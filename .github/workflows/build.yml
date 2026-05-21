@@ -25,8 +25,8 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          shellcheck scripts/install.sh apps/agent_debugboard/tests/run_unit_tests.sh
-          sh -n scripts/install.sh
+          shellcheck skills/agent-debugboard/scripts/install.sh apps/agent_debugboard/tests/run_unit_tests.sh
+          sh -n skills/agent-debugboard/scripts/install.sh
           sh -n apps/agent_debugboard/tests/run_unit_tests.sh
 
   windows-installer:
@@ -40,8 +40,8 @@ jobs:
       - name: Check PowerShell installer
         shell: pwsh
         run: |
-          $null = [scriptblock]::Create((Get-Content .\scripts\install.ps1 -Raw))
-          .\scripts\install.ps1 -DryRun
+          $null = [scriptblock]::Create((Get-Content .\skills\agent-debugboard\scripts\install.ps1 -Raw))
+          .\skills\agent-debugboard\scripts\install.ps1 -DryRun
 
   firmware:
     name: Build RP2040 UF2 firmware

@@ -54,48 +54,38 @@ agent-debugboardctl --json status
 
 `agent-debugboardctl` 是 Go native binary。用户不需要 Python、pip 或虚拟环境。
 
-公开仓库可以在 macOS / Linux 上通过 `curl` 或 `wget` 一行安装最新版：
+在 checkout 内，macOS / Linux 可以把 host CLI 安装到 skill-local
+`scripts/bin` 目录：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xzl01/agent-debugboard/main/scripts/install.sh | sh
-wget -qO- https://raw.githubusercontent.com/xzl01/agent-debugboard/main/scripts/install.sh | sh
+./skills/agent-debugboard/scripts/install.sh
 ```
 
-也可以指定版本或安装目录：
+也可以指定 release 版本：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xzl01/agent-debugboard/main/scripts/install.sh | VERSION=<tag> sh
-curl -fsSL https://raw.githubusercontent.com/xzl01/agent-debugboard/main/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
+./skills/agent-debugboard/scripts/install.sh --version <tag>
 ```
 
-当前仓库是私有仓库时，需要先提供 GitHub token。已经登录 GitHub CLI 的机器可
-以直接使用 `gh auth token`：
+私有仓库 release fallback 需要先提供 GitHub token。已经登录 GitHub CLI 的机器
+可以直接使用 `gh auth token`：
 
 ```sh
 export GH_TOKEN="$(gh auth token)"
-curl -fsSL \
-  -H "Authorization: Bearer $GH_TOKEN" \
-  -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/xzl01/agent-debugboard/contents/scripts/install.sh?ref=main" | sh
-wget -qO- \
-  --header="Authorization: Bearer $GH_TOKEN" \
-  --header="Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/xzl01/agent-debugboard/contents/scripts/install.sh?ref=main" | sh
+./skills/agent-debugboard/scripts/install.sh
 ```
 
 Windows PowerShell：
 
 ```powershell
-irm https://raw.githubusercontent.com/xzl01/agent-debugboard/main/scripts/install.ps1 | iex
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1
 ```
 
-私有仓库 PowerShell：
+私有仓库 PowerShell release fallback：
 
 ```powershell
 $env:GH_TOKEN = gh auth token
-irm `
-  -Headers @{Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github.raw"} `
-  "https://api.github.com/repos/xzl01/agent-debugboard/contents/scripts/install.ps1?ref=main" | iex
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1
 ```
 
 也可以从 GitHub Release 手动下载匹配 OS 和 CPU 的产物：
@@ -120,9 +110,9 @@ xattr -dr com.apple.quarantine ./agent-debugboardctl
 安装后验证：
 
 ```sh
-agent-debugboardctl --help
-agent-debugboardctl --version
-agent-debugboardctl doctor
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --help
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --version
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl doctor
 ```
 
 ## 构建固件

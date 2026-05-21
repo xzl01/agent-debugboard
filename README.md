@@ -57,49 +57,38 @@ skill first. For automation, prefer `agent-debugboardctl --json ...`; parse
 `agent-debugboardctl` is a native Go binary. Users do not need Python, pip, or a
 virtual environment.
 
-For a public checkout, install the latest release on macOS or Linux with either
-`curl` or `wget`:
+From a checkout, install the host CLI into the skill-local `scripts/bin`
+directory on macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xzl01/agent-debugboard/main/scripts/install.sh | sh
-wget -qO- https://raw.githubusercontent.com/xzl01/agent-debugboard/main/scripts/install.sh | sh
+./skills/agent-debugboard/scripts/install.sh
 ```
 
-Install a specific version or choose a target directory:
+Install a specific release version:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xzl01/agent-debugboard/main/scripts/install.sh | VERSION=<tag> sh
-curl -fsSL https://raw.githubusercontent.com/xzl01/agent-debugboard/main/scripts/install.sh | INSTALL_DIR=/usr/local/bin sh
+./skills/agent-debugboard/scripts/install.sh --version <tag>
 ```
 
-For the current private repository, export a GitHub token first. `gh auth token`
-works if the GitHub CLI is logged in:
+For a private repository release fallback, export a GitHub token first.
+`gh auth token` works if the GitHub CLI is logged in:
 
 ```sh
 export GH_TOKEN="$(gh auth token)"
-curl -fsSL \
-  -H "Authorization: Bearer $GH_TOKEN" \
-  -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/xzl01/agent-debugboard/contents/scripts/install.sh?ref=main" | sh
-wget -qO- \
-  --header="Authorization: Bearer $GH_TOKEN" \
-  --header="Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/xzl01/agent-debugboard/contents/scripts/install.sh?ref=main" | sh
+./skills/agent-debugboard/scripts/install.sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/xzl01/agent-debugboard/main/scripts/install.ps1 | iex
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1
 ```
 
-Private repository PowerShell:
+Private repository PowerShell release fallback:
 
 ```powershell
 $env:GH_TOKEN = gh auth token
-irm `
-  -Headers @{Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github.raw"} `
-  "https://api.github.com/repos/xzl01/agent-debugboard/contents/scripts/install.ps1?ref=main" | iex
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1
 ```
 
 Manual downloads are also available from each GitHub Release:
@@ -125,9 +114,9 @@ xattr -dr com.apple.quarantine ./agent-debugboardctl
 After installation:
 
 ```sh
-agent-debugboardctl --help
-agent-debugboardctl --version
-agent-debugboardctl doctor
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --help
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --version
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl doctor
 ```
 
 ## Build Firmware
