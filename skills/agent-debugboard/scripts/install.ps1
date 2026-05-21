@@ -1,9 +1,7 @@
 param(
     [string]$Version = $env:VERSION,
-    [string]$InstallDir = $env:INSTALL_DIR,
     [string]$Repo = $env:REPO,
-    [switch]$DryRun,
-    [switch]$NoPathUpdate
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,8 +12,17 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 if ([string]::IsNullOrWhiteSpace($Repo)) {
     $Repo = "xzl01/agent-debugboard"
 }
-if ([string]::IsNullOrWhiteSpace($InstallDir)) {
-    $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\agent-debugboard\bin"
+
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir "../../.."))
+$installDir = Join-Path $scriptDir "bin"
+$target = Join-Path $installDir "agent-debugboardctl.exe"
+
+function Test-CanBuildFromSource([string]$Root) {
+    $hasGoMod = Test-Path -LiteralPath (Join-Path $Root "go.mod") -PathType Leaf
+    $hasCmdDir = Test-Path -LiteralPath (Join-Path $Root "cmd/agent-debugboardctl") -PathType Container
+    $go = Get-Command go -ErrorAction SilentlyContinue
+    return ($hasGoMod -and $hasCmdDir -and $null -ne $go)
 }
 
 function Get-AgentDebugBoardArch {
@@ -92,21 +99,51 @@ function Invoke-AgentDebugBoardReleaseAssetDownload([string]$Name, [string]$OutF
     Invoke-WebRequest -Uri $assetObject.url -OutFile $OutFile -Headers $assetHeaders
 }
 
+$canBuild = Test-CanBuildFromSource -Root $repoRoot
 $arch = Get-AgentDebugBoardArch
 $asset = "agent-debugboardctl_windows_$arch.zip"
 $assetUrl = Get-ReleaseAssetUrl $asset
 $token = Get-AgentDebugBoardToken
 
 if ($DryRun) {
-    $tokenState = if ([string]::IsNullOrWhiteSpace($token)) { "no" } else { "yes" }
-    Write-Host "agent-debugboardctl install dry-run"
-    Write-Host "repo:        $Repo"
-    Write-Host "version:     $Version"
-    Write-Host "platform:    windows/$arch"
-    Write-Host "asset:       $asset"
-    Write-Host "install dir: $InstallDir"
-    Write-Host "auth token:  $tokenState"
-    Write-Host "asset URL:   $assetUrl"
+    if ($canBuild) {
+        Write-Host "agent-debugboardctl skill install dry-run"
+        Write-Host "mode:        build from source"
+        Write-Host "repo root:   $repoRoot"
+        Write-Host "output:      $target"
+    } else {
+        $tokenState = if ([string]::IsNullOrWhiteSpace($token)) { "no" } else { "yes" }
+        Write-Host "agent-debugboardctl skill install dry-run"
+        Write-Host "mode:        download release"
+        Write-Host "repo:        $Repo"
+        Write-Host "version:     $Version"
+        Write-Host "platform:    windows/$arch"
+        Write-Host "asset:       $asset"
+        Write-Host "install dir: $installDir"
+        Write-Host "auth token:  $tokenState"
+        Write-Host "asset URL:   $assetUrl"
+    }
+    exit 0
+}
+
+New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+
+if ($canBuild) {
+    Write-Host "Building skill-local agent-debugboardctl at $target"
+    Push-Location $repoRoot
+    try {
+        & go build -trimpath -o $target ./cmd/agent-debugboardctl
+        if ($LASTEXITCODE -ne 0) {
+            throw "go build failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        Pop-Location
+    }
+    Write-Host "Installed agent-debugboardctl to $target"
+    $versionOutput = & $target --version 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host $versionOutput
+    }
     exit 0
 }
 
@@ -150,23 +187,7 @@ try {
         throw "agent-debugboardctl.exe not found in archive"
     }
 
-    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    $target = Join-Path $InstallDir "agent-debugboardctl.exe"
     Copy-Item -Path $binary.FullName -Destination $target -Force
-
-    if (-not $NoPathUpdate) {
-        $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
-        $paths = @()
-        if (-not [string]::IsNullOrWhiteSpace($currentPath)) {
-            $paths = $currentPath -split ";"
-        }
-        if ($paths -notcontains $InstallDir) {
-            $newPath = if ([string]::IsNullOrWhiteSpace($currentPath)) { $InstallDir } else { "$currentPath;$InstallDir" }
-            [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-            Write-Host "Added $InstallDir to the user PATH. Open a new terminal before running agent-debugboardctl."
-        }
-    }
-
     Write-Host "Installed agent-debugboardctl to $target"
     $versionOutput = & $target --version 2>$null
     if ($LASTEXITCODE -eq 0) {

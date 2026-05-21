@@ -3,18 +3,25 @@ set -eu
 
 REPO="${REPO:-xzl01/agent-debugboard}"
 VERSION="${VERSION:-latest}"
-INSTALL_DIR="${INSTALL_DIR:-}"
 DRY_RUN=0
 
 usage() {
   cat <<'USAGE'
-Usage: install.sh [--version VERSION] [--install-dir DIR] [--repo OWNER/REPO] [--dry-run]
+Usage: install.sh [--version VERSION] [--repo OWNER/REPO] [--dry-run]
+
+Builds or installs agent-debugboardctl into this skill only:
+  skills/agent-debugboard/scripts/bin/agent-debugboardctl
+
+Behavior:
+  - If this checkout has go.mod, cmd/agent-debugboardctl, and go, build locally.
+  - Otherwise download the release asset, verify SHA256SUMS.txt, and copy it here.
 
 Environment:
   VERSION      Release tag to install, for example v0.0.4. Default: latest.
-  INSTALL_DIR Directory to install agent-debugboardctl into.
   REPO         GitHub repository. Default: xzl01/agent-debugboard.
   GH_TOKEN     Token for private repository release downloads.
+
+This script never modifies PATH, shell profiles, or global install locations.
 USAGE
 }
 
@@ -26,14 +33,6 @@ while [ "$#" -gt 0 ]; do
         exit 2
       fi
       VERSION="$2"
-      shift 2
-      ;;
-    --install-dir)
-      if [ "$#" -lt 2 ]; then
-        echo "--install-dir requires a value" >&2
-        exit 2
-      fi
-      INSTALL_DIR="$2"
       shift 2
       ;;
     --repo)
@@ -60,6 +59,16 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+unset CDPATH
+script_dir=$(cd "$(dirname "$0")" && pwd)
+repo_root=$(cd "$script_dir/../../.." && pwd)
+install_dir="$script_dir/bin"
+binary_path="$install_dir/agent-debugboardctl"
+
+can_build_from_source() {
+  [ -f "$repo_root/go.mod" ] && [ -d "$repo_root/cmd/agent-debugboardctl" ] && command -v go >/dev/null 2>&1
+}
+
 detect_os() {
   case "$(uname -s)" in
     Darwin) echo "darwin" ;;
@@ -80,16 +89,6 @@ detect_arch() {
       exit 1
       ;;
   esac
-}
-
-pick_install_dir() {
-  if [ -n "$INSTALL_DIR" ]; then
-    echo "$INSTALL_DIR"
-  elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
-    echo "/usr/local/bin"
-  else
-    echo "$HOME/.local/bin"
-  fi
 }
 
 release_url() {
@@ -190,22 +189,44 @@ sha256_file() {
 
 os="$(detect_os)"
 arch="$(detect_arch)"
-install_dir="$(pick_install_dir)"
 asset="agent-debugboardctl_${os}_${arch}.tar.gz"
-asset_url="$(release_url "$asset")"
 token="$(github_token)"
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  cat <<EOF
-agent-debugboardctl install dry-run
+  if can_build_from_source; then
+    cat <<EOF
+agent-debugboardctl skill install dry-run
+mode:        build from source
+repo root:   $repo_root
+output:      $binary_path
+EOF
+  else
+    cat <<EOF
+agent-debugboardctl skill install dry-run
+mode:        download release
 repo:        $REPO
 version:     $VERSION
 platform:    ${os}/${arch}
 asset:       $asset
 install dir: $install_dir
 auth token:  $(if [ -n "$token" ]; then echo "yes"; else echo "no"; fi)
-asset URL:   $asset_url
+asset URL:   $(release_url "$asset")
 EOF
+  fi
+  exit 0
+fi
+
+mkdir -p "$install_dir"
+
+if can_build_from_source; then
+  echo "Building skill-local agent-debugboardctl at $binary_path"
+  (
+    cd "$repo_root"
+    go build -trimpath -o "$binary_path" ./cmd/agent-debugboardctl
+  )
+  chmod 755 "$binary_path"
+  echo "Installed agent-debugboardctl to $binary_path"
+  "$binary_path" --version 2>/dev/null || true
   exit 0
 fi
 
@@ -265,28 +286,12 @@ if [ -z "$binary" ]; then
   exit 1
 fi
 
-mkdir -p "$install_dir"
-if [ ! -w "$install_dir" ]; then
-  echo "$install_dir is not writable. Set INSTALL_DIR to a writable directory or run with sudo." >&2
-  exit 1
-fi
-
-cp "$binary" "$install_dir/agent-debugboardctl"
-chmod 755 "$install_dir/agent-debugboardctl"
+cp "$binary" "$binary_path"
+chmod 755 "$binary_path"
 
 if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
-  xattr -dr com.apple.quarantine "$install_dir/agent-debugboardctl" 2>/dev/null || true
+  xattr -dr com.apple.quarantine "$binary_path" 2>/dev/null || true
 fi
 
-case ":$PATH:" in
-  *":$install_dir:"*) ;;
-  *)
-    echo "Installed to $install_dir, which is not currently in PATH." >&2
-    echo "Add it to PATH or run: $install_dir/agent-debugboardctl" >&2
-    ;;
-esac
-
-echo "Installed agent-debugboardctl to $install_dir/agent-debugboardctl"
-if version_output="$("$install_dir/agent-debugboardctl" --version 2>/dev/null)"; then
-  echo "$version_output"
-fi
+echo "Installed agent-debugboardctl to $binary_path"
+"$binary_path" --version 2>/dev/null || true
