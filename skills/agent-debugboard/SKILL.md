@@ -5,82 +5,93 @@ description: Use the Agent DebugBoard host CLI to diagnose and operate target-bo
 
 # Agent DebugBoard
 
-Use `agent-debugboardctl` for Agent-side hardware control. Prefer JSON output for all automation. Do not parse human-readable command output when `--json` is available.
+Use the skill-local binary for Agent-side hardware control. Prefer JSON output for all automation. Do not parse human-readable command output when `--json` is available.
+
+- macOS/Linux binary: `${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl`
+- Windows binary: `%CLAUDE_SKILL_DIR%\scripts\bin\agent-debugboardctl.exe`
 
 ## First Checks
 
-1. Check whether the CLI exists:
+1. Check whether the skill-local binary exists and runs:
+
+   macOS/Linux:
 
    ```sh
-   agent-debugboardctl --version
+   ${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --version
    ```
 
-2. Check whether the installed CLI is new enough for Agent automation:
+   Windows CMD:
+
+   ```bat
+   "%CLAUDE_SKILL_DIR%\scripts\bin\agent-debugboardctl.exe" --version
+   ```
+
+2. Check whether the skill-local binary is new enough for Agent automation:
+
+   macOS/Linux:
 
    ```sh
-   agent-debugboardctl --json doctor
+   ${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json doctor
+   ```
+
+   Windows CMD:
+
+   ```bat
+   "%CLAUDE_SKILL_DIR%\scripts\bin\agent-debugboardctl.exe" --json doctor
    ```
 
 3. Treat these outcomes as follows:
    - Exit code `0` with `ok: true`: the CLI and board connection are ready.
-   - Valid JSON with `ok: false`: read `error.code` and `error.message`; the CLI is installed but the board or serial path needs attention.
-   - Unknown `--json` or `doctor`: the installed CLI is too old. Install `agent-debugboardctl` v0.0.3 or newer.
-   - Command not found: install the CLI.
+   - Valid JSON with `ok: false`: read `error.code` and `error.message`; the skill-local binary is working, but the board or serial path needs attention.
+   - Unknown `--json` or `doctor`: the built binary is too old. Rebuild from this checkout.
+   - Binary is missing: run the matching installer from the repository checkout.
 
-## Install CLI
+## Install/Build Repo-Local CLI
 
-Use the repository install scripts. They download the correct native binary, verify `SHA256SUMS.txt`, and install `agent-debugboardctl`. The JSON and `doctor` workflow requires `agent-debugboardctl` v0.0.3 or newer.
+This skill uses only repo-local scripts and binaries. Do not modify `PATH`, shell
+profiles, or global install directories.
 
-Public repository on macOS or Linux:
+Install the CLI into the repo-local output directory.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/xzl01/agent-debugboard/main/scripts/install.sh | sh
-```
-
-If `curl` is unavailable:
+macOS/Linux:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/xzl01/agent-debugboard/main/scripts/install.sh | sh
-```
-
-Private repository on macOS or Linux:
-
-```sh
-export GH_TOKEN="$(gh auth token)"
-curl -fsSL \
-  -H "Authorization: Bearer $GH_TOKEN" \
-  -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/xzl01/agent-debugboard/contents/scripts/install.sh?ref=main" | sh
+${CLAUDE_SKILL_DIR}/scripts/install.sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/xzl01/agent-debugboard/main/scripts/install.ps1 | iex
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${env:CLAUDE_SKILL_DIR}\scripts\install.ps1"
 ```
 
-Private repository on Windows PowerShell:
+When the current repository checkout contains `go.mod` and
+`cmd/agent-debugboardctl`, and `go` is available, the helper builds from source
+with `go build -trimpath`. Otherwise the same skill-local installer downloads
+and verifies a release artifact. In both cases it installs only to:
 
-```powershell
-$env:GH_TOKEN = gh auth token
-irm `
-  -Headers @{Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github.raw"} `
-  "https://api.github.com/repos/xzl01/agent-debugboard/contents/scripts/install.ps1?ref=main" | iex
+```text
+skills/agent-debugboard/scripts/bin/agent-debugboardctl
+skills/agent-debugboard/scripts/bin/agent-debugboardctl.exe
 ```
 
-After installation, run:
+After installation, run the matching binary.
+
+macOS/Linux:
 
 ```sh
-agent-debugboardctl --version
-agent-debugboardctl --json doctor
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --version
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json doctor
 ```
 
-If the installed CLI is older than v0.0.3, install the latest release or build from the current checkout:
+Windows CMD:
 
-```sh
-go build -trimpath -o agent-debugboardctl ./cmd/agent-debugboardctl
-./agent-debugboardctl --json doctor
+```bat
+"%CLAUDE_SKILL_DIR%\scripts\bin\agent-debugboardctl.exe" --version
+"%CLAUDE_SKILL_DIR%\scripts\bin\agent-debugboardctl.exe" --json doctor
 ```
+
+The helper never modifies `PATH`, shell profiles, or global install locations.
 
 ## JSON Contract
 
@@ -98,30 +109,30 @@ If `ok` is `false`, do not infer success from partial fields. Handle `error.code
 Diagnose board connection:
 
 ```sh
-agent-debugboardctl --json doctor
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json doctor
 ```
 
 Read full board state:
 
 ```sh
-agent-debugboardctl --json status
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json status
 ```
 
 List power rails:
 
 ```sh
-agent-debugboardctl --json rail list
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail list
 ```
 
 Control power rails:
 
 ```sh
-agent-debugboardctl --json rail set 12v_out on
-agent-debugboardctl --json rail set 12v_out off
-agent-debugboardctl --json rail set 5v_out on
-agent-debugboardctl --json rail set 5v_out off
-agent-debugboardctl --json rail set 5v_ws on
-agent-debugboardctl --json rail set 20v_out on
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 12v_out on
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 12v_out off
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 5v_out on
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 5v_out off
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 5v_ws on
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 20v_out on
 ```
 
 Restart a target board with its normal software reboot or reset interface first.
@@ -131,10 +142,10 @@ the rail name first, then turn it off, wait briefly for discharge, and turn it
 back on:
 
 ```sh
-agent-debugboardctl --json rail set 5v_out off
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 5v_out off
 sleep 2
-agent-debugboardctl --json rail set 5v_out on
-agent-debugboardctl --json rail get 5v_out
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 5v_out on
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail get 5v_out
 ```
 
 Use the rail that actually powers the target, for example `5v_out`, `12v_out`,
@@ -143,17 +154,17 @@ or `20v_out`. Do not power-cycle unrelated rails.
 Read ADC current monitors:
 
 ```sh
-agent-debugboardctl --json adc read
-agent-debugboardctl --json adc read 5v_out
-agent-debugboardctl --json adc read 12v_out
-agent-debugboardctl --json adc read 20v_out
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json adc read
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json adc read 5v_out
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json adc read 12v_out
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json adc read 20v_out
 ```
 
 For manual calibration or hardware debugging, use verbose human-readable ADC
 output to inspect raw fields:
 
 ```sh
-agent-debugboardctl adc read -v 5v_out
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl adc read -v 5v_out
 ```
 
 Do not parse this text in automation. Agents should use `--json adc read ...`
@@ -162,24 +173,24 @@ and consume `readings[].ma_est`, `readings[].raw`, and `readings[].mv`.
 Switch TF/SD route:
 
 ```sh
-agent-debugboardctl --json sd get
-agent-debugboardctl --json sd route target
-agent-debugboardctl --json sd route usb-reader
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json sd get
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json sd route target
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json sd route usb-reader
 ```
 
 Use allowlisted GPIOs:
 
 ```sh
-agent-debugboardctl --json gpio list
-agent-debugboardctl --json gpio get GP13
-agent-debugboardctl --json gpio set GP13 1
-agent-debugboardctl --json gpio input GP13
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json gpio list
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json gpio get GP13
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json gpio set GP13 1
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json gpio input GP13
 ```
 
 Enter RP2040 BOOTSEL mode for flashing:
 
 ```sh
-agent-debugboardctl bootloader
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl bootloader
 ```
 
 ## OpenOCD / JTAG Workflow
@@ -205,8 +216,8 @@ available in the host OpenOCD installation and the target config for the board
 under test:
 
 ```sh
-agent-debugboardctl --json rail set 5v_out on
-agent-debugboardctl --json rail get 5v_out
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 5v_out on
+${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail get 5v_out
 openocd -f interface/<ch347-interface>.cfg -f target/<target>.cfg
 ```
 
@@ -235,7 +246,7 @@ available or the target is unresponsive.
 - Treat `rail set`, `gpio set`, `gpio input`, `sd route`, and `bootloader` as side-effectful operations. Confirm the target and desired state before running them.
 - Prefer soft reboot/reset for target-board restarts. Treat rail power-cycling as a hard-restart fallback that is destructive to target runtime state. Confirm the exact rail and only cycle the rail powering the target.
 - `5V_FIN` is an input/source rail. Do not present it as a controllable output.
-- Only use allowlisted GPIOs reported by `agent-debugboardctl --json gpio list`.
+- Only use allowlisted GPIOs reported by `${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json gpio list`.
 - Do not expose board-internal schematic codenames in user-facing output.
 
 ## ADC Calibration Notes
