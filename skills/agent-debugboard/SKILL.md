@@ -7,8 +7,15 @@ description: Use the Agent DebugBoard host CLI to diagnose and operate target-bo
 
 Use the skill-local binary for Agent-side hardware control. Prefer JSON output for all automation. Do not parse human-readable command output when `--json` is available.
 
-- macOS/Linux binary: `${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl`
-- Windows binary: `%CLAUDE_SKILL_DIR%\scripts\bin\agent-debugboardctl.exe`
+The examples below assume this skill is checked into the current repository at
+`./skills/agent-debugboard` and commands are run from the repository root. If
+the skill is installed elsewhere, for example under `.claude/skills`, replace
+the `./skills/agent-debugboard` prefix with the actual skill directory. Do not
+use `./skills/...` from another repository unless that repository contains this
+skill at that path.
+
+- macOS/Linux binary: `./skills/agent-debugboard/scripts/bin/agent-debugboardctl`
+- Windows binary: `.\skills\agent-debugboard\scripts\bin\agent-debugboardctl.exe`
 
 ## First Checks
 
@@ -17,13 +24,13 @@ Use the skill-local binary for Agent-side hardware control. Prefer JSON output f
    macOS/Linux:
 
    ```sh
-   ${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --version
+   ./skills/agent-debugboard/scripts/bin/agent-debugboardctl --version
    ```
 
    Windows CMD:
 
    ```bat
-   "%CLAUDE_SKILL_DIR%\scripts\bin\agent-debugboardctl.exe" --version
+   .\skills\agent-debugboard\scripts\bin\agent-debugboardctl.exe --version
    ```
 
 2. Check whether the skill-local binary is new enough for Agent automation:
@@ -31,13 +38,13 @@ Use the skill-local binary for Agent-side hardware control. Prefer JSON output f
    macOS/Linux:
 
    ```sh
-   ${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json doctor
+   ./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json doctor
    ```
 
    Windows CMD:
 
    ```bat
-   "%CLAUDE_SKILL_DIR%\scripts\bin\agent-debugboardctl.exe" --json doctor
+   .\skills\agent-debugboard\scripts\bin\agent-debugboardctl.exe --json doctor
    ```
 
 3. Treat these outcomes as follows:
@@ -56,19 +63,33 @@ Install the CLI into the repo-local output directory.
 macOS/Linux:
 
 ```sh
-${CLAUDE_SKILL_DIR}/scripts/install.sh
+./skills/agent-debugboard/scripts/install.sh
+```
+
+Install a specific release version. An explicit version always skips local
+source builds and downloads the requested release artifact:
+
+```sh
+./skills/agent-debugboard/scripts/install.sh --version <tag>
 ```
 
 Windows PowerShell:
 
 ```powershell
-powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${env:CLAUDE_SKILL_DIR}\scripts\install.ps1"
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1
+```
+
+Windows PowerShell specific release version:
+
+```powershell
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1 -Version <tag>
 ```
 
 When the current repository checkout contains `go.mod` and
 `cmd/agent-debugboardctl`, and `go` is available, the helper builds from source
-with `go build -trimpath`. Otherwise the same skill-local installer downloads
-and verifies a release artifact. In both cases it installs only to:
+with `go build -trimpath`, unless a release version is explicitly requested.
+Otherwise the same skill-local installer downloads and verifies a release
+artifact. In both cases it installs only to:
 
 ```text
 skills/agent-debugboard/scripts/bin/agent-debugboardctl
@@ -80,15 +101,15 @@ After installation, run the matching binary.
 macOS/Linux:
 
 ```sh
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --version
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json doctor
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --version
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json doctor
 ```
 
 Windows CMD:
 
 ```bat
-"%CLAUDE_SKILL_DIR%\scripts\bin\agent-debugboardctl.exe" --version
-"%CLAUDE_SKILL_DIR%\scripts\bin\agent-debugboardctl.exe" --json doctor
+.\skills\agent-debugboard\scripts\bin\agent-debugboardctl.exe --version
+.\skills\agent-debugboard\scripts\bin\agent-debugboardctl.exe --json doctor
 ```
 
 The helper never modifies `PATH`, shell profiles, or global install locations.
@@ -109,30 +130,30 @@ If `ok` is `false`, do not infer success from partial fields. Handle `error.code
 Diagnose board connection:
 
 ```sh
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json doctor
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json doctor
 ```
 
 Read full board state:
 
 ```sh
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json status
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json status
 ```
 
 List power rails:
 
 ```sh
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail list
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail list
 ```
 
 Control power rails:
 
 ```sh
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 12v_out on
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 12v_out off
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 5v_out on
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 5v_out off
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 5v_ws on
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 20v_out on
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 12v_out on
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 12v_out off
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 5v_out on
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 5v_out off
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 5v_ws on
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 20v_out on
 ```
 
 Restart a target board with its normal software reboot or reset interface first.
@@ -142,10 +163,10 @@ the rail name first, then turn it off, wait briefly for discharge, and turn it
 back on:
 
 ```sh
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 5v_out off
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 5v_out off
 sleep 2
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 5v_out on
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail get 5v_out
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 5v_out on
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail get 5v_out
 ```
 
 Use the rail that actually powers the target, for example `5v_out`, `12v_out`,
@@ -154,17 +175,17 @@ or `20v_out`. Do not power-cycle unrelated rails.
 Read ADC current monitors:
 
 ```sh
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json adc read
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json adc read 5v_out
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json adc read 12v_out
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json adc read 20v_out
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json adc read
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json adc read 5v_out
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json adc read 12v_out
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json adc read 20v_out
 ```
 
 For manual calibration or hardware debugging, use verbose human-readable ADC
 output to inspect raw fields:
 
 ```sh
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl adc read -v 5v_out
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl adc read -v 5v_out
 ```
 
 Do not parse this text in automation. Agents should use `--json adc read ...`
@@ -173,24 +194,24 @@ and consume `readings[].ma_est`, `readings[].raw`, and `readings[].mv`.
 Switch TF/SD route:
 
 ```sh
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json sd get
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json sd route target
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json sd route usb-reader
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json sd get
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json sd route target
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json sd route usb-reader
 ```
 
 Use allowlisted GPIOs:
 
 ```sh
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json gpio list
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json gpio get GP13
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json gpio set GP13 1
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json gpio input GP13
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json gpio list
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json gpio get GP13
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json gpio set GP13 1
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json gpio input GP13
 ```
 
 Enter RP2040 BOOTSEL mode for flashing:
 
 ```sh
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl bootloader
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl bootloader
 ```
 
 ## OpenOCD / JTAG Workflow
@@ -216,8 +237,8 @@ available in the host OpenOCD installation and the target config for the board
 under test:
 
 ```sh
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail set 5v_out on
-${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json rail get 5v_out
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 5v_out on
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail get 5v_out
 openocd -f interface/<ch347-interface>.cfg -f target/<target>.cfg
 ```
 
@@ -246,7 +267,7 @@ available or the target is unresponsive.
 - Treat `rail set`, `gpio set`, `gpio input`, `sd route`, and `bootloader` as side-effectful operations. Confirm the target and desired state before running them.
 - Prefer soft reboot/reset for target-board restarts. Treat rail power-cycling as a hard-restart fallback that is destructive to target runtime state. Confirm the exact rail and only cycle the rail powering the target.
 - `5V_FIN` is an input/source rail. Do not present it as a controllable output.
-- Only use allowlisted GPIOs reported by `${CLAUDE_SKILL_DIR}/scripts/bin/agent-debugboardctl --json gpio list`.
+- Only use allowlisted GPIOs reported by `./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json gpio list`.
 - Do not expose board-internal schematic codenames in user-facing output.
 
 ## ADC Calibration Notes
