@@ -70,12 +70,13 @@ Install a specific release version:
 ./skills/agent-debugboard/scripts/install.sh --version <tag>
 ```
 
-For a private repository release fallback, export a GitHub token first.
-`gh auth token` works if the GitHub CLI is logged in:
+For a private repository release download, export a GitHub token first and
+request the release version explicitly. `gh auth token` works if the GitHub CLI
+is logged in:
 
 ```sh
 export GH_TOKEN="$(gh auth token)"
-./skills/agent-debugboard/scripts/install.sh
+./skills/agent-debugboard/scripts/install.sh --version <tag>
 ```
 
 Windows PowerShell:
@@ -84,11 +85,11 @@ Windows PowerShell:
 powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1
 ```
 
-Private repository PowerShell release fallback:
+Private repository PowerShell release download:
 
 ```powershell
 $env:GH_TOKEN = gh auth token
-powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1 -Version <tag>
 ```
 
 Manual downloads are also available from each GitHub Release:
@@ -108,7 +109,7 @@ then removes the quarantine flag from the installed binary. If installing
 manually, verify the checksum and run:
 
 ```sh
-xattr -dr com.apple.quarantine ./agent-debugboardctl
+xattr -dr com.apple.quarantine ./skills/agent-debugboard/scripts/bin/agent-debugboardctl
 ```
 
 After installation:
