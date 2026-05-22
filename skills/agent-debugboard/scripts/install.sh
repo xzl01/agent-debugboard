@@ -2,7 +2,7 @@
 set -eu
 
 REPO="${REPO:-xzl01/agent-debugboard}"
-VERSION="${VERSION:-latest}"
+VERSION="latest"
 DRY_RUN=0
 VERSION_EXPLICIT=0
 
@@ -19,7 +19,6 @@ Behavior:
   - Otherwise download the release asset, verify SHA256SUMS.txt, and copy it here.
 
 Environment:
-  VERSION      Release tag to install, for example v0.0.4. Default: latest.
   REPO         GitHub repository. Default: xzl01/agent-debugboard.
   GH_TOKEN     Token for private repository release downloads.
 

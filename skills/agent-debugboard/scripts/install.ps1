@@ -1,5 +1,5 @@
 param(
-    [string]$Version = $env:VERSION,
+    [string]$Version = "latest",
     [string]$Repo = $env:REPO,
     [switch]$DryRun
 )
