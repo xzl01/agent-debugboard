@@ -4,6 +4,7 @@ set -eu
 REPO="${REPO:-xzl01/agent-debugboard}"
 VERSION="${VERSION:-latest}"
 DRY_RUN=0
+VERSION_EXPLICIT=0
 
 usage() {
   cat <<'USAGE'
@@ -13,6 +14,7 @@ Builds or installs agent-debugboardctl into this skill only:
   skills/agent-debugboard/scripts/bin/agent-debugboardctl
 
 Behavior:
+  - If --version is explicitly provided, always download that release.
   - If this checkout has go.mod, cmd/agent-debugboardctl, and go, build locally.
   - Otherwise download the release asset, verify SHA256SUMS.txt, and copy it here.
 
@@ -33,6 +35,7 @@ while [ "$#" -gt 0 ]; do
         exit 2
       fi
       VERSION="$2"
+      VERSION_EXPLICIT=1
       shift 2
       ;;
     --repo)
@@ -193,7 +196,7 @@ asset="agent-debugboardctl_${os}_${arch}.tar.gz"
 token="$(github_token)"
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  if can_build_from_source; then
+  if can_build_from_source && [ "$VERSION_EXPLICIT" -eq 0 ]; then
     cat <<EOF
 agent-debugboardctl skill install dry-run
 mode:        build from source
@@ -218,7 +221,7 @@ fi
 
 mkdir -p "$install_dir"
 
-if can_build_from_source; then
+if can_build_from_source && [ "$VERSION_EXPLICIT" -eq 0 ]; then
   echo "Building skill-local agent-debugboardctl at $binary_path"
   (
     cd "$repo_root"

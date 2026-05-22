@@ -17,6 +17,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir "../../.."))
 $installDir = Join-Path $scriptDir "bin"
 $target = Join-Path $installDir "agent-debugboardctl.exe"
+$versionExplicit = $PSBoundParameters.ContainsKey('Version')
 
 function Test-CanBuildFromSource([string]$Root) {
     $hasGoMod = Test-Path -LiteralPath (Join-Path $Root "go.mod") -PathType Leaf
@@ -106,7 +107,7 @@ $assetUrl = Get-ReleaseAssetUrl $asset
 $token = Get-AgentDebugBoardToken
 
 if ($DryRun) {
-    if ($canBuild) {
+    if ($canBuild -and -not $versionExplicit) {
         Write-Host "agent-debugboardctl skill install dry-run"
         Write-Host "mode:        build from source"
         Write-Host "repo root:   $repoRoot"
@@ -128,7 +129,7 @@ if ($DryRun) {
 
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 
-if ($canBuild) {
+if ($canBuild -and -not $versionExplicit) {
     Write-Host "Building skill-local agent-debugboardctl at $target"
     Push-Location $repoRoot
     try {
