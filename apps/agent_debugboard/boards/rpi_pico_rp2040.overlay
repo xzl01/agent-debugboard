@@ -1,4 +1,5 @@
 #include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
 #include <zephyr/dt-bindings/i2c/i2c.h>
 #include <zephyr/dt-bindings/pinctrl/rpi-pico-rp2040-pinctrl.h>
 
@@ -6,21 +7,103 @@
 	chosen {
 		zephyr,console = &cdc_acm_uart0;
 		zephyr,shell-uart = &cdc_acm_uart0;
+		agent-debugboard-temperature-sensor = &die_temp;
 	};
 
 	zephyr,user {
-		/* Board current-monitor outputs:
-		 * GP26/ADC0 = S_C_5V, GP27/ADC1 = S_C_12V,
-		 * GP28/ADC2 = S_C_20V.
+		/*
+		 * Raw ADC taps for current monitor debugging.
+		 * GP26/ADC0 = S_C_5V, GP27/ADC1 = S_C_12V, GP28/ADC2 = S_C_20V.
 		 */
 		io-channels = <&adc 0>, <&adc 1>, <&adc 2>;
+	};
+
+	reg_12v_out: regulator-12v-out {
+		compatible = "regulator-fixed";
+		regulator-name = "12v_out";
+		regulator-min-microvolt = <12000000>;
+		regulator-max-microvolt = <12000000>;
+		enable-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+		regulator-boot-off;
+	};
+
+	reg_5v_out: regulator-5v-out {
+		compatible = "regulator-fixed";
+		regulator-name = "5v_out";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		enable-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+		regulator-boot-off;
+	};
+
+	reg_5v_ws: regulator-5v-ws {
+		compatible = "regulator-fixed";
+		regulator-name = "5v_ws";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		enable-gpios = <&gpio0 9 GPIO_ACTIVE_HIGH>;
+		regulator-boot-off;
+	};
+
+	reg_20v_out: regulator-20v-out {
+		compatible = "regulator-fixed";
+		regulator-name = "20v_out";
+		regulator-min-microvolt = <20000000>;
+		regulator-max-microvolt = <20000000>;
+		enable-gpios = <&gpio0 10 GPIO_ACTIVE_HIGH>;
+		regulator-boot-off;
+	};
+
+	/*
+	 * Board current monitors use INA139 with a 0.2 mOhm shunt and a
+	 * 100 kOhm output load resistor. The INA139 datasheet transfer function is:
+	 *
+	 *   Vout = Is * Rs * RL / 1 kOhm
+	 *
+	 * The real hardware gain is therefore RL / 1 kOhm = 100, giving an
+	 * effective scale of 0.2 mOhm * 100 = 20 mV/A.
+	 *
+	 * Zephyr's current-sense-amplifier binding stores the shunt resistor as an
+	 * integer number of milli-ohms, so it cannot represent the real 0.2 mOhm
+	 * shunt directly. Use the equivalent 1 mOhm * 20 scale here to preserve the
+	 * same 20 mV/A nominal transfer function. Board-specific offset and
+	 * piecewise calibration stay in firmware/user space.
+	 */
+	sense_5v_out: current-sense-5v-out {
+		compatible = "current-sense-amplifier";
+		io-channels = <&adc 0>;
+		sense-resistor-milli-ohms = <1>;
+		sense-gain-mult = <20>;
+		sense-gain-div = <1>;
+	};
+
+	sense_12v_out: current-sense-12v-out {
+		compatible = "current-sense-amplifier";
+		io-channels = <&adc 1>;
+		sense-resistor-milli-ohms = <1>;
+		sense-gain-mult = <20>;
+		sense-gain-div = <1>;
+	};
+
+	sense_20v_out: current-sense-20v-out {
+		compatible = "current-sense-amplifier";
+		io-channels = <&adc 2>;
+		sense-resistor-milli-ohms = <1>;
+		sense-gain-mult = <20>;
+		sense-gain-div = <1>;
 	};
 };
 
 &zephyr_udc0 {
+	cdc_ncm_eth0: cdc_ncm_eth0 {
+		compatible = "zephyr,cdc-ncm-ethernet";
+		remote-mac-address = "00005E005301";
+		local-mac-address = [ 02 2f e3 db 00 01 ];
+	};
+
 	cdc_acm_uart0: cdc_acm_uart0 {
 		compatible = "zephyr,cdc-acm-uart";
-		label = "Agent DebugBoard USB shell";
+		label = "Agent DebugBoard USB CDC ACM";
 	};
 };
 
@@ -35,10 +118,6 @@
 			input-schmitt-enable;
 		};
 	};
-};
-
-&uart0 {
-	status = "disabled";
 };
 
 &i2c0 {
@@ -82,4 +161,12 @@
 		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
 		zephyr,resolution = <12>;
 	};
+};
+
+&die_temp {
+	status = "okay";
+};
+
+&wdt0 {
+	status = "okay";
 };
