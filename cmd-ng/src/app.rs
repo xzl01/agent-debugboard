@@ -1,0 +1,1264 @@
+use crate::adc;
+use crate::cli::Cli;
+use crate::client::{
+    resolve_base_url, BoardClient, BoardRequest, BoardTransport, DEFAULT_BASE_URL,
+};
+use crate::json_contract::{parse_envelope, render_failure, EnvelopeError, JsonError, JSON_SCHEMA};
+use crate::tui;
+use anyhow::Result;
+use clap::{error::ErrorKind, Parser};
+use reqwest::Method;
+use serde::Serialize;
+use serde_json::{json, Value};
+use std::ffi::OsString;
+use std::io::{self, Write};
+use std::time::Duration;
+
+fn version() -> &'static str {
+    option_env!("AGENT_DEBUGBOARDCTL_VERSION").unwrap_or("dev")
+}
+
+#[derive(Serialize, Debug)]
+struct DoctorResult {
+    schema: &'static str,
+    ok: bool,
+    command: &'static str,
+    cli_version: &'static str,
+    base_url: String,
+    probe_ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<JsonError>,
+}
+
+pub trait TuiRunner {
+    fn run_tui(
+        &self,
+        base_url: &str,
+        timeout: Duration,
+        stdout: &mut dyn Write,
+        stderr: &mut dyn Write,
+    ) -> Result<u8>;
+}
+
+pub struct DefaultTuiRunner;
+
+impl TuiRunner for DefaultTuiRunner {
+    fn run_tui(
+        &self,
+        base_url: &str,
+        timeout: Duration,
+        _stdout: &mut dyn Write,
+        _stderr: &mut dyn Write,
+    ) -> Result<u8> {
+        let client = BoardClient::new(base_url, timeout)?;
+        tui::run_tui(client, base_url.to_string(), timeout)
+    }
+}
+
+pub fn run<I, T>(args: I) -> Result<u8>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let stdout = io::stdout();
+    let stderr = io::stderr();
+    let mut stdout = stdout.lock();
+    let mut stderr = stderr.lock();
+    run_with_io(args, &mut stdout, &mut stderr)
+}
+
+fn run_with_io<I, T>(args: I, stdout: &mut dyn Write, stderr: &mut dyn Write) -> Result<u8>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(err) => {
+            let code = if err.kind() == ErrorKind::DisplayHelp {
+                0
+            } else {
+                2
+            };
+            if err.kind() == ErrorKind::DisplayHelp {
+                write_usage(stderr)?;
+            } else {
+                write!(stderr, "{err}")?;
+            }
+            return Ok(code);
+        }
+    };
+
+    let base_url = base_url_from_cli(&cli);
+    let client = BoardClient::new(&base_url, cli.timeout)?;
+    let tui = DefaultTuiRunner;
+    execute_with_io(cli, &client, &tui, stdout, stderr)
+}
+
+fn execute_with_io<TClient, TTui>(
+    cli: Cli,
+    client: &TClient,
+    tui_runner: &TTui,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8>
+where
+    TClient: BoardTransport,
+    TTui: TuiRunner,
+{
+    let base_url = base_url_from_cli(&cli);
+
+    if cli.version {
+        if cli.json {
+            write_json(
+                stdout,
+                &json!({
+                    "schema": JSON_SCHEMA,
+                    "ok": true,
+                    "command": "version",
+                    "version": version(),
+                }),
+            )?;
+        } else {
+            writeln!(stdout, "agent-debugboardctl {}", version())?;
+        }
+        return Ok(0);
+    }
+
+    if cli.command_args.is_empty() {
+        if !cli.raw && !cli.json {
+            return tui_runner.run_tui(&base_url, cli.timeout, stdout, stderr);
+        }
+        return missing_command(cli.json, stdout, stderr);
+    }
+
+    if cli.raw {
+        return unsupported_raw(cli.json, stdout, stderr);
+    }
+
+    execute_command(&cli, client, stdout, stderr)
+}
+
+fn execute_command<TClient>(
+    cli: &Cli,
+    client: &TClient,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8>
+where
+    TClient: BoardTransport,
+{
+    if !cli.raw && cli.command_args.first().map(String::as_str) == Some("doctor") {
+        if cli.command_args.len() != 1 {
+            if cli.json {
+                write_json_error(
+                    stdout,
+                    "doctor",
+                    "usage",
+                    "usage: agent-debugboardctl doctor",
+                )?;
+            } else {
+                writeln!(stderr, "usage: agent-debugboardctl doctor")?;
+            }
+            return Ok(2);
+        }
+        return run_doctor(client, cli.json, stdout, stderr);
+    }
+
+    let adc_read_command = is_adc_read_command(&cli.command_args);
+    let adc_verbose = adc_read_command
+        && (cli.verbose
+            || has_arg(&cli.command_args, "-v")
+            || has_arg(&cli.command_args, "--verbose"));
+
+    let mut wire_args = cli.command_args.clone();
+    if cli.verbose
+        && !cli.json
+        && !adc_read_command
+        && !has_arg(&wire_args, "-v")
+        && !has_arg(&wire_args, "--verbose")
+    {
+        wire_args.push("-v".to_string());
+    }
+    if (cli.json || adc_read_command) && !has_arg(&wire_args, "--json") {
+        wire_args.push("--json".to_string());
+    }
+
+    if is_adc_record_command(&cli.command_args) {
+        return run_adc_record(
+            client.base_url(),
+            cli.timeout,
+            &cli.command_args,
+            stdout,
+            stderr,
+        );
+    }
+
+    let request = match request_from_args(&wire_args) {
+        Ok(request) => request,
+        Err(err) => {
+            if cli.json {
+                write_json_error(stdout, command_name(&cli.command_args), "usage", &err)?;
+            } else {
+                writeln!(stderr, "{err}")?;
+            }
+            return Ok(2);
+        }
+    };
+
+    if adc_read_command {
+        let channel = extract_adc_channel(&wire_args);
+        return run_adc(client, channel, cli.json, adc_verbose, stdout, stderr);
+    }
+
+    run_standard(
+        client,
+        command_name(&cli.command_args),
+        request,
+        cli.json,
+        stdout,
+        stderr,
+    )
+}
+
+fn run_standard<TClient>(
+    client: &TClient,
+    command: &str,
+    request: BoardRequest,
+    json_output: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8>
+where
+    TClient: BoardTransport,
+{
+    let output = match client.send_text(request) {
+        Ok(output) => output,
+        Err(err) => {
+            if json_output {
+                write_json_error(stdout, command, "transport_error", &err.to_string())?;
+            } else {
+                writeln!(stderr, "{err}")?;
+            }
+            return Ok(1);
+        }
+    };
+
+    if json_output || looks_like_json(&output) {
+        match parse_envelope(&output, true) {
+            Ok(envelope) => {
+                writeln!(stdout, "{}", output.trim())?;
+                return Ok(if envelope.ok == Some(false) { 1 } else { 0 });
+            }
+            Err(err) => {
+                write_json_error(stdout, command, "invalid_json", &err.to_string())?;
+                return Ok(1);
+            }
+        }
+    }
+
+    if !output.trim().is_empty() {
+        writeln!(stdout, "{}", output.trim())?;
+    }
+    Ok(0)
+}
+
+fn run_adc<TClient>(
+    client: &TClient,
+    channel: Option<String>,
+    json_output: bool,
+    verbose: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8>
+where
+    TClient: BoardTransport,
+{
+    let mut query = Vec::new();
+    if let Some(name) = channel {
+        query.push(("channel".to_string(), name));
+    }
+    let output = match client.send_text(BoardRequest {
+        method: Method::GET,
+        path: "/api/v1/adc/read".to_string(),
+        query,
+        body: None,
+    }) {
+        Ok(output) => output,
+        Err(err) => {
+            if json_output {
+                write_json_error(stdout, "adc", "transport_error", &err.to_string())?;
+            } else {
+                writeln!(stderr, "{err}")?;
+            }
+            return Ok(1);
+        }
+    };
+
+    if json_output {
+        match adc::write_json(&output, "adc") {
+            Ok(body) => {
+                writeln!(stdout, "{body}")?;
+                return Ok(
+                    if parse_envelope(&output, true).ok().and_then(|env| env.ok) == Some(false) {
+                        1
+                    } else {
+                        0
+                    },
+                );
+            }
+            Err(err) => {
+                write_json_error(stdout, "adc", "invalid_json", &err.to_string())?;
+                return Ok(1);
+            }
+        }
+    }
+
+    match adc::write_text(&output, verbose) {
+        Ok(text) => {
+            if !text.is_empty() {
+                writeln!(stdout, "{text}")?;
+            }
+            Ok(0)
+        }
+        Err(err) => {
+            writeln!(stderr, "{err}")?;
+            Ok(1)
+        }
+    }
+}
+
+fn run_doctor<TClient>(
+    client: &TClient,
+    json_output: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8>
+where
+    TClient: BoardTransport,
+{
+    let mut result = DoctorResult {
+        schema: JSON_SCHEMA,
+        ok: false,
+        command: "doctor",
+        cli_version: version(),
+        base_url: client.base_url().to_string(),
+        probe_ok: false,
+        status: None,
+        status_text: None,
+        error: None,
+    };
+
+    match client.send_text(BoardRequest {
+        method: Method::GET,
+        path: "/api/v1/status".to_string(),
+        query: vec![],
+        body: None,
+    }) {
+        Ok(output) => match parse_envelope(&output, true) {
+            Ok(envelope) => {
+                result.status = serde_json::from_str::<Value>(&output).ok();
+                if envelope.ok == Some(false) {
+                    result.error = envelope.error;
+                } else {
+                    result.ok = true;
+                    result.probe_ok = true;
+                }
+            }
+            Err(err) => {
+                result.status_text = Some(output.trim().to_string());
+                result.error = Some(error_from_envelope(err));
+            }
+        },
+        Err(err) => {
+            result.error = Some(JsonError {
+                code: "status_failed".to_string(),
+                message: err.to_string(),
+            });
+        }
+    }
+
+    finish_doctor(stdout, stderr, result, json_output)
+}
+
+fn finish_doctor(
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    result: DoctorResult,
+    json_output: bool,
+) -> Result<u8> {
+    let exit_code = if result.ok { 0 } else { 1 };
+    if json_output {
+        write_json(stdout, &result)?;
+        return Ok(exit_code);
+    }
+
+    writeln!(stdout, "Agent DebugBoard doctor")?;
+    writeln!(stdout, "cli_version={}", result.cli_version)?;
+    writeln!(stdout, "base_url={}", result.base_url)?;
+    writeln!(
+        stdout,
+        "probe={}",
+        if result.probe_ok { "ok" } else { "failed" }
+    )?;
+    if let Some(status) = &result.status {
+        writeln!(stdout, "status={status}")?;
+    }
+    if let Some(status_text) = &result.status_text {
+        writeln!(stdout, "status_text={status_text}")?;
+    }
+    if let Some(error) = &result.error {
+        writeln!(stdout, "error={}: {}", error.code, error.message)?;
+        if exit_code != 0 {
+            writeln!(stderr, "{}: {}", error.code, error.message)?;
+        }
+    } else {
+        writeln!(stdout, "result=ok")?;
+    }
+    Ok(exit_code)
+}
+
+fn base_url_from_cli(cli: &Cli) -> String {
+    if let Some(url) = cli.url.as_deref() {
+        return resolve_base_url(url);
+    }
+    if let Some(addr) = cli.addr.as_deref() {
+        return resolve_base_url(addr);
+    }
+    if let Some(port) = cli.port.as_deref() {
+        return resolve_base_url(port);
+    }
+    DEFAULT_BASE_URL.to_string()
+}
+
+fn has_arg(args: &[String], value: &str) -> bool {
+    args.iter().any(|arg| arg == value)
+}
+
+fn is_adc_read_command(args: &[String]) -> bool {
+    let cleaned = strip_passthrough_flags(args);
+    cleaned.first().map(String::as_str) == Some("adc")
+        && (cleaned.len() == 1 || cleaned.get(1).map(String::as_str) == Some("read"))
+}
+
+fn is_adc_record_command(args: &[String]) -> bool {
+    let cleaned = strip_passthrough_flags(args);
+    cleaned.first().map(String::as_str) == Some("adc")
+        && cleaned.get(1).map(String::as_str) == Some("record")
+}
+
+fn strip_passthrough_flags(args: &[String]) -> Vec<String> {
+    args.iter()
+        .filter(|arg| {
+            arg.as_str() != "--json" && arg.as_str() != "-v" && arg.as_str() != "--verbose"
+        })
+        .cloned()
+        .collect()
+}
+
+fn command_name(args: &[String]) -> &str {
+    args.first()
+        .map(String::as_str)
+        .unwrap_or("agent-debugboardctl")
+}
+
+fn extract_adc_channel(args: &[String]) -> Option<String> {
+    let cleaned = strip_passthrough_flags(args);
+    if cleaned.len() >= 3 {
+        return cleaned.get(2).cloned();
+    }
+    None
+}
+
+fn run_adc_record(
+    base_url: &str,
+    timeout: Duration,
+    args: &[String],
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8> {
+    let cleaned = strip_passthrough_flags(args);
+    if cleaned.len() < 3 || cleaned.len() > 4 {
+        writeln!(
+            stderr,
+            "usage: agent-debugboardctl adc record OUTPUT_PATH [MAX_SAMPLES]"
+        )?;
+        return Ok(2);
+    }
+    let output = cleaned[2].clone();
+    let max_samples = cleaned.get(3).and_then(|s| s.parse::<usize>().ok());
+    crate::recorder::record_adc_ws_to_file(base_url, timeout, &output, max_samples)?;
+    writeln!(stdout, "recorded adc websocket stream to {output}")?;
+    Ok(0)
+}
+
+fn request_from_args(args: &[String]) -> Result<BoardRequest, String> {
+    let cleaned = strip_passthrough_flags(args);
+    if cleaned.is_empty() {
+        return Err("missing command".to_string());
+    }
+
+    match cleaned[0].as_str() {
+        "status" => {
+            if cleaned.len() != 1 {
+                return Err("usage: agent-debugboardctl status".to_string());
+            }
+            Ok(BoardRequest {
+                method: Method::GET,
+                path: "/api/v1/status".to_string(),
+                query: vec![],
+                body: None,
+            })
+        }
+        "power" => power_request(&cleaned),
+        "adc" => adc_request(&cleaned),
+        "sd" => sd_request(&cleaned),
+        "gpio" => gpio_request(&cleaned),
+        "watchdog" => watchdog_request(&cleaned),
+        "bootloader" => {
+            if cleaned.len() != 1 {
+                return Err("usage: agent-debugboardctl bootloader".to_string());
+            }
+            Ok(BoardRequest {
+                method: Method::POST,
+                path: "/api/v1/bootloader".to_string(),
+                query: vec![],
+                body: None,
+            })
+        }
+        other => Err(format!("unsupported command {:?} over HTTP", other)),
+    }
+}
+
+fn power_request(args: &[String]) -> Result<BoardRequest, String> {
+    if args.len() < 2 {
+        return Err("usage: agent-debugboardctl power list|get|set ...".to_string());
+    }
+    match args[1].as_str() {
+        "list" => {
+            if args.len() != 2 {
+                return Err("usage: agent-debugboardctl power list".to_string());
+            }
+            Ok(BoardRequest {
+                method: Method::GET,
+                path: "/api/v1/power".to_string(),
+                query: vec![],
+                body: None,
+            })
+        }
+        "get" => {
+            if args.len() != 3 {
+                return Err("usage: agent-debugboardctl power get NAME".to_string());
+            }
+            Ok(BoardRequest {
+                method: Method::GET,
+                path: format!("/api/v1/power/{}", args[2]),
+                query: vec![],
+                body: None,
+            })
+        }
+        "set" => {
+            if args.len() != 4 {
+                return Err("usage: agent-debugboardctl power set NAME on|off".to_string());
+            }
+            Ok(BoardRequest {
+                method: Method::PUT,
+                path: format!("/api/v1/power/{}", args[2]),
+                query: vec![],
+                body: Some(json!({ "state": args[3] })),
+            })
+        }
+        other => Err(format!("unsupported power action {:?}", other)),
+    }
+}
+
+fn adc_request(args: &[String]) -> Result<BoardRequest, String> {
+    if args.len() < 2 || args[1] != "read" {
+        return Err("usage: agent-debugboardctl adc read [NAME]".to_string());
+    }
+    if args.len() > 3 {
+        return Err("usage: agent-debugboardctl adc read [NAME]".to_string());
+    }
+    let mut query = Vec::new();
+    if let Some(name) = args.get(2) {
+        query.push(("channel".to_string(), name.clone()));
+    }
+    Ok(BoardRequest {
+        method: Method::GET,
+        path: "/api/v1/adc/read".to_string(),
+        query,
+        body: None,
+    })
+}
+
+fn sd_request(args: &[String]) -> Result<BoardRequest, String> {
+    if args.len() < 2 {
+        return Err("usage: agent-debugboardctl sd get|route ...".to_string());
+    }
+    match args[1].as_str() {
+        "get" => {
+            if args.len() != 2 {
+                return Err("usage: agent-debugboardctl sd get".to_string());
+            }
+            Ok(BoardRequest {
+                method: Method::GET,
+                path: "/api/v1/sd".to_string(),
+                query: vec![],
+                body: None,
+            })
+        }
+        "route" => {
+            if args.len() != 3 {
+                return Err("usage: agent-debugboardctl sd route target|usb-reader".to_string());
+            }
+            Ok(BoardRequest {
+                method: Method::PUT,
+                path: "/api/v1/sd".to_string(),
+                query: vec![],
+                body: Some(json!({ "route": args[2] })),
+            })
+        }
+        other => Err(format!("unsupported sd action {:?}", other)),
+    }
+}
+
+fn gpio_request(args: &[String]) -> Result<BoardRequest, String> {
+    if args.len() < 2 {
+        return Err("usage: agent-debugboardctl gpio list|set|input ...".to_string());
+    }
+    match args[1].as_str() {
+        "list" => {
+            if args.len() != 2 {
+                return Err("usage: agent-debugboardctl gpio list".to_string());
+            }
+            Ok(BoardRequest {
+                method: Method::GET,
+                path: "/api/v1/gpio".to_string(),
+                query: vec![],
+                body: None,
+            })
+        }
+        "input" => {
+            if args.len() != 3 {
+                return Err("usage: agent-debugboardctl gpio input NAME".to_string());
+            }
+            Ok(BoardRequest {
+                method: Method::PUT,
+                path: format!("/api/v1/gpio/{}", args[2]),
+                query: vec![],
+                body: Some(json!({ "direction": "input" })),
+            })
+        }
+        "set" => {
+            if args.len() != 4 {
+                return Err("usage: agent-debugboardctl gpio set NAME 0|1".to_string());
+            }
+            let value = args[3].parse::<i32>().unwrap_or(0);
+            Ok(BoardRequest {
+                method: Method::PUT,
+                path: format!("/api/v1/gpio/{}", args[2]),
+                query: vec![],
+                body: Some(json!({ "direction": "output", "value": value })),
+            })
+        }
+        other => Err(format!("unsupported gpio action {:?}", other)),
+    }
+}
+
+fn watchdog_request(args: &[String]) -> Result<BoardRequest, String> {
+    if args.len() != 2 {
+        return Err("usage: agent-debugboardctl watchdog status".to_string());
+    }
+    match args[1].as_str() {
+        "status" => Ok(BoardRequest {
+            method: Method::GET,
+            path: "/api/v1/watchdog".to_string(),
+            query: vec![],
+            body: None,
+        }),
+        other => Err(format!(
+            "unsupported watchdog action {:?} (watchdog is supervised by firmware)",
+            other
+        )),
+    }
+}
+
+fn looks_like_json(output: &str) -> bool {
+    let trimmed = output.trim();
+    trimmed.starts_with('{') || trimmed.starts_with('[')
+}
+
+fn missing_command(
+    json_output: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8> {
+    if json_output {
+        write_json_error(
+            stdout,
+            "agent-debugboardctl",
+            "missing_command",
+            "missing command, for example: adc read",
+        )?;
+    } else {
+        writeln!(stderr, "missing command, for example: adc read")?;
+        write_usage(stderr)?;
+    }
+    Ok(2)
+}
+
+fn unsupported_raw(
+    json_output: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8> {
+    if json_output {
+        write_json_error(
+            stdout,
+            "raw",
+            "unsupported_raw",
+            "raw shell commands are not available over HTTP",
+        )?;
+    } else {
+        writeln!(stderr, "raw shell commands are not available over HTTP")?;
+    }
+    Ok(2)
+}
+
+fn error_from_envelope(err: EnvelopeError) -> JsonError {
+    JsonError {
+        code: "invalid_json".to_string(),
+        message: err.to_string(),
+    }
+}
+
+fn write_json_error(
+    writer: &mut dyn Write,
+    command: &str,
+    code: &str,
+    message: &str,
+) -> Result<()> {
+    let json = render_failure(command, code, message);
+    writeln!(writer, "{json}")?;
+    Ok(())
+}
+
+fn write_json<T: Serialize>(writer: &mut dyn Write, value: &T) -> Result<()> {
+    serde_json::to_writer(&mut *writer, value)?;
+    writeln!(writer)?;
+    Ok(())
+}
+
+fn write_usage(writer: &mut dyn Write) -> Result<()> {
+    writeln!(writer, "usage: agent-debugboardctl [--url URL] [--timeout 2s] [--json] [-v] [--version] <command> [args...]\n")?;
+    writeln!(writer, "examples:")?;
+    writeln!(writer, "  agent-debugboardctl status")?;
+    writeln!(writer, "  agent-debugboardctl --json status")?;
+    writeln!(writer, "  agent-debugboardctl doctor")?;
+    writeln!(writer, "  agent-debugboardctl power set 12v_out on")?;
+    writeln!(writer, "  agent-debugboardctl adc read")?;
+    writeln!(writer, "  agent-debugboardctl adc read -v 5v_out")?;
+    writeln!(writer, "  agent-debugboardctl watchdog status\n")?;
+    writeln!(writer, "      --url <URL>")?;
+    writeln!(writer, "      --addr <ADDR>")?;
+    writeln!(writer, "      --port <PORT>")?;
+    writeln!(writer, "      --timeout <TIMEOUT>")?;
+    writeln!(writer, "      --raw")?;
+    writeln!(writer, "      --json")?;
+    writeln!(writer, "  -v, --verbose")?;
+    writeln!(writer, "      --version")?;
+    writeln!(writer, "  -h, --help")?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use serde_json::Value;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct FakeClient {
+        requests: RefCell<Vec<BoardRequest>>,
+        response: String,
+        err: Option<String>,
+        base_url: String,
+    }
+
+    impl BoardTransport for FakeClient {
+        fn send_text(&self, request: BoardRequest) -> Result<String> {
+            self.requests.borrow_mut().push(request);
+            if let Some(err) = &self.err {
+                return Err(anyhow::anyhow!(err.clone()));
+            }
+            Ok(self.response.clone())
+        }
+
+        fn base_url(&self) -> &str {
+            if self.base_url.is_empty() {
+                DEFAULT_BASE_URL
+            } else {
+                &self.base_url
+            }
+        }
+    }
+
+    struct FakeTuiRunner {
+        called: RefCell<bool>,
+        seen_base_url: RefCell<String>,
+        seen_timeout: RefCell<Duration>,
+        code: u8,
+    }
+
+    impl FakeTuiRunner {
+        fn new(code: u8) -> Self {
+            Self {
+                called: RefCell::new(false),
+                seen_base_url: RefCell::new(String::new()),
+                seen_timeout: RefCell::new(Duration::ZERO),
+                code,
+            }
+        }
+    }
+
+    impl TuiRunner for FakeTuiRunner {
+        fn run_tui(
+            &self,
+            base_url: &str,
+            timeout: Duration,
+            _stdout: &mut dyn Write,
+            _stderr: &mut dyn Write,
+        ) -> Result<u8> {
+            *self.called.borrow_mut() = true;
+            *self.seen_base_url.borrow_mut() = base_url.to_string();
+            *self.seen_timeout.borrow_mut() = timeout;
+            Ok(self.code)
+        }
+    }
+
+    #[test]
+    fn prefers_url_flag() {
+        let cli = Cli::parse_from(["cmd", "--url", "http://example.com", "status"]);
+        assert_eq!(base_url_from_cli(&cli), "http://example.com");
+    }
+
+    #[test]
+    fn detects_json_output() {
+        assert!(looks_like_json("{\"ok\":true}"));
+    }
+
+    #[test]
+    fn run_without_args_starts_tui() {
+        let cli = Cli::parse_from(["cmd"]);
+        let client = FakeClient::default();
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        assert!(*tui.called.borrow());
+        assert_eq!(&*tui.seen_base_url.borrow(), DEFAULT_BASE_URL);
+        assert_eq!(*tui.seen_timeout.borrow(), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn run_status_uses_http_client() {
+        let cli = Cli::parse_from(["cmd", "status"]);
+        let client = FakeClient {
+            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard"}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        let requests = client.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, Method::GET);
+        assert_eq!(requests[0].path, "/api/v1/status");
+    }
+
+    #[test]
+    fn run_raw_command_is_rejected_over_http() {
+        let cli = Cli::parse_from(["cmd", "--raw", "status"]);
+        let client = FakeClient::default();
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 2);
+        assert!(String::from_utf8(stderr)
+            .unwrap()
+            .contains("raw shell commands are not available"));
+    }
+
+    #[test]
+    fn run_adc_read_default_text_uses_host_side_calibration() {
+        let cli = Cli::parse_from(["cmd", "adc", "read", "5v_out"]);
+        let client = FakeClient {
+            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        let requests = client.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, "/api/v1/adc/read");
+        assert_eq!(
+            requests[0].query[0],
+            ("channel".to_string(), "5v_out".to_string())
+        );
+        assert_eq!(String::from_utf8(stdout).unwrap().trim(), "5v_out=500mA");
+    }
+
+    #[test]
+    fn run_adc_read_json_uses_host_side_calibration() {
+        let cli = Cli::parse_from(["cmd", "--json", "adc", "read", "5v_out"]);
+        let client = FakeClient {
+            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(
+            String::from_utf8(stdout).unwrap().trim(),
+            r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","raw":null,"current_valid":true,"mv":17,"ma_est":500,"power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#
+        );
+    }
+
+    #[test]
+    fn run_adc_read_verbose_flag_after_command_is_honored() {
+        let cli = Cli::parse_from(["cmd", "adc", "read", "-v", "5v_out"]);
+        let client = FakeClient {
+            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(
+            String::from_utf8(stdout).unwrap().trim(),
+            "5v_out signal=S_C_5V power=on current=0.850000A current_ua=850000 raw=null mv=17 ma_est=500"
+        );
+    }
+
+    #[test]
+    fn run_adc_read_power_disabled_reports_zero_current() {
+        let cli = Cli::parse_from(["cmd", "adc", "read", "5v_out"]);
+        let client = FakeClient {
+            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":false,"raw":24,"mv":19,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(String::from_utf8(stdout).unwrap().trim(), "5v_out=0mA");
+    }
+
+    #[test]
+    fn run_power_set_maps_to_power_endpoint() {
+        let cli = Cli::parse_from(["cmd", "power", "set", "12v_out", "off"]);
+        let client = FakeClient {
+            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"power","action":"set","power_output":{"name":"12v_out","state":"off"}}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        let requests = client.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, Method::PUT);
+        assert_eq!(requests[0].path, "/api/v1/power/12v_out");
+        assert_eq!(requests[0].body.as_ref().unwrap()["state"], "off");
+    }
+
+    #[test]
+    fn run_sd_gpio_and_bootloader_mappings() {
+        let tests = [
+            (
+                vec!["cmd", "sd", "route", "usb-reader"],
+                Method::PUT,
+                "/api/v1/sd",
+            ),
+            (
+                vec!["cmd", "gpio", "input", "GP13"],
+                Method::PUT,
+                "/api/v1/gpio/GP13",
+            ),
+            (
+                vec!["cmd", "gpio", "set", "GP13", "1"],
+                Method::PUT,
+                "/api/v1/gpio/GP13",
+            ),
+            (
+                vec!["cmd", "gpio", "set", "CON_MAS", "1"],
+                Method::PUT,
+                "/api/v1/gpio/CON_MAS",
+            ),
+            (
+                vec!["cmd", "watchdog", "status"],
+                Method::GET,
+                "/api/v1/watchdog",
+            ),
+            (
+                vec!["cmd", "bootloader"],
+                Method::POST,
+                "/api/v1/bootloader",
+            ),
+        ];
+
+        for (args, method, path) in tests {
+            let cli = Cli::parse_from(args.clone());
+            let client = FakeClient {
+                response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"ok"}"#
+                    .to_string(),
+                ..Default::default()
+            };
+            let tui = FakeTuiRunner::new(0);
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+
+            let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+            assert_eq!(code, 0, "args={args:?}");
+            let requests = client.requests.borrow();
+            assert_eq!(requests.len(), 1, "args={args:?}");
+            assert_eq!(requests[0].method, method, "args={args:?}");
+            assert_eq!(requests[0].path, path, "args={args:?}");
+        }
+    }
+
+    #[test]
+    fn run_watchdog_feed_is_rejected_locally() {
+        let cli = Cli::parse_from(["cmd", "watchdog", "feed"]);
+        let client = FakeClient {
+            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"ok"}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 2);
+        assert_eq!(client.requests.borrow().len(), 0);
+        assert!(String::from_utf8(stderr)
+            .unwrap()
+            .contains("unsupported watchdog action"));
+    }
+
+    #[test]
+    fn run_json_watchdog_feed_is_rejected_locally() {
+        let cli = Cli::parse_from(["cmd", "--json", "watchdog", "feed"]);
+        let client = FakeClient {
+            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"ok"}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 2);
+        assert_eq!(client.requests.borrow().len(), 0);
+        let got: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(got["ok"], false);
+        assert_eq!(got["command"], "watchdog");
+        assert_eq!(got["error"]["code"], "usage");
+    }
+
+    #[test]
+    fn doctor_with_extra_args_returns_usage() {
+        let cli = Cli::parse_from(["cmd", "doctor", "extra"]);
+        let client = FakeClient::default();
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 2);
+        assert!(String::from_utf8(stderr)
+            .unwrap()
+            .contains("usage: agent-debugboardctl doctor"));
+    }
+
+    #[test]
+    fn run_json_command_returns_failure_on_board_error() {
+        let cli = Cli::parse_from(["cmd", "--json", "power", "get", "missing"]);
+        let client = FakeClient {
+            response: r#"{"schema":"agent-debugboard.v1","ok":false,"command":"power","error":{"code":"unknown_power_output","message":"unknown power output"}}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 1);
+        assert_eq!(String::from_utf8(stdout).unwrap().trim(), client.response);
+    }
+
+    #[test]
+    fn run_json_rejects_old_text_firmware_output() {
+        let cli = Cli::parse_from(["cmd", "--json", "status"]);
+        let client = FakeClient {
+            response: "project=agent-debugboard".to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 1);
+        let got: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(got["ok"], false);
+        assert_eq!(got["command"], "status");
+        assert_eq!(got["error"]["code"], "invalid_json");
+    }
+
+    #[test]
+    fn run_reports_transport_error() {
+        let cli = Cli::parse_from(["cmd", "status"]);
+        let client = FakeClient {
+            err: Some("dial failed".to_string()),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 1);
+        assert!(String::from_utf8(stderr).unwrap().contains("dial failed"));
+    }
+
+    #[test]
+    fn run_help_returns_success() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = run_with_io(["cmd", "--help"], &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        let _ = String::from_utf8(stdout).unwrap();
+        let _ = String::from_utf8(stderr).unwrap();
+    }
+
+    #[test]
+    fn run_version_returns_success_without_board_access() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = run_with_io(["cmd", "--version"], &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(
+            String::from_utf8(stdout).unwrap().trim(),
+            format!("agent-debugboardctl {}", version())
+        );
+    }
+
+    #[test]
+    fn run_json_version_returns_success_without_board_access() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = run_with_io(["cmd", "--json", "--version"], &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        let got: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(got["schema"], JSON_SCHEMA);
+        assert_eq!(got["command"], "version");
+        assert_eq!(got["version"], version());
+    }
+
+    #[test]
+    fn doctor_json_reports_http_status() {
+        let cli = Cli::parse_from([
+            "cmd",
+            "--json",
+            "--url",
+            "http://172.29.203.1:8080",
+            "doctor",
+        ]);
+        let client = FakeClient {
+            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard"}"#.to_string(),
+            base_url: "http://172.29.203.1:8080".to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        let got: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(got["ok"], true);
+        assert_eq!(got["base_url"], "http://172.29.203.1:8080");
+        assert_eq!(got["probe_ok"], true);
+    }
+
+    #[test]
+    fn doctor_json_reports_http_failure() {
+        let cli = Cli::parse_from(["cmd", "--json", "doctor"]);
+        let client = FakeClient {
+            err: Some("connection refused".to_string()),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 1);
+        let got: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(got["ok"], false);
+        assert_eq!(got["error"]["code"], "status_failed");
+    }
+
+    #[test]
+    fn status_json_includes_board_monitoring_shape() {
+        let cli = Cli::parse_from(["cmd", "--json", "status"]);
+        let client = FakeClient {
+            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard","board_monitoring":{"temperature":{"available":false,"reason":"no_zephyr_temperature_device"},"heap":{"available":true,"reason":"","source":"system_heap","free_bytes":6144,"allocated_bytes":2048,"max_allocated_bytes":3072,"total_bytes":8192},"runtime":{"available":true,"reason":"","uptime_ms":12345,"uptime_seconds":12},"cpu":{"available":false,"reason":"thread_runtime_stats_disabled"}}}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        let got: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(got["board_monitoring"]["temperature"]["available"], false);
+        assert_eq!(
+            got["board_monitoring"]["temperature"]["reason"],
+            "no_zephyr_temperature_device"
+        );
+        assert_eq!(got["board_monitoring"]["heap"]["source"], "system_heap");
+        assert_eq!(got["board_monitoring"]["runtime"]["uptime_seconds"], 12);
+    }
+}

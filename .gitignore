@@ -19,6 +19,7 @@
 /out/
 /agent-debugboardctl
 /agent-debugboardctl.exe
+**/target/
 
 # Skill-local generated host CLI binary
 /skills/agent-debugboard/scripts/bin/
