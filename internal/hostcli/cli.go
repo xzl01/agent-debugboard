@@ -2,23 +2,23 @@ package hostcli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-
-	"go.bug.st/serial"
 )
 
 const (
 	PromptText        = "debugboard:~$"
-	probeCommand      = "debugboard status"
-	probeTimeout      = 1200 * time.Millisecond
+	DefaultBaseURL    = "http://172.29.203.1:8080"
 	projectStatusLine = "project=agent-debugboard"
 	JSONSchema        = "agent-debugboard.v1"
 )
@@ -28,10 +28,19 @@ var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 var Version = "dev"
 
 type App struct {
-	ListPorts func() ([]string, error)
-	FindPort  func() (string, error)
-	ProbePort func(portName string) bool
-	Transact  func(port string, command string, timeout time.Duration) (string, error)
+	Client BoardClient
+	RunTUI func(baseURL string, timeout time.Duration, stdout io.Writer, stderr io.Writer) int
+}
+
+type BoardClient interface {
+	Do(ctx context.Context, request boardRequest) ([]byte, error)
+}
+
+type boardRequest struct {
+	Method string
+	Path   string
+	Query  url.Values
+	Body   any
 }
 
 type durationFlag struct {
@@ -58,17 +67,15 @@ type jsonResponse struct {
 }
 
 type doctorResult struct {
-	Schema       string          `json:"schema"`
-	OK           bool            `json:"ok"`
-	Command      string          `json:"command"`
-	CLIVersion   string          `json:"cli_version"`
-	Ports        []string        `json:"ports"`
-	Candidates   []string        `json:"candidates"`
-	SelectedPort string          `json:"selected_port,omitempty"`
-	ProbeOK      bool            `json:"probe_ok"`
-	Status       json.RawMessage `json:"status,omitempty"`
-	StatusText   string          `json:"status_text,omitempty"`
-	Error        *JSONError      `json:"error,omitempty"`
+	Schema     string          `json:"schema"`
+	OK         bool            `json:"ok"`
+	Command    string          `json:"command"`
+	CLIVersion string          `json:"cli_version"`
+	BaseURL    string          `json:"base_url"`
+	ProbeOK    bool            `json:"probe_ok"`
+	Status     json.RawMessage `json:"status,omitempty"`
+	StatusText string          `json:"status_text,omitempty"`
+	Error      *JSONError      `json:"error,omitempty"`
 }
 
 type jsonValidationError struct {
@@ -81,12 +88,7 @@ func (e jsonValidationError) Error() string {
 }
 
 func NewApp() App {
-	return App{
-		ListPorts: ListPorts,
-		FindPort:  FindPort,
-		ProbePort: ProbePort,
-		Transact:  Transact,
-	}
+	return App{Client: HTTPClient{BaseURL: DefaultBaseURL, Client: http.DefaultClient}}
 }
 
 func (d *durationFlag) String() string {
@@ -113,7 +115,7 @@ func (d *durationFlag) Set(value string) error {
 
 func (a App) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	timeout := &durationFlag{value: 2 * time.Second}
-	var portName string
+	var baseURL string
 	var raw bool
 	var showVersion bool
 	var jsonOutput bool
@@ -121,7 +123,9 @@ func (a App) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	fs := flag.NewFlagSet("agent-debugboardctl", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&portName, "port", "", "serial port, for example /dev/cu.usbmodemXXXX")
+	fs.StringVar(&baseURL, "url", "", "Agent DebugBoard HTTP base URL, for example http://172.29.203.1:8080")
+	fs.StringVar(&baseURL, "addr", "", "Agent DebugBoard HTTP address or base URL, for example 172.29.203.1:8080")
+	fs.StringVar(&baseURL, "port", "", "deprecated alias for --url")
 	fs.Var(timeout, "timeout", "command timeout, for example 2s or 0.5")
 	fs.BoolVar(&raw, "raw", false, "send args as a raw shell command")
 	fs.BoolVar(&jsonOutput, "json", false, "request and validate JSON output")
@@ -129,14 +133,15 @@ func (a App) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	fs.BoolVar(&verbose, "verbose", false, "request verbose human output")
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "usage: agent-debugboardctl [--port PORT] [--timeout 2s] [--raw] [--json] [-v] [--version] <command> [args...]\n\n")
+		fmt.Fprintf(stderr, "usage: agent-debugboardctl [--url URL] [--timeout 2s] [--json] [-v] [--version] <command> [args...]\n\n")
 		fmt.Fprintf(stderr, "examples:\n")
 		fmt.Fprintf(stderr, "  agent-debugboardctl status\n")
 		fmt.Fprintf(stderr, "  agent-debugboardctl --json status\n")
 		fmt.Fprintf(stderr, "  agent-debugboardctl doctor\n")
-		fmt.Fprintf(stderr, "  agent-debugboardctl rail set 12v_out on\n")
+		fmt.Fprintf(stderr, "  agent-debugboardctl power set 12v_out on\n")
 		fmt.Fprintf(stderr, "  agent-debugboardctl adc read\n")
-		fmt.Fprintf(stderr, "  agent-debugboardctl adc read -v 5v_out\n\n")
+		fmt.Fprintf(stderr, "  agent-debugboardctl adc read -v 5v_out\n")
+		fmt.Fprintf(stderr, "  agent-debugboardctl watchdog status\n\n")
 		fs.PrintDefaults()
 	}
 
@@ -163,6 +168,9 @@ func (a App) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	commandArgs := fs.Args()
 	if len(commandArgs) == 0 {
+		if !raw && !jsonOutput {
+			return a.runTUI(resolveBaseURL(baseURL), timeout.value, stdout, stderr)
+		}
 		if jsonOutput {
 			writeJSONError(stdout, "agent-debugboardctl", "missing_command",
 				"missing command, for example: adc read")
@@ -182,36 +190,38 @@ func (a App) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			}
 			return 2
 		}
-		return a.runDoctor(portName, timeout.value, jsonOutput, stdout, stderr)
+		return a.runDoctor(resolveBaseURL(baseURL), timeout.value, jsonOutput, stdout, stderr)
+	}
+	if raw {
+		if jsonOutput {
+			writeJSONError(stdout, commandName(commandArgs, raw), "unsupported_raw", "raw shell commands are not available over HTTP")
+		} else {
+			fmt.Fprintln(stderr, "raw shell commands are not available over HTTP")
+		}
+		return 2
 	}
 
+	adcReadCommand := isADCReadCommand(commandArgs)
+	adcVerbose := adcReadCommand && (verbose || hasArg(commandArgs, "-v") || hasArg(commandArgs, "--verbose"))
 	wireArgs := append([]string(nil), commandArgs...)
-	if verbose && !raw && !jsonOutput && !hasArg(wireArgs, "-v") && !hasArg(wireArgs, "--verbose") {
+	if verbose && !jsonOutput && !adcReadCommand && !hasArg(wireArgs, "-v") && !hasArg(wireArgs, "--verbose") {
 		wireArgs = append(wireArgs, "-v")
 	}
-	if jsonOutput && !raw && !hasArg(wireArgs, "--json") {
+	if (jsonOutput || adcReadCommand) && !hasArg(wireArgs, "--json") {
 		wireArgs = append(wireArgs, "--json")
 	}
 
-	if portName == "" {
-		var err error
-		portName, err = a.findPort()
-		if err != nil {
-			if jsonOutput {
-				writeJSONError(stdout, commandName(commandArgs, raw), "port_not_found", err.Error())
-			} else {
-				fmt.Fprintln(stderr, err)
-			}
-			return 1
+	request, _, err := requestFromArgs(wireArgs)
+	if err != nil {
+		if jsonOutput {
+			writeJSONError(stdout, commandName(commandArgs, raw), "usage", err.Error())
+		} else {
+			fmt.Fprintln(stderr, err)
 		}
+		return 2
 	}
 
-	command := strings.Join(wireArgs, " ")
-	if !raw {
-		command = "debugboard " + command
-	}
-
-	output, err := a.transact(portName, command, timeout.value)
+	output, err := a.request(resolveBaseURL(baseURL), request, timeout.value)
 	if err != nil {
 		if jsonOutput {
 			writeJSONError(stdout, commandName(commandArgs, raw), "transport_error", err.Error())
@@ -221,8 +231,15 @@ func (a App) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	cleaned := CleanOutput(output, command)
-	if jsonOutput {
+	cleaned := strings.TrimSpace(output)
+	if adcReadCommand {
+		if jsonOutput {
+			return writeADCReadJSON(stdout, cleaned, commandName(commandArgs, raw))
+		}
+		return writeADCReadText(stdout, stderr, cleaned, adcVerbose)
+	}
+
+	if jsonOutput || looksLikeJSON(cleaned) {
 		return writeValidatedJSON(stdout, cleaned, commandName(commandArgs, raw), !raw)
 	}
 
@@ -232,60 +249,28 @@ func (a App) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
-func (a App) runDoctor(portName string, timeout time.Duration, jsonOutput bool, stdout io.Writer, stderr io.Writer) int {
-	ports, err := a.listPorts()
-	if ports == nil {
-		ports = []string{}
+func (a App) runTUI(baseURL string, timeout time.Duration, stdout io.Writer, stderr io.Writer) int {
+	if a.RunTUI != nil {
+		return a.RunTUI(baseURL, timeout, stdout, stderr)
 	}
+	return runTUI(a.withBaseURL(baseURL), baseURL, timeout, stdout, stderr)
+}
+
+func (a App) runDoctor(baseURL string, timeout time.Duration, jsonOutput bool, stdout io.Writer, stderr io.Writer) int {
 	result := doctorResult{
 		Schema:     JSONSchema,
 		Command:    "doctor",
 		CLIVersion: Version,
-		Ports:      ports,
-		Candidates: CandidatePorts(ports),
-	}
-	if err != nil {
-		result.Error = &JSONError{Code: "list_ports_failed", Message: err.Error()}
-		return finishDoctor(stdout, stderr, result, jsonOutput, 1)
+		BaseURL:    baseURL,
 	}
 
-	if portName != "" {
-		result.SelectedPort = portName
-		result.ProbeOK = a.probePort(portName)
-	} else {
-		for _, candidate := range result.Candidates {
-			if a.probePort(candidate) {
-				result.SelectedPort = candidate
-				result.ProbeOK = true
-				break
-			}
-		}
-	}
-
-	if result.SelectedPort == "" {
-		result.Error = &JSONError{
-			Code:    "port_not_found",
-			Message: "Agent DebugBoard CDC port not found",
-		}
-		return finishDoctor(stdout, stderr, result, jsonOutput, 1)
-	}
-
-	if !result.ProbeOK {
-		result.Error = &JSONError{
-			Code:    "probe_failed",
-			Message: "selected port did not answer as Agent DebugBoard",
-		}
-		return finishDoctor(stdout, stderr, result, jsonOutput, 1)
-	}
-
-	const statusCommand = "debugboard status --json"
-	output, err := a.transact(result.SelectedPort, statusCommand, timeout)
+	output, err := a.request(baseURL, boardRequest{Method: http.MethodGet, Path: "/api/v1/status"}, timeout)
 	if err != nil {
 		result.Error = &JSONError{Code: "status_failed", Message: err.Error()}
 		return finishDoctor(stdout, stderr, result, jsonOutput, 1)
 	}
 
-	cleaned := CleanOutput(output, statusCommand)
+	cleaned := strings.TrimSpace(output)
 	env, err := parseAgentJSON(cleaned, true)
 	if err != nil {
 		var validationErr jsonValidationError
@@ -307,6 +292,7 @@ func (a App) runDoctor(portName string, timeout time.Duration, jsonOutput bool, 
 		return finishDoctor(stdout, stderr, result, jsonOutput, 1)
 	}
 
+	result.ProbeOK = true
 	result.OK = true
 	return finishDoctor(stdout, stderr, result, jsonOutput, 0)
 }
@@ -326,11 +312,7 @@ func finishDoctor(stdout io.Writer, stderr io.Writer, result doctorResult, jsonO
 func printDoctorText(w io.Writer, result doctorResult) {
 	fmt.Fprintln(w, "Agent DebugBoard doctor")
 	fmt.Fprintf(w, "cli_version=%s\n", result.CLIVersion)
-	printStringList(w, "ports", result.Ports)
-	printStringList(w, "candidates", result.Candidates)
-	if result.SelectedPort != "" {
-		fmt.Fprintf(w, "selected_port=%s\n", result.SelectedPort)
-	}
+	fmt.Fprintf(w, "base_url=%s\n", result.BaseURL)
 	fmt.Fprintf(w, "probe=%s\n", mapBool(result.ProbeOK, "ok", "failed"))
 	if len(result.Status) > 0 {
 		fmt.Fprintf(w, "status=%s\n", string(result.Status))
@@ -345,17 +327,6 @@ func printDoctorText(w io.Writer, result doctorResult) {
 	}
 }
 
-func printStringList(w io.Writer, name string, values []string) {
-	if len(values) == 0 {
-		fmt.Fprintf(w, "%s=[]\n", name)
-		return
-	}
-	fmt.Fprintf(w, "%s:\n", name)
-	for _, value := range values {
-		fmt.Fprintf(w, "  %s\n", value)
-	}
-}
-
 func mapBool(value bool, trueText string, falseText string) string {
 	if value {
 		return trueText
@@ -363,104 +334,82 @@ func mapBool(value bool, trueText string, falseText string) string {
 	return falseText
 }
 
-func ListPorts() ([]string, error) {
-	return serial.GetPortsList()
-}
-
-func FindPort() (string, error) {
-	ports, err := ListPorts()
-	if err != nil {
-		return "", fmt.Errorf("failed to enumerate serial ports: %w", err)
+func IsDebugBoardStatus(output string) bool {
+	if strings.Contains(output, projectStatusLine) {
+		return true
 	}
-
-	return FindPortFromList(ports, ProbePort)
-}
-
-func FindPortFromList(ports []string, probe func(portName string) bool) (string, error) {
-	for _, portName := range CandidatePorts(ports) {
-		if probe(portName) {
-			return portName, nil
-		}
+	var status struct {
+		Schema  string `json:"schema"`
+		OK      bool   `json:"ok"`
+		Command string `json:"command"`
+		Project string `json:"project"`
 	}
-	return "", errors.New("Agent DebugBoard CDC port not found; pass --port /dev/cu.usbmodemXXXX")
-}
-
-func CandidatePorts(ports []string) []string {
-	candidates := make([]string, 0, len(ports))
-	seen := make(map[string]bool, len(ports))
-
-	add := func(portName string) {
-		if portName == "" || seen[portName] {
-			return
-		}
-		seen[portName] = true
-		candidates = append(candidates, portName)
-	}
-
-	for _, portName := range ports {
-		lower := strings.ToLower(portName)
-		upper := strings.ToUpper(portName)
-		if strings.Contains(lower, "usbmodem") ||
-			strings.Contains(lower, "usbserial") ||
-			strings.Contains(lower, "ttyacm") ||
-			strings.Contains(lower, "ttyusb") ||
-			strings.HasPrefix(upper, "COM") {
-			add(portName)
-		}
-	}
-
-	return candidates
-}
-
-func ProbePort(portName string) bool {
-	output, err := Transact(portName, probeCommand, probeTimeout)
-	if err != nil {
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &status); err != nil {
 		return false
 	}
-	return IsDebugBoardStatus(output)
+	return status.Schema == JSONSchema && status.OK && status.Command == "status" && status.Project == "agent-debugboard"
 }
 
-func IsDebugBoardStatus(output string) bool {
-	return strings.Contains(CleanOutput(output, probeCommand), projectStatusLine)
+type HTTPClient struct {
+	BaseURL string
+	Client  *http.Client
 }
 
-func Transact(portName string, command string, timeout time.Duration) (string, error) {
-	mode := &serial.Mode{BaudRate: 115200}
-	port, err := serial.Open(portName, mode)
+func (c HTTPClient) Do(ctx context.Context, request boardRequest) ([]byte, error) {
+	base := resolveBaseURL(c.BaseURL)
+	u, err := url.Parse(base)
 	if err != nil {
-		return "", fmt.Errorf("open %s: %w", portName, err)
+		return nil, fmt.Errorf("parse base URL %q: %w", base, err)
 	}
-	defer port.Close()
-
-	_ = port.SetDTR(true)
-	_ = port.SetReadTimeout(50 * time.Millisecond)
-	time.Sleep(200 * time.Millisecond)
-	_ = port.ResetInputBuffer()
-
-	if _, err := port.Write([]byte(command + "\r\n")); err != nil {
-		return "", fmt.Errorf("write command: %w", err)
+	path, err := url.JoinPath(strings.TrimRight(u.Path, "/"), request.Path)
+	if err != nil {
+		return nil, fmt.Errorf("build request path: %w", err)
 	}
-	_ = port.Drain()
-
-	deadline := time.Now().Add(timeout)
-	var data bytes.Buffer
-	buf := make([]byte, 256)
-	for time.Now().Before(deadline) {
-		n, err := port.Read(buf)
-		if err != nil {
-			return "", fmt.Errorf("read response: %w", err)
-		}
-		if n == 0 {
-			continue
-		}
-
-		data.Write(buf[:n])
-		if bytes.Contains(data.Bytes(), []byte(PromptText)) {
-			break
-		}
+	u.Path = path
+	if len(request.Query) > 0 {
+		u.RawQuery = request.Query.Encode()
 	}
 
-	return data.String(), nil
+	var body io.Reader
+	if request.Body != nil {
+		var encoded bytes.Buffer
+		if err := json.NewEncoder(&encoded).Encode(request.Body); err != nil {
+			return nil, fmt.Errorf("encode request body: %w", err)
+		}
+		body = &encoded
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, request.Method, u.String(), body)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	httpReq.Header.Set("Accept", "application/json")
+	if request.Body != nil {
+		httpReq.Header.Set("Content-Type", "application/json")
+	}
+
+	client := c.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	httpResp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer httpResp.Body.Close()
+
+	data, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		message := strings.TrimSpace(string(data))
+		if message == "" {
+			message = httpResp.Status
+		}
+		return nil, fmt.Errorf("HTTP %s: %s", httpResp.Status, message)
+	}
+	return data, nil
 }
 
 func CleanOutput(output string, command string) string {
@@ -481,32 +430,27 @@ func CleanOutput(output string, command string) string {
 	return strings.Join(lines, "\n")
 }
 
-func (a App) listPorts() ([]string, error) {
-	if a.ListPorts != nil {
-		return a.ListPorts()
+func (a App) request(baseURL string, request boardRequest, timeout time.Duration) (string, error) {
+	client := a.withBaseURL(baseURL).Client
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	data, err := client.Do(ctx, request)
+	if err != nil {
+		return "", err
 	}
-	return ListPorts()
+	return string(data), nil
 }
 
-func (a App) findPort() (string, error) {
-	if a.FindPort != nil {
-		return a.FindPort()
+func (a App) withBaseURL(baseURL string) App {
+	if a.Client == nil {
+		a.Client = HTTPClient{BaseURL: baseURL, Client: http.DefaultClient}
+		return a
 	}
-	return FindPort()
-}
-
-func (a App) probePort(portName string) bool {
-	if a.ProbePort != nil {
-		return a.ProbePort(portName)
+	if client, ok := a.Client.(HTTPClient); ok {
+		client.BaseURL = baseURL
+		a.Client = client
 	}
-	return ProbePort(portName)
-}
-
-func (a App) transact(port string, command string, timeout time.Duration) (string, error) {
-	if a.Transact != nil {
-		return a.Transact(port, command, timeout)
-	}
-	return Transact(port, command, timeout)
+	return a
 }
 
 func hasArg(args []string, value string) bool {
@@ -516,6 +460,178 @@ func hasArg(args []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func resolveBaseURL(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return DefaultBaseURL
+	}
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
+		return strings.TrimRight(trimmed, "/")
+	}
+	return "http://" + strings.TrimRight(trimmed, "/")
+}
+
+func looksLikeJSON(output string) bool {
+	trimmed := strings.TrimSpace(output)
+	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
+}
+
+func requestFromArgs(args []string) (boardRequest, string, error) {
+	cleaned := stripPassthroughFlags(args)
+	if len(cleaned) == 0 {
+		return boardRequest{}, "", errors.New("missing command")
+	}
+
+	switch cleaned[0] {
+	case "status":
+		if len(cleaned) != 1 {
+			return boardRequest{}, "status", errors.New("usage: agent-debugboardctl status")
+		}
+		return boardRequest{Method: http.MethodGet, Path: "/api/v1/status"}, "debugboard status --json", nil
+	case "power":
+		return powerRequest(cleaned)
+	case "adc":
+		return adcRequest(cleaned)
+	case "sd":
+		return sdRequest(cleaned)
+	case "gpio":
+		return gpioRequest(cleaned)
+	case "watchdog":
+		return watchdogRequest(cleaned)
+	case "bootloader":
+		if len(cleaned) != 1 {
+			return boardRequest{}, "bootloader", errors.New("usage: agent-debugboardctl bootloader")
+		}
+		return boardRequest{Method: http.MethodPost, Path: "/api/v1/bootloader"}, "debugboard bootloader --json", nil
+	default:
+		return boardRequest{}, cleaned[0], fmt.Errorf("unsupported command %q over HTTP", cleaned[0])
+	}
+}
+
+func watchdogRequest(args []string) (boardRequest, string, error) {
+	command := "debugboard " + strings.Join(args, " ") + " --json"
+	if len(args) != 2 {
+		return boardRequest{}, "watchdog", errors.New("usage: agent-debugboardctl watchdog status")
+	}
+	switch args[1] {
+	case "status":
+		return boardRequest{Method: http.MethodGet, Path: "/api/v1/watchdog"}, command, nil
+	default:
+		return boardRequest{}, "watchdog", fmt.Errorf("unsupported watchdog action %q (watchdog is supervised by firmware)", args[1])
+	}
+}
+
+func stripPassthroughFlags(args []string) []string {
+	cleaned := make([]string, 0, len(args))
+	for _, arg := range args {
+		switch arg {
+		case "--json", "-v", "--verbose":
+			continue
+		default:
+			cleaned = append(cleaned, arg)
+		}
+	}
+	return cleaned
+}
+
+func powerRequest(args []string) (boardRequest, string, error) {
+	commandName := args[0]
+	command := "debugboard power " + strings.Join(args[1:], " ") + " --json"
+	if len(args) < 2 {
+		return boardRequest{}, commandName, errors.New("usage: agent-debugboardctl power list|get|set ...")
+	}
+	switch args[1] {
+	case "list":
+		if len(args) != 2 {
+			return boardRequest{}, commandName, errors.New("usage: agent-debugboardctl power list")
+		}
+		return boardRequest{Method: http.MethodGet, Path: "/api/v1/power"}, command, nil
+	case "get":
+		if len(args) != 3 {
+			return boardRequest{}, commandName, errors.New("usage: agent-debugboardctl power get NAME")
+		}
+		return boardRequest{Method: http.MethodGet, Path: "/api/v1/power/" + args[2]}, command, nil
+	case "set":
+		if len(args) != 4 {
+			return boardRequest{}, commandName, errors.New("usage: agent-debugboardctl power set NAME on|off")
+		}
+		return boardRequest{Method: http.MethodPut, Path: "/api/v1/power/" + args[2], Body: map[string]string{"state": args[3]}}, command, nil
+	default:
+		return boardRequest{}, commandName, fmt.Errorf("unsupported power action %q", args[1])
+	}
+}
+
+func adcRequest(args []string) (boardRequest, string, error) {
+	command := "debugboard " + strings.Join(args, " ") + " --json"
+	if len(args) < 2 || args[1] != "read" {
+		return boardRequest{}, "adc", errors.New("usage: agent-debugboardctl adc read [NAME]")
+	}
+	if len(args) > 3 {
+		return boardRequest{}, "adc", errors.New("usage: agent-debugboardctl adc read [NAME]")
+	}
+	query := url.Values{}
+	if len(args) == 3 {
+		query.Set("channel", args[2])
+	}
+	return boardRequest{Method: http.MethodGet, Path: "/api/v1/adc/read", Query: query}, command, nil
+}
+
+func sdRequest(args []string) (boardRequest, string, error) {
+	command := "debugboard " + strings.Join(args, " ") + " --json"
+	if len(args) < 2 {
+		return boardRequest{}, "sd", errors.New("usage: agent-debugboardctl sd get|route ...")
+	}
+	switch args[1] {
+	case "get":
+		if len(args) != 2 {
+			return boardRequest{}, "sd", errors.New("usage: agent-debugboardctl sd get")
+		}
+		return boardRequest{Method: http.MethodGet, Path: "/api/v1/sd"}, command, nil
+	case "route":
+		if len(args) != 3 {
+			return boardRequest{}, "sd", errors.New("usage: agent-debugboardctl sd route target|usb-reader")
+		}
+		return boardRequest{Method: http.MethodPut, Path: "/api/v1/sd", Body: map[string]string{"route": args[2]}}, command, nil
+	default:
+		return boardRequest{}, "sd", fmt.Errorf("unsupported sd action %q", args[1])
+	}
+}
+
+func gpioRequest(args []string) (boardRequest, string, error) {
+	command := "debugboard " + strings.Join(args, " ") + " --json"
+	if len(args) < 2 {
+		return boardRequest{}, "gpio", errors.New("usage: agent-debugboardctl gpio list|set|input ...")
+	}
+	switch args[1] {
+	case "list":
+		if len(args) != 2 {
+			return boardRequest{}, "gpio", errors.New("usage: agent-debugboardctl gpio list")
+		}
+		return boardRequest{Method: http.MethodGet, Path: "/api/v1/gpio"}, command, nil
+	case "input":
+		if len(args) != 3 {
+			return boardRequest{}, "gpio", errors.New("usage: agent-debugboardctl gpio input NAME")
+		}
+		return boardRequest{Method: http.MethodPut, Path: "/api/v1/gpio/" + args[2], Body: map[string]string{"direction": "input"}}, command, nil
+	case "set":
+		if len(args) != 4 {
+			return boardRequest{}, "gpio", errors.New("usage: agent-debugboardctl gpio set NAME 0|1")
+		}
+		return boardRequest{Method: http.MethodPut, Path: "/api/v1/gpio/" + args[2], Body: map[string]any{"direction": "output", "value": mustParseInt(args[3])}}, command, nil
+	default:
+		return boardRequest{}, "gpio", fmt.Errorf("unsupported gpio action %q", args[1])
+	}
+}
+
+func mustParseInt(value string) int {
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+
+	return parsed
 }
 
 func commandName(args []string, raw bool) string {

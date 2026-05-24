@@ -2,12 +2,32 @@ package hostcli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
+
+type fakeClient struct {
+	requests []boardRequest
+	response string
+	err      error
+}
+
+func (c *fakeClient) Do(ctx context.Context, request boardRequest) ([]byte, error) {
+	c.requests = append(c.requests, request)
+	if c.err != nil {
+		return nil, c.err
+	}
+	return []byte(c.response), nil
+}
 
 func TestCleanOutputStripsEchoPromptAndANSI(t *testing.T) {
 	raw := "\r\ndebugboard status\r\nproject=agent-debugboard\r\n\x1b[1;32mdebugboard:~$ \x1b[m\r\n"
@@ -18,192 +38,231 @@ func TestCleanOutputStripsEchoPromptAndANSI(t *testing.T) {
 	}
 }
 
-func TestRunPrefixesDebugboardCommand(t *testing.T) {
+func TestRunWithoutArgsStartsTUI(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	var calls []string
+	called := false
 
 	app := App{
-		FindPort: func() (string, error) {
-			return "/dev/cu.debugboard", nil
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			calls = append(calls, port+"|"+command+"|"+timeout.String())
-			return "debugboard status\r\nproject=agent-debugboard\r\ndebugboard:~$ ", nil
+		RunTUI: func(baseURL string, timeout time.Duration, stdout io.Writer, stderr io.Writer) int {
+			called = true
+			if baseURL != DefaultBaseURL {
+				t.Fatalf("baseURL = %q", baseURL)
+			}
+			if timeout != 2*time.Second {
+				t.Fatalf("timeout = %s", timeout)
+			}
+			return 0
 		},
 	}
 
-	code := app.Run([]string{"status"}, &stdout, &stderr)
+	code := app.Run(nil, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stderr=%q", code, stderr.String())
 	}
-	if len(calls) != 1 || calls[0] != "/dev/cu.debugboard|debugboard status|2s" {
-		t.Fatalf("calls = %#v", calls)
+	if !called {
+		t.Fatal("expected RunTUI to be called")
 	}
-	if strings.TrimSpace(stdout.String()) != "project=agent-debugboard" {
+}
+
+func TestRunStatusUsesHTTPClient(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	client := &fakeClient{response: `{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard"}`}
+
+	code := (App{Client: client}).Run([]string{"status"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("Run() exit code = %d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if len(client.requests) != 1 || client.requests[0].Method != http.MethodGet || client.requests[0].Path != "/api/v1/status" {
+		t.Fatalf("requests = %#v", client.requests)
+	}
+	if strings.TrimSpace(stdout.String()) != client.response {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
 
-func TestRunRawCommandAndTimeout(t *testing.T) {
+func TestRunRawCommandIsRejectedOverHTTP(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	var gotPort string
-	var gotCommand string
-	var gotTimeout time.Duration
 
-	app := App{
-		FindPort: func() (string, error) {
-			t.Fatal("FindPort should not be called when --port is provided")
-			return "", nil
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			gotPort = port
-			gotCommand = command
-			gotTimeout = timeout
-			return "version\r\nok\r\ndebugboard:~$ ", nil
-		},
+	code := (App{Client: &fakeClient{}}).Run([]string{"--raw", "version"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("Run() exit code = %d", code)
 	}
-
-	code := app.Run([]string{"--port", "/dev/cu.fake", "--timeout", "0.5", "--raw", "version"}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("Run() exit code = %d stderr=%q", code, stderr.String())
-	}
-	if gotPort != "/dev/cu.fake" || gotCommand != "version" || gotTimeout != 500*time.Millisecond {
-		t.Fatalf("got port=%q command=%q timeout=%s", gotPort, gotCommand, gotTimeout)
-	}
-	if strings.TrimSpace(stdout.String()) != "ok" {
-		t.Fatalf("stdout = %q", stdout.String())
+	if !strings.Contains(stderr.String(), "raw shell commands are not available") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 
-func TestRunJSONCommandRequestsAndValidatesFirmwareJSON(t *testing.T) {
+func TestRunJSONCommandRequestsAndValidatesEnvelope(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	var gotCommand string
-
 	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard"}`
-	app := App{
-		FindPort: func() (string, error) {
-			return "/dev/cu.debugboard", nil
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			gotCommand = command
-			return command + "\r\n" + response + "\r\n" + PromptText + " ", nil
-		},
-	}
+	client := &fakeClient{response: response}
 
-	code := app.Run([]string{"--json", "status"}, &stdout, &stderr)
+	code := (App{Client: client}).Run([]string{"--json", "status"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
-	}
-	if gotCommand != "debugboard status --json" {
-		t.Fatalf("command = %q", gotCommand)
 	}
 	if strings.TrimSpace(stdout.String()) != response {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
 
-func TestRunVerboseCommandRequestsFirmwareVerbose(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	var gotCommand string
+func TestRequestLiveSessionWSURL(t *testing.T) {
+	client := &fakeClient{response: `{"schema":"agent-debugboard.v1","ok":true,"command":"live-sessions","action":"create","session_id":7,"ws_url":"ws://172.29.203.1:8080/api/v1/ws/2"}`}
+	wsURL, err := requestLiveSessionWSURL(App{Client: client}, 2*time.Second)
+	if err != nil {
+		t.Fatalf("requestLiveSessionWSURL() error = %v", err)
+	}
+	if wsURL != "ws://172.29.203.1:8080/api/v1/ws/2" {
+		t.Fatalf("wsURL = %q", wsURL)
+	}
+	if len(client.requests) != 1 || client.requests[0].Method != http.MethodPost || client.requests[0].Path != "/api/v1/live-sessions" {
+		t.Fatalf("requests = %#v", client.requests)
+	}
+}
 
-	response := `5v_out signal=S_C_5V raw=22 mv=17 ma_est=540`
-	app := App{
-		FindPort: func() (string, error) {
-			return "/dev/cu.debugboard", nil
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			gotCommand = command
-			return command + "\r\n" + response + "\r\n" + PromptText + " ", nil
-		},
+func TestStatusJSONIncludesBoardMonitoringShape(t *testing.T) {
+	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard","board_monitoring":{"temperature":{"available":false,"reason":"no_zephyr_temperature_device"},"heap":{"available":true,"reason":"","source":"system_heap","free_bytes":6144,"allocated_bytes":2048,"max_allocated_bytes":3072,"total_bytes":8192},"runtime":{"available":true,"reason":"","uptime_ms":12345,"uptime_seconds":12},"cpu":{"available":false,"reason":"thread_runtime_stats_disabled"}}}`
+	var status struct {
+		BoardMonitoring boardMonitoring `json:"board_monitoring"`
 	}
 
-	code := app.Run([]string{"-v", "adc", "read", "5v_out"}, &stdout, &stderr)
+	if err := json.Unmarshal([]byte(response), &status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.BoardMonitoring.Temperature.Available {
+		t.Fatalf("temperature should be unavailable: %#v", status.BoardMonitoring.Temperature)
+	}
+	if status.BoardMonitoring.Temperature.Reason != "no_zephyr_temperature_device" {
+		t.Fatalf("temperature reason = %q", status.BoardMonitoring.Temperature.Reason)
+	}
+	if status.BoardMonitoring.Heap.Source != "system_heap" || status.BoardMonitoring.Heap.TotalBytes != 8192 {
+		t.Fatalf("heap = %#v", status.BoardMonitoring.Heap)
+	}
+	if status.BoardMonitoring.Runtime.UptimeSeconds != 12 {
+		t.Fatalf("runtime = %#v", status.BoardMonitoring.Runtime)
+	}
+}
+
+func TestRunADCReadDefaultTextUsesHostSideCalibration(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}`
+	client := &fakeClient{response: response}
+
+	code := (App{Client: client}).Run([]string{"adc", "read", "5v_out"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
-	if gotCommand != "debugboard adc read 5v_out -v" {
-		t.Fatalf("command = %q", gotCommand)
+	if len(client.requests) != 1 || client.requests[0].Path != "/api/v1/adc/read" || client.requests[0].Query.Get("channel") != "5v_out" {
+		t.Fatalf("requests = %#v", client.requests)
 	}
-	if strings.TrimSpace(stdout.String()) != response {
+	if strings.TrimSpace(stdout.String()) != "5v_out=500mA" {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
 
-func TestRunVerboseCommandPassesThroughCommandFlag(t *testing.T) {
+func TestRunADCReadJSONUsesHostSideCalibration(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	var gotCommand string
+	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}`
 
-	response := `5v_out signal=S_C_5V raw=22 mv=17 ma_est=540`
-	app := App{
-		FindPort: func() (string, error) {
-			return "/dev/cu.debugboard", nil
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			gotCommand = command
-			return command + "\r\n" + response + "\r\n" + PromptText + " ", nil
-		},
-	}
-
-	code := app.Run([]string{"adc", "read", "-v", "5v_out"}, &stdout, &stderr)
+	code := (App{Client: &fakeClient{response: response}}).Run([]string{"--json", "adc", "read", "5v_out"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
-	if gotCommand != "debugboard adc read -v 5v_out" {
-		t.Fatalf("command = %q", gotCommand)
-	}
-	if strings.TrimSpace(stdout.String()) != response {
+	if strings.TrimSpace(stdout.String()) != `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","raw":null,"current_valid":true,"mv":17,"ma_est":500,"power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}` {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
 
-func TestRunJSONCommandIgnoresGlobalVerbose(t *testing.T) {
+func TestRunADCReadPowerDisabledReportsZeroCurrent(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	var gotCommand string
+	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":false,"raw":24,"mv":19,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}`
 
-	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","readings":[{"name":"5v_out","ma_est":540}]}`
-	app := App{
-		FindPort: func() (string, error) {
-			return "/dev/cu.debugboard", nil
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			gotCommand = command
-			return command + "\r\n" + response + "\r\n" + PromptText + " ", nil
-		},
-	}
-
-	code := app.Run([]string{"--json", "-v", "adc", "read", "5v_out"}, &stdout, &stderr)
+	code := (App{Client: &fakeClient{response: response}}).Run([]string{"adc", "read", "5v_out"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
-	if gotCommand != "debugboard adc read 5v_out --json" {
-		t.Fatalf("command = %q", gotCommand)
-	}
-	if strings.TrimSpace(stdout.String()) != response {
+	if strings.TrimSpace(stdout.String()) != "5v_out=0mA" {
 		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestRunPowerSetMapsToPowerEndpoint(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	client := &fakeClient{response: `{"schema":"agent-debugboard.v1","ok":true,"command":"power","action":"set","power_output":{"name":"12v_out","state":"off"}}`}
+
+	code := (App{Client: client}).Run([]string{"power", "set", "12v_out", "off"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("Run() exit code = %d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if len(client.requests) != 1 || client.requests[0].Method != http.MethodPut || client.requests[0].Path != "/api/v1/power/12v_out" {
+		t.Fatalf("requests = %#v", client.requests)
+	}
+	body := client.requests[0].Body.(map[string]string)
+	if body["state"] != "off" {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestRunSDGPIOAndBootloaderMappings(t *testing.T) {
+	tests := []struct {
+		name   string
+		args   []string
+		method string
+		path   string
+	}{
+		{name: "sd route", args: []string{"sd", "route", "usb-reader"}, method: http.MethodPut, path: "/api/v1/sd"},
+		{name: "gpio input", args: []string{"gpio", "input", "GP13"}, method: http.MethodPut, path: "/api/v1/gpio/GP13"},
+		{name: "gpio set", args: []string{"gpio", "set", "GP13", "1"}, method: http.MethodPut, path: "/api/v1/gpio/GP13"},
+		{name: "watchdog status", args: []string{"watchdog", "status"}, method: http.MethodGet, path: "/api/v1/watchdog"},
+		{name: "bootloader", args: []string{"bootloader"}, method: http.MethodPost, path: "/api/v1/bootloader"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			client := &fakeClient{response: `{"schema":"agent-debugboard.v1","ok":true,"command":"ok"}`}
+			code := (App{Client: client}).Run(tt.args, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("Run() exit code = %d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+			}
+			if len(client.requests) != 1 || client.requests[0].Method != tt.method || client.requests[0].Path != tt.path {
+				t.Fatalf("requests = %#v", client.requests)
+			}
+		})
+	}
+}
+
+func TestRunWatchdogFeedIsRejectedLocally(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	client := &fakeClient{response: `{"schema":"agent-debugboard.v1","ok":true,"command":"ok"}`}
+
+	code := (App{Client: client}).Run([]string{"watchdog", "feed"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("Run() exit code = %d stderr=%q", code, stderr.String())
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("unexpected requests = %#v", client.requests)
+	}
+	if !strings.Contains(stderr.String(), "unsupported watchdog action") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 
 func TestRunJSONCommandReturnsFailureOnBoardError(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	response := `{"schema":"agent-debugboard.v1","ok":false,"command":"power","error":{"code":"unknown_power_output","message":"unknown power output"}}`
 
-	response := `{"schema":"agent-debugboard.v1","ok":false,"command":"rail","error":{"code":"unknown_rail","message":"unknown rail"}}`
-	app := App{
-		FindPort: func() (string, error) {
-			return "/dev/cu.debugboard", nil
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			return command + "\r\n" + response + "\r\n" + PromptText + " ", nil
-		},
-	}
-
-	code := app.Run([]string{"--json", "rail", "get", "missing"}, &stdout, &stderr)
+	code := (App{Client: &fakeClient{response: response}}).Run([]string{"--json", "power", "get", "missing"}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("Run() exit code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
@@ -216,16 +275,7 @@ func TestRunJSONRejectsOldTextFirmwareOutput(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	app := App{
-		FindPort: func() (string, error) {
-			return "/dev/cu.debugboard", nil
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			return command + "\r\nproject=agent-debugboard\r\n" + PromptText + " ", nil
-		},
-	}
-
-	code := app.Run([]string{"--json", "status"}, &stdout, &stderr)
+	code := (App{Client: &fakeClient{response: "project=agent-debugboard"}}).Run([]string{"--json", "status"}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("Run() exit code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
@@ -239,52 +289,15 @@ func TestRunJSONRejectsOldTextFirmwareOutput(t *testing.T) {
 	}
 }
 
-func TestRunRawJSONDoesNotAppendFirmwareJSONFlag(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	var gotCommand string
-
-	app := App{
-		FindPort: func() (string, error) {
-			return "/dev/cu.debugboard", nil
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			gotCommand = command
-			return command + "\r\n{\"raw\":true}\r\n" + PromptText + " ", nil
-		},
-	}
-
-	code := app.Run([]string{"--raw", "--json", "version"}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("Run() exit code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-	if gotCommand != "version" {
-		t.Fatalf("command = %q", gotCommand)
-	}
-	if strings.TrimSpace(stdout.String()) != `{"raw":true}` {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
-}
-
-func TestRunReportsFindPortError(t *testing.T) {
+func TestRunReportsTransportError(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	app := App{
-		FindPort: func() (string, error) {
-			return "", errors.New("not found")
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			t.Fatal("Transact should not be called when FindPort fails")
-			return "", nil
-		},
-	}
-
-	code := app.Run([]string{"status"}, &stdout, &stderr)
+	code := (App{Client: &fakeClient{err: errors.New("dial failed")}}).Run([]string{"status"}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("Run() exit code = %d", code)
 	}
-	if !strings.Contains(stderr.String(), "not found") {
+	if !strings.Contains(stderr.String(), "dial failed") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
@@ -293,18 +306,7 @@ func TestRunHelpReturnsSuccess(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	app := App{
-		FindPort: func() (string, error) {
-			t.Fatal("FindPort should not be called for --help")
-			return "", nil
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			t.Fatal("Transact should not be called for --help")
-			return "", nil
-		},
-	}
-
-	code := app.Run([]string{"--help"}, &stdout, &stderr)
+	code := (App{}).Run([]string{"--help"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stderr=%q", code, stderr.String())
 	}
@@ -317,18 +319,7 @@ func TestRunVersionReturnsSuccessWithoutBoardAccess(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	app := App{
-		FindPort: func() (string, error) {
-			t.Fatal("FindPort should not be called for --version")
-			return "", nil
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			t.Fatal("Transact should not be called for --version")
-			return "", nil
-		},
-	}
-
-	code := app.Run([]string{"--version"}, &stdout, &stderr)
+	code := (App{}).Run([]string{"--version"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stderr=%q", code, stderr.String())
 	}
@@ -341,18 +332,7 @@ func TestRunJSONVersionReturnsSuccessWithoutBoardAccess(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	app := App{
-		FindPort: func() (string, error) {
-			t.Fatal("FindPort should not be called for --version")
-			return "", nil
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			t.Fatal("Transact should not be called for --version")
-			return "", nil
-		},
-	}
-
-	code := app.Run([]string{"--json", "--version"}, &stdout, &stderr)
+	code := (App{}).Run([]string{"--json", "--version"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stderr=%q", code, stderr.String())
 	}
@@ -366,61 +346,12 @@ func TestRunJSONVersionReturnsSuccessWithoutBoardAccess(t *testing.T) {
 	}
 }
 
-func TestDoctorJSONReportsMissingBoard(t *testing.T) {
+func TestDoctorJSONReportsHTTPStatus(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-
-	app := App{
-		ListPorts: func() ([]string, error) {
-			return []string{"/dev/ttyS0", "/dev/ttyACM0"}, nil
-		},
-		ProbePort: func(portName string) bool {
-			return false
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			t.Fatal("Transact should not be called without a probed board")
-			return "", nil
-		},
-	}
-
-	code := app.Run([]string{"--json", "doctor"}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("Run() exit code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-
-	var got doctorResult
-	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
-		t.Fatalf("stdout is not JSON: %v stdout=%q", err, stdout.String())
-	}
-	if got.OK || got.Command != "doctor" || got.Error == nil || got.Error.Code != "port_not_found" {
-		t.Fatalf("doctor JSON = %#v", got)
-	}
-	if strings.Join(got.Candidates, ",") != "/dev/ttyACM0" {
-		t.Fatalf("candidates = %#v", got.Candidates)
-	}
-}
-
-func TestDoctorJSONReportsBoardStatus(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
 	status := `{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard"}`
-	app := App{
-		ListPorts: func() ([]string, error) {
-			return []string{"/dev/ttyS0", "/dev/cu.usbmodem21201"}, nil
-		},
-		ProbePort: func(portName string) bool {
-			return portName == "/dev/cu.usbmodem21201"
-		},
-		Transact: func(port string, command string, timeout time.Duration) (string, error) {
-			if port != "/dev/cu.usbmodem21201" || command != "debugboard status --json" {
-				t.Fatalf("port=%q command=%q", port, command)
-			}
-			return command + "\r\n" + status + "\r\n" + PromptText + " ", nil
-		},
-	}
 
-	code := app.Run([]string{"--json", "doctor"}, &stdout, &stderr)
+	code := (App{Client: &fakeClient{response: status}}).Run([]string{"--json", "--url", "http://172.29.203.1:8080", "doctor"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
@@ -429,7 +360,7 @@ func TestDoctorJSONReportsBoardStatus(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("stdout is not JSON: %v stdout=%q", err, stdout.String())
 	}
-	if !got.OK || got.SelectedPort != "/dev/cu.usbmodem21201" || !got.ProbeOK {
+	if !got.OK || got.BaseURL != "http://172.29.203.1:8080" || !got.ProbeOK {
 		t.Fatalf("doctor JSON = %#v", got)
 	}
 	if strings.TrimSpace(string(got.Status)) != status {
@@ -437,46 +368,247 @@ func TestDoctorJSONReportsBoardStatus(t *testing.T) {
 	}
 }
 
-func TestCandidatePortsFiltersCommonUSBSerialNames(t *testing.T) {
-	got := CandidatePorts([]string{
-		"/dev/ttyS0",
-		"/dev/cu.Bluetooth-Incoming-Port",
-		"/dev/cu.usbmodem21201",
-		"/dev/ttyACM0",
-		"/dev/ttyUSB0",
-		"COM7",
-		"/dev/cu.usbmodem21201",
-	})
-	want := []string{
-		"/dev/cu.usbmodem21201",
-		"/dev/ttyACM0",
-		"/dev/ttyUSB0",
-		"COM7",
+func TestDoctorJSONReportsHTTPFailure(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := (App{Client: &fakeClient{err: errors.New("connection refused")}}).Run([]string{"--json", "doctor"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("Run() exit code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("CandidatePorts() = %#v, want %#v", got, want)
+
+	var got doctorResult
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v stdout=%q", err, stdout.String())
+	}
+	if got.OK || got.Error == nil || got.Error.Code != "status_failed" {
+		t.Fatalf("doctor JSON = %#v", got)
 	}
 }
 
-func TestFindPortFromListProbesCandidates(t *testing.T) {
-	var probed []string
-	got, err := FindPortFromList([]string{"/dev/ttyS0", "/dev/ttyACM0", "/dev/ttyUSB0"}, func(portName string) bool {
-		probed = append(probed, portName)
-		return portName == "/dev/ttyUSB0"
+func TestHTTPClientBuildsRequestAndEncodesJSON(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotQuery string
+	var gotBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"schema":"agent-debugboard.v1","ok":true,"command":"power"}`))
+	}))
+	defer server.Close()
+
+	client := HTTPClient{BaseURL: server.URL, Client: server.Client()}
+	data, err := client.Do(context.Background(), boardRequest{
+		Method: http.MethodPut,
+		Path:   "/api/v1/power/12v_out",
+		Body:   map[string]string{"state": "on"},
 	})
 	if err != nil {
-		t.Fatalf("FindPortFromList() error = %v", err)
+		t.Fatalf("Do() error = %v", err)
 	}
-	if got != "/dev/ttyUSB0" {
-		t.Fatalf("FindPortFromList() = %q", got)
+	if gotMethod != http.MethodPut || gotPath != "/api/v1/power/12v_out" || gotQuery != "" || gotBody["state"] != "on" {
+		t.Fatalf("method=%q path=%q query=%q body=%#v", gotMethod, gotPath, gotQuery, gotBody)
 	}
-	if strings.Join(probed, ",") != "/dev/ttyACM0,/dev/ttyUSB0" {
-		t.Fatalf("probed = %#v", probed)
+	if !strings.Contains(string(data), `"ok":true`) {
+		t.Fatalf("data = %s", data)
+	}
+}
+
+func TestWSURLFromBase(t *testing.T) {
+	wsURL, err := wsURLFromBase("http://172.29.203.1:8080")
+	if err != nil {
+		t.Fatalf("wsURLFromBase() error = %v", err)
+	}
+	if wsURL != "ws://172.29.203.1:8080/api/v1/ws" {
+		t.Fatalf("wsURL = %q", wsURL)
+	}
+}
+
+func TestWSClientConnectAndSend(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	var got map[string]any
+	done := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+		if err := conn.ReadJSON(&got); err != nil {
+			t.Fatalf("read json: %v", err)
+		}
+		done <- struct{}{}
+		if err := conn.WriteJSON(wsStatusSnapshot{
+			Type:         "snapshot",
+			Topic:        "status",
+			Schema:       JSONSchema,
+			Sequence:     1,
+			PowerOutputs: []tuiStatusPowerOutput{{Name: "5v_out", State: "on", Value: 1}},
+			SD:           tuiStatusSD{Route: "target"},
+			BoardMonitoring: boardMonitoring{
+				Temperature: monitoringTemperature{
+					monitoringAvailability: monitoringAvailability{Available: false, Reason: "no_zephyr_temperature_device"},
+				},
+				Heap: monitoringHeap{
+					monitoringAvailability: monitoringAvailability{Available: true},
+					Source:                 "system_heap",
+					FreeBytes:              6144,
+					AllocatedBytes:         2048,
+					MaxAllocatedBytes:      3072,
+					TotalBytes:             8192,
+				},
+				Runtime: monitoringRuntime{
+					monitoringAvailability: monitoringAvailability{Available: true},
+					UptimeMS:               12345,
+					UptimeSeconds:          12,
+				},
+				CPU: monitoringCPU{
+					monitoringAvailability: monitoringAvailability{Available: false, Reason: "thread_runtime_stats_disabled"},
+				},
+			},
+		}); err != nil {
+			t.Fatalf("write json: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWSClient(server.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := client.Connect(ctx); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	defer client.Close()
+	if err := client.Send(ctx, wsCommandRequest{Type: "subscribe", Topic: "live", RateHz: tuiADCSubscribeRateHz}); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for websocket request")
+	}
+	if got["type"] != "subscribe" || got["topic"] != "live" || got["rate_hz"] != float64(tuiADCSubscribeRateHz) {
+		t.Fatalf("got request = %#v", got)
+	}
+}
+
+func TestWSClientCloseAdvancesGeneration(t *testing.T) {
+	client := NewWSClient(DefaultBaseURL)
+	before := client.Generation()
+	if before == 0 {
+		t.Fatalf("expected non-zero generation")
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	after := client.Generation()
+	if after <= before {
+		t.Fatalf("generation did not advance: before=%d after=%d", before, after)
+	}
+	if client.IsCurrentGeneration(before) {
+		t.Fatalf("old generation %d should be stale after close", before)
+	}
+	if !client.IsCurrentGeneration(after) {
+		t.Fatalf("new generation %d should be current", after)
+	}
+}
+
+func TestNextStreamMessageParsesResult(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+		if err := conn.WriteJSON(map[string]any{
+			"type":    "result",
+			"schema":  JSONSchema,
+			"command": "power_set",
+			"ok":      true,
+			"status":  "ok",
+		}); err != nil {
+			t.Fatalf("write json: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	wsClient := NewWSClient(server.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := wsClient.Connect(ctx); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	defer wsClient.Close()
+
+	msg := nextStreamMessage(wsClient, 2*time.Second)().(tuiStreamMsg)
+	if msg.err != nil {
+		t.Fatalf("nextStreamMessage error = %v", msg.err)
+	}
+	if msg.result == nil || msg.result.Command != "power_set" || msg.result.Status != "ok" {
+		t.Fatalf("result = %#v", msg.result)
+	}
+}
+
+func TestMultipleWSClientsConnectIndependently(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	connected := make(chan struct{}, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+		connected <- struct{}{}
+		if err := conn.WriteJSON(map[string]any{
+			"type":    "result",
+			"schema":  JSONSchema,
+			"command": "subscribe",
+			"ok":      true,
+			"status":  "ok",
+		}); err != nil {
+			t.Fatalf("write json: %v", err)
+		}
+		select {}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clients := []*WSClient{NewWSClient(server.URL), NewWSClient(server.URL)}
+	for _, client := range clients {
+		if err := client.Connect(ctx); err != nil {
+			t.Fatalf("Connect() error = %v", err)
+		}
+		defer client.Close()
+	}
+
+	for i := 0; i < len(clients); i++ {
+		select {
+		case <-connected:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for websocket connections")
+		}
+	}
+
+	for _, client := range clients {
+		msg := nextStreamMessage(client, 2*time.Second)().(tuiStreamMsg)
+		if msg.err != nil {
+			t.Fatalf("nextStreamMessage error = %v", msg.err)
+		}
+		if msg.result == nil || msg.result.Command != "subscribe" || msg.result.Status != "ok" {
+			t.Fatalf("result = %#v", msg.result)
+		}
 	}
 }
 
 func TestIsDebugBoardStatus(t *testing.T) {
-	output := "debugboard status\r\nproject=agent-debugboard\r\nmcu=rp2040\r\ndebugboard:~$ "
+	output := `{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard"}`
 	if !IsDebugBoardStatus(output) {
 		t.Fatal("expected debugboard status output to be recognized")
 	}
