@@ -20,10 +20,9 @@ $target = Join-Path $installDir "agent-debugboardctl.exe"
 $versionExplicit = $PSBoundParameters.ContainsKey('Version')
 
 function Test-CanBuildFromSource([string]$Root) {
-    $hasGoMod = Test-Path -LiteralPath (Join-Path $Root "go.mod") -PathType Leaf
-    $hasCmdDir = Test-Path -LiteralPath (Join-Path $Root "cmd/agent-debugboardctl") -PathType Container
-    $go = Get-Command go -ErrorAction SilentlyContinue
-    return ($hasGoMod -and $hasCmdDir -and $null -ne $go)
+    $hasCargoToml = Test-Path -LiteralPath (Join-Path $Root "cmd-ng/Cargo.toml") -PathType Leaf
+    $cargo = Get-Command cargo -ErrorAction SilentlyContinue
+    return ($hasCargoToml -and $null -ne $cargo)
 }
 
 function Get-AgentDebugBoardArch {
@@ -109,7 +108,7 @@ $token = Get-AgentDebugBoardToken
 if ($DryRun) {
     if ($canBuild -and -not $versionExplicit) {
         Write-Host "agent-debugboardctl skill install dry-run"
-        Write-Host "mode:        build from source"
+        Write-Host "mode:        build Rust cmd-ng from source"
         Write-Host "repo root:   $repoRoot"
         Write-Host "output:      $target"
     } else {
@@ -130,13 +129,14 @@ if ($DryRun) {
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 
 if ($canBuild -and -not $versionExplicit) {
-    Write-Host "Building skill-local agent-debugboardctl at $target"
+    Write-Host "Building skill-local Rust agent-debugboardctl at $target"
     Push-Location $repoRoot
     try {
-        & go build -trimpath -o $target ./cmd/agent-debugboardctl
+        & cargo build --release --manifest-path cmd-ng/Cargo.toml
         if ($LASTEXITCODE -ne 0) {
-            throw "go build failed with exit code $LASTEXITCODE"
+            throw "cargo build failed with exit code $LASTEXITCODE"
         }
+        Copy-Item -Path (Join-Path $repoRoot "cmd-ng/target/release/agent-debugboardctl.exe") -Destination $target -Force
     } finally {
         Pop-Location
     }

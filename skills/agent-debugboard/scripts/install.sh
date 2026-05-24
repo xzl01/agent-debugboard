@@ -15,7 +15,7 @@ Builds or installs agent-debugboardctl into this skill only:
 
 Behavior:
   - If --version is explicitly provided, always download that release.
-  - If this checkout has go.mod, cmd/agent-debugboardctl, and go, build locally.
+  - If this checkout has cmd-ng/Cargo.toml and cargo, build locally.
   - Otherwise download the release asset, verify SHA256SUMS.txt, and copy it here.
 
 Environment:
@@ -68,7 +68,7 @@ install_dir="$script_dir/bin"
 binary_path="$install_dir/agent-debugboardctl"
 
 can_build_from_source() {
-  [ -f "$repo_root/go.mod" ] && [ -d "$repo_root/cmd/agent-debugboardctl" ] && command -v go >/dev/null 2>&1
+  [ -f "$repo_root/cmd-ng/Cargo.toml" ] && command -v cargo >/dev/null 2>&1
 }
 
 detect_os() {
@@ -198,7 +198,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   if can_build_from_source && [ "$VERSION_EXPLICIT" -eq 0 ]; then
     cat <<EOF
 agent-debugboardctl skill install dry-run
-mode:        build from source
+mode:        build Rust cmd-ng from source
 repo root:   $repo_root
 output:      $binary_path
 EOF
@@ -221,10 +221,11 @@ fi
 mkdir -p "$install_dir"
 
 if can_build_from_source && [ "$VERSION_EXPLICIT" -eq 0 ]; then
-  echo "Building skill-local agent-debugboardctl at $binary_path"
+  echo "Building skill-local Rust agent-debugboardctl at $binary_path"
   (
     cd "$repo_root"
-    go build -trimpath -o "$binary_path" ./cmd/agent-debugboardctl
+    cargo build --release --manifest-path cmd-ng/Cargo.toml
+    cp "$repo_root/cmd-ng/target/release/agent-debugboardctl" "$binary_path"
   )
   chmod 755 "$binary_path"
   echo "Installed agent-debugboardctl to $binary_path"

@@ -41,7 +41,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Set up Go
+      - name: Set up Go (legacy compatibility packaging)
         uses: actions/setup-go@v6
         with:
           go-version: "1.25.x"
@@ -59,7 +59,22 @@ jobs:
         working-directory: app
         run: ./apps/agent_debugboard/tests/run_unit_tests.sh
 
-      - name: Smoke test local host CLI build
+      - name: Set up Rust for primary host CLI smoke test
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/cmd-ng
+
+      - name: Smoke test primary Rust host CLI build
+        working-directory: app
+        run: |
+          cargo build --release --manifest-path cmd-ng/Cargo.toml
+          ./cmd-ng/target/release/agent-debugboardctl --help
+          ./cmd-ng/target/release/agent-debugboardctl --version
+
+      - name: Smoke test legacy Go host CLI build
         working-directory: app
         run: |
           go build -trimpath -o /tmp/agent-debugboardctl ./cmd/agent-debugboardctl
@@ -75,7 +90,7 @@ jobs:
           cp build/agent_debugboard/zephyr/zephyr.elf release-assets/agent-debugboard-rp2040.elf
           cp build/agent_debugboard/zephyr/zephyr.map release-assets/agent-debugboard-rp2040.map
 
-      - name: Build host CLI release archives
+      - name: Build legacy Go host CLI release archives
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
@@ -105,7 +120,8 @@ jobs:
 
           Included assets:
           - RP2040 firmware: UF2, ELF, and MAP
-          - agent-debugboardctl native packages for macOS, Linux, and Windows on amd64/arm64
+          - Rust cmd-ng is the primary actively-developed host CLI/TUI path
+          - agent-debugboardctl_* archives remain published with compatibility naming while the release pipeline transitions away from the legacy Go packaging flow
           - SHA256SUMS.txt for release asset verification
           EOF
 

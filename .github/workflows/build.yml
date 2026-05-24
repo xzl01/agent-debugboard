@@ -80,8 +80,8 @@ jobs:
           path: dist/firmware/
           if-no-files-found: error
 
-  host-cli:
-    name: Test and package Go host CLI
+  host-cli-legacy:
+    name: Test legacy Go host CLI
     runs-on: ubuntu-latest
 
     steps:
@@ -106,19 +106,52 @@ jobs:
           /tmp/agent-debugboardctl --version
           /tmp/agent-debugboardctl --json --version
 
-      - name: Build host CLI release archives
+      - name: Build legacy Go host CLI release archives
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "~> v2"
           args: release --snapshot --clean
 
-      - name: Upload host CLI artifacts
+      - name: Upload legacy Go host CLI artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: agent-debugboardctl-native-packages
+          name: agent-debugboardctl-go-legacy-packages
           path: |
             dist/*.tar.gz
             dist/*.zip
             dist/checksums.txt
           if-no-files-found: error
+
+  host-cli:
+    name: Test primary Rust host CLI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cmd-ng
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path cmd-ng/Cargo.toml --all --check
+
+      - name: Run clippy
+        run: cargo clippy --manifest-path cmd-ng/Cargo.toml --all-targets -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path cmd-ng/Cargo.toml --all-targets
+
+      - name: Smoke test primary Rust host CLI build
+        run: |
+          cargo build --manifest-path cmd-ng/Cargo.toml
+          ./cmd-ng/target/debug/agent-debugboardctl --help
+          ./cmd-ng/target/debug/agent-debugboardctl --version
