@@ -11,57 +11,80 @@
 ## 项目简介
 
 Agent DebugBoard 面向自动化 bring-up、远程恢复、产测和 AI agent 调试链路。
-固件会枚举为名为 `Agent DebugBoard` 的 USB CDC ACM 串口设备，并提供
-`debugboard` shell 命令；仓库里同时提供了主机侧 Go native CLI，方便脚本或
-Agent 直接调用。
+固件会枚举为复合 USB 设备：以 USB NCM 网络接口作为主控制面，并保留一个
+USB CDC ACM 串口用于 Zephyr 通用 cmdline 和 BOOTSEL fallback；主机侧当前主力
+命令路径是 `cmd-ng/` 下的 Rust CLI/TUI，用于脚本和 Agent 直接调用。
 
-本仓库包含 Zephyr 应用、主机侧辅助工具、单元测试、原理图副本和项目文档。
+本仓库包含 Zephyr 应用、主力 Rust 主机侧 CLI/TUI、保留作弃用参考的旧 Go 主机
+侧实现、单元测试、原理图副本和项目文档。
+
+当前主力主机侧命令路径是 [`cmd-ng/`](cmd-ng/)。旧的 Go
+`cmd/agent-debugboardctl` + `internal/hostcli` 已进入 deprecated/legacy 维护状
+态，仅保留作参考实现与回归对照。
 
 ## 功能范围
 
 | 模块 | 当前固件支持 |
 | --- | --- |
-| USB 控制 | CDC ACM shell，提供 `debugboard` 命令 |
-| 主机自动化 | 支持 JSON 输出和 `doctor` 诊断的 `agent-debugboardctl` CLI |
-| 电源轨 | `12v_out`、`5v_out`、`5v_ws`、`20v_out` |
+| USB 控制 | 复合 USB 设备：NCM HTTP/WS 主控制面 + CDC ACM fallback 控制台 |
+| 主机自动化 | Rust `cmd-ng` CLI/TUI，支持 JSON 输出和 `doctor` 诊断 |
+| 实时遥测 | `/api/v1/ws` 上的双向 WebSocket 长连接 |
+| 电源输出 | `12v_out`、`5v_out`、`5v_ws`、`20v_out` |
 | ADC 监测 | 读取 `5v_out`、`12v_out`、`20v_out` 的电流监测通道 |
+| 调试板自监控 | `/api/v1/status` 和 WebSocket 状态快照会报告板自身 CPU/runtime/heap/temperature 的可用性，并在 Zephyr 暴露可靠来源时给出数值；watchdog supervisor 也会周期性打印 heap 诊断，方便排查短复位 |
 | TF/SD 路由 | 在 `target` 和 `usb-reader` 之间切换 |
-| GPIO | 安全白名单：`GP13`、`GP14`、`GP15`、`GP22`、`GP23`、`GP24` |
+| GPIO | 安全白名单：`GP4`、`GP7`、`GP8`、`GP13`-`GP24` |
+| 固件自主 watchdog 恢复 | 固件监督 watchdog；当核心服务不再上报健康状态时自动复位并进入 ROM BOOTSEL |
 | 固件更新 | 通过 USB 命令让 RP2040 进入 BOOTSEL |
 
-`5V_FIN` 会被当作独立的输入/来源电源轨处理，不作为可控输出电源轨暴露给主机。
+`5V_FIN` 会被当作独立的输入/来源电源处理，不作为可控输出暴露给主机。
 
 ## 给 AI Agent 的使用入口
 
 AI Agent 在操作硬件前，应先读取
 [skills/agent-debugboard/SKILL.md](skills/agent-debugboard/SKILL.md)。这份 skill
-是仓库内面向 Agent 的权威操作规程，包含 `agent-debugboardctl` 的安装、连接诊
+是仓库内面向 Agent 的权威操作规程，包含主力主机侧 CLI 的构建/运行、连接诊
 断、JSON 命令使用和有副作用操作的安全规则。
+
+在修改仓库文件之前，AI Agent 还应先读取 [AGENTS.md](AGENTS.md)。仓库内的
+默认规则如下：
+
+- 任何代码改动都必须在同一个改动中同步更新对应的 skill 和文档。
+- 修改固件行为或主机侧 CLI 逻辑时，必须同步更新相关说明并运行对应测试。
+- 修改固件时，必须检查并保持 USB CDC ACM 串口的 BOOTSEL fallback 路径可用。
+- 修改 skill 时，必须执行一次 subagent 验证/测试。
+- 添加新功能时，只要实际可行，就应同步添加对应的功能测试。
+- 只要 Zephyr 绑定和板级模型能自然表达，硬件描述就优先使用 Device Tree，而不是固件里的硬编码表。
+- 软件实现应保持标准、统一、优雅，避免引入让维护、自动化或文档理解变得困难的临时性写法。
+- MCU 侧输出应尽量贴近接口原值；只要不破坏原始固件契约，解释、校准和展示优先放在 host 侧完成。
 
 推荐 Agent 最小流程：
 
 ```sh
-agent-debugboardctl --version
-agent-debugboardctl --json doctor
-agent-debugboardctl --json status
+cargo run --manifest-path cmd-ng/Cargo.toml -- --version
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json doctor
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
 ```
 
-如果 `agent-debugboardctl` 未安装，先按 skill 中的安装命令处理。自动化场景
-优先使用 `agent-debugboardctl --json ...`，解析 `schema`、`ok`、`command` 和
-`error.code`，不要解析面向人看的文本输出。
+如果主机侧 CLI 尚未构建或安装，先按 skill 中的命令处理。自动化场景优先使用
+`--json`，解析 `schema`、`ok`、`command` 和 `error.code`，不要解析面向人看的文
+本输出。
 
 ## 安装主机侧 CLI
 
-`agent-debugboardctl` 是 Go native binary。用户不需要 Python、pip 或虚拟环境。
+当前主力主机侧 CLI 是 Rust `cmd-ng` 实现。旧 Go `agent-debugboardctl` 路径已弃
+用。
 
-在 checkout 内，macOS / Linux 可以把 host CLI 安装到 skill-local
-`scripts/bin` 目录：
+在 checkout 内，直接构建/运行当前主力 Rust 主机 CLI：
 
 ```sh
-./skills/agent-debugboard/scripts/install.sh
+cargo run --manifest-path cmd-ng/Cargo.toml -- --help
+cargo run --manifest-path cmd-ng/Cargo.toml -- --version
+cargo run --manifest-path cmd-ng/Cargo.toml --
 ```
 
-也可以指定 release 版本：
+旧 Go 安装脚本仅保留作兼容迁移用途。若确有需要，也可以指定 legacy release 版
+本：
 
 ```sh
 ./skills/agent-debugboard/scripts/install.sh --version <tag>
@@ -107,13 +130,26 @@ macOS 上未签名的 release 二进制可能触发 Gatekeeper，提示 Apple �
 xattr -dr com.apple.quarantine ./skills/agent-debugboard/scripts/bin/agent-debugboardctl
 ```
 
-安装后验证：
+构建/安装后验证：
 
 ```sh
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --help
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --version
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl doctor
+cargo run --manifest-path cmd-ng/Cargo.toml -- --help
+cargo run --manifest-path cmd-ng/Cargo.toml -- --version
+cargo run --manifest-path cmd-ng/Cargo.toml -- doctor
+cargo run --manifest-path cmd-ng/Cargo.toml --
 ```
+
+直接运行 Rust 主机 CLI（不带子命令）会启动交互式 TUI。需要传统命令行
+模式时，再使用 `status`、`adc read`、`power set` 等子命令。
+
+TUI 本身只维持较温和的 60 Hz 重绘节奏，并改为通过 HTTP 轮询状态与 ADC 数据，
+因此多个 TUI 实例可以稳定同时打开。电源输出和安全 GPIO 现在合并进同一个
+自适应控件网格：方向键或 Tab 移动选择，Space/Enter 切换当前项，`i` 把当前
+GPIO 切回输入模式。高频采样改由 `adc record` 负责：它会创建 live websocket
+session，并把 1000Hz telemetry 记录到文件。
+FIXME：`adc record` 当前把 websocket 订阅速率固定在 1000Hz。后续应补一个可配
+置的采样/订阅速率参数，并加入设备侧时间信息，明确区分设备采样节拍与主机接收
+时间戳。
 
 ## 构建固件
 
@@ -146,6 +182,11 @@ west build -p always -b rpi_pico/rp2040 apps/agent_debugboard -d build/agent_deb
 build/agent_debugboard/zephyr/zephyr.uf2
 ```
 
+本仓库的固件 build/flash 路径应固定不变：始终构建到
+`build/agent_debugboard/`，始终刷写
+`build/agent_debugboard/zephyr/zephyr.uf2`。不要切换到其它 build 目录，也不要
+使用临时挂载点里残留的旧 UF2。
+
 ## 刷写
 
 如果板子当前已经运行本固件，可以先让它进入 BOOTSEL，再刷写新的 UF2：
@@ -155,10 +196,26 @@ agent-debugboardctl bootloader
 picotool load -v -x build/agent_debugboard/zephyr/zephyr.uf2
 ```
 
+每次修改固件后，都应把这条 BOOTSEL 流程和下方 RP2040 CDC ACM 串口 shell 的
+fallback 路径当作必做验收项；确认串口 fallback 仍然可用后，才能结束该改动。
+
+如果 HTTP/WS 控制面不可用，但 RP2040 的 CDC ACM shell 还在，也可以直接在本地
+Zephyr shell 里进入同一条 BOOTSEL 路径：
+
+```text
+debugboard:~$ bootloader
+```
+
 如果板子已经以 `RPI-RP2` 磁盘方式挂载，只需要执行：
 
 ```sh
 picotool load -v -x build/agent_debugboard/zephyr/zephyr.uf2
+```
+
+如果改用 `RPI-RP2` 盘符拖拽复制，而不是 `picotool`，也只能复制这一个固定产物：
+
+```text
+build/agent_debugboard/zephyr/zephyr.uf2
 ```
 
 ## GitHub Actions 产物
@@ -178,20 +235,30 @@ picotool load -v -x build/agent_debugboard/zephyr/zephyr.uf2
 - `agent-debugboardctl_darwin_arm64.tar.gz`：macOS Apple Silicon native CLI。
 - `SHA256SUMS.txt`：所有 release assets 的 SHA256 校验文件。
 
-开发者可以从源码构建 host CLI：
+开发者可以从源码构建当前主力 host CLI：
 
 ```sh
-go build -o agent-debugboardctl ./cmd/agent-debugboardctl
-./agent-debugboardctl --help
+cargo build --manifest-path cmd-ng/Cargo.toml
+./cmd-ng/target/debug/agent-debugboardctl --help
 ```
+
+Rust `cmd-ng` 现在是主力开发路径，可直接构建运行：
+
+```sh
+cargo run --manifest-path cmd-ng/Cargo.toml -- --help
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
+cargo run --manifest-path cmd-ng/Cargo.toml --
+```
+
+不带子命令时会进入 Rust TUI。
 
 ## 主机侧使用
 
 查询调试板状态：
 
 ```sh
-agent-debugboardctl status
-agent-debugboardctl doctor
+cargo run --manifest-path cmd-ng/Cargo.toml -- status
+cargo run --manifest-path cmd-ng/Cargo.toml -- doctor
 ```
 
 Agent 或自动化程序推荐优先使用 JSON 输出。JSON 响应固定包含
@@ -199,51 +266,100 @@ Agent 或自动化程序推荐优先使用 JSON 输出。JSON 响应固定包含
 失败时返回 `error: {code, message}`：
 
 ```sh
-agent-debugboardctl --json doctor
-agent-debugboardctl --json status
-agent-debugboardctl --json rail list
-agent-debugboardctl --json adc read
-agent-debugboardctl --json gpio list
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json doctor
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json power list
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json adc read
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json gpio list
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json watchdog status
 ```
 
-控制电源轨：
+`GP13` 这类 GPIO 名称由固件按 RP2040 引脚号派生；每个 allowlist GPIO 还带有
+板级 `note`，例如 `CON_MAS` 或 `J17_PIN1`。CLI/TUI 会同时显示二者，HTTP/CLI
+控制同时接受 `GPxx`、原始数字引脚（例如 `4`）以及精确 note（例如 `CON_MAS`）。
+
+状态 JSON 还包含 `board_monitoring`。其中 `temperature`、`heap`、`runtime` 和
+`cpu` 每一类都会带 `available` 和机器可读的 `reason`。固件只会在 Zephyr 设备或
+runtime stats API 已启用且可读取时报告真实数值；当前默认 RP2040 配置会启用
+内部 CPU die temperature、system heap runtime 统计、真实板端 uptime
+（`uptime_ms` / `uptime_seconds`）以及 CPU utilization delta。只有在读取失败或
+CPU 统计窗口尚不足以推导百分比时，相关字段才会继续返回 `reason`（例如
+`insufficient_runtime_window`），而不会伪造数据。WebSocket `snapshot/status`
+与 `GET /api/v1/status` 使用同一个 `board_monitoring` 对象。
+
+为了排查短时间复位，watchdog supervisor 线程还会在固件日志中周期性打印内存
+诊断。日志优先包含 system heap 已分配、空闲、总量和峰值字节数，并同时输出
+真实 uptime。该路径只读，不会推进 `board_monitoring` 使用的 CPU utilization
+采样窗口。
+
+同样按 1 Hz 节奏，固件还会输出一条 watchdog trace，明确记录 supervisor 是否
+还活着、这一次喂硬件 watchdog 是成功、失败还是被跳过，以及当前是 `core`、
+`api` 还是 `cmdline` 在阻止继续喂狗。它的目的就是在短时复位排查中直接回答
+\u201c到底是谁让 watchdog 没有被持续喂到\u201d。
+
+启动时固件会打印上次 reset 原因；当通过 watchdog 恢复路径进入 ROM BOOTSEL
+时，也会记录此次进入是来自显式 bootloader 请求还是 watchdog 不健康停止喂狗。
+USB 设备生命周期事件同样会被记录，便于与 CDC ACM 断连做诊断关联。
+
+控制电源输出：
 
 ```sh
-agent-debugboardctl rail set 12v_out on
-agent-debugboardctl rail set 12v_out off
-agent-debugboardctl rail set 5v_out on
-agent-debugboardctl rail set 5v_out off
-agent-debugboardctl rail set 5v_ws on
-agent-debugboardctl rail set 20v_out on
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 12v_out on
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 12v_out off
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 5v_out on
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 5v_out off
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 5v_ws on
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 20v_out on
 ```
 
 读取电流监测 ADC 通道：
 
 ```sh
-agent-debugboardctl adc read
-agent-debugboardctl adc read 5v_out
-agent-debugboardctl adc read -v 5v_out
-agent-debugboardctl adc read 12v_out
-agent-debugboardctl adc read 20v_out
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc read
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 5v_out
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.ndjson 1000
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc read -v 5v_out
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 12v_out
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 20v_out
 ```
 
 人类可读 ADC 输出默认保持简洁，例如 `5v_out=540mA`。需要调试字段时使用
-`-v` / `--verbose`，会额外输出 `signal`、`raw`、`mv` 等信息。JSON 输出仍保留完整结构化数据。
+`-v` / `--verbose`，会额外输出 `signal`、`mv` 等信息。`agent-debugboardctl --json adc read`
+返回完整诊断链路字段：`raw`、`mv`、`current_ua`、`sensor_value`，并补充
+host 侧 `ma_est` 等结构化结果。
 
 切换 TF/SD 路由：
 
 ```sh
-agent-debugboardctl sd route target
-agent-debugboardctl sd route usb-reader
+cargo run --manifest-path cmd-ng/Cargo.toml -- sd route target
+cargo run --manifest-path cmd-ng/Cargo.toml -- sd route usb-reader
 ```
 
 使用安全 GPIO：
 
 ```sh
-agent-debugboardctl gpio list
-agent-debugboardctl gpio set GP13 1
-agent-debugboardctl gpio input GP13
+cargo run --manifest-path cmd-ng/Cargo.toml -- gpio list
+cargo run --manifest-path cmd-ng/Cargo.toml -- gpio set GP13 1
+cargo run --manifest-path cmd-ng/Cargo.toml -- gpio set CON_MAS 1
+cargo run --manifest-path cmd-ng/Cargo.toml -- gpio input J17_PIN1
+cargo run --manifest-path cmd-ng/Cargo.toml -- gpio input GP13
 ```
+
+使用固件自主 watchdog 恢复：
+
+```sh
+cargo run --manifest-path cmd-ng/Cargo.toml -- watchdog status
+```
+
+watchdog 由固件自身管理，而不是由主机喂狗。固件会自动 arm RP2040 硬件
+watchdog，并且只有在核心固件循环、HTTP/API 服务、以及 CDC ACM cmdline
+fallback 都持续上报本地存活时才继续喂狗。WebSocket 会话静默、订阅超时、以及
+会话过期都不会被当作 watchdog 失败条件。如果核心固件卡死、API 服务停止响应、
+或 CDC ACM cmdline fallback 不再上报存活，固件就会停止喂狗，RP2040 随后复位，
+并在下一次最早启动路径通过保留恢复标记进入标准 ROM BOOTSEL。直接
+`bootloader` 命令和 CDC ACM shell fallback 仍是独立路径，行为不变。周期性内存
+诊断只是日志输出，不会增加 watchdog 参与者，也不会改变 BOOTSEL marker/reset
+语义。watchdog trace 也只是日志，不会改变实际喂狗策略。
 
 ## OpenOCD / JTAG
 
@@ -262,7 +378,7 @@ openocd --version
 对应的 target 配置启动 OpenOCD：
 
 ```sh
-agent-debugboardctl --json rail set 5v_out on
+agent-debugboardctl --json power set 5v_out on
 openocd -f interface/<ch347-interface>.cfg -f target/<target>.cfg
 ```
 
@@ -271,28 +387,30 @@ CH347F 支持取决于 OpenOCD 构建版本。如果系统包没有 CH347F inter
 
 OpenOCD 通常会在 TCP `3333` 暴露 GDB server，并在 TCP `4444` 暴露 telnet
 控制接口。目标板重启优先使用 OpenOCD 的 `reset halt`、`reset run` 或目标系统
-自己的软重启；只有软重启不可行时，才使用电源轨断电再上电作为硬重启 fallback。
+自己的软重启；只有软重启不可行时，才使用电源输出断电再上电作为硬重启 fallback。
 
 完整流程见 [doc/openocd/README.md](doc/openocd/README.md)。
 
-## 直接使用 Shell
+## NCM 网络接口
 
-打开 CDC 串口设备后，可以直接使用 `debugboard` 命令：
+固件枚举为复合 USB 设备。主机 CLI 通过 USB NCM 接口上的 HTTP 与调试板
+通信。默认设备 URL 为 `http://172.29.203.1:8080`。调试板会在 NCM 链路上运行
+一个小型 DHCPv4 server，让 host 自动拿到兼容地址；如果你修改了默认地址规划，
+可用 `agent-debugboardctl --url ...` 显式指定。
 
-```text
-debugboard status
-debugboard status --json
-debugboard rail list
-debugboard rail list --json
-debugboard adc read
-debugboard adc read -v 5v_out
-debugboard adc read --json
-debugboard sd get
-debugboard sd get --json
-debugboard gpio list
-debugboard gpio list --json
-debugboard bootloader
-```
+所有控制均通过 `agent-debugboardctl` 的 HTTP JSON 请求，或直接通过
+`curl` / 任意 HTTP 客户端完成。RP2040 USB CDC ACM 串口会继续保留，作为
+Zephyr 通用 cmdline 和 BOOTSEL fallback 的辅助通道，但它不是主控制面。只要
+CDC ACM shell 可用，本地 `bootloader` shell 命令就会走与 HTTP API 相同的
+RP2040 ROM BOOTSEL 路径。
+
+如果需要在一条长连接上同时做实时遥测和双向控制，固件还提供
+`ws://172.29.203.1:8080/api/v1/ws` WebSocket 端点。
+WebSocket 客户端可以从状态快照里观察 watchdog 状态，但不能手动喂狗；watchdog
+监督完全由固件自主完成。
+
+mDNS 暂时不作为首发必需项。现在 DHCP 已经解决跨平台即插即用的地址获取问题；
+mDNS 只是后续可选的“名字更友好”增强，不影响正常使用。
 
 ## 硬件映射
 
@@ -308,10 +426,11 @@ debugboard bootloader
 | 20 V 电流监测 | `adc read 20v_out` | `S_C_20V` |
 
 电流监测通道使用 INA139、0.2 mOhm 采样电阻、100 kOhm 输出负载和
-1000 uA/V 跨导。理想换算到 RP2040 ADC 输入为 20 mV/A，因此
-`1 mV = 50 mA`，`20 mV = 1 A`。`5v_out` 已按本地 0.1 A 步进实测数据使用
-分段线性校准表，并将 `mv <= 11` 视为 0 mA；`12v_out` 和 `20v_out`
-在完成校准前仍使用理想模型。传感器传输函数参考公开的
+1000 uA/V 跨导。这些换算和校准现在由 `agent-debugboardctl` 在主机侧完成；
+其中 `5v_out` 使用基于本地负载实测数据得到的 offset 修正表，`12v_out` 和
+`20v_out` 在完成校准前仍使用理想模型。MCU 同时上报原始 ADC 调试值，以及
+通过 Zephyr `current-sense-amplifier` 标准接口得到的电流值。
+传感器传输函数参考公开的
 [TI INA139 规格书](https://www.ti.com/product/INA139)。
 
 当前原理图副本放在
@@ -328,7 +447,10 @@ debugboard bootloader
 测试脚本覆盖：
 
 - 共享板级模型的 host C 单元测试。
-- 主机侧 CLI 辅助工具的 Go 测试。
+- 主机侧 CLI 辅助工具的 Go 测试。仓库内测试脚本会只跑真实 Go 源码目录
+  （`./cmd/...` 与 `./internal/...`），而不会在仓库根目录直接执行
+  `go test ./...`，以避免 Zephyr/CMake 在 `build/` 下生成的产物树被误扫进
+  Go 包发现流程。
 
 ## 仓库结构
 

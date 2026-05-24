@@ -1,11 +1,40 @@
 ---
 name: agent-debugboard
-description: Use the Agent DebugBoard host CLI to diagnose and operate target-board power rails, ADC current monitors, safe GPIOs, TF/SD routing, and RP2040 BOOTSEL mode. Use this when an Agent needs hardware-control access through agent-debugboardctl.
+description: Use curl or the optional Agent DebugBoard CLI to diagnose and operate target-board power outputs, ADC current monitors, safe GPIOs, TF/SD routing, firmware-owned watchdog recovery, and RP2040 BOOTSEL mode over USB NCM HTTP while keeping USB CDC ACM available for fallback cmdline access.
 ---
 
 # Agent DebugBoard
 
-Use the skill-local binary for Agent-side hardware control. Prefer JSON output for all automation. Do not parse human-readable command output when `--json` is available.
+Prefer direct HTTP requests with `curl` for Agent-side automation. The board
+enumerates as a USB NCM network interface and exposes its control API at the
+default device URL `http://172.29.203.1:8080`.
+
+The board also runs a DHCPv4 server on the NCM link so the host can acquire a
+compatible IPv4 address automatically. mDNS is not required for the normal
+workflow.
+
+`curl` remains the lowest-common-denominator path across macOS, Linux, and
+Windows. The primary actively-developed host CLI/TUI path in this repository is
+now the Rust implementation under `./cmd-ng/`. The older Go
+`agent-debugboardctl` path remains only as a deprecated legacy/reference path.
+The RP2040 USB CDC ACM port is intentionally kept as a secondary path for
+Zephyr cmdline access and BOOTSEL fallback.
+
+For long-lived telemetry and bidirectional control, the firmware also exposes a
+live-session workflow: create a live session over HTTP, then connect to the
+returned dedicated websocket URL under `/api/v1/ws/<slot>`.
+The interactive TUI is expected to close only its own websocket session
+explicitly when it exits; unused sessions should expire automatically in
+firmware. Firmware supports four live websocket slots and keeps the HTTP server
+client capacity aligned with that limit. If you rebuild the CLI after websocket
+lifecycle fixes, prefer verifying repeated open/close cycles and concurrent
+subscriber behavior with the freshly built skill-local binary.
+
+> **Agent automation rule**: always try `curl` HTTP requests first. Only
+> download or build the CLI binary when `curl` is unavailable (not installed)
+> or when the task specifically needs the interactive TUI or `doctor`
+> diagnostic. The HTTP REST API at `http://172.29.203.1:8080` is the canonical
+> automation path.
 
 The examples below assume this skill is checked into the current repository at
 `./skills/agent-debugboard` and commands are run from the repository root. If
@@ -14,51 +43,80 @@ the `./skills/agent-debugboard` prefix with the actual skill directory. Do not
 use `./skills/...` from another repository unless that repository contains this
 skill at that path.
 
-- macOS/Linux binary: `./skills/agent-debugboard/scripts/bin/agent-debugboardctl`
-- Windows binary: `.\skills\agent-debugboard\scripts\bin\agent-debugboardctl.exe`
+- Default device URL: `http://172.29.203.1:8080`
+- Optional CLI binary (macOS/Linux): `./skills/agent-debugboard/scripts/bin/agent-debugboardctl`
+- Optional CLI binary (Windows): `./skills/agent-debugboard/scripts/bin/agent-debugboardctl.exe`
+
+## Repository Change Rules
+
+When an agent changes files in this repository, follow `./AGENTS.md` and keep
+this skill aligned with user-facing docs.
+
+- Any code change must update the corresponding skill and documentation in the
+  same change.
+- If firmware behavior or host CLI logic changes, update the
+  related skill/docs and run the relevant tests before finishing.
+- If firmware changes, verify and preserve the USB CDC ACM serial BOOTSEL
+  fallback path before finishing.
+- If this skill or another repo skill changes, run a subagent validation/test
+  before finishing.
+- When adding new functionality, add corresponding functional tests whenever
+  practical.
+
+## Canonical Build and Flash Paths
+
+For this repository, the firmware build and flash locations are fixed:
+
+- Canonical build directory: `./build/agent_debugboard/`
+- Canonical UF2 artifact: `./build/agent_debugboard/zephyr/zephyr.uf2`
+
+When an agent builds or flashes firmware, always use that exact build directory
+and UF2 path. Do not switch to alternate build directories and do not flash a
+stale UF2 copied somewhere else, such as a temporary mount point.
 
 ## First Checks
 
-1. Check whether the skill-local binary exists and runs:
+1. Confirm that curl is available.
 
    macOS/Linux:
 
    ```sh
-   ./skills/agent-debugboard/scripts/bin/agent-debugboardctl --version
+   curl --version
    ```
 
-   Windows CMD:
+   Windows PowerShell or CMD:
 
-   ```bat
-   .\skills\agent-debugboard\scripts\bin\agent-debugboardctl.exe --version
+   ```powershell
+   curl.exe --version
    ```
 
-2. Check whether the skill-local binary is new enough for Agent automation:
+2. Confirm that the board answers on the default HTTP endpoint.
 
    macOS/Linux:
 
    ```sh
-   ./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json doctor
+    curl -fsS http://172.29.203.1:8080/api/v1/status
    ```
 
-   Windows CMD:
+   Windows PowerShell:
 
-   ```bat
-   .\skills\agent-debugboard\scripts\bin\agent-debugboardctl.exe --json doctor
+   ```powershell
+    curl.exe -fsS http://172.29.203.1:8080/api/v1/status
    ```
 
 3. Treat these outcomes as follows:
-   - Exit code `0` with `ok: true`: the CLI and board connection are ready.
-   - Valid JSON with `ok: false`: read `error.code` and `error.message`; the skill-local binary is working, but the board or serial path needs attention.
-   - Unknown `--json` or `doctor`: the built binary is too old. Rebuild from this checkout.
-   - Binary is missing: run the matching installer from the repository checkout.
+   - Exit code `0` with valid JSON and `ok: true`: the board is ready.
+   - Valid JSON with `ok: false`: read `error.code` and `error.message`; HTTP transport works, but the board rejected the operation.
+   - Connection refused / timeout / no route: the board NCM link or address needs attention.
+   - `curl` missing: install curl or use the optional repo-local CLI as a fallback.
 
-## Install/Build Repo-Local CLI
+## Optional: Install/Build Repo-Local CLI
 
-This skill uses only repo-local scripts and binaries. Do not modify `PATH`, shell
-profiles, or global install directories.
+This skill uses only repo-local scripts and binaries. Do not modify `PATH`,
+shell profiles, or global install directories.
 
-Install the CLI into the repo-local output directory.
+Install the CLI into the repo-local output directory when you want the TUI,
+`doctor`, or the convenience wrapper around the HTTP API.
 
 macOS/Linux:
 
@@ -85,17 +143,6 @@ Windows PowerShell specific release version:
 powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1 -Version <tag>
 ```
 
-When the current repository checkout contains `go.mod` and
-`cmd/agent-debugboardctl`, and `go` is available, the helper builds from source
-with `go build -trimpath`, unless a release version is explicitly requested.
-Otherwise the same skill-local installer downloads and verifies a release
-artifact. In both cases it installs only to:
-
-```text
-skills/agent-debugboard/scripts/bin/agent-debugboardctl
-skills/agent-debugboard/scripts/bin/agent-debugboardctl.exe
-```
-
 After installation, run the matching binary.
 
 macOS/Linux:
@@ -112,7 +159,20 @@ Windows CMD:
 .\skills\agent-debugboard\scripts\bin\agent-debugboardctl.exe --json doctor
 ```
 
-The helper never modifies `PATH`, shell profiles, or global install locations.
+## Build Primary Rust cmd-ng
+
+The repository's primary host CLI/TUI path is the Rust `cmd-ng`
+implementation.
+
+macOS/Linux/Windows with Rust installed:
+
+```sh
+cargo run --manifest-path cmd-ng/Cargo.toml -- --help
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
+cargo run --manifest-path cmd-ng/Cargo.toml --
+```
+
+The Rust tool keeps the same default URL (`http://172.29.203.1:8080`) and still expects the `agent-debugboard.v1` JSON envelope. Running it without a subcommand starts the primary TUI, which polls HTTP status/ADC endpoints and keeps power plus GPIO controls in one adaptive grid.
 
 ## JSON Contract
 
@@ -123,104 +183,258 @@ Agent automation should expect the top-level fields:
 - `command`: command name
 - `error`: present on failure, with `code` and `message`
 
-If `ok` is `false`, do not infer success from partial fields. Handle `error.code` first.
+If `ok` is `false`, do not infer success from partial fields. Handle
+`error.code` first.
+
+`GET /api/v1/status` and WebSocket `snapshot/status` messages include the same
+`board_monitoring` object. Its `temperature`, `heap`, `runtime`, and `cpu`
+members each report `available` and a machine-readable `reason`. Treat
+`available: false` as authoritative; the firmware does not invent sensor,
+memory, runtime, or CPU values when Zephyr has no reliable source enabled. On
+the default RP2040 configuration, the board should report internal CPU die
+temperature, system heap runtime statistics, real board uptime (`uptime_ms` /
+`uptime_seconds`), and CPU utilization deltas. The CPU percentage can still
+temporarily report `insufficient_runtime_window` until enough runtime delta has
+been collected.
+
+For short reset debugging, the watchdog supervisor also prints periodic memory
+diagnostics in the firmware log. These lines prioritize heap allocated, free,
+total, and peak bytes from the system heap plus real uptime. Treat them as
+side-effect-free log output only: they do not feed the watchdog, do not advance
+the CPU utilization sampling window, and do not change watchdog behavior.
+
+The same 1 Hz diagnostics cadence also emits a watchdog trace line. Use it to
+see whether the supervisor is still alive, whether hardware watchdog feeding was
+`ok`, `failed`, or `skipped`, and which liveness source (`core`, `api`, or
+`cmdline`) is currently blocking feeding. Treat this as log-only debug output;
+it does not itself change watchdog behavior.
+
+Firmware also logs the reset cause at boot and USB device lifecycle events
+during runtime. When watchdog recovery enters ROM BOOTSEL, the boot message
+distinguishes between an explicit bootloader command and an unhealthy liveness
+stop.
 
 ## Common Commands
 
-Diagnose board connection:
+Set the board URL once per shell/session.
+
+macOS/Linux:
 
 ```sh
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json doctor
+BOARD_URL="http://172.29.203.1:8080"
 ```
 
-Read full board state:
+Windows PowerShell:
 
-```sh
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json status
+```powershell
+$BoardUrl = 'http://172.29.203.1:8080'
 ```
 
-List power rails:
+Read full board state.
+
+macOS/Linux:
 
 ```sh
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail list
+curl -fsS "$BOARD_URL/api/v1/status"
 ```
 
-Control power rails:
+Windows PowerShell:
 
-```sh
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 12v_out on
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 12v_out off
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 5v_out on
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 5v_out off
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 5v_ws on
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 20v_out on
+```powershell
+curl.exe -fsS "$BoardUrl/api/v1/status"
 ```
 
-Restart a target board with its normal software reboot or reset interface first.
-Use rail power-cycling only as a hard-restart fallback when soft reboot/reset is
-unavailable, the target is unresponsive, or no reset line is exposed. Confirm
-the rail name first, then turn it off, wait briefly for discharge, and turn it
-back on:
+List power outputs.
+
+macOS/Linux:
 
 ```sh
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 5v_out off
+curl -fsS "$BOARD_URL/api/v1/power"
+```
+
+Windows PowerShell:
+
+```powershell
+curl.exe -fsS "$BoardUrl/api/v1/power"
+```
+
+Control power outputs.
+
+macOS/Linux:
+
+```sh
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"state":"on"}' \
+  "$BOARD_URL/api/v1/power/12v_out"
+
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"state":"off"}' \
+  "$BOARD_URL/api/v1/power/5v_out"
+```
+
+Windows PowerShell:
+
+```powershell
+curl.exe -fsS -X PUT -H "Content-Type: application/json" `
+  --data '{"state":"on"}' `
+  "$BoardUrl/api/v1/power/12v_out"
+
+curl.exe -fsS -X PUT -H "Content-Type: application/json" `
+  --data '{"state":"off"}' `
+  "$BoardUrl/api/v1/power/5v_out"
+```
+
+Restart a target board with its normal software reboot or reset interface
+first. Use power-cycling only as a hard-restart fallback when soft reboot/reset
+is unavailable, the target is unresponsive, or no reset line is exposed.
+Confirm the output name first, then turn it off, wait briefly for discharge,
+and turn it back on:
+
+```sh
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"state":"off"}' \
+  "$BOARD_URL/api/v1/power/5v_out"
 sleep 2
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 5v_out on
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail get 5v_out
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"state":"on"}' \
+  "$BOARD_URL/api/v1/power/5v_out"
+curl -fsS "$BOARD_URL/api/v1/power"
 ```
 
-Use the rail that actually powers the target, for example `5v_out`, `12v_out`,
-or `20v_out`. Do not power-cycle unrelated rails.
-
-Read ADC current monitors:
+Read ADC current monitors.
 
 ```sh
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json adc read
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json adc read 5v_out
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json adc read 12v_out
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json adc read 20v_out
+curl -fsS "$BOARD_URL/api/v1/adc/read"
+curl -fsS "$BOARD_URL/api/v1/adc/read?channel=5v_out"
+curl -fsS "$BOARD_URL/api/v1/adc/read?channel=12v_out"
+curl -fsS "$BOARD_URL/api/v1/adc/read?channel=20v_out"
 ```
 
-For manual calibration or hardware debugging, use verbose human-readable ADC
-output to inspect raw fields:
+High-rate recording is a separate websocket workflow. Use the Rust CLI when you
+need to subscribe at 1000Hz and write NDJSON telemetry records to a file:
+
+```sh
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.ndjson 1000
+```
+
+FIXME: the current recorder keeps the websocket subscription rate fixed at
+1000Hz. A future follow-up should make the requested rate configurable and
+record device-side timing metadata so host receive timestamps can be analyzed
+separately from actual sampling cadence.
+
+WebSocket clients can subscribe to telemetry and send control commands on the
+same connection. Example subscription payload:
+
+```json
+{"type":"subscribe","topic":"live","rate_hz":60}
+```
+
+The host TUI does not need to redraw at the same rate as the live data stream.
+The board controls WebSocket push cadence, and the same live push path carries
+ADC telemetry plus status snapshots with `board_monitoring`, while the TUI can
+render at a lower fixed frame rate.
+
+Example control payload:
+
+```json
+{"type":"command","command":"power_set","output":"12v_out","state":"on"}
+```
+
+Autonomous watchdog recovery is firmware-owned. The host does not arm or feed
+the watchdog. Firmware keeps the RP2040 hardware watchdog alive only while core
+firmware, the HTTP/API service, and the CDC ACM cmdline fallback are still
+reporting healthy liveness. WebSocket session silence, subscription timeout,
+and session expiration are not watchdog failure conditions. If core firmware
+wedges, the API service stops responding, or the CDC ACM cmdline fallback stops
+reporting liveness, firmware stops feeding the watchdog, the RP2040 resets, and
+the next boot enters ROM BOOTSEL using a retained marker. The direct
+`bootloader` command and the CDC ACM shell fallback remain independent recovery
+paths. Periodic memory diagnostics are log-only debug output and must not be
+treated as an additional watchdog participant or a change to BOOTSEL
+marker/reset semantics. The watchdog trace line is equally diagnostic-only.
+
+```sh
+curl -fsS "$BOARD_URL/api/v1/watchdog"
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json watchdog status
+```
+
+For manual calibration or hardware debugging, use the optional CLI verbose
+output to inspect host-side interpreted diagnostic fields:
 
 ```sh
 ./skills/agent-debugboard/scripts/bin/agent-debugboardctl adc read -v 5v_out
 ```
 
-Do not parse this text in automation. Agents should use `--json adc read ...`
-and consume `readings[].ma_est`, `readings[].raw`, and `readings[].mv`.
-
-Switch TF/SD route:
+Switch TF/SD route.
 
 ```sh
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json sd get
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json sd route target
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json sd route usb-reader
+curl -fsS "$BOARD_URL/api/v1/sd"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"route":"target"}' \
+  "$BOARD_URL/api/v1/sd"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"route":"usb-reader"}' \
+  "$BOARD_URL/api/v1/sd"
 ```
 
-Use allowlisted GPIOs:
+Use allowlisted GPIOs.
 
 ```sh
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json gpio list
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json gpio get GP13
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json gpio set GP13 1
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json gpio input GP13
+curl -fsS "$BOARD_URL/api/v1/gpio"
+curl -fsS "$BOARD_URL/api/v1/gpio/GP13"
+curl -fsS "$BOARD_URL/api/v1/gpio/CON_MAS"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"direction":"output","value":1}' \
+  "$BOARD_URL/api/v1/gpio/GP13"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"direction":"output","value":1}' \
+  "$BOARD_URL/api/v1/gpio/CON_MAS"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"direction":"input"}' \
+  "$BOARD_URL/api/v1/gpio/GP13"
 ```
 
-Enter RP2040 BOOTSEL mode for flashing:
+GPIO list/status responses expose `name`, `pin`, and `note`. Control targets may
+use canonical `GPxx`, raw numeric pins such as `4`, or exact notes such as
+`CON_MAS` / `J17_PIN1`.
+
+Enter RP2040 BOOTSEL mode for flashing.
 
 ```sh
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl bootloader
+curl -fsS -X POST "$BOARD_URL/api/v1/bootloader"
+```
+
+After firmware changes, treat this HTTP BOOTSEL flow and the CDC ACM shell
+fallback below as required validation paths before you finish; verify that the
+serial fallback path still reaches the standard RP2040 ROM BOOTSEL workflow.
+
+If the HTTP control plane is unavailable but the RP2040 CDC ACM shell is still
+reachable, use the local Zephyr shell command instead:
+
+```text
+debugboard:~$ bootloader
+```
+
+This shell command still uses the standard RP2040 ROM USB BOOTSEL path, so the
+device should reappear as the usual `RP2 Boot` / `RPI-RP2` target for UF2 or
+`picotool` workflows.
+
+If you want the TUI or convenience wrapper instead of raw HTTP, the CLI still
+works:
+
+```sh
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json doctor
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json status
+./skills/agent-debugboard/scripts/bin/agent-debugboardctl
 ```
 
 ## OpenOCD / JTAG Workflow
 
 Use OpenOCD through the onboard CH347F path when the target board exposes
-JTAG/SWD through the debug fixture. CH347F is wired directly to the target debug
-connector. The RP2040 firmware controls target power and recovery lines; it does
-not sit in the JTAG/SWD path and does not act as a CMSIS-DAP, Picoprobe, or JTAG
-probe.
+JTAG/SWD through the debug fixture. CH347F is wired directly to the target
+debug connector. The RP2040 firmware controls target power and recovery lines;
+it does not sit in the JTAG/SWD path and does not act as a CMSIS-DAP,
+Picoprobe, or JTAG probe.
 
 First check OpenOCD availability:
 
@@ -228,55 +442,59 @@ First check OpenOCD availability:
 openocd --version
 ```
 
-If OpenOCD is missing, install it with the host OS package manager, for example
-`brew install open-ocd` on macOS or `sudo apt-get install openocd` on
-Ubuntu/Debian.
-
 Power the target first, then start OpenOCD with the CH347F interface script
 available in the host OpenOCD installation and the target config for the board
 under test:
 
 ```sh
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail set 5v_out on
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json rail get 5v_out
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"state":"on"}' \
+  "$BOARD_URL/api/v1/power/5v_out"
+curl -fsS "$BOARD_URL/api/v1/power"
 openocd -f interface/<ch347-interface>.cfg -f target/<target>.cfg
 ```
 
-CH347F support depends on the OpenOCD build. If the system OpenOCD package does
-not include a CH347F interface script, use the WCH/vendor OpenOCD build or add
-the matching interface script.
+CH347F support depends on the OpenOCD build. If the system OpenOCD package
+does not include a CH347F interface script, use the WCH/vendor OpenOCD build
+or add the matching interface script.
 
-Use the rail that actually powers the target. If the target uses `12v_out` or
-`20v_out`, replace `5v_out` accordingly.
+Use the output that actually powers the target. If the target uses `12v_out`
+or `20v_out`, replace `5v_out` accordingly.
 
-When a reset is needed, prefer a target software reboot or OpenOCD reset command
-first:
+When a reset is needed, prefer a target software reboot or OpenOCD reset
+command first:
 
 ```text
 reset halt
 reset run
 ```
 
-Only use rail power-cycling as a hard-restart fallback when soft reset is not
+Only use power-cycling as a hard-restart fallback when soft reset is not
 available or the target is unresponsive.
 
 ## Safety Rules
 
-- Prefer `--json` for all non-interactive use.
-- Do not use `--raw` unless debugging the firmware shell protocol itself.
-- Treat `rail set`, `gpio set`, `gpio input`, `sd route`, and `bootloader` as side-effectful operations. Confirm the target and desired state before running them.
-- Prefer soft reboot/reset for target-board restarts. Treat rail power-cycling as a hard-restart fallback that is destructive to target runtime state. Confirm the exact rail and only cycle the rail powering the target.
-- `5V_FIN` is an input/source rail. Do not present it as a controllable output.
-- Only use allowlisted GPIOs reported by `./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json gpio list`.
+- Prefer machine-readable JSON responses for all non-interactive use.
+- Treat power-output changes, GPIO changes, SD routing, and
+  `bootloader` as side-effectful operations. Confirm the target and desired
+  state before running them.
+- Prefer soft reboot/reset for target-board restarts. Treat power-cycling as a
+  hard-restart fallback that is destructive to target runtime state. Confirm
+  the exact output and only cycle the output powering the target.
+- `5V_FIN` is an input/source power input. Do not present it as a controllable output.
+- Only use allowlisted GPIOs reported by `GET /api/v1/gpio` or the equivalent
+  CLI command.
 - Do not expose board-internal schematic codenames in user-facing output.
 
 ## ADC Calibration Notes
 
-- `5v_out` uses a fixed piecewise-linear calibration table from local load
-  measurements. The table covers approximately `0A` through `4.3A`; readings at
-  and below the 5V zero point are reported as `0mA`.
-- `12v_out` and `20v_out` currently use the ideal INA139 linear model
-  (`ma_per_mv=50`) until each rail is measured and calibrated. Treat these
-  channels as approximate, not precision current measurements.
-- When a controllable rail is off, firmware reports `ma_est=0` for that rail
-  while still exposing `raw` and `mv` in JSON/verbose output for diagnostics.
+- `5v_out` uses a fixed host-side offset correction table derived from local
+  load measurements. It covers approximately `0A` through `4.3A`; readings at
+  and below the effective 5V zero point are reported as `0mA`.
+- `12v_out` and `20v_out` currently use the ideal INA139 linear model until
+  each output is measured and calibrated. Treat these channels as approximate,
+  not precision current measurements.
+- `GET /api/v1/adc/read` exposes both raw ADC diagnostics (`readings[].raw`,
+  `readings[].mv`) and the current-sense-amplifier result
+  (`readings[].current_ua`, `readings[].sensor_value`), so raw hardware
+  behavior and host-side calibration can be compared directly.

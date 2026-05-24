@@ -43,8 +43,8 @@ the target flow.
 Power the target first:
 
 ```sh
-agent-debugboardctl --json rail set 5v_out on
-agent-debugboardctl --json rail get 5v_out
+agent-debugboardctl --json power set 5v_out on
+agent-debugboardctl --json power list
 ```
 
 Start OpenOCD with the CH347F interface from your OpenOCD installation and the
@@ -76,12 +76,12 @@ reset run
 ```
 
 Only if the target is unresponsive, has no reset line, or soft reset fails,
-hard-restart the target by power-cycling the rail that actually powers it:
+hard-restart the target by power-cycling the power output that actually powers it:
 
 ```sh
-agent-debugboardctl --json rail set 5v_out off
+agent-debugboardctl --json power set 5v_out off
 sleep 2
-agent-debugboardctl --json rail set 5v_out on
+agent-debugboardctl --json power set 5v_out on
 ```
 
-Do not power-cycle unrelated rails.
+Do not power-cycle unrelated power outputs.

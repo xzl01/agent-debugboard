@@ -11,60 +11,86 @@ current-monitor ADC channels, and a small safe GPIO surface.
 ## Overview
 
 Agent DebugBoard is designed for automated board bring-up, recovery, production
-test, and remote debugging workflows. The firmware exposes a USB CDC ACM shell
-named `Agent DebugBoard`, plus a host-side native Go CLI that turns board
-operations into scriptable commands.
+test, and remote debugging workflows. The firmware enumerates as a composite
+USB device with a USB NCM network interface for the main control plane and a
+USB CDC ACM serial port reserved for Zephyr cmdline and BOOTSEL fallback; the
+primary host-side command path is the Rust CLI/TUI under `cmd-ng/`, which turns
+board operations into scriptable commands.
 
-This repository contains the Zephyr application, host helper, unit tests,
+This repository contains the Zephyr application, the primary Rust host CLI/TUI,
+legacy Go host CLI sources kept for deprecated/reference use, unit tests,
 schematic copy, and project documentation.
+
+The active host-side development path is [`cmd-ng/`](cmd-ng/). The older Go
+`cmd/agent-debugboardctl` + `internal/hostcli` stack is deprecated and kept only
+as a legacy/reference implementation during migration.
 
 ## Features
 
 | Area | Supported in this firmware |
 | --- | --- |
-| USB control | CDC ACM shell with `debugboard` commands |
-| Host automation | `agent-debugboardctl` CLI with JSON output and `doctor` diagnostics |
-| Power rails | `12v_out`, `5v_out`, `5v_ws`, `20v_out` |
+| USB control | Composite USB device: NCM HTTP/WS control plane + CDC ACM fallback console |
+| Host automation | Rust `cmd-ng` CLI/TUI with JSON output and `doctor` diagnostics |
+| Live telemetry | Bidirectional WebSocket stream on `/api/v1/ws` |
+| Power outputs | `12v_out`, `5v_out`, `5v_ws`, `20v_out` |
 | ADC monitor | Current monitor reads for `5v_out`, `12v_out`, `20v_out` |
+| Board self-monitoring | `/api/v1/status` and status WebSocket snapshots report board CPU/runtime/heap/temperature availability and values when Zephyr exposes reliable sources; the watchdog supervisor also prints periodic heap diagnostics for short-reset debugging |
 | TF/SD routing | Switch route between `target` and `usb-reader` |
-| GPIO | Safe allowlist: `GP13`, `GP14`, `GP15`, `GP22`, `GP23`, `GP24` |
+| GPIO | Safe allowlist: `GP4`, `GP7`, `GP8`, `GP13`-`GP24` |
+| Autonomous watchdog recovery | Firmware-supervised watchdog resets into ROM BOOTSEL when core services stop reporting healthy liveness |
 | Firmware update | USB command to reboot RP2040 into BOOTSEL |
 
-`5V_FIN` is intentionally treated as a separate input/source rail. It is not
-exposed as a controllable output rail.
+`5V_FIN` is intentionally treated as a separate input/source power input. It is
+not exposed as a controllable output.
 
 ## For AI Agents
 
 AI agents should read [skills/agent-debugboard/SKILL.md](skills/agent-debugboard/SKILL.md)
 before operating hardware through this project. The skill is the canonical
-Agent-facing procedure for installing `agent-debugboardctl`, diagnosing the
+Agent-facing procedure for building/running the primary host CLI, diagnosing the
 board connection, and using JSON commands safely.
+
+Before making repository changes, AI agents should also read
+[AGENTS.md](AGENTS.md). Repository-local rules:
+
+- Any code change must update the related skill and documentation in the same change.
+- Firmware or host CLI logic changes must update the related guidance and run the relevant tests.
+- Firmware changes must verify and preserve the USB CDC ACM serial BOOTSEL fallback path before finishing.
+- Skill changes must include a subagent validation/test run.
+- When adding new functionality, add corresponding functional tests whenever practical.
+- Prefer describing board hardware in Device Tree whenever Zephyr bindings and the board model can express it cleanly.
+- Keep software implementation standard, consistent, and elegant; avoid ad hoc patterns that make maintenance, automation, or documentation harder to follow.
+- Keep MCU-side output as close as practical to raw interface values; prefer host-side interpretation, calibration, and presentation when that preserves the raw firmware contract.
 
 Recommended agent flow:
 
 ```sh
-agent-debugboardctl --version
-agent-debugboardctl --json doctor
-agent-debugboardctl --json status
+cargo run --manifest-path cmd-ng/Cargo.toml -- --version
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json doctor
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
 ```
 
-If `agent-debugboardctl` is not installed, follow the install commands in the
-skill first. For automation, prefer `agent-debugboardctl --json ...`; parse
-`schema`, `ok`, `command`, and `error.code` instead of human-readable text.
+If the host CLI is not built/installed yet, follow the commands in the skill
+first. For automation, prefer `--json`; parse `schema`, `ok`, `command`, and
+`error.code` instead of human-readable text.
 
 ## Install Host CLI
 
 `agent-debugboardctl` is a native Go binary. Users do not need Python, pip, or a
 virtual environment.
 
-From a checkout, install the host CLI into the skill-local `scripts/bin`
-directory on macOS or Linux:
+From a checkout, build/run the active Rust host CLI directly:
 
 ```sh
-./skills/agent-debugboard/scripts/install.sh
+cargo run --manifest-path cmd-ng/Cargo.toml -- --help
+cargo run --manifest-path cmd-ng/Cargo.toml -- --version
+cargo run --manifest-path cmd-ng/Cargo.toml --
 ```
 
-Install a specific release version:
+The legacy Go install scripts are retained only for compatibility/transition
+workflows.
+
+Install a specific legacy Go release version:
 
 ```sh
 ./skills/agent-debugboard/scripts/install.sh --version <tag>
@@ -112,13 +138,29 @@ manually, verify the checksum and run:
 xattr -dr com.apple.quarantine ./skills/agent-debugboard/scripts/bin/agent-debugboardctl
 ```
 
-After installation:
+After build/install:
 
 ```sh
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --help
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl --version
-./skills/agent-debugboard/scripts/bin/agent-debugboardctl doctor
+cargo run --manifest-path cmd-ng/Cargo.toml -- --help
+cargo run --manifest-path cmd-ng/Cargo.toml -- --version
+cargo run --manifest-path cmd-ng/Cargo.toml -- doctor
+cargo run --manifest-path cmd-ng/Cargo.toml --
 ```
+
+Running the Rust host CLI without a subcommand starts the interactive TUI.
+Use subcommands such as `status`, `adc read`, or `power set` when you want the
+traditional command-line mode.
+
+The TUI keeps its own redraw cadence modest (60 Hz) and uses HTTP polling for
+status plus ADC reads, which keeps multiple concurrent TUI instances stable.
+Power outputs and safe GPIOs now share one adaptive control grid: arrow keys or
+Tab move selection, Space/Enter toggles the selected item, and `i` returns the
+selected GPIO to input mode. For high-rate capture, use `adc record`, which
+creates a live websocket session and records 1000Hz telemetry to a file.
+FIXME: `adc record` currently fixes the websocket subscription rate at 1000Hz.
+A later follow-up should make the requested rate configurable and include
+device-side timing metadata so sampling cadence can be separated from host
+receive timestamps.
 
 ## Build Firmware
 
@@ -151,6 +193,11 @@ The generated UF2 is:
 build/agent_debugboard/zephyr/zephyr.uf2
 ```
 
+For this repository, keep the firmware build/flash path fixed: always build
+into `build/agent_debugboard/` and always flash
+`build/agent_debugboard/zephyr/zephyr.uf2`. Do not switch to alternate build
+directories or stale UF2 copies from temporary mount points.
+
 ## Flashing
 
 If the board is already running this firmware, ask it to enter BOOTSEL and then
@@ -161,10 +208,28 @@ agent-debugboardctl bootloader
 picotool load -v -x build/agent_debugboard/zephyr/zephyr.uf2
 ```
 
+After firmware changes, treat this BOOTSEL flow and the RP2040 CDC ACM shell
+fallback below as required validation paths; do not conclude the change until
+you have verified the serial fallback path still works.
+
+If HTTP/WS control is unavailable but the RP2040 CDC ACM shell is still up, you
+can enter the same BOOTSEL path from the local Zephyr shell:
+
+```text
+debugboard:~$ bootloader
+```
+
 If the board is already mounted as `RPI-RP2`, only run:
 
 ```sh
 picotool load -v -x build/agent_debugboard/zephyr/zephyr.uf2
+```
+
+If you use drag-and-drop flashing through the `RPI-RP2` volume instead of
+`picotool`, copy this same canonical artifact:
+
+```text
+build/agent_debugboard/zephyr/zephyr.uf2
 ```
 
 ## GitHub Actions Artifacts
@@ -184,20 +249,30 @@ GitHub Release, and uploads the fixed release assets.
 - `agent-debugboardctl_darwin_arm64.tar.gz`: native macOS Apple Silicon CLI.
 - `SHA256SUMS.txt`: SHA256 checksums for all release assets.
 
-Developers can build the host CLI from source:
+Developers can build the primary host CLI from source:
 
 ```sh
-go build -o agent-debugboardctl ./cmd/agent-debugboardctl
-./agent-debugboardctl --help
+cargo build --manifest-path cmd-ng/Cargo.toml
+./cmd-ng/target/debug/agent-debugboardctl --help
 ```
+
+The Rust `cmd-ng` version is now the primary development path. Build and run it directly:
+
+```sh
+cargo run --manifest-path cmd-ng/Cargo.toml -- --help
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
+cargo run --manifest-path cmd-ng/Cargo.toml --
+```
+
+Running it without a subcommand starts the Rust TUI.
 
 ## Host Usage
 
 Query board status:
 
 ```sh
-agent-debugboardctl status
-agent-debugboardctl doctor
+cargo run --manifest-path cmd-ng/Cargo.toml -- status
+cargo run --manifest-path cmd-ng/Cargo.toml -- doctor
 ```
 
 Agent or automation code should prefer JSON output. JSON responses use
@@ -205,52 +280,112 @@ Agent or automation code should prefer JSON output. JSON responses use
 fields or `error: {code, message}`:
 
 ```sh
-agent-debugboardctl --json doctor
-agent-debugboardctl --json status
-agent-debugboardctl --json rail list
-agent-debugboardctl --json adc read
-agent-debugboardctl --json gpio list
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json doctor
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json power list
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json adc read
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json gpio list
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json watchdog status
 ```
 
-Control rails:
+GPIO names such as `GP13` are derived from RP2040 pin numbers in firmware; each
+allowlisted GPIO also carries a board-specific `note` such as `CON_MAS` or
+`J17_PIN1`. CLI/TUI display both, and HTTP control accepts canonical `GPxx`,
+raw numeric pins like `4`, or exact notes such as `CON_MAS`.
+
+Status JSON also includes `board_monitoring`. Each category (`temperature`,
+`heap`, `runtime`, and `cpu`) carries `available` plus a machine-readable
+`reason`. Firmware only reports values from Zephyr devices or runtime-stat APIs
+that are actually enabled; on the default RP2040 configuration this includes the
+internal CPU die temperature sensor, system heap runtime statistics, real board
+uptime (`uptime_ms` / `uptime_seconds`), and CPU utilization deltas. The first
+CPU sample can still report `insufficient_runtime_window` until the board has
+accumulated enough runtime delta to derive a percentage.
+WebSocket `snapshot/status` messages carry the same `board_monitoring` object as
+`GET /api/v1/status`.
+
+For short reset debugging, the watchdog supervisor thread also prints periodic
+memory diagnostics to the firmware log. Those lines prioritize system-heap
+allocated, free, total, and peak bytes, plus real uptime; they are
+side-effect-free and do not advance the CPU utilization sampling window used by
+`board_monitoring`.
+
+The same 1 Hz diagnostics cadence also emits a watchdog trace line with the
+current feed decision: whether the supervisor is alive, whether hardware
+watchdog feeding succeeded, or whether feeding was skipped because `core`,
+`api`, or `cmdline` is currently the blocker. This trace is log-only and is
+intended to answer "who stopped the watchdog from being fed" during short reset
+investigations.
+
+At boot, the firmware logs the reset cause and, when entering ROM BOOTSEL via
+watchdog recovery, prints the previous watchdog source (explicit bootloader
+request versus unhealthy liveness stop). USB device lifecycle events are also
+logged for diagnostic correlation with CDC ACM disconnects.
+
+Control power outputs:
 
 ```sh
-agent-debugboardctl rail set 12v_out on
-agent-debugboardctl rail set 12v_out off
-agent-debugboardctl rail set 5v_out on
-agent-debugboardctl rail set 5v_out off
-agent-debugboardctl rail set 5v_ws on
-agent-debugboardctl rail set 20v_out on
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 12v_out on
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 12v_out off
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 5v_out on
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 5v_out off
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 5v_ws on
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 20v_out on
 ```
 
 Read current-monitor ADC channels:
 
 ```sh
-agent-debugboardctl adc read
-agent-debugboardctl adc read 5v_out
-agent-debugboardctl adc read -v 5v_out
-agent-debugboardctl adc read 12v_out
-agent-debugboardctl adc read 20v_out
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc read
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 5v_out
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.ndjson 1000
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc read -v 5v_out
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 12v_out
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 20v_out
 ```
 
 Human-readable ADC output is concise by default, for example
 `5v_out=540mA`. Use `-v` / `--verbose` when you need debug fields such as
-`signal`, `raw`, and `mv`. JSON output keeps the full structured data.
+`signal` and `mv`. `agent-debugboardctl --json adc read` carries the raw
+diagnostic chain (`raw`, `mv`, `current_ua`, `sensor_value`) in addition
+to the power-output state, and adds host-side `ma_est`.
 
 Switch TF/SD route:
 
 ```sh
-agent-debugboardctl sd route target
-agent-debugboardctl sd route usb-reader
+cargo run --manifest-path cmd-ng/Cargo.toml -- sd route target
+cargo run --manifest-path cmd-ng/Cargo.toml -- sd route usb-reader
 ```
 
 Use safe GPIOs:
 
 ```sh
-agent-debugboardctl gpio list
-agent-debugboardctl gpio set GP13 1
-agent-debugboardctl gpio input GP13
+cargo run --manifest-path cmd-ng/Cargo.toml -- gpio list
+cargo run --manifest-path cmd-ng/Cargo.toml -- gpio set GP13 1
+cargo run --manifest-path cmd-ng/Cargo.toml -- gpio set CON_MAS 1
+cargo run --manifest-path cmd-ng/Cargo.toml -- gpio input J17_PIN1
+cargo run --manifest-path cmd-ng/Cargo.toml -- gpio input GP13
 ```
+
+Use autonomous firmware watchdog recovery:
+
+```sh
+cargo run --manifest-path cmd-ng/Cargo.toml -- watchdog status
+```
+
+The watchdog is owned by firmware, not the host. Firmware automatically arms
+the RP2040 hardware watchdog and only keeps feeding it while core firmware,
+the HTTP/API service, and the CDC ACM cmdline fallback are still reporting
+healthy local liveness. WebSocket session silence, subscription timeout, and
+session expiration do not count as watchdog failures. If core firmware wedges,
+the API service stops responding, or the CDC ACM cmdline fallback stops
+reporting liveness, firmware stops feeding the watchdog, the RP2040 resets,
+and the next earliest boot path enters the standard ROM BOOTSEL mode via the
+retained recovery marker. The direct `bootloader` command and the CDC ACM
+shell fallback remain separate and unchanged. Periodic memory diagnostics are
+log-only debug output and do not add watchdog participants or change BOOTSEL
+marker/reset behavior. The watchdog trace line is also log-only and does not
+change feed policy.
 
 ## OpenOCD / JTAG
 
@@ -270,7 +405,7 @@ in your OpenOCD installation and the target configuration for the board under
 test:
 
 ```sh
-agent-debugboardctl --json rail set 5v_out on
+agent-debugboardctl --json power set 5v_out on
 openocd -f interface/<ch347-interface>.cfg -f target/<target>.cfg
 ```
 
@@ -280,28 +415,35 @@ the matching interface script.
 
 OpenOCD normally exposes GDB on TCP `3333` and telnet control on TCP `4444`.
 Prefer OpenOCD reset commands such as `reset halt` or the target OS reboot path
-first. Use rail power-cycling only as a hard-restart fallback.
+first. Use power-cycling only as a hard-restart fallback.
 
 See [doc/openocd/README.md](doc/openocd/README.md) for the full workflow.
 
-## Direct Shell
+## NCM Network Interface
 
-Open the CDC serial device and use the `debugboard` shell command:
+The firmware enumerates as a composite USB device. The host CLI connects to
+the board via HTTP over the USB NCM interface. The default device URL is
+`http://172.29.203.1:8080`. The board runs a DHCPv4 server on the NCM link so the
+host can automatically obtain a compatible address; pass
+`agent-debugboardctl --url ...` only if you intentionally override the default
+addressing in your environment.
 
-```text
-debugboard status
-debugboard status --json
-debugboard rail list
-debugboard rail list --json
-debugboard adc read
-debugboard adc read -v 5v_out
-debugboard adc read --json
-debugboard sd get
-debugboard sd get --json
-debugboard gpio list
-debugboard gpio list --json
-debugboard bootloader
-```
+All control is performed through `agent-debugboardctl` using HTTP JSON
+requests, or directly through `curl` / another HTTP client. The CDC ACM port is
+kept intentionally as a secondary path for Zephyr cmdline access and recovery
+workflows such as BOOTSEL fallback; it is not the primary automation/control
+transport. When the CDC ACM shell is available, the local `bootloader` shell
+command enters the same RP2040 ROM BOOTSEL path used by the HTTP API.
+
+For long-lived telemetry and bidirectional control over a single socket, the
+firmware also exposes a WebSocket endpoint at `ws://172.29.203.1:8080/api/v1/ws`.
+WebSocket clients can observe watchdog status in status snapshots, but they do
+not feed the watchdog; firmware supervision is autonomous.
+
+mDNS is intentionally not part of the first-class workflow yet. DHCP already
+solves the plug-and-play addressing problem across operating systems; mDNS is a
+possible future enhancement for friendlier naming, not a requirement for
+normal use.
 
 ## Hardware Mapping
 
@@ -317,10 +459,12 @@ debugboard bootloader
 | 20 V current monitor | `adc read 20v_out` | `S_C_20V` |
 
 The current monitor channels use INA139 with a 0.2 mOhm shunt, 100 kOhm output
-load, and 1000 uA/V transconductance. The ideal transfer is 20 mV/A at the
-RP2040 ADC input, so `1 mV = 50 mA` and `20 mV = 1 A`. The `5v_out` channel uses
-a piecewise-linear table from local 0.1 A step measurements, with `mv <= 11`
-treated as 0 mA; `12v_out` and `20v_out` keep the ideal model until calibrated.
+load, and 1000 uA/V transconductance. `agent-debugboardctl` applies host-side
+correction to the standard current values reported by the MCU; `5v_out` uses an
+offset correction table derived from local load measurements, while `12v_out`
+and `20v_out` keep the ideal model until calibrated. The MCU reports raw ADC
+diagnostics plus standard sensor current values from Zephyr's
+`current-sense-amplifier` interface.
 See the public
 [TI INA139 datasheet](https://www.ti.com/product/INA139) for the sensor
 transfer function.
@@ -339,7 +483,10 @@ Run unit tests:
 The test runner covers:
 
 - host C tests for the shared board model.
-- Go tests for the host CLI helper.
+- Go tests for the host CLI helper. The repo-local test script targets the real
+  Go source trees (`./cmd/...` and `./internal/...`) instead of `go test ./...`
+  from the repository root, so Zephyr/CMake build outputs under `build/` do not
+  get swept into Go package discovery.
 
 ## Repository Layout
 
