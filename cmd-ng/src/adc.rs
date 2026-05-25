@@ -13,15 +13,21 @@ pub struct AdcReading {
     #[serde(default)]
     pub signal: String,
     pub raw: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub current_valid: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mv: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ma_est: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub power_enabled: Option<bool>,
     #[serde(default)]
     pub sensor_channel: String,
     #[serde(default)]
     pub unit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sensor_value: Option<AdcSensorValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub current_ua: Option<i32>,
 }
 
@@ -37,207 +43,6 @@ pub struct AdcResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<JsonError>,
 }
-
-#[derive(Clone, Copy)]
-struct OffsetPoint {
-    nominal_ma: i32,
-    offset_ma: i32,
-}
-
-struct ChannelModel {
-    name: &'static str,
-    signal: &'static str,
-    ma_per_mv: i32,
-    offset_points: &'static [OffsetPoint],
-}
-
-const FIVE_VOLT_OFFSET_POINTS: &[OffsetPoint] = &[
-    OffsetPoint {
-        nominal_ma: 550,
-        offset_ma: -550,
-    },
-    OffsetPoint {
-        nominal_ma: 600,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 650,
-        offset_ma: -350,
-    },
-    OffsetPoint {
-        nominal_ma: 800,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 850,
-        offset_ma: -350,
-    },
-    OffsetPoint {
-        nominal_ma: 1000,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 1050,
-        offset_ma: -350,
-    },
-    OffsetPoint {
-        nominal_ma: 1200,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 1300,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 1350,
-        offset_ma: -350,
-    },
-    OffsetPoint {
-        nominal_ma: 1450,
-        offset_ma: -350,
-    },
-    OffsetPoint {
-        nominal_ma: 1650,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 1800,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 1900,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 2000,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 2050,
-        offset_ma: -350,
-    },
-    OffsetPoint {
-        nominal_ma: 2150,
-        offset_ma: -350,
-    },
-    OffsetPoint {
-        nominal_ma: 2300,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 2400,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 2450,
-        offset_ma: -350,
-    },
-    OffsetPoint {
-        nominal_ma: 2600,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 2650,
-        offset_ma: -350,
-    },
-    OffsetPoint {
-        nominal_ma: 2800,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 2900,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 3050,
-        offset_ma: -450,
-    },
-    OffsetPoint {
-        nominal_ma: 3100,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 3250,
-        offset_ma: -450,
-    },
-    OffsetPoint {
-        nominal_ma: 3300,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 3400,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 3500,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 3700,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 3850,
-        offset_ma: -450,
-    },
-    OffsetPoint {
-        nominal_ma: 3900,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 4050,
-        offset_ma: -450,
-    },
-    OffsetPoint {
-        nominal_ma: 4100,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 4300,
-        offset_ma: -500,
-    },
-    OffsetPoint {
-        nominal_ma: 4350,
-        offset_ma: -450,
-    },
-    OffsetPoint {
-        nominal_ma: 4450,
-        offset_ma: -450,
-    },
-    OffsetPoint {
-        nominal_ma: 4550,
-        offset_ma: -450,
-    },
-    OffsetPoint {
-        nominal_ma: 4600,
-        offset_ma: -400,
-    },
-    OffsetPoint {
-        nominal_ma: 4750,
-        offset_ma: -450,
-    },
-];
-
-const CHANNEL_MODELS: &[ChannelModel] = &[
-    ChannelModel {
-        name: "5v_out",
-        signal: "S_C_5V",
-        ma_per_mv: 50,
-        offset_points: FIVE_VOLT_OFFSET_POINTS,
-    },
-    ChannelModel {
-        name: "12v_out",
-        signal: "S_C_12V",
-        ma_per_mv: 50,
-        offset_points: &[],
-    },
-    ChannelModel {
-        name: "20v_out",
-        signal: "S_C_20V",
-        ma_per_mv: 50,
-        offset_points: &[],
-    },
-];
 
 pub fn transform_response(output: &str) -> Result<AdcResponse, String> {
     let response: AdcResponse = serde_json::from_str(output).map_err(|err| err.to_string())?;
@@ -295,7 +100,10 @@ pub fn write_text(output: &str, verbose: bool) -> Result<String, String> {
                 ));
                 parts.push(format!("current_ua={current_ua}"));
             }
-            parts.push("raw=null".to_string());
+            match reading.raw {
+                Some(raw) => parts.push(format!("raw={raw}")),
+                None => parts.push("raw=null".to_string()),
+            }
             if let Some(mv) = reading.mv {
                 parts.push(format!("mv={mv}"));
             }
@@ -306,14 +114,14 @@ pub fn write_text(output: &str, verbose: bool) -> Result<String, String> {
             continue;
         }
 
-        if let Some(ma_est) = reading.ma_est {
-            lines.push(format!("{}={}mA", reading.name, ma_est));
-        } else if let Some(current_ua) = reading.current_ua {
+        if let Some(current_ua) = reading.current_ua {
             lines.push(format!(
                 "{}={}",
                 reading.name,
                 current_text_from_microamps(current_ua)
             ));
+        } else if let Some(ma_est) = reading.ma_est {
+            lines.push(format!("{}={}mA", reading.name, ma_est));
         }
     }
 
@@ -321,29 +129,12 @@ pub fn write_text(output: &str, verbose: bool) -> Result<String, String> {
 }
 
 fn transform_reading(mut reading: AdcReading) -> Result<AdcReading, String> {
-    if reading.ma_est.is_some() {
-        return Ok(reading);
-    }
-
-    let model = find_channel_model(&reading)
-        .ok_or_else(|| format!("unknown ADC channel {:?}", reading.name))?;
     let current_ua = match (reading.current_ua, reading.sensor_value.clone()) {
         (Some(current_ua), _) => current_ua,
         (None, Some(sensor_value)) => sensor_value_to_microamps(sensor_value),
-        (None, None) => return Err(format!("reading {:?} missing current value", reading.name)),
+        (None, None) => return Ok(reading),
     };
 
-    let nominal_ma = current_ua / 1000;
-    let mv = nominal_mv_from_current_ua(current_ua, model);
-    let mut ma_est = apply_current_offset(nominal_ma, model);
-    if reading.power_enabled == Some(false) {
-        ma_est = 0;
-    }
-
-    reading.raw = None;
-    reading.current_valid = Some(true);
-    reading.mv = Some(mv);
-    reading.ma_est = Some(ma_est);
     reading.current_ua = Some(current_ua);
     if reading.sensor_value.is_none() {
         reading.sensor_value = Some(sensor_value_from_microamps(current_ua));
@@ -355,12 +146,6 @@ fn transform_reading(mut reading: AdcReading) -> Result<AdcReading, String> {
         reading.unit = "A".to_string();
     }
     Ok(reading)
-}
-
-fn find_channel_model(reading: &AdcReading) -> Option<&'static ChannelModel> {
-    CHANNEL_MODELS
-        .iter()
-        .find(|model| model.name == reading.name || model.signal == reading.signal)
 }
 
 fn sensor_value_to_microamps(value: AdcSensorValue) -> i32 {
@@ -388,71 +173,19 @@ fn current_text_from_microamps(current_ua: i32) -> String {
     )
 }
 
-fn nominal_mv_from_current_ua(current_ua: i32, model: &ChannelModel) -> i32 {
-    let nominal_ma = current_ua / 1000;
-    if nominal_ma <= 0 || model.ma_per_mv == 0 {
-        return 0;
-    }
-    nominal_ma / model.ma_per_mv
-}
-
-fn apply_current_offset(nominal_ma: i32, model: &ChannelModel) -> i32 {
-    let points = model.offset_points;
-    if let Some(first) = points.first() {
-        if nominal_ma <= first.nominal_ma {
-            return (nominal_ma + first.offset_ma).max(0);
-        }
-
-        for window in points.windows(2) {
-            let prev = window[0];
-            let next = window[1];
-            if nominal_ma > next.nominal_ma {
-                continue;
-            }
-            let den = next.nominal_ma - prev.nominal_ma;
-            if den <= 0 {
-                return (nominal_ma + next.offset_ma).max(0);
-            }
-            let num = i64::from(nominal_ma - prev.nominal_ma)
-                * i64::from(next.offset_ma - prev.offset_ma);
-            return (nominal_ma
-                + prev.offset_ma
-                + ((num + i64::from(den / 2)) / i64::from(den)) as i32)
-                .max(0);
-        }
-
-        if points.len() >= 2 {
-            let prev = points[points.len() - 2];
-            let next = points[points.len() - 1];
-            let den = next.nominal_ma - prev.nominal_ma;
-            if den <= 0 {
-                return (nominal_ma + next.offset_ma).max(0);
-            }
-            let num = i64::from(nominal_ma - next.nominal_ma)
-                * i64::from(next.offset_ma - prev.offset_ma);
-            return (nominal_ma
-                + next.offset_ma
-                + ((num + i64::from(den / 2)) / i64::from(den)) as i32)
-                .max(0);
-        }
-
-        return (nominal_ma + points[points.len() - 1].offset_ma).max(0);
-    }
-
-    nominal_ma.max(0)
-}
 
 #[cfg(test)]
 mod tests {
     use super::{transform_response, AdcResponse};
 
     #[test]
-    fn enriches_adc_reading() {
+    fn derives_current_from_sensor_value_without_calibration() {
         let raw = r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","readings":[{"name":"12v_out","signal":"S_C_12V","sensor_value":{"val1":0,"val2":1200000}}]}"#;
         let transformed = transform_response(raw).unwrap();
         let reading = transformed.readings.first().unwrap();
-        assert_eq!(reading.ma_est, Some(1200));
-        assert_eq!(reading.mv, Some(24));
+        assert_eq!(reading.current_ua, Some(1_200_000));
+        assert_eq!(reading.ma_est, None);
+        assert_eq!(reading.mv, None);
     }
 
     #[test]
@@ -460,5 +193,12 @@ mod tests {
         let raw = r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","readings":[{"name":"12v_out","ma_est":1}]}"#;
         let transformed: AdcResponse = transform_response(raw).unwrap();
         assert_eq!(transformed.readings[0].ma_est, Some(1));
+    }
+
+    #[test]
+    fn leaves_unknown_current_shape_unchanged() {
+        let raw = r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","readings":[{"name":"12v_out"}]}"#;
+        let transformed: AdcResponse = transform_response(raw).unwrap();
+        assert_eq!(transformed.readings[0].current_ua, None);
     }
 }
