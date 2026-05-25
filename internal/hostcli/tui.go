@@ -40,6 +40,7 @@ type tuiStatusWatchdog struct {
 type tuiActionMsg struct {
 	status string
 	err    error
+	sdRoute string
 }
 
 type tuiStreamMsg struct {
@@ -66,6 +67,8 @@ type tuiModel struct {
 	scrollOffset int
 	powerStates  map[string]bool
 	sdRoute      string
+	pendingSDRoute string
+	pendingSDRouteUntil time.Time
 	monitoring   boardMonitoring
 	connectPending bool
 	streamPending  bool
@@ -187,10 +190,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter", " ":
 			target := controlTargets[m.controlIdx]
 			return m, performControlAction(m.wsClient, m.timeout, target, m.powerStates[target])
-		case "t":
-			return m, setSDRoute(m.wsClient, m.timeout, "target")
-		case "u":
-			return m, setSDRoute(m.wsClient, m.timeout, "usb-reader")
+	case "t":
+		return m, setSwitchRoute(m.wsClient, m.timeout, "sd", "target")
+	case "u":
+		return m, setSwitchRoute(m.wsClient, m.timeout, "sd", "usb-reader")
 		case "pgdown", "ctrl+d", "]":
 			m.scrollOffset += 3
 			return m, nil
@@ -211,6 +214,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = msg.status
+		if msg.sdRoute != "" {
+			m.sdRoute = msg.sdRoute
+			m.pendingSDRoute = msg.sdRoute
+			m.pendingSDRouteUntil = time.Now().Add(2 * time.Second)
+		}
 		if m.wsClient.IsConnected() && !m.streamPending {
 			m.streamPending = true
 			return m, nextStreamMessage(m.wsClient, m.timeout)
@@ -238,8 +246,17 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, output := range msg.snapshot.PowerOutputs {
 				m.powerStates[output.Name] = output.Value != 0 || output.State == "on"
 			}
-			if msg.snapshot.SD.Route != "" {
-				m.sdRoute = msg.snapshot.SD.Route
+			if msg.snapshot.Switches.SD.Route != "" {
+				now := time.Now()
+				if m.pendingSDRoute != "" && now.Before(m.pendingSDRouteUntil) && msg.snapshot.Switches.SD.Route != m.pendingSDRoute {
+					// Keep optimistic route until the board confirms it or the short grace window expires.
+				} else {
+					m.sdRoute = msg.snapshot.Switches.SD.Route
+					if msg.snapshot.Switches.SD.Route == m.pendingSDRoute || now.After(m.pendingSDRouteUntil) {
+						m.pendingSDRoute = ""
+						m.pendingSDRouteUntil = time.Time{}
+					}
+				}
 			}
 			m.monitoring = msg.snapshot.BoardMonitoring
 		}
@@ -292,7 +309,7 @@ func (m tuiModel) View() string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
 	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	header := titleStyle.Render("Agent DebugBoard TUI")
-	header += "\n" + mutedStyle.Render(fmt.Sprintf("url=%s  status=%s  keys: q quit · p pause · r refresh · ↑/↓ select power · Enter toggle · t/u sd route · [/]/PgUp/PgDn scroll", m.baseURL, m.status))
+	header += "\n" + mutedStyle.Render(fmt.Sprintf("url=%s  status=%s  keys: q quit · p pause · r refresh · ↑/↓ select power · Enter toggle · t/u switch-sd · [/]/PgUp/PgDn scroll", m.baseURL, m.status))
 
 	chartHeight := 4
 	columnGap := 2
@@ -384,7 +401,7 @@ func chartMaxMilliamp(channel string) int32 {
 }
 
 func renderControlTab(m tuiModel) []string {
-	lines := []string{"Controls:", "  ↑/↓ select   Enter/Space toggle power   t target route   u usb-reader route", ""}
+	lines := []string{"Controls:", "  ↑/↓ select   Enter/Space toggle power   t switch-sd target   u switch-sd usb-reader", ""}
 	contentWidth := m.width
 	if contentWidth <= 0 {
 		contentWidth = 80
@@ -402,7 +419,7 @@ func renderControlTab(m tuiModel) []string {
 		}
 		lines = append(lines, strings.Join(parts, "  "))
 	}
-	lines = append(lines, "", fmt.Sprintf("  sd route = %s", m.sdRoute))
+	lines = append(lines, "", fmt.Sprintf("  switch sd = %s", m.sdRoute))
 	lines = append(lines, "  "+formatMonitoringSummary(m.monitoring))
 	return lines
 }
@@ -597,18 +614,21 @@ func performControlAction(wsClient *WSClient, timeout time.Duration, output stri
 	}
 }
 
-func setSDRoute(wsClient *WSClient, timeout time.Duration, route string) tea.Cmd {
+func setSwitchRoute(wsClient *WSClient, timeout time.Duration, name string, route string) tea.Cmd {
 	return func() tea.Msg {
 		if wsClient == nil || !wsClient.IsConnected() {
 			return tuiActionMsg{err: fmt.Errorf("websocket not connected")}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		err := wsClient.Send(ctx, wsCommandRequest{Type: "command", Command: "sd_route", Route: route})
+		err := wsClient.Send(ctx, wsCommandRequest{Type: "command", Command: "switch_route", Output: name, Route: route})
 		if err != nil {
 			return tuiActionMsg{err: err}
 		}
-		return tuiActionMsg{status: fmt.Sprintf("sd route=%s", route)}
+		if name == "sd" {
+			return tuiActionMsg{status: fmt.Sprintf("switch %s=%s", name, route), sdRoute: route}
+		}
+		return tuiActionMsg{status: fmt.Sprintf("switch %s=%s", name, route)}
 	}
 }
 

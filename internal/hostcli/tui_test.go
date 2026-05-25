@@ -50,10 +50,10 @@ func TestTUIStatusSnapshotUpdatesBoardMonitoring(t *testing.T) {
 		channelIDs:  []string{"5v_out", "12v_out", "20v_out"},
 		wsClient:    NewWSClient(DefaultBaseURL),
 	}
-	snapshot := &wsStatusSnapshot{
-		PowerOutputs: []tuiStatusPowerOutput{{Name: "5v_out", State: "on", Value: 1}},
-		SD:           tuiStatusSD{Route: "usb-reader"},
-		BoardMonitoring: boardMonitoring{
+		snapshot := &wsStatusSnapshot{
+			PowerOutputs: []tuiStatusPowerOutput{{Name: "5v_out", State: "on", Value: 1}},
+			Switches:     tuiStatusSwitches{SD: tuiStatusSwitchRoute{Route: "usb-reader"}},
+			BoardMonitoring: boardMonitoring{
 			Temperature: monitoringTemperature{
 				monitoringAvailability: monitoringAvailability{Available: false, Reason: "no_zephyr_temperature_device"},
 			},
@@ -76,9 +76,9 @@ func TestTUIStatusSnapshotUpdatesBoardMonitoring(t *testing.T) {
 
 	updated, _ := model.Update(tuiStreamMsg{generation: model.wsClient.Generation(), snapshot: snapshot})
 	next := updated.(tuiModel)
-	if !next.powerStates["5v_out"] || next.sdRoute != "usb-reader" {
-		t.Fatalf("snapshot state not applied: power=%v sd=%s", next.powerStates, next.sdRoute)
-	}
+		if !next.powerStates["5v_out"] || next.sdRoute != "usb-reader" {
+			t.Fatalf("snapshot state not applied: power=%v sd=%s", next.powerStates, next.sdRoute)
+		}
 	if got := formatMonitoringSummary(next.monitoring); !strings.Contains(got, "n/a(no_zephyr_temperature_device)") || !strings.Contains(got, "2048/3072B") {
 		t.Fatalf("monitoring summary = %q", got)
 	}
