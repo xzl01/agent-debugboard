@@ -492,10 +492,10 @@ func requestFromArgs(args []string) (boardRequest, string, error) {
 		return boardRequest{Method: http.MethodGet, Path: "/api/v1/status"}, "debugboard status --json", nil
 	case "power":
 		return powerRequest(cleaned)
+	case "switch":
+		return switchRequest(cleaned)
 	case "adc":
 		return adcRequest(cleaned)
-	case "sd":
-		return sdRequest(cleaned)
 	case "gpio":
 		return gpioRequest(cleaned)
 	case "watchdog":
@@ -578,24 +578,29 @@ func adcRequest(args []string) (boardRequest, string, error) {
 	return boardRequest{Method: http.MethodGet, Path: "/api/v1/adc/read", Query: query}, command, nil
 }
 
-func sdRequest(args []string) (boardRequest, string, error) {
+func switchRequest(args []string) (boardRequest, string, error) {
 	command := "debugboard " + strings.Join(args, " ") + " --json"
 	if len(args) < 2 {
-		return boardRequest{}, "sd", errors.New("usage: agent-debugboardctl sd get|route ...")
+		return boardRequest{}, "switch", errors.New("usage: agent-debugboardctl switch list|get|route ...")
 	}
 	switch args[1] {
-	case "get":
+	case "list":
 		if len(args) != 2 {
-			return boardRequest{}, "sd", errors.New("usage: agent-debugboardctl sd get")
+			return boardRequest{}, "switch", errors.New("usage: agent-debugboardctl switch list")
 		}
-		return boardRequest{Method: http.MethodGet, Path: "/api/v1/sd"}, command, nil
-	case "route":
+		return boardRequest{Method: http.MethodGet, Path: "/api/v1/switch"}, command, nil
+	case "get":
 		if len(args) != 3 {
-			return boardRequest{}, "sd", errors.New("usage: agent-debugboardctl sd route target|usb-reader")
+			return boardRequest{}, "switch", errors.New("usage: agent-debugboardctl switch get sd|usb")
 		}
-		return boardRequest{Method: http.MethodPut, Path: "/api/v1/sd", Body: map[string]string{"route": args[2]}}, command, nil
+		return boardRequest{Method: http.MethodGet, Path: "/api/v1/switch/" + args[2]}, command, nil
+	case "route":
+		if len(args) != 4 {
+			return boardRequest{}, "switch", errors.New("usage: agent-debugboardctl switch route sd|usb ROUTE")
+		}
+		return boardRequest{Method: http.MethodPut, Path: "/api/v1/switch/" + args[2], Body: map[string]string{"route": args[3]}}, command, nil
 	default:
-		return boardRequest{}, "sd", fmt.Errorf("unsupported sd action %q", args[1])
+		return boardRequest{}, "switch", fmt.Errorf("unsupported switch action %q", args[1])
 	}
 }
 

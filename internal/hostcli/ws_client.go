@@ -32,9 +32,18 @@ type wsStatusSnapshot struct {
 	Schema          string                 `json:"schema"`
 	Sequence        uint32                 `json:"sequence"`
 	PowerOutputs    []tuiStatusPowerOutput `json:"power_outputs"`
-	SD              tuiStatusSD            `json:"sd"`
+	Switches        tuiStatusSwitches      `json:"switches"`
 	Watchdog        tuiStatusWatchdog      `json:"watchdog"`
 	BoardMonitoring boardMonitoring        `json:"board_monitoring"`
+}
+
+type tuiStatusSwitchRoute struct {
+	Route string `json:"route"`
+}
+
+type tuiStatusSwitches struct {
+	SD  tuiStatusSwitchRoute `json:"sd"`
+	USB tuiStatusSwitchRoute `json:"usb"`
 }
 
 type wsADCMessage struct {
@@ -50,6 +59,7 @@ type wsCommandRequest struct {
 	Command   string `json:"command,omitempty"`
 	Topic     string `json:"topic,omitempty"`
 	Output    string `json:"output,omitempty"`
+	Name      string `json:"name,omitempty"`
 	State     string `json:"state,omitempty"`
 	Route     string `json:"route,omitempty"`
 	GPIO      string `json:"gpio,omitempty"`
@@ -68,32 +78,8 @@ type WSClient struct {
 	gen     uint64
 }
 
-func NewWSClient(baseURL string) *WSClient {
-	return &WSClient{baseURL: resolveBaseURL(baseURL), gen: 1}
-}
-
 func NewWSClientURL(baseURL string, wsURL string) *WSClient {
 	return &WSClient{baseURL: resolveBaseURL(baseURL), wsURL: strings.TrimSpace(wsURL), gen: 1}
-}
-
-func wsURLFromBase(baseURL string) (string, error) {
-	parsed, err := url.Parse(resolveBaseURL(baseURL))
-	if err != nil {
-		return "", err
-	}
-
-	switch parsed.Scheme {
-	case "http":
-		parsed.Scheme = "ws"
-	case "https":
-		parsed.Scheme = "wss"
-	default:
-		return "", fmt.Errorf("unsupported base URL scheme %q", parsed.Scheme)
-	}
-
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/api/v1/ws"
-	parsed.RawQuery = ""
-	return parsed.String(), nil
 }
 
 func (c *WSClient) Connect(ctx context.Context) error {
@@ -106,11 +92,7 @@ func (c *WSClient) Connect(ctx context.Context) error {
 
 	wsURL := c.wsURL
 	if strings.TrimSpace(wsURL) == "" {
-		var err error
-		wsURL, err = wsURLFromBase(c.baseURL)
-		if err != nil {
-			return err
-		}
+		return fmt.Errorf("missing dedicated websocket URL")
 	}
 
 	dialer := websocket.Dialer{}

@@ -147,7 +147,7 @@ func TestStatusJSONIncludesBoardMonitoringShape(t *testing.T) {
 	}
 }
 
-func TestRunADCReadDefaultTextUsesHostSideCalibration(t *testing.T) {
+func TestRunADCReadDefaultTextUsesRawCurrent(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}`
@@ -160,12 +160,12 @@ func TestRunADCReadDefaultTextUsesHostSideCalibration(t *testing.T) {
 	if len(client.requests) != 1 || client.requests[0].Path != "/api/v1/adc/read" || client.requests[0].Query.Get("channel") != "5v_out" {
 		t.Fatalf("requests = %#v", client.requests)
 	}
-	if strings.TrimSpace(stdout.String()) != "5v_out=500mA" {
+	if strings.TrimSpace(stdout.String()) != "5v_out=0.850000A" {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
 
-func TestRunADCReadJSONUsesHostSideCalibration(t *testing.T) {
+func TestRunADCReadJSONPreservesRawCurrentFields(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}`
@@ -174,12 +174,12 @@ func TestRunADCReadJSONUsesHostSideCalibration(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
-	if strings.TrimSpace(stdout.String()) != `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","raw":null,"current_valid":true,"mv":17,"ma_est":500,"power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}` {
+	if strings.TrimSpace(stdout.String()) != `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","raw":null,"power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}` {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
 
-func TestRunADCReadPowerDisabledReportsZeroCurrent(t *testing.T) {
+func TestRunADCReadPowerDisabledStillReportsRawCurrent(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":false,"raw":24,"mv":19,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}`
@@ -188,7 +188,7 @@ func TestRunADCReadPowerDisabledReportsZeroCurrent(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
-	if strings.TrimSpace(stdout.String()) != "5v_out=0mA" {
+	if strings.TrimSpace(stdout.String()) != "5v_out=0.850000A" {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
@@ -218,7 +218,7 @@ func TestRunSDGPIOAndBootloaderMappings(t *testing.T) {
 		method string
 		path   string
 	}{
-		{name: "sd route", args: []string{"sd", "route", "usb-reader"}, method: http.MethodPut, path: "/api/v1/sd"},
+		{name: "switch route", args: []string{"switch", "route", "sd", "usb-reader"}, method: http.MethodPut, path: "/api/v1/switch/sd"},
 		{name: "gpio input", args: []string{"gpio", "input", "GP13"}, method: http.MethodPut, path: "/api/v1/gpio/GP13"},
 		{name: "gpio set", args: []string{"gpio", "set", "GP13", "1"}, method: http.MethodPut, path: "/api/v1/gpio/GP13"},
 		{name: "watchdog status", args: []string{"watchdog", "status"}, method: http.MethodGet, path: "/api/v1/watchdog"},
@@ -449,7 +449,7 @@ func TestWSClientConnectAndSend(t *testing.T) {
 			Schema:       JSONSchema,
 			Sequence:     1,
 			PowerOutputs: []tuiStatusPowerOutput{{Name: "5v_out", State: "on", Value: 1}},
-			SD:           tuiStatusSD{Route: "target"},
+			Switches:     tuiStatusSwitches{SD: tuiStatusSwitchRoute{Route: "target"}},
 			BoardMonitoring: boardMonitoring{
 				Temperature: monitoringTemperature{
 					monitoringAvailability: monitoringAvailability{Available: false, Reason: "no_zephyr_temperature_device"},
