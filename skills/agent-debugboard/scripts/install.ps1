@@ -101,7 +101,7 @@ function Invoke-AgentDebugBoardReleaseAssetDownload([string]$Name, [string]$OutF
 
 $canBuild = Test-CanBuildFromSource -Root $repoRoot
 $arch = Get-AgentDebugBoardArch
-$asset = "agent-debugboardctl_windows_$arch.zip"
+$asset = "agent-debugboardctl-rust_windows_$arch.zip"
 $assetUrl = Get-ReleaseAssetUrl $asset
 $token = Get-AgentDebugBoardToken
 

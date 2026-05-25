@@ -125,7 +125,17 @@ jobs:
 
   host-cli:
     name: Test primary Rust host CLI
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: agent-debugboardctl_linux_amd64.tar.gz
+          - os: macos-latest
+            artifact_name: agent-debugboardctl_darwin_arm64.tar.gz
+          - os: windows-latest
+            artifact_name: agent-debugboardctl_windows_amd64.zip
 
     steps:
       - name: Checkout application
@@ -151,7 +161,53 @@ jobs:
         run: cargo test --manifest-path cmd-ng/Cargo.toml --all-targets
 
       - name: Smoke test primary Rust host CLI build
+        shell: bash
         run: |
-          cargo build --manifest-path cmd-ng/Cargo.toml
-          ./cmd-ng/target/debug/agent-debugboardctl --help
-          ./cmd-ng/target/debug/agent-debugboardctl --version
+          cargo build --release --manifest-path cmd-ng/Cargo.toml
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./cmd-ng/target/release/agent-debugboardctl.exe --help
+            ./cmd-ng/target/release/agent-debugboardctl.exe --version
+          else
+            ./cmd-ng/target/release/agent-debugboardctl --help
+            ./cmd-ng/target/release/agent-debugboardctl --version
+          fi
+
+      - name: Package primary Rust host CLI artifact
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist/rust-cli
+          tar -C cmd-ng/target/release -czf dist/rust-cli/${{ matrix.artifact_name }} agent-debugboardctl
+
+      - name: Package primary Rust host CLI artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/rust-cli | Out-Null
+          Compress-Archive -Path cmd-ng/target/release/agent-debugboardctl.exe -DestinationPath dist/rust-cli/${{ matrix.artifact_name }}
+
+      - name: Upload primary Rust host CLI artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: rust-host-cli-${{ runner.os }}
+          path: dist/rust-cli/${{ matrix.artifact_name }}
+          if-no-files-found: error
+
+  skill-bundle:
+    name: Upload skill bundle artifact
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@v6
+
+      - name: Package skill bundle
+        run: |
+          mkdir -p dist/skills
+          tar -C skills -czf dist/skills/skills-agent-debugboard.tar.gz agent-debugboard
+
+      - name: Upload skill bundle artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: skills-agent-debugboard
+          path: dist/skills/skills-agent-debugboard.tar.gz
+          if-no-files-found: error

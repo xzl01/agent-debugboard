@@ -125,7 +125,7 @@ macOS/Linux:
 ```
 
 Install a specific release version. An explicit version always skips local
-source builds and downloads the requested release artifact:
+source builds and downloads the requested primary Rust CLI release artifact:
 
 ```sh
 ./skills/agent-debugboard/scripts/install.sh --version <tag>
@@ -143,7 +143,9 @@ Windows PowerShell specific release version:
 powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1 -Version <tag>
 ```
 
-After installation, run the matching binary.
+After installation, run the matching binary. The release download path prefers
+`agent-debugboardctl-rust_<os>_<arch>.*`; legacy Go compatibility archives
+remain in the release only for transition/reference use.
 
 macOS/Linux:
 
@@ -172,7 +174,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
 cargo run --manifest-path cmd-ng/Cargo.toml --
 ```
 
-The Rust tool keeps the same default URL (`http://172.29.203.1:8080`) and still expects the `agent-debugboard.v1` JSON envelope. Running it without a subcommand starts the primary TUI, which polls HTTP status/ADC endpoints and keeps power plus GPIO controls in one adaptive grid.
+The Rust tool keeps the same default URL (`http://172.29.203.1:8080`) and still expects the `agent-debugboard.v1` JSON envelope. Running it without a subcommand starts the primary TUI, which polls HTTP status/ADC endpoints and keeps power, SD route, and GPIO controls in one adaptive grid.
 
 ## JSON Contract
 
@@ -311,16 +313,19 @@ curl -fsS "$BOARD_URL/api/v1/adc/read?channel=20v_out"
 ```
 
 High-rate recording is a separate websocket workflow. Use the Rust CLI when you
-need to subscribe at 1000Hz and write NDJSON telemetry records to a file:
+need to write NDJSON telemetry records to a file. It defaults to 1000Hz and
+accepts `--rate-hz HZ` for a 1..1000Hz requested websocket subscription rate:
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.ndjson 1000
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.ndjson 1000 --rate-hz 250
 ```
 
-FIXME: the current recorder keeps the websocket subscription rate fixed at
-1000Hz. A future follow-up should make the requested rate configurable and
-record device-side timing metadata so host receive timestamps can be analyzed
-separately from actual sampling cadence.
+Each recorder output row keeps the existing JSON schema, records host receive
+timestamps, and includes `metadata.requested_rate_hz`. If firmware telemetry
+contains device-side timing fields, the recorder copies them into
+`metadata.device_timing`. Current ADC telemetry carries `sequence` but no
+explicit device timestamp, so do not assume `device_timing` is present when
+analyzing capture cadence.
 
 WebSocket clients can subscribe to telemetry and send control commands on the
 same connection. Example subscription payload:
@@ -358,24 +363,36 @@ curl -fsS "$BOARD_URL/api/v1/watchdog"
 ./skills/agent-debugboard/scripts/bin/agent-debugboardctl --json watchdog status
 ```
 
-For manual calibration or hardware debugging, use the optional CLI verbose
-output to inspect host-side interpreted diagnostic fields:
+For raw ADC inspection or hardware debugging, use the optional CLI verbose
+output to inspect the firmware-reported diagnostic fields:
 
 ```sh
 ./skills/agent-debugboard/scripts/bin/agent-debugboardctl adc read -v 5v_out
 ```
 
-Switch TF/SD route.
+Switch mux routes.
 
 ```sh
-curl -fsS "$BOARD_URL/api/v1/sd"
-curl -fsS -X PUT -H 'Content-Type: application/json' \
-  --data '{"route":"target"}' \
-  "$BOARD_URL/api/v1/sd"
+curl -fsS "$BOARD_URL/api/v1/switch"
+curl -fsS "$BOARD_URL/api/v1/switch/sd"
+curl -fsS "$BOARD_URL/api/v1/switch/usb"
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"route":"usb-reader"}' \
-  "$BOARD_URL/api/v1/sd"
+  "$BOARD_URL/api/v1/switch/sd"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"route":"target"}' \
+  "$BOARD_URL/api/v1/switch/usb"
 ```
+
+When validating switch behavior, run the sequence strictly in order: send the
+`switch route ...` request, wait briefly for settling, then issue the matching
+`switch get ...`. Do not run conflicting route changes in parallel if your goal
+is to verify stability on real hardware.
+
+The unified `/api/v1/switch/*` family is the interface for mux-style controls
+in this repository. `switch sd` controls the RS2099XTQC16 TF/SD route
+between `target` and `usb-reader`, while `switch usb` controls the GP03 USB mux
+between `pc` and `target`.
 
 Use allowlisted GPIOs.
 
@@ -486,15 +503,13 @@ available or the target is unresponsive.
   CLI command.
 - Do not expose board-internal schematic codenames in user-facing output.
 
-## ADC Calibration Notes
+## ADC Notes
 
-- `5v_out` uses a fixed host-side offset correction table derived from local
-  load measurements. It covers approximately `0A` through `4.3A`; readings at
-  and below the effective 5V zero point are reported as `0mA`.
-- `12v_out` and `20v_out` currently use the ideal INA139 linear model until
-  each output is measured and calibrated. Treat these channels as approximate,
-  not precision current measurements.
 - `GET /api/v1/adc/read` exposes both raw ADC diagnostics (`readings[].raw`,
   `readings[].mv`) and the current-sense-amplifier result
-  (`readings[].current_ua`, `readings[].sensor_value`), so raw hardware
-  behavior and host-side calibration can be compared directly.
+  (`readings[].current_ua`, `readings[].sensor_value`).
+- The host CLI no longer applies any host-side ADC calibration table or
+  zero-point correction. Treat the reported current values as the firmware's
+  direct readings.
+- Current-monitor hardware in this repository is documented as INA139 with a
+  10 mOhm shunt and a 51 kOhm output load.

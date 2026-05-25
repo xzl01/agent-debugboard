@@ -191,7 +191,7 @@ sha256_file() {
 
 os="$(detect_os)"
 arch="$(detect_arch)"
-asset="agent-debugboardctl_${os}_${arch}.tar.gz"
+asset="agent-debugboardctl-rust_${os}_${arch}.tar.gz"
 token="$(github_token)"
 
 if [ "$DRY_RUN" -eq 1 ]; then
