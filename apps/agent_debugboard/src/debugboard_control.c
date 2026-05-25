@@ -76,6 +76,8 @@ BUILD_ASSERT(DT_NODE_HAS_STATUS(CURRENT_20V_OUT_NODE, okay));
 static const struct device *const gpio0 = DEVICE_DT_GET(GPIO0_NODE);
 static const struct device *const watchdog_dev = DEVICE_DT_GET_OR_NULL(WATCHDOG_NODE);
 static bool regulator_states[REGULATOR_STATE_CAPACITY];
+static enum debugboard_sd_route debugboard_sd_route = DEBUGBOARD_SD_ROUTE_TARGET;
+static enum debugboard_usb_route debugboard_usb_route = DEBUGBOARD_USB_ROUTE_PC;
 static uint8_t debugboard_gpio_directions[16];
 static bool debugboard_gpio_output_levels[16];
 static struct k_mutex debugboard_control_lock;
@@ -213,7 +215,14 @@ static int configure_regulator_defaults(void)
 
 static int configure_sd_default(void)
 {
+	debugboard_sd_route = DEBUGBOARD_SD_ROUTE_TARGET;
 	return gpio_pin_configure(gpio0, 6, GPIO_OUTPUT_INACTIVE);
+}
+
+static int configure_usb_mux_default(void)
+{
+	debugboard_usb_route = DEBUGBOARD_USB_ROUTE_PC;
+	return gpio_pin_configure(gpio0, 3, GPIO_OUTPUT_INACTIVE);
 }
 
 static void debugboard_gpio_apply_safe_drive_strength(const struct debugboard_safe_gpio_desc *desc)
@@ -624,6 +633,11 @@ int debugboard_control_init(void)
 		return ret;
 	}
 
+	ret = configure_usb_mux_default();
+	if (ret < 0) {
+		return ret;
+	}
+
 	ret = setup_current_sensors();
 	if (ret < 0) {
 		return ret;
@@ -690,14 +704,30 @@ int debugboard_power_output_set(const struct debugboard_rail_desc *rail, bool en
 
 enum debugboard_sd_route debugboard_sd_route_get(void)
 {
-	return gpio_pin_get(gpio0, 6) > 0 ? DEBUGBOARD_SD_ROUTE_USB_READER :
-					      DEBUGBOARD_SD_ROUTE_TARGET;
+	k_mutex_lock(&debugboard_control_lock, K_FOREVER);
+	enum debugboard_sd_route route = debugboard_sd_route;
+	k_mutex_unlock(&debugboard_control_lock);
+	return route;
 }
 
 const char *debugboard_sd_route_name(void)
 {
 	return debugboard_sd_route_get() == DEBUGBOARD_SD_ROUTE_USB_READER ?
 	       "usb-reader" : "target";
+}
+
+enum debugboard_usb_route debugboard_usb_route_get(void)
+{
+	k_mutex_lock(&debugboard_control_lock, K_FOREVER);
+	enum debugboard_usb_route route = debugboard_usb_route;
+	k_mutex_unlock(&debugboard_control_lock);
+	return route;
+}
+
+const char *debugboard_usb_route_name(void)
+{
+	return debugboard_usb_route_get() == DEBUGBOARD_USB_ROUTE_TARGET ?
+	       "target" : "pc";
 }
 
 int debugboard_sd_route_set(enum debugboard_sd_route route)
@@ -710,6 +740,26 @@ int debugboard_sd_route_set(enum debugboard_sd_route route)
 		k_mutex_unlock(&debugboard_control_lock);
 		return ret;
 	}
+
+	debugboard_sd_route = route;
+
+	k_msleep(10);
+	k_mutex_unlock(&debugboard_control_lock);
+	return 0;
+}
+
+int debugboard_usb_route_set(enum debugboard_usb_route route)
+{
+	int ret;
+
+	k_mutex_lock(&debugboard_control_lock, K_FOREVER);
+	ret = gpio_pin_set(gpio0, 3, route == DEBUGBOARD_USB_ROUTE_TARGET ? 1 : 0);
+	if (ret < 0) {
+		k_mutex_unlock(&debugboard_control_lock);
+		return ret;
+	}
+
+	debugboard_usb_route = route;
 
 	k_msleep(10);
 	k_mutex_unlock(&debugboard_control_lock);

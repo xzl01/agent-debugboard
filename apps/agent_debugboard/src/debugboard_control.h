@@ -17,6 +17,11 @@ enum debugboard_sd_route {
 	DEBUGBOARD_SD_ROUTE_USB_READER = 1,
 };
 
+enum debugboard_usb_route {
+	DEBUGBOARD_USB_ROUTE_PC = 0,
+	DEBUGBOARD_USB_ROUTE_TARGET = 1,
+};
+
 struct debugboard_current_sample {
 	bool rail_enabled;
 	bool raw_available;
@@ -50,6 +55,10 @@ int debugboard_power_output_set(const struct debugboard_rail_desc *rail, bool en
 enum debugboard_sd_route debugboard_sd_route_get(void);
 const char *debugboard_sd_route_name(void);
 int debugboard_sd_route_set(enum debugboard_sd_route route);
+
+enum debugboard_usb_route debugboard_usb_route_get(void);
+const char *debugboard_usb_route_name(void);
+int debugboard_usb_route_set(enum debugboard_usb_route route);
 
 int debugboard_current_read(const struct debugboard_current_desc *current,
 				   struct debugboard_current_sample *sample);
