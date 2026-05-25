@@ -9,8 +9,8 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
@@ -47,6 +47,13 @@ pub struct TuiModel {
     pub scroll_offset: usize,
     pub power_states: std::collections::HashMap<String, bool>,
     pub sd_route: String,
+    pub usb_route: String,
+    pub actual_sd_route: String,
+    pub actual_usb_route: String,
+    pub pending_sd_route: Option<String>,
+    pub pending_sd_route_until: Option<Instant>,
+    pub pending_usb_route: Option<String>,
+    pub pending_usb_route_until: Option<Instant>,
     pub gpio_names: Vec<String>,
     pub gpio_notes: std::collections::HashMap<String, String>,
     pub gpio_levels: std::collections::HashMap<String, bool>,
@@ -73,6 +80,13 @@ impl TuiModel {
             scroll_offset: 0,
             power_states: std::collections::HashMap::new(),
             sd_route: "target".to_string(),
+            usb_route: "pc".to_string(),
+            actual_sd_route: "target".to_string(),
+            actual_usb_route: "pc".to_string(),
+            pending_sd_route: None,
+            pending_sd_route_until: None,
+            pending_usb_route: None,
+            pending_usb_route_until: None,
             gpio_names: Vec::new(),
             gpio_notes: std::collections::HashMap::new(),
             gpio_levels: std::collections::HashMap::new(),
@@ -94,8 +108,28 @@ impl TuiModel {
                 output.value != 0 || output.state == "on",
             );
         }
-        if !snapshot.sd.route.is_empty() {
-            self.sd_route = snapshot.sd.route;
+        if !snapshot.switches.sd.route.is_empty() {
+            self.actual_sd_route = snapshot.switches.sd.route.clone();
+            self.sd_route = snapshot.switches.sd.route;
+            self.pending_sd_route = None;
+            self.pending_sd_route_until = None;
+        }
+        if !snapshot.switches.usb.route.is_empty() {
+            self.actual_usb_route = snapshot.switches.usb.route.clone();
+            let now = Instant::now();
+            match (&self.pending_usb_route, self.pending_usb_route_until) {
+                (Some(pending), Some(_until)) if snapshot.switches.usb.route == *pending => {
+                    self.usb_route = snapshot.switches.usb.route;
+                    self.pending_usb_route = None;
+                    self.pending_usb_route_until = None;
+                }
+                (Some(_), Some(until)) if now < until => {}
+                _ => {
+                    self.usb_route = snapshot.switches.usb.route;
+                    self.pending_usb_route = None;
+                    self.pending_usb_route_until = None;
+                }
+            }
         }
         self.gpio_names = snapshot
             .gpios
@@ -245,6 +279,30 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
                         model.gpio_is_input.insert(gpio, false);
                         model.apply_action_msg(action);
                     }
+                    ControlItem::SdSwitch => {
+                        let next_route = if model.sd_route == "usb-reader" {
+                            "target"
+                        } else {
+                            "usb-reader"
+                        };
+                        let action = set_switch_route(&model.base_url, model.timeout, "sd", next_route)?;
+                        model.sd_route = next_route.to_string();
+                        model.pending_sd_route = Some(next_route.to_string());
+                        model.pending_sd_route_until = Some(Instant::now() + Duration::from_secs(2));
+                        model.apply_action_msg(action);
+                    }
+                    ControlItem::UsbSwitch => {
+                        let next_route = if model.usb_route == "target" {
+                            "pc"
+                        } else {
+                            "target"
+                        };
+                        let action = set_switch_route(&model.base_url, model.timeout, "usb", next_route)?;
+                        model.usb_route = next_route.to_string();
+                        model.pending_usb_route = Some(next_route.to_string());
+                        model.pending_usb_route_until = Some(Instant::now() + Duration::from_secs(2));
+                        model.apply_action_msg(action);
+                    }
                 }
             }
         }
@@ -263,7 +321,10 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
             }
         }
         (KeyCode::Char('t'), _) => {
-            let action = set_sd_route(&model.base_url, model.timeout, "target")?;
+            let action = set_switch_route(&model.base_url, model.timeout, "sd", "target")?;
+            model.sd_route = "target".to_string();
+            model.pending_sd_route = Some("target".to_string());
+            model.pending_sd_route_until = Some(Instant::now() + Duration::from_secs(2));
             model.apply_action_msg(action);
         }
         (KeyCode::Char('u'), KeyModifiers::CONTROL)
@@ -272,7 +333,10 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
             model.scroll_offset = model.scroll_offset.saturating_sub(3);
         }
         (KeyCode::Char('u'), _) => {
-            let action = set_sd_route(&model.base_url, model.timeout, "usb-reader")?;
+            let action = set_switch_route(&model.base_url, model.timeout, "sd", "usb-reader")?;
+            model.sd_route = "usb-reader".to_string();
+            model.pending_sd_route = Some("usb-reader".to_string());
+            model.pending_sd_route_until = Some(Instant::now() + Duration::from_secs(2));
             model.apply_action_msg(action);
         }
         (KeyCode::PageDown, _)
@@ -346,16 +410,16 @@ fn perform_control_action(
     })
 }
 
-fn set_sd_route(base_url: &str, timeout: Duration, route: &str) -> Result<TuiActionMsg> {
+fn set_switch_route(base_url: &str, timeout: Duration, name: &str, route: &str) -> Result<TuiActionMsg> {
     let client = crate::client::BoardClient::new(base_url, timeout)?;
     client.send_text(BoardRequest {
         method: Method::PUT,
-        path: "/api/v1/sd".to_string(),
+        path: format!("/api/v1/switch/{name}"),
         query: vec![],
         body: Some(serde_json::json!({ "route": route })),
     })?;
     Ok(TuiActionMsg {
-        status: format!("sd route={route}"),
+        status: format!("switch {name}={route}"),
         err: None,
     })
 }
@@ -415,6 +479,8 @@ fn control_targets() -> &'static [&'static str] {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ControlItem {
     Power(String),
+    SdSwitch,
+    UsbSwitch,
     Gpio(String),
 }
 
@@ -423,6 +489,8 @@ fn control_items(model: &TuiModel) -> Vec<ControlItem> {
     for output in control_targets() {
         items.push(ControlItem::Power((*output).to_string()));
     }
+    items.push(ControlItem::SdSwitch);
+    items.push(ControlItem::UsbSwitch);
     for gpio in &model.gpio_names {
         items.push(ControlItem::Gpio(gpio.clone()));
     }
@@ -430,7 +498,7 @@ fn control_items(model: &TuiModel) -> Vec<ControlItem> {
 }
 
 fn first_gpio_index(model: &TuiModel) -> Option<usize> {
-    let count = control_targets().len();
+    let count = control_targets().len() + 2;
     if model.gpio_names.is_empty() {
         None
     } else {
@@ -482,13 +550,89 @@ fn move_control_selection(model: &TuiModel, row_delta: isize, col_delta: isize) 
 }
 
 fn build_control_rows(model: &TuiModel, content_width: usize) -> Vec<Vec<usize>> {
-    let chips = build_control_chips(model);
+    let (power, switches, gpio) = grouped_control_chips(model);
+    let mut rows = Vec::new();
+    rows.extend(build_section_navigation_rows(&power, content_width));
+    rows.extend(build_section_navigation_rows(&switches, content_width));
+    rows.extend(build_section_navigation_rows(&gpio, content_width));
+    rows
+}
+
+fn build_control_chips(model: &TuiModel) -> Vec<String> {
+    control_items(model)
+        .into_iter()
+        .map(|item| match item {
+            ControlItem::Power(output) => {
+                let state = if *model.power_states.get(&output).unwrap_or(&false) {
+                    "on"
+                } else {
+                    "off"
+                };
+                format!("power {} [{}]", output, state)
+            }
+            ControlItem::SdSwitch => format!("switch sd [{}]", model.sd_route),
+            ControlItem::UsbSwitch => format!("switch usb [{}]", model.usb_route),
+            ControlItem::Gpio(gpio) => {
+                let value = if *model.gpio_levels.get(&gpio).unwrap_or(&false) {
+                    "1"
+                } else {
+                    "0"
+                };
+                let direction = if *model.gpio_is_input.get(&gpio).unwrap_or(&true) {
+                    "in"
+                } else {
+                    "out"
+                };
+                let note = model.gpio_notes.get(&gpio).cloned().unwrap_or_default();
+                format!("gpio {} [{}] {}={}", gpio, note, direction, value)
+            }
+        })
+        .collect()
+}
+
+#[derive(Clone)]
+struct RenderedControlChip {
+    global_idx: usize,
+    label: String,
+}
+
+fn grouped_control_chips(
+    model: &TuiModel,
+) -> (
+    Vec<RenderedControlChip>,
+    Vec<RenderedControlChip>,
+    Vec<RenderedControlChip>,
+) {
+    let items = control_items(model);
+    let labels = build_control_chips(model);
+    let mut power = Vec::new();
+    let mut sd = Vec::new();
+    let mut gpio = Vec::new();
+
+    for (idx, item) in items.into_iter().enumerate() {
+        let chip = RenderedControlChip {
+            global_idx: idx,
+            label: labels[idx].clone(),
+        };
+        match item {
+            ControlItem::Power(_) => power.push(chip),
+            ControlItem::SdSwitch | ControlItem::UsbSwitch => sd.push(chip),
+            ControlItem::Gpio(_) => gpio.push(chip),
+        }
+    }
+
+    (power, sd, gpio)
+}
+
+fn build_section_rows(chips: &[RenderedControlChip], content_width: usize) -> Vec<Vec<usize>> {
     let mut rows = Vec::new();
     let mut current_row = Vec::new();
     let mut current_width = 0usize;
+    let cell_width = chip_cell_width(chips);
 
     for (idx, chip) in chips.iter().enumerate() {
-        let chip_width = chip.chars().count();
+        let _ = chip;
+        let chip_width = cell_width;
         let mut candidate_width = current_width;
         if !current_row.is_empty() {
             candidate_width += 2;
@@ -511,34 +655,63 @@ fn build_control_rows(model: &TuiModel, content_width: usize) -> Vec<Vec<usize>>
     rows
 }
 
-fn build_control_chips(model: &TuiModel) -> Vec<String> {
-    control_items(model)
+fn build_section_navigation_rows(chips: &[RenderedControlChip], content_width: usize) -> Vec<Vec<usize>> {
+    build_section_rows(chips, content_width)
         .into_iter()
-        .map(|item| match item {
-            ControlItem::Power(output) => {
-                let state = if *model.power_states.get(&output).unwrap_or(&false) {
-                    "on"
-                } else {
-                    "off"
-                };
-                format!("{}:{}", output, state)
-            }
-            ControlItem::Gpio(gpio) => {
-                let value = if *model.gpio_levels.get(&gpio).unwrap_or(&false) {
-                    "1"
-                } else {
-                    "0"
-                };
-                let direction = if *model.gpio_is_input.get(&gpio).unwrap_or(&true) {
-                    "in"
-                } else {
-                    "out"
-                };
-                let note = model.gpio_notes.get(&gpio).cloned().unwrap_or_default();
-                format!("{}[{}]:{}({})", gpio, note, direction, value)
-            }
-        })
+        .map(|row| row.into_iter().map(|idx| chips[idx].global_idx).collect())
         .collect()
+}
+
+fn chip_cell_width(chips: &[RenderedControlChip]) -> usize {
+    chips
+        .iter()
+        .map(|chip| chip.label.chars().count())
+        .max()
+        .unwrap_or(8)
+        + 4
+}
+
+fn append_section_lines(
+    lines: &mut Vec<Line<'static>>,
+    title: &str,
+    chips: &[RenderedControlChip],
+    content_width: usize,
+    selected_idx: usize,
+) {
+    lines.push(Line::from(Span::styled(
+        title.to_string(),
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    )));
+    if chips.is_empty() {
+        lines.push(Line::from("  (none)"));
+        lines.push(Line::from(""));
+        return;
+    }
+
+    let cell_width = chip_cell_width(chips);
+
+    for row in build_section_rows(chips, content_width) {
+        let mut spans = Vec::new();
+        for idx in row {
+            let chip = &chips[idx];
+            let selected = chip.global_idx == selected_idx;
+            let text = format!("{:^width$}", chip.label, width = cell_width);
+            if selected {
+                spans.push(Span::styled(
+                    text,
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::raw(text));
+            }
+            spans.push(Span::raw("  "));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::from(""));
 }
 
 fn current_text_from_microamps(current_ua: i32) -> String {
@@ -554,7 +727,7 @@ fn render_ui(frame: &mut ratatui::Frame, model: &TuiModel) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(4),
             Constraint::Length(7),
             Constraint::Min(8),
         ])
@@ -566,19 +739,26 @@ fn render_ui(frame: &mut ratatui::Frame, model: &TuiModel) {
 }
 
 fn render_header(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
-    let header = vec![
-        Line::from(Span::styled(
-            "Agent DebugBoard TUI",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(format!(
-            "url={}  status={}  keys: q quit · p pause · r refresh · arrows/Tab select item · Enter toggle · i selected GPIO to input · t/u sd route · [/]/PgUp/PgDn scroll",
-            model.base_url, model.status
-        )),
-    ];
-    let paragraph =
-        Paragraph::new(Text::from(header)).block(Block::default().borders(Borders::ALL));
-    frame.render_widget(paragraph, area);
+    let block = Block::default().borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let header_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(inner);
+
+    let title = Paragraph::new("Agent DebugBoard TUI")
+        .alignment(Alignment::Center)
+        .style(Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
+    frame.render_widget(title, header_chunks[0]);
+
+    let meta = Paragraph::new(format!(
+        "Control Surface · url={} · status={} · keys: q quit · p pause · r refresh · arrows/Tab select item · Enter toggle · i selected GPIO to input · t/u sd route · [/]/PgUp/PgDn scroll",
+        model.base_url, model.status
+    ))
+    .alignment(Alignment::Center);
+    frame.render_widget(meta, header_chunks[1]);
 }
 
 fn render_sparklines(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
@@ -633,32 +813,39 @@ fn render_sparklines(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
 }
 
 fn render_body(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
-    let chips = build_control_chips(model);
-    let rows = build_control_rows(model, area.width.saturating_sub(4) as usize);
+    let section_width = area.width.saturating_sub(4) as usize;
+    let (power, sd, gpio) = grouped_control_chips(model);
     let mut lines = vec![
-        Line::from("Controls:"),
+        Line::from(Span::styled(
+            "Controls",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
         Line::from(
             "  ↑/↓/←/→ select item   Enter/Space toggle   i selected GPIO to input   g jump to first GPIO   t target route   u usb-reader route",
         ),
         Line::from(""),
     ];
 
-    for row in rows {
-        let mut spans = Vec::new();
-        for idx in row {
-            let text = if idx == model.control_idx {
-                format!(">{}<", chips[idx])
-            } else {
-                chips[idx].clone()
-            };
-            spans.push(Span::raw(text));
-            spans.push(Span::raw("  "));
-        }
-        lines.push(Line::from(spans));
-    }
+    append_section_lines(&mut lines, "Power", &power, section_width, model.control_idx);
+    append_section_lines(&mut lines, "Switch", &sd, section_width, model.control_idx);
+    append_section_lines(&mut lines, "GPIO", &gpio, section_width, model.control_idx);
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(format!("  sd route = {}", model.sd_route)));
+    lines.push(Line::from(Span::styled(
+        "Status",
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    )));
+    lines.push(Line::from(format!(
+        "  sd desired = {}{}",
+        model.sd_route,
+        if model.pending_sd_route.is_some() { " (pending)" } else { "" }
+    )));
+    lines.push(Line::from(format!("  sd actual  = {}", model.actual_sd_route)));
+    lines.push(Line::from(format!(
+        "  usb desired = {}{}",
+        model.usb_route,
+        if model.pending_usb_route.is_some() { " (pending)" } else { "" }
+    )));
+    lines.push(Line::from(format!("  usb actual  = {}", model.actual_usb_route)));
     lines.push(Line::from(format!(
         "  {}",
         format_monitoring_summary(&model.monitoring)
@@ -691,7 +878,7 @@ fn render_body(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
 mod tests {
     use super::*;
     use crate::client::DEFAULT_BASE_URL;
-    use crate::ws_client::{TuiStatusGpio, TuiStatusSd};
+    use crate::ws_client::TuiStatusGpio;
 
     #[test]
     fn apply_status_snapshot_updates_gpio_and_power_state() {
@@ -708,9 +895,6 @@ mod tests {
                 state: "on".to_string(),
                 value: 1,
             }],
-            sd: TuiStatusSd {
-                route: String::new(),
-            },
             gpios: vec![TuiStatusGpio {
                 name: "GP14".to_string(),
                 pin: 14,
@@ -749,6 +933,25 @@ mod tests {
 
         assert_eq!(model.power_states.get("5v_out"), Some(&true));
         assert_eq!(model.history.get("5v_out").map(|v| v.len()), Some(1));
+    }
+
+    #[test]
+    fn milliamp_estimate_falls_back_to_current_microamps() {
+        let reading = AdcReading {
+            name: "5v_out".to_string(),
+            signal: "S_C_5V".to_string(),
+            raw: None,
+            current_valid: None,
+            mv: None,
+            ma_est: None,
+            power_enabled: Some(true),
+            sensor_channel: "current".to_string(),
+            unit: "A".to_string(),
+            sensor_value: None,
+            current_ua: Some(850_000),
+        };
+
+        assert_eq!(current_milliamp_estimate(&reading), 850);
     }
 
     #[test]
@@ -797,6 +1000,14 @@ mod tests {
     }
 
     #[test]
+    fn move_control_selection_down_reaches_switch_section() {
+        let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+        model.width = 120;
+        model.control_idx = 0;
+        assert_eq!(move_control_selection(&model, 1, 0), control_targets().len());
+    }
+
+    #[test]
     fn g_jumps_to_first_gpio_in_unified_grid() {
         let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
         model.gpio_names = vec!["GP13".to_string(), "GP14".to_string()];
@@ -805,7 +1016,44 @@ mod tests {
             KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
         )
         .unwrap();
-        assert_eq!(model.control_idx, control_targets().len());
+        assert_eq!(model.control_idx, control_targets().len() + 2);
+    }
+
+    #[test]
+    fn control_items_include_switches_between_power_and_gpio() {
+        let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+        model.gpio_names = vec!["GP13".to_string()];
+
+        let items = control_items(&model);
+        assert_eq!(items[control_targets().len()], ControlItem::SdSwitch);
+        assert_eq!(items[control_targets().len() + 1], ControlItem::UsbSwitch);
+        assert_eq!(items[control_targets().len() + 2], ControlItem::Gpio("GP13".to_string()));
+    }
+
+    #[test]
+    fn build_control_chips_show_current_switch_routes() {
+        let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+        model.sd_route = "usb-reader".to_string();
+        model.usb_route = "target".to_string();
+
+        let chips = build_control_chips(&model);
+        assert!(chips.iter().any(|chip| chip == "switch sd [usb-reader]"));
+        assert!(chips.iter().any(|chip| chip == "switch usb [target]"));
+    }
+
+    #[test]
+    fn apply_status_snapshot_tracks_actual_switch_routes() {
+        let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+        let mut snapshot = WsStatusSnapshot::default();
+        snapshot.switches.sd.route = "usb-reader".to_string();
+        snapshot.switches.usb.route = "target".to_string();
+
+        model.apply_status_snapshot(snapshot);
+
+        assert_eq!(model.actual_sd_route, "usb-reader");
+        assert_eq!(model.actual_usb_route, "target");
+        assert_eq!(model.sd_route, "usb-reader");
+        assert_eq!(model.usb_route, "target");
     }
 
     #[test]
@@ -824,7 +1072,7 @@ mod tests {
         model.gpio_names = vec!["GP13".to_string()];
         model.gpio_levels.insert("GP13".to_string(), false);
         model.gpio_is_input.insert("GP13".to_string(), false);
-        model.control_idx = control_targets().len();
+        model.control_idx = control_targets().len() + 2;
 
         model.apply_action_msg(TuiActionMsg {
             status: "gpio GP13=1".to_string(),
@@ -849,23 +1097,34 @@ mod tests {
         model.gpio_levels.insert("GP13".to_string(), true);
         model.gpio_is_input.insert("GP13".to_string(), false);
         let mut lines = vec![
-            Line::from("Controls:"),
+            Line::from("Controls"),
             Line::from("  ↑/↓/←/→ select item   Enter/Space toggle   i selected GPIO to input   g jump to first GPIO   t target route   u usb-reader route"),
             Line::from(""),
         ];
-        let rows = build_control_rows(&model, 80);
-        let chips = build_control_chips(&model);
-        for row in rows {
-            let mut spans = Vec::new();
-            for idx in row {
-                spans.push(Span::raw(chips[idx].clone()));
-                spans.push(Span::raw("  "));
-            }
-            lines.push(Line::from(spans));
-        }
+        let (power, sd, gpio) = grouped_control_chips(&model);
+        append_section_lines(&mut lines, "Power", &power, 80, model.control_idx);
+        append_section_lines(&mut lines, "Switch", &sd, 80, model.control_idx);
+        append_section_lines(&mut lines, "GPIO", &gpio, 80, model.control_idx);
+        lines.push(Line::from(Span::styled(
+            "Status",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )));
+        lines.push(Line::from(format!("  sd desired = {}", model.sd_route)));
+        lines.push(Line::from(format!("  sd actual  = {}", model.actual_sd_route)));
+        lines.push(Line::from(format!("  usb desired = {}", model.usb_route)));
+        lines.push(Line::from(format!("  usb actual  = {}", model.actual_usb_route)));
         let rendered = Text::from(lines).to_string();
-        assert!(rendered.contains("GP13[J17_PIN1]:out(1)"));
-        assert!(rendered.contains("12v_out:off"));
+        assert!(rendered.contains("Power"));
+        assert!(rendered.contains("Switch"));
+        assert!(rendered.contains("GPIO"));
+        assert!(rendered.contains("gpio GP13 [J17_PIN1] out=1"));
+        assert!(rendered.contains("power 12v_out [off]"));
+        assert!(rendered.contains("switch sd [target]"));
+        assert!(rendered.contains("switch usb [pc]"));
+        assert!(rendered.contains("sd desired = target"));
+        assert!(rendered.contains("sd actual  = target"));
+        assert!(rendered.contains("usb desired = pc"));
+        assert!(rendered.contains("usb actual  = pc"));
         assert!(!rendered.contains("5v_out: 0mA power=off"));
     }
 
