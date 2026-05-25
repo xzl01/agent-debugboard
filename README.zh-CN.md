@@ -115,12 +115,16 @@ powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 
 
 | 系统 / CPU | 产物 |
 | --- | --- |
-| Windows x64 | `agent-debugboardctl_windows_amd64.zip` |
-| Windows arm64 | `agent-debugboardctl_windows_arm64.zip` |
-| Linux x64 | `agent-debugboardctl_linux_amd64.tar.gz` |
-| Linux arm64 | `agent-debugboardctl_linux_arm64.tar.gz` |
-| macOS Intel | `agent-debugboardctl_darwin_amd64.tar.gz` |
-| macOS Apple Silicon | `agent-debugboardctl_darwin_arm64.tar.gz` |
+| Windows x64 | `agent-debugboardctl-rust_windows_amd64.zip` |
+| Windows arm64 | `agent-debugboardctl-rust_windows_arm64.zip` |
+| Linux x64 | `agent-debugboardctl-rust_linux_amd64.tar.gz` |
+| Linux arm64 | `agent-debugboardctl-rust_linux_arm64.tar.gz` |
+| macOS Intel | `agent-debugboardctl-rust_darwin_amd64.tar.gz` |
+| macOS Apple Silicon | `agent-debugboardctl-rust_darwin_arm64.tar.gz` |
+
+如果需要保留作对照或迁移用途的旧 Go host CLI，GitHub Release 中还会额外提供
+`agent-debugboardctl_<os>_<arch>.*` 兼容归档；主力 Rust CLI/TUI 则会以
+`agent-debugboardctl-rust_<os>_<arch>.*` 的名字一并发布，skill 安装脚本也会优先下载它。
 
 macOS 上未签名的 release 二进制可能触发 Gatekeeper，提示 Apple 无法验证软件。
 安装脚本会先校验 `SHA256SUMS.txt`，再移除安装后二进制的 quarantine 标记。
@@ -143,13 +147,17 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 模式时，再使用 `status`、`adc read`、`power set` 等子命令。
 
 TUI 本身只维持较温和的 60 Hz 重绘节奏，并改为通过 HTTP 轮询状态与 ADC 数据，
-因此多个 TUI 实例可以稳定同时打开。电源输出和安全 GPIO 现在合并进同一个
-自适应控件网格：方向键或 Tab 移动选择，Space/Enter 切换当前项，`i` 把当前
-GPIO 切回输入模式。高频采样改由 `adc record` 负责：它会创建 live websocket
-session，并把 1000Hz telemetry 记录到文件。
-FIXME：`adc record` 当前把 websocket 订阅速率固定在 1000Hz。后续应补一个可配
-置的采样/订阅速率参数，并加入设备侧时间信息，明确区分设备采样节拍与主机接收
-时间戳。
+因此多个 TUI 实例可以稳定同时打开。电源输出、switch 控制和安全 GPIO 现在统一进
+控制面：power 保持独立分区，`Switch` 分区会同时显示 `switch sd [target|usb-reader]`
+与 `switch usb [pc|target]`，GPIO 仍单独显示。方向键或 Tab 移动选择，Space/Enter
+切换当前项，`i` 把当前 GPIO 切回输入模式；`t` / `u` 快捷键仍然直接作用于 SD switch。
+状态区现在会同时显示 switch 的 `desired`（本地目标状态）与 `actual`（后端回读状态），
+方便现场区分“看起来稳定”和“真实稳定”。高频采样改由 `adc record` 负责：它会创建 live websocket
+session，并把 telemetry 记录为 NDJSON 文件。默认订阅速率为 1000Hz，也可用
+`--rate-hz HZ` 指定更低速率。每条输出记录都会包含主机接收时间戳和
+`metadata.requested_rate_hz`；如果固件 telemetry 带有设备侧 timing 字段，recorder
+会把它们写入 `metadata.device_timing`。当前 ADC telemetry 有 `sequence`，但没有
+显式设备时间戳，因此 `device_timing` 可能不存在。
 
 ## 构建固件
 
@@ -227,12 +235,14 @@ build/agent_debugboard/zephyr/zephyr.uf2
 - `agent-debugboard-rp2040.uf2`：用于拖拽刷写或 `picotool` 的 RP2040 固件。
 - `agent-debugboard-rp2040.elf`：用于调试的 RP2040 ELF。
 - `agent-debugboard-rp2040.map`：RP2040 链接 map。
-- `agent-debugboardctl_windows_amd64.zip`：Windows x64 native CLI。
-- `agent-debugboardctl_windows_arm64.zip`：Windows arm64 native CLI。
-- `agent-debugboardctl_linux_amd64.tar.gz`：Linux x64 native CLI。
-- `agent-debugboardctl_linux_arm64.tar.gz`：Linux arm64 native CLI。
-- `agent-debugboardctl_darwin_amd64.tar.gz`：macOS Intel native CLI。
-- `agent-debugboardctl_darwin_arm64.tar.gz`：macOS Apple Silicon native CLI。
+- `agent-debugboardctl-rust_windows_amd64.zip`：Windows x64 主力 Rust CLI/TUI。
+- `agent-debugboardctl-rust_windows_arm64.zip`：Windows arm64 主力 Rust CLI/TUI。
+- `agent-debugboardctl-rust_linux_amd64.tar.gz`：Linux x64 主力 Rust CLI/TUI。
+- `agent-debugboardctl-rust_linux_arm64.tar.gz`：Linux arm64 主力 Rust CLI/TUI。
+- `agent-debugboardctl-rust_darwin_amd64.tar.gz`：macOS Intel 主力 Rust CLI/TUI。
+- `agent-debugboardctl-rust_darwin_arm64.tar.gz`：macOS Apple Silicon 主力 Rust CLI/TUI。
+- `agent-debugboardctl_<os>_<arch>.*`：弃用 Go CLI 的兼容归档。
+- `skills-agent-debugboard.tar.gz`：`skills/agent-debugboard/` 的 Agent skill 打包。
 - `SHA256SUMS.txt`：所有 release assets 的 SHA256 校验文件。
 
 开发者可以从源码构建当前主力 host CLI：
@@ -317,23 +327,30 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- power set 20v_out on
 ```sh
 cargo run --manifest-path cmd-ng/Cargo.toml -- adc read
 cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 5v_out
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.ndjson 1000
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.ndjson 1000 --rate-hz 250
 cargo run --manifest-path cmd-ng/Cargo.toml -- adc read -v 5v_out
 cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 12v_out
 cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 20v_out
 ```
 
-人类可读 ADC 输出默认保持简洁，例如 `5v_out=540mA`。需要调试字段时使用
+人类可读 ADC 输出默认保持简洁，例如 `5v_out=0.540000A`。需要调试字段时使用
 `-v` / `--verbose`，会额外输出 `signal`、`mv` 等信息。`agent-debugboardctl --json adc read`
-返回完整诊断链路字段：`raw`、`mv`、`current_ua`、`sensor_value`，并补充
-host 侧 `ma_est` 等结构化结果。
+返回完整诊断链路字段：`raw`、`mv`、`current_ua`、`sensor_value` 和电源状态。
+主机侧不再附加 ADC 校准表或零点修正。
 
-切换 TF/SD 路由：
+切换 switch 路由：
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- sd route target
-cargo run --manifest-path cmd-ng/Cargo.toml -- sd route usb-reader
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch list
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch get sd
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch get usb
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch route sd usb-reader
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch route usb target
 ```
+
+做 mux/switch 功能验证时，建议严格顺序执行：先运行 `switch route ...`，再给硬件
+一点稳定时间（本地验证时通常等待几秒），然后再执行 `switch get ...`。如果目标是验证
+稳定性，不要对同一块板并行或交错执行相反方向的切换命令。
 
 使用安全 GPIO：
 
@@ -420,16 +437,16 @@ mDNS 只是后续可选的“名字更友好”增强，不影响正常使用。
 | 5 V 输出使能 | `5v_out` | `GP05_5V_EN` |
 | 5 V WS 使能 | `5v_ws` | `GP09_5V_WS_EN` |
 | 20 V 输出使能 | `20v_out` | `GP10_20V_EN` |
-| TF/SD 路由切换 | `sd route` | `GP06_TF_SW` |
+| TF/SD 路由切换 | `switch sd` | `GP06_TF_SW` |
+| USB mux 切换 | `switch usb` | `GP03_USB_MUX` |
 | 5 V 电流监测 | `adc read 5v_out` | `S_C_5V` |
 | 12 V 电流监测 | `adc read 12v_out` | `S_C_12V` |
 | 20 V 电流监测 | `adc read 20v_out` | `S_C_20V` |
 
-电流监测通道使用 INA139、0.2 mOhm 采样电阻、100 kOhm 输出负载和
-1000 uA/V 跨导。这些换算和校准现在由 `agent-debugboardctl` 在主机侧完成；
-其中 `5v_out` 使用基于本地负载实测数据得到的 offset 修正表，`12v_out` 和
-`20v_out` 在完成校准前仍使用理想模型。MCU 同时上报原始 ADC 调试值，以及
-通过 Zephyr `current-sense-amplifier` 标准接口得到的电流值。
+电流监测通道使用 INA139、10 mOhm 采样电阻、51 kOhm 输出负载和
+1000 uA/V 跨导。MCU 同时上报原始 ADC 调试值，以及通过 Zephyr
+`current-sense-amplifier` 标准接口得到的电流值；主机侧现在直接展示这些值，
+不再做 ADC 校准表或零点修正。
 传感器传输函数参考公开的
 [TI INA139 规格书](https://www.ti.com/product/INA139)。
 

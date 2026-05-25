@@ -38,10 +38,10 @@ cmdline access and BOOTSEL fallback.
 The board also runs a DHCPv4 server on the NCM link so the host can acquire a
 compatible address automatically.
 
-For long-lived telemetry and bidirectional control, the firmware also exposes
-`ws://172.29.203.1:8080/api/v1/ws`. Multi-client live use should create a live
-session over HTTP first and connect to the returned dedicated WebSocket URL; the
-firmware keeps the HTTP client limit aligned with the four live WebSocket slots.
+For long-lived telemetry and bidirectional control, multi-client live use should
+create a live session over HTTP first and connect to the returned dedicated
+WebSocket URL under `/api/v1/ws/<slot>`; the firmware keeps the HTTP client
+limit aligned with the four live WebSocket slots.
 When HTTP/WS is unavailable but the CDC ACM shell still works, the local shell
 command below enters the same RP2040 ROM BOOTSEL path used by the HTTP API:
 
@@ -65,9 +65,11 @@ agent-debugboardctl --json power set 20v_out off
 agent-debugboardctl --json adc read
 agent-debugboardctl --json adc read 5v_out
 agent-debugboardctl --json adc read -v 5v_out
-agent-debugboardctl --json sd get
-agent-debugboardctl --json sd route target
-agent-debugboardctl --json sd route usb-reader
+agent-debugboardctl --json switch list
+agent-debugboardctl --json switch get sd
+agent-debugboardctl --json switch get usb
+agent-debugboardctl --json switch route sd target
+agent-debugboardctl --json switch route usb target
 agent-debugboardctl --json gpio list
 agent-debugboardctl --json gpio get GP13
 agent-debugboardctl --json gpio set GP13 1
@@ -133,7 +135,7 @@ Host helper:
 ./agent-debugboardctl adc read -v 5v_out
 ./agent-debugboardctl power set 12v_out on
 ./agent-debugboardctl power set 20v_out on
-./agent-debugboardctl sd route usb-reader
+./agent-debugboardctl switch route sd usb-reader
 ./agent-debugboardctl watchdog status
 ```
 
@@ -159,6 +161,7 @@ Current schematic mapping:
 - TF/SD route switch: `GP06_TF_SW`
 - ADC current monitor inputs: `S_C_5V`, `S_C_12V`, `S_C_20V`
 
-All ADC current monitor inputs use an INA139 with a 0.2 mOhm shunt and a
-100 kOhm output load. `agent-debugboardctl` performs board-specific conversion
-on the host side and applies the `5v_out` offset correction table there.
+All ADC current monitor inputs use an INA139 with a 10 mOhm shunt and a
+51 kOhm output load. `agent-debugboardctl` now reports the firmware's raw
+current-monitor chain directly and no longer applies host-side ADC calibration
+tables or zero-point correction.

@@ -122,12 +122,17 @@ Manual downloads are also available from each GitHub Release:
 
 | OS / CPU | Artifact |
 | --- | --- |
-| Windows x64 | `agent-debugboardctl_windows_amd64.zip` |
-| Windows arm64 | `agent-debugboardctl_windows_arm64.zip` |
-| Linux x64 | `agent-debugboardctl_linux_amd64.tar.gz` |
-| Linux arm64 | `agent-debugboardctl_linux_arm64.tar.gz` |
-| macOS Intel | `agent-debugboardctl_darwin_amd64.tar.gz` |
-| macOS Apple Silicon | `agent-debugboardctl_darwin_arm64.tar.gz` |
+| Windows x64 | `agent-debugboardctl-rust_windows_amd64.zip` |
+| Windows arm64 | `agent-debugboardctl-rust_windows_arm64.zip` |
+| Linux x64 | `agent-debugboardctl-rust_linux_amd64.tar.gz` |
+| Linux arm64 | `agent-debugboardctl-rust_linux_arm64.tar.gz` |
+| macOS Intel | `agent-debugboardctl-rust_darwin_amd64.tar.gz` |
+| macOS Apple Silicon | `agent-debugboardctl-rust_darwin_arm64.tar.gz` |
+
+Legacy Go compatibility archives remain available in GitHub Releases as
+`agent-debugboardctl_<os>_<arch>.*` when you need the deprecated host CLI for
+comparison or transition workflows. The skill installer and release download
+examples prefer the primary Rust CLI/TUI archives.
 
 On macOS, unsigned release binaries may trigger a Gatekeeper warning saying Apple
 cannot verify the software. The installer verifies `SHA256SUMS.txt` first and
@@ -153,14 +158,22 @@ traditional command-line mode.
 
 The TUI keeps its own redraw cadence modest (60 Hz) and uses HTTP polling for
 status plus ADC reads, which keeps multiple concurrent TUI instances stable.
-Power outputs and safe GPIOs now share one adaptive control grid: arrow keys or
-Tab move selection, Space/Enter toggles the selected item, and `i` returns the
-selected GPIO to input mode. For high-rate capture, use `adc record`, which
-creates a live websocket session and records 1000Hz telemetry to a file.
-FIXME: `adc record` currently fixes the websocket subscription rate at 1000Hz.
-A later follow-up should make the requested rate configurable and include
-device-side timing metadata so sampling cadence can be separated from host
-receive timestamps.
+Power outputs, switch controls, and safe GPIOs now share the control surface:
+power outputs stay in their own section, the `Switch` section groups both
+`switch sd [target|usb-reader]` and `switch usb [pc|target]`, and GPIO controls
+remain separate. Arrow keys or Tab move selection, Space/Enter toggles the
+selected item, and `i` returns the selected GPIO to input mode. The `t` / `u`
+shortcuts still target the SD switch route directly. The status block now shows
+both the optimistic `desired` switch state and the backend-confirmed `actual`
+switch state, which helps diagnose transient or one-direction route failures.
+For high-rate capture, use `adc record`, which
+creates a live websocket session and records telemetry to an NDJSON file. It
+defaults to a 1000Hz websocket subscription and accepts `--rate-hz HZ` for lower
+rates. Each output record includes host receive timestamps plus
+`metadata.requested_rate_hz`; if firmware telemetry includes device-side timing
+fields, the recorder copies them into `metadata.device_timing`. Current ADC
+telemetry includes `sequence` but no explicit device timestamp, so
+`device_timing` may be absent.
 
 ## Build Firmware
 
@@ -241,12 +254,14 @@ GitHub Release, and uploads the fixed release assets.
 - `agent-debugboard-rp2040.uf2`: RP2040 firmware for drag-and-drop or `picotool`.
 - `agent-debugboard-rp2040.elf`: RP2040 ELF for debugging.
 - `agent-debugboard-rp2040.map`: RP2040 linker map.
-- `agent-debugboardctl_windows_amd64.zip`: native Windows x64 CLI.
-- `agent-debugboardctl_windows_arm64.zip`: native Windows arm64 CLI.
-- `agent-debugboardctl_linux_amd64.tar.gz`: native Linux x64 CLI.
-- `agent-debugboardctl_linux_arm64.tar.gz`: native Linux arm64 CLI.
-- `agent-debugboardctl_darwin_amd64.tar.gz`: native macOS Intel CLI.
-- `agent-debugboardctl_darwin_arm64.tar.gz`: native macOS Apple Silicon CLI.
+- `agent-debugboardctl-rust_windows_amd64.zip`: primary Rust CLI/TUI for Windows x64.
+- `agent-debugboardctl-rust_windows_arm64.zip`: primary Rust CLI/TUI for Windows arm64.
+- `agent-debugboardctl-rust_linux_amd64.tar.gz`: primary Rust CLI/TUI for Linux x64.
+- `agent-debugboardctl-rust_linux_arm64.tar.gz`: primary Rust CLI/TUI for Linux arm64.
+- `agent-debugboardctl-rust_darwin_amd64.tar.gz`: primary Rust CLI/TUI for macOS Intel.
+- `agent-debugboardctl-rust_darwin_arm64.tar.gz`: primary Rust CLI/TUI for macOS Apple Silicon.
+- `agent-debugboardctl_<os>_<arch>.*`: deprecated Go CLI compatibility archives.
+- `skills-agent-debugboard.tar.gz`: Agent skill bundle for `skills/agent-debugboard/`.
 - `SHA256SUMS.txt`: SHA256 checksums for all release assets.
 
 Developers can build the primary host CLI from source:
@@ -338,24 +353,34 @@ Read current-monitor ADC channels:
 ```sh
 cargo run --manifest-path cmd-ng/Cargo.toml -- adc read
 cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 5v_out
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.ndjson 1000
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.ndjson 1000 --rate-hz 250
 cargo run --manifest-path cmd-ng/Cargo.toml -- adc read -v 5v_out
 cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 12v_out
 cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 20v_out
 ```
 
 Human-readable ADC output is concise by default, for example
-`5v_out=540mA`. Use `-v` / `--verbose` when you need debug fields such as
+`5v_out=0.540000A`. Use `-v` / `--verbose` when you need debug fields such as
 `signal` and `mv`. `agent-debugboardctl --json adc read` carries the raw
 diagnostic chain (`raw`, `mv`, `current_ua`, `sensor_value`) in addition
-to the power-output state, and adds host-side `ma_est`.
+to the power-output state. The host CLI no longer applies host-side ADC
+calibration tables or zero-point correction.
 
-Switch TF/SD route:
+Switch routes:
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- sd route target
-cargo run --manifest-path cmd-ng/Cargo.toml -- sd route usb-reader
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch list
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch get sd
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch get usb
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch route sd usb-reader
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch route usb target
 ```
+
+For functional verification of mux/switch controls, run the commands strictly
+sequentially: issue `switch route ...`, wait briefly for hardware settling
+(typically a few seconds in local validation), then run `switch get ...`. Avoid
+parallel or interleaved opposite-direction tests on the same board when you are
+trying to validate stability.
 
 Use safe GPIOs:
 
@@ -435,10 +460,11 @@ workflows such as BOOTSEL fallback; it is not the primary automation/control
 transport. When the CDC ACM shell is available, the local `bootloader` shell
 command enters the same RP2040 ROM BOOTSEL path used by the HTTP API.
 
-For long-lived telemetry and bidirectional control over a single socket, the
-firmware also exposes a WebSocket endpoint at `ws://172.29.203.1:8080/api/v1/ws`.
-WebSocket clients can observe watchdog status in status snapshots, but they do
-not feed the watchdog; firmware supervision is autonomous.
+For long-lived telemetry and bidirectional control over a single socket, create
+a live session over HTTP first and then connect to the returned dedicated
+WebSocket URL under `/api/v1/ws/<slot>`. WebSocket clients can observe watchdog
+status in status snapshots, but they do not feed the watchdog; firmware
+supervision is autonomous.
 
 mDNS is intentionally not part of the first-class workflow yet. DHCP already
 solves the plug-and-play addressing problem across operating systems; mDNS is a
@@ -453,18 +479,17 @@ normal use.
 | 5 V output enable | `5v_out` | `GP05_5V_EN` |
 | 5 V WS enable | `5v_ws` | `GP09_5V_WS_EN` |
 | 20 V output enable | `20v_out` | `GP10_20V_EN` |
-| TF/SD route switch | `sd route` | `GP06_TF_SW` |
+| TF/SD route switch | `switch sd` | `GP06_TF_SW` |
+| USB mux switch | `switch usb` | `GP03_USB_MUX` |
 | 5 V current monitor | `adc read 5v_out` | `S_C_5V` |
 | 12 V current monitor | `adc read 12v_out` | `S_C_12V` |
 | 20 V current monitor | `adc read 20v_out` | `S_C_20V` |
 
-The current monitor channels use INA139 with a 0.2 mOhm shunt, 100 kOhm output
-load, and 1000 uA/V transconductance. `agent-debugboardctl` applies host-side
-correction to the standard current values reported by the MCU; `5v_out` uses an
-offset correction table derived from local load measurements, while `12v_out`
-and `20v_out` keep the ideal model until calibrated. The MCU reports raw ADC
-diagnostics plus standard sensor current values from Zephyr's
-`current-sense-amplifier` interface.
+The current monitor channels use INA139 with a 10 mOhm shunt, 51 kOhm output
+load, and 1000 uA/V transconductance. The MCU reports raw ADC diagnostics plus
+standard sensor current values from Zephyr's `current-sense-amplifier`
+interface, and the host CLI now presents those values directly without any
+host-side calibration table or zero-point correction.
 See the public
 [TI INA139 datasheet](https://www.ti.com/product/INA139) for the sensor
 transfer function.
