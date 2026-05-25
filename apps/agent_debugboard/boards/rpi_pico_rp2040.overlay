@@ -55,41 +55,38 @@
 	};
 
 	/*
-	 * Board current monitors use INA139 with a 0.2 mOhm shunt and a
-	 * 100 kOhm output load resistor. The INA139 datasheet transfer function is:
+	 * Board current monitors use INA139 with a 10 mOhm shunt and a
+	 * 51 kOhm output load resistor. The INA139 datasheet transfer function is:
 	 *
 	 *   Vout = Is * Rs * RL / 1 kOhm
 	 *
-	 * The real hardware gain is therefore RL / 1 kOhm = 100, giving an
-	 * effective scale of 0.2 mOhm * 100 = 20 mV/A.
+	 * The real hardware gain is therefore RL / 1 kOhm = 51, giving an
+	 * effective scale of 10 mOhm * 51 = 510 mV/A.
 	 *
-	 * Zephyr's current-sense-amplifier binding stores the shunt resistor as an
-	 * integer number of milli-ohms, so it cannot represent the real 0.2 mOhm
-	 * shunt directly. Use the equivalent 1 mOhm * 20 scale here to preserve the
-	 * same 20 mV/A nominal transfer function. Board-specific offset and
-	 * piecewise calibration stay in firmware/user space.
+	 * Represent that directly in Zephyr's current-sense-amplifier binding and
+	 * keep additional board-specific calibration out of the host path.
 	 */
 	sense_5v_out: current-sense-5v-out {
 		compatible = "current-sense-amplifier";
 		io-channels = <&adc 0>;
-		sense-resistor-milli-ohms = <1>;
-		sense-gain-mult = <20>;
+		sense-resistor-milli-ohms = <10>;
+		sense-gain-mult = <51>;
 		sense-gain-div = <1>;
 	};
 
 	sense_12v_out: current-sense-12v-out {
 		compatible = "current-sense-amplifier";
 		io-channels = <&adc 1>;
-		sense-resistor-milli-ohms = <1>;
-		sense-gain-mult = <20>;
+		sense-resistor-milli-ohms = <10>;
+		sense-gain-mult = <51>;
 		sense-gain-div = <1>;
 	};
 
 	sense_20v_out: current-sense-20v-out {
 		compatible = "current-sense-amplifier";
 		io-channels = <&adc 2>;
-		sense-resistor-milli-ohms = <1>;
-		sense-gain-mult = <20>;
+		sense-resistor-milli-ohms = <10>;
+		sense-gain-mult = <51>;
 		sense-gain-div = <1>;
 	};
 };
