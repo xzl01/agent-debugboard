@@ -4,9 +4,8 @@ use crate::adc::{transform_readings, AdcReading};
 use crate::json_contract::{JsonError, JSON_SCHEMA};
 use crate::monitoring::BoardMonitoring;
 use anyhow::{anyhow, Result};
-use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -53,8 +52,17 @@ pub struct TuiStatusGpio {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TuiStatusSd {
+pub struct TuiStatusSwitchRoute {
+    #[serde(default)]
     pub route: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TuiStatusSwitches {
+    #[serde(default)]
+    pub sd: TuiStatusSwitchRoute,
+    #[serde(default)]
+    pub usb: TuiStatusSwitchRoute,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -81,7 +89,7 @@ pub struct WsStatusSnapshot {
     #[serde(default)]
     pub power_outputs: Vec<TuiStatusPowerOutput>,
     #[serde(default)]
-    pub sd: TuiStatusSd,
+    pub switches: TuiStatusSwitches,
     #[serde(default)]
     pub watchdog: TuiStatusWatchdog,
     #[serde(default)]
@@ -101,6 +109,8 @@ pub struct WsTelemetryMessage {
     pub sequence: Option<u32>,
     #[serde(default)]
     pub readings: Vec<AdcReading>,
+    #[serde(default, flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +123,8 @@ pub struct WsCommandRequest {
     pub topic: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -150,22 +162,6 @@ impl WsClient {
         }
     }
 
-    pub fn ws_url_from_base(base_url: &str) -> Result<String> {
-        let parsed = Url::parse(base_url)?;
-        let scheme = match parsed.scheme() {
-            "http" => "ws",
-            "https" => "wss",
-            other => return Err(anyhow!("unsupported base URL scheme {:?}", other)),
-        };
-
-        let mut url = parsed;
-        url.set_scheme(scheme)
-            .map_err(|_| anyhow!("set scheme failed"))?;
-        url.set_path(&format!("{}/api/v1/ws", url.path().trim_end_matches('/')));
-        url.set_query(None);
-        Ok(url.to_string())
-    }
-
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::SeqCst)
     }
@@ -187,7 +183,7 @@ impl WsClient {
         let ws_url = self
             .ws_url
             .clone()
-            .unwrap_or_else(|| Self::ws_url_from_base(&self.base_url).expect("derive ws url"));
+            .ok_or_else(|| anyhow!("missing dedicated websocket URL"))?;
         let (socket, _) = connect(&ws_url)?;
         *guard = Some(socket);
         Ok(())
@@ -267,6 +263,7 @@ pub fn subscribe_request(rate_hz: i32) -> WsCommandRequest {
         command: None,
         topic: Some("live".to_string()),
         output: None,
+        name: None,
         state: None,
         route: None,
         gpio: None,
@@ -300,12 +297,6 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
     use tungstenite::{accept, Message};
-
-    #[test]
-    fn ws_url_from_base_matches_go() {
-        let ws_url = WsClient::ws_url_from_base("http://172.29.203.1:8080").unwrap();
-        assert_eq!(ws_url, "ws://172.29.203.1:8080/api/v1/ws");
-    }
 
     #[test]
     fn ws_client_close_advances_generation() {
@@ -467,7 +458,8 @@ mod tests {
         match client.recv().unwrap() {
             WsMessage::Telemetry(message) => {
                 assert_eq!(message.readings.len(), 1);
-                assert_eq!(message.readings[0].ma_est, Some(500));
+                assert_eq!(message.readings[0].current_ua, Some(850000));
+                assert_eq!(message.readings[0].ma_est, None);
             }
             _ => panic!("expected telemetry message"),
         }

@@ -482,18 +482,97 @@ fn run_adc_record(
     stderr: &mut dyn Write,
 ) -> Result<u8> {
     let cleaned = strip_passthrough_flags(args);
-    if cleaned.len() < 3 || cleaned.len() > 4 {
-        writeln!(
-            stderr,
-            "usage: agent-debugboardctl adc record OUTPUT_PATH [MAX_SAMPLES]"
-        )?;
+    let usage = "usage: agent-debugboardctl adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]";
+    if cleaned.len() < 3 {
+        writeln!(stderr, "{usage}")?;
         return Ok(2);
     }
-    let output = cleaned[2].clone();
-    let max_samples = cleaned.get(3).and_then(|s| s.parse::<usize>().ok());
-    crate::recorder::record_adc_ws_to_file(base_url, timeout, &output, max_samples)?;
-    writeln!(stdout, "recorded adc websocket stream to {output}")?;
+
+    let parsed = match parse_adc_record_args(&cleaned) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            writeln!(stderr, "{err}")?;
+            return Ok(2);
+        }
+    };
+    crate::recorder::record_adc_ws_to_file(
+        base_url,
+        timeout,
+        &parsed.output,
+        parsed.max_samples,
+        parsed.rate_hz,
+    )?;
+    writeln!(stdout, "recorded adc websocket stream to {}", parsed.output)?;
     Ok(0)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AdcRecordArgs {
+    output: String,
+    max_samples: Option<usize>,
+    rate_hz: i32,
+}
+
+fn parse_adc_record_args(cleaned: &[String]) -> Result<AdcRecordArgs, String> {
+    let usage = "usage: agent-debugboardctl adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]";
+    if cleaned.len() < 3 {
+        return Err(usage.to_string());
+    }
+
+    let output = cleaned[2].clone();
+    let mut positional = Vec::new();
+    let mut rate_hz = crate::recorder::DEFAULT_ADC_RECORD_RATE_HZ;
+    let mut index = 3usize;
+    while index < cleaned.len() {
+        match cleaned[index].as_str() {
+            "--rate-hz" => {
+                let Some(value) = cleaned.get(index + 1) else {
+                    return Err(usage.to_string());
+                };
+                rate_hz = parse_adc_record_rate_hz(value)?;
+                index += 2;
+            }
+            other if other.starts_with("--rate-hz=") => {
+                let value = other.trim_start_matches("--rate-hz=");
+                rate_hz = parse_adc_record_rate_hz(value)?;
+                index += 1;
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("unsupported adc record option {other:?}"));
+            }
+            other => {
+                positional.push(other.to_string());
+                index += 1;
+            }
+        }
+    }
+    if positional.len() > 1 {
+        return Err(usage.to_string());
+    }
+
+    let max_samples = match positional.first() {
+        Some(value) => match value.parse::<usize>() {
+            Ok(max_samples) if max_samples > 0 => Some(max_samples),
+            _ => return Err("MAX_SAMPLES must be a positive integer".to_string()),
+        },
+        None => None,
+    };
+
+    Ok(AdcRecordArgs {
+        output,
+        max_samples,
+        rate_hz,
+    })
+}
+
+fn parse_adc_record_rate_hz(value: &str) -> Result<i32, String> {
+    let rate_hz: i32 = value
+        .parse()
+        .map_err(|_| "--rate-hz must be a positive integer up to 1000".to_string())?;
+    if !(1..=1000).contains(&rate_hz) {
+        return Err("--rate-hz must be a positive integer up to 1000".to_string());
+    }
+    Ok(rate_hz)
 }
 
 fn request_from_args(args: &[String]) -> Result<BoardRequest, String> {
@@ -507,28 +586,18 @@ fn request_from_args(args: &[String]) -> Result<BoardRequest, String> {
             if cleaned.len() != 1 {
                 return Err("usage: agent-debugboardctl status".to_string());
             }
-            Ok(BoardRequest {
-                method: Method::GET,
-                path: "/api/v1/status".to_string(),
-                query: vec![],
-                body: None,
-            })
+            Ok(get_request("/api/v1/status"))
         }
         "power" => power_request(&cleaned),
+        "switch" => switch_request(&cleaned),
         "adc" => adc_request(&cleaned),
-        "sd" => sd_request(&cleaned),
         "gpio" => gpio_request(&cleaned),
         "watchdog" => watchdog_request(&cleaned),
         "bootloader" => {
             if cleaned.len() != 1 {
                 return Err("usage: agent-debugboardctl bootloader".to_string());
             }
-            Ok(BoardRequest {
-                method: Method::POST,
-                path: "/api/v1/bootloader".to_string(),
-                query: vec![],
-                body: None,
-            })
+            Ok(post_request("/api/v1/bootloader"))
         }
         other => Err(format!("unsupported command {:?} over HTTP", other)),
     }
@@ -543,34 +612,22 @@ fn power_request(args: &[String]) -> Result<BoardRequest, String> {
             if args.len() != 2 {
                 return Err("usage: agent-debugboardctl power list".to_string());
             }
-            Ok(BoardRequest {
-                method: Method::GET,
-                path: "/api/v1/power".to_string(),
-                query: vec![],
-                body: None,
-            })
+            Ok(get_request("/api/v1/power"))
         }
         "get" => {
             if args.len() != 3 {
                 return Err("usage: agent-debugboardctl power get NAME".to_string());
             }
-            Ok(BoardRequest {
-                method: Method::GET,
-                path: format!("/api/v1/power/{}", args[2]),
-                query: vec![],
-                body: None,
-            })
+            Ok(get_request(format!("/api/v1/power/{}", args[2])))
         }
         "set" => {
             if args.len() != 4 {
                 return Err("usage: agent-debugboardctl power set NAME on|off".to_string());
             }
-            Ok(BoardRequest {
-                method: Method::PUT,
-                path: format!("/api/v1/power/{}", args[2]),
-                query: vec![],
-                body: Some(json!({ "state": args[3] })),
-            })
+            Ok(put_request(
+                format!("/api/v1/power/{}", args[2]),
+                json!({ "state": args[3] }),
+            ))
         }
         other => Err(format!("unsupported power action {:?}", other)),
     }
@@ -587,42 +644,36 @@ fn adc_request(args: &[String]) -> Result<BoardRequest, String> {
     if let Some(name) = args.get(2) {
         query.push(("channel".to_string(), name.clone()));
     }
-    Ok(BoardRequest {
-        method: Method::GET,
-        path: "/api/v1/adc/read".to_string(),
-        query,
-        body: None,
-    })
+    Ok(get_request_with_query("/api/v1/adc/read", query))
 }
 
-fn sd_request(args: &[String]) -> Result<BoardRequest, String> {
+fn switch_request(args: &[String]) -> Result<BoardRequest, String> {
     if args.len() < 2 {
-        return Err("usage: agent-debugboardctl sd get|route ...".to_string());
+        return Err("usage: agent-debugboardctl switch list|get|route ...".to_string());
     }
     match args[1].as_str() {
-        "get" => {
+        "list" => {
             if args.len() != 2 {
-                return Err("usage: agent-debugboardctl sd get".to_string());
+                return Err("usage: agent-debugboardctl switch list".to_string());
             }
-            Ok(BoardRequest {
-                method: Method::GET,
-                path: "/api/v1/sd".to_string(),
-                query: vec![],
-                body: None,
-            })
+            Ok(get_request("/api/v1/switch"))
+        }
+        "get" => {
+            if args.len() != 3 {
+                return Err("usage: agent-debugboardctl switch get sd|usb".to_string());
+            }
+            Ok(get_request(format!("/api/v1/switch/{}", args[2])))
         }
         "route" => {
-            if args.len() != 3 {
-                return Err("usage: agent-debugboardctl sd route target|usb-reader".to_string());
+            if args.len() != 4 {
+                return Err("usage: agent-debugboardctl switch route sd|usb ROUTE".to_string());
             }
-            Ok(BoardRequest {
-                method: Method::PUT,
-                path: "/api/v1/sd".to_string(),
-                query: vec![],
-                body: Some(json!({ "route": args[2] })),
-            })
+            Ok(put_request(
+                format!("/api/v1/switch/{}", args[2]),
+                json!({ "route": args[3] }),
+            ))
         }
-        other => Err(format!("unsupported sd action {:?}", other)),
+        other => Err(format!("unsupported switch action {:?}", other)),
     }
 }
 
@@ -635,35 +686,26 @@ fn gpio_request(args: &[String]) -> Result<BoardRequest, String> {
             if args.len() != 2 {
                 return Err("usage: agent-debugboardctl gpio list".to_string());
             }
-            Ok(BoardRequest {
-                method: Method::GET,
-                path: "/api/v1/gpio".to_string(),
-                query: vec![],
-                body: None,
-            })
+            Ok(get_request("/api/v1/gpio"))
         }
         "input" => {
             if args.len() != 3 {
                 return Err("usage: agent-debugboardctl gpio input NAME".to_string());
             }
-            Ok(BoardRequest {
-                method: Method::PUT,
-                path: format!("/api/v1/gpio/{}", args[2]),
-                query: vec![],
-                body: Some(json!({ "direction": "input" })),
-            })
+            Ok(put_request(
+                format!("/api/v1/gpio/{}", args[2]),
+                json!({ "direction": "input" }),
+            ))
         }
         "set" => {
             if args.len() != 4 {
                 return Err("usage: agent-debugboardctl gpio set NAME 0|1".to_string());
             }
             let value = args[3].parse::<i32>().unwrap_or(0);
-            Ok(BoardRequest {
-                method: Method::PUT,
-                path: format!("/api/v1/gpio/{}", args[2]),
-                query: vec![],
-                body: Some(json!({ "direction": "output", "value": value })),
-            })
+            Ok(put_request(
+                format!("/api/v1/gpio/{}", args[2]),
+                json!({ "direction": "output", "value": value }),
+            ))
         }
         other => Err(format!("unsupported gpio action {:?}", other)),
     }
@@ -674,16 +716,47 @@ fn watchdog_request(args: &[String]) -> Result<BoardRequest, String> {
         return Err("usage: agent-debugboardctl watchdog status".to_string());
     }
     match args[1].as_str() {
-        "status" => Ok(BoardRequest {
-            method: Method::GET,
-            path: "/api/v1/watchdog".to_string(),
-            query: vec![],
-            body: None,
-        }),
+        "status" => Ok(get_request("/api/v1/watchdog")),
         other => Err(format!(
             "unsupported watchdog action {:?} (watchdog is supervised by firmware)",
             other
         )),
+    }
+}
+
+fn get_request(path: impl Into<String>) -> BoardRequest {
+    BoardRequest {
+        method: Method::GET,
+        path: path.into(),
+        query: vec![],
+        body: None,
+    }
+}
+
+fn get_request_with_query(path: impl Into<String>, query: Vec<(String, String)>) -> BoardRequest {
+    BoardRequest {
+        method: Method::GET,
+        path: path.into(),
+        query,
+        body: None,
+    }
+}
+
+fn put_request(path: impl Into<String>, body: Value) -> BoardRequest {
+    BoardRequest {
+        method: Method::PUT,
+        path: path.into(),
+        query: vec![],
+        body: Some(body),
+    }
+}
+
+fn post_request(path: impl Into<String>) -> BoardRequest {
+    BoardRequest {
+        method: Method::POST,
+        path: path.into(),
+        query: vec![],
+        body: None,
     }
 }
 
@@ -762,6 +835,10 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
     writeln!(writer, "  agent-debugboardctl power set 12v_out on")?;
     writeln!(writer, "  agent-debugboardctl adc read")?;
     writeln!(writer, "  agent-debugboardctl adc read -v 5v_out")?;
+    writeln!(
+        writer,
+        "  agent-debugboardctl adc record /tmp/adc.ndjson 1000 --rate-hz 250"
+    )?;
     writeln!(writer, "  agent-debugboardctl watchdog status\n")?;
     writeln!(writer, "      --url <URL>")?;
     writeln!(writer, "      --addr <ADDR>")?;
@@ -902,7 +979,7 @@ mod tests {
     }
 
     #[test]
-    fn run_adc_read_default_text_uses_host_side_calibration() {
+    fn run_adc_read_default_text_uses_raw_current() {
         let cli = Cli::parse_from(["cmd", "adc", "read", "5v_out"]);
         let client = FakeClient {
             response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
@@ -921,11 +998,11 @@ mod tests {
             requests[0].query[0],
             ("channel".to_string(), "5v_out".to_string())
         );
-        assert_eq!(String::from_utf8(stdout).unwrap().trim(), "5v_out=500mA");
+        assert_eq!(String::from_utf8(stdout).unwrap().trim(), "5v_out=0.850000A");
     }
 
     #[test]
-    fn run_adc_read_json_uses_host_side_calibration() {
+    fn run_adc_read_json_preserves_raw_current_fields() {
         let cli = Cli::parse_from(["cmd", "--json", "adc", "read", "5v_out"]);
         let client = FakeClient {
             response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
@@ -939,7 +1016,7 @@ mod tests {
         assert_eq!(code, 0);
         assert_eq!(
             String::from_utf8(stdout).unwrap().trim(),
-            r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","raw":null,"current_valid":true,"mv":17,"ma_est":500,"power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#
+            r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","raw":null,"power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#
         );
     }
 
@@ -958,12 +1035,12 @@ mod tests {
         assert_eq!(code, 0);
         assert_eq!(
             String::from_utf8(stdout).unwrap().trim(),
-            "5v_out signal=S_C_5V power=on current=0.850000A current_ua=850000 raw=null mv=17 ma_est=500"
+            "5v_out signal=S_C_5V power=on current=0.850000A current_ua=850000 raw=null"
         );
     }
 
     #[test]
-    fn run_adc_read_power_disabled_reports_zero_current() {
+    fn run_adc_read_power_disabled_still_reports_raw_current() {
         let cli = Cli::parse_from(["cmd", "adc", "read", "5v_out"]);
         let client = FakeClient {
             response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":false,"raw":24,"mv":19,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
@@ -975,7 +1052,46 @@ mod tests {
 
         let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
         assert_eq!(code, 0);
-        assert_eq!(String::from_utf8(stdout).unwrap().trim(), "5v_out=0mA");
+        assert_eq!(String::from_utf8(stdout).unwrap().trim(), "5v_out=0.850000A");
+    }
+
+    #[test]
+    fn parse_adc_record_rate_accepts_firmware_supported_range() {
+        assert_eq!(parse_adc_record_rate_hz("1").unwrap(), 1);
+        assert_eq!(parse_adc_record_rate_hz("1000").unwrap(), 1000);
+        assert!(parse_adc_record_rate_hz("0").is_err());
+        assert!(parse_adc_record_rate_hz("1001").is_err());
+        assert!(parse_adc_record_rate_hz("fast").is_err());
+    }
+
+    #[test]
+    fn parse_adc_record_args_accepts_optional_rate() {
+        let parsed = parse_adc_record_args(&[
+            "adc".to_string(),
+            "record".to_string(),
+            "/tmp/adc.ndjson".to_string(),
+            "42".to_string(),
+            "--rate-hz".to_string(),
+            "250".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(parsed.output, "/tmp/adc.ndjson");
+        assert_eq!(parsed.max_samples, Some(42));
+        assert_eq!(parsed.rate_hz, 250);
+    }
+
+    #[test]
+    fn parse_adc_record_args_keeps_default_rate() {
+        let parsed = parse_adc_record_args(&[
+            "adc".to_string(),
+            "record".to_string(),
+            "/tmp/adc.ndjson".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(parsed.max_samples, None);
+        assert_eq!(parsed.rate_hz, crate::recorder::DEFAULT_ADC_RECORD_RATE_HZ);
     }
 
     #[test]
@@ -1001,11 +1117,6 @@ mod tests {
     #[test]
     fn run_sd_gpio_and_bootloader_mappings() {
         let tests = [
-            (
-                vec!["cmd", "sd", "route", "usb-reader"],
-                Method::PUT,
-                "/api/v1/sd",
-            ),
             (
                 vec!["cmd", "gpio", "input", "GP13"],
                 Method::PUT,
