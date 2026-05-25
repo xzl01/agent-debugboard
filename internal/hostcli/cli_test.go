@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,34 @@ type fakeClient struct {
 	requests []boardRequest
 	response string
 	err      error
+}
+
+func mustTestWSURL(t *testing.T, baseURL string) string {
+	t.Helper()
+
+	parsed, err := url.Parse(resolveBaseURL(baseURL))
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+
+	switch parsed.Scheme {
+	case "http":
+		parsed.Scheme = "ws"
+	case "https":
+		parsed.Scheme = "wss"
+	default:
+		t.Fatalf("unexpected scheme %q", parsed.Scheme)
+	}
+
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/api/v1/ws/1"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+func newTestWSClient(t *testing.T, baseURL string) *WSClient {
+	t.Helper()
+	return NewWSClientURL(baseURL, mustTestWSURL(t, baseURL))
 }
 
 func (c *fakeClient) Do(ctx context.Context, request boardRequest) ([]byte, error) {
@@ -419,13 +448,13 @@ func TestHTTPClientBuildsRequestAndEncodesJSON(t *testing.T) {
 	}
 }
 
-func TestWSURLFromBase(t *testing.T) {
-	wsURL, err := wsURLFromBase("http://172.29.203.1:8080")
-	if err != nil {
-		t.Fatalf("wsURLFromBase() error = %v", err)
+func TestNewWSClientURLNormalizesBaseAndWSURL(t *testing.T) {
+	client := NewWSClientURL("172.29.203.1:8080", " ws://172.29.203.1:8080/api/v1/ws/2 ")
+	if client.baseURL != DefaultBaseURL {
+		t.Fatalf("baseURL = %q", client.baseURL)
 	}
-	if wsURL != "ws://172.29.203.1:8080/api/v1/ws" {
-		t.Fatalf("wsURL = %q", wsURL)
+	if client.wsURL != "ws://172.29.203.1:8080/api/v1/ws/2" {
+		t.Fatalf("wsURL = %q", client.wsURL)
 	}
 }
 
@@ -477,7 +506,7 @@ func TestWSClientConnectAndSend(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewWSClient(server.URL)
+	client := newTestWSClient(t, server.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := client.Connect(ctx); err != nil {
@@ -498,7 +527,7 @@ func TestWSClientConnectAndSend(t *testing.T) {
 }
 
 func TestWSClientCloseAdvancesGeneration(t *testing.T) {
-	client := NewWSClient(DefaultBaseURL)
+	client := newTestWSClient(t, DefaultBaseURL)
 	before := client.Generation()
 	if before == 0 {
 		t.Fatalf("expected non-zero generation")
@@ -538,7 +567,7 @@ func TestNextStreamMessageParsesResult(t *testing.T) {
 	}))
 	defer server.Close()
 
-	wsClient := NewWSClient(server.URL)
+	wsClient := newTestWSClient(t, server.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := wsClient.Connect(ctx); err != nil {
@@ -580,7 +609,7 @@ func TestMultipleWSClientsConnectIndependently(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	clients := []*WSClient{NewWSClient(server.URL), NewWSClient(server.URL)}
+	clients := []*WSClient{newTestWSClient(t, server.URL), newTestWSClient(t, server.URL)}
 	for _, client := range clients {
 		if err := client.Connect(ctx); err != nil {
 			t.Fatalf("Connect() error = %v", err)
