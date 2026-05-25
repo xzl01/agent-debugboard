@@ -41,7 +41,7 @@ struct debugboard_http_power_set_request {
 	char state[8];
 };
 
-struct debugboard_http_sd_route_request {
+struct debugboard_http_switch_route_request {
 	char route[16];
 };
 
@@ -112,8 +112,8 @@ static const struct json_obj_descr power_set_request_descr[] = {
 	JSON_OBJ_DESCR_PRIM(struct debugboard_http_power_set_request, state, JSON_TOK_STRING_BUF),
 };
 
-static const struct json_obj_descr sd_route_request_descr[] = {
-	JSON_OBJ_DESCR_PRIM(struct debugboard_http_sd_route_request, route, JSON_TOK_STRING_BUF),
+static const struct json_obj_descr switch_route_request_descr[] = {
+	JSON_OBJ_DESCR_PRIM(struct debugboard_http_switch_route_request, route, JSON_TOK_STRING_BUF),
 };
 
 static const struct json_obj_descr gpio_write_request_descr[] = {
@@ -613,9 +613,11 @@ static int debugboard_http_handle_status(struct http_client_ctx *client,
 				 ",\"power_inputs\":[{\"name\":\"5v_fin\",\"controllable\":false,\"measured\":false}]"
 				 ",\"power_outputs\":") < 0 ||
 	    debugboard_http_json_power_outputs(&env) < 0 ||
-	    debugboard_http_append(&env, ",\"sd\":{\"route\":") < 0 ||
+	    debugboard_http_append(&env, ",\"switches\":{\"sd\":{\"route\":") < 0 ||
 	    debugboard_http_json_string(&env, debugboard_sd_route_name()) < 0 ||
-	    debugboard_http_append(&env, "},\"adc_channels\":") < 0 ||
+	    debugboard_http_append(&env, "},\"usb\":{\"route\":") < 0 ||
+	    debugboard_http_json_string(&env, debugboard_usb_route_name()) < 0 ||
+	    debugboard_http_append(&env, "}},\"adc_channels\":") < 0 ||
 	    debugboard_http_json_adc_channels(&env) < 0 ||
 	    debugboard_http_append(&env, ",\"watchdog\":") < 0 ||
 	    debugboard_http_json_watchdog_status(&env) < 0 ||
@@ -851,13 +853,14 @@ too_large:
 	return 0;
 }
 
-static int debugboard_http_handle_sd(struct http_client_ctx *client,
-				     enum http_transaction_status status,
-				     const struct http_request_ctx *request_ctx,
-				     struct http_response_ctx *response_ctx,
-				     void *user_data)
+static int debugboard_http_handle_switch(struct http_client_ctx *client,
+				 enum http_transaction_status status,
+				 const struct http_request_ctx *request_ctx,
+				 struct http_response_ctx *response_ctx,
+				 void *user_data)
 {
 	static uint8_t json_buf[DEBUGBOARD_HTTP_JSON_BUFSZ];
+	char *path;
 	struct debugboard_http_env env = {
 		.buf = (char *)json_buf,
 		.cap = sizeof(json_buf),
@@ -869,14 +872,38 @@ static int debugboard_http_handle_sd(struct http_client_ctx *client,
 		return 0;
 	}
 
+	path = strchr((char *)client->url_buffer + strlen("/api/v1/switch"), '/');
 	k_mutex_lock(&debugboard_http_lock, K_FOREVER);
 	switch (client->method) {
 	case HTTP_GET:
-		if (debugboard_http_json_begin(&env, "sd", true) < 0 ||
-		    debugboard_http_append(&env, ",\"action\":\"get\",\"route\":") < 0 ||
-		    debugboard_http_json_string(&env, debugboard_sd_route_name()) < 0 ||
-		    debugboard_http_append(&env, "}\n") < 0) {
-			break;
+		if (path == NULL) {
+			if (debugboard_http_json_begin(&env, "switch", true) < 0 ||
+			    debugboard_http_append(&env, ",\"action\":\"list\",\"switches\":{\"sd\":{\"route\":") < 0 ||
+			    debugboard_http_json_string(&env, debugboard_sd_route_name()) < 0 ||
+			    debugboard_http_append(&env, "},\"usb\":{\"route\":") < 0 ||
+			    debugboard_http_json_string(&env, debugboard_usb_route_name()) < 0 ||
+			    debugboard_http_append(&env, "}}}\n") < 0) {
+				break;
+			}
+		} else if (strcmp(path + 1, "sd") == 0) {
+			if (debugboard_http_json_begin(&env, "switch", true) < 0 ||
+			    debugboard_http_append(&env, ",\"action\":\"get\",\"name\":\"sd\",\"route\":") < 0 ||
+			    debugboard_http_json_string(&env, debugboard_sd_route_name()) < 0 ||
+			    debugboard_http_append(&env, "}\n") < 0) {
+				break;
+			}
+		} else if (strcmp(path + 1, "usb") == 0) {
+			if (debugboard_http_json_begin(&env, "switch", true) < 0 ||
+			    debugboard_http_append(&env, ",\"action\":\"get\",\"name\":\"usb\",\"route\":") < 0 ||
+			    debugboard_http_json_string(&env, debugboard_usb_route_name()) < 0 ||
+			    debugboard_http_append(&env, "}\n") < 0) {
+				break;
+			}
+		} else {
+			k_mutex_unlock(&debugboard_http_lock);
+			debugboard_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_404_NOT_FOUND,
+					     "switch", "not_found", "unknown switch");
+			return 0;
 		}
 
 		k_mutex_unlock(&debugboard_http_lock);
@@ -884,54 +911,81 @@ static int debugboard_http_handle_sd(struct http_client_ctx *client,
 		return 0;
 
 	case HTTP_PUT: {
-		struct debugboard_http_sd_route_request req = { 0 };
-		enum debugboard_sd_route route;
+		struct debugboard_http_switch_route_request req = { 0 };
 		int ret;
+
+		if (path == NULL) {
+			k_mutex_unlock(&debugboard_http_lock);
+			debugboard_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+					     "switch", "missing_switch", "missing switch name in URL");
+			return 0;
+		}
 
 		if (request_ctx->data == NULL || request_ctx->data_len == 0U) {
 			k_mutex_unlock(&debugboard_http_lock);
 			debugboard_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
-					     "sd", "missing_body", "missing JSON request body");
+					     "switch", "missing_body", "missing JSON request body");
 			return 0;
 		}
 
 		ret = json_obj_parse((char *)request_ctx->data, request_ctx->data_len,
-				     sd_route_request_descr,
-				     ARRAY_SIZE(sd_route_request_descr), &req);
+				     switch_route_request_descr,
+				     ARRAY_SIZE(switch_route_request_descr), &req);
 		if (ret < 0) {
 			k_mutex_unlock(&debugboard_http_lock);
 			debugboard_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
-					     "sd", "invalid_route",
-					     "route must be target or usb-reader");
+					     "switch", "invalid_route", "route must be valid for the selected switch");
 			return 0;
 		}
 
-		if (strcmp(req.route, "target") == 0) {
-			route = DEBUGBOARD_SD_ROUTE_TARGET;
-		} else if (strcmp(req.route, "usb-reader") == 0 || strcmp(req.route, "reader") == 0) {
-			route = DEBUGBOARD_SD_ROUTE_USB_READER;
+		if (strcmp(path + 1, "sd") == 0) {
+			enum debugboard_sd_route route;
+			if (strcmp(req.route, "target") == 0) {
+				route = DEBUGBOARD_SD_ROUTE_TARGET;
+			} else if (strcmp(req.route, "usb-reader") == 0 || strcmp(req.route, "reader") == 0) {
+				route = DEBUGBOARD_SD_ROUTE_USB_READER;
+			} else {
+				k_mutex_unlock(&debugboard_http_lock);
+				debugboard_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+						     "switch", "invalid_route", "sd route must be target or usb-reader");
+				return 0;
+			}
+			ret = debugboard_sd_route_set(route);
+		} else if (strcmp(path + 1, "usb") == 0) {
+			enum debugboard_usb_route route;
+			if (strcmp(req.route, "pc") == 0) {
+				route = DEBUGBOARD_USB_ROUTE_PC;
+			} else if (strcmp(req.route, "target") == 0) {
+				route = DEBUGBOARD_USB_ROUTE_TARGET;
+			} else {
+				k_mutex_unlock(&debugboard_http_lock);
+				debugboard_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+						     "switch", "invalid_route", "usb route must be pc or target");
+				return 0;
+			}
+			ret = debugboard_usb_route_set(route);
 		} else {
 			k_mutex_unlock(&debugboard_http_lock);
-			debugboard_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
-					     "sd", "invalid_route",
-					     "route must be target or usb-reader");
+			debugboard_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_404_NOT_FOUND,
+					     "switch", "not_found", "unknown switch");
 			return 0;
 		}
 
-		ret = debugboard_sd_route_set(route);
 		if (ret < 0) {
 			k_mutex_unlock(&debugboard_http_lock);
-			debugboard_http_error(response_ctx, json_buf, sizeof(json_buf),
-					     HTTP_500_INTERNAL_SERVER_ERROR,
-					     "sd", "set_failed", "failed to set SD route");
+			debugboard_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
+					     "switch", "set_failed", "failed to set switch route");
 			return 0;
 		}
 
 		debugboard_ws_publish_state_change();
 
-		if (debugboard_http_json_begin(&env, "sd", true) < 0 ||
-		    debugboard_http_append(&env, ",\"action\":\"route\",\"route\":") < 0 ||
-		    debugboard_http_json_string(&env, debugboard_sd_route_name()) < 0 ||
+		if (debugboard_http_json_begin(&env, "switch", true) < 0 ||
+		    debugboard_http_append(&env, ",\"action\":\"route\",\"name\":") < 0 ||
+		    debugboard_http_json_string(&env, path + 1) < 0 ||
+		    debugboard_http_append(&env, ",\"route\":") < 0 ||
+		    debugboard_http_json_string(&env,
+			    strcmp(path + 1, "sd") == 0 ? debugboard_sd_route_name() : debugboard_usb_route_name()) < 0 ||
 		    debugboard_http_append(&env, "}\n") < 0) {
 			break;
 		}
@@ -943,15 +997,14 @@ static int debugboard_http_handle_sd(struct http_client_ctx *client,
 
 	default:
 		k_mutex_unlock(&debugboard_http_lock);
-		debugboard_http_error(response_ctx, json_buf, sizeof(json_buf),
-				     HTTP_405_METHOD_NOT_ALLOWED,
-				     "sd", "method_not_allowed", "method not allowed");
+		debugboard_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_405_METHOD_NOT_ALLOWED,
+				     "switch", "method_not_allowed", "method not allowed");
 		return 0;
 	}
 
 	k_mutex_unlock(&debugboard_http_lock);
 	debugboard_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
-			     "sd", "response_too_large", "failed to encode sd response");
+			     "switch", "response_too_large", "failed to encode switch response");
 	return 0;
 }
 
@@ -1437,8 +1490,8 @@ static int debugboard_http_route_request(struct http_client_ctx *client,
 		return debugboard_http_handle_adc(client, status, request_ctx, response_ctx, user_data);
 	}
 
-	if (strncmp(path, "/api/v1/sd", strlen("/api/v1/sd")) == 0) {
-		return debugboard_http_handle_sd(client, status, request_ctx, response_ctx, user_data);
+	if (strncmp(path, "/api/v1/switch", strlen("/api/v1/switch")) == 0) {
+		return debugboard_http_handle_switch(client, status, request_ctx, response_ctx, user_data);
 	}
 
 	if (strncmp(path, "/api/v1/gpio", strlen("/api/v1/gpio")) == 0) {

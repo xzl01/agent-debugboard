@@ -417,6 +417,12 @@ static int debugboard_ws_emit_status_snapshot(struct debugboard_ws_client *clien
 		return -ENOMEM;
 	}
 
+	if (debugboard_ws_append(buf, DEBUGBOARD_WS_SEND_BUFFER_SIZE, &cursor,
+				 "\"switches\":{\"sd\":{\"route\":\"%s\"},\"usb\":{\"route\":\"%s\"}},",
+				 debugboard_sd_route_name(), debugboard_usb_route_name()) < 0) {
+		return -ENOMEM;
+	}
+
 	debugboard_watchdog_status_get(&watchdog);
 	if (debugboard_ws_append(buf, DEBUGBOARD_WS_SEND_BUFFER_SIZE, &cursor,
 				 "\"watchdog\":{\"supported\":%s,\"automatic\":%s,\"healthy\":%s,"
@@ -573,25 +579,42 @@ static int debugboard_ws_handle_control_message(struct debugboard_ws_client *cli
 		return debugboard_ws_emit_result_and_snapshot(client, request->id, "power_set", "ok");
 	}
 
-	if (strcmp(request->command, "sd_route") == 0) {
-		enum debugboard_sd_route route;
+	if (strcmp(request->command, "switch_route") == 0) {
 		int ret;
 
-		if (strcmp(request->route, "target") == 0) {
-			route = DEBUGBOARD_SD_ROUTE_TARGET;
-		} else if (strcmp(request->route, "usb-reader") == 0) {
-			route = DEBUGBOARD_SD_ROUTE_USB_READER;
+		if (strcmp(request->output, "sd") == 0) {
+			enum debugboard_sd_route route;
+			if (strcmp(request->route, "target") == 0) {
+				route = DEBUGBOARD_SD_ROUTE_TARGET;
+			} else if (strcmp(request->route, "usb-reader") == 0 || strcmp(request->route, "reader") == 0) {
+				route = DEBUGBOARD_SD_ROUTE_USB_READER;
+			} else {
+				return debugboard_ws_emit_error(client, "switch", "invalid_route",
+						"sd route must be target or usb-reader");
+			}
+			ret = debugboard_sd_route_set(route);
+		} else if (strcmp(request->output, "usb") == 0) {
+			enum debugboard_usb_route route;
+			if (strcmp(request->route, "pc") == 0) {
+				route = DEBUGBOARD_USB_ROUTE_PC;
+			} else if (strcmp(request->route, "target") == 0) {
+				route = DEBUGBOARD_USB_ROUTE_TARGET;
+			} else {
+				return debugboard_ws_emit_error(client, "switch", "invalid_route",
+						"usb route must be pc or target");
+			}
+			ret = debugboard_usb_route_set(route);
 		} else {
-			return debugboard_ws_emit_error(client, "sd", "invalid_route",
-						"route must be target or usb-reader");
+			return debugboard_ws_emit_error(client, "switch", "unknown_switch",
+					"switch target must be sd or usb");
 		}
-		ret = debugboard_sd_route_set(route);
+
 		if (ret < 0) {
-			return debugboard_ws_emit_error(client, "sd", "set_failed",
-						"failed to set SD route");
+			return debugboard_ws_emit_error(client, "switch", "set_failed",
+					"failed to set switch route");
 		}
 		debugboard_ws_publish_state_change();
-		return debugboard_ws_emit_result_and_snapshot(client, request->id, "sd_route", "ok");
+		return debugboard_ws_emit_result_and_snapshot(client, request->id, "switch_route", "ok");
 	}
 
 	if (strcmp(request->command, "gpio_set") == 0) {
