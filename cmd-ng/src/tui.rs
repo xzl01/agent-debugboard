@@ -285,10 +285,12 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
                         } else {
                             "usb-reader"
                         };
-                        let action = set_switch_route(&model.base_url, model.timeout, "sd", next_route)?;
+                        let action =
+                            set_switch_route(&model.base_url, model.timeout, "sd", next_route)?;
                         model.sd_route = next_route.to_string();
                         model.pending_sd_route = Some(next_route.to_string());
-                        model.pending_sd_route_until = Some(Instant::now() + Duration::from_secs(2));
+                        model.pending_sd_route_until =
+                            Some(Instant::now() + Duration::from_secs(2));
                         model.apply_action_msg(action);
                     }
                     ControlItem::UsbSwitch => {
@@ -297,10 +299,12 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
                         } else {
                             "target"
                         };
-                        let action = set_switch_route(&model.base_url, model.timeout, "usb", next_route)?;
+                        let action =
+                            set_switch_route(&model.base_url, model.timeout, "usb", next_route)?;
                         model.usb_route = next_route.to_string();
                         model.pending_usb_route = Some(next_route.to_string());
-                        model.pending_usb_route_until = Some(Instant::now() + Duration::from_secs(2));
+                        model.pending_usb_route_until =
+                            Some(Instant::now() + Duration::from_secs(2));
                         model.apply_action_msg(action);
                     }
                 }
@@ -410,7 +414,12 @@ fn perform_control_action(
     })
 }
 
-fn set_switch_route(base_url: &str, timeout: Duration, name: &str, route: &str) -> Result<TuiActionMsg> {
+fn set_switch_route(
+    base_url: &str,
+    timeout: Duration,
+    name: &str,
+    route: &str,
+) -> Result<TuiActionMsg> {
     let client = crate::client::BoardClient::new(base_url, timeout)?;
     client.send_text(BoardRequest {
         method: Method::PUT,
@@ -655,7 +664,10 @@ fn build_section_rows(chips: &[RenderedControlChip], content_width: usize) -> Ve
     rows
 }
 
-fn build_section_navigation_rows(chips: &[RenderedControlChip], content_width: usize) -> Vec<Vec<usize>> {
+fn build_section_navigation_rows(
+    chips: &[RenderedControlChip],
+    content_width: usize,
+) -> Vec<Vec<usize>> {
     build_section_rows(chips, content_width)
         .into_iter()
         .map(|row| row.into_iter().map(|idx| chips[idx].global_idx).collect())
@@ -826,7 +838,13 @@ fn render_body(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
         Line::from(""),
     ];
 
-    append_section_lines(&mut lines, "Power", &power, section_width, model.control_idx);
+    append_section_lines(
+        &mut lines,
+        "Power",
+        &power,
+        section_width,
+        model.control_idx,
+    );
     append_section_lines(&mut lines, "Switch", &sd, section_width, model.control_idx);
     append_section_lines(&mut lines, "GPIO", &gpio, section_width, model.control_idx);
 
@@ -837,15 +855,29 @@ fn render_body(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
     lines.push(Line::from(format!(
         "  sd desired = {}{}",
         model.sd_route,
-        if model.pending_sd_route.is_some() { " (pending)" } else { "" }
+        if model.pending_sd_route.is_some() {
+            " (pending)"
+        } else {
+            ""
+        }
     )));
-    lines.push(Line::from(format!("  sd actual  = {}", model.actual_sd_route)));
+    lines.push(Line::from(format!(
+        "  sd actual  = {}",
+        model.actual_sd_route
+    )));
     lines.push(Line::from(format!(
         "  usb desired = {}{}",
         model.usb_route,
-        if model.pending_usb_route.is_some() { " (pending)" } else { "" }
+        if model.pending_usb_route.is_some() {
+            " (pending)"
+        } else {
+            ""
+        }
     )));
-    lines.push(Line::from(format!("  usb actual  = {}", model.actual_usb_route)));
+    lines.push(Line::from(format!(
+        "  usb actual  = {}",
+        model.actual_usb_route
+    )));
     lines.push(Line::from(format!(
         "  {}",
         format_monitoring_summary(&model.monitoring)
@@ -1004,7 +1036,10 @@ mod tests {
         let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
         model.width = 120;
         model.control_idx = 0;
-        assert_eq!(move_control_selection(&model, 1, 0), control_targets().len());
+        assert_eq!(
+            move_control_selection(&model, 1, 0),
+            control_targets().len()
+        );
     }
 
     #[test]
@@ -1027,7 +1062,10 @@ mod tests {
         let items = control_items(&model);
         assert_eq!(items[control_targets().len()], ControlItem::SdSwitch);
         assert_eq!(items[control_targets().len() + 1], ControlItem::UsbSwitch);
-        assert_eq!(items[control_targets().len() + 2], ControlItem::Gpio("GP13".to_string()));
+        assert_eq!(
+            items[control_targets().len() + 2],
+            ControlItem::Gpio("GP13".to_string())
+        );
     }
 
     #[test]
@@ -1110,9 +1148,15 @@ mod tests {
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )));
         lines.push(Line::from(format!("  sd desired = {}", model.sd_route)));
-        lines.push(Line::from(format!("  sd actual  = {}", model.actual_sd_route)));
+        lines.push(Line::from(format!(
+            "  sd actual  = {}",
+            model.actual_sd_route
+        )));
         lines.push(Line::from(format!("  usb desired = {}", model.usb_route)));
-        lines.push(Line::from(format!("  usb actual  = {}", model.actual_usb_route)));
+        lines.push(Line::from(format!(
+            "  usb actual  = {}",
+            model.actual_usb_route
+        )));
         let rendered = Text::from(lines).to_string();
         assert!(rendered.contains("Power"));
         assert!(rendered.contains("Switch"));

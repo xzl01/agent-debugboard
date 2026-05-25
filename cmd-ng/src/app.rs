@@ -998,7 +998,10 @@ mod tests {
             requests[0].query[0],
             ("channel".to_string(), "5v_out".to_string())
         );
-        assert_eq!(String::from_utf8(stdout).unwrap().trim(), "5v_out=0.850000A");
+        assert_eq!(
+            String::from_utf8(stdout).unwrap().trim(),
+            "5v_out=0.850000A"
+        );
     }
 
     #[test]
@@ -1052,7 +1055,10 @@ mod tests {
 
         let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
         assert_eq!(code, 0);
-        assert_eq!(String::from_utf8(stdout).unwrap().trim(), "5v_out=0.850000A");
+        assert_eq!(
+            String::from_utf8(stdout).unwrap().trim(),
+            "5v_out=0.850000A"
+        );
     }
 
     #[test]

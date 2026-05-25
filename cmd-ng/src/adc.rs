@@ -173,7 +173,6 @@ fn current_text_from_microamps(current_ua: i32) -> String {
     )
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::{transform_response, AdcResponse};
