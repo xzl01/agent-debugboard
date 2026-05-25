@@ -1,14 +1,14 @@
 version: 2
 
-project_name: agent-debugboardctl
+project_name: radxa-linkr-debuggerctl
 
 release:
   disable: true
 
 builds:
-  - id: agent-debugboardctl
-    main: ./cmd/agent-debugboardctl
-    binary: agent-debugboardctl
+  - id: radxa-linkr-debuggerctl
+    main: ./cmd/radxa-linkr-debuggerctl
+    binary: radxa-linkr-debuggerctl
     env:
       - CGO_ENABLED=0
     goos:
@@ -20,14 +20,14 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X agent-debugboard/internal/hostcli.Version={{ .Version }}
+      - -X radxa-linkr-debugger/internal/hostcli.Version={{ .Version }}
     flags:
       - -trimpath
 
 archives:
-  - id: agent-debugboardctl
+  - id: radxa-linkr-debuggerctl
     ids:
-      - agent-debugboardctl
+      - radxa-linkr-debuggerctl
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz

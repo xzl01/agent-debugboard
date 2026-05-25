@@ -1,16 +1,16 @@
-# agent-debugboard
+# radxa-linkr-debugger
 
 [中文](README.zh-CN.md)
 
-RP2040 firmware for **Agent DebugBoard**, a USB-controlled hardware bridge that
+RP2040 firmware for **Radxa Linkr Debugger**, a USB-controlled hardware bridge that
 lets a PC-side Agent/AI operate target-board power, boot-mode, TF/SD routing,
 current-monitor ADC channels, and a small safe GPIO surface.
 
-![Agent Debugger promo](doc/marketing/agent-debugger-promo.png)
+![Radxa Linkr Debugger promo](doc/marketing/radxa-linkr-debugger-promo.png)
 
 ## Overview
 
-Agent DebugBoard is designed for automated board bring-up, recovery, production
+Radxa Linkr Debugger is designed for automated board bring-up, recovery, production
 test, and remote debugging workflows. The firmware enumerates as a composite
 USB device with a USB NCM network interface for the main control plane and a
 USB CDC ACM serial port reserved for Zephyr cmdline and BOOTSEL fallback; the
@@ -22,7 +22,7 @@ legacy Go host CLI sources kept for deprecated/reference use, unit tests,
 schematic copy, and project documentation.
 
 The active host-side development path is [`cmd-ng/`](cmd-ng/). The older Go
-`cmd/agent-debugboardctl` + `internal/hostcli` stack is deprecated and kept only
+`cmd/radxa-linkr-debuggerctl` + `internal/hostcli` stack is deprecated and kept only
 as a legacy/reference implementation during migration.
 
 ## Features
@@ -45,7 +45,7 @@ not exposed as a controllable output.
 
 ## For AI Agents
 
-AI agents should read [skills/agent-debugboard/SKILL.md](skills/agent-debugboard/SKILL.md)
+AI agents should read [skills/radxa-linkr-debugger/SKILL.md](skills/radxa-linkr-debugger/SKILL.md)
 before operating hardware through this project. The skill is the canonical
 Agent-facing procedure for building/running the primary host CLI, diagnosing the
 board connection, and using JSON commands safely.
@@ -76,7 +76,7 @@ first. For automation, prefer `--json`; parse `schema`, `ok`, `command`, and
 
 ## Install Host CLI
 
-`agent-debugboardctl` is a native Go binary. Users do not need Python, pip, or a
+`radxa-linkr-debuggerctl` is a native Go binary. Users do not need Python, pip, or a
 virtual environment.
 
 From a checkout, build/run the active Rust host CLI directly:
@@ -93,7 +93,7 @@ workflows.
 Install a specific legacy Go release version:
 
 ```sh
-./skills/agent-debugboard/scripts/install.sh --version <tag>
+./skills/radxa-linkr-debugger/scripts/install.sh --version <tag>
 ```
 
 For a private repository release download, export a GitHub token first and
@@ -102,35 +102,35 @@ is logged in:
 
 ```sh
 export GH_TOKEN="$(gh auth token)"
-./skills/agent-debugboard/scripts/install.sh --version <tag>
+./skills/radxa-linkr-debugger/scripts/install.sh --version <tag>
 ```
 
 Windows PowerShell:
 
 ```powershell
-powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\radxa-linkr-debugger\scripts\install.ps1
 ```
 
 Private repository PowerShell release download:
 
 ```powershell
 $env:GH_TOKEN = gh auth token
-powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1 -Version <tag>
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\radxa-linkr-debugger\scripts\install.ps1 -Version <tag>
 ```
 
 Manual downloads are also available from each GitHub Release:
 
 | OS / CPU | Artifact |
 | --- | --- |
-| Windows x64 | `agent-debugboardctl-rust_windows_amd64.zip` |
-| Windows arm64 | `agent-debugboardctl-rust_windows_arm64.zip` |
-| Linux x64 | `agent-debugboardctl-rust_linux_amd64.tar.gz` |
-| Linux arm64 | `agent-debugboardctl-rust_linux_arm64.tar.gz` |
-| macOS Intel | `agent-debugboardctl-rust_darwin_amd64.tar.gz` |
-| macOS Apple Silicon | `agent-debugboardctl-rust_darwin_arm64.tar.gz` |
+| Windows x64 | `radxa-linkr-debuggerctl-rust_windows_amd64.zip` |
+| Windows arm64 | `radxa-linkr-debuggerctl-rust_windows_arm64.zip` |
+| Linux x64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
+| Linux arm64 | `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` |
+| macOS Intel | `radxa-linkr-debuggerctl-rust_darwin_amd64.tar.gz` |
+| macOS Apple Silicon | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` |
 
 Legacy Go compatibility archives remain available in GitHub Releases as
-`agent-debugboardctl_<os>_<arch>.*` when you need the deprecated host CLI for
+`radxa-linkr-debuggerctl_<os>_<arch>.*` when you need the deprecated host CLI for
 comparison or transition workflows. The skill installer and release download
 examples prefer the primary Rust CLI/TUI archives.
 
@@ -140,7 +140,7 @@ then removes the quarantine flag from the installed binary. If installing
 manually, verify the checksum and run:
 
 ```sh
-xattr -dr com.apple.quarantine ./skills/agent-debugboard/scripts/bin/agent-debugboardctl
+xattr -dr com.apple.quarantine ./skills/radxa-linkr-debugger/scripts/bin/radxa-linkr-debuggerctl
 ```
 
 After build/install:
@@ -197,18 +197,18 @@ Build the RP2040 firmware:
 
 ```sh
 source .venv/bin/activate
-west build -p always -b rpi_pico/rp2040 apps/agent_debugboard -d build/agent_debugboard
+west build -p always -b rpi_pico/rp2040 apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
 ```
 
 The generated UF2 is:
 
 ```text
-build/agent_debugboard/zephyr/zephyr.uf2
+build/radxa_linkr_debugger/zephyr/zephyr.uf2
 ```
 
 For this repository, keep the firmware build/flash path fixed: always build
-into `build/agent_debugboard/` and always flash
-`build/agent_debugboard/zephyr/zephyr.uf2`. Do not switch to alternate build
+into `build/radxa_linkr_debugger/` and always flash
+`build/radxa_linkr_debugger/zephyr/zephyr.uf2`. Do not switch to alternate build
 directories or stale UF2 copies from temporary mount points.
 
 ## Flashing
@@ -217,8 +217,8 @@ If the board is already running this firmware, ask it to enter BOOTSEL and then
 load the new UF2:
 
 ```sh
-agent-debugboardctl bootloader
-picotool load -v -x build/agent_debugboard/zephyr/zephyr.uf2
+radxa-linkr-debuggerctl bootloader
+picotool load -v -x build/radxa_linkr_debugger/zephyr/zephyr.uf2
 ```
 
 After firmware changes, treat this BOOTSEL flow and the RP2040 CDC ACM shell
@@ -229,20 +229,20 @@ If HTTP/WS control is unavailable but the RP2040 CDC ACM shell is still up, you
 can enter the same BOOTSEL path from the local Zephyr shell:
 
 ```text
-debugboard:~$ bootloader
+linkr-debugger:~$ bootloader
 ```
 
 If the board is already mounted as `RPI-RP2`, only run:
 
 ```sh
-picotool load -v -x build/agent_debugboard/zephyr/zephyr.uf2
+picotool load -v -x build/radxa_linkr_debugger/zephyr/zephyr.uf2
 ```
 
 If you use drag-and-drop flashing through the `RPI-RP2` volume instead of
 `picotool`, copy this same canonical artifact:
 
 ```text
-build/agent_debugboard/zephyr/zephyr.uf2
+build/radxa_linkr_debugger/zephyr/zephyr.uf2
 ```
 
 ## GitHub Actions Artifacts
@@ -251,24 +251,24 @@ The `Build` workflow checks every push and pull request. Tagging `v*` triggers
 the `Release` workflow, which builds firmware, packages the host CLI, creates a
 GitHub Release, and uploads the fixed release assets.
 
-- `agent-debugboard-rp2040.uf2`: RP2040 firmware for drag-and-drop or `picotool`.
-- `agent-debugboard-rp2040.elf`: RP2040 ELF for debugging.
-- `agent-debugboard-rp2040.map`: RP2040 linker map.
-- `agent-debugboardctl-rust_windows_amd64.zip`: primary Rust CLI/TUI for Windows x64.
-- `agent-debugboardctl-rust_windows_arm64.zip`: primary Rust CLI/TUI for Windows arm64.
-- `agent-debugboardctl-rust_linux_amd64.tar.gz`: primary Rust CLI/TUI for Linux x64.
-- `agent-debugboardctl-rust_linux_arm64.tar.gz`: primary Rust CLI/TUI for Linux arm64.
-- `agent-debugboardctl-rust_darwin_amd64.tar.gz`: primary Rust CLI/TUI for macOS Intel.
-- `agent-debugboardctl-rust_darwin_arm64.tar.gz`: primary Rust CLI/TUI for macOS Apple Silicon.
-- `agent-debugboardctl_<os>_<arch>.*`: deprecated Go CLI compatibility archives.
-- `skills-agent-debugboard.tar.gz`: Agent skill bundle for `skills/agent-debugboard/`.
+- `radxa-linkr-debugger-rp2040.uf2`: RP2040 firmware for drag-and-drop or `picotool`.
+- `radxa-linkr-debugger-rp2040.elf`: RP2040 ELF for debugging.
+- `radxa-linkr-debugger-rp2040.map`: RP2040 linker map.
+- `radxa-linkr-debuggerctl-rust_windows_amd64.zip`: primary Rust CLI/TUI for Windows x64.
+- `radxa-linkr-debuggerctl-rust_windows_arm64.zip`: primary Rust CLI/TUI for Windows arm64.
+- `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz`: primary Rust CLI/TUI for Linux x64.
+- `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz`: primary Rust CLI/TUI for Linux arm64.
+- `radxa-linkr-debuggerctl-rust_darwin_amd64.tar.gz`: primary Rust CLI/TUI for macOS Intel.
+- `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz`: primary Rust CLI/TUI for macOS Apple Silicon.
+- `radxa-linkr-debuggerctl_<os>_<arch>.*`: deprecated Go CLI compatibility archives.
+- `skills-radxa-linkr-debugger.tar.gz`: Agent skill bundle for `skills/radxa-linkr-debugger/`.
 - `SHA256SUMS.txt`: SHA256 checksums for all release assets.
 
 Developers can build the primary host CLI from source:
 
 ```sh
 cargo build --manifest-path cmd-ng/Cargo.toml
-./cmd-ng/target/debug/agent-debugboardctl --help
+./cmd-ng/target/debug/radxa-linkr-debuggerctl --help
 ```
 
 The Rust `cmd-ng` version is now the primary development path. Build and run it directly:
@@ -291,7 +291,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- doctor
 ```
 
 Agent or automation code should prefer JSON output. JSON responses use
-`schema: "agent-debugboard.v1"`, `ok`, `command`, and either command-specific
+`schema: "radxa-linkr-debugger.v1"`, `ok`, `command`, and either command-specific
 fields or `error: {code, message}`:
 
 ```sh
@@ -361,7 +361,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 20v_out
 
 Human-readable ADC output is concise by default, for example
 `5v_out=0.540000A`. Use `-v` / `--verbose` when you need debug fields such as
-`signal` and `mv`. `agent-debugboardctl --json adc read` carries the raw
+`signal` and `mv`. `radxa-linkr-debuggerctl --json adc read` carries the raw
 diagnostic chain (`raw`, `mv`, `current_ua`, `sensor_value`) in addition
 to the power-output state. The host CLI no longer applies host-side ADC
 calibration tables or zero-point correction.
@@ -414,7 +414,7 @@ change feed policy.
 
 ## OpenOCD / JTAG
 
-Agent DebugBoard can be used together with OpenOCD by using the DebugBoard for
+Radxa Linkr Debugger can be used together with OpenOCD by using the Linkr Debugger for
 target power and recovery control while the onboard CH347F path handles target
 JTAG/SWD. The CH347F is wired directly to the target debug connector; RP2040
 does not sit in that path and does not act as a CMSIS-DAP or JTAG probe.
@@ -430,7 +430,7 @@ in your OpenOCD installation and the target configuration for the board under
 test:
 
 ```sh
-agent-debugboardctl --json power set 5v_out on
+radxa-linkr-debuggerctl --json power set 5v_out on
 openocd -f interface/<ch347-interface>.cfg -f target/<target>.cfg
 ```
 
@@ -450,10 +450,10 @@ The firmware enumerates as a composite USB device. The host CLI connects to
 the board via HTTP over the USB NCM interface. The default device URL is
 `http://172.29.203.1:8080`. The board runs a DHCPv4 server on the NCM link so the
 host can automatically obtain a compatible address; pass
-`agent-debugboardctl --url ...` only if you intentionally override the default
+`radxa-linkr-debuggerctl --url ...` only if you intentionally override the default
 addressing in your environment.
 
-All control is performed through `agent-debugboardctl` using HTTP JSON
+All control is performed through `radxa-linkr-debuggerctl` using HTTP JSON
 requests, or directly through `curl` / another HTTP client. The CDC ACM port is
 kept intentionally as a secondary path for Zephyr cmdline access and recovery
 workflows such as BOOTSEL fallback; it is not the primary automation/control
@@ -495,14 +495,14 @@ See the public
 transfer function.
 
 The current schematic copy is stored at
-[doc/agent-debugboard-schematic.pdf](doc/agent-debugboard-schematic.pdf).
+[doc/radxa-linkr-debugger-schematic.pdf](doc/radxa-linkr-debugger-schematic.pdf).
 
 ## Development
 
 Run unit tests:
 
 ```sh
-./apps/agent_debugboard/tests/run_unit_tests.sh
+./apps/radxa_linkr_debugger/tests/run_unit_tests.sh
 ```
 
 The test runner covers:
@@ -516,13 +516,13 @@ The test runner covers:
 ## Repository Layout
 
 ```text
-apps/agent_debugboard/        Zephyr application
-apps/agent_debugboard/src/    Firmware source and shared board model
-apps/agent_debugboard/tests/  Unit tests
-cmd/agent-debugboardctl/      Go host CLI entrypoint
+apps/radxa_linkr_debugger/        Zephyr application
+apps/radxa_linkr_debugger/src/    Firmware source and shared board model
+apps/radxa_linkr_debugger/tests/  Unit tests
+cmd/radxa-linkr-debuggerctl/      Go host CLI entrypoint
 internal/hostcli/             Go host CLI implementation
 doc/                          Hardware documents, OpenOCD configs, and marketing assets
-skills/agent-debugboard/      Agent-facing skill and operating guide
+skills/radxa-linkr-debugger/      Agent-facing skill and operating guide
 .goreleaser.yaml              GoReleaser host CLI packaging config
 go.mod, go.sum                Go module for host CLI
 west.yml                      Zephyr workspace manifest

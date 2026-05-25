@@ -23,11 +23,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            asset_name: agent-debugboardctl-rust_linux_amd64.tar.gz
+            asset_name: radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz
           - os: macos-latest
-            asset_name: agent-debugboardctl-rust_darwin_arm64.tar.gz
+            asset_name: radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz
           - os: windows-latest
-            asset_name: agent-debugboardctl-rust_windows_amd64.zip
+            asset_name: radxa-linkr-debuggerctl-rust_windows_amd64.zip
 
     steps:
       - name: Resolve release tag
@@ -59,25 +59,25 @@ jobs:
         run: |
           cargo build --release --manifest-path app/cmd-ng/Cargo.toml
           if [ "${{ runner.os }}" = "Windows" ]; then
-            ./app/cmd-ng/target/release/agent-debugboardctl.exe --help
-            ./app/cmd-ng/target/release/agent-debugboardctl.exe --version
+            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe --help
+            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe --version
           else
-            ./app/cmd-ng/target/release/agent-debugboardctl --help
-            ./app/cmd-ng/target/release/agent-debugboardctl --version
+            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl --help
+            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl --version
           fi
 
       - name: Package Rust release archive
         if: runner.os != 'Windows'
         run: |
           mkdir -p rust-release
-          tar -C app/cmd-ng/target/release -czf rust-release/${{ matrix.asset_name }} agent-debugboardctl
+          tar -C app/cmd-ng/target/release -czf rust-release/${{ matrix.asset_name }} radxa-linkr-debuggerctl
 
       - name: Package Rust release archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path rust-release | Out-Null
-          Compress-Archive -Path app/cmd-ng/target/release/agent-debugboardctl.exe -DestinationPath rust-release/${{ matrix.asset_name }}
+          Compress-Archive -Path app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe -DestinationPath rust-release/${{ matrix.asset_name }}
 
       - name: Upload Rust release archive
         uses: actions/upload-artifact@v6
@@ -130,23 +130,23 @@ jobs:
 
       - name: Run unit tests
         working-directory: app
-        run: ./apps/agent_debugboard/tests/run_unit_tests.sh
+        run: ./apps/radxa_linkr_debugger/tests/run_unit_tests.sh
 
       - name: Smoke test legacy Go host CLI build
         working-directory: app
         run: |
-          go build -trimpath -o /tmp/agent-debugboardctl ./cmd/agent-debugboardctl
-          /tmp/agent-debugboardctl --help
-          /tmp/agent-debugboardctl --version
-          /tmp/agent-debugboardctl --json --version
+          go build -trimpath -o /tmp/radxa-linkr-debuggerctl ./cmd/radxa-linkr-debuggerctl
+          /tmp/radxa-linkr-debuggerctl --help
+          /tmp/radxa-linkr-debuggerctl --version
+          /tmp/radxa-linkr-debuggerctl --json --version
 
       - name: Build firmware
         run: |
-          west build -p always -b rpi_pico/rp2040 app/apps/agent_debugboard -d build/agent_debugboard
+          west build -p always -b rpi_pico/rp2040 app/apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
           mkdir -p release-assets
-          cp build/agent_debugboard/zephyr/zephyr.uf2 release-assets/agent-debugboard-rp2040.uf2
-          cp build/agent_debugboard/zephyr/zephyr.elf release-assets/agent-debugboard-rp2040.elf
-          cp build/agent_debugboard/zephyr/zephyr.map release-assets/agent-debugboard-rp2040.map
+          cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 release-assets/radxa-linkr-debugger-rp2040.uf2
+          cp build/radxa_linkr_debugger/zephyr/zephyr.elf release-assets/radxa-linkr-debugger-rp2040.elf
+          cp build/radxa_linkr_debugger/zephyr/zephyr.map release-assets/radxa-linkr-debugger-rp2040.map
 
       - name: Build legacy Go host CLI release archives
         uses: goreleaser/goreleaser-action@v7
@@ -167,36 +167,36 @@ jobs:
         working-directory: app
         run: |
           mkdir -p dist/skill-bundle
-          tar -C skills -czf dist/skill-bundle/skills-agent-debugboard.tar.gz agent-debugboard
+          tar -C skills -czf dist/skill-bundle/skills-radxa-linkr-debugger.tar.gz radxa-linkr-debugger
 
       - name: Prepare release assets
         working-directory: app
         run: |
           mkdir -p dist/release
-          cp ../release-assets/agent-debugboard-rp2040.* dist/release/
-          cp ../rust-release-downloads/agent-debugboardctl_* dist/release/
+          cp ../release-assets/radxa-linkr-debugger-rp2040.* dist/release/
+          cp ../rust-release-downloads/radxa-linkr-debuggerctl_* dist/release/
           cp dist/*.tar.gz dist/release/
           cp dist/*.zip dist/release/
-          cp dist/skill-bundle/skills-agent-debugboard.tar.gz dist/release/
+          cp dist/skill-bundle/skills-radxa-linkr-debugger.tar.gz dist/release/
           cd dist/release
           sha256sum \
-            agent-debugboard-rp2040.elf \
-            agent-debugboard-rp2040.map \
-            agent-debugboard-rp2040.uf2 \
-            agent-debugboardctl_* \
-            skills-agent-debugboard.tar.gz > SHA256SUMS.txt
+            radxa-linkr-debugger-rp2040.elf \
+            radxa-linkr-debugger-rp2040.map \
+            radxa-linkr-debugger-rp2040.uf2 \
+            radxa-linkr-debuggerctl_* \
+            skills-radxa-linkr-debugger.tar.gz > SHA256SUMS.txt
 
       - name: Write release notes
         working-directory: app
         run: |
           cat > dist/release-notes.md <<EOF
-          Agent DebugBoard ${{ steps.release.outputs.tag }}
+          Radxa Linkr Debugger ${{ steps.release.outputs.tag }}
 
           Included assets:
           - RP2040 firmware: UF2, ELF, and MAP
-          - Primary Rust host CLI/TUI archives: agent-debugboardctl-rust_{os}_{arch}
-          - Legacy Go CLI compatibility archives: agent-debugboardctl_{os}_{arch}
-          - Agent skill bundle: skills-agent-debugboard.tar.gz
+          - Primary Rust host CLI/TUI archives: radxa-linkr-debuggerctl-rust_{os}_{arch}
+          - Legacy Go CLI compatibility archives: radxa-linkr-debuggerctl_{os}_{arch}
+          - Agent skill bundle: skills-radxa-linkr-debugger.tar.gz
           - SHA256SUMS.txt for release asset verification
           EOF
 

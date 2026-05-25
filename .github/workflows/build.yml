@@ -25,9 +25,9 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          shellcheck skills/agent-debugboard/scripts/install.sh apps/agent_debugboard/tests/run_unit_tests.sh
-          sh -n skills/agent-debugboard/scripts/install.sh
-          sh -n apps/agent_debugboard/tests/run_unit_tests.sh
+          shellcheck skills/radxa-linkr-debugger/scripts/install.sh apps/radxa_linkr_debugger/tests/run_unit_tests.sh
+          sh -n skills/radxa-linkr-debugger/scripts/install.sh
+          sh -n apps/radxa_linkr_debugger/tests/run_unit_tests.sh
 
   windows-installer:
     name: Check Windows installer
@@ -40,8 +40,8 @@ jobs:
       - name: Check PowerShell installer
         shell: pwsh
         run: |
-          $null = [scriptblock]::Create((Get-Content .\skills\agent-debugboard\scripts\install.ps1 -Raw))
-          .\skills\agent-debugboard\scripts\install.ps1 -DryRun
+          $null = [scriptblock]::Create((Get-Content .\skills\radxa-linkr-debugger\scripts\install.ps1 -Raw))
+          .\skills\radxa-linkr-debugger\scripts\install.ps1 -DryRun
 
   firmware:
     name: Build RP2040 UF2 firmware
@@ -67,16 +67,16 @@ jobs:
 
       - name: Build firmware
         run: |
-          west build -p always -b rpi_pico/rp2040 app/apps/agent_debugboard -d build/agent_debugboard
+          west build -p always -b rpi_pico/rp2040 app/apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
           mkdir -p dist/firmware
-          cp build/agent_debugboard/zephyr/zephyr.uf2 dist/firmware/agent-debugboard-rp2040.uf2
-          cp build/agent_debugboard/zephyr/zephyr.elf dist/firmware/agent-debugboard-rp2040.elf
-          cp build/agent_debugboard/zephyr/zephyr.map dist/firmware/agent-debugboard-rp2040.map
+          cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 dist/firmware/radxa-linkr-debugger-rp2040.uf2
+          cp build/radxa_linkr_debugger/zephyr/zephyr.elf dist/firmware/radxa-linkr-debugger-rp2040.elf
+          cp build/radxa_linkr_debugger/zephyr/zephyr.map dist/firmware/radxa-linkr-debugger-rp2040.map
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: agent-debugboard-rp2040-firmware
+          name: radxa-linkr-debugger-rp2040-firmware
           path: dist/firmware/
           if-no-files-found: error
 
@@ -97,14 +97,14 @@ jobs:
           cache: true
 
       - name: Run unit tests
-        run: ./apps/agent_debugboard/tests/run_unit_tests.sh
+        run: ./apps/radxa_linkr_debugger/tests/run_unit_tests.sh
 
       - name: Smoke test local host CLI build
         run: |
-          go build -trimpath -o /tmp/agent-debugboardctl ./cmd/agent-debugboardctl
-          /tmp/agent-debugboardctl --help
-          /tmp/agent-debugboardctl --version
-          /tmp/agent-debugboardctl --json --version
+          go build -trimpath -o /tmp/radxa-linkr-debuggerctl ./cmd/radxa-linkr-debuggerctl
+          /tmp/radxa-linkr-debuggerctl --help
+          /tmp/radxa-linkr-debuggerctl --version
+          /tmp/radxa-linkr-debuggerctl --json --version
 
       - name: Build legacy Go host CLI release archives
         uses: goreleaser/goreleaser-action@v7
@@ -116,7 +116,7 @@ jobs:
       - name: Upload legacy Go host CLI artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: agent-debugboardctl-go-legacy-packages
+          name: radxa-linkr-debuggerctl-go-legacy-packages
           path: |
             dist/*.tar.gz
             dist/*.zip
@@ -131,11 +131,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact_name: agent-debugboardctl_linux_amd64.tar.gz
+            artifact_name: radxa-linkr-debuggerctl_linux_amd64.tar.gz
           - os: macos-latest
-            artifact_name: agent-debugboardctl_darwin_arm64.tar.gz
+            artifact_name: radxa-linkr-debuggerctl_darwin_arm64.tar.gz
           - os: windows-latest
-            artifact_name: agent-debugboardctl_windows_amd64.zip
+            artifact_name: radxa-linkr-debuggerctl_windows_amd64.zip
 
     steps:
       - name: Checkout application
@@ -165,25 +165,25 @@ jobs:
         run: |
           cargo build --release --manifest-path cmd-ng/Cargo.toml
           if [ "${{ runner.os }}" = "Windows" ]; then
-            ./cmd-ng/target/release/agent-debugboardctl.exe --help
-            ./cmd-ng/target/release/agent-debugboardctl.exe --version
+            ./cmd-ng/target/release/radxa-linkr-debuggerctl.exe --help
+            ./cmd-ng/target/release/radxa-linkr-debuggerctl.exe --version
           else
-            ./cmd-ng/target/release/agent-debugboardctl --help
-            ./cmd-ng/target/release/agent-debugboardctl --version
+            ./cmd-ng/target/release/radxa-linkr-debuggerctl --help
+            ./cmd-ng/target/release/radxa-linkr-debuggerctl --version
           fi
 
       - name: Package primary Rust host CLI artifact
         if: runner.os != 'Windows'
         run: |
           mkdir -p dist/rust-cli
-          tar -C cmd-ng/target/release -czf dist/rust-cli/${{ matrix.artifact_name }} agent-debugboardctl
+          tar -C cmd-ng/target/release -czf dist/rust-cli/${{ matrix.artifact_name }} radxa-linkr-debuggerctl
 
       - name: Package primary Rust host CLI artifact (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/rust-cli | Out-Null
-          Compress-Archive -Path cmd-ng/target/release/agent-debugboardctl.exe -DestinationPath dist/rust-cli/${{ matrix.artifact_name }}
+          Compress-Archive -Path cmd-ng/target/release/radxa-linkr-debuggerctl.exe -DestinationPath dist/rust-cli/${{ matrix.artifact_name }}
 
       - name: Upload primary Rust host CLI artifacts
         uses: actions/upload-artifact@v6
@@ -203,11 +203,11 @@ jobs:
       - name: Package skill bundle
         run: |
           mkdir -p dist/skills
-          tar -C skills -czf dist/skills/skills-agent-debugboard.tar.gz agent-debugboard
+          tar -C skills -czf dist/skills/skills-radxa-linkr-debugger.tar.gz radxa-linkr-debugger
 
       - name: Upload skill bundle artifact
         uses: actions/upload-artifact@v6
         with:
-          name: skills-agent-debugboard
-          path: dist/skills/skills-agent-debugboard.tar.gz
+          name: skills-radxa-linkr-debugger
+          path: dist/skills/skills-radxa-linkr-debugger.tar.gz
           if-no-files-found: error

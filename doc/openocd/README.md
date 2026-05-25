@@ -1,10 +1,10 @@
 # OpenOCD Support
 
-Agent DebugBoard works with OpenOCD through the onboard CH347F path:
+Radxa Linkr Debugger works with OpenOCD through the onboard CH347F path:
 
 ```text
 PC OpenOCD -> CH347F -> target JTAG/SWD
-PC agent-debugboardctl -> RP2040 -> target power / boot mode / ADC / SD / GPIO
+PC radxa-linkr-debuggerctl -> RP2040 -> target power / boot mode / ADC / SD / GPIO
 ```
 
 CH347F is wired directly to the target debug connector. The RP2040 does not sit
@@ -43,8 +43,8 @@ the target flow.
 Power the target first:
 
 ```sh
-agent-debugboardctl --json power set 5v_out on
-agent-debugboardctl --json power list
+radxa-linkr-debuggerctl --json power set 5v_out on
+radxa-linkr-debuggerctl --json power list
 ```
 
 Start OpenOCD with the CH347F interface from your OpenOCD installation and the
@@ -79,9 +79,9 @@ Only if the target is unresponsive, has no reset line, or soft reset fails,
 hard-restart the target by power-cycling the power output that actually powers it:
 
 ```sh
-agent-debugboardctl --json power set 5v_out off
+radxa-linkr-debuggerctl --json power set 5v_out off
 sleep 2
-agent-debugboardctl --json power set 5v_out on
+radxa-linkr-debuggerctl --json power set 5v_out on
 ```
 
 Do not power-cycle unrelated power outputs.

@@ -218,7 +218,7 @@ mod tests {
     fn temp_file_path(name: &str) -> std::path::PathBuf {
         let mut path = std::env::temp_dir();
         path.push(format!(
-            "agent-debugboard-recorder-test-{name}-{}.ndjson",
+            "radxa-linkr-debugger-recorder-test-{name}-{}.ndjson",
             std::process::id(),
         ));
         path

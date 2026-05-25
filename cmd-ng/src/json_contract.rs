@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const JSON_SCHEMA: &str = "agent-debugboard.v1";
+pub const JSON_SCHEMA: &str = "radxa-linkr-debugger.v1";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct JsonError {
@@ -29,7 +29,7 @@ pub enum EnvelopeError {
     Empty,
     #[error("firmware returned non-JSON output")]
     InvalidJson,
-    #[error("firmware returned JSON without agent-debugboard.v1 envelope")]
+    #[error("firmware returned JSON without radxa-linkr-debugger.v1 envelope")]
     MissingEnvelope,
     #[error("{0}")]
     Decode(String),

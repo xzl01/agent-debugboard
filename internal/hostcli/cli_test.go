@@ -59,10 +59,10 @@ func (c *fakeClient) Do(ctx context.Context, request boardRequest) ([]byte, erro
 }
 
 func TestCleanOutputStripsEchoPromptAndANSI(t *testing.T) {
-	raw := "\r\ndebugboard status\r\nproject=agent-debugboard\r\n\x1b[1;32mdebugboard:~$ \x1b[m\r\n"
+	raw := "\r\ndebugboard status\r\nproject=radxa-linkr-debugger\r\n\x1b[1;32mlinkr-debugger:~$ \x1b[m\r\n"
 
 	got := CleanOutput(raw, "debugboard status")
-	if got != "project=agent-debugboard" {
+	if got != "project=radxa-linkr-debugger" {
 		t.Fatalf("CleanOutput() = %q", got)
 	}
 }
@@ -97,7 +97,7 @@ func TestRunWithoutArgsStartsTUI(t *testing.T) {
 func TestRunStatusUsesHTTPClient(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	client := &fakeClient{response: `{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard"}`}
+	client := &fakeClient{response: `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","project":"radxa-linkr-debugger"}`}
 
 	code := (App{Client: client}).Run([]string{"status"}, &stdout, &stderr)
 	if code != 0 {
@@ -127,7 +127,7 @@ func TestRunRawCommandIsRejectedOverHTTP(t *testing.T) {
 func TestRunJSONCommandRequestsAndValidatesEnvelope(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard"}`
+	response := `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","project":"radxa-linkr-debugger"}`
 	client := &fakeClient{response: response}
 
 	code := (App{Client: client}).Run([]string{"--json", "status"}, &stdout, &stderr)
@@ -140,7 +140,7 @@ func TestRunJSONCommandRequestsAndValidatesEnvelope(t *testing.T) {
 }
 
 func TestRequestLiveSessionWSURL(t *testing.T) {
-	client := &fakeClient{response: `{"schema":"agent-debugboard.v1","ok":true,"command":"live-sessions","action":"create","session_id":7,"ws_url":"ws://172.29.203.1:8080/api/v1/ws/2"}`}
+	client := &fakeClient{response: `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"live-sessions","action":"create","session_id":7,"ws_url":"ws://172.29.203.1:8080/api/v1/ws/2"}`}
 	wsURL, err := requestLiveSessionWSURL(App{Client: client}, 2*time.Second)
 	if err != nil {
 		t.Fatalf("requestLiveSessionWSURL() error = %v", err)
@@ -154,7 +154,7 @@ func TestRequestLiveSessionWSURL(t *testing.T) {
 }
 
 func TestStatusJSONIncludesBoardMonitoringShape(t *testing.T) {
-	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard","board_monitoring":{"temperature":{"available":false,"reason":"no_zephyr_temperature_device"},"heap":{"available":true,"reason":"","source":"system_heap","free_bytes":6144,"allocated_bytes":2048,"max_allocated_bytes":3072,"total_bytes":8192},"runtime":{"available":true,"reason":"","uptime_ms":12345,"uptime_seconds":12},"cpu":{"available":false,"reason":"thread_runtime_stats_disabled"}}}`
+	response := `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","project":"radxa-linkr-debugger","board_monitoring":{"temperature":{"available":false,"reason":"no_zephyr_temperature_device"},"heap":{"available":true,"reason":"","source":"system_heap","free_bytes":6144,"allocated_bytes":2048,"max_allocated_bytes":3072,"total_bytes":8192},"runtime":{"available":true,"reason":"","uptime_ms":12345,"uptime_seconds":12},"cpu":{"available":false,"reason":"thread_runtime_stats_disabled"}}}`
 	var status struct {
 		BoardMonitoring boardMonitoring `json:"board_monitoring"`
 	}
@@ -179,7 +179,7 @@ func TestStatusJSONIncludesBoardMonitoringShape(t *testing.T) {
 func TestRunADCReadDefaultTextUsesRawCurrent(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}`
+	response := `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}`
 	client := &fakeClient{response: response}
 
 	code := (App{Client: client}).Run([]string{"adc", "read", "5v_out"}, &stdout, &stderr)
@@ -197,13 +197,13 @@ func TestRunADCReadDefaultTextUsesRawCurrent(t *testing.T) {
 func TestRunADCReadJSONPreservesRawCurrentFields(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}`
+	response := `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}`
 
 	code := (App{Client: &fakeClient{response: response}}).Run([]string{"--json", "adc", "read", "5v_out"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
-	if strings.TrimSpace(stdout.String()) != `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","raw":null,"power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}` {
+	if strings.TrimSpace(stdout.String()) != `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","raw":null,"power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}` {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
@@ -211,7 +211,7 @@ func TestRunADCReadJSONPreservesRawCurrentFields(t *testing.T) {
 func TestRunADCReadPowerDisabledStillReportsRawCurrent(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	response := `{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":false,"raw":24,"mv":19,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}`
+	response := `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":false,"raw":24,"mv":19,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}`
 
 	code := (App{Client: &fakeClient{response: response}}).Run([]string{"adc", "read", "5v_out"}, &stdout, &stderr)
 	if code != 0 {
@@ -225,7 +225,7 @@ func TestRunADCReadPowerDisabledStillReportsRawCurrent(t *testing.T) {
 func TestRunPowerSetMapsToPowerEndpoint(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	client := &fakeClient{response: `{"schema":"agent-debugboard.v1","ok":true,"command":"power","action":"set","power_output":{"name":"12v_out","state":"off"}}`}
+	client := &fakeClient{response: `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"power","action":"set","power_output":{"name":"12v_out","state":"off"}}`}
 
 	code := (App{Client: client}).Run([]string{"power", "set", "12v_out", "off"}, &stdout, &stderr)
 	if code != 0 {
@@ -257,7 +257,7 @@ func TestRunSDGPIOAndBootloaderMappings(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
-			client := &fakeClient{response: `{"schema":"agent-debugboard.v1","ok":true,"command":"ok"}`}
+			client := &fakeClient{response: `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ok"}`}
 			code := (App{Client: client}).Run(tt.args, &stdout, &stderr)
 			if code != 0 {
 				t.Fatalf("Run() exit code = %d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
@@ -272,7 +272,7 @@ func TestRunSDGPIOAndBootloaderMappings(t *testing.T) {
 func TestRunWatchdogFeedIsRejectedLocally(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	client := &fakeClient{response: `{"schema":"agent-debugboard.v1","ok":true,"command":"ok"}`}
+	client := &fakeClient{response: `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ok"}`}
 
 	code := (App{Client: client}).Run([]string{"watchdog", "feed"}, &stdout, &stderr)
 	if code != 2 {
@@ -289,7 +289,7 @@ func TestRunWatchdogFeedIsRejectedLocally(t *testing.T) {
 func TestRunJSONCommandReturnsFailureOnBoardError(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	response := `{"schema":"agent-debugboard.v1","ok":false,"command":"power","error":{"code":"unknown_power_output","message":"unknown power output"}}`
+	response := `{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"power","error":{"code":"unknown_power_output","message":"unknown power output"}}`
 
 	code := (App{Client: &fakeClient{response: response}}).Run([]string{"--json", "power", "get", "missing"}, &stdout, &stderr)
 	if code != 1 {
@@ -304,7 +304,7 @@ func TestRunJSONRejectsOldTextFirmwareOutput(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	code := (App{Client: &fakeClient{response: "project=agent-debugboard"}}).Run([]string{"--json", "status"}, &stdout, &stderr)
+	code := (App{Client: &fakeClient{response: "project=radxa-linkr-debugger"}}).Run([]string{"--json", "status"}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("Run() exit code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
@@ -339,7 +339,7 @@ func TestRunHelpReturnsSuccess(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stderr=%q", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "usage: agent-debugboardctl") {
+	if !strings.Contains(stderr.String(), "usage: radxa-linkr-debuggerctl") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
@@ -352,7 +352,7 @@ func TestRunVersionReturnsSuccessWithoutBoardAccess(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run() exit code = %d stderr=%q", code, stderr.String())
 	}
-	if strings.TrimSpace(stdout.String()) != "agent-debugboardctl "+Version {
+	if strings.TrimSpace(stdout.String()) != "radxa-linkr-debuggerctl "+Version {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
@@ -378,7 +378,7 @@ func TestRunJSONVersionReturnsSuccessWithoutBoardAccess(t *testing.T) {
 func TestDoctorJSONReportsHTTPStatus(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	status := `{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard"}`
+	status := `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","project":"radxa-linkr-debugger"}`
 
 	code := (App{Client: &fakeClient{response: status}}).Run([]string{"--json", "--url", "http://172.29.203.1:8080", "doctor"}, &stdout, &stderr)
 	if code != 0 {
@@ -427,7 +427,7 @@ func TestHTTPClientBuildsRequestAndEncodesJSON(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		_, _ = w.Write([]byte(`{"schema":"agent-debugboard.v1","ok":true,"command":"power"}`))
+		_, _ = w.Write([]byte(`{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"power"}`))
 	}))
 	defer server.Close()
 
@@ -637,7 +637,7 @@ func TestMultipleWSClientsConnectIndependently(t *testing.T) {
 }
 
 func TestIsDebugBoardStatus(t *testing.T) {
-	output := `{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard"}`
+	output := `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","project":"radxa-linkr-debugger"}`
 	if !IsDebugBoardStatus(output) {
 		t.Fatal("expected debugboard status output to be recognized")
 	}

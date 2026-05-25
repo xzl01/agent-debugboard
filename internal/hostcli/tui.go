@@ -308,7 +308,7 @@ var controlTargets = []string{"12v_out", "5v_out", "5v_ws", "20v_out"}
 func (m tuiModel) View() string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
 	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	header := titleStyle.Render("Agent DebugBoard TUI")
+	header := titleStyle.Render("Radxa Linkr Debugger TUI")
 	header += "\n" + mutedStyle.Render(fmt.Sprintf("url=%s  status=%s  keys: q quit · p pause · r refresh · ↑/↓ select power · Enter toggle · t/u switch-sd · [/]/PgUp/PgDn scroll", m.baseURL, m.status))
 
 	chartHeight := 4

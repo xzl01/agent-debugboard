@@ -1,16 +1,16 @@
-# agent-debugboard
+# radxa-linkr-debugger
 
 [English](README.md)
 
-`agent-debugboard` 是 **Agent DebugBoard** 的 RP2040 固件。它把一块硬件
+`radxa-linkr-debugger` 是 **Radxa Linkr Debugger** 的 RP2040 固件。它把一块硬件
 调试板变成 PC 侧 Agent/AI 可以直接操作的 USB 控制接口，用于控制目标开发板
 或 SBC 的供电、刷机模式、TF/SD 路由、电流监测 ADC 和一组安全 GPIO。
 
-![Agent Debugger 宣传图](doc/marketing/agent-debugger-promo.png)
+![Radxa Linkr Debugger 宣传图](doc/marketing/radxa-linkr-debugger-promo.png)
 
 ## 项目简介
 
-Agent DebugBoard 面向自动化 bring-up、远程恢复、产测和 AI agent 调试链路。
+Radxa Linkr Debugger 面向自动化 bring-up、远程恢复、产测和 AI agent 调试链路。
 固件会枚举为复合 USB 设备：以 USB NCM 网络接口作为主控制面，并保留一个
 USB CDC ACM 串口用于 Zephyr 通用 cmdline 和 BOOTSEL fallback；主机侧当前主力
 命令路径是 `cmd-ng/` 下的 Rust CLI/TUI，用于脚本和 Agent 直接调用。
@@ -19,7 +19,7 @@ USB CDC ACM 串口用于 Zephyr 通用 cmdline 和 BOOTSEL fallback；主机侧�
 侧实现、单元测试、原理图副本和项目文档。
 
 当前主力主机侧命令路径是 [`cmd-ng/`](cmd-ng/)。旧的 Go
-`cmd/agent-debugboardctl` + `internal/hostcli` 已进入 deprecated/legacy 维护状
+`cmd/radxa-linkr-debuggerctl` + `internal/hostcli` 已进入 deprecated/legacy 维护状
 态，仅保留作参考实现与回归对照。
 
 ## 功能范围
@@ -42,7 +42,7 @@ USB CDC ACM 串口用于 Zephyr 通用 cmdline 和 BOOTSEL fallback；主机侧�
 ## 给 AI Agent 的使用入口
 
 AI Agent 在操作硬件前，应先读取
-[skills/agent-debugboard/SKILL.md](skills/agent-debugboard/SKILL.md)。这份 skill
+[skills/radxa-linkr-debugger/SKILL.md](skills/radxa-linkr-debugger/SKILL.md)。这份 skill
 是仓库内面向 Agent 的权威操作规程，包含主力主机侧 CLI 的构建/运行、连接诊
 断、JSON 命令使用和有副作用操作的安全规则。
 
@@ -72,7 +72,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
 
 ## 安装主机侧 CLI
 
-当前主力主机侧 CLI 是 Rust `cmd-ng` 实现。旧 Go `agent-debugboardctl` 路径已弃
+当前主力主机侧 CLI 是 Rust `cmd-ng` 实现。旧 Go `radxa-linkr-debuggerctl` 路径已弃
 用。
 
 在 checkout 内，直接构建/运行当前主力 Rust 主机 CLI：
@@ -87,7 +87,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 本：
 
 ```sh
-./skills/agent-debugboard/scripts/install.sh --version <tag>
+./skills/radxa-linkr-debugger/scripts/install.sh --version <tag>
 ```
 
 私有仓库 release 下载需要先提供 GitHub token，并显式指定 release 版本。
@@ -95,43 +95,43 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 
 ```sh
 export GH_TOKEN="$(gh auth token)"
-./skills/agent-debugboard/scripts/install.sh --version <tag>
+./skills/radxa-linkr-debugger/scripts/install.sh --version <tag>
 ```
 
 Windows PowerShell：
 
 ```powershell
-powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\radxa-linkr-debugger\scripts\install.ps1
 ```
 
 私有仓库 PowerShell release 下载：
 
 ```powershell
 $env:GH_TOKEN = gh auth token
-powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\agent-debugboard\scripts\install.ps1 -Version <tag>
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\radxa-linkr-debugger\scripts\install.ps1 -Version <tag>
 ```
 
 也可以从 GitHub Release 手动下载匹配 OS 和 CPU 的产物：
 
 | 系统 / CPU | 产物 |
 | --- | --- |
-| Windows x64 | `agent-debugboardctl-rust_windows_amd64.zip` |
-| Windows arm64 | `agent-debugboardctl-rust_windows_arm64.zip` |
-| Linux x64 | `agent-debugboardctl-rust_linux_amd64.tar.gz` |
-| Linux arm64 | `agent-debugboardctl-rust_linux_arm64.tar.gz` |
-| macOS Intel | `agent-debugboardctl-rust_darwin_amd64.tar.gz` |
-| macOS Apple Silicon | `agent-debugboardctl-rust_darwin_arm64.tar.gz` |
+| Windows x64 | `radxa-linkr-debuggerctl-rust_windows_amd64.zip` |
+| Windows arm64 | `radxa-linkr-debuggerctl-rust_windows_arm64.zip` |
+| Linux x64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
+| Linux arm64 | `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` |
+| macOS Intel | `radxa-linkr-debuggerctl-rust_darwin_amd64.tar.gz` |
+| macOS Apple Silicon | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` |
 
 如果需要保留作对照或迁移用途的旧 Go host CLI，GitHub Release 中还会额外提供
-`agent-debugboardctl_<os>_<arch>.*` 兼容归档；主力 Rust CLI/TUI 则会以
-`agent-debugboardctl-rust_<os>_<arch>.*` 的名字一并发布，skill 安装脚本也会优先下载它。
+`radxa-linkr-debuggerctl_<os>_<arch>.*` 兼容归档；主力 Rust CLI/TUI 则会以
+`radxa-linkr-debuggerctl-rust_<os>_<arch>.*` 的名字一并发布，skill 安装脚本也会优先下载它。
 
 macOS 上未签名的 release 二进制可能触发 Gatekeeper，提示 Apple 无法验证软件。
 安装脚本会先校验 `SHA256SUMS.txt`，再移除安装后二进制的 quarantine 标记。
 如果手动安装，请先校验 SHA256，再执行：
 
 ```sh
-xattr -dr com.apple.quarantine ./skills/agent-debugboard/scripts/bin/agent-debugboardctl
+xattr -dr com.apple.quarantine ./skills/radxa-linkr-debugger/scripts/bin/radxa-linkr-debuggerctl
 ```
 
 构建/安装后验证：
@@ -181,18 +181,18 @@ pip install -r zephyr/scripts/requirements.txt
 
 ```sh
 source .venv/bin/activate
-west build -p always -b rpi_pico/rp2040 apps/agent_debugboard -d build/agent_debugboard
+west build -p always -b rpi_pico/rp2040 apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
 ```
 
 生成的 UF2 文件位置：
 
 ```text
-build/agent_debugboard/zephyr/zephyr.uf2
+build/radxa_linkr_debugger/zephyr/zephyr.uf2
 ```
 
 本仓库的固件 build/flash 路径应固定不变：始终构建到
-`build/agent_debugboard/`，始终刷写
-`build/agent_debugboard/zephyr/zephyr.uf2`。不要切换到其它 build 目录，也不要
+`build/radxa_linkr_debugger/`，始终刷写
+`build/radxa_linkr_debugger/zephyr/zephyr.uf2`。不要切换到其它 build 目录，也不要
 使用临时挂载点里残留的旧 UF2。
 
 ## 刷写
@@ -200,8 +200,8 @@ build/agent_debugboard/zephyr/zephyr.uf2
 如果板子当前已经运行本固件，可以先让它进入 BOOTSEL，再刷写新的 UF2：
 
 ```sh
-agent-debugboardctl bootloader
-picotool load -v -x build/agent_debugboard/zephyr/zephyr.uf2
+radxa-linkr-debuggerctl bootloader
+picotool load -v -x build/radxa_linkr_debugger/zephyr/zephyr.uf2
 ```
 
 每次修改固件后，都应把这条 BOOTSEL 流程和下方 RP2040 CDC ACM 串口 shell 的
@@ -211,19 +211,19 @@ fallback 路径当作必做验收项；确认串口 fallback 仍然可用后，�
 Zephyr shell 里进入同一条 BOOTSEL 路径：
 
 ```text
-debugboard:~$ bootloader
+linkr-debugger:~$ bootloader
 ```
 
 如果板子已经以 `RPI-RP2` 磁盘方式挂载，只需要执行：
 
 ```sh
-picotool load -v -x build/agent_debugboard/zephyr/zephyr.uf2
+picotool load -v -x build/radxa_linkr_debugger/zephyr/zephyr.uf2
 ```
 
 如果改用 `RPI-RP2` 盘符拖拽复制，而不是 `picotool`，也只能复制这一个固定产物：
 
 ```text
-build/agent_debugboard/zephyr/zephyr.uf2
+build/radxa_linkr_debugger/zephyr/zephyr.uf2
 ```
 
 ## GitHub Actions 产物
@@ -232,24 +232,24 @@ build/agent_debugboard/zephyr/zephyr.uf2
 `Release` workflow，自动构建固件、打包主机 CLI、创建 GitHub Release，并上传
 固定命名的 release assets。
 
-- `agent-debugboard-rp2040.uf2`：用于拖拽刷写或 `picotool` 的 RP2040 固件。
-- `agent-debugboard-rp2040.elf`：用于调试的 RP2040 ELF。
-- `agent-debugboard-rp2040.map`：RP2040 链接 map。
-- `agent-debugboardctl-rust_windows_amd64.zip`：Windows x64 主力 Rust CLI/TUI。
-- `agent-debugboardctl-rust_windows_arm64.zip`：Windows arm64 主力 Rust CLI/TUI。
-- `agent-debugboardctl-rust_linux_amd64.tar.gz`：Linux x64 主力 Rust CLI/TUI。
-- `agent-debugboardctl-rust_linux_arm64.tar.gz`：Linux arm64 主力 Rust CLI/TUI。
-- `agent-debugboardctl-rust_darwin_amd64.tar.gz`：macOS Intel 主力 Rust CLI/TUI。
-- `agent-debugboardctl-rust_darwin_arm64.tar.gz`：macOS Apple Silicon 主力 Rust CLI/TUI。
-- `agent-debugboardctl_<os>_<arch>.*`：弃用 Go CLI 的兼容归档。
-- `skills-agent-debugboard.tar.gz`：`skills/agent-debugboard/` 的 Agent skill 打包。
+- `radxa-linkr-debugger-rp2040.uf2`：用于拖拽刷写或 `picotool` 的 RP2040 固件。
+- `radxa-linkr-debugger-rp2040.elf`：用于调试的 RP2040 ELF。
+- `radxa-linkr-debugger-rp2040.map`：RP2040 链接 map。
+- `radxa-linkr-debuggerctl-rust_windows_amd64.zip`：Windows x64 主力 Rust CLI/TUI。
+- `radxa-linkr-debuggerctl-rust_windows_arm64.zip`：Windows arm64 主力 Rust CLI/TUI。
+- `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz`：Linux x64 主力 Rust CLI/TUI。
+- `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz`：Linux arm64 主力 Rust CLI/TUI。
+- `radxa-linkr-debuggerctl-rust_darwin_amd64.tar.gz`：macOS Intel 主力 Rust CLI/TUI。
+- `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz`：macOS Apple Silicon 主力 Rust CLI/TUI。
+- `radxa-linkr-debuggerctl_<os>_<arch>.*`：弃用 Go CLI 的兼容归档。
+- `skills-radxa-linkr-debugger.tar.gz`：`skills/radxa-linkr-debugger/` 的 Agent skill 打包。
 - `SHA256SUMS.txt`：所有 release assets 的 SHA256 校验文件。
 
 开发者可以从源码构建当前主力 host CLI：
 
 ```sh
 cargo build --manifest-path cmd-ng/Cargo.toml
-./cmd-ng/target/debug/agent-debugboardctl --help
+./cmd-ng/target/debug/radxa-linkr-debuggerctl --help
 ```
 
 Rust `cmd-ng` 现在是主力开发路径，可直接构建运行：
@@ -272,7 +272,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- doctor
 ```
 
 Agent 或自动化程序推荐优先使用 JSON 输出。JSON 响应固定包含
-`schema: "agent-debugboard.v1"`、`ok`、`command`，成功时返回命令相关字段，
+`schema: "radxa-linkr-debugger.v1"`、`ok`、`command`，成功时返回命令相关字段，
 失败时返回 `error: {code, message}`：
 
 ```sh
@@ -334,7 +334,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 20v_out
 ```
 
 人类可读 ADC 输出默认保持简洁，例如 `5v_out=0.540000A`。需要调试字段时使用
-`-v` / `--verbose`，会额外输出 `signal`、`mv` 等信息。`agent-debugboardctl --json adc read`
+`-v` / `--verbose`，会额外输出 `signal`、`mv` 等信息。`radxa-linkr-debuggerctl --json adc read`
 返回完整诊断链路字段：`raw`、`mv`、`current_ua`、`sensor_value` 和电源状态。
 主机侧不再附加 ADC 校准表或零点修正。
 
@@ -380,9 +380,9 @@ fallback 都持续上报本地存活时才继续喂狗。WebSocket 会话静默�
 
 ## OpenOCD / JTAG
 
-Agent DebugBoard 可以和 OpenOCD 配合使用：DebugBoard 负责目标板供电和恢复
+Radxa Linkr Debugger 可以和 OpenOCD 配合使用：Linkr Debugger 负责目标板供电和恢复
 控制，板载 CH347F 路径负责目标板 JTAG/SWD。CH347F 直连目标调试口，RP2040
-不在 JTAG/SWD 数据链路中，也不会把 DebugBoard 自己模拟成 CMSIS-DAP 或 JTAG
+不在 JTAG/SWD 数据链路中，也不会把 Linkr Debugger 自己模拟成 CMSIS-DAP 或 JTAG
 probe。
 
 安装 OpenOCD 后先确认版本：
@@ -395,7 +395,7 @@ openocd --version
 对应的 target 配置启动 OpenOCD：
 
 ```sh
-agent-debugboardctl --json power set 5v_out on
+radxa-linkr-debuggerctl --json power set 5v_out on
 openocd -f interface/<ch347-interface>.cfg -f target/<target>.cfg
 ```
 
@@ -413,9 +413,9 @@ OpenOCD 通常会在 TCP `3333` 暴露 GDB server，并在 TCP `4444` 暴露 tel
 固件枚举为复合 USB 设备。主机 CLI 通过 USB NCM 接口上的 HTTP 与调试板
 通信。默认设备 URL 为 `http://172.29.203.1:8080`。调试板会在 NCM 链路上运行
 一个小型 DHCPv4 server，让 host 自动拿到兼容地址；如果你修改了默认地址规划，
-可用 `agent-debugboardctl --url ...` 显式指定。
+可用 `radxa-linkr-debuggerctl --url ...` 显式指定。
 
-所有控制均通过 `agent-debugboardctl` 的 HTTP JSON 请求，或直接通过
+所有控制均通过 `radxa-linkr-debuggerctl` 的 HTTP JSON 请求，或直接通过
 `curl` / 任意 HTTP 客户端完成。RP2040 USB CDC ACM 串口会继续保留，作为
 Zephyr 通用 cmdline 和 BOOTSEL fallback 的辅助通道，但它不是主控制面。只要
 CDC ACM shell 可用，本地 `bootloader` shell 命令就会走与 HTTP API 相同的
@@ -451,14 +451,14 @@ mDNS 只是后续可选的“名字更友好”增强，不影响正常使用。
 [TI INA139 规格书](https://www.ti.com/product/INA139)。
 
 当前原理图副本放在
-[doc/agent-debugboard-schematic.pdf](doc/agent-debugboard-schematic.pdf)。
+[doc/radxa-linkr-debugger-schematic.pdf](doc/radxa-linkr-debugger-schematic.pdf)。
 
 ## 开发
 
 运行单元测试：
 
 ```sh
-./apps/agent_debugboard/tests/run_unit_tests.sh
+./apps/radxa_linkr_debugger/tests/run_unit_tests.sh
 ```
 
 测试脚本覆盖：
@@ -472,13 +472,13 @@ mDNS 只是后续可选的“名字更友好”增强，不影响正常使用。
 ## 仓库结构
 
 ```text
-apps/agent_debugboard/        Zephyr 应用
-apps/agent_debugboard/src/    固件源码和共享板级模型
-apps/agent_debugboard/tests/  单元测试
-cmd/agent-debugboardctl/      Go 主机侧 CLI 入口
+apps/radxa_linkr_debugger/        Zephyr 应用
+apps/radxa_linkr_debugger/src/    固件源码和共享板级模型
+apps/radxa_linkr_debugger/tests/  单元测试
+cmd/radxa-linkr-debuggerctl/      Go 主机侧 CLI 入口
 internal/hostcli/             Go 主机侧 CLI 实现
 doc/                          硬件文档、OpenOCD 配置和宣传素材
-skills/agent-debugboard/      面向 Agent 的 skill 和操作规程
+skills/radxa-linkr-debugger/      面向 Agent 的 skill 和操作规程
 .goreleaser.yaml              GoReleaser 主机侧 CLI 打包配置
 go.mod, go.sum                主机侧 CLI Go module
 west.yml                      Zephyr workspace manifest

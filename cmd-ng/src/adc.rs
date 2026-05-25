@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn derives_current_from_sensor_value_without_calibration() {
-        let raw = r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","readings":[{"name":"12v_out","signal":"S_C_12V","sensor_value":{"val1":0,"val2":1200000}}]}"#;
+        let raw = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"adc","readings":[{"name":"12v_out","signal":"S_C_12V","sensor_value":{"val1":0,"val2":1200000}}]}"#;
         let transformed = transform_response(raw).unwrap();
         let reading = transformed.readings.first().unwrap();
         assert_eq!(reading.current_ua, Some(1_200_000));
@@ -189,14 +189,14 @@ mod tests {
 
     #[test]
     fn preserves_existing_ma_est() {
-        let raw = r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","readings":[{"name":"12v_out","ma_est":1}]}"#;
+        let raw = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"adc","readings":[{"name":"12v_out","ma_est":1}]}"#;
         let transformed: AdcResponse = transform_response(raw).unwrap();
         assert_eq!(transformed.readings[0].ma_est, Some(1));
     }
 
     #[test]
     fn leaves_unknown_current_shape_unchanged() {
-        let raw = r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","readings":[{"name":"12v_out"}]}"#;
+        let raw = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"adc","readings":[{"name":"12v_out"}]}"#;
         let transformed: AdcResponse = transform_response(raw).unwrap();
         assert_eq!(transformed.readings[0].current_ua, None);
     }

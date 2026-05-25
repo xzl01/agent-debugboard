@@ -1,4 +1,4 @@
-module agent-debugboard
+module radxa-linkr-debugger
 
 go 1.23.0
 

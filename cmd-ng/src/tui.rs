@@ -760,7 +760,7 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
         .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(inner);
 
-    let title = Paragraph::new("Agent DebugBoard TUI")
+    let title = Paragraph::new("Radxa Linkr Debugger TUI")
         .alignment(Alignment::Center)
         .style(Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
     frame.render_widget(title, header_chunks[0]);

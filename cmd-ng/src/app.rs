@@ -124,7 +124,7 @@ where
                 }),
             )?;
         } else {
-            writeln!(stdout, "agent-debugboardctl {}", version())?;
+            writeln!(stdout, "radxa-linkr-debuggerctl {}", version())?;
         }
         return Ok(0);
     }
@@ -159,10 +159,10 @@ where
                     stdout,
                     "doctor",
                     "usage",
-                    "usage: agent-debugboardctl doctor",
+                    "usage: radxa-linkr-debuggerctl doctor",
                 )?;
             } else {
-                writeln!(stderr, "usage: agent-debugboardctl doctor")?;
+                writeln!(stderr, "usage: radxa-linkr-debuggerctl doctor")?;
             }
             return Ok(2);
         }
@@ -397,7 +397,7 @@ fn finish_doctor(
         return Ok(exit_code);
     }
 
-    writeln!(stdout, "Agent DebugBoard doctor")?;
+    writeln!(stdout, "Radxa Linkr Debugger doctor")?;
     writeln!(stdout, "cli_version={}", result.cli_version)?;
     writeln!(stdout, "base_url={}", result.base_url)?;
     writeln!(
@@ -463,7 +463,7 @@ fn strip_passthrough_flags(args: &[String]) -> Vec<String> {
 fn command_name(args: &[String]) -> &str {
     args.first()
         .map(String::as_str)
-        .unwrap_or("agent-debugboardctl")
+        .unwrap_or("radxa-linkr-debuggerctl")
 }
 
 fn extract_adc_channel(args: &[String]) -> Option<String> {
@@ -482,7 +482,7 @@ fn run_adc_record(
     stderr: &mut dyn Write,
 ) -> Result<u8> {
     let cleaned = strip_passthrough_flags(args);
-    let usage = "usage: agent-debugboardctl adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]";
+    let usage = "usage: radxa-linkr-debuggerctl adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]";
     if cleaned.len() < 3 {
         writeln!(stderr, "{usage}")?;
         return Ok(2);
@@ -514,7 +514,7 @@ struct AdcRecordArgs {
 }
 
 fn parse_adc_record_args(cleaned: &[String]) -> Result<AdcRecordArgs, String> {
-    let usage = "usage: agent-debugboardctl adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]";
+    let usage = "usage: radxa-linkr-debuggerctl adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]";
     if cleaned.len() < 3 {
         return Err(usage.to_string());
     }
@@ -584,7 +584,7 @@ fn request_from_args(args: &[String]) -> Result<BoardRequest, String> {
     match cleaned[0].as_str() {
         "status" => {
             if cleaned.len() != 1 {
-                return Err("usage: agent-debugboardctl status".to_string());
+                return Err("usage: radxa-linkr-debuggerctl status".to_string());
             }
             Ok(get_request("/api/v1/status"))
         }
@@ -595,7 +595,7 @@ fn request_from_args(args: &[String]) -> Result<BoardRequest, String> {
         "watchdog" => watchdog_request(&cleaned),
         "bootloader" => {
             if cleaned.len() != 1 {
-                return Err("usage: agent-debugboardctl bootloader".to_string());
+                return Err("usage: radxa-linkr-debuggerctl bootloader".to_string());
             }
             Ok(post_request("/api/v1/bootloader"))
         }
@@ -605,24 +605,24 @@ fn request_from_args(args: &[String]) -> Result<BoardRequest, String> {
 
 fn power_request(args: &[String]) -> Result<BoardRequest, String> {
     if args.len() < 2 {
-        return Err("usage: agent-debugboardctl power list|get|set ...".to_string());
+        return Err("usage: radxa-linkr-debuggerctl power list|get|set ...".to_string());
     }
     match args[1].as_str() {
         "list" => {
             if args.len() != 2 {
-                return Err("usage: agent-debugboardctl power list".to_string());
+                return Err("usage: radxa-linkr-debuggerctl power list".to_string());
             }
             Ok(get_request("/api/v1/power"))
         }
         "get" => {
             if args.len() != 3 {
-                return Err("usage: agent-debugboardctl power get NAME".to_string());
+                return Err("usage: radxa-linkr-debuggerctl power get NAME".to_string());
             }
             Ok(get_request(format!("/api/v1/power/{}", args[2])))
         }
         "set" => {
             if args.len() != 4 {
-                return Err("usage: agent-debugboardctl power set NAME on|off".to_string());
+                return Err("usage: radxa-linkr-debuggerctl power set NAME on|off".to_string());
             }
             Ok(put_request(
                 format!("/api/v1/power/{}", args[2]),
@@ -635,10 +635,10 @@ fn power_request(args: &[String]) -> Result<BoardRequest, String> {
 
 fn adc_request(args: &[String]) -> Result<BoardRequest, String> {
     if args.len() < 2 || args[1] != "read" {
-        return Err("usage: agent-debugboardctl adc read [NAME]".to_string());
+        return Err("usage: radxa-linkr-debuggerctl adc read [NAME]".to_string());
     }
     if args.len() > 3 {
-        return Err("usage: agent-debugboardctl adc read [NAME]".to_string());
+        return Err("usage: radxa-linkr-debuggerctl adc read [NAME]".to_string());
     }
     let mut query = Vec::new();
     if let Some(name) = args.get(2) {
@@ -649,24 +649,24 @@ fn adc_request(args: &[String]) -> Result<BoardRequest, String> {
 
 fn switch_request(args: &[String]) -> Result<BoardRequest, String> {
     if args.len() < 2 {
-        return Err("usage: agent-debugboardctl switch list|get|route ...".to_string());
+        return Err("usage: radxa-linkr-debuggerctl switch list|get|route ...".to_string());
     }
     match args[1].as_str() {
         "list" => {
             if args.len() != 2 {
-                return Err("usage: agent-debugboardctl switch list".to_string());
+                return Err("usage: radxa-linkr-debuggerctl switch list".to_string());
             }
             Ok(get_request("/api/v1/switch"))
         }
         "get" => {
             if args.len() != 3 {
-                return Err("usage: agent-debugboardctl switch get sd|usb".to_string());
+                return Err("usage: radxa-linkr-debuggerctl switch get sd|usb".to_string());
             }
             Ok(get_request(format!("/api/v1/switch/{}", args[2])))
         }
         "route" => {
             if args.len() != 4 {
-                return Err("usage: agent-debugboardctl switch route sd|usb ROUTE".to_string());
+                return Err("usage: radxa-linkr-debuggerctl switch route sd|usb ROUTE".to_string());
             }
             Ok(put_request(
                 format!("/api/v1/switch/{}", args[2]),
@@ -679,18 +679,18 @@ fn switch_request(args: &[String]) -> Result<BoardRequest, String> {
 
 fn gpio_request(args: &[String]) -> Result<BoardRequest, String> {
     if args.len() < 2 {
-        return Err("usage: agent-debugboardctl gpio list|set|input ...".to_string());
+        return Err("usage: radxa-linkr-debuggerctl gpio list|set|input ...".to_string());
     }
     match args[1].as_str() {
         "list" => {
             if args.len() != 2 {
-                return Err("usage: agent-debugboardctl gpio list".to_string());
+                return Err("usage: radxa-linkr-debuggerctl gpio list".to_string());
             }
             Ok(get_request("/api/v1/gpio"))
         }
         "input" => {
             if args.len() != 3 {
-                return Err("usage: agent-debugboardctl gpio input NAME".to_string());
+                return Err("usage: radxa-linkr-debuggerctl gpio input NAME".to_string());
             }
             Ok(put_request(
                 format!("/api/v1/gpio/{}", args[2]),
@@ -699,7 +699,7 @@ fn gpio_request(args: &[String]) -> Result<BoardRequest, String> {
         }
         "set" => {
             if args.len() != 4 {
-                return Err("usage: agent-debugboardctl gpio set NAME 0|1".to_string());
+                return Err("usage: radxa-linkr-debuggerctl gpio set NAME 0|1".to_string());
             }
             let value = args[3].parse::<i32>().unwrap_or(0);
             Ok(put_request(
@@ -713,7 +713,7 @@ fn gpio_request(args: &[String]) -> Result<BoardRequest, String> {
 
 fn watchdog_request(args: &[String]) -> Result<BoardRequest, String> {
     if args.len() != 2 {
-        return Err("usage: agent-debugboardctl watchdog status".to_string());
+        return Err("usage: radxa-linkr-debuggerctl watchdog status".to_string());
     }
     match args[1].as_str() {
         "status" => Ok(get_request("/api/v1/watchdog")),
@@ -773,7 +773,7 @@ fn missing_command(
     if json_output {
         write_json_error(
             stdout,
-            "agent-debugboardctl",
+            "radxa-linkr-debuggerctl",
             "missing_command",
             "missing command, for example: adc read",
         )?;
@@ -827,19 +827,19 @@ fn write_json<T: Serialize>(writer: &mut dyn Write, value: &T) -> Result<()> {
 }
 
 fn write_usage(writer: &mut dyn Write) -> Result<()> {
-    writeln!(writer, "usage: agent-debugboardctl [--url URL] [--timeout 2s] [--json] [-v] [--version] <command> [args...]\n")?;
+    writeln!(writer, "usage: radxa-linkr-debuggerctl [--url URL] [--timeout 2s] [--json] [-v] [--version] <command> [args...]\n")?;
     writeln!(writer, "examples:")?;
-    writeln!(writer, "  agent-debugboardctl status")?;
-    writeln!(writer, "  agent-debugboardctl --json status")?;
-    writeln!(writer, "  agent-debugboardctl doctor")?;
-    writeln!(writer, "  agent-debugboardctl power set 12v_out on")?;
-    writeln!(writer, "  agent-debugboardctl adc read")?;
-    writeln!(writer, "  agent-debugboardctl adc read -v 5v_out")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl status")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl --json status")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl doctor")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl power set 12v_out on")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl adc read")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl adc read -v 5v_out")?;
     writeln!(
         writer,
-        "  agent-debugboardctl adc record /tmp/adc.ndjson 1000 --rate-hz 250"
+        "  radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 1000 --rate-hz 250"
     )?;
-    writeln!(writer, "  agent-debugboardctl watchdog status\n")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl watchdog status\n")?;
     writeln!(writer, "      --url <URL>")?;
     writeln!(writer, "      --addr <ADDR>")?;
     writeln!(writer, "      --port <PORT>")?;
@@ -948,7 +948,7 @@ mod tests {
     fn run_status_uses_http_client() {
         let cli = Cli::parse_from(["cmd", "status"]);
         let client = FakeClient {
-            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard"}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","project":"radxa-linkr-debugger"}"#.to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -982,7 +982,7 @@ mod tests {
     fn run_adc_read_default_text_uses_raw_current() {
         let cli = Cli::parse_from(["cmd", "adc", "read", "5v_out"]);
         let client = FakeClient {
-            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -1008,7 +1008,7 @@ mod tests {
     fn run_adc_read_json_preserves_raw_current_fields() {
         let cli = Cli::parse_from(["cmd", "--json", "adc", "read", "5v_out"]);
         let client = FakeClient {
-            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -1019,7 +1019,7 @@ mod tests {
         assert_eq!(code, 0);
         assert_eq!(
             String::from_utf8(stdout).unwrap().trim(),
-            r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","raw":null,"power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#
+            r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","raw":null,"power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#
         );
     }
 
@@ -1027,7 +1027,7 @@ mod tests {
     fn run_adc_read_verbose_flag_after_command_is_honored() {
         let cli = Cli::parse_from(["cmd", "adc", "read", "-v", "5v_out"]);
         let client = FakeClient {
-            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":true,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -1046,7 +1046,7 @@ mod tests {
     fn run_adc_read_power_disabled_still_reports_raw_current() {
         let cli = Cli::parse_from(["cmd", "adc", "read", "5v_out"]);
         let client = FakeClient {
-            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":false,"raw":24,"mv":19,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"5v_out","signal":"S_C_5V","power_enabled":false,"raw":24,"mv":19,"sensor_channel":"current","unit":"A","sensor_value":{"val1":0,"val2":850000},"current_ua":850000}]}"#.to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -1104,7 +1104,7 @@ mod tests {
     fn run_power_set_maps_to_power_endpoint() {
         let cli = Cli::parse_from(["cmd", "power", "set", "12v_out", "off"]);
         let client = FakeClient {
-            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"power","action":"set","power_output":{"name":"12v_out","state":"off"}}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"power","action":"set","power_output":{"name":"12v_out","state":"off"}}"#.to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -1153,7 +1153,7 @@ mod tests {
         for (args, method, path) in tests {
             let cli = Cli::parse_from(args.clone());
             let client = FakeClient {
-                response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"ok"}"#
+                response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ok"}"#
                     .to_string(),
                 ..Default::default()
             };
@@ -1174,7 +1174,7 @@ mod tests {
     fn run_watchdog_feed_is_rejected_locally() {
         let cli = Cli::parse_from(["cmd", "watchdog", "feed"]);
         let client = FakeClient {
-            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"ok"}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ok"}"#.to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -1193,7 +1193,7 @@ mod tests {
     fn run_json_watchdog_feed_is_rejected_locally() {
         let cli = Cli::parse_from(["cmd", "--json", "watchdog", "feed"]);
         let client = FakeClient {
-            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"ok"}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ok"}"#.to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -1221,14 +1221,14 @@ mod tests {
         assert_eq!(code, 2);
         assert!(String::from_utf8(stderr)
             .unwrap()
-            .contains("usage: agent-debugboardctl doctor"));
+            .contains("usage: radxa-linkr-debuggerctl doctor"));
     }
 
     #[test]
     fn run_json_command_returns_failure_on_board_error() {
         let cli = Cli::parse_from(["cmd", "--json", "power", "get", "missing"]);
         let client = FakeClient {
-            response: r#"{"schema":"agent-debugboard.v1","ok":false,"command":"power","error":{"code":"unknown_power_output","message":"unknown power output"}}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"power","error":{"code":"unknown_power_output","message":"unknown power output"}}"#.to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -1244,7 +1244,7 @@ mod tests {
     fn run_json_rejects_old_text_firmware_output() {
         let cli = Cli::parse_from(["cmd", "--json", "status"]);
         let client = FakeClient {
-            response: "project=agent-debugboard".to_string(),
+            response: "project=radxa-linkr-debugger".to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -1295,7 +1295,7 @@ mod tests {
         assert_eq!(code, 0);
         assert_eq!(
             String::from_utf8(stdout).unwrap().trim(),
-            format!("agent-debugboardctl {}", version())
+            format!("radxa-linkr-debuggerctl {}", version())
         );
     }
 
@@ -1322,7 +1322,7 @@ mod tests {
             "doctor",
         ]);
         let client = FakeClient {
-            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard"}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","project":"radxa-linkr-debugger"}"#.to_string(),
             base_url: "http://172.29.203.1:8080".to_string(),
             ..Default::default()
         };
@@ -1360,7 +1360,7 @@ mod tests {
     fn status_json_includes_board_monitoring_shape() {
         let cli = Cli::parse_from(["cmd", "--json", "status"]);
         let client = FakeClient {
-            response: r#"{"schema":"agent-debugboard.v1","ok":true,"command":"status","project":"agent-debugboard","board_monitoring":{"temperature":{"available":false,"reason":"no_zephyr_temperature_device"},"heap":{"available":true,"reason":"","source":"system_heap","free_bytes":6144,"allocated_bytes":2048,"max_allocated_bytes":3072,"total_bytes":8192},"runtime":{"available":true,"reason":"","uptime_ms":12345,"uptime_seconds":12},"cpu":{"available":false,"reason":"thread_runtime_stats_disabled"}}}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","project":"radxa-linkr-debugger","board_monitoring":{"temperature":{"available":false,"reason":"no_zephyr_temperature_device"},"heap":{"available":true,"reason":"","source":"system_heap","free_bytes":6144,"allocated_bytes":2048,"max_allocated_bytes":3072,"total_bytes":8192},"runtime":{"available":true,"reason":"","uptime_ms":12345,"uptime_seconds":12},"cpu":{"available":false,"reason":"thread_runtime_stats_disabled"}}}"#.to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);

@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	PromptText        = "debugboard:~$"
+	PromptText        = "linkr-debugger:~$"
 	DefaultBaseURL    = "http://172.29.203.1:8080"
-	projectStatusLine = "project=agent-debugboard"
-	JSONSchema        = "agent-debugboard.v1"
+	projectStatusLine = "project=radxa-linkr-debugger"
+	JSONSchema        = "radxa-linkr-debugger.v1"
 )
 
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -121,10 +121,10 @@ func (a App) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	var jsonOutput bool
 	var verbose bool
 
-	fs := flag.NewFlagSet("agent-debugboardctl", flag.ContinueOnError)
+	fs := flag.NewFlagSet("radxa-linkr-debuggerctl", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&baseURL, "url", "", "Agent DebugBoard HTTP base URL, for example http://172.29.203.1:8080")
-	fs.StringVar(&baseURL, "addr", "", "Agent DebugBoard HTTP address or base URL, for example 172.29.203.1:8080")
+	fs.StringVar(&baseURL, "url", "", "Radxa Linkr Debugger HTTP base URL, for example http://172.29.203.1:8080")
+	fs.StringVar(&baseURL, "addr", "", "Radxa Linkr Debugger HTTP address or base URL, for example 172.29.203.1:8080")
 	fs.StringVar(&baseURL, "port", "", "deprecated alias for --url")
 	fs.Var(timeout, "timeout", "command timeout, for example 2s or 0.5")
 	fs.BoolVar(&raw, "raw", false, "send args as a raw shell command")
@@ -133,15 +133,15 @@ func (a App) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	fs.BoolVar(&verbose, "verbose", false, "request verbose human output")
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "usage: agent-debugboardctl [--url URL] [--timeout 2s] [--json] [-v] [--version] <command> [args...]\n\n")
+		fmt.Fprintf(stderr, "usage: radxa-linkr-debuggerctl [--url URL] [--timeout 2s] [--json] [-v] [--version] <command> [args...]\n\n")
 		fmt.Fprintf(stderr, "examples:\n")
-		fmt.Fprintf(stderr, "  agent-debugboardctl status\n")
-		fmt.Fprintf(stderr, "  agent-debugboardctl --json status\n")
-		fmt.Fprintf(stderr, "  agent-debugboardctl doctor\n")
-		fmt.Fprintf(stderr, "  agent-debugboardctl power set 12v_out on\n")
-		fmt.Fprintf(stderr, "  agent-debugboardctl adc read\n")
-		fmt.Fprintf(stderr, "  agent-debugboardctl adc read -v 5v_out\n")
-		fmt.Fprintf(stderr, "  agent-debugboardctl watchdog status\n\n")
+		fmt.Fprintf(stderr, "  radxa-linkr-debuggerctl status\n")
+		fmt.Fprintf(stderr, "  radxa-linkr-debuggerctl --json status\n")
+		fmt.Fprintf(stderr, "  radxa-linkr-debuggerctl doctor\n")
+		fmt.Fprintf(stderr, "  radxa-linkr-debuggerctl power set 12v_out on\n")
+		fmt.Fprintf(stderr, "  radxa-linkr-debuggerctl adc read\n")
+		fmt.Fprintf(stderr, "  radxa-linkr-debuggerctl adc read -v 5v_out\n")
+		fmt.Fprintf(stderr, "  radxa-linkr-debuggerctl watchdog status\n\n")
 		fs.PrintDefaults()
 	}
 
@@ -162,7 +162,7 @@ func (a App) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			})
 			return 0
 		}
-		fmt.Fprintf(stdout, "agent-debugboardctl %s\n", Version)
+		fmt.Fprintf(stdout, "radxa-linkr-debuggerctl %s\n", Version)
 		return 0
 	}
 
@@ -172,7 +172,7 @@ func (a App) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return a.runTUI(resolveBaseURL(baseURL), timeout.value, stdout, stderr)
 		}
 		if jsonOutput {
-			writeJSONError(stdout, "agent-debugboardctl", "missing_command",
+			writeJSONError(stdout, "radxa-linkr-debuggerctl", "missing_command",
 				"missing command, for example: adc read")
 			return 2
 		}
@@ -184,9 +184,9 @@ func (a App) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if !raw && commandArgs[0] == "doctor" {
 		if len(commandArgs) != 1 {
 			if jsonOutput {
-				writeJSONError(stdout, "doctor", "usage", "usage: agent-debugboardctl doctor")
+				writeJSONError(stdout, "doctor", "usage", "usage: radxa-linkr-debuggerctl doctor")
 			} else {
-				fmt.Fprintln(stderr, "usage: agent-debugboardctl doctor")
+				fmt.Fprintln(stderr, "usage: radxa-linkr-debuggerctl doctor")
 			}
 			return 2
 		}
@@ -310,7 +310,7 @@ func finishDoctor(stdout io.Writer, stderr io.Writer, result doctorResult, jsonO
 }
 
 func printDoctorText(w io.Writer, result doctorResult) {
-	fmt.Fprintln(w, "Agent DebugBoard doctor")
+	fmt.Fprintln(w, "Radxa Linkr Debugger doctor")
 	fmt.Fprintf(w, "cli_version=%s\n", result.CLIVersion)
 	fmt.Fprintf(w, "base_url=%s\n", result.BaseURL)
 	fmt.Fprintf(w, "probe=%s\n", mapBool(result.ProbeOK, "ok", "failed"))
@@ -347,7 +347,7 @@ func IsDebugBoardStatus(output string) bool {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &status); err != nil {
 		return false
 	}
-	return status.Schema == JSONSchema && status.OK && status.Command == "status" && status.Project == "agent-debugboard"
+	return status.Schema == JSONSchema && status.OK && status.Command == "status" && status.Project == "radxa-linkr-debugger"
 }
 
 type HTTPClient struct {
@@ -487,7 +487,7 @@ func requestFromArgs(args []string) (boardRequest, string, error) {
 	switch cleaned[0] {
 	case "status":
 		if len(cleaned) != 1 {
-			return boardRequest{}, "status", errors.New("usage: agent-debugboardctl status")
+			return boardRequest{}, "status", errors.New("usage: radxa-linkr-debuggerctl status")
 		}
 		return boardRequest{Method: http.MethodGet, Path: "/api/v1/status"}, "debugboard status --json", nil
 	case "power":
@@ -502,7 +502,7 @@ func requestFromArgs(args []string) (boardRequest, string, error) {
 		return watchdogRequest(cleaned)
 	case "bootloader":
 		if len(cleaned) != 1 {
-			return boardRequest{}, "bootloader", errors.New("usage: agent-debugboardctl bootloader")
+			return boardRequest{}, "bootloader", errors.New("usage: radxa-linkr-debuggerctl bootloader")
 		}
 		return boardRequest{Method: http.MethodPost, Path: "/api/v1/bootloader"}, "debugboard bootloader --json", nil
 	default:
@@ -513,7 +513,7 @@ func requestFromArgs(args []string) (boardRequest, string, error) {
 func watchdogRequest(args []string) (boardRequest, string, error) {
 	command := "debugboard " + strings.Join(args, " ") + " --json"
 	if len(args) != 2 {
-		return boardRequest{}, "watchdog", errors.New("usage: agent-debugboardctl watchdog status")
+		return boardRequest{}, "watchdog", errors.New("usage: radxa-linkr-debuggerctl watchdog status")
 	}
 	switch args[1] {
 	case "status":
@@ -540,22 +540,22 @@ func powerRequest(args []string) (boardRequest, string, error) {
 	commandName := args[0]
 	command := "debugboard power " + strings.Join(args[1:], " ") + " --json"
 	if len(args) < 2 {
-		return boardRequest{}, commandName, errors.New("usage: agent-debugboardctl power list|get|set ...")
+		return boardRequest{}, commandName, errors.New("usage: radxa-linkr-debuggerctl power list|get|set ...")
 	}
 	switch args[1] {
 	case "list":
 		if len(args) != 2 {
-			return boardRequest{}, commandName, errors.New("usage: agent-debugboardctl power list")
+			return boardRequest{}, commandName, errors.New("usage: radxa-linkr-debuggerctl power list")
 		}
 		return boardRequest{Method: http.MethodGet, Path: "/api/v1/power"}, command, nil
 	case "get":
 		if len(args) != 3 {
-			return boardRequest{}, commandName, errors.New("usage: agent-debugboardctl power get NAME")
+			return boardRequest{}, commandName, errors.New("usage: radxa-linkr-debuggerctl power get NAME")
 		}
 		return boardRequest{Method: http.MethodGet, Path: "/api/v1/power/" + args[2]}, command, nil
 	case "set":
 		if len(args) != 4 {
-			return boardRequest{}, commandName, errors.New("usage: agent-debugboardctl power set NAME on|off")
+			return boardRequest{}, commandName, errors.New("usage: radxa-linkr-debuggerctl power set NAME on|off")
 		}
 		return boardRequest{Method: http.MethodPut, Path: "/api/v1/power/" + args[2], Body: map[string]string{"state": args[3]}}, command, nil
 	default:
@@ -566,10 +566,10 @@ func powerRequest(args []string) (boardRequest, string, error) {
 func adcRequest(args []string) (boardRequest, string, error) {
 	command := "debugboard " + strings.Join(args, " ") + " --json"
 	if len(args) < 2 || args[1] != "read" {
-		return boardRequest{}, "adc", errors.New("usage: agent-debugboardctl adc read [NAME]")
+		return boardRequest{}, "adc", errors.New("usage: radxa-linkr-debuggerctl adc read [NAME]")
 	}
 	if len(args) > 3 {
-		return boardRequest{}, "adc", errors.New("usage: agent-debugboardctl adc read [NAME]")
+		return boardRequest{}, "adc", errors.New("usage: radxa-linkr-debuggerctl adc read [NAME]")
 	}
 	query := url.Values{}
 	if len(args) == 3 {
@@ -581,22 +581,22 @@ func adcRequest(args []string) (boardRequest, string, error) {
 func switchRequest(args []string) (boardRequest, string, error) {
 	command := "debugboard " + strings.Join(args, " ") + " --json"
 	if len(args) < 2 {
-		return boardRequest{}, "switch", errors.New("usage: agent-debugboardctl switch list|get|route ...")
+		return boardRequest{}, "switch", errors.New("usage: radxa-linkr-debuggerctl switch list|get|route ...")
 	}
 	switch args[1] {
 	case "list":
 		if len(args) != 2 {
-			return boardRequest{}, "switch", errors.New("usage: agent-debugboardctl switch list")
+			return boardRequest{}, "switch", errors.New("usage: radxa-linkr-debuggerctl switch list")
 		}
 		return boardRequest{Method: http.MethodGet, Path: "/api/v1/switch"}, command, nil
 	case "get":
 		if len(args) != 3 {
-			return boardRequest{}, "switch", errors.New("usage: agent-debugboardctl switch get sd|usb")
+			return boardRequest{}, "switch", errors.New("usage: radxa-linkr-debuggerctl switch get sd|usb")
 		}
 		return boardRequest{Method: http.MethodGet, Path: "/api/v1/switch/" + args[2]}, command, nil
 	case "route":
 		if len(args) != 4 {
-			return boardRequest{}, "switch", errors.New("usage: agent-debugboardctl switch route sd|usb ROUTE")
+			return boardRequest{}, "switch", errors.New("usage: radxa-linkr-debuggerctl switch route sd|usb ROUTE")
 		}
 		return boardRequest{Method: http.MethodPut, Path: "/api/v1/switch/" + args[2], Body: map[string]string{"route": args[3]}}, command, nil
 	default:
@@ -607,22 +607,22 @@ func switchRequest(args []string) (boardRequest, string, error) {
 func gpioRequest(args []string) (boardRequest, string, error) {
 	command := "debugboard " + strings.Join(args, " ") + " --json"
 	if len(args) < 2 {
-		return boardRequest{}, "gpio", errors.New("usage: agent-debugboardctl gpio list|set|input ...")
+		return boardRequest{}, "gpio", errors.New("usage: radxa-linkr-debuggerctl gpio list|set|input ...")
 	}
 	switch args[1] {
 	case "list":
 		if len(args) != 2 {
-			return boardRequest{}, "gpio", errors.New("usage: agent-debugboardctl gpio list")
+			return boardRequest{}, "gpio", errors.New("usage: radxa-linkr-debuggerctl gpio list")
 		}
 		return boardRequest{Method: http.MethodGet, Path: "/api/v1/gpio"}, command, nil
 	case "input":
 		if len(args) != 3 {
-			return boardRequest{}, "gpio", errors.New("usage: agent-debugboardctl gpio input NAME")
+			return boardRequest{}, "gpio", errors.New("usage: radxa-linkr-debuggerctl gpio input NAME")
 		}
 		return boardRequest{Method: http.MethodPut, Path: "/api/v1/gpio/" + args[2], Body: map[string]string{"direction": "input"}}, command, nil
 	case "set":
 		if len(args) != 4 {
-			return boardRequest{}, "gpio", errors.New("usage: agent-debugboardctl gpio set NAME 0|1")
+			return boardRequest{}, "gpio", errors.New("usage: radxa-linkr-debuggerctl gpio set NAME 0|1")
 		}
 		return boardRequest{Method: http.MethodPut, Path: "/api/v1/gpio/" + args[2], Body: map[string]any{"direction": "output", "value": mustParseInt(args[3])}}, command, nil
 	default:
@@ -644,7 +644,7 @@ func commandName(args []string, raw bool) string {
 		return "raw"
 	}
 	if len(args) == 0 {
-		return "agent-debugboardctl"
+		return "radxa-linkr-debuggerctl"
 	}
 	return args[0]
 }
@@ -698,7 +698,7 @@ func parseAgentJSON(output string, requireEnvelope bool) (*jsonEnvelope, error) 
 		if env.Schema != JSONSchema || env.OK == nil || env.Command == "" {
 			return nil, jsonValidationError{
 				code:    "invalid_json",
-				message: "firmware returned JSON without agent-debugboard.v1 envelope",
+				message: "firmware returned JSON without radxa-linkr-debugger.v1 envelope",
 			}
 		}
 	}

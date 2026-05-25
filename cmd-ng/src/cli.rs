@@ -2,9 +2,9 @@ use clap::Parser;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "agent-debugboardctl",
+    name = "radxa-linkr-debuggerctl",
     disable_version_flag = true,
-    about = "Rust host CLI/TUI for Agent DebugBoard"
+    about = "Rust host CLI/TUI for Radxa Linkr Debugger"
 )]
 pub struct Cli {
     #[arg(long = "url")]

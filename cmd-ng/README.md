@@ -2,12 +2,12 @@
 
 `cmd-ng/` 是当前主力开发的 Rust 主机侧 CLI/TUI 实现。
 
-当前目标是把主机侧 CLI/TUI 的主线能力收敛到 Rust 实现，并保留“无参数进入 TUI、有参数进入传统 CLI”的入口契约。仓库里的旧 Go `cmd/agent-debugboardctl` 路径进入 deprecated/legacy 维护状态，不再作为主力开发方向。
+当前目标是把主机侧 CLI/TUI 的主线能力收敛到 Rust 实现，并保留“无参数进入 TUI、有参数进入传统 CLI”的入口契约。仓库里的旧 Go `cmd/radxa-linkr-debuggerctl` 路径进入 deprecated/legacy 维护状态，不再作为主力开发方向。
 
 ## 当前范围
 
 - CLI：`status`、`doctor`、`power list|get|set`、`switch list|get|route`、`adc read`、`adc record`、`gpio list|set|input`、`watchdog status`、`bootloader`
-- 输出：支持 `--json`，并校验 `agent-debugboard.v1` envelope
+- 输出：支持 `--json`，并校验 `radxa-linkr-debugger.v1` envelope
 - TUI：无参数启动，是当前主力交互入口，并持续向现有 Go 行为收敛
 
 ## 构建与运行
@@ -29,4 +29,4 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 - recorder 每条记录都会写入主机接收时间戳和 `metadata.requested_rate_hz`；如果 firmware telemetry 自带设备侧 timing 字段，会透传到 `metadata.device_timing`。当前 ADC telemetry 只有 `sequence`，没有显式设备时间戳，因此 `device_timing` 可能不存在
 - `raw` 模式与 Go 版一致：HTTP 路径下不支持
 - `watchdog` 仍只暴露 `status`，不提供 host 侧 feed/控制
-- 旧 Go `cmd/agent-debugboardctl` 路径仅保留作 legacy 参考与回归对照
+- 旧 Go `cmd/radxa-linkr-debuggerctl` 路径仅保留作 legacy 参考与回归对照

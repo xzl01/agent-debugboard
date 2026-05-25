@@ -17,12 +17,12 @@
 /build/
 /dist/
 /out/
-/agent-debugboardctl
-/agent-debugboardctl.exe
+/radxa-linkr-debuggerctl
+/radxa-linkr-debuggerctl.exe
 **/target/
 
 # Skill-local generated host CLI binary
-/skills/agent-debugboard/scripts/bin/
+/skills/radxa-linkr-debugger/scripts/bin/
 *.elf
 *.hex
 *.bin
