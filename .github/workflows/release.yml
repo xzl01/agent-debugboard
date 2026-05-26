@@ -174,7 +174,8 @@ jobs:
         run: |
           mkdir -p dist/release
           cp ../release-assets/radxa-linkr-debugger-rp2040.* dist/release/
-          cp ../rust-release-downloads/radxa-linkr-debuggerctl_* dist/release/
+          cp ../rust-release-downloads/radxa-linkr-debuggerctl-rust_* \
+            dist/release/
           cp dist/*.tar.gz dist/release/
           cp dist/*.zip dist/release/
           cp dist/skill-bundle/skills-radxa-linkr-debugger.tar.gz dist/release/
@@ -183,6 +184,7 @@ jobs:
             radxa-linkr-debugger-rp2040.elf \
             radxa-linkr-debugger-rp2040.map \
             radxa-linkr-debugger-rp2040.uf2 \
+            radxa-linkr-debuggerctl-rust_* \
             radxa-linkr-debuggerctl_* \
             skills-radxa-linkr-debugger.tar.gz > SHA256SUMS.txt
 
