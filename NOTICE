@@ -1,0 +1,13 @@
+Radxa Linkr Debugger
+
+Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
+xzl <xiangzelong@radxa.com>
+Jiali Chen <chenjiali@radxa.com>
+
+Project-owned source files are licensed under the GNU Lesser General
+Public License version 3 or later (LGPL-3.0-or-later), as indicated by
+their SPDX-License-Identifier headers.
+
+This project uses and links to third-party open source software, including
+Rust crates, Go modules, Zephyr, and Zephyr west-imported modules. Those
+third-party components remain licensed under their respective terms.

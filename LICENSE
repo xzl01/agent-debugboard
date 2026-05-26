@@ -1,0 +1,10 @@
+This project is licensed under the GNU Lesser General Public License version 3
+or later (LGPL-3.0-or-later), as indicated by project-owned source file
+SPDX-License-Identifier headers.
+
+The full LGPLv3 license text is provided in COPYING.LESSER. The GNU GPLv3 text
+incorporated by LGPLv3 is provided in COPYING.
+
+Third-party dependencies, Zephyr, and west-imported modules remain licensed
+under their respective upstream terms. See NOTICE for the project-level license
+summary.
