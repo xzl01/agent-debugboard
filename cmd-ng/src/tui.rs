@@ -1,9 +1,14 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
+// Copyright (c) Jiali Chen <chenjiali@radxa.com>
+
 use crate::adc::AdcReading;
 use crate::client::{BoardRequest, BoardTransport};
 use crate::monitoring::{format_monitoring_summary, BoardMonitoring};
 use crate::ws_client::WsStatusSnapshot;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -234,6 +239,10 @@ fn event_loop(
 }
 
 fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
+    if key.kind != KeyEventKind::Press {
+        return Ok(false);
+    }
+
     if model.switch_confirm_active {
         match key.code {
             KeyCode::Enter | KeyCode::Char(' ') => {}
@@ -993,6 +1002,7 @@ mod tests {
     use super::*;
     use crate::client::DEFAULT_BASE_URL;
     use crate::ws_client::TuiStatusGpio;
+    use crossterm::event::KeyEventState;
 
     #[test]
     fn apply_status_snapshot_updates_gpio_and_power_state() {
@@ -1265,5 +1275,37 @@ mod tests {
 
         assert!(quit);
         assert!(model.closed);
+    }
+
+    #[test]
+    fn non_press_key_events_are_ignored() {
+        let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+        let quit = handle_key(
+            &mut model,
+            KeyEvent {
+                code: KeyCode::Char('c'),
+                modifiers: KeyModifiers::CONTROL,
+                kind: KeyEventKind::Release,
+                state: KeyEventState::NONE,
+            },
+        )
+        .unwrap();
+
+        assert!(!quit);
+        assert!(!model.closed);
+
+        let before_idx = model.control_idx;
+        handle_key(
+            &mut model,
+            KeyEvent {
+                code: KeyCode::Right,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Repeat,
+                state: KeyEventState::NONE,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(model.control_idx, before_idx);
     }
 }

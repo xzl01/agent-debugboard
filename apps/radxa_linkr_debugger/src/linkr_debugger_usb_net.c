@@ -1,5 +1,8 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: LGPL-3.0-or-later
+ *
+ * Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
+ * Copyright (c) Jiali Chen <chenjiali@radxa.com>
  */
 
 #include "linkr_debugger_usb_net.h"

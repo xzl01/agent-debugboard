@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
+#
+# Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
+# Copyright (c) xzl <xiangzelong@radxa.com>
+# Copyright (c) Jiali Chen <chenjiali@radxa.com>
+
 param(
     [string]$Version = "latest",
     [string]$Repo = $env:REPO,

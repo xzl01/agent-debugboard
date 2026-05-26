@@ -1,21 +1,26 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
+#
+# Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
+# Copyright (c) Jiali Chen <chenjiali@radxa.com>
+
 [package]
 name = "radxa-linkr-debuggerctl-ng"
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0"
+license = "LGPL-3.0-or-later"
 
 [[bin]]
 name = "radxa-linkr-debuggerctl"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.100"
-clap = { version = "4.5.53", features = ["derive"] }
+anyhow = "1.0.102"
+clap = { version = "4.6.1", features = ["derive"] }
 crossterm = "0.29.0"
 humantime = "2.3.0"
-ratatui = "0.29.0"
-reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+ratatui = "0.30.0"
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
-thiserror = "2.0.17"
-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+tungstenite = { version = "0.29.0", features = ["rustls-tls-webpki-roots"] }

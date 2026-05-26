@@ -1,7 +1,9 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: LGPL-3.0-or-later
  *
- * radxa-linkr-debugger RP2040 controller firmware.
+ * Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
+ * Copyright (c) xzl <xiangzelong@radxa.com>
+ * Copyright (c) Jiali Chen <chenjiali@radxa.com>
  */
 
 #include "linkr_debugger_control.h"
