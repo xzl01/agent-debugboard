@@ -25,7 +25,7 @@ function Test-CanBuildFromSource([string]$Root) {
     return ($hasCargoToml -and $null -ne $cargo)
 }
 
-function Get-AgentLinkr DebuggerArch {
+function Get-AgentLinkrDebuggerArch {
     switch ($env:PROCESSOR_ARCHITECTURE) {
         "AMD64" { "amd64"; return }
         "ARM64" { "arm64"; return }
@@ -35,7 +35,7 @@ function Get-AgentLinkr DebuggerArch {
     }
 }
 
-function Get-AgentLinkr DebuggerToken {
+function Get-AgentLinkrDebuggerToken {
     if (-not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
         return $env:GH_TOKEN
     }
@@ -67,7 +67,7 @@ function Get-ReleaseApiUrl {
     return "https://api.github.com/repos/$Repo/releases/tags/$Version"
 }
 
-function Invoke-AgentLinkr DebuggerDownload([string]$Url, [string]$OutFile, [string]$Token) {
+function Invoke-AgentLinkrDebuggerDownload([string]$Url, [string]$OutFile, [string]$Token) {
     $headers = @{}
     if (-not [string]::IsNullOrWhiteSpace($Token)) {
         $headers["Authorization"] = "Bearer $Token"
@@ -76,9 +76,9 @@ function Invoke-AgentLinkr DebuggerDownload([string]$Url, [string]$OutFile, [str
     Invoke-WebRequest -Uri $Url -OutFile $OutFile -Headers $headers
 }
 
-function Invoke-AgentLinkr DebuggerReleaseAssetDownload([string]$Name, [string]$OutFile, [string]$Token) {
+function Invoke-AgentLinkrDebuggerReleaseAssetDownload([string]$Name, [string]$OutFile, [string]$Token) {
     if ([string]::IsNullOrWhiteSpace($Token)) {
-        Invoke-AgentLinkr DebuggerDownload (Get-ReleaseAssetUrl $Name) $OutFile ""
+        Invoke-AgentLinkrDebuggerDownload (Get-ReleaseAssetUrl $Name) $OutFile ""
         return
     }
 
@@ -100,10 +100,10 @@ function Invoke-AgentLinkr DebuggerReleaseAssetDownload([string]$Name, [string]$
 }
 
 $canBuild = Test-CanBuildFromSource -Root $repoRoot
-$arch = Get-AgentLinkr DebuggerArch
+$arch = Get-AgentLinkrDebuggerArch
 $asset = "radxa-linkr-debuggerctl-rust_windows_$arch.zip"
 $assetUrl = Get-ReleaseAssetUrl $asset
-$token = Get-AgentLinkr DebuggerToken
+$token = Get-AgentLinkrDebuggerToken
 
 if ($DryRun) {
     if ($canBuild -and -not $versionExplicit) {
@@ -158,8 +158,8 @@ try {
 
     Write-Host "Downloading $asset"
     try {
-        Invoke-AgentLinkr DebuggerReleaseAssetDownload $asset $assetPath $token
-        Invoke-AgentLinkr DebuggerReleaseAssetDownload "SHA256SUMS.txt" $sumsPath $token
+        Invoke-AgentLinkrDebuggerReleaseAssetDownload $asset $assetPath $token
+        Invoke-AgentLinkrDebuggerReleaseAssetDownload "SHA256SUMS.txt" $sumsPath $token
     } catch {
         throw "Download failed. For private repositories, set GH_TOKEN or run gh auth login. $($_.Exception.Message)"
     }
