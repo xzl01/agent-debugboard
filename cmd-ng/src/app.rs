@@ -169,6 +169,10 @@ where
         return run_doctor(client, cli.json, stdout, stderr);
     }
 
+    if !cli.raw && is_switch_usb_route_command(&cli.command_args) {
+        return run_switch_usb(client, &cli.command_args, cli.json, stdout, stderr);
+    }
+
     let adc_read_command = is_adc_read_command(&cli.command_args);
     let adc_verbose = adc_read_command
         && (cli.verbose
@@ -676,6 +680,75 @@ fn switch_request(args: &[String]) -> Result<BoardRequest, String> {
             ))
         }
         other => Err(format!("unsupported switch action {:?}", other)),
+    }
+}
+
+fn is_switch_usb_route_command(args: &[String]) -> bool {
+    let cleaned = strip_passthrough_flags(args);
+    cleaned.len() >= 4 && cleaned[0] == "switch" && cleaned[1] == "route" && cleaned[2] == "usb"
+}
+
+fn run_switch_usb<TClient>(
+    client: &TClient,
+    args: &[String],
+    json_output: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8>
+where
+    TClient: BoardTransport,
+{
+    let has_confirm = args.iter().any(|a| a == "--confirm" || a == "-y");
+    if !has_confirm {
+        if json_output {
+            write_json_error(
+                stdout,
+                "switch",
+                "confirm_required",
+                "switch route usb requires --confirm. USB route switching is a dangerous operation that may affect target board connectivity.",
+            )?;
+        } else {
+            writeln!(
+                stderr,
+                "switch route usb: dangerous operation requires --confirm.\nusage: radxa-linkr-debuggerctl switch route usb pc|target --confirm"
+            )?;
+        }
+        return Ok(2);
+    }
+
+    let switch_args: Vec<String> = args
+        .iter()
+        .filter(|a| *a != "--confirm" && *a != "-y")
+        .cloned()
+        .collect();
+
+    let target_route = switch_args.get(3).map(String::as_str).unwrap_or("");
+    let vbus_state = if target_route == "pc" { "on" } else { "off" };
+
+    let _ = client.send_text(BoardRequest {
+        method: Method::PUT,
+        path: "/api/v1/power/5v_ws".to_string(),
+        query: vec![],
+        body: Some(json!({ "state": vbus_state })),
+    });
+
+    match request_from_args(&switch_args) {
+        Ok(request) => run_standard(
+            client,
+            command_name(&switch_args),
+            request,
+            json_output,
+            stdout,
+            stderr,
+        ),
+        Err(err) => {
+            if json_output {
+                write_json_error(stdout, "switch", "usage", &err)?;
+            } else {
+                writeln!(stderr, "{err}")?;
+            }
+            Ok(2)
+        }
     }
 }
 
