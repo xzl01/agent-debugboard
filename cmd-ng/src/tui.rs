@@ -54,6 +54,10 @@ pub struct TuiModel {
     pub pending_sd_route_until: Option<Instant>,
     pub pending_usb_route: Option<String>,
     pub pending_usb_route_until: Option<Instant>,
+    pub switch_confirm_active: bool,
+    pub switch_confirm_start: Option<Instant>,
+    pub switch_confirm_kind: String,
+    pub switch_confirm_target: String,
     pub gpio_names: Vec<String>,
     pub gpio_notes: std::collections::HashMap<String, String>,
     pub gpio_levels: std::collections::HashMap<String, bool>,
@@ -87,6 +91,10 @@ impl TuiModel {
             pending_sd_route_until: None,
             pending_usb_route: None,
             pending_usb_route_until: None,
+            switch_confirm_active: false,
+            switch_confirm_start: None,
+            switch_confirm_kind: String::new(),
+            switch_confirm_target: String::new(),
             gpio_names: Vec::new(),
             gpio_notes: std::collections::HashMap::new(),
             gpio_levels: std::collections::HashMap::new(),
@@ -226,6 +234,18 @@ fn event_loop(
 }
 
 fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
+    if model.switch_confirm_active {
+        match key.code {
+            KeyCode::Enter | KeyCode::Char(' ') => {}
+            _ => {
+                model.switch_confirm_active = false;
+                model.switch_confirm_start = None;
+                model.status = "Switch cancelled".to_string();
+                return Ok(false);
+            }
+        }
+    }
+
     match (key.code, key.modifiers) {
         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
             model.closed = true;
@@ -280,32 +300,60 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
                         model.apply_action_msg(action);
                     }
                     ControlItem::SdSwitch => {
-                        let next_route = if model.sd_route == "usb-reader" {
-                            "target"
-                        } else {
-                            "usb-reader"
-                        };
-                        let action =
-                            set_switch_route(&model.base_url, model.timeout, "sd", next_route)?;
-                        model.sd_route = next_route.to_string();
-                        model.pending_sd_route = Some(next_route.to_string());
-                        model.pending_sd_route_until =
-                            Some(Instant::now() + Duration::from_secs(2));
-                        model.apply_action_msg(action);
+                        if !model.switch_confirm_active {
+                            let next_route = if model.sd_route == "usb-reader" {
+                                "target"
+                            } else {
+                                "usb-reader"
+                            };
+                            model.switch_confirm_active = true;
+                            model.switch_confirm_start = Some(Instant::now());
+                            model.switch_confirm_kind = "sd".to_string();
+                            model.switch_confirm_target = next_route.to_string();
+                            model.status = format!(
+                                "Press Enter again within 3s to confirm SD switch to {}",
+                                model.switch_confirm_target
+                            );
+                        } else if model.switch_confirm_kind == "sd" {
+                            let route = model.switch_confirm_target.clone();
+                            let action =
+                                set_switch_route(&model.base_url, model.timeout, "sd", &route)?;
+                            model.sd_route = route.clone();
+                            model.pending_sd_route = Some(route);
+                            model.pending_sd_route_until =
+                                Some(Instant::now() + Duration::from_secs(2));
+                            model.apply_action_msg(action);
+                            model.switch_confirm_active = false;
+                            model.switch_confirm_start = None;
+                        }
                     }
                     ControlItem::UsbSwitch => {
-                        let next_route = if model.usb_route == "target" {
-                            "pc"
-                        } else {
-                            "target"
-                        };
-                        let action =
-                            set_switch_route(&model.base_url, model.timeout, "usb", next_route)?;
-                        model.usb_route = next_route.to_string();
-                        model.pending_usb_route = Some(next_route.to_string());
-                        model.pending_usb_route_until =
-                            Some(Instant::now() + Duration::from_secs(2));
-                        model.apply_action_msg(action);
+                        if !model.switch_confirm_active {
+                            let next_route = if model.usb_route == "target" {
+                                "pc"
+                            } else {
+                                "target"
+                            };
+                            model.switch_confirm_active = true;
+                            model.switch_confirm_start = Some(Instant::now());
+                            model.switch_confirm_kind = "usb".to_string();
+                            model.switch_confirm_target = next_route.to_string();
+                            model.status = format!(
+                                "Press Enter again within 3s to confirm USB switch to {}",
+                                model.switch_confirm_target
+                            );
+                        } else if model.switch_confirm_kind == "usb" {
+                            let route = model.switch_confirm_target.clone();
+                            let action =
+                                usb_switch_coordinated(&model.base_url, model.timeout, &route)?;
+                            model.usb_route = route.clone();
+                            model.pending_usb_route = Some(route);
+                            model.pending_usb_route_until =
+                                Some(Instant::now() + Duration::from_secs(2));
+                            model.apply_action_msg(action);
+                            model.switch_confirm_active = false;
+                            model.switch_confirm_start = None;
+                        }
                     }
                 }
             }
@@ -356,6 +404,16 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
 fn on_time_tick(model: &mut TuiModel) -> Result<()> {
     if model.closed || model.paused {
         return Ok(());
+    }
+
+    if model.switch_confirm_active {
+        if let Some(start) = model.switch_confirm_start {
+            if start.elapsed() >= Duration::from_secs(3) {
+                model.switch_confirm_active = false;
+                model.switch_confirm_start = None;
+                model.status = "Switch confirmation timed out".to_string();
+            }
+        }
     }
 
     let should_poll = match model.last_http_poll {
@@ -429,6 +487,30 @@ fn set_switch_route(
     })?;
     Ok(TuiActionMsg {
         status: format!("switch {name}={route}"),
+        err: None,
+    })
+}
+
+fn usb_switch_coordinated(base_url: &str, timeout: Duration, route: &str) -> Result<TuiActionMsg> {
+    let vbus_state = if route == "pc" { "on" } else { "off" };
+    let client = crate::client::BoardClient::new(base_url, timeout)?;
+
+    client.send_text(BoardRequest {
+        method: Method::PUT,
+        path: "/api/v1/power/5v_ws".to_string(),
+        query: vec![],
+        body: Some(serde_json::json!({ "state": vbus_state })),
+    })?;
+
+    client.send_text(BoardRequest {
+        method: Method::PUT,
+        path: "/api/v1/switch/usb".to_string(),
+        query: vec![],
+        body: Some(serde_json::json!({ "route": route })),
+    })?;
+
+    Ok(TuiActionMsg {
+        status: format!("switch usb={route} (5v_ws={vbus_state})"),
         err: None,
     })
 }
