@@ -77,7 +77,7 @@ static const struct device *const gpio0 = DEVICE_DT_GET(GPIO0_NODE);
 static const struct device *const watchdog_dev = DEVICE_DT_GET_OR_NULL(WATCHDOG_NODE);
 static bool regulator_states[REGULATOR_STATE_CAPACITY];
 static enum linkr_debugger_sd_route linkr_debugger_sd_route = LINKR_DEBUGGER_SD_ROUTE_TARGET;
-static enum linkr_debugger_usb_route linkr_debugger_usb_route = LINKR_DEBUGGER_USB_ROUTE_PC;
+static enum linkr_debugger_usb_route linkr_debugger_usb_route = LINKR_DEBUGGER_USB_ROUTE_TARGET;
 static uint8_t linkr_debugger_gpio_directions[16];
 static bool linkr_debugger_gpio_output_levels[16];
 static struct k_mutex linkr_debugger_control_lock;
@@ -221,8 +221,8 @@ static int configure_sd_default(void)
 
 static int configure_usb_mux_default(void)
 {
-	linkr_debugger_usb_route = LINKR_DEBUGGER_USB_ROUTE_PC;
-	return gpio_pin_configure(gpio0, 3, GPIO_OUTPUT_INACTIVE);
+	linkr_debugger_usb_route = LINKR_DEBUGGER_USB_ROUTE_TARGET;
+	return gpio_pin_configure(gpio0, 3, GPIO_OUTPUT_ACTIVE);
 }
 
 static void linkr_debugger_gpio_apply_safe_drive_strength(const struct linkr_debugger_safe_gpio_desc *desc)
