@@ -482,7 +482,8 @@ fn run_adc_record(
     stderr: &mut dyn Write,
 ) -> Result<u8> {
     let cleaned = strip_passthrough_flags(args);
-    let usage = "usage: radxa-linkr-debuggerctl adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]";
+    let usage =
+        "usage: radxa-linkr-debuggerctl adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]";
     if cleaned.len() < 3 {
         writeln!(stderr, "{usage}")?;
         return Ok(2);
@@ -514,7 +515,8 @@ struct AdcRecordArgs {
 }
 
 fn parse_adc_record_args(cleaned: &[String]) -> Result<AdcRecordArgs, String> {
-    let usage = "usage: radxa-linkr-debuggerctl adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]";
+    let usage =
+        "usage: radxa-linkr-debuggerctl adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]";
     if cleaned.len() < 3 {
         return Err(usage.to_string());
     }
@@ -1174,7 +1176,8 @@ mod tests {
     fn run_watchdog_feed_is_rejected_locally() {
         let cli = Cli::parse_from(["cmd", "watchdog", "feed"]);
         let client = FakeClient {
-            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ok"}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ok"}"#
+                .to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -1193,7 +1196,8 @@ mod tests {
     fn run_json_watchdog_feed_is_rejected_locally() {
         let cli = Cli::parse_from(["cmd", "--json", "watchdog", "feed"]);
         let client = FakeClient {
-            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ok"}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ok"}"#
+                .to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
