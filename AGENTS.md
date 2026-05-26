@@ -1,0 +1,39 @@
+# Agent Development Notes
+
+## Board hardware description ownership
+
+Keep board-level hardware descriptions in Device Tree whenever Zephyr bindings
+and the board model can express them. Only define hardware facts in firmware C
+code when they cannot be represented cleanly in Device Tree. Never define
+board-level hardware descriptions, pin maps, rail maps, ADC channel maps, or
+schematic-derived hardware facts in the host CLI.
+
+## Upstream/public repository boundaries
+
+Keep fixes repo-local. Do not modify Zephyr itself, Rust toolchain crates, west
+modules, or any shared/public upstream repository code unless the user
+explicitly asks for upstream work. In particular, never solve this repository's
+problems by patching sibling `zephyr/`, `modules/`, or other shared checkout
+code when the intended change belongs in this repository.
+
+## CI validation
+
+Do not declare CI-ready after validating only the firmware lane. For repository
+changes, reproduce every affected GitHub Actions lane locally when practical:
+
+- Rust host CLI formatting: `cargo fmt --manifest-path cmd-ng/Cargo.toml --all --check`
+- Rust host CLI checks when touched: `cargo clippy --manifest-path cmd-ng/Cargo.toml --all-targets -- -D warnings` and `cargo test --manifest-path cmd-ng/Cargo.toml --all-targets`
+- PowerShell installer parsing/dry-run:
+  `pwsh -NoLogo -NoProfile -NonInteractive -Command '[scriptblock]::Create((Get-Content ./skills/radxa-linkr-debugger/scripts/install.ps1 -Raw)) | Out-Null'`
+  and, when available, `./skills/radxa-linkr-debugger/scripts/install.ps1 -DryRun`
+- Shell installer/test scripts: `sh -n ...` and `shellcheck ...`
+- Firmware changes: full canonical build only,
+  `west build -p always -b rpi_pico/rp2040 apps/radxa_linkr_debugger -d build/radxa_linkr_debugger`
+
+Do not run single-object or single-driver firmware compile checks; they disturb
+the user's build/cache workflow. Use the full firmware/package workflow instead.
+
+The 2026-05-25 CI run `26400376587` is the reference failure: the firmware job
+was green, but CI still failed because `cmd-ng/src/app.rs` had rustfmt drift and
+`skills/radxa-linkr-debugger/scripts/install.ps1` contained invalid PowerShell
+function names with spaces, such as `Get-AgentLinkr DebuggerArch`.
