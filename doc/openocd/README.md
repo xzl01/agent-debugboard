@@ -7,6 +7,10 @@ PC OpenOCD -> CH347F -> target JTAG/SWD
 PC radxa-linkr-debuggerctl -> RP2040 -> target power / boot mode / ADC / SD / GPIO
 ```
 
+For normal use, prefer the released `radxa-linkr-debuggerctl` CLI. Use direct
+`curl` only when debugging the raw HTTP API or when following the separate,
+curl-first Agent skill.
+
 CH347F is wired directly to the target debug connector. The RP2040 does not sit
 in the JTAG/SWD path, does not mux those lines, and should not be treated as a
 CMSIS-DAP/Picoprobe adapter.
@@ -43,8 +47,18 @@ the target flow.
 Power the target first:
 
 ```sh
-radxa-linkr-debuggerctl --json power set 5v_out on
-radxa-linkr-debuggerctl --json power list
+radxa-linkr-debuggerctl power set 5v_out on
+radxa-linkr-debuggerctl power list
+```
+
+If you need to inspect the raw HTTP API instead of the released CLI, the
+equivalent fallback is:
+
+```sh
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"state":"on"}' \
+  http://172.29.203.1:8080/api/v1/power/5v_out
+curl -fsS http://172.29.203.1:8080/api/v1/power
 ```
 
 Start OpenOCD with the CH347F interface from your OpenOCD installation and the
@@ -79,9 +93,9 @@ Only if the target is unresponsive, has no reset line, or soft reset fails,
 hard-restart the target by power-cycling the power output that actually powers it:
 
 ```sh
-radxa-linkr-debuggerctl --json power set 5v_out off
+radxa-linkr-debuggerctl power set 5v_out off
 sleep 2
-radxa-linkr-debuggerctl --json power set 5v_out on
+radxa-linkr-debuggerctl power set 5v_out on
 ```
 
 Do not power-cycle unrelated power outputs.
