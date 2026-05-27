@@ -4,6 +4,8 @@ This directory contains the Zephyr application for `radxa-linkr-debugger`. The r
 [README.md](../../README.md) contains workspace setup, flashing, and usage
 instructions.
 
+Unless noted otherwise, run the commands below from the repository root.
+
 Agent/AI operators should read the repository skill first:
 [skills/radxa-linkr-debugger/SKILL.md](../../skills/radxa-linkr-debugger/SKILL.md).
 
@@ -31,9 +33,10 @@ doc/radxa-linkr-debugger-schematic.pdf
 
 The USB interface enumerates as a composite USB device. The board exposes its
 HTTP control API on the USB NCM interface at `http://172.29.203.1:8080` by
-default. The host CLI (`radxa-linkr-debuggerctl`) and direct `curl` requests both
-use this endpoint. A USB CDC ACM serial port is also kept available for Zephyr
-cmdline access and BOOTSEL fallback.
+default. Normal host-side use should prefer the released
+`radxa-linkr-debuggerctl` CLI; direct `curl` is mainly for raw HTTP/API checks.
+A USB CDC ACM serial port is also kept available for Zephyr cmdline access and
+BOOTSEL fallback.
 
 The board also runs a DHCPv4 server on the NCM link so the host can acquire a
 compatible address automatically.
@@ -49,36 +52,14 @@ command below enters the same RP2040 ROM BOOTSEL path used by the HTTP API:
 linkr-debugger:~$ bootloader
 ```
 
-Useful CLI commands:
+Normal host operations should use the released `radxa-linkr-debuggerctl` CLI.
+If you are developing `cmd-ng` itself, use `cargo run --manifest-path
+cmd-ng/Cargo.toml -- ...`. Raw HTTP examples below are only for firmware/API
+debugging. Full CLI examples are in the root [README.md](../../README.md), and
+the [skill](../../skills/radxa-linkr-debugger/SKILL.md) remains the curl-first
+Agent workflow.
 
-```sh
-radxa-linkr-debuggerctl --json status
-radxa-linkr-debuggerctl --json power list
-radxa-linkr-debuggerctl --json power set 12v_out on
-radxa-linkr-debuggerctl --json power set 12v_out off
-radxa-linkr-debuggerctl --json power set 5v_out on
-radxa-linkr-debuggerctl --json power set 5v_out off
-radxa-linkr-debuggerctl --json power set 5v_ws on
-radxa-linkr-debuggerctl --json power set 5v_ws off
-radxa-linkr-debuggerctl --json power set 20v_out on
-radxa-linkr-debuggerctl --json power set 20v_out off
-radxa-linkr-debuggerctl --json adc read
-radxa-linkr-debuggerctl --json adc read 5v_out
-radxa-linkr-debuggerctl --json adc read -v 5v_out
-radxa-linkr-debuggerctl --json switch list
-radxa-linkr-debuggerctl --json switch get sd
-radxa-linkr-debuggerctl --json switch get usb
-radxa-linkr-debuggerctl --json switch route sd target
-radxa-linkr-debuggerctl --json switch route usb target
-radxa-linkr-debuggerctl --json gpio list
-radxa-linkr-debuggerctl --json gpio get GP13
-radxa-linkr-debuggerctl --json gpio set GP13 1
-radxa-linkr-debuggerctl --json gpio input GP13
-radxa-linkr-debuggerctl --json watchdog status
-radxa-linkr-debuggerctl --json bootloader
-```
-
-Equivalent direct HTTP checks with `curl`:
+Raw HTTP checks for firmware/API debugging:
 
 ```sh
 curl -fsS http://172.29.203.1:8080/api/v1/status
@@ -119,30 +100,49 @@ Safe GPIO names such as `GP13` are derived from the RP2040 pin number; the
 firmware allowlist keeps the connector note so users can map commands back to
 the exposed header position.
 
-Build the host CLI:
+Develop the primary Rust host CLI from source:
 
 ```sh
-go build -o radxa-linkr-debuggerctl ./cmd/radxa-linkr-debuggerctl
+cargo build --manifest-path cmd-ng/Cargo.toml
 ```
 
-Host helper:
+For normal use, prefer the released CLI:
 
 ```sh
-./radxa-linkr-debuggerctl status
-./radxa-linkr-debuggerctl doctor
-./radxa-linkr-debuggerctl --json status
-./radxa-linkr-debuggerctl adc read
-./radxa-linkr-debuggerctl adc read -v 5v_out
-./radxa-linkr-debuggerctl power set 12v_out on
-./radxa-linkr-debuggerctl power set 20v_out on
-./radxa-linkr-debuggerctl switch route sd usb-reader
-./radxa-linkr-debuggerctl watchdog status
+radxa-linkr-debuggerctl status
+radxa-linkr-debuggerctl doctor
+radxa-linkr-debuggerctl --json status
+radxa-linkr-debuggerctl --json adc read
+radxa-linkr-debuggerctl adc read -v 5v_out
+radxa-linkr-debuggerctl power set 12v_out on
+radxa-linkr-debuggerctl power set 20v_out on
+radxa-linkr-debuggerctl switch route sd usb-reader
+radxa-linkr-debuggerctl watchdog status
 ```
+
+If you are iterating on unreleased `cmd-ng` changes, the equivalent source-run
+workflow is:
+
+```sh
+cargo run --manifest-path cmd-ng/Cargo.toml -- status
+cargo run --manifest-path cmd-ng/Cargo.toml -- doctor
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
+cargo run --manifest-path cmd-ng/Cargo.toml -- --json adc read
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc read -v 5v_out
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 12v_out on
+cargo run --manifest-path cmd-ng/Cargo.toml -- power set 20v_out on
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch route sd usb-reader
+cargo run --manifest-path cmd-ng/Cargo.toml -- watchdog status
+```
+
+The released CLI and direct `curl` HTTP requests both use the same endpoint
+`http://172.29.203.1:8080`. The Go binary path (`go build -o radxa-linkr-debuggerctl ./cmd/radxa-linkr-debuggerctl`)
+is deprecated and kept only for reference.
 
 OpenOCD:
 
 ```sh
-./radxa-linkr-debuggerctl --json power set 5v_out on
+radxa-linkr-debuggerctl power set 5v_out on
 openocd -f interface/<ch347-interface>.cfg -f target/<target>.cfg
 ```
 
@@ -162,6 +162,6 @@ Current schematic mapping:
 - ADC current monitor inputs: `S_C_5V`, `S_C_12V`, `S_C_20V`
 
 All ADC current monitor inputs use an INA139 with a 10 mOhm shunt and a
-51 kOhm output load. `radxa-linkr-debuggerctl` now reports the firmware's raw
-current-monitor chain directly and no longer applies host-side ADC calibration
-tables or zero-point correction.
+51 kOhm output load. The Rust CLI and `curl` both report the firmware's raw
+current-monitor chain directly; no host-side ADC calibration tables or
+zero-point correction are applied.
