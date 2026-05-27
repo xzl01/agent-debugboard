@@ -26,6 +26,27 @@ explicitly asks for upstream work. In particular, never solve this repository's
 problems by patching sibling `zephyr/`, `modules/`, or other shared checkout
 code when the intended change belongs in this repository.
 
+## HIL functional test requirements
+
+Firmware and host control logic changes must not be considered complete based only on compilation, static analysis, or unit tests. When a change affects real hardware behavior, the author must also perform a board-level HIL functional test.
+
+A change requires HIL when it touches any of the following:
+
+- RP2040 firmware logic
+- host CLI/TUI control logic that talks to real hardware
+- power outputs, switch routing, ADC monitoring, safe GPIO, watchdog, or BOOTSEL behavior
+
+Before concluding such a change, the following must be verified on real hardware:
+
+- full canonical firmware build
+- flashing and normal board startup
+- HTTP/WS control path
+- USB CDC ACM serial fallback path
+- BOOTSEL entry path
+- corresponding functional tests for new features when practical
+
+Detailed checklist and procedures are maintained in `doc/testing/hil-functional-test-spec.md`.
+
 ## CI validation
 
 Do not declare CI-ready after validating only the firmware lane. For repository
