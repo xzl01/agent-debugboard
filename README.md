@@ -13,17 +13,19 @@ current-monitor ADC channels, and a small safe GPIO surface.
 Radxa Linkr Debugger is designed for automated board bring-up, recovery, production
 test, and remote debugging workflows. The firmware enumerates as a composite
 USB device with a USB NCM network interface for the main control plane and a
-USB CDC ACM serial port reserved for Zephyr cmdline and BOOTSEL fallback; the
-primary host-side command path is the Rust CLI/TUI under `cmd-ng/`, which turns
-board operations into scriptable commands.
+USB CDC ACM serial port reserved for Zephyr cmdline and BOOTSEL fallback; normal
+host-side workflows use the released Rust `radxa-linkr-debuggerctl` CLI/TUI,
+whose source lives under `cmd-ng/`.
 
 This repository contains the Zephyr application, the primary Rust host CLI/TUI,
 legacy Go host CLI sources kept for deprecated/reference use, unit tests,
 schematic copy, and project documentation.
 
-The active host-side development path is [`cmd-ng/`](cmd-ng/). The older Go
-`cmd/radxa-linkr-debuggerctl` + `internal/hostcli` stack is deprecated and kept only
-as a legacy/reference implementation during migration.
+The active host-side development path is [`cmd-ng/`](cmd-ng/). Released user
+workflows should use the published `radxa-linkr-debuggerctl` CLI, which speaks
+the board HTTP API over USB NCM. The older Go `cmd/radxa-linkr-debuggerctl` +
+`internal/hostcli` stack is deprecated and kept only as a legacy/reference
+implementation.
 
 ## Features
 
@@ -46,9 +48,10 @@ not exposed as a controllable output.
 ## For AI Agents
 
 AI agents should read [skills/radxa-linkr-debugger/SKILL.md](skills/radxa-linkr-debugger/SKILL.md)
-before operating hardware through this project. The skill is the canonical
-Agent-facing procedure for building/running the primary host CLI, diagnosing the
-board connection, and using JSON commands safely.
+before operating hardware through this project. The skill is the canonical,
+curl-first Agent-facing procedure for diagnosing the board connection,
+building/running the primary host CLI when needed, and using JSON commands
+safely.
 
 Before making repository changes, AI agents should also read
 [AGENTS.md](AGENTS.md). Repository-local rules:
@@ -58,6 +61,7 @@ Before making repository changes, AI agents should also read
 - Firmware changes must verify and preserve the USB CDC ACM serial BOOTSEL fallback path before finishing.
 - Skill changes must include a subagent validation/test run.
 - When adding new functionality, add corresponding functional tests whenever practical.
+- Firmware and hardware-interactive host changes require HIL functional testing before conclusion; see `AGENTS.md` and `doc/testing/hil-functional-test-spec.md`.
 - Prefer describing board hardware in Device Tree whenever Zephyr bindings and the board model can express it cleanly.
 - Keep software implementation standard, consistent, and elegant; avoid ad hoc patterns that make maintenance, automation, or documentation harder to follow.
 - Keep MCU-side output as close as practical to raw interface values; prefer host-side interpretation, calibration, and presentation when that preserves the raw firmware contract.
@@ -65,32 +69,28 @@ Before making repository changes, AI agents should also read
 Recommended agent flow:
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- --version
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json doctor
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
+radxa-linkr-debuggerctl --version
+radxa-linkr-debuggerctl --json doctor
+radxa-linkr-debuggerctl --json status
 ```
 
-If the host CLI is not built/installed yet, follow the commands in the skill
-first. For automation, prefer `--json`; parse `schema`, `ok`, `command`, and
-`error.code` instead of human-readable text.
+If the released host CLI is not downloaded or installed yet, use the release
+installation path below. When following the Agent skill itself, keep using the
+skill's curl-first workflow. For automation through the CLI, prefer `--json`;
+parse `schema`, `ok`, `command`, and `error.code` instead of human-readable
+text.
 
 ## Install Host CLI
 
-`radxa-linkr-debuggerctl` is a native Go binary. Users do not need Python, pip, or a
-virtual environment.
-
-From a checkout, build/run the active Rust host CLI directly:
-
-```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- --help
-cargo run --manifest-path cmd-ng/Cargo.toml -- --version
-cargo run --manifest-path cmd-ng/Cargo.toml --
-```
+The normal host-side workflow uses the released `radxa-linkr-debuggerctl` CLI.
+Download the matching archive from GitHub Releases, or from a checkout use the
+repo-local installer scripts below with an explicit version so they fetch the
+published release artifact instead of building from source.
 
 The legacy Go install scripts are retained only for compatibility/transition
 workflows.
 
-Install a specific legacy Go release version:
+Install a specific release version:
 
 ```sh
 ./skills/radxa-linkr-debugger/scripts/install.sh --version <tag>
@@ -131,30 +131,40 @@ Manual downloads are also available from each GitHub Release:
 
 Legacy Go compatibility archives remain available in GitHub Releases as
 `radxa-linkr-debuggerctl_<os>_<arch>.*` when you need the deprecated host CLI for
-comparison or transition workflows. The skill installer and release download
-examples prefer the primary Rust CLI/TUI archives.
+comparison or transition workflows. The installer and release download examples
+above prefer the published Rust CLI/TUI archives.
 
 On macOS, unsigned release binaries may trigger a Gatekeeper warning saying Apple
 cannot verify the software. The installer verifies `SHA256SUMS.txt` first and
-then removes the quarantine flag from the installed binary. If installing
-manually, verify the checksum and run:
+then removes the quarantine flag from the installed binary. If you unpack a
+release archive manually, verify the checksum and remove the quarantine flag
+from the unpacked `radxa-linkr-debuggerctl` binary:
 
 ```sh
-xattr -dr com.apple.quarantine ./skills/radxa-linkr-debugger/scripts/bin/radxa-linkr-debuggerctl
+xattr -dr com.apple.quarantine ./radxa-linkr-debuggerctl
 ```
 
-After build/install:
+After installation, the examples below assume `radxa-linkr-debuggerctl` is on
+your `PATH`, or that you invoke the unpacked release binary with the same
+command name:
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- --help
-cargo run --manifest-path cmd-ng/Cargo.toml -- --version
-cargo run --manifest-path cmd-ng/Cargo.toml -- doctor
-cargo run --manifest-path cmd-ng/Cargo.toml --
+radxa-linkr-debuggerctl --help
+radxa-linkr-debuggerctl --version
+radxa-linkr-debuggerctl doctor
+radxa-linkr-debuggerctl
 ```
 
-Running the Rust host CLI without a subcommand starts the interactive TUI.
+Running the released host CLI without a subcommand starts the interactive TUI.
 Use subcommands such as `status`, `adc read`, or `power set` when you want the
 traditional command-line mode.
+
+If you are developing `cmd-ng` itself from source, build it directly:
+
+```sh
+cargo build --manifest-path cmd-ng/Cargo.toml
+./cmd-ng/target/debug/radxa-linkr-debuggerctl --help
+```
 
 The TUI keeps its own redraw cadence modest (60 Hz) and uses HTTP polling for
 status plus ADC reads, which keeps multiple concurrent TUI instances stable.
@@ -238,7 +248,16 @@ If the board is already mounted as `RPI-RP2`, only run:
 picotool load -v -x build/radxa_linkr_debugger/zephyr/zephyr.uf2
 ```
 
-If you use drag-and-drop flashing through the `RPI-RP2` volume instead of
+On Linux you can also flash without root by using `udisksctl` to mount the
+`RPI-RP2` volume and then copying the canonical UF2:
+
+```sh
+RPI_RP2=$(udisksctl mount -b /dev/sdX1 | awk -F" at " '{print $2}' | tr -d '[:space:]')
+cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 "$RPI_RP2/"
+```
+
+Replace `/dev/sdX1` with the actual RP2040 BOOTSEL block device path on your
+system. If you use drag-and-drop flashing through the `RPI-RP2` volume instead of
 `picotool`, copy this same canonical artifact:
 
 ```text
@@ -264,30 +283,21 @@ GitHub Release, and uploads the fixed release assets.
 - `skills-radxa-linkr-debugger.tar.gz`: Agent skill bundle for `skills/radxa-linkr-debugger/`.
 - `SHA256SUMS.txt`: SHA256 checksums for all release assets.
 
-Developers can build the primary host CLI from source:
+Normal users should download one of the `radxa-linkr-debuggerctl-rust_*`
+archives above. If you are developing `cmd-ng` itself from source:
 
 ```sh
 cargo build --manifest-path cmd-ng/Cargo.toml
 ./cmd-ng/target/debug/radxa-linkr-debuggerctl --help
 ```
 
-The Rust `cmd-ng` version is now the primary development path. Build and run it directly:
-
-```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- --help
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
-cargo run --manifest-path cmd-ng/Cargo.toml --
-```
-
-Running it without a subcommand starts the Rust TUI.
-
-## Host Usage
+## CLI Usage
 
 Query board status:
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- status
-cargo run --manifest-path cmd-ng/Cargo.toml -- doctor
+radxa-linkr-debuggerctl status
+radxa-linkr-debuggerctl doctor
 ```
 
 Agent or automation code should prefer JSON output. JSON responses use
@@ -295,12 +305,12 @@ Agent or automation code should prefer JSON output. JSON responses use
 fields or `error: {code, message}`:
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json doctor
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json power list
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json adc read
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json gpio list
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json watchdog status
+radxa-linkr-debuggerctl --json doctor
+radxa-linkr-debuggerctl --json status
+radxa-linkr-debuggerctl --json power list
+radxa-linkr-debuggerctl --json adc read
+radxa-linkr-debuggerctl --json gpio list
+radxa-linkr-debuggerctl --json watchdog status
 ```
 
 GPIO names such as `GP13` are derived from RP2040 pin numbers in firmware; each
@@ -340,23 +350,23 @@ logged for diagnostic correlation with CDC ACM disconnects.
 Control power outputs:
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- power set 12v_out on
-cargo run --manifest-path cmd-ng/Cargo.toml -- power set 12v_out off
-cargo run --manifest-path cmd-ng/Cargo.toml -- power set 5v_out on
-cargo run --manifest-path cmd-ng/Cargo.toml -- power set 5v_out off
-cargo run --manifest-path cmd-ng/Cargo.toml -- power set 5v_ws on
-cargo run --manifest-path cmd-ng/Cargo.toml -- power set 20v_out on
+radxa-linkr-debuggerctl power set 12v_out on
+radxa-linkr-debuggerctl power set 12v_out off
+radxa-linkr-debuggerctl power set 5v_out on
+radxa-linkr-debuggerctl power set 5v_out off
+radxa-linkr-debuggerctl power set 5v_ws on
+radxa-linkr-debuggerctl power set 20v_out on
 ```
 
 Read current-monitor ADC channels:
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc read
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 5v_out
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.ndjson 1000 --rate-hz 250
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc read -v 5v_out
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 12v_out
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 20v_out
+radxa-linkr-debuggerctl adc read
+radxa-linkr-debuggerctl adc read 5v_out
+radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 1000 --rate-hz 250
+radxa-linkr-debuggerctl adc read -v 5v_out
+radxa-linkr-debuggerctl adc read 12v_out
+radxa-linkr-debuggerctl adc read 20v_out
 ```
 
 Human-readable ADC output is concise by default, for example
@@ -369,11 +379,11 @@ calibration tables or zero-point correction.
 Switch routes:
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- switch list
-cargo run --manifest-path cmd-ng/Cargo.toml -- switch get sd
-cargo run --manifest-path cmd-ng/Cargo.toml -- switch get usb
-cargo run --manifest-path cmd-ng/Cargo.toml -- switch route sd usb-reader
-cargo run --manifest-path cmd-ng/Cargo.toml -- switch route usb target
+radxa-linkr-debuggerctl switch list
+radxa-linkr-debuggerctl switch get sd
+radxa-linkr-debuggerctl switch get usb
+radxa-linkr-debuggerctl switch route sd usb-reader
+radxa-linkr-debuggerctl switch route usb target --confirm
 ```
 
 For functional verification of mux/switch controls, run the commands strictly
@@ -385,17 +395,17 @@ trying to validate stability.
 Use safe GPIOs:
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- gpio list
-cargo run --manifest-path cmd-ng/Cargo.toml -- gpio set GP13 1
-cargo run --manifest-path cmd-ng/Cargo.toml -- gpio set CON_MAS 1
-cargo run --manifest-path cmd-ng/Cargo.toml -- gpio input J17_PIN1
-cargo run --manifest-path cmd-ng/Cargo.toml -- gpio input GP13
+radxa-linkr-debuggerctl gpio list
+radxa-linkr-debuggerctl gpio set GP13 1
+radxa-linkr-debuggerctl gpio set CON_MAS 1
+radxa-linkr-debuggerctl gpio input J17_PIN1
+radxa-linkr-debuggerctl gpio input GP13
 ```
 
 Use autonomous firmware watchdog recovery:
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- watchdog status
+radxa-linkr-debuggerctl watchdog status
 ```
 
 The watchdog is owned by firmware, not the host. Firmware automatically arms
@@ -430,7 +440,7 @@ in your OpenOCD installation and the target configuration for the board under
 test:
 
 ```sh
-radxa-linkr-debuggerctl --json power set 5v_out on
+radxa-linkr-debuggerctl power set 5v_out on
 openocd -f interface/<ch347-interface>.cfg -f target/<target>.cfg
 ```
 
@@ -446,19 +456,20 @@ See [doc/openocd/README.md](doc/openocd/README.md) for the full workflow.
 
 ## NCM Network Interface
 
-The firmware enumerates as a composite USB device. The host CLI connects to
-the board via HTTP over the USB NCM interface. The default device URL is
-`http://172.29.203.1:8080`. The board runs a DHCPv4 server on the NCM link so the
-host can automatically obtain a compatible address; pass
-`radxa-linkr-debuggerctl --url ...` only if you intentionally override the default
-addressing in your environment.
+The firmware enumerates as a composite USB device. The released
+`radxa-linkr-debuggerctl` CLI talks to the board over HTTP on the USB NCM
+interface, with the default device URL `http://172.29.203.1:8080`. The board
+runs a DHCPv4 server on the NCM link so the host can automatically obtain a
+compatible address; pass `radxa-linkr-debuggerctl --url ...` only if you
+intentionally override the default addressing in your environment.
 
-All control is performed through `radxa-linkr-debuggerctl` using HTTP JSON
-requests, or directly through `curl` / another HTTP client. The CDC ACM port is
-kept intentionally as a secondary path for Zephyr cmdline access and recovery
-workflows such as BOOTSEL fallback; it is not the primary automation/control
-transport. When the CDC ACM shell is available, the local `bootloader` shell
-command enters the same RP2040 ROM BOOTSEL path used by the HTTP API.
+Normal user workflows should use the released CLI, which wraps the same HTTP
+JSON API. Direct `curl` is mainly for raw API debugging or for the Agent skill,
+which intentionally stays curl-first. The CDC ACM port is kept intentionally as
+a secondary path for Zephyr cmdline access and recovery workflows such as
+BOOTSEL fallback; it is not the primary automation/control transport. When the
+CDC ACM shell is available, the local `bootloader` shell command enters the
+same RP2040 ROM BOOTSEL path used by the HTTP API.
 
 For long-lived telemetry and bidirectional control over a single socket, create
 a live session over HTTP first and then connect to the returned dedicated
@@ -519,8 +530,9 @@ The test runner covers:
 apps/radxa_linkr_debugger/        Zephyr application
 apps/radxa_linkr_debugger/src/    Firmware source and shared board model
 apps/radxa_linkr_debugger/tests/  Unit tests
-cmd/radxa-linkr-debuggerctl/      Go host CLI entrypoint
-internal/hostcli/             Go host CLI implementation
+cmd-ng/                          Primary Rust host CLI/TUI
+cmd/radxa-linkr-debuggerctl/      Deprecated Go host CLI entrypoint
+internal/hostcli/                 Deprecated Go host CLI implementation
 doc/                          Hardware documents, OpenOCD configs, and marketing assets
 skills/radxa-linkr-debugger/      Agent-facing skill and operating guide
 .goreleaser.yaml              GoReleaser host CLI packaging config
