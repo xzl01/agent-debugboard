@@ -2,6 +2,9 @@
 
 `cmd-ng/` 是当前主力开发的 Rust 主机侧 CLI/TUI 实现。
 
+面向普通用户的 release 文档应优先使用已发布的 `radxa-linkr-debuggerctl` CLI；本文件只描述
+如何开发、构建和直接运行 `cmd-ng` 源码树。
+
 当前目标是把主机侧 CLI/TUI 的主线能力收敛到 Rust 实现，并保留“无参数进入 TUI、有参数进入传统 CLI”的入口契约。仓库里的旧 Go `cmd/radxa-linkr-debuggerctl` 路径进入 deprecated/legacy 维护状态，不再作为主力开发方向。
 
 ## 当前范围

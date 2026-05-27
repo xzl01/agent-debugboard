@@ -434,7 +434,16 @@ linkr-debugger:~$ bootloader
 
 This shell command still uses the standard RP2040 ROM USB BOOTSEL path, so the
 device should reappear as the usual `RP2 Boot` / `RPI-RP2` target for UF2 or
-`picotool` workflows.
+`picotool` workflows. On Linux you can also flash without root by mounting the
+`RPI-RP2` volume with `udisksctl` and copying the canonical UF2:
+
+```sh
+RPI_RP2=$(udisksctl mount -b /dev/sdX1 | awk -F" at " '{print $2}' | tr -d '[:space:]')
+cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 "$RPI_RP2/"
+```
+
+Replace `/dev/sdX1` with the actual RP2040 BOOTSEL block device path on your
+system.
 
 If you want the TUI or convenience wrapper instead of raw HTTP, the CLI still
 works:
