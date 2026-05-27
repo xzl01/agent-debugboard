@@ -12,15 +12,17 @@
 
 Radxa Linkr Debugger 面向自动化 bring-up、远程恢复、产测和 AI agent 调试链路。
 固件会枚举为复合 USB 设备：以 USB NCM 网络接口作为主控制面，并保留一个
-USB CDC ACM 串口用于 Zephyr 通用 cmdline 和 BOOTSEL fallback；主机侧当前主力
-命令路径是 `cmd-ng/` 下的 Rust CLI/TUI，用于脚本和 Agent 直接调用。
+USB CDC ACM 串口用于 Zephyr 通用 cmdline 和 BOOTSEL fallback；主机侧正常工作流
+优先使用 release 发布的 Rust `radxa-linkr-debuggerctl` CLI/TUI，其源码位于
+`cmd-ng/`。
 
 本仓库包含 Zephyr 应用、主力 Rust 主机侧 CLI/TUI、保留作弃用参考的旧 Go 主机
 侧实现、单元测试、原理图副本和项目文档。
 
-当前主力主机侧命令路径是 [`cmd-ng/`](cmd-ng/)。旧的 Go
-`cmd/radxa-linkr-debuggerctl` + `internal/hostcli` 已进入 deprecated/legacy 维护状
-态，仅保留作参考实现与回归对照。
+当前主力主机侧开发路径是 [`cmd-ng/`](cmd-ng/)。面向用户的正常工作流应优先使用
+release 发布的 `radxa-linkr-debuggerctl` CLI，它通过 USB NCM 上的 HTTP API 与调试板
+通信。旧的 Go `cmd/radxa-linkr-debuggerctl` + `internal/hostcli` 已进入
+deprecated/legacy 维护状态，仅保留作参考实现与回归对照。
 
 ## 功能范围
 
@@ -43,8 +45,8 @@ USB CDC ACM 串口用于 Zephyr 通用 cmdline 和 BOOTSEL fallback；主机侧�
 
 AI Agent 在操作硬件前，应先读取
 [skills/radxa-linkr-debugger/SKILL.md](skills/radxa-linkr-debugger/SKILL.md)。这份 skill
-是仓库内面向 Agent 的权威操作规程，包含主力主机侧 CLI 的构建/运行、连接诊
-断、JSON 命令使用和有副作用操作的安全规则。
+是仓库内面向 Agent 的权威操作规程，并且有意保持 curl-first；它同时覆盖连接诊
+断、需要时构建/运行主力 CLI、JSON 命令使用和有副作用操作的安全规则。
 
 在修改仓库文件之前，AI Agent 还应先读取 [AGENTS.md](AGENTS.md)。仓库内的
 默认规则如下：
@@ -54,6 +56,7 @@ AI Agent 在操作硬件前，应先读取
 - 修改固件时，必须检查并保持 USB CDC ACM 串口的 BOOTSEL fallback 路径可用。
 - 修改 skill 时，必须执行一次 subagent 验证/测试。
 - 添加新功能时，只要实际可行，就应同步添加对应的功能测试。
+- 修改固件或与真实硬件交互的主机侧逻辑时，结束前必须完成 HIL 功能测试；参见 `AGENTS.md` 和 `doc/testing/hil-functional-test-spec.md`。
 - 只要 Zephyr 绑定和板级模型能自然表达，硬件描述就优先使用 Device Tree，而不是固件里的硬编码表。
 - 软件实现应保持标准、统一、优雅，避免引入让维护、自动化或文档理解变得困难的临时性写法。
 - MCU 侧输出应尽量贴近接口原值；只要不破坏原始固件契约，解释、校准和展示优先放在 host 侧完成。
@@ -61,30 +64,23 @@ AI Agent 在操作硬件前，应先读取
 推荐 Agent 最小流程：
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- --version
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json doctor
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
+radxa-linkr-debuggerctl --version
+radxa-linkr-debuggerctl --json doctor
+radxa-linkr-debuggerctl --json status
 ```
 
-如果主机侧 CLI 尚未构建或安装，先按 skill 中的命令处理。自动化场景优先使用
-`--json`，解析 `schema`、`ok`、`command` 和 `error.code`，不要解析面向人看的文
-本输出。
+如果 release CLI 尚未下载或安装，先按下方 release 安装路径处理。只有在执行
+Agent skill 本身时，才继续遵循 skill 的 curl-first 工作流。通过 CLI 做自动化时，
+优先使用 `--json`，解析 `schema`、`ok`、`command` 和 `error.code`，不要解析面向
+人看的文本输出。
 
 ## 安装主机侧 CLI
 
-当前主力主机侧 CLI 是 Rust `cmd-ng` 实现。旧 Go `radxa-linkr-debuggerctl` 路径已弃
-用。
+主机侧正常工作流优先使用 release 发布的 `radxa-linkr-debuggerctl` CLI。可以直接从
+GitHub Releases 下载匹配平台的归档，或者在 checkout 内使用下方 repo-local
+installer，并显式指定版本，让它下载已发布的 release 产物而不是从源码构建。
 
-在 checkout 内，直接构建/运行当前主力 Rust 主机 CLI：
-
-```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- --help
-cargo run --manifest-path cmd-ng/Cargo.toml -- --version
-cargo run --manifest-path cmd-ng/Cargo.toml --
-```
-
-旧 Go 安装脚本仅保留作兼容迁移用途。若确有需要，也可以指定 legacy release 版
-本：
+安装指定 release 版本：
 
 ```sh
 ./skills/radxa-linkr-debugger/scripts/install.sh --version <tag>
@@ -123,28 +119,37 @@ powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 
 | macOS Apple Silicon | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` |
 
 如果需要保留作对照或迁移用途的旧 Go host CLI，GitHub Release 中还会额外提供
-`radxa-linkr-debuggerctl_<os>_<arch>.*` 兼容归档；主力 Rust CLI/TUI 则会以
-`radxa-linkr-debuggerctl-rust_<os>_<arch>.*` 的名字一并发布，skill 安装脚本也会优先下载它。
+`radxa-linkr-debuggerctl_<os>_<arch>.*` 兼容归档；上面的安装与下载示例则优先使用
+已发布的 Rust CLI/TUI 归档。
 
 macOS 上未签名的 release 二进制可能触发 Gatekeeper，提示 Apple 无法验证软件。
 安装脚本会先校验 `SHA256SUMS.txt`，再移除安装后二进制的 quarantine 标记。
-如果手动安装，请先校验 SHA256，再执行：
+如果你是手动解压 release 归档，请先校验 SHA256，再对解压得到的
+`radxa-linkr-debuggerctl` 二进制执行：
 
 ```sh
-xattr -dr com.apple.quarantine ./skills/radxa-linkr-debugger/scripts/bin/radxa-linkr-debuggerctl
+xattr -dr com.apple.quarantine ./radxa-linkr-debuggerctl
 ```
 
-构建/安装后验证：
+安装后，下面的示例默认假设 `radxa-linkr-debuggerctl` 已在 `PATH` 中，或者你用相同
+命令名直接调用刚解压出来的 release 二进制：
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- --help
-cargo run --manifest-path cmd-ng/Cargo.toml -- --version
-cargo run --manifest-path cmd-ng/Cargo.toml -- doctor
-cargo run --manifest-path cmd-ng/Cargo.toml --
+radxa-linkr-debuggerctl --help
+radxa-linkr-debuggerctl --version
+radxa-linkr-debuggerctl doctor
+radxa-linkr-debuggerctl
 ```
 
-直接运行 Rust 主机 CLI（不带子命令）会启动交互式 TUI。需要传统命令行
+直接运行 release CLI（不带子命令）会启动交互式 TUI。需要传统命令行
 模式时，再使用 `status`、`adc read`、`power set` 等子命令。
+
+如果你是在开发 `cmd-ng` 自身，可直接从源码构建：
+
+```sh
+cargo build --manifest-path cmd-ng/Cargo.toml
+./cmd-ng/target/debug/radxa-linkr-debuggerctl --help
+```
 
 TUI 本身只维持较温和的 60 Hz 重绘节奏，并改为通过 HTTP 轮询状态与 ADC 数据，
 因此多个 TUI 实例可以稳定同时打开。电源输出、switch 控制和安全 GPIO 现在统一进
@@ -220,6 +225,15 @@ linkr-debugger:~$ bootloader
 picotool load -v -x build/radxa_linkr_debugger/zephyr/zephyr.uf2
 ```
 
+Linux 下也可以先用 `udisksctl` 挂载 `RPI-RP2`，再复制这一个固定 UF2：
+
+```sh
+RPI_RP2=$(udisksctl mount -b /dev/sdX1 | awk -F" at " '{print $2}' | tr -d '[:space:]')
+cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 "$RPI_RP2/"
+```
+
+将 `/dev/sdX1` 替换为实际 RP2040 BOOTSEL 块设备路径。
+
 如果改用 `RPI-RP2` 盘符拖拽复制，而不是 `picotool`，也只能复制这一个固定产物：
 
 ```text
@@ -245,30 +259,21 @@ build/radxa_linkr_debugger/zephyr/zephyr.uf2
 - `skills-radxa-linkr-debugger.tar.gz`：`skills/radxa-linkr-debugger/` 的 Agent skill 打包。
 - `SHA256SUMS.txt`：所有 release assets 的 SHA256 校验文件。
 
-开发者可以从源码构建当前主力 host CLI：
+普通用户应优先下载上面的 `radxa-linkr-debuggerctl-rust_*` 归档。若你在开发
+`cmd-ng` 本身，可从源码构建：
 
 ```sh
 cargo build --manifest-path cmd-ng/Cargo.toml
 ./cmd-ng/target/debug/radxa-linkr-debuggerctl --help
 ```
 
-Rust `cmd-ng` 现在是主力开发路径，可直接构建运行：
-
-```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- --help
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
-cargo run --manifest-path cmd-ng/Cargo.toml --
-```
-
-不带子命令时会进入 Rust TUI。
-
-## 主机侧使用
+## CLI 使用
 
 查询调试板状态：
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- status
-cargo run --manifest-path cmd-ng/Cargo.toml -- doctor
+radxa-linkr-debuggerctl status
+radxa-linkr-debuggerctl doctor
 ```
 
 Agent 或自动化程序推荐优先使用 JSON 输出。JSON 响应固定包含
@@ -276,12 +281,12 @@ Agent 或自动化程序推荐优先使用 JSON 输出。JSON 响应固定包含
 失败时返回 `error: {code, message}`：
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json doctor
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json power list
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json adc read
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json gpio list
-cargo run --manifest-path cmd-ng/Cargo.toml -- --json watchdog status
+radxa-linkr-debuggerctl --json doctor
+radxa-linkr-debuggerctl --json status
+radxa-linkr-debuggerctl --json power list
+radxa-linkr-debuggerctl --json adc read
+radxa-linkr-debuggerctl --json gpio list
+radxa-linkr-debuggerctl --json watchdog status
 ```
 
 `GP13` 这类 GPIO 名称由固件按 RP2040 引脚号派生；每个 allowlist GPIO 还带有
@@ -314,23 +319,23 @@ USB 设备生命周期事件同样会被记录，便于与 CDC ACM 断连做诊�
 控制电源输出：
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- power set 12v_out on
-cargo run --manifest-path cmd-ng/Cargo.toml -- power set 12v_out off
-cargo run --manifest-path cmd-ng/Cargo.toml -- power set 5v_out on
-cargo run --manifest-path cmd-ng/Cargo.toml -- power set 5v_out off
-cargo run --manifest-path cmd-ng/Cargo.toml -- power set 5v_ws on
-cargo run --manifest-path cmd-ng/Cargo.toml -- power set 20v_out on
+radxa-linkr-debuggerctl power set 12v_out on
+radxa-linkr-debuggerctl power set 12v_out off
+radxa-linkr-debuggerctl power set 5v_out on
+radxa-linkr-debuggerctl power set 5v_out off
+radxa-linkr-debuggerctl power set 5v_ws on
+radxa-linkr-debuggerctl power set 20v_out on
 ```
 
 读取电流监测 ADC 通道：
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc read
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 5v_out
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.ndjson 1000 --rate-hz 250
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc read -v 5v_out
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 12v_out
-cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 20v_out
+radxa-linkr-debuggerctl adc read
+radxa-linkr-debuggerctl adc read 5v_out
+radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 1000 --rate-hz 250
+radxa-linkr-debuggerctl adc read -v 5v_out
+radxa-linkr-debuggerctl adc read 12v_out
+radxa-linkr-debuggerctl adc read 20v_out
 ```
 
 人类可读 ADC 输出默认保持简洁，例如 `5v_out=0.540000A`。需要调试字段时使用
@@ -341,11 +346,11 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- adc read 20v_out
 切换 switch 路由：
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- switch list
-cargo run --manifest-path cmd-ng/Cargo.toml -- switch get sd
-cargo run --manifest-path cmd-ng/Cargo.toml -- switch get usb
-cargo run --manifest-path cmd-ng/Cargo.toml -- switch route sd usb-reader
-cargo run --manifest-path cmd-ng/Cargo.toml -- switch route usb target
+radxa-linkr-debuggerctl switch list
+radxa-linkr-debuggerctl switch get sd
+radxa-linkr-debuggerctl switch get usb
+radxa-linkr-debuggerctl switch route sd usb-reader
+radxa-linkr-debuggerctl switch route usb target --confirm
 ```
 
 做 mux/switch 功能验证时，建议严格顺序执行：先运行 `switch route ...`，再给硬件
@@ -355,17 +360,17 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- switch route usb target
 使用安全 GPIO：
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- gpio list
-cargo run --manifest-path cmd-ng/Cargo.toml -- gpio set GP13 1
-cargo run --manifest-path cmd-ng/Cargo.toml -- gpio set CON_MAS 1
-cargo run --manifest-path cmd-ng/Cargo.toml -- gpio input J17_PIN1
-cargo run --manifest-path cmd-ng/Cargo.toml -- gpio input GP13
+radxa-linkr-debuggerctl gpio list
+radxa-linkr-debuggerctl gpio set GP13 1
+radxa-linkr-debuggerctl gpio set CON_MAS 1
+radxa-linkr-debuggerctl gpio input J17_PIN1
+radxa-linkr-debuggerctl gpio input GP13
 ```
 
 使用固件自主 watchdog 恢复：
 
 ```sh
-cargo run --manifest-path cmd-ng/Cargo.toml -- watchdog status
+radxa-linkr-debuggerctl watchdog status
 ```
 
 watchdog 由固件自身管理，而不是由主机喂狗。固件会自动 arm RP2040 硬件
@@ -395,7 +400,7 @@ openocd --version
 对应的 target 配置启动 OpenOCD：
 
 ```sh
-radxa-linkr-debuggerctl --json power set 5v_out on
+radxa-linkr-debuggerctl power set 5v_out on
 openocd -f interface/<ch347-interface>.cfg -f target/<target>.cfg
 ```
 
@@ -410,16 +415,16 @@ OpenOCD 通常会在 TCP `3333` 暴露 GDB server，并在 TCP `4444` 暴露 tel
 
 ## NCM 网络接口
 
-固件枚举为复合 USB 设备。主机 CLI 通过 USB NCM 接口上的 HTTP 与调试板
-通信。默认设备 URL 为 `http://172.29.203.1:8080`。调试板会在 NCM 链路上运行
-一个小型 DHCPv4 server，让 host 自动拿到兼容地址；如果你修改了默认地址规划，
-可用 `radxa-linkr-debuggerctl --url ...` 显式指定。
+固件枚举为复合 USB 设备，而 release 发布的 `radxa-linkr-debuggerctl` CLI 会通过
+USB NCM 接口上的 HTTP 与调试板通信。默认设备 URL 为 `http://172.29.203.1:8080`。
+调试板会在 NCM 链路上运行一个小型 DHCPv4 server，让 host 自动拿到兼容地址；如
+果你修改了默认地址规划，可用 `radxa-linkr-debuggerctl --url ...` 显式指定。
 
-所有控制均通过 `radxa-linkr-debuggerctl` 的 HTTP JSON 请求，或直接通过
-`curl` / 任意 HTTP 客户端完成。RP2040 USB CDC ACM 串口会继续保留，作为
-Zephyr 通用 cmdline 和 BOOTSEL fallback 的辅助通道，但它不是主控制面。只要
-CDC ACM shell 可用，本地 `bootloader` shell 命令就会走与 HTTP API 相同的
-RP2040 ROM BOOTSEL 路径。
+面向普通用户的正常工作流优先使用 release CLI，它只是对同一套 HTTP JSON API
+做了包装。直接 `curl` 更适合原始 API 调试，或者执行刻意保持 curl-first 的 Agent
+skill。RP2040 USB CDC ACM 串口会继续保留，作为 Zephyr 通用 cmdline 和
+BOOTSEL fallback 的辅助通道，但它不是主控制面。只要 CDC ACM shell 可用，本地
+`bootloader` shell 命令就会走与 HTTP API 相同的 RP2040 ROM BOOTSEL 路径。
 
 如果需要在一条长连接上同时做实时遥测和双向控制，固件还提供
 `ws://172.29.203.1:8080/api/v1/ws` WebSocket 端点。
@@ -475,8 +480,9 @@ mDNS 只是后续可选的“名字更友好”增强，不影响正常使用。
 apps/radxa_linkr_debugger/        Zephyr 应用
 apps/radxa_linkr_debugger/src/    固件源码和共享板级模型
 apps/radxa_linkr_debugger/tests/  单元测试
-cmd/radxa-linkr-debuggerctl/      Go 主机侧 CLI 入口
-internal/hostcli/             Go 主机侧 CLI 实现
+cmd-ng/                          主力 Rust 主机侧 CLI/TUI
+cmd/radxa-linkr-debuggerctl/      已弃用 Go 主机侧 CLI 入口
+internal/hostcli/                 已弃用 Go 主机侧 CLI 实现
 doc/                          硬件文档、OpenOCD 配置和宣传素材
 skills/radxa-linkr-debugger/      面向 Agent 的 skill 和操作规程
 .goreleaser.yaml              GoReleaser 主机侧 CLI 打包配置
