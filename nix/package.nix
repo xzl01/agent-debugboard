@@ -1,7 +1,10 @@
-{
-  lib,
-  rustPlatform,
-  installShellFiles,
+{ lib
+, rustPlatform
+, cacert
+, installShellFiles
+, pkg-config
+, udev
+,
 }:
 
 let
@@ -13,13 +16,24 @@ rustPlatform.buildRustPackage {
 
   src = lib.cleanSource ./..;
 
-  cargoLock.lockFile = ../cmd-ng/Cargo.lock;
+  cargoRoot = "cmd-ng";
+
+  cargoHash = "sha256-A4NXACQ3ztBufNtYLmdwGUdCuB8zn8T2l3zO7wYaBts=";
 
   buildAndTestSubdir = "cmd-ng";
 
   nativeBuildInputs = [
     installShellFiles
+    pkg-config
   ];
+
+  buildInputs = [
+    cacert
+    udev
+  ];
+
+  SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
+  NIX_SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
 
   postInstall = ''
     install -Dm644 skills/radxa-linkr-debugger/SKILL.md \
