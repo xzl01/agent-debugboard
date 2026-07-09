@@ -27,7 +27,8 @@
 #include <zephyr/sys/printk.h>
 
 #define LINKR_DEBUGGER_HTTP_PORT 8080U
-#define LINKR_DEBUGGER_HTTP_HOST "172.29.203.1"
+#define LINKR_DEBUGGER_HTTP_HOST "0.0.0.0"
+#define LINKR_DEBUGGER_HTTP_ADDR "172.29.203.1"
 #define LINKR_DEBUGGER_HTTP_BODY_BUFSZ 160U
 #define LINKR_DEBUGGER_HTTP_JSON_BUFSZ 4096U
 #define LINKR_DEBUGGER_HTTP_GPIO_NAME_BUFSZ LINKR_DEBUGGER_GPIO_NAME_BUFSZ
@@ -1534,7 +1535,7 @@ uint16_t linkr_debugger_http_listener_port(void)
 
 const char *linkr_debugger_http_listener_host(void)
 {
-	return LINKR_DEBUGGER_HTTP_HOST;
+	return LINKR_DEBUGGER_HTTP_ADDR;
 }
 
 void linkr_debugger_http_init(void)
