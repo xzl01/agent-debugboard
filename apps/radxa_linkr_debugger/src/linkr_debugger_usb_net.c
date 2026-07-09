@@ -7,14 +7,10 @@
 
 #include "linkr_debugger_usb_net.h"
 
-#include "linkr_debugger_network.h"
-
 #include <errno.h>
 
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/net/net_config.h>
-#include <zephyr/net/net_if.h>
 #include <zephyr/usb/usbd.h>
 #include <zephyr/usb/usbd_msg.h>
 
@@ -94,15 +90,15 @@ static struct usbd_context *linkr_debugger_usbd_setup(void)
 
 	linkr_debugger_fix_code_triple(&linkr_debugger_usbd);
 
+	err = usbd_msg_register_cb(&linkr_debugger_usbd, linkr_debugger_usbd_msg_cb);
+	if (err) {
+		LOG_WRN("Failed to register USB message callback (%d)", err);
+	}
+
 	err = usbd_init(&linkr_debugger_usbd);
 	if (err) {
 		LOG_ERR("Failed to initialize USB device (%d)", err);
 		return NULL;
-	}
-
-	err = usbd_msg_register_cb(&linkr_debugger_usbd, linkr_debugger_usbd_msg_cb);
-	if (err) {
-		LOG_WRN("Failed to register USB message callback (%d)", err);
 	}
 
 	return &linkr_debugger_usbd;
@@ -111,7 +107,6 @@ static struct usbd_context *linkr_debugger_usbd_setup(void)
 int linkr_debugger_usb_net_init(void)
 {
 	struct usbd_context *usbd;
-	struct net_if *iface;
 	int ret;
 
 	usbd = linkr_debugger_usbd_setup();
@@ -120,20 +115,6 @@ int linkr_debugger_usb_net_init(void)
 	}
 
 	ret = usbd_enable(usbd);
-	if (ret < 0) {
-		return ret;
-	}
-
-	ret = linkr_debugger_network_get_ncm_iface(&iface);
-	if (ret < 0) {
-		return ret;
-	}
-
-	net_if_set_default(iface);
-
-	ret = net_config_init_by_iface(iface, "Initializing network",
-				      NET_CONFIG_NEED_IPV4,
-				      CONFIG_NET_CONFIG_INIT_TIMEOUT * MSEC_PER_SEC);
 	if (ret < 0) {
 		return ret;
 	}

@@ -849,7 +849,7 @@ int linkr_debugger_ws_setup(int ws_socket, struct http_request_ctx *request_ctx,
 				      LINKR_DEBUGGER_WS_PRIORITY,
 				      0, K_NO_WAIT);
 	if (IS_ENABLED(CONFIG_THREAD_NAME)) {
-		char thread_name[20];
+		char thread_name[21];
 		snprintk(thread_name, sizeof(thread_name), "linkr_debugger_ws%u", client->slot);
 		k_thread_name_set(&client->thread_data, thread_name);
 	}
