@@ -1,6 +1,6 @@
 ---
 name: radxa-linkr-debugger
-description: Use curl or the optional Radxa Linkr Debugger CLI to diagnose and operate target-board power outputs, ADC current monitors, safe GPIOs, TF/SD routing, firmware-owned watchdog recovery, and RP2040 BOOTSEL mode over USB NCM HTTP while keeping USB CDC ACM available for fallback cmdline access.
+description: Use curl or the optional Radxa Linkr Debugger CLI to diagnose and operate target-board power outputs, ADC current monitors, safe GPIOs, TF/SD routing, firmware-owned watchdog recovery, and RP2040/RP2350 BOOTSEL mode over USB NCM HTTP while keeping USB CDC ACM available for fallback cmdline access.
 ---
 
 # Radxa Linkr Debugger
@@ -17,7 +17,7 @@ workflow.
 Windows. The primary actively-developed host CLI/TUI path in this repository is
 now the Rust implementation under `./cmd-ng/`. The older Go
 `radxa-linkr-debuggerctl` path remains only as a deprecated legacy/reference path.
-The RP2040 USB CDC ACM port is intentionally kept as a secondary path for
+The RP2040/RP2350 USB CDC ACM port is intentionally kept as a secondary path for
 Zephyr cmdline access and BOOTSEL fallback.
 
 For long-lived telemetry and bidirectional control, the firmware also exposes a
@@ -193,7 +193,7 @@ If `ok` is `false`, do not infer success from partial fields. Handle
 members each report `available` and a machine-readable `reason`. Treat
 `available: false` as authoritative; the firmware does not invent sensor,
 memory, runtime, or CPU values when Zephyr has no reliable source enabled. On
-the default RP2040 configuration, the board should report internal CPU die
+the default RP2040/RP2350 configuration, the board should report internal CPU die
 temperature, system heap runtime statistics, real board uptime (`uptime_ms` /
 `uptime_seconds`), and CPU utilization deltas. The CPU percentage can still
 temporarily report `insufficient_runtime_window` until enough runtime delta has
@@ -346,12 +346,12 @@ Example control payload:
 ```
 
 Autonomous watchdog recovery is firmware-owned. The host does not arm or feed
-the watchdog. Firmware keeps the RP2040 hardware watchdog alive only while core
+the watchdog. Firmware keeps the RP2040/RP2350 hardware watchdog alive only while core
 firmware, the HTTP/API service, and the CDC ACM cmdline fallback are still
 reporting healthy liveness. WebSocket session silence, subscription timeout,
 and session expiration are not watchdog failure conditions. If core firmware
 wedges, the API service stops responding, or the CDC ACM cmdline fallback stops
-reporting liveness, firmware stops feeding the watchdog, the RP2040 resets, and
+reporting liveness, firmware stops feeding the watchdog, the MCU resets, and
 the next boot enters ROM BOOTSEL using a retained marker. The direct
 `bootloader` command and the CDC ACM shell fallback remain independent recovery
 paths. Periodic memory diagnostics are log-only debug output and must not be
@@ -413,9 +413,9 @@ curl -fsS -X PUT -H 'Content-Type: application/json' \
 
 GPIO list/status responses expose `name`, `pin`, and `note`. Control targets may
 use canonical `GPxx`, raw numeric pins such as `4`, or exact notes such as
-`CON_MAS` / `J17_PIN1`.
+`CON_MAS` / `J17_PIN1` (G2 boards) or `CON_REST` / `J13_PIN1` (G3 boards).
 
-Enter RP2040 BOOTSEL mode for flashing.
+Enter BOOTSEL mode for flashing.
 
 ```sh
 curl -fsS -X POST "$BOARD_URL/api/v1/bootloader"
@@ -423,16 +423,16 @@ curl -fsS -X POST "$BOARD_URL/api/v1/bootloader"
 
 After firmware changes, treat this HTTP BOOTSEL flow and the CDC ACM shell
 fallback below as required validation paths before you finish; verify that the
-serial fallback path still reaches the standard RP2040 ROM BOOTSEL workflow.
+serial fallback path still reaches the standard ROM BOOTSEL workflow.
 
-If the HTTP control plane is unavailable but the RP2040 CDC ACM shell is still
+If the HTTP control plane is unavailable but the CDC ACM shell is still
 reachable, use the local Zephyr shell command instead:
 
 ```text
 linkr-debugger:~$ bootloader
 ```
 
-This shell command still uses the standard RP2040 ROM USB BOOTSEL path, so the
+This shell command still uses the standard ROM USB BOOTSEL path, so the
 device should reappear as the usual `RP2 Boot` / `RPI-RP2` target for UF2 or
 `picotool` workflows. On Linux you can also flash without root by mounting the
 `RPI-RP2` volume with `udisksctl` and copying the canonical UF2:
@@ -442,8 +442,9 @@ RPI_RP2=$(udisksctl mount -b /dev/sdX1 | awk -F" at " '{print $2}' | tr -d '[:sp
 cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 "$RPI_RP2/"
 ```
 
-Replace `/dev/sdX1` with the actual RP2040 BOOTSEL block device path on your
-system.
+Replace `/dev/sdX1` with the actual BOOTSEL block device path on your
+system (use `lsblk -o NAME,SIZE,VENDOR,MOUNTPOINT` and look for the `RPI` vendor
+entry).
 
 If you want the TUI or convenience wrapper instead of raw HTTP, the CLI still
 works:
@@ -458,7 +459,7 @@ works:
 
 Use OpenOCD through the onboard CH347F path when the target board exposes
 JTAG/SWD through the debug fixture. CH347F is wired directly to the target
-debug connector. The RP2040 firmware controls target power and recovery lines;
+debug connector. The firmware controls target power and recovery lines;
 it does not sit in the JTAG/SWD path and does not act as a CMSIS-DAP,
 Picoprobe, or JTAG probe.
 

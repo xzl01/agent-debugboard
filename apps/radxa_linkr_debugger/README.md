@@ -9,10 +9,16 @@ Unless noted otherwise, run the commands below from the repository root.
 Agent/AI operators should read the repository skill first:
 [skills/radxa-linkr-debugger/SKILL.md](../../skills/radxa-linkr-debugger/SKILL.md).
 
-Build:
+Build (G2 / RP2040):
 
 ```sh
 west build -p always -b rpi_pico/rp2040 apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+```
+
+Build (G3 / RP2350):
+
+```sh
+west build -p always -b rpi_pico2/rp2350a/m33 apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
 ```
 
 Use `build/radxa_linkr_debugger/` as the only canonical build directory for this
@@ -25,10 +31,11 @@ Tests:
 ./apps/radxa_linkr_debugger/tests/run_unit_tests.sh
 ```
 
-Schematic:
+Schematics:
 
 ```text
-doc/radxa-linkr-debugger-schematic.pdf
+doc/radxa-linkr-debugger-schematic-x1.1.pdf  (G3 / RP2350A)
+doc/radxa-linkr-debugger-schematic.pdf       (G2 / RP2040)
 ```
 
 The USB interface enumerates as a composite USB device. The board exposes its
@@ -147,7 +154,7 @@ openocd -f interface/<ch347-interface>.cfg -f target/<target>.cfg
 ```
 
 JTAG/SWD goes through the onboard CH347F path, which is wired directly to the
-target debug connector. The RP2040 firmware does not act as a debug probe.
+target debug connector. The RP2040/RP2350 firmware does not act as a debug probe.
 
 Power-output naming intentionally distinguishes controllable 5V outputs from
 `5V_FIN`. The firmware does not control `5V_FIN`.

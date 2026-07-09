@@ -2,9 +2,9 @@
 
 [中文](README.zh-CN.md)
 
-RP2040 firmware for **Radxa Linkr Debugger**, a USB-controlled hardware bridge that
-lets a PC-side Agent/AI operate target-board power, boot-mode, TF/SD routing,
-current-monitor ADC channels, and a small safe GPIO surface.
+RP2040 / RP2350 firmware for **Radxa Linkr Debugger**, a USB-controlled hardware
+bridge that lets a PC-side Agent/AI operate target-board power, boot-mode, TF/SD
+routing, current-monitor ADC channels, and a small safe GPIO surface.
 
 ![Radxa Linkr Debugger promo](doc/marketing/radxa-linkr-debugger-promo.png)
 
@@ -203,11 +203,18 @@ pip install -r zephyr/scripts/requirements.txt
 Install the Zephyr SDK if it is not already installed. The current local build
 has been verified with Zephyr SDK `1.0.1`.
 
-Build the RP2040 firmware:
+Build the RP2040 firmware (G2 revision boards):
 
 ```sh
 source .venv/bin/activate
 west build -p always -b rpi_pico/rp2040 apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+```
+
+Build the RP2350 firmware (G3 revision boards):
+
+```sh
+source .venv/bin/activate
+west build -p always -b rpi_pico2/rp2350a/m33 apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
 ```
 
 The generated UF2 is:
@@ -231,7 +238,7 @@ radxa-linkr-debuggerctl bootloader
 picotool load -v -x build/radxa_linkr_debugger/zephyr/zephyr.uf2
 ```
 
-After firmware changes, treat this BOOTSEL flow and the RP2040 CDC ACM shell
+After firmware changes, treat this BOOTSEL flow and the RP2040/RP2350 CDC ACM shell
 fallback below as required validation paths; do not conclude the change until
 you have verified the serial fallback path still works.
 
@@ -256,8 +263,9 @@ RPI_RP2=$(udisksctl mount -b /dev/sdX1 | awk -F" at " '{print $2}' | tr -d '[:sp
 cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 "$RPI_RP2/"
 ```
 
-Replace `/dev/sdX1` with the actual RP2040 BOOTSEL block device path on your
-system. If you use drag-and-drop flashing through the `RPI-RP2` volume instead of
+Replace `/dev/sdX1` with the actual BOOTSEL block device path on your
+system (use `lsblk -o NAME,SIZE,VENDOR,MOUNTPOINT` and look for the `RPI` vendor
+entry). If you use drag-and-drop flashing through the `RPI-RP2` volume instead of
 `picotool`, copy this same canonical artifact:
 
 ```text
@@ -270,9 +278,12 @@ The `Build` workflow checks every push and pull request. Tagging `v*` triggers
 the `Release` workflow, which builds firmware, packages the host CLI, creates a
 GitHub Release, and uploads the fixed release assets.
 
-- `radxa-linkr-debugger-rp2040.uf2`: RP2040 firmware for drag-and-drop or `picotool`.
+- `radxa-linkr-debugger-rp2040.uf2`: RP2040 firmware (G2) for drag-and-drop or `picotool`.
 - `radxa-linkr-debugger-rp2040.elf`: RP2040 ELF for debugging.
 - `radxa-linkr-debugger-rp2040.map`: RP2040 linker map.
+- `radxa-linkr-debugger-rp2350.uf2`: RP2350 firmware (G3) for drag-and-drop or `picotool`.
+- `radxa-linkr-debugger-rp2350.elf`: RP2350 ELF for debugging.
+- `radxa-linkr-debugger-rp2350.map`: RP2350 linker map.
 - `radxa-linkr-debuggerctl-rust_windows_amd64.zip`: primary Rust CLI/TUI for Windows x64.
 - `radxa-linkr-debuggerctl-rust_windows_arm64.zip`: primary Rust CLI/TUI for Windows arm64.
 - `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz`: primary Rust CLI/TUI for Linux x64.
@@ -484,17 +495,35 @@ normal use.
 
 ## Hardware Mapping
 
-| Function | Firmware name | Schematic signal |
-| --- | --- | --- |
-| 12 V output enable | `12v_out` | `GP02_12V_EN` |
-| 5 V output enable | `5v_out` | `GP05_5V_EN` |
-| 5 V WS enable | `5v_ws` | `GP09_5V_WS_EN` |
-| 20 V output enable | `20v_out` | `GP10_20V_EN` |
-| TF/SD route switch | `switch sd` | `GP06_TF_SW` |
-| USB mux switch | `switch usb` | `GP03_USB_MUX` |
-| 5 V current monitor | `adc read 5v_out` | `S_C_5V` |
-| 12 V current monitor | `adc read 12v_out` | `S_C_12V` |
-| 20 V current monitor | `adc read 20v_out` | `S_C_20V` |
+### G2 (RP2040) Revision
+
+| Function | Firmware name | Schematic signal | GPIO |
+|---|---|---|---|
+| 12 V output enable | `12v_out` | `GP02_12V_EN` | 2 |
+| 5 V output enable | `5v_out` | `GP05_5V_EN` | 5 |
+| 5 V WS enable | `5v_ws` | `GP09_5V_WS_EN` | 9 |
+| 20 V output enable | `20v_out` | `GP10_20V_EN` | 10 |
+| TF/SD route switch | `switch sd` | `GP06_TF_SW` | 6 |
+| USB mux switch | `switch usb` | `GP03_USB_MUX` | 3 |
+| 5 V current monitor | `adc read 5v_out` | `S_C_5V` | 26 (ADC0) |
+| 12 V current monitor | `adc read 12v_out` | `S_C_12V` | 27 (ADC1) |
+| 20 V current monitor | `adc read 20v_out` | `S_C_20V` | 28 (ADC2) |
+
+### G3 (RP2350A) Revision
+
+| Function | Firmware name | Schematic signal | GPIO |
+|---|---|---|---|
+| 12 V output enable | `12v_out` | `GP02_12V_EN` | 2 |
+| 5 V output enable | `5v_out` | `GP05_5V_EN` | 0 |
+| 5 V WS enable | `5v_ws` | `GP09_5V_WS_EN` | 1 |
+| 20 V output enable | `20v_out` | `GP10_20V_EN` | 3 |
+| TF/SD route switch | `switch sd` | `GP06_TF_SW` | 4 |
+| USB hub mux switch | `switch usb` | `GP03_USB3_HUB` | 5 |
+| 1.8 V regulator enable | — | `1V8_EN` | 6 |
+| 5 V current monitor | `adc read 5v_out` | `S_C_5V` | 26 (ADC0) |
+| 12 V current monitor | `adc read 12v_out` | `S_C_12V` | 27 (ADC1) |
+| 20 V current monitor | `adc read 20v_out` | `S_C_20V` | 28 (ADC2) |
+| Reserved ADC | — | — | 29 (ADC3) |
 
 The current monitor channels use INA139 with a 10 mOhm shunt, 51 kOhm output
 load, and 1000 uA/V transconductance. The MCU reports raw ADC diagnostics plus
@@ -505,8 +534,9 @@ See the public
 [TI INA139 datasheet](https://www.ti.com/product/INA139) for the sensor
 transfer function.
 
-The current schematic copy is stored at
-[doc/radxa-linkr-debugger-schematic.pdf](doc/radxa-linkr-debugger-schematic.pdf).
+The current schematic copies are stored at:
+- G3 revision: [doc/radxa-linkr-debugger-schematic-x1.1.pdf](doc/radxa-linkr-debugger-schematic-x1.1.pdf)
+- G2 revision: [doc/radxa-linkr-debugger-schematic.pdf](doc/radxa-linkr-debugger-schematic.pdf)
 
 ## Development
 
