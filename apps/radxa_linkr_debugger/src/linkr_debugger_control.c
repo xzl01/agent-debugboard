@@ -68,13 +68,29 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 	COND_CODE_1(DT_PHA_HAS_CELL_AT_IDX(node_id, prop, idx, input), \
 			(ADC_DT_SPEC_GET_BY_IDX(node_id, idx),), ())
 
+#if DT_NODE_HAS_STATUS(REGULATOR_12V_OUT_NODE, okay) && \
+    DT_NODE_HAS_STATUS(REGULATOR_5V_OUT_NODE, okay) && \
+    DT_NODE_HAS_STATUS(REGULATOR_5V_WS_NODE, okay) && \
+    DT_NODE_HAS_STATUS(REGULATOR_20V_OUT_NODE, okay)
+#define HAS_REGULATORS 1
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_12V_OUT_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_5V_OUT_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_5V_WS_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_20V_OUT_NODE, okay));
+#else
+#define HAS_REGULATORS 0
+#endif
+
+#if DT_NODE_HAS_STATUS(CURRENT_5V_OUT_NODE, okay) && \
+    DT_NODE_HAS_STATUS(CURRENT_12V_OUT_NODE, okay) && \
+    DT_NODE_HAS_STATUS(CURRENT_20V_OUT_NODE, okay)
+#define HAS_CURRENT_SENSE 1
 BUILD_ASSERT(DT_NODE_HAS_STATUS(CURRENT_5V_OUT_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(CURRENT_12V_OUT_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(CURRENT_20V_OUT_NODE, okay));
+#else
+#define HAS_CURRENT_SENSE 0
+#endif
 
 static const struct device *const gpio0 = DEVICE_DT_GET(GPIO0_NODE);
 static const struct device *const watchdog_dev = DEVICE_DT_GET_OR_NULL(WATCHDOG_NODE);
@@ -99,22 +115,35 @@ static const char *linkr_debugger_watchdog_last_reported_service;
 static K_THREAD_STACK_DEFINE(linkr_debugger_watchdog_supervisor_stack, 1536);
 static struct k_thread linkr_debugger_watchdog_supervisor_thread;
 
+#if HAS_REGULATORS
 static const struct device *const regulators[] = {
 	DEVICE_DT_GET(REGULATOR_12V_OUT_NODE),
 	DEVICE_DT_GET(REGULATOR_5V_OUT_NODE),
 	DEVICE_DT_GET(REGULATOR_5V_WS_NODE),
 	DEVICE_DT_GET(REGULATOR_20V_OUT_NODE),
 };
+#else
+static const struct device *const regulators[] = {};
+#endif
 
+#if HAS_CURRENT_SENSE
 static const struct device *const current_sensors[] = {
 	DEVICE_DT_GET(CURRENT_5V_OUT_NODE),
 	DEVICE_DT_GET(CURRENT_12V_OUT_NODE),
 	DEVICE_DT_GET(CURRENT_20V_OUT_NODE),
 };
+#else
+static const struct device *const current_sensors[] = {};
+#endif
 
+#if DT_NODE_HAS_STATUS(DT_PATH(zephyr_user), okay) && \
+    DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
 static const struct adc_dt_spec adc_channels[] = {
 	DT_FOREACH_PROP_ELEM(ADC_INPUTS_NODE, io_channels, ADC_SPEC_AND_COMMA)
 };
+#else
+static const struct adc_dt_spec adc_channels[] = {};
+#endif
 
 BUILD_ASSERT(ARRAY_SIZE(regulators) <= REGULATOR_STATE_CAPACITY);
 
@@ -196,6 +225,10 @@ static int configure_regulator_defaults(void)
 {
 	const struct device *regulator;
 
+	if (ARRAY_SIZE(regulators) == 0) {
+		return 0;
+	}
+
 	if (linkr_debugger_rail_count != ARRAY_SIZE(regulators)) {
 		return -EINVAL;
 	}
@@ -219,13 +252,21 @@ static int configure_regulator_defaults(void)
 static int configure_sd_default(void)
 {
 	linkr_debugger_sd_route = LINKR_DEBUGGER_SD_ROUTE_TARGET;
+#ifdef CONFIG_SOC_SERIES_RP2350
+	return gpio_pin_configure(gpio0, 4, GPIO_OUTPUT_INACTIVE);
+#else
 	return gpio_pin_configure(gpio0, 6, GPIO_OUTPUT_INACTIVE);
+#endif
 }
 
 static int configure_usb_mux_default(void)
 {
 	linkr_debugger_usb_route = LINKR_DEBUGGER_USB_ROUTE_TARGET;
+#ifdef CONFIG_SOC_SERIES_RP2350
+	return gpio_pin_configure(gpio0, 5, GPIO_OUTPUT_ACTIVE);
+#else
 	return gpio_pin_configure(gpio0, 3, GPIO_OUTPUT_ACTIVE);
+#endif
 }
 
 static void linkr_debugger_gpio_apply_safe_drive_strength(const struct linkr_debugger_safe_gpio_desc *desc)
@@ -241,6 +282,10 @@ static void linkr_debugger_gpio_apply_safe_drive_strength(const struct linkr_deb
 
 static int setup_current_sensors(void)
 {
+	if (ARRAY_SIZE(current_sensors) == 0) {
+		return 0;
+	}
+
 	if (linkr_debugger_current_count != ARRAY_SIZE(current_sensors)) {
 		return -EINVAL;
 	}
@@ -738,7 +783,11 @@ int linkr_debugger_sd_route_set(enum linkr_debugger_sd_route route)
 	int ret;
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+#ifdef CONFIG_SOC_SERIES_RP2350
+	ret = gpio_pin_set(gpio0, 4, route == LINKR_DEBUGGER_SD_ROUTE_USB_READER ? 1 : 0);
+#else
 	ret = gpio_pin_set(gpio0, 6, route == LINKR_DEBUGGER_SD_ROUTE_USB_READER ? 1 : 0);
+#endif
 	if (ret < 0) {
 		k_mutex_unlock(&linkr_debugger_control_lock);
 		return ret;
@@ -756,7 +805,11 @@ int linkr_debugger_usb_route_set(enum linkr_debugger_usb_route route)
 	int ret;
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+#ifdef CONFIG_SOC_SERIES_RP2350
+	ret = gpio_pin_set(gpio0, 5, route == LINKR_DEBUGGER_USB_ROUTE_TARGET ? 1 : 0);
+#else
 	ret = gpio_pin_set(gpio0, 3, route == LINKR_DEBUGGER_USB_ROUTE_TARGET ? 1 : 0);
+#endif
 	if (ret < 0) {
 		k_mutex_unlock(&linkr_debugger_control_lock);
 		return ret;
