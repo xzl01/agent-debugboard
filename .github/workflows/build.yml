@@ -10,6 +10,29 @@ permissions:
   contents: read
 
 jobs:
+  web:
+    name: Build Web frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: web
+        run: npm run build
+
   scripts:
     name: Check install and helper scripts
     runs-on: ubuntu-latest
