@@ -48,12 +48,12 @@ BOOTSEL fallback.
 The board also runs a DHCPv4 server on the NCM link so the host can acquire a
 compatible address automatically.
 
-For long-lived telemetry and bidirectional control, multi-client live use should
-create a live session over HTTP first and connect to the returned dedicated
-WebSocket URL under `/api/v1/ws/<slot>`; the firmware keeps the HTTP client
-limit aligned with the four live WebSocket slots.
+For long-lived telemetry and bidirectional control, create a live session over
+HTTP first and connect to the returned dedicated WebSocket URL under
+`/api/v1/ws/<slot>`. The current firmware supports one active WebSocket client
+at a time; close it before creating another live connection.
 When HTTP/WS is unavailable but the CDC ACM shell still works, the local shell
-command below enters the same RP2040 ROM BOOTSEL path used by the HTTP API:
+command below enters the current MCU's ROM BOOTSEL path used by the HTTP API:
 
 ```text
 linkr-debugger:~$ bootloader
@@ -76,14 +76,23 @@ curl -fsS -X PUT -H 'Content-Type: application/json' \
   http://172.29.203.1:8080/api/v1/power/12v_out
 curl -fsS http://172.29.203.1:8080/api/v1/adc/read?channel=5v_out
 curl -fsS http://172.29.203.1:8080/api/v1/watchdog
+curl -fsS http://172.29.203.1:8080/api/v1/switch
+curl -fsS http://172.29.203.1:8080/api/v1/switch/vin   # G3: returns 1.8v or 3.3v; G2: unavailable
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"route":"3.3v"}' \
+  http://172.29.203.1:8080/api/v1/switch/vin   # safe default; G3 only
 ```
+
+VIN defaults to 3.3V at boot. G3-only VIN 1.8V switching is documented in the
+expert gated section below; it requires target voltage compatibility confirmation
+and physical measurement setup before use.
 
 `GET /api/v1/status` includes `board_monitoring`, and WebSocket
 `snapshot/status` messages include the same object. The categories are
 `temperature`, `heap`, `runtime`, and `cpu`; each one reports `available` and a
 machine-readable `reason`. Values are emitted only when Zephyr exposes a real
-device or runtime-stat API. With the default RP2040 configuration, the board
-reports internal RP2040 CPU die temperature, system heap runtime statistics,
+device or runtime-stat API. With the default RP2040 and RP2350 configurations,
+the board reports internal MCU die temperature, system heap runtime statistics,
 real board uptime (`uptime_ms` / `uptime_seconds`), and CPU utilization deltas
 when those readings are available. The CPU utilization field can still report
 `insufficient_runtime_window` until the firmware has accumulated enough runtime
@@ -92,18 +101,18 @@ delta to derive a percentage.
 `GET /api/v1/watchdog` reports the autonomous firmware watchdog state. Firmware
 itself owns watchdog arming and feeding. If core firmware, API service, or the
 CDC ACM cmdline fallback stop reporting healthy liveness, firmware stops
-feeding the RP2040 watchdog and the retained recovery marker drives the next
+feeding the hardware watchdog and the retained recovery marker drives the next
 boot into ROM BOOTSEL. The CDC ACM `bootloader` shell command remains available
 as an independent fallback path.
 
 FIXME: add a safe fault-injection path for validation of daemon/service failure
 scenarios. The current firmware and manual validation confirm websocket
 recovery, autonomous watchdog status reporting, and CDC ACM `bootloader`
-fallback into RP2040 BOOTSEL, but they do not yet provide a controlled way to
+fallback into ROM BOOTSEL, but they do not yet provide a controlled way to
 intentionally wedge HTTP/WS/cmdline liveness and prove automatic watchdog
 timeout into BOOTSEL without using ad hoc destructive test methods.
 
-Safe GPIO names such as `GP13` are derived from the RP2040 pin number; the
+Safe GPIO names such as `GP13` are derived from the MCU pin number; the
 firmware allowlist keeps the connector note so users can map commands back to
 the exposed header position.
 
@@ -124,6 +133,7 @@ radxa-linkr-debuggerctl adc read -v 5v_out
 radxa-linkr-debuggerctl power set 12v_out on
 radxa-linkr-debuggerctl power set 20v_out on
 radxa-linkr-debuggerctl switch route sd usb-reader
+radxa-linkr-debuggerctl switch get vin   # G3: returns 1.8v/3.3v; G2: unavailable
 radxa-linkr-debuggerctl watchdog status
 ```
 
@@ -139,6 +149,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- adc read -v 5v_out
 cargo run --manifest-path cmd-ng/Cargo.toml -- power set 12v_out on
 cargo run --manifest-path cmd-ng/Cargo.toml -- power set 20v_out on
 cargo run --manifest-path cmd-ng/Cargo.toml -- switch route sd usb-reader
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch get vin
 cargo run --manifest-path cmd-ng/Cargo.toml -- watchdog status
 ```
 
@@ -159,16 +170,76 @@ target debug connector. The RP2040/RP2350 firmware does not act as a debug probe
 Power-output naming intentionally distinguishes controllable 5V outputs from
 `5V_FIN`. The firmware does not control `5V_FIN`.
 
-Current schematic mapping:
+Current schematic mapping (G3 / RP2350A):
 
-- `12v_out`: `GP02_12V_EN`
-- `5v_out`: `GP05_5V_EN`
-- `5v_ws`: `GP09_5V_WS_EN`
-- `20v_out`: `GP10_20V_EN`
-- TF/SD route switch: `GP06_TF_SW`
-- ADC current monitor inputs: `S_C_5V`, `S_C_12V`, `S_C_20V`
+- `12v_out`: `GP02_12V_EN` (GPIO 2)
+- `5v_out`: `GP05_5V_EN` (GPIO 0)
+- `5v_ws`: `GP09_5V_WS_EN` (GPIO 1)
+- `20v_out`: `GP10_20V_EN` (GPIO 3)
+- TF/SD route switch: `GP06_TF_SW` (GPIO 4)
+- USB hub mux switch: `GP03_USB3_HUB` (GPIO 5)
+- CH347 1.8 V VIN supply enable: `1V8_EN` (GPIO 6, internal to `switch vin`)
+- TF write-protect: `TF_WP` (GPIO 22)
+- CH347 VIO voltage select: `VIO_SEL` (GPIO 23, `switch vin`)
+- Test point: `TP15` (GPIO 24)
+- Status LED: `LED_BLUE` (GPIO 25)
+- GPIO aliases: `CON_MAS` (GP7), `CON_REST` (GP8), `CON_USER` (GP9)
+- J16 GPIO: `GP10`-`GP20`
+- J16 ADC3/GPIO: `GP29` (ADC3)
+- ADC current monitor inputs: `S_C_5V` (ADC0), `S_C_12V` (ADC1), `S_C_20V` (ADC2)
 
-All ADC current monitor inputs use an INA139 with a 10 mOhm shunt and a
-51 kOhm output load. The Rust CLI and `curl` both report the firmware's raw
-current-monitor chain directly; no host-side ADC calibration tables or
-zero-point correction are applied.
+VIN defaults to 3.3V at boot. GPIO1 VDD_5V and its GPIO6 VDD_1V8 child rail are
+always on in the G3 Device Tree model. The selectable CH347 VIO level is modeled
+as a standard `regulator-gpio` regulator with exact 1.8V and 3.3V states, and
+firmware selects it through the Zephyr regulator API.
+
+The raw firmware API retains `5v_ws` as a compatibility name for GPIO1 VDD_5V.
+The host CLI and TUI intentionally filter this board-internal rail from status,
+power lists, and controls. On G3 it remains always on; G2 firmware keeps its
+original raw API behavior.
+
+G3 ADC current monitor inputs use an INA139 with a 10 mOhm shunt and a
+50 kOhm output load. (G2 uses 51 kOhm.) The Rust CLI and `curl` both report the
+firmware's raw current-monitor chain directly; no host-side ADC calibration
+tables or zero-point correction are applied.
+
+## Expert: G3 VIN 1.8V Switching
+
+VIN 1.8V switching applies only to G3 (RP2350A) boards and is not available on
+G2 (RP2040). This operation is side-effectful and requires confirmed target
+voltage compatibility and physical measurement setup before use.
+
+Prerequisites before any 1.8V switch:
+
+1. Confirm your target device's VIO supports 1.8V signaling.
+2. Connect a voltmeter or oscilloscope to the target VIO pin.
+3. Acknowledge that incorrect voltage will likely damage the target.
+
+To inspect current VIN state:
+
+```sh
+curl -fsS http://172.29.203.1:8080/api/v1/switch/vin
+radxa-linkr-debuggerctl switch get vin
+```
+
+To switch to 1.8V (G3 only), confirm target compatibility first, then:
+
+```sh
+radxa-linkr-debuggerctl switch route vin 1.8v --confirm
+# Then immediately measure target VIO pin — expect ~1.8V
+```
+
+To restore safe 3.3V:
+
+```sh
+radxa-linkr-debuggerctl switch route vin 3.3v --confirm
+# Then immediately measure target VIO pin — expect ~3.3V
+```
+
+CDC ACM shell equivalent (G3 only; returns unavailable on G2):
+
+```text
+linkr-debugger:~$ vin get
+linkr-debugger:~$ vin set 1.8v
+linkr-debugger:~$ vin set 3.3v
+```

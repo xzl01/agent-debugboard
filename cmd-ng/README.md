@@ -12,6 +12,7 @@
 - CLI：`status`、`doctor`、`power list|get|set`、`switch list|get|route`、`adc read`、`adc record`、`gpio list|set|input`、`watchdog status`、`bootloader`
 - 输出：支持 `--json`，并校验 `radxa-linkr-debugger.v1` envelope
 - TUI：无参数启动，是当前主力交互入口，并持续向现有 Go 行为收敛
+- VIN：`switch get vin` 和带确认保护的 route 控制（仅 G3；RP2040 固件不暴露此 switch）
 
 ## 构建与运行
 
@@ -26,10 +27,13 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 - 默认设备 URL 仍是 `http://172.29.203.1:8080`
 - `--json` 仍要求固件返回 `schema/ok/command`
 - TUI 现在以 HTTP 轮询作为主数据通道，因此可以稳定多开；实时高频采集改由 `adc record` 走 websocket
-- TUI 控件区把 power、Switch 和 GPIO 合并进同一个控制面，方向键/Tab 统一导航，Space/Enter 切换当前项，`i` 把当前 GPIO 切回输入，`t/u` 仍可直接切到 `target`/`usb-reader`；状态区会同时显示 switch 的 `desired` / `actual` 以便诊断后端回读差异
+- TUI 控件区把 power、Switch（包含 VIN）和 GPIO 合并进同一个控制面，方向键/Tab 统一导航，Space/Enter 切换当前项，`i` 把当前 GPIO 切回输入，`t/u` 仍可直接切到 `target`/`usb-reader`；状态区会同时显示 switch 的 `desired` / `actual` 以便诊断后端回读差异；VIN 只在固件报告时显示，且切换前需要确认
 - GPIO 在 CLI/TUI 中会同时显示 `GPxx` 和 `note`；控制时可使用 `GPxx`、数字引脚（如 `4`）或精确 note（如 `CON_MAS`）
 - `adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]` 会创建 live websocket session，把 telemetry 写成 NDJSON 文件；默认 1000Hz，`--rate-hz` 可指定 1..1000Hz 的订阅速率
+- 当前固件一次只支持一个活动 websocket 客户端；开始另一个 `adc record` 前应等待现有录制结束并关闭连接
 - recorder 每条记录都会写入主机接收时间戳和 `metadata.requested_rate_hz`；如果 firmware telemetry 自带设备侧 timing 字段，会透传到 `metadata.device_timing`。当前 ADC telemetry 只有 `sequence`，没有显式设备时间戳，因此 `device_timing` 可能不存在
 - `raw` 模式与 Go 版一致：HTTP 路径下不支持
 - `watchdog` 仍只暴露 `status`，不提供 host 侧 feed/控制
+- 板内 `5v_ws` 电源轨不会出现在 CLI/TUI 的状态或电源控制中；原始固件 API 兼容项仅供底层诊断
+- VIN 切换需要 `--confirm`（TUI 中为 Space/Enter 确认），因为电压切换有副作用；G3 的 GPIO1 VDD_5V 和 GPIO6 VDD_1V8 由固件 Device Tree 建模为常开，可选 CH347 VIO 电平由固件标准 `regulator-gpio` 节点建模并通过 Zephyr regulator API 切换。执行 1.8V 切换前必须确认目标支持该电平、连接 VIO 物理测量设备，并明确接受硬件副作用；默认验证只读取或保持 3.3V
 - 旧 Go `cmd/radxa-linkr-debuggerctl` 路径仅保留作 legacy 参考与回归对照

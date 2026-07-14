@@ -25,10 +25,10 @@ live-session workflow: create a live session over HTTP, then connect to the
 returned dedicated websocket URL under `/api/v1/ws/<slot>`.
 The interactive TUI is expected to close only its own websocket session
 explicitly when it exits; unused sessions should expire automatically in
-firmware. Firmware supports four live websocket slots and keeps the HTTP server
-client capacity aligned with that limit. If you rebuild the CLI after websocket
-lifecycle fixes, prefer verifying repeated open/close cycles and concurrent
-subscriber behavior with the freshly built skill-local binary.
+firmware. The current firmware supports one active websocket client at a time;
+close that connection before creating another live session. If you rebuild the
+CLI after websocket lifecycle fixes, verify repeated open/close cycles with the
+freshly built skill-local binary.
 
 > **Agent automation rule**: always try `curl` HTTP requests first. Only
 > download or build the CLI binary when `curl` is unavailable (not installed)
@@ -175,6 +175,10 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 ```
 
 The Rust tool keeps the same default URL (`http://172.29.203.1:8080`) and still expects the `radxa-linkr-debugger.v1` JSON envelope. Running it without a subcommand starts the primary TUI, which polls HTTP status/ADC endpoints and keeps power, SD route, and GPIO controls in one adaptive grid.
+
+The board-internal `5v_ws` rail is intentionally omitted from CLI/TUI status,
+power lists, and controls. The raw HTTP API retains that compatibility entry for
+low-level firmware diagnostics only.
 
 ## JSON Contract
 
@@ -384,6 +388,20 @@ curl -fsS -X PUT -H 'Content-Type: application/json' \
   "$BOARD_URL/api/v1/switch/usb"
 ```
 
+VIN control (G3 only; RP2040 firmware omits this switch):
+
+```sh
+curl -fsS "$BOARD_URL/api/v1/switch/vin"   # G3: 1.8v or 3.3v; G2: unavailable
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"route":"3.3v"}' \
+  "$BOARD_URL/api/v1/switch/vin"   # safe default; G3 only
+```
+
+VIN defaults to 3.3V at boot. Switching to 1.8V is G3-only, side-effectful,
+and requires confirmed target voltage compatibility and physical measurement
+setup before use. The 1.8V procedure is documented in the Expert: VIN 1.8V
+Switching section below.
+
 When validating switch behavior, run the sequence strictly in order: send the
 `switch route ...` request, wait briefly for settling, then issue the matching
 `switch get ...`. Do not run conflicting route changes in parallel if your goal
@@ -392,7 +410,12 @@ is to verify stability on real hardware.
 The unified `/api/v1/switch/*` family is the interface for mux-style controls
 in this repository. `switch sd` controls the RS2099XTQC16 TF/SD route
 between `target` and `usb-reader`, while `switch usb` controls the GP03 USB mux
-between `pc` and `target`.
+between `pc` and `target`. On G3, GPIO1 VDD_5V and its GPIO6 VDD_1V8 child rail
+are always on in Device Tree. The selectable CH347 VIO level is modeled as a
+standard `regulator-gpio` regulator with exact 1.8V and 3.3V states; firmware
+uses the Zephyr regulator API for `switch vin`. VIN defaults to 3.3V at boot.
+Voltage switching is side-effectful; confirm your target supports the selected
+level before applying it.
 
 Use allowlisted GPIOs.
 
@@ -411,9 +434,11 @@ curl -fsS -X PUT -H 'Content-Type: application/json' \
   "$BOARD_URL/api/v1/gpio/GP13"
 ```
 
-GPIO list/status responses expose `name`, `pin`, and `note`. Control targets may
-use canonical `GPxx`, raw numeric pins such as `4`, or exact notes such as
-`CON_MAS` / `J17_PIN1` (G2 boards) or `CON_REST` / `J13_PIN1` (G3 boards).
+GPIO list/status responses expose `name`, `pin`, and `note`. G3 safe allowlist:
+`GP7` (`CON_MAS`), `GP8` (`CON_REST`), `GP9` (`CON_USER`), `GP10`-`GP20`
+(J16), and `GP29` (ADC3). Control targets may use canonical `GPxx`, raw
+numeric pins such as `4`, or board-specific exact notes such as `CON_MAS`,
+`J17_PIN1` (G2), or `J16_PIN1` (G3).
 
 Enter BOOTSEL mode for flashing.
 
@@ -431,6 +456,15 @@ reachable, use the local Zephyr shell command instead:
 ```text
 linkr-debugger:~$ bootloader
 ```
+
+On G3 firmware, the same CDC ACM shell also exposes VIN control:
+
+```text
+linkr-debugger:~$ vin get   # G3: 1.8v/3.3v; G2: unavailable
+linkr-debugger:~$ vin set 3.3v   # safe default; G3 only
+```
+
+On G2 firmware these `vin` commands return unavailable and do not change hardware.
 
 This shell command still uses the standard ROM USB BOOTSEL path, so the
 device should reappear as the usual `RP2 Boot` / `RPI-RP2` target for UF2 or
@@ -502,13 +536,16 @@ available or the target is unresponsive.
 ## Safety Rules
 
 - Prefer machine-readable JSON responses for all non-interactive use.
-- Treat power-output changes, GPIO changes, SD routing, and
+- Treat power-output changes, GPIO changes, SD routing, VIN switching, and
   `bootloader` as side-effectful operations. Confirm the target and desired
   state before running them.
 - Prefer soft reboot/reset for target-board restarts. Treat power-cycling as a
   hard-restart fallback that is destructive to target runtime state. Confirm
   the exact output and only cycle the output powering the target.
 - `5V_FIN` is an input/source power input. Do not present it as a controllable output.
+- VIN switching is side-effectful. Confirm your target supports the selected
+  voltage (1.8V or 3.3V) before applying it. The TUI requires confirmation
+  before changing VIN; the CLI requires `--confirm` flag.
 - Only use allowlisted GPIOs reported by `GET /api/v1/gpio` or the equivalent
   CLI command.
 - Do not expose board-internal schematic codenames in user-facing output.
@@ -521,5 +558,42 @@ available or the target is unresponsive.
 - The host CLI no longer applies any host-side ADC calibration table or
   zero-point correction. Treat the reported current values as the firmware's
   direct readings.
-- Current-monitor hardware in this repository is documented as INA139 with a
-  10 mOhm shunt and a 51 kOhm output load.
+- G3 current-monitor hardware uses INA139 with a 10 mOhm shunt and a
+  50 kOhm output load. G2 uses 51 kOhm.
+
+## Expert: VIN 1.8V Switching
+
+VIN 1.8V switching applies only to G3 (RP2350A) boards and is not available on
+G2 (RP2040). This operation is side-effectful and requires confirmed target
+voltage compatibility and physical measurement setup before use.
+
+Prerequisites before any 1.8V switch:
+
+1. Confirm your target device's VIO supports 1.8V signaling.
+2. Connect a voltmeter or oscilloscope to the target VIO pin.
+3. Acknowledge that incorrect voltage will likely damage the target.
+
+To switch to 1.8V (G3 only):
+
+```sh
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"route":"1.8v"}' \
+  "$BOARD_URL/api/v1/switch/vin"
+# Then immediately measure target VIO pin — expect ~1.8V
+```
+
+To restore safe 3.3V:
+
+```sh
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"route":"3.3v"}' \
+  "$BOARD_URL/api/v1/switch/vin"
+# Then immediately measure target VIO pin — expect ~3.3V
+```
+
+CDC ACM shell equivalent (G3 only):
+
+```text
+linkr-debugger:~$ vin set 1.8v
+linkr-debugger:~$ vin set 3.3v
+```
