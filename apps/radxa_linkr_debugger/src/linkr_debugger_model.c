@@ -39,6 +39,7 @@ const struct linkr_debugger_rail_desc linkr_debugger_rails[] = {
 		.signal = "GP09_5V_WS_EN",
 #if defined(CONFIG_SOC_SERIES_RP2350)
 		.pin = 1,
+		.always_on = true,
 #else
 		.pin = 9,
 #endif
@@ -83,8 +84,8 @@ const size_t linkr_debugger_current_count = ARRAY_SIZE_LOCAL(linkr_debugger_curr
 
 const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[] = {
 #if defined(CONFIG_SOC_SERIES_RP2350)
-	{ .pin = 7,  .note = "CON_REST" },
-	{ .pin = 8,  .note = "CON_USER" },
+	{ .pin = 7,  .note = "CON_MAS" },
+	{ .pin = 8,  .note = "CON_REST" },
 	{ .pin = 9,  .note = "CON_USER" },
 	{ .pin = 10, .note = "J16_PIN1" },
 	{ .pin = 11, .note = "J16_PIN3" },
@@ -97,11 +98,7 @@ const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[] = {
 	{ .pin = 18, .note = "J16_PIN6" },
 	{ .pin = 19, .note = "J16_PIN8" },
 	{ .pin = 20, .note = "J16_PIN10" },
-	{ .pin = 21, .note = "J16_PIN12" },
-	{ .pin = 22, .note = "J16_PIN14" },
-	{ .pin = 23, .note = "J16_PIN16" },
-	{ .pin = 24, .note = "J16_PIN18" },
-	{ .pin = 25, .note = "J16_PIN20" },
+	{ .pin = 29, .note = "J16_PIN12" },
 #else
 	{ .pin = 4,  .note = "CON_MAS" },
 	{ .pin = 7,  .note = "CON_REST" },
@@ -194,6 +191,70 @@ bool linkr_debugger_format_gpio_name(uint8_t pin, char *buf, size_t len)
 
 	written = snprintf(buf, len, "GP%u", (unsigned int)pin);
 	return written > 0 && (size_t)written < len;
+}
+
+bool linkr_debugger_parse_vin_route(const char *arg, enum linkr_debugger_vin_route *route)
+{
+	if (arg == NULL || route == NULL) {
+		return false;
+	}
+
+	if (streq(arg, "1.8v")) {
+		*route = LINKR_DEBUGGER_VIN_ROUTE_1V8;
+		return true;
+	}
+
+	if (streq(arg, "3.3v")) {
+		*route = LINKR_DEBUGGER_VIN_ROUTE_3V3;
+		return true;
+	}
+
+	return false;
+}
+
+const char *linkr_debugger_vin_route_to_string(enum linkr_debugger_vin_route route)
+{
+	return route == LINKR_DEBUGGER_VIN_ROUTE_1V8 ? "1.8v" : "3.3v";
+}
+
+int linkr_debugger_vin_route_microvolt(enum linkr_debugger_vin_route route)
+{
+	return route == LINKR_DEBUGGER_VIN_ROUTE_1V8 ?
+	       LINKR_DEBUGGER_VIN_1V8_UV : LINKR_DEBUGGER_VIN_3V3_UV;
+}
+
+bool linkr_debugger_vin_route_from_microvolt(int32_t microvolt,
+					    enum linkr_debugger_vin_route *route)
+{
+	if (route == NULL) {
+		return false;
+	}
+
+	if (microvolt == LINKR_DEBUGGER_VIN_1V8_UV) {
+		*route = LINKR_DEBUGGER_VIN_ROUTE_1V8;
+		return true;
+	}
+
+	if (microvolt == LINKR_DEBUGGER_VIN_3V3_UV) {
+		*route = LINKR_DEBUGGER_VIN_ROUTE_3V3;
+		return true;
+	}
+
+	return false;
+}
+
+bool linkr_debugger_rail_initial_enabled(const struct linkr_debugger_rail_desc *rail)
+{
+	return rail != NULL && rail->controllable && rail->always_on;
+}
+
+bool linkr_debugger_rail_state_allowed(const struct linkr_debugger_rail_desc *rail, bool enabled)
+{
+	if (rail == NULL || !rail->controllable) {
+		return false;
+	}
+
+	return !rail->always_on || enabled;
 }
 
 const struct linkr_debugger_rail_desc *linkr_debugger_find_rail(const char *name)

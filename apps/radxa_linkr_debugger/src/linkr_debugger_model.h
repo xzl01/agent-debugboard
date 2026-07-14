@@ -17,6 +17,7 @@ struct linkr_debugger_rail_desc {
 	const char *signal;
 	uint8_t pin;
 	bool controllable;
+	bool always_on;
 };
 
 struct linkr_debugger_current_desc {
@@ -31,7 +32,14 @@ struct linkr_debugger_safe_gpio_desc {
 	const char *note;
 };
 
+enum linkr_debugger_vin_route {
+	LINKR_DEBUGGER_VIN_ROUTE_1V8 = 0,
+	LINKR_DEBUGGER_VIN_ROUTE_3V3 = 1,
+};
+
 #define LINKR_DEBUGGER_GPIO_NAME_BUFSZ 5
+#define LINKR_DEBUGGER_VIN_1V8_UV 1800000
+#define LINKR_DEBUGGER_VIN_3V3_UV 3300000
 
 extern const struct linkr_debugger_rail_desc linkr_debugger_rails[];
 extern const size_t linkr_debugger_rail_count;
@@ -45,6 +53,14 @@ extern const size_t linkr_debugger_safe_gpio_count;
 bool linkr_debugger_parse_bool_arg(const char *arg, bool *value);
 bool linkr_debugger_parse_gpio_pin(const char *arg, uint8_t *pin);
 bool linkr_debugger_format_gpio_name(uint8_t pin, char *buf, size_t len);
+bool linkr_debugger_parse_vin_route(const char *arg, enum linkr_debugger_vin_route *route);
+const char *linkr_debugger_vin_route_to_string(enum linkr_debugger_vin_route route);
+int linkr_debugger_vin_route_microvolt(enum linkr_debugger_vin_route route);
+bool linkr_debugger_vin_route_from_microvolt(int32_t microvolt,
+					    enum linkr_debugger_vin_route *route);
+bool linkr_debugger_rail_initial_enabled(const struct linkr_debugger_rail_desc *rail);
+bool linkr_debugger_rail_state_allowed(const struct linkr_debugger_rail_desc *rail,
+					      bool enabled);
 
 const struct linkr_debugger_rail_desc *linkr_debugger_find_rail(const char *name);
 const struct linkr_debugger_current_desc *linkr_debugger_find_current(const char *name);

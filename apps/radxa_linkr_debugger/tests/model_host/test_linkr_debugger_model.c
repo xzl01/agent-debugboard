@@ -21,6 +21,7 @@ static void assert_str_eq(const char *actual, const char *expected)
 static void test_rail_table_matches_schematic(void)
 {
 	const struct linkr_debugger_rail_desc *rail;
+	const struct linkr_debugger_rail_desc *ws_rail;
 
 	assert(linkr_debugger_rail_count == 4);
 
@@ -28,19 +29,47 @@ static void test_rail_table_matches_schematic(void)
 	assert(rail != NULL);
 	assert(rail->pin == 2);
 	assert(rail->controllable);
+	assert(!rail->always_on);
 	assert_str_eq(rail->signal, "GP02_12V_EN");
 
-	rail = linkr_debugger_find_rail("GP09_5V_WS_EN");
-	assert(rail != NULL);
-	assert_str_eq(rail->name, "5v_ws");
-	assert(rail->pin == 9);
+	ws_rail = linkr_debugger_find_rail("GP09_5V_WS_EN");
+	assert(ws_rail != NULL);
+	assert_str_eq(ws_rail->name, "5v_ws");
+#if defined(CONFIG_SOC_SERIES_RP2350)
+	assert(ws_rail->pin == 1);
+	assert(ws_rail->always_on);
+#else
+	assert(ws_rail->pin == 9);
+	assert(!ws_rail->always_on);
+#endif
+	assert(ws_rail->controllable);
 
 	rail = linkr_debugger_find_rail("20v_out");
 	assert(rail != NULL);
+#if defined(CONFIG_SOC_SERIES_RP2350)
+	assert(rail->pin == 3);
+#else
 	assert(rail->pin == 10);
+#endif
 	assert_str_eq(rail->signal, "GP10_20V_EN");
+	assert(!rail->always_on);
 
 	assert(linkr_debugger_find_rail("5V_FIN") == NULL);
+}
+
+static void test_5v_ws_state_contract_matches_board_revision(void)
+{
+	const struct linkr_debugger_rail_desc *rail = linkr_debugger_find_rail("5v_ws");
+
+	assert(rail != NULL);
+	assert(linkr_debugger_rail_state_allowed(rail, true));
+#if defined(CONFIG_SOC_SERIES_RP2350)
+	assert(linkr_debugger_rail_initial_enabled(rail));
+	assert(!linkr_debugger_rail_state_allowed(rail, false));
+#else
+	assert(!linkr_debugger_rail_initial_enabled(rail));
+	assert(linkr_debugger_rail_state_allowed(rail, false));
+#endif
 }
 
 static void test_current_table(void)
@@ -74,6 +103,54 @@ static void test_safe_gpio_allowlist(void)
 	const struct linkr_debugger_safe_gpio_desc *gpio;
 	char name[LINKR_DEBUGGER_GPIO_NAME_BUFSZ];
 
+#if defined(CONFIG_SOC_SERIES_RP2350)
+	assert(linkr_debugger_safe_gpio_count == 15);
+
+	gpio = linkr_debugger_find_safe_gpio_by_pin(7);
+	assert(gpio != NULL);
+	assert_str_eq(gpio->note, "CON_MAS");
+
+	gpio = linkr_debugger_find_safe_gpio_by_pin(8);
+	assert(gpio != NULL);
+	assert_str_eq(gpio->note, "CON_REST");
+
+	gpio = linkr_debugger_find_safe_gpio_by_pin(9);
+	assert(gpio != NULL);
+	assert_str_eq(gpio->note, "CON_USER");
+
+	gpio = linkr_debugger_find_safe_gpio_by_pin(10);
+	assert(gpio != NULL);
+	assert_str_eq(gpio->note, "J16_PIN1");
+
+	gpio = linkr_debugger_find_safe_gpio_by_pin(15);
+	assert(gpio != NULL);
+	assert_str_eq(gpio->note, "J16_PIN11");
+
+	gpio = linkr_debugger_find_safe_gpio_by_pin(20);
+	assert(gpio != NULL);
+	assert_str_eq(gpio->note, "J16_PIN10");
+
+	gpio = linkr_debugger_find_safe_gpio_by_pin(29);
+	assert(gpio != NULL);
+	assert_str_eq(gpio->note, "J16_PIN12");
+	assert(linkr_debugger_format_gpio_name(gpio->pin, name, sizeof(name)));
+	assert_str_eq(name, "GP29");
+
+	assert(linkr_debugger_find_safe_gpio_by_pin(6) == NULL);
+	assert(linkr_debugger_find_safe_gpio_by_pin(21) == NULL);
+	assert(linkr_debugger_find_safe_gpio_by_pin(22) == NULL);
+	assert(linkr_debugger_find_safe_gpio_by_pin(23) == NULL);
+	assert(linkr_debugger_find_safe_gpio_by_pin(24) == NULL);
+	assert(linkr_debugger_find_safe_gpio_by_pin(25) == NULL);
+
+	gpio = linkr_debugger_find_safe_gpio_by_identifier("GP7");
+	assert(gpio != NULL);
+	assert_str_eq(gpio->note, "CON_MAS");
+
+	gpio = linkr_debugger_find_safe_gpio_by_identifier("J16_PIN12");
+	assert(gpio != NULL);
+	assert(gpio->pin == 29);
+#else
 	assert(linkr_debugger_safe_gpio_count == 15);
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(4);
@@ -123,6 +200,7 @@ static void test_safe_gpio_allowlist(void)
 	gpio = linkr_debugger_find_safe_gpio_by_identifier("J17_PIN1");
 	assert(gpio != NULL);
 	assert(gpio->pin == 13);
+#endif
 
 	assert(linkr_debugger_find_safe_gpio_by_identifier("not-a-gpio") == NULL);
 }
@@ -189,14 +267,41 @@ static void test_gpio_pin_parser(void)
 	assert(!linkr_debugger_parse_gpio_pin("GP13", NULL));
 }
 
+static void test_vin_route_parser(void)
+{
+	enum linkr_debugger_vin_route route = LINKR_DEBUGGER_VIN_ROUTE_3V3;
+
+	assert(linkr_debugger_parse_vin_route("1.8v", &route));
+	assert(route == LINKR_DEBUGGER_VIN_ROUTE_1V8);
+	assert_str_eq(linkr_debugger_vin_route_to_string(route), "1.8v");
+
+	assert(linkr_debugger_parse_vin_route("3.3v", &route));
+	assert(route == LINKR_DEBUGGER_VIN_ROUTE_3V3);
+	assert_str_eq(linkr_debugger_vin_route_to_string(route), "3.3v");
+	assert(linkr_debugger_vin_route_microvolt(route) == LINKR_DEBUGGER_VIN_3V3_UV);
+	assert(linkr_debugger_vin_route_from_microvolt(LINKR_DEBUGGER_VIN_1V8_UV, &route));
+	assert(route == LINKR_DEBUGGER_VIN_ROUTE_1V8);
+	assert(linkr_debugger_vin_route_from_microvolt(LINKR_DEBUGGER_VIN_3V3_UV, &route));
+	assert(route == LINKR_DEBUGGER_VIN_ROUTE_3V3);
+
+	assert(!linkr_debugger_parse_vin_route("1v8", &route));
+	assert(!linkr_debugger_parse_vin_route("3v3", &route));
+	assert(!linkr_debugger_parse_vin_route(NULL, &route));
+	assert(!linkr_debugger_parse_vin_route("1.8v", NULL));
+	assert(!linkr_debugger_vin_route_from_microvolt(2500000, &route));
+	assert(!linkr_debugger_vin_route_from_microvolt(LINKR_DEBUGGER_VIN_3V3_UV, NULL));
+}
+
 int main(void)
 {
 	test_rail_table_matches_schematic();
+	test_5v_ws_state_contract_matches_board_revision();
 	test_current_table();
 	test_safe_gpio_allowlist();
 	test_gpio_name_formatter();
 	test_bool_parser();
 	test_gpio_pin_parser();
+	test_vin_route_parser();
 
 	puts("linkr_debugger_model: all tests passed");
 	return 0;
