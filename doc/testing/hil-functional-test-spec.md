@@ -101,8 +101,17 @@ timeout 10s radxa-linkr-debuggerctl adc record /tmp/linkr-hil.ndjson 3 --rate-hz
 ```
 
 验证输出文件包含 3 条 `radxa-linkr-debugger.v1` telemetry record。
-当前固件一次只支持一个活动 WebSocket 客户端；测试重复录制时必须等待前一个连接
-正常关闭，不把并发 recorder 作为支持能力。
+高频路径还必须执行：
+
+```sh
+timeout 15s radxa-linkr-debuggerctl adc record /tmp/linkr-hil-1000.ndjson 1000 --rate-hz 1000
+test "$(wc -l < /tmp/linkr-hil-1000.ndjson)" -eq 1000
+! grep -q '"dropped_samples"' /tmp/linkr-hil-1000.ndjson
+```
+
+用连续记录的 `sequence` 和 `metadata.device_timing.uptime_us` 计算实际采样间隔；不得用
+WebSocket 帧数代替样本数。固件支持最多四个并发客户端，四路并发测试必须确认每个
+输出文件都持续增长，且任一客户端退出不会中断其他客户端。
 
 ### 3. 电源输出 get/set
 

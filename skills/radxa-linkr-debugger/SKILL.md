@@ -25,10 +25,10 @@ live-session workflow: create a live session over HTTP, then connect to the
 returned dedicated websocket URL under `/api/v1/ws/<slot>`.
 The interactive TUI is expected to close only its own websocket session
 explicitly when it exits; unused sessions should expire automatically in
-firmware. The current firmware supports one active websocket client at a time;
-close that connection before creating another live session. If you rebuild the
-CLI after websocket lifecycle fixes, verify repeated open/close cycles with the
-freshly built skill-local binary.
+firmware. The firmware supports up to four concurrent websocket clients via
+dedicated slot URLs under `/api/v1/ws/<slot>`. If you rebuild the CLI after
+websocket lifecycle fixes, verify repeated open/close cycles and concurrent
+subscriber behavior with the freshly built skill-local binary.
 
 > **Agent automation rule**: always try `curl` HTTP requests first. Only
 > download or build the CLI binary when `curl` is unavailable (not installed)
@@ -324,11 +324,14 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.ndjson 1000 -
 cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.csv 1000 --rate-hz 250
 ```
 
-Each NDJSON row keeps the existing JSON schema, host receive timestamps, and
-`metadata.requested_rate_hz`. Firmware telemetry includes `sample_sequence` and
-`device_t_mono_us`; the recorder preserves device time under
-`metadata.device_timing`. Prefer device time over host receive time when
-analyzing cadence. A `.csv` output path writes device time and three current
+Each recorder row keeps the existing JSON schema, host receive timestamps, and
+`metadata.requested_rate_hz`. Requests above 100Hz use batch JSON on the wire,
+while the recorder still writes one row per device sample. Firmware telemetry
+includes `sequence`, `sample_sequence`, `uptime_us`, and `device_t_mono_us`;
+the recorder preserves device time under `metadata.device_timing`. Prefer
+device time over host receive time when analyzing cadence, and treat
+`metadata.dropped_samples` as authoritative evidence that the per-client
+sampling ring overran. A `.csv` output path writes device time and three current
 channels directly.
 
 For triggered acquisition, arm the firmware ring buffer over the same live
@@ -351,6 +354,10 @@ same connection. Example subscription payload:
 ```json
 {"type":"subscribe","topic":"live","rate_hz":60}
 ```
+
+Raw clients may add `"batch_size":20` for high-rate capture. Batch size is
+limited to 20, and each client has an independent cursor into the shared sample
+ring.
 
 The host TUI does not need to redraw at the same rate as the live data stream.
 The board controls WebSocket push cadence, and the same live push path carries
