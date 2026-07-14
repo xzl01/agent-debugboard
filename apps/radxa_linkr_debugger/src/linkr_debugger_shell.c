@@ -8,6 +8,8 @@
 #include "linkr_debugger_control.h"
 #include "linkr_debugger_shell.h"
 
+#include <errno.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
 
@@ -42,12 +44,57 @@ static int cmd_bootloader(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 
-	shell_print(sh, "Entering RP2040 BOOTSEL in 250 ms...");
+	shell_print(sh, "Entering %s BOOTSEL in 250 ms...", linkr_debugger_mcu_name());
 	(void)k_work_reschedule(&linkr_debugger_shell_bootloader_work, K_MSEC(250));
 
 	return 0;
 }
 
+static int cmd_vin_get(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (!linkr_debugger_vin_switch_available()) {
+		shell_error(sh, "VIN switch is not available on this board");
+		return -ENOTSUP;
+	}
+
+	shell_print(sh, "vin=%s", linkr_debugger_vin_route_name());
+	return 0;
+}
+
+static int cmd_vin_set(const struct shell *sh, size_t argc, char **argv)
+{
+	enum linkr_debugger_vin_route route;
+	int ret;
+
+	if (argc != 2 || !linkr_debugger_parse_vin_route(argv[1], &route)) {
+		shell_error(sh, "usage: vin set 1.8v|3.3v");
+		return -EINVAL;
+	}
+
+	if (!linkr_debugger_vin_switch_available()) {
+		shell_error(sh, "VIN switch is not available on this board");
+		return -ENOTSUP;
+	}
+
+	ret = linkr_debugger_vin_route_set(route);
+	if (ret < 0) {
+		shell_error(sh, "failed to set VIN route: %d", ret);
+		return ret;
+	}
+
+	shell_print(sh, "vin=%s", linkr_debugger_vin_route_name());
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(vin_cmds,
+	SHELL_CMD(get, NULL, "Get VIN voltage route.", cmd_vin_get),
+	SHELL_CMD(set, NULL, "Set VIN voltage route: 1.8v or 3.3v.", cmd_vin_set),
+	SHELL_SUBCMD_SET_END);
+
 SHELL_CMD_REGISTER(bootloader, NULL,
-			   "Enter RP2040 BOOTSEL for UF2/picotool flashing.",
+			   "Enter MCU BOOTSEL for UF2/picotool flashing.",
 			   cmd_bootloader);
+SHELL_CMD_REGISTER(vin, &vin_cmds, "Control VIN voltage route.", NULL);

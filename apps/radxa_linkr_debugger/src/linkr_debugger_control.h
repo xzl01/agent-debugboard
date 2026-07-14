@@ -49,6 +49,7 @@ int linkr_debugger_control_init(void);
 int linkr_debugger_watchdog_supervisor_start(void);
 
 const char *linkr_debugger_json_schema(void);
+const char *linkr_debugger_mcu_name(void);
 const char *linkr_debugger_reserved_gpios(void);
 const char *linkr_debugger_usb_mode(void);
 
@@ -63,6 +64,11 @@ enum linkr_debugger_usb_route linkr_debugger_usb_route_get(void);
 const char *linkr_debugger_usb_route_name(void);
 int linkr_debugger_usb_route_set(enum linkr_debugger_usb_route route);
 
+bool linkr_debugger_vin_switch_available(void);
+enum linkr_debugger_vin_route linkr_debugger_vin_route_get(void);
+const char *linkr_debugger_vin_route_name(void);
+int linkr_debugger_vin_route_set(enum linkr_debugger_vin_route route);
+
 int linkr_debugger_current_read(const struct linkr_debugger_current_desc *current,
 				   struct linkr_debugger_current_sample *sample);
 
@@ -70,6 +76,7 @@ int linkr_debugger_gpio_get(const struct linkr_debugger_safe_gpio_desc *desc, in
 int linkr_debugger_gpio_set_output(const struct linkr_debugger_safe_gpio_desc *desc, bool value);
 int linkr_debugger_gpio_set_input(const struct linkr_debugger_safe_gpio_desc *desc);
 const char *linkr_debugger_safe_gpio_direction_name(size_t index);
+const char *linkr_debugger_safe_gpio_direction(const struct linkr_debugger_safe_gpio_desc *desc);
 
 void linkr_debugger_watchdog_status_get(struct linkr_debugger_watchdog_status *status);
 void linkr_debugger_watchdog_note_core_alive(void);

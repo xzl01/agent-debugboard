@@ -33,11 +33,13 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #endif
 
 #define GPIO0_NODE DT_NODELABEL(gpio0)
-#define ADC_INPUTS_NODE DT_PATH(zephyr_user)
+#define ZEPHYR_USER_NODE DT_PATH(zephyr_user)
+#define ADC_INPUTS_NODE ZEPHYR_USER_NODE
 #define REGULATOR_12V_OUT_NODE DT_NODELABEL(reg_12v_out)
 #define REGULATOR_5V_OUT_NODE DT_NODELABEL(reg_5v_out)
 #define REGULATOR_5V_WS_NODE DT_NODELABEL(reg_5v_ws)
 #define REGULATOR_20V_OUT_NODE DT_NODELABEL(reg_20v_out)
+#define REGULATOR_VIO_NODE DT_NODELABEL(reg_vio)
 #define CURRENT_5V_OUT_NODE DT_NODELABEL(sense_5v_out)
 #define CURRENT_12V_OUT_NODE DT_NODELABEL(sense_12v_out)
 #define CURRENT_20V_OUT_NODE DT_NODELABEL(sense_20v_out)
@@ -45,12 +47,19 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 
 #define LINKR_DEBUGGER_JSON_SCHEMA "radxa-linkr-debugger.v1"
 #define LINKR_DEBUGGER_USB_MODE "ncm-http"
+#if defined(CONFIG_SOC_SERIES_RP2350)
+#define LINKR_DEBUGGER_MCU_NAME "rp2350"
+#define LINKR_DEBUGGER_RESERVED_GPIOS "GP00-GP06 GP22-GP25 GP26-GP28"
+#else
+#define LINKR_DEBUGGER_MCU_NAME "rp2040"
 #define LINKR_DEBUGGER_RESERVED_GPIOS "GP02 GP03 GP05 GP06 GP09 GP10 GP26-GP28"
+#endif
 
 #define LINKR_DEBUGGER_GPIO_DIR_INPUT 1
 #define LINKR_DEBUGGER_GPIO_DIR_OUTPUT 2
 
 #define REGULATOR_STATE_CAPACITY 8U
+#define SAFE_GPIO_STATE_CAPACITY 32U
 #define LINKR_DEBUGGER_WATCHDOG_TIMEOUT_MS 5000U
 #define LINKR_DEBUGGER_WATCHDOG_SUPERVISOR_PERIOD_MS 250U
 #define LINKR_DEBUGGER_WATCHDOG_STARTUP_GRACE_MS 15000U
@@ -92,13 +101,21 @@ BUILD_ASSERT(DT_NODE_HAS_STATUS(CURRENT_20V_OUT_NODE, okay));
 #define HAS_CURRENT_SENSE 0
 #endif
 
+#if defined(CONFIG_SOC_SERIES_RP2350) && DT_NODE_HAS_STATUS(REGULATOR_VIO_NODE, okay)
+#define HAS_VIN_SWITCH 1
+BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_VIO_NODE, okay));
+#else
+#define HAS_VIN_SWITCH 0
+#endif
+
 static const struct device *const gpio0 = DEVICE_DT_GET(GPIO0_NODE);
 static const struct device *const watchdog_dev = DEVICE_DT_GET_OR_NULL(WATCHDOG_NODE);
 static bool regulator_states[REGULATOR_STATE_CAPACITY];
 static enum linkr_debugger_sd_route linkr_debugger_sd_route = LINKR_DEBUGGER_SD_ROUTE_TARGET;
 static enum linkr_debugger_usb_route linkr_debugger_usb_route = LINKR_DEBUGGER_USB_ROUTE_TARGET;
-static uint8_t linkr_debugger_gpio_directions[16];
-static bool linkr_debugger_gpio_output_levels[16];
+static enum linkr_debugger_vin_route linkr_debugger_vin_route = LINKR_DEBUGGER_VIN_ROUTE_3V3;
+static uint8_t linkr_debugger_gpio_directions[SAFE_GPIO_STATE_CAPACITY];
+static bool linkr_debugger_gpio_output_levels[SAFE_GPIO_STATE_CAPACITY];
 static struct k_mutex linkr_debugger_control_lock;
 static bool linkr_debugger_watchdog_armed;
 static int linkr_debugger_watchdog_channel = -1;
@@ -145,6 +162,10 @@ static const struct adc_dt_spec adc_channels[] = {
 static const struct adc_dt_spec adc_channels[] = {};
 #endif
 
+#if HAS_VIN_SWITCH
+static const struct device *const vio_regulator = DEVICE_DT_GET(REGULATOR_VIO_NODE);
+#endif
+
 BUILD_ASSERT(ARRAY_SIZE(regulators) <= REGULATOR_STATE_CAPACITY);
 
 static size_t regulator_index(const struct linkr_debugger_rail_desc *rail)
@@ -152,14 +173,32 @@ static size_t regulator_index(const struct linkr_debugger_rail_desc *rail)
 	return (size_t)(rail - linkr_debugger_rails);
 }
 
-static size_t safe_gpio_index(const struct linkr_debugger_safe_gpio_desc *desc)
+static bool safe_gpio_index_valid(const struct linkr_debugger_safe_gpio_desc *desc, size_t *index)
 {
-	return (size_t)(desc - linkr_debugger_safe_gpios);
+	if (desc == NULL) {
+		return false;
+	}
+
+	if (linkr_debugger_safe_gpio_count > ARRAY_SIZE(linkr_debugger_gpio_directions)) {
+		return false;
+	}
+
+	for (size_t i = 0; i < linkr_debugger_safe_gpio_count; i++) {
+		if (&linkr_debugger_safe_gpios[i] == desc) {
+			if (index != NULL) {
+				*index = i;
+			}
+			return true;
+		}
+	}
+
+	return false;
 }
 
 const char *linkr_debugger_safe_gpio_direction_name(size_t index)
 {
-	if (index >= linkr_debugger_safe_gpio_count) {
+	if (index >= linkr_debugger_safe_gpio_count ||
+	    index >= ARRAY_SIZE(linkr_debugger_gpio_directions)) {
 		return "unknown";
 	}
 	switch (linkr_debugger_gpio_directions[index]) {
@@ -170,6 +209,17 @@ const char *linkr_debugger_safe_gpio_direction_name(size_t index)
 	default:
 		return "unknown";
 	}
+}
+
+const char *linkr_debugger_safe_gpio_direction(const struct linkr_debugger_safe_gpio_desc *desc)
+{
+	size_t index;
+
+	if (!safe_gpio_index_valid(desc, &index)) {
+		return "unknown";
+	}
+
+	return linkr_debugger_safe_gpio_direction_name(index);
 }
 
 static const struct device *linkr_debugger_regulator_device(const struct linkr_debugger_rail_desc *rail)
@@ -243,7 +293,8 @@ static int configure_regulator_defaults(void)
 			return -ENODEV;
 		}
 
-		set_regulator_state(&linkr_debugger_rails[i], false);
+		set_regulator_state(&linkr_debugger_rails[i],
+				    linkr_debugger_rail_initial_enabled(&linkr_debugger_rails[i]));
 	}
 
 	return 0;
@@ -267,6 +318,26 @@ static int configure_usb_mux_default(void)
 #else
 	return gpio_pin_configure(gpio0, 3, GPIO_OUTPUT_ACTIVE);
 #endif
+}
+
+static int configure_vin_default(void)
+{
+#if HAS_VIN_SWITCH
+	int ret;
+
+	if (vio_regulator == NULL || !device_is_ready(vio_regulator)) {
+		return -ENODEV;
+	}
+
+	ret = regulator_set_voltage(vio_regulator,
+					LINKR_DEBUGGER_VIN_3V3_UV,
+					LINKR_DEBUGGER_VIN_3V3_UV);
+	if (ret < 0) {
+		return ret;
+	}
+	linkr_debugger_vin_route = linkr_debugger_vin_route_get();
+#endif
+	return 0;
 }
 
 static void linkr_debugger_gpio_apply_safe_drive_strength(const struct linkr_debugger_safe_gpio_desc *desc)
@@ -651,6 +722,11 @@ const char *linkr_debugger_json_schema(void)
 	return LINKR_DEBUGGER_JSON_SCHEMA;
 }
 
+const char *linkr_debugger_mcu_name(void)
+{
+	return LINKR_DEBUGGER_MCU_NAME;
+}
+
 const char *linkr_debugger_reserved_gpios(void)
 {
 	return LINKR_DEBUGGER_RESERVED_GPIOS;
@@ -686,12 +762,21 @@ int linkr_debugger_control_init(void)
 		return ret;
 	}
 
+	ret = configure_vin_default();
+	if (ret < 0) {
+		return ret;
+	}
+
 	ret = setup_current_sensors();
 	if (ret < 0) {
 		return ret;
 	}
 
-	for (size_t i = 0; i < MIN(linkr_debugger_safe_gpio_count, ARRAY_SIZE(linkr_debugger_gpio_directions)); i++) {
+	if (linkr_debugger_safe_gpio_count > ARRAY_SIZE(linkr_debugger_gpio_directions)) {
+		return -ERANGE;
+	}
+
+	for (size_t i = 0; i < linkr_debugger_safe_gpio_count; i++) {
 		linkr_debugger_gpio_directions[i] = LINKR_DEBUGGER_GPIO_DIR_INPUT;
 	}
 
@@ -704,6 +789,9 @@ bool linkr_debugger_power_output_enabled(const struct linkr_debugger_rail_desc *
 
 	if (rail == NULL || !rail->controllable) {
 		return false;
+	}
+	if (linkr_debugger_rail_initial_enabled(rail)) {
+		return true;
 	}
 
 	index = regulator_index(rail);
@@ -725,6 +813,12 @@ int linkr_debugger_power_output_set(const struct linkr_debugger_rail_desc *rail,
 
 	if (!rail->controllable) {
 		return -EPERM;
+	}
+	if (!linkr_debugger_rail_state_allowed(rail, enabled)) {
+		return -EPERM;
+	}
+	if (linkr_debugger_rail_initial_enabled(rail)) {
+		return enabled ? 0 : -EPERM;
 	}
 
 	regulator = linkr_debugger_regulator_device(rail);
@@ -782,6 +876,10 @@ int linkr_debugger_sd_route_set(enum linkr_debugger_sd_route route)
 {
 	int ret;
 
+	if (!device_is_ready(gpio0)) {
+		return -ENODEV;
+	}
+
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
 #ifdef CONFIG_SOC_SERIES_RP2350
 	ret = gpio_pin_set(gpio0, 4, route == LINKR_DEBUGGER_SD_ROUTE_USB_READER ? 1 : 0);
@@ -804,6 +902,10 @@ int linkr_debugger_usb_route_set(enum linkr_debugger_usb_route route)
 {
 	int ret;
 
+	if (!device_is_ready(gpio0)) {
+		return -ENODEV;
+	}
+
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
 #ifdef CONFIG_SOC_SERIES_RP2350
 	ret = gpio_pin_set(gpio0, 5, route == LINKR_DEBUGGER_USB_ROUTE_TARGET ? 1 : 0);
@@ -820,6 +922,73 @@ int linkr_debugger_usb_route_set(enum linkr_debugger_usb_route route)
 	k_msleep(10);
 	k_mutex_unlock(&linkr_debugger_control_lock);
 	return 0;
+}
+
+bool linkr_debugger_vin_switch_available(void)
+{
+	return HAS_VIN_SWITCH != 0;
+}
+
+enum linkr_debugger_vin_route linkr_debugger_vin_route_get(void)
+{
+	enum linkr_debugger_vin_route route;
+
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	route = linkr_debugger_vin_route;
+	k_mutex_unlock(&linkr_debugger_control_lock);
+#if HAS_VIN_SWITCH
+	int32_t microvolt;
+	int ret;
+
+	if (vio_regulator == NULL || !device_is_ready(vio_regulator)) {
+		return route;
+	}
+
+	ret = regulator_get_voltage(vio_regulator, &microvolt);
+	if (ret == 0 && linkr_debugger_vin_route_from_microvolt(microvolt, &route)) {
+		k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+		linkr_debugger_vin_route = route;
+		k_mutex_unlock(&linkr_debugger_control_lock);
+	}
+#endif
+	return route;
+}
+
+const char *linkr_debugger_vin_route_name(void)
+{
+	return linkr_debugger_vin_route_to_string(linkr_debugger_vin_route_get());
+}
+
+int linkr_debugger_vin_route_set(enum linkr_debugger_vin_route route)
+{
+#if HAS_VIN_SWITCH
+	int microvolt;
+	int ret;
+
+	if (vio_regulator == NULL || !device_is_ready(vio_regulator)) {
+		return -ENODEV;
+	}
+
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	if (linkr_debugger_vin_route == route) {
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		return 0;
+	}
+
+	microvolt = linkr_debugger_vin_route_microvolt(route);
+	ret = regulator_set_voltage(vio_regulator, microvolt, microvolt);
+	if (ret < 0) {
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		return ret;
+	}
+	linkr_debugger_vin_route = route;
+
+	k_mutex_unlock(&linkr_debugger_control_lock);
+	return 0;
+#else
+	ARG_UNUSED(route);
+	return -ENOTSUP;
+#endif
 }
 
 int linkr_debugger_current_read(const struct linkr_debugger_current_desc *current,
@@ -883,15 +1052,19 @@ int linkr_debugger_gpio_get(const struct linkr_debugger_safe_gpio_desc *desc, in
 {
 	size_t index;
 
-	if (desc == NULL || value == NULL) {
+	if (value == NULL) {
 		return -EINVAL;
 	}
 
-	index = safe_gpio_index(desc);
+	if (!safe_gpio_index_valid(desc, &index)) {
+		return -ERANGE;
+	}
+	if (!device_is_ready(gpio0)) {
+		return -ENODEV;
+	}
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
-	if (index < linkr_debugger_safe_gpio_count &&
-	    linkr_debugger_gpio_directions[index] == LINKR_DEBUGGER_GPIO_DIR_OUTPUT) {
+	if (linkr_debugger_gpio_directions[index] == LINKR_DEBUGGER_GPIO_DIR_OUTPUT) {
 		*value = linkr_debugger_gpio_output_levels[index] ? 1 : 0;
 	} else {
 		*value = gpio_pin_get(gpio0, desc->pin);
@@ -910,16 +1083,17 @@ int linkr_debugger_gpio_set_output(const struct linkr_debugger_safe_gpio_desc *d
 	size_t index;
 	int ret;
 
-	if (desc == NULL) {
-		return -EINVAL;
+	if (!safe_gpio_index_valid(desc, &index)) {
+		return -ERANGE;
 	}
-
-	index = safe_gpio_index(desc);
+	if (!device_is_ready(gpio0)) {
+		return -ENODEV;
+	}
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
 	ret = gpio_pin_configure(gpio0, desc->pin,
 				 value ? GPIO_OUTPUT_ACTIVE : GPIO_OUTPUT_INACTIVE);
-	if (ret >= 0 && index < linkr_debugger_safe_gpio_count) {
+	if (ret >= 0) {
 		linkr_debugger_gpio_apply_safe_drive_strength(desc);
 		linkr_debugger_gpio_directions[index] = LINKR_DEBUGGER_GPIO_DIR_OUTPUT;
 		linkr_debugger_gpio_output_levels[index] = value;
@@ -933,15 +1107,16 @@ int linkr_debugger_gpio_set_input(const struct linkr_debugger_safe_gpio_desc *de
 	size_t index;
 	int ret;
 
-	if (desc == NULL) {
-		return -EINVAL;
+	if (!safe_gpio_index_valid(desc, &index)) {
+		return -ERANGE;
 	}
-
-	index = safe_gpio_index(desc);
+	if (!device_is_ready(gpio0)) {
+		return -ENODEV;
+	}
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
 	ret = gpio_pin_configure(gpio0, desc->pin, GPIO_INPUT);
-	if (ret >= 0 && index < linkr_debugger_safe_gpio_count) {
+	if (ret >= 0) {
 		linkr_debugger_gpio_apply_safe_drive_strength(desc);
 		linkr_debugger_gpio_directions[index] = LINKR_DEBUGGER_GPIO_DIR_INPUT;
 	}
@@ -1039,7 +1214,7 @@ int linkr_debugger_bootloader_now(void)
 	ARG_UNUSED(ret);
 	linkr_debugger_watchdog_force_disable_locked();
 	k_mutex_unlock(&linkr_debugger_control_lock);
-	printk("explicit BOOTSEL entry\n");
+	printk("explicit %s BOOTSEL entry\n", linkr_debugger_mcu_name());
 	reset_usb_boot(0, 0);
 	return 0;
 #else
