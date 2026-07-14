@@ -246,6 +246,61 @@ func TestRunPowerSetMapsToPowerEndpoint(t *testing.T) {
 	}
 }
 
+func TestRunRejectsInternalPowerOutputWithoutBoardAccess(t *testing.T) {
+	for _, args := range [][]string{
+		{"power", "get", internalPowerOutput},
+		{"power", "set", internalPowerOutput, "off"},
+	} {
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		client := &fakeClient{}
+
+		code := (App{Client: client}).Run(args, &stdout, &stderr)
+		if code != 2 {
+			t.Fatalf("Run(%v) exit code = %d stderr=%q", args, code, stderr.String())
+		}
+		if len(client.requests) != 0 {
+			t.Fatalf("Run(%v) unexpected requests = %#v", args, client.requests)
+		}
+		if !strings.Contains(stderr.String(), "is internal and unavailable through the CLI") {
+			t.Fatalf("Run(%v) stderr = %q", args, stderr.String())
+		}
+	}
+}
+
+func TestRunStatusHidesInternalPowerOutput(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	client := &fakeClient{response: `{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","power_outputs":[{"name":"12v_out","state":"off"},{"name":"5v_ws","state":"on"}]}`}
+
+	code := (App{Client: client}).Run([]string{"--json", "status"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("Run() exit code = %d stderr=%q", code, stderr.String())
+	}
+	var output struct {
+		PowerOutputs []struct {
+			Name string `json:"name"`
+		} `json:"power_outputs"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if len(output.PowerOutputs) != 1 || output.PowerOutputs[0].Name != "12v_out" {
+		t.Fatalf("power_outputs = %#v", output.PowerOutputs)
+	}
+}
+
+func TestFilterInternalPowerOutputHandlesNestedDoctorStatus(t *testing.T) {
+	input := `{"schema":"radxa-linkr-debugger.v1","status":{"power_outputs":[{"name":"5v_ws"},{"name":"5v_out"}]}}`
+	output, err := filterInternalPowerOutput(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output, `"name":"5v_ws"`) || !strings.Contains(output, `"name":"5v_out"`) {
+		t.Fatalf("filtered output = %s", output)
+	}
+}
+
 func TestRunSDGPIOAndBootloaderMappings(t *testing.T) {
 	tests := []struct {
 		name   string

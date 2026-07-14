@@ -43,43 +43,43 @@ type tuiStatusWatchdog struct {
 }
 
 type tuiActionMsg struct {
-	status string
-	err    error
+	status  string
+	err     error
 	sdRoute string
 }
 
 type tuiStreamMsg struct {
-	snapshot  *wsStatusSnapshot
-	telemetry *adcResponse
-	result    *wsEnvelope
-	err       error
+	snapshot   *wsStatusSnapshot
+	telemetry  *adcResponse
+	result     *wsEnvelope
+	err        error
 	generation uint64
 }
 
 type tuiModel struct {
-	app          App
-	baseURL      string
-	wsURL        string
-	timeout      time.Duration
-	width        int
-	height       int
-	paused       bool
-	err          error
-	status       string
-	history      map[string][]int32
-	latest       map[string]adcReading
-	controlIdx   int
-	scrollOffset int
-	powerStates  map[string]bool
-	sdRoute      string
-	pendingSDRoute string
+	app                 App
+	baseURL             string
+	wsURL               string
+	timeout             time.Duration
+	width               int
+	height              int
+	paused              bool
+	err                 error
+	status              string
+	history             map[string][]int32
+	latest              map[string]adcReading
+	controlIdx          int
+	scrollOffset        int
+	powerStates         map[string]bool
+	sdRoute             string
+	pendingSDRoute      string
 	pendingSDRouteUntil time.Time
-	monitoring   boardMonitoring
-	connectPending bool
-	streamPending  bool
-	closed       bool
-	channelIDs   []string
-	wsClient     *WSClient
+	monitoring          boardMonitoring
+	connectPending      bool
+	streamPending       bool
+	closed              bool
+	channelIDs          []string
+	wsClient            *WSClient
 }
 
 type liveSessionCreateResponse struct {
@@ -195,10 +195,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter", " ":
 			target := controlTargets[m.controlIdx]
 			return m, performControlAction(m.wsClient, m.timeout, target, m.powerStates[target])
-	case "t":
-		return m, setSwitchRoute(m.wsClient, m.timeout, "sd", "target")
-	case "u":
-		return m, setSwitchRoute(m.wsClient, m.timeout, "sd", "usb-reader")
+		case "t":
+			return m, setSwitchRoute(m.wsClient, m.timeout, "sd", "target")
+		case "u":
+			return m, setSwitchRoute(m.wsClient, m.timeout, "sd", "usb-reader")
 		case "pgdown", "ctrl+d", "]":
 			m.scrollOffset += 3
 			return m, nil
@@ -249,6 +249,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.snapshot != nil {
 			for _, output := range msg.snapshot.PowerOutputs {
+				if output.Name == internalPowerOutput {
+					continue
+				}
 				m.powerStates[output.Name] = output.Value != 0 || output.State == "on"
 			}
 			if msg.snapshot.Switches.SD.Route != "" {
@@ -308,7 +311,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-var controlTargets = []string{"12v_out", "5v_out", "5v_ws", "20v_out"}
+var controlTargets = []string{"12v_out", "5v_out", "20v_out"}
 
 func (m tuiModel) View() string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))

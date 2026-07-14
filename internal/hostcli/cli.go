@@ -23,10 +23,11 @@ import (
 )
 
 const (
-	PromptText        = "linkr-debugger:~$"
-	DefaultBaseURL    = "http://172.29.203.1:8080"
-	projectStatusLine = "project=radxa-linkr-debugger"
-	JSONSchema        = "radxa-linkr-debugger.v1"
+	PromptText          = "linkr-debugger:~$"
+	DefaultBaseURL      = "http://172.29.203.1:8080"
+	projectStatusLine   = "project=radxa-linkr-debugger"
+	JSONSchema          = "radxa-linkr-debugger.v1"
+	internalPowerOutput = "5v_ws"
 )
 
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -238,6 +239,16 @@ func (a App) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	cleaned := strings.TrimSpace(output)
+	filtered, err := filterInternalPowerOutput(cleaned)
+	if err != nil {
+		if jsonOutput {
+			writeJSONError(stdout, commandName(commandArgs, raw), "invalid_json", err.Error())
+		} else {
+			fmt.Fprintln(stderr, err)
+		}
+		return 1
+	}
+	cleaned = filtered
 	if adcReadCommand {
 		if jsonOutput {
 			return writeADCReadJSON(stdout, cleaned, commandName(commandArgs, raw))
@@ -277,6 +288,12 @@ func (a App) runDoctor(baseURL string, timeout time.Duration, jsonOutput bool, s
 	}
 
 	cleaned := strings.TrimSpace(output)
+	filtered, err := filterInternalPowerOutput(cleaned)
+	if err != nil {
+		result.Error = &JSONError{Code: "invalid_json", Message: err.Error()}
+		return finishDoctor(stdout, stderr, result, jsonOutput, 1)
+	}
+	cleaned = filtered
 	env, err := parseAgentJSON(cleaned, true)
 	if err != nil {
 		var validationErr jsonValidationError
@@ -558,15 +575,74 @@ func powerRequest(args []string) (boardRequest, string, error) {
 		if len(args) != 3 {
 			return boardRequest{}, commandName, errors.New("usage: radxa-linkr-debuggerctl power get NAME")
 		}
+		if err := rejectInternalPowerOutput(args[2]); err != nil {
+			return boardRequest{}, commandName, err
+		}
 		return boardRequest{Method: http.MethodGet, Path: "/api/v1/power/" + args[2]}, command, nil
 	case "set":
 		if len(args) != 4 {
 			return boardRequest{}, commandName, errors.New("usage: radxa-linkr-debuggerctl power set NAME on|off")
 		}
+		if err := rejectInternalPowerOutput(args[2]); err != nil {
+			return boardRequest{}, commandName, err
+		}
 		return boardRequest{Method: http.MethodPut, Path: "/api/v1/power/" + args[2], Body: map[string]string{"state": args[3]}}, command, nil
 	default:
 		return boardRequest{}, commandName, fmt.Errorf("unsupported power action %q", args[1])
 	}
+}
+
+func rejectInternalPowerOutput(name string) error {
+	if name == internalPowerOutput {
+		return fmt.Errorf("power output %q is internal and unavailable through the CLI", name)
+	}
+	return nil
+}
+
+func filterInternalPowerOutput(output string) (string, error) {
+	if !strings.Contains(output, internalPowerOutput) {
+		return output, nil
+	}
+
+	var value any
+	if err := json.Unmarshal([]byte(output), &value); err != nil {
+		return "", err
+	}
+	if !removeInternalPowerOutput(value) {
+		return output, nil
+	}
+	filtered, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return string(filtered), nil
+}
+
+func removeInternalPowerOutput(value any) bool {
+	changed := false
+	switch typed := value.(type) {
+	case map[string]any:
+		if rawOutputs, ok := typed["power_outputs"].([]any); ok {
+			outputs := rawOutputs[:0]
+			for _, output := range rawOutputs {
+				item, ok := output.(map[string]any)
+				if ok && item["name"] == internalPowerOutput {
+					changed = true
+					continue
+				}
+				outputs = append(outputs, output)
+			}
+			typed["power_outputs"] = outputs
+		}
+		for _, child := range typed {
+			changed = removeInternalPowerOutput(child) || changed
+		}
+	case []any:
+		for _, child := range typed {
+			changed = removeInternalPowerOutput(child) || changed
+		}
+	}
+	return changed
 }
 
 func adcRequest(args []string) (boardRequest, string, error) {

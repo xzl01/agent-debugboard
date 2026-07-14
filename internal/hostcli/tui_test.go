@@ -56,8 +56,11 @@ func TestTUIStatusSnapshotUpdatesBoardMonitoring(t *testing.T) {
 		wsClient:    newTestWSClient(t, DefaultBaseURL),
 	}
 	snapshot := &wsStatusSnapshot{
-		PowerOutputs: []tuiStatusPowerOutput{{Name: "5v_out", State: "on", Value: 1}},
-		Switches:     tuiStatusSwitches{SD: tuiStatusSwitchRoute{Route: "usb-reader"}},
+		PowerOutputs: []tuiStatusPowerOutput{
+			{Name: "5v_out", State: "on", Value: 1},
+			{Name: internalPowerOutput, State: "on", Value: 1},
+		},
+		Switches: tuiStatusSwitches{SD: tuiStatusSwitchRoute{Route: "usb-reader"}},
 		BoardMonitoring: boardMonitoring{
 			Temperature: monitoringTemperature{
 				monitoringAvailability: monitoringAvailability{Available: false, Reason: "no_zephyr_temperature_device"},
@@ -83,6 +86,9 @@ func TestTUIStatusSnapshotUpdatesBoardMonitoring(t *testing.T) {
 	next := updated.(tuiModel)
 	if !next.powerStates["5v_out"] || next.sdRoute != "usb-reader" {
 		t.Fatalf("snapshot state not applied: power=%v sd=%s", next.powerStates, next.sdRoute)
+	}
+	if _, ok := next.powerStates[internalPowerOutput]; ok {
+		t.Fatalf("internal power output leaked into TUI state: %v", next.powerStates)
 	}
 	if got := formatMonitoringSummary(next.monitoring); !strings.Contains(got, "n/a(no_zephyr_temperature_device)") || !strings.Contains(got, "2048/3072B") {
 		t.Fatalf("monitoring summary = %q", got)
