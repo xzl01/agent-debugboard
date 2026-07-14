@@ -4,15 +4,15 @@ Radxa Linkr Debugger works with OpenOCD through the onboard CH347F path:
 
 ```text
 PC OpenOCD -> CH347F -> target JTAG/SWD
-PC radxa-linkr-debuggerctl -> RP2040 -> target power / boot mode / ADC / SD / GPIO
+PC radxa-linkr-debuggerctl -> RP2040/RP2350 -> target power / boot mode / ADC / SD / GPIO
 ```
 
 For normal use, prefer the released `radxa-linkr-debuggerctl` CLI. Use direct
 `curl` only when debugging the raw HTTP API or when following the separate,
 curl-first Agent skill.
 
-CH347F is wired directly to the target debug connector. The RP2040 does not sit
-in the JTAG/SWD path, does not mux those lines, and should not be treated as a
+CH347F is wired directly to the target debug connector. The MCU firmware does
+not sit in the JTAG/SWD path, does not mux those lines, and should not be treated as a
 CMSIS-DAP/Picoprobe adapter.
 
 ## Install OpenOCD
