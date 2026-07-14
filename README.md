@@ -33,14 +33,15 @@ implementation.
 | --- | --- |
 | USB control | Composite USB device: NCM HTTP/WS control plane + CDC ACM fallback console |
 | Host automation | Rust `cmd-ng` CLI/TUI with JSON output and `doctor` diagnostics |
-| Live telemetry | Bidirectional WebSocket stream on `/api/v1/ws` |
-| Power outputs | `12v_out`, `5v_out`, `5v_ws`, `20v_out` |
+| Live telemetry | Bidirectional WebSocket stream on a live-session URL under `/api/v1/ws/<slot>` |
+| Power outputs | `12v_out`, `5v_out`, `20v_out` |
 | ADC monitor | Current monitor reads for `5v_out`, `12v_out`, `20v_out` |
 | Board self-monitoring | `/api/v1/status` and status WebSocket snapshots report board CPU/runtime/heap/temperature availability and values when Zephyr exposes reliable sources; the watchdog supervisor also prints periodic heap diagnostics for short-reset debugging |
 | TF/SD routing | Switch route between `target` and `usb-reader` |
-| GPIO | Safe allowlist: `GP4`, `GP7`, `GP8`, `GP13`-`GP24` |
+| VIN control (G3 only) | Switch route between `1.8v` and `3.3v`; firmware uses a Device Tree VIO regulator |
+| GPIO | G2: `GP4`, `GP7`, `GP8`, `GP13`-`GP24`; G3: `GP7`, `GP8`, `GP9`, `GP10`-`GP20`, `GP29` |
 | Autonomous watchdog recovery | Firmware-supervised watchdog resets into ROM BOOTSEL when core services stop reporting healthy liveness |
-| Firmware update | USB command to reboot RP2040 into BOOTSEL |
+| Firmware update | USB command to reboot RP2040/RP2350 into BOOTSEL |
 
 `5V_FIN` is intentionally treated as a separate input/source power input. It is
 not exposed as a controllable output.
@@ -123,10 +124,7 @@ Manual downloads are also available from each GitHub Release:
 | OS / CPU | Artifact |
 | --- | --- |
 | Windows x64 | `radxa-linkr-debuggerctl-rust_windows_amd64.zip` |
-| Windows arm64 | `radxa-linkr-debuggerctl-rust_windows_arm64.zip` |
 | Linux x64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
-| Linux arm64 | `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` |
-| macOS Intel | `radxa-linkr-debuggerctl-rust_darwin_amd64.tar.gz` |
 | macOS Apple Silicon | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` |
 
 Legacy Go compatibility archives remain available in GitHub Releases as
@@ -242,7 +240,7 @@ After firmware changes, treat this BOOTSEL flow and the RP2040/RP2350 CDC ACM sh
 fallback below as required validation paths; do not conclude the change until
 you have verified the serial fallback path still works.
 
-If HTTP/WS control is unavailable but the RP2040 CDC ACM shell is still up, you
+If HTTP/WS control is unavailable but the MCU CDC ACM shell is still up, you
 can enter the same BOOTSEL path from the local Zephyr shell:
 
 ```text
@@ -285,10 +283,7 @@ GitHub Release, and uploads the fixed release assets.
 - `radxa-linkr-debugger-rp2350.elf`: RP2350 ELF for debugging.
 - `radxa-linkr-debugger-rp2350.map`: RP2350 linker map.
 - `radxa-linkr-debuggerctl-rust_windows_amd64.zip`: primary Rust CLI/TUI for Windows x64.
-- `radxa-linkr-debuggerctl-rust_windows_arm64.zip`: primary Rust CLI/TUI for Windows arm64.
 - `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz`: primary Rust CLI/TUI for Linux x64.
-- `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz`: primary Rust CLI/TUI for Linux arm64.
-- `radxa-linkr-debuggerctl-rust_darwin_amd64.tar.gz`: primary Rust CLI/TUI for macOS Intel.
 - `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz`: primary Rust CLI/TUI for macOS Apple Silicon.
 - `radxa-linkr-debuggerctl_<os>_<arch>.*`: deprecated Go CLI compatibility archives.
 - `skills-radxa-linkr-debugger.tar.gz`: Agent skill bundle for `skills/radxa-linkr-debugger/`.
@@ -324,7 +319,7 @@ radxa-linkr-debuggerctl --json gpio list
 radxa-linkr-debuggerctl --json watchdog status
 ```
 
-GPIO names such as `GP13` are derived from RP2040 pin numbers in firmware; each
+GPIO names such as `GP13` are derived from MCU pin numbers in firmware; each
 allowlisted GPIO also carries a board-specific `note` such as `CON_MAS` or
 `J17_PIN1`. CLI/TUI display both, and HTTP control accepts canonical `GPxx`,
 raw numeric pins like `4`, or exact notes such as `CON_MAS`.
@@ -332,7 +327,7 @@ raw numeric pins like `4`, or exact notes such as `CON_MAS`.
 Status JSON also includes `board_monitoring`. Each category (`temperature`,
 `heap`, `runtime`, and `cpu`) carries `available` plus a machine-readable
 `reason`. Firmware only reports values from Zephyr devices or runtime-stat APIs
-that are actually enabled; on the default RP2040 configuration this includes the
+that are actually enabled; on the default RP2040/RP2350 configuration this includes the
 internal CPU die temperature sensor, system heap runtime statistics, real board
 uptime (`uptime_ms` / `uptime_seconds`), and CPU utilization deltas. The first
 CPU sample can still report `insufficient_runtime_window` until the board has
@@ -365,9 +360,12 @@ radxa-linkr-debuggerctl power set 12v_out on
 radxa-linkr-debuggerctl power set 12v_out off
 radxa-linkr-debuggerctl power set 5v_out on
 radxa-linkr-debuggerctl power set 5v_out off
-radxa-linkr-debuggerctl power set 5v_ws on
 radxa-linkr-debuggerctl power set 20v_out on
 ```
+
+The board-internal VDD_5V rail is intentionally omitted from CLI/TUI status,
+power lists, and power controls. The raw firmware API retains its compatibility
+entry for low-level diagnostics.
 
 Read current-monitor ADC channels:
 
@@ -397,6 +395,19 @@ radxa-linkr-debuggerctl switch route sd usb-reader
 radxa-linkr-debuggerctl switch route usb target --confirm
 ```
 
+VIN control (G3 only, RP2040 omits this switch):
+
+```sh
+radxa-linkr-debuggerctl switch get vin
+radxa-linkr-debuggerctl switch route vin 3.3v --confirm
+```
+
+VIN defaults to 3.3V. Switching to 1.8V is an expert operation: first confirm
+that the attached target supports 1.8V signaling, connect physical VIO
+measurement equipment, and explicitly accept the hardware side effect. Follow
+the gated procedure in the
+[firmware app README](apps/radxa_linkr_debugger/README.md#expert-g3-vin-18v-switching).
+
 For functional verification of mux/switch controls, run the commands strictly
 sequentially: issue `switch route ...`, wait briefly for hardware settling
 (typically a few seconds in local validation), then run `switch get ...`. Avoid
@@ -409,7 +420,8 @@ Use safe GPIOs:
 radxa-linkr-debuggerctl gpio list
 radxa-linkr-debuggerctl gpio set GP13 1
 radxa-linkr-debuggerctl gpio set CON_MAS 1
-radxa-linkr-debuggerctl gpio input J17_PIN1
+radxa-linkr-debuggerctl gpio input J17_PIN1  # G2
+radxa-linkr-debuggerctl gpio input J16_PIN1  # G3
 radxa-linkr-debuggerctl gpio input GP13
 ```
 
@@ -420,12 +432,12 @@ radxa-linkr-debuggerctl watchdog status
 ```
 
 The watchdog is owned by firmware, not the host. Firmware automatically arms
-the RP2040 hardware watchdog and only keeps feeding it while core firmware,
+the MCU hardware watchdog and only keeps feeding it while core firmware,
 the HTTP/API service, and the CDC ACM cmdline fallback are still reporting
 healthy local liveness. WebSocket session silence, subscription timeout, and
 session expiration do not count as watchdog failures. If core firmware wedges,
 the API service stops responding, or the CDC ACM cmdline fallback stops
-reporting liveness, firmware stops feeding the watchdog, the RP2040 resets,
+reporting liveness, firmware stops feeding the watchdog, the MCU resets,
 and the next earliest boot path enters the standard ROM BOOTSEL mode via the
 retained recovery marker. The direct `bootloader` command and the CDC ACM
 shell fallback remain separate and unchanged. Periodic memory diagnostics are
@@ -437,7 +449,7 @@ change feed policy.
 
 Radxa Linkr Debugger can be used together with OpenOCD by using the Linkr Debugger for
 target power and recovery control while the onboard CH347F path handles target
-JTAG/SWD. The CH347F is wired directly to the target debug connector; RP2040
+JTAG/SWD. The CH347F is wired directly to the target debug connector; RP2040/RP2350
 does not sit in that path and does not act as a CMSIS-DAP or JTAG probe.
 
 Install OpenOCD, then verify it:
@@ -480,13 +492,14 @@ which intentionally stays curl-first. The CDC ACM port is kept intentionally as
 a secondary path for Zephyr cmdline access and recovery workflows such as
 BOOTSEL fallback; it is not the primary automation/control transport. When the
 CDC ACM shell is available, the local `bootloader` shell command enters the
-same RP2040 ROM BOOTSEL path used by the HTTP API.
+same MCU ROM BOOTSEL path used by the HTTP API.
 
 For long-lived telemetry and bidirectional control over a single socket, create
 a live session over HTTP first and then connect to the returned dedicated
 WebSocket URL under `/api/v1/ws/<slot>`. WebSocket clients can observe watchdog
 status in status snapshots, but they do not feed the watchdog; firmware
-supervision is autonomous.
+supervision is autonomous. The current firmware supports one active WebSocket
+client at a time; close that connection before starting another live session.
 
 mDNS is intentionally not part of the first-class workflow yet. DHCP already
 solves the plug-and-play addressing problem across operating systems; mDNS is a
@@ -515,18 +528,32 @@ normal use.
 |---|---|---|---|
 | 12 V output enable | `12v_out` | `GP02_12V_EN` | 2 |
 | 5 V output enable | `5v_out` | `GP05_5V_EN` | 0 |
-| 5 V WS enable | `5v_ws` | `GP09_5V_WS_EN` | 1 |
+| 5 V WS / VDD_5V always-on rail | `5v_ws` | `GP09_5V_WS_EN` | 1 |
 | 20 V output enable | `20v_out` | `GP10_20V_EN` | 3 |
 | TF/SD route switch | `switch sd` | `GP06_TF_SW` | 4 |
 | USB hub mux switch | `switch usb` | `GP03_USB3_HUB` | 5 |
-| 1.8 V regulator enable | — | `1V8_EN` | 6 |
+| CH347 1.8 V VIN supply | internal to `switch vin` | `1V8_EN` | 6 |
+| TF write-protect | — | `TF_WP` | 22 |
+| CH347 VIO voltage select | `switch vin` | `VIO_SEL` | 23 |
+| Test point | — | `TP15` | 24 |
+| Status LED | — | `LED_BLUE` | 25 |
+| GPIO alias | `CON_MAS` | `CON_MAS` | 7 |
+| GPIO alias | `CON_REST` | `CON_REST` | 8 |
+| GPIO alias | `CON_USER` | `CON_USER` | 9 |
+| J16 GPIO range | `GP10`-`GP20` | — | 10-20 |
+| J16 ADC3 / GPIO | `ADC3` / `GP29` | — | 29 (ADC3) |
 | 5 V current monitor | `adc read 5v_out` | `S_C_5V` | 26 (ADC0) |
 | 12 V current monitor | `adc read 12v_out` | `S_C_12V` | 27 (ADC1) |
 | 20 V current monitor | `adc read 20v_out` | `S_C_20V` | 28 (ADC2) |
-| Reserved ADC | — | — | 29 (ADC3) |
 
-The current monitor channels use INA139 with a 10 mOhm shunt, 51 kOhm output
-load, and 1000 uA/V transconductance. The MCU reports raw ADC diagnostics plus
+VIN defaults to 3.3V at boot. GPIO1 VDD_5V and its GPIO6 VDD_1V8 child rail are
+always on in the G3 Device Tree model. The selectable CH347 VIO level is modeled
+as a standard `regulator-gpio` regulator with exact 1.8V and 3.3V states, and
+firmware selects it through the Zephyr regulator API. Confirm your target
+supports the selected voltage before applying it.
+
+The G3 current monitor channels use INA139 with a 10 mOhm shunt and 50 kOhm
+output load. (G2 uses 51 kOhm.) The MCU reports raw ADC diagnostics plus
 standard sensor current values from Zephyr's `current-sense-amplifier`
 interface, and the host CLI now presents those values directly without any
 host-side calibration table or zero-point correction.
