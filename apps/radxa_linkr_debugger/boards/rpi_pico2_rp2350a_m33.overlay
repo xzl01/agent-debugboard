@@ -15,6 +15,7 @@
 		zephyr,console = &cdc_acm_uart0;
 		zephyr,shell-uart = &cdc_acm_uart0;
 		zephyr,heartbeat-led = &led0;
+		radxa-linkr-debugger-temperature-sensor = &die_temp;
 	};
 
 	zephyr,user {
@@ -45,7 +46,8 @@
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
 		enable-gpios = <&gpio0 1 GPIO_ACTIVE_HIGH>;
-		regulator-boot-off;
+		regulator-always-on;
+		regulator-boot-on;
 	};
 
 	reg_20v_out: regulator-20v-out {
@@ -55,6 +57,26 @@
 		regulator-max-microvolt = <20000000>;
 		enable-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
 		regulator-boot-off;
+	};
+
+	reg_1v8_vio: regulator-1v8-vio {
+		compatible = "regulator-fixed";
+		regulator-name = "1v8_vio";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		enable-gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	reg_vio: regulator-vio {
+		compatible = "regulator-gpio";
+		regulator-name = "vio";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-init-microvolt = <3300000>;
+		gpios = <&gpio0 23 GPIO_ACTIVE_HIGH>;
+		states = <1800000 0>, <3300000 1>;
 	};
 
 	sense_5v_out: current-sense-5v-out {
@@ -77,7 +99,7 @@
 		compatible = "current-sense-amplifier";
 		io-channels = <&adc 2>;
 		sense-resistor-milli-ohms = <10>;
-		sense-gain-mult = <59>;
+		sense-gain-mult = <50>;
 		sense-gain-div = <1>;
 	};
 };

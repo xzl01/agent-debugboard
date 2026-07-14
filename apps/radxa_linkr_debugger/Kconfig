@@ -7,3 +7,6 @@
 mainmenu "radxa-linkr-debugger controller"
 
 source "Kconfig.zephyr"
+
+config REGULATOR_GPIO
+	default y if DT_HAS_REGULATOR_GPIO_ENABLED
