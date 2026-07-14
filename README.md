@@ -170,8 +170,12 @@ For high-rate capture, use `adc record`, which
 creates a live websocket session and records telemetry to an NDJSON file. It
 defaults to a 1000Hz websocket subscription and accepts `--rate-hz HZ` for lower
 rates. Each output record includes host receive timestamps plus
-`metadata.requested_rate_hz`; firmware telemetry includes `sample_sequence` and
-`device_t_mono_us`, which the recorder copies into `metadata.device_timing`.
+`metadata.requested_rate_hz`. Requests above 100Hz use batch JSON on the wire,
+then the recorder expands each device sample into its own NDJSON or CSV row.
+Firmware telemetry includes `sequence`, `sample_sequence`, `uptime_us`, and
+`device_t_mono_us`; the recorder preserves device timing under
+`metadata.device_timing`, and reports ring overruns as
+`metadata.dropped_samples` on the first affected row.
 
 Power-analyzer captures add a firmware ring buffer and device monotonic
 timestamps. G3 keeps 2048 samples and G2 keeps 512. The Web UI can arm manual,
@@ -494,8 +498,8 @@ For long-lived telemetry and bidirectional control over a single socket, create
 a live session over HTTP first and then connect to the returned dedicated
 WebSocket URL under `/api/v1/ws/<slot>`. WebSocket clients can observe watchdog
 status in status snapshots, but they do not feed the watchdog; firmware
-supervision is autonomous. The current firmware supports one active WebSocket
-client at a time; close that connection before starting another live session.
+supervision is autonomous. The firmware supports up to four concurrent
+WebSocket clients; each live session gets a dedicated `/api/v1/ws/<slot>` URL.
 
 mDNS is intentionally not part of the first-class workflow yet. DHCP already
 solves the plug-and-play addressing problem across operating systems; mDNS is a

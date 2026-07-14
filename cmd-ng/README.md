@@ -29,9 +29,9 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 - TUI 现在以 HTTP 轮询作为主数据通道，因此可以稳定多开；实时高频采集改由 `adc record` 走 websocket
 - TUI 控件区把 power、Switch（包含 VIN）和 GPIO 合并进同一个控制面，方向键/Tab 统一导航，Space/Enter 切换当前项，`i` 把当前 GPIO 切回输入，`t/u` 仍可直接切到 `target`/`usb-reader`；状态区会同时显示 switch 的 `desired` / `actual` 以便诊断后端回读差异；VIN 只在固件报告时显示，且切换前需要确认
 - GPIO 在 CLI/TUI 中会同时显示 `GPxx` 和 `note`；控制时可使用 `GPxx`、数字引脚（如 `4`）或精确 note（如 `CON_MAS`）
-- `adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]` 会创建 live websocket session；`.ndjson` 输出完整 telemetry 记录，`.csv` 输出设备时间戳和三路电流列；默认 1000Hz，`--rate-hz` 可指定 1..1000Hz 的订阅速率
-- 固件可同时维护多个 live websocket session，但触发式功耗采集使用全局硬件缓冲区，同一时间只能有一个 capture owner
-- recorder 每条 NDJSON 记录都会写入主机接收时间戳和 `metadata.requested_rate_hz`，并把 firmware 的 `device_t_mono_us` 放入 `metadata.device_timing`。分析采样间隔时应优先使用设备时间而不是主机接收时间
+- `adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]` 会创建 live websocket session；`.ndjson` 输出完整 telemetry 记录，`.csv` 输出设备时间戳和三路电流列；默认请求 1000Hz，`--rate-hz` 可指定 1..1000Hz，高于 100Hz 时 CLI 请求 batch JSON 并逐样本展开
+- 固件最多支持四个并发 websocket 客户端，多个 `adc record` 可以同时运行；触发式功耗采集使用全局硬件缓冲区，同一时间只能有一个 capture owner
+- recorder 会写入主机接收时间和 `metadata.requested_rate_hz`，并把设备 `sequence`、`sample_sequence`、`uptime_us` 和 `device_t_mono_us` 放入 `metadata.device_timing`；采样环覆盖通过 `metadata.dropped_samples` 显式报告，分析采样间隔时应优先使用设备时间
 - `raw` 模式在 HTTP 路径下不支持
 - `watchdog` 仍只暴露 `status`，不提供 host 侧 feed/控制
 - 板内 `5v_ws` 电源轨不会出现在 CLI/TUI 的状态或电源控制中；原始固件 API 兼容项仅供底层诊断

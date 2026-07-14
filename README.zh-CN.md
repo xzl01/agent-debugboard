@@ -152,9 +152,10 @@ TUI 本身只维持较温和的 60 Hz 重绘节奏，并改为通过 HTTP 轮询
 方便现场区分“看起来稳定”和“真实稳定”。高频采样改由 `adc record` 负责：它会创建 live websocket
 session，并把 telemetry 记录为 NDJSON 文件。默认订阅速率为 1000Hz，也可用
 `--rate-hz HZ` 指定更低速率。每条输出记录都会包含主机接收时间戳和
-`metadata.requested_rate_hz`；如果固件 telemetry 带有设备侧 timing 字段，recorder
-会把它们写入 `metadata.device_timing`。当前 ADC telemetry 有 `sequence`，但没有
-显式设备时间戳，因此 `device_timing` 可能不存在。
+`metadata.requested_rate_hz`。请求速率高于 100Hz 时，固件在线路上使用 batch JSON，
+recorder 再把每个设备样本展开成独立 NDJSON 行。设备 `sequence` 和 `uptime_us` 会保留
+在 `metadata.device_timing` 中；采样环发生覆盖时，首个受影响记录会携带
+`metadata.dropped_samples`。
 
 ## 构建固件
 
@@ -440,7 +441,7 @@ BOOTSEL fallback 的辅助通道，但它不是主控制面。只要 CDC ACM she
 
 如果需要在一条长连接上同时做实时遥测和双向控制，应先通过 HTTP 创建 live
 session，再连接响应中返回的 `/api/v1/ws/<slot>` 专用 WebSocket URL。当前固件一次
-只支持一个活动 WebSocket 客户端，开始另一个 live session 前应先关闭现有连接。
+最多支持四个并发 WebSocket 客户端，每个 live session 分配独立的 `/api/v1/ws/<slot>` URL。
 WebSocket 客户端可以从状态快照里观察 watchdog 状态，但不能手动喂狗；watchdog
 监督完全由固件自主完成。
 

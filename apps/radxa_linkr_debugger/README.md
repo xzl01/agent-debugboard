@@ -51,13 +51,17 @@ compatible address automatically.
 
 For long-lived telemetry and bidirectional control, create a live session over
 HTTP first and connect to the returned dedicated WebSocket URL under
-`/api/v1/ws/<slot>`. The current firmware supports one active WebSocket client
-at a time; close it before creating another live connection.
+`/api/v1/ws/<slot>`. The firmware supports up to four concurrent WebSocket
+clients; each live session gets a dedicated slot URL. Subscriptions may request
+`batch_size` from 1 through 20, with independent per-client sequence cursors so
+one slow subscriber cannot consume another subscriber's samples.
 ADC telemetry includes `sample_sequence` and device-side monotonic
 `device_t_mono_us`. The same session can arm a triggered power capture with a
 firmware ring buffer: 2048 samples on G3 and 512 on G2. Manual, current
 threshold, allowlisted GPIO edge, and power-output off-to-on triggers are
-supported. See [the power analyzer protocol](../../doc/power-analyzer.md).
+supported. Triggered capture uses one global hardware buffer and therefore has
+only one capture owner at a time. See
+[the power analyzer protocol](../../doc/power-analyzer.md).
 When HTTP/WS is unavailable but the CDC ACM shell still works, the local shell
 command below enters the current MCU's ROM BOOTSEL path used by the HTTP API:
 
