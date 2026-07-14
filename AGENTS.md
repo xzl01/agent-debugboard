@@ -32,7 +32,7 @@ Firmware and host control logic changes must not be considered complete based on
 
 A change requires HIL when it touches any of the following:
 
-- RP2040 firmware logic
+- RP2040/RP2350 firmware logic
 - host CLI/TUI control logic that talks to real hardware
 - power outputs, switch routing, ADC monitoring, safe GPIO, watchdog, or BOOTSEL behavior
 
@@ -58,8 +58,10 @@ changes, reproduce every affected GitHub Actions lane locally when practical:
   `pwsh -NoLogo -NoProfile -NonInteractive -Command '[scriptblock]::Create((Get-Content ./skills/radxa-linkr-debugger/scripts/install.ps1 -Raw)) | Out-Null'`
   and, when available, `./skills/radxa-linkr-debugger/scripts/install.ps1 -DryRun`
 - Shell installer/test scripts: `sh -n ...` and `shellcheck ...`
-- Firmware changes: full canonical build only,
+- Firmware changes: full canonical build only (one at a time into the shared
+  `build/radxa_linkr_debugger/` directory):
   `west build -p always -b rpi_pico/rp2040 apps/radxa_linkr_debugger -d build/radxa_linkr_debugger`
+  `west build -p always -b rpi_pico2/rp2350a/m33 apps/radxa_linkr_debugger -d build/radxa_linkr_debugger`
 
 Do not run single-object or single-driver firmware compile checks; they disturb
 the user's build/cache workflow. Use the full firmware/package workflow instead.
