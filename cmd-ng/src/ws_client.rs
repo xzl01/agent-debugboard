@@ -25,7 +25,7 @@ pub struct WsEnvelope {
     pub topic: String,
     #[serde(default)]
     pub schema: String,
-    pub sequence: Option<u32>,
+    pub sequence: Option<u64>,
     #[serde(default)]
     pub id: String,
     #[serde(default)]
@@ -92,7 +92,7 @@ pub struct WsStatusSnapshot {
     pub topic: String,
     #[serde(default)]
     pub schema: String,
-    pub sequence: Option<u32>,
+    pub sequence: Option<u64>,
     #[serde(default)]
     pub power_outputs: Vec<TuiStatusPowerOutput>,
     #[serde(default)]
@@ -113,7 +113,7 @@ pub struct WsTelemetryMessage {
     pub topic: String,
     #[serde(default)]
     pub schema: String,
-    pub sequence: Option<u32>,
+    pub sequence: Option<u64>,
     #[serde(default)]
     pub readings: Vec<AdcReading>,
     #[serde(default, flatten)]
@@ -144,12 +144,41 @@ pub struct WsCommandRequest {
     pub value: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_hz: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch_size: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WsTelemetryBatchChannel {
+    pub name: String,
+    #[serde(default)]
+    pub signal: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WsTelemetryBatchSample {
+    pub sequence: u64,
+    pub uptime_us: u64,
+    pub values: Vec<[i32; 4]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WsTelemetryBatch {
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub topic: String,
+    pub schema: String,
+    #[serde(default)]
+    pub dropped_samples: u32,
+    pub channels: Vec<WsTelemetryBatchChannel>,
+    pub samples: Vec<WsTelemetryBatchSample>,
 }
 
 pub enum WsMessage {
     Snapshot(Box<WsStatusSnapshot>),
     Telemetry(Box<WsTelemetryMessage>),
-    Result(WsEnvelope),
+    TelemetryBatch(Box<WsTelemetryBatch>),
+    Result(Box<WsEnvelope>),
 }
 
 pub struct WsClient {
@@ -233,7 +262,10 @@ impl WsClient {
                     transform_readings(telemetry.readings).map_err(|err| anyhow!(err))?;
                 Ok(WsMessage::Telemetry(Box::new(telemetry)))
             }
-            "result" => Ok(WsMessage::Result(base)),
+            "telemetry-batch" => Ok(WsMessage::TelemetryBatch(Box::new(serde_json::from_value(
+                value,
+            )?))),
+            "result" => Ok(WsMessage::Result(Box::new(base))),
             "error" => {
                 if let Some(error) = base.error {
                     Err(anyhow!("{}: {}", error.code, error.message))
@@ -277,7 +309,66 @@ pub fn subscribe_request(rate_hz: i32) -> WsCommandRequest {
         direction: None,
         value: None,
         rate_hz: Some(rate_hz),
+        batch_size: None,
     }
+}
+
+pub fn subscribe_batch_request(rate_hz: i32, batch_size: u8) -> WsCommandRequest {
+    WsCommandRequest {
+        batch_size: Some(batch_size),
+        ..subscribe_request(rate_hz)
+    }
+}
+
+pub fn expand_telemetry_batch(batch: WsTelemetryBatch) -> Result<Vec<WsTelemetryMessage>> {
+    let mut messages = Vec::with_capacity(batch.samples.len());
+
+    for (sample_index, sample) in batch.samples.into_iter().enumerate() {
+        if sample.values.len() != batch.channels.len() {
+            return Err(anyhow!(
+                "telemetry batch channel/value count mismatch: {} channels, {} values",
+                batch.channels.len(),
+                sample.values.len()
+            ));
+        }
+
+        let readings = batch
+            .channels
+            .iter()
+            .zip(sample.values)
+            .map(|(channel, values)| AdcReading {
+                name: channel.name.clone(),
+                signal: channel.signal.clone(),
+                raw: Some(values[1]),
+                current_valid: None,
+                mv: Some(values[2]),
+                ma_est: None,
+                power_enabled: Some(values[0] != 0),
+                sensor_channel: "current".to_string(),
+                unit: "A".to_string(),
+                sensor_value: None,
+                current_ua: Some(values[3]),
+            })
+            .collect();
+        let mut extra = Map::new();
+        extra.insert("uptime_us".to_string(), Value::from(sample.uptime_us));
+        if sample_index == 0 && batch.dropped_samples != 0 {
+            extra.insert(
+                "dropped_samples".to_string(),
+                Value::from(batch.dropped_samples),
+            );
+        }
+        messages.push(WsTelemetryMessage {
+            r#type: "telemetry".to_string(),
+            topic: batch.topic.clone(),
+            schema: batch.schema.clone(),
+            sequence: Some(sample.sequence),
+            readings,
+            extra,
+        });
+    }
+
+    Ok(messages)
 }
 
 pub fn subscribe_ok_result() -> WsEnvelope {
@@ -294,7 +385,8 @@ pub fn subscribe_ok_result() -> WsEnvelope {
 #[cfg(test)]
 mod tests {
     use super::{
-        subscribe_request, WsClient, WsCommandRequest, WsEnvelope, WsMessage, WsStatusSnapshot,
+        expand_telemetry_batch, subscribe_batch_request, subscribe_request, WsClient,
+        WsCommandRequest, WsEnvelope, WsMessage, WsStatusSnapshot, WsTelemetryBatch,
     };
     use crate::json_contract::JSON_SCHEMA;
     use crate::monitoring::{
@@ -406,6 +498,41 @@ mod tests {
         assert_eq!(got.message_type, "subscribe");
         assert_eq!(got.topic.as_deref(), Some("live"));
         assert_eq!(got.rate_hz, Some(60));
+        assert_eq!(got.batch_size, None);
+    }
+
+    #[test]
+    fn expands_telemetry_batch_into_individual_samples() {
+        let batch: WsTelemetryBatch = serde_json::from_str(
+            r#"{
+                "type":"telemetry-batch",
+                "topic":"adc",
+                "schema":"radxa-linkr-debugger.v1",
+                "dropped_samples":2,
+                "channels":[{"name":"5v_out","signal":"S_C_5V"}],
+                "samples":[
+                    {"sequence":10,"uptime_us":1000,"values":[[1,12,34,56]]},
+                    {"sequence":11,"uptime_us":2000,"values":[[0,13,35,57]]}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let messages = expand_telemetry_batch(batch).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].sequence, Some(10));
+        assert_eq!(messages[0].readings[0].name, "5v_out");
+        assert_eq!(messages[0].readings[0].power_enabled, Some(true));
+        assert_eq!(messages[0].readings[0].raw, Some(12));
+        assert_eq!(messages[0].readings[0].current_ua, Some(56));
+        assert_eq!(messages[0].extra["uptime_us"], 1000);
+        assert_eq!(messages[0].extra["dropped_samples"], 2);
+        assert_eq!(messages[1].sequence, Some(11));
+        assert!(messages[1].extra.get("dropped_samples").is_none());
+
+        let request = subscribe_batch_request(1000, 10);
+        assert_eq!(request.rate_hz, Some(1000));
+        assert_eq!(request.batch_size, Some(10));
     }
 
     #[test]

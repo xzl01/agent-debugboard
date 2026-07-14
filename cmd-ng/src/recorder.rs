@@ -5,7 +5,10 @@
 
 use crate::client::{BoardClient, BoardRequest};
 use crate::json_contract::JSON_SCHEMA;
-use crate::ws_client::{subscribe_request, WsClient, WsTelemetryMessage};
+use crate::ws_client::{
+    expand_telemetry_batch, subscribe_batch_request, subscribe_request, WsClient, WsTelemetryBatch,
+    WsTelemetryMessage,
+};
 use anyhow::{anyhow, Result};
 use reqwest::Method;
 use serde::Deserialize;
@@ -16,6 +19,7 @@ use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_ADC_RECORD_RATE_HZ: i32 = 1000;
+const ADC_RECORD_BATCH_SIZE: u8 = 20;
 
 const DEVICE_TIMING_FIELDS: &[&str] = &[
     "device_t_mono_ns",
@@ -73,7 +77,12 @@ pub fn record_adc_ws_to_file(
     let ws_url = request_live_session_ws_url(base_url, timeout)?;
     let ws_client = WsClient::with_ws_url(base_url.to_string(), ws_url);
     ws_client.connect()?;
-    ws_client.send(&subscribe_request(requested_rate_hz))?;
+    let subscribe = if requested_rate_hz > 100 {
+        subscribe_batch_request(requested_rate_hz, ADC_RECORD_BATCH_SIZE)
+    } else {
+        subscribe_request(requested_rate_hz)
+    };
+    ws_client.send(&subscribe)?;
 
     let file = File::create(Path::new(output_path))?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, file);
@@ -94,18 +103,33 @@ pub fn record_adc_ws_to_file(
             }
         }
 
-        let elapsed = started.elapsed();
-        let unix_ns = unix_time_ns();
         let text = ws_client.recv_text()?;
         let value: serde_json::Value = serde_json::from_str(&text)?;
-        if value.get("type").and_then(|v| v.as_str()) == Some("telemetry") {
-            let mut message: WsTelemetryMessage = serde_json::from_value(value)?;
+        let mut messages = match value.get("type").and_then(|v| v.as_str()) {
+            Some("telemetry") => vec![serde_json::from_value(value)?],
+            Some("telemetry-batch") => {
+                let batch: WsTelemetryBatch = serde_json::from_value(value)?;
+                expand_telemetry_batch(batch)?
+            }
+            _ => continue,
+        };
+
+        for mut message in messages.drain(..) {
+            if max_samples.is_some_and(|limit| written >= limit) {
+                break;
+            }
             message.readings =
                 crate::adc::transform_readings(message.readings).map_err(|e| anyhow!(e))?;
             if csv {
-                write_telemetry_csv_row(&mut writer, &message, elapsed, unix_ns)?;
+                write_telemetry_csv_row(&mut writer, &message, started.elapsed(), unix_time_ns())?;
             } else {
-                write_telemetry_record(&mut writer, &message, elapsed, unix_ns, requested_rate_hz)?;
+                write_telemetry_record(
+                    &mut writer,
+                    &message,
+                    started.elapsed(),
+                    unix_time_ns(),
+                    requested_rate_hz,
+                )?;
             }
             written += 1;
         }
@@ -176,6 +200,9 @@ fn write_telemetry_record(
     });
     if let Some(device_timing) = device_timing_metadata(message) {
         metadata["device_timing"] = device_timing;
+    }
+    if let Some(dropped_samples) = message.extra.get("dropped_samples") {
+        metadata["dropped_samples"] = dropped_samples.clone();
     }
 
     let record = json!({
@@ -300,6 +327,28 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert!(data.contains("device_t_mono_us"));
         assert!(data.contains("9,2000000,77,55,true,123000"));
+    }
+
+    #[test]
+    fn telemetry_record_includes_reported_dropped_samples() {
+        let path = temp_file_path("dropped");
+        let mut writer = BufWriter::new(File::create(&path).unwrap());
+        let mut extra = serde_json::Map::new();
+        extra.insert("dropped_samples".to_string(), serde_json::json!(3));
+        let message = WsTelemetryMessage {
+            sequence: Some(9),
+            extra,
+            ..Default::default()
+        };
+
+        write_telemetry_record(&mut writer, &message, Duration::from_millis(4), 789, 1000).unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+
+        let data = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let record: Value = serde_json::from_str(data.trim()).unwrap();
+        assert_eq!(record["metadata"]["dropped_samples"], 3);
     }
 
     #[test]
