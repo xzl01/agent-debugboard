@@ -312,7 +312,7 @@ static int configure_sd_default(void)
 {
 	linkr_debugger_sd_route = LINKR_DEBUGGER_SD_ROUTE_TARGET;
 #ifdef CONFIG_SOC_SERIES_RP2350
-	return gpio_pin_configure(gpio0, 4, GPIO_OUTPUT_INACTIVE);
+	return gpio_pin_configure(gpio0, 4, GPIO_OUTPUT_ACTIVE);
 #else
 	return gpio_pin_configure(gpio0, 6, GPIO_OUTPUT_INACTIVE);
 #endif
@@ -890,7 +890,7 @@ int linkr_debugger_sd_route_set(enum linkr_debugger_sd_route route)
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
 #ifdef CONFIG_SOC_SERIES_RP2350
-	ret = gpio_pin_set(gpio0, 4, route == LINKR_DEBUGGER_SD_ROUTE_USB_READER ? 1 : 0);
+	ret = gpio_pin_set(gpio0, 4, route == LINKR_DEBUGGER_SD_ROUTE_TARGET ? 1 : 0);
 #else
 	ret = gpio_pin_set(gpio0, 6, route == LINKR_DEBUGGER_SD_ROUTE_USB_READER ? 1 : 0);
 #endif
