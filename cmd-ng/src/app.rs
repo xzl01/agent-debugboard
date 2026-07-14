@@ -19,6 +19,8 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::time::Duration;
 
+const INTERNAL_POWER_OUTPUT: &str = "5v_ws";
+
 fn version() -> &'static str {
     option_env!("AGENT_DEBUGBOARDCTL_VERSION").unwrap_or("dev")
 }
@@ -178,6 +180,10 @@ where
         return run_switch_usb(client, &cli.command_args, cli.json, stdout, stderr);
     }
 
+    if !cli.raw && is_switch_vin_route_command(&cli.command_args) {
+        return run_switch_vin(client, &cli.command_args, cli.json, stdout, stderr);
+    }
+
     let adc_read_command = is_adc_read_command(&cli.command_args);
     let adc_verbose = adc_read_command
         && (cli.verbose
@@ -260,7 +266,8 @@ where
     if json_output || looks_like_json(&output) {
         match parse_envelope(&output, true) {
             Ok(envelope) => {
-                writeln!(stdout, "{}", output.trim())?;
+                let filtered = filter_internal_power_output(&output)?;
+                writeln!(stdout, "{}", filtered.as_deref().unwrap_or(output.trim()))?;
                 return Ok(if envelope.ok == Some(false) { 1 } else { 0 });
             }
             Err(err) => {
@@ -370,7 +377,12 @@ where
     }) {
         Ok(output) => match parse_envelope(&output, true) {
             Ok(envelope) => {
-                result.status = serde_json::from_str::<Value>(&output).ok();
+                result.status = serde_json::from_str::<Value>(&output)
+                    .ok()
+                    .map(|mut status| {
+                        remove_internal_power_output(&mut status);
+                        status
+                    });
                 if envelope.ok == Some(false) {
                     result.error = envelope.error;
                 } else {
@@ -629,18 +641,68 @@ fn power_request(args: &[String]) -> Result<BoardRequest, String> {
             if args.len() != 3 {
                 return Err("usage: radxa-linkr-debuggerctl power get NAME".to_string());
             }
+            reject_internal_power_output(&args[2])?;
             Ok(get_request(format!("/api/v1/power/{}", args[2])))
         }
         "set" => {
             if args.len() != 4 {
                 return Err("usage: radxa-linkr-debuggerctl power set NAME on|off".to_string());
             }
+            reject_internal_power_output(&args[2])?;
             Ok(put_request(
                 format!("/api/v1/power/{}", args[2]),
                 json!({ "state": args[3] }),
             ))
         }
         other => Err(format!("unsupported power action {:?}", other)),
+    }
+}
+
+fn reject_internal_power_output(name: &str) -> Result<(), String> {
+    if name == INTERNAL_POWER_OUTPUT {
+        return Err(format!(
+            "power output {INTERNAL_POWER_OUTPUT:?} is internal and unavailable through the CLI"
+        ));
+    }
+    Ok(())
+}
+
+fn filter_internal_power_output(output: &str) -> Result<Option<String>> {
+    if !output.contains(INTERNAL_POWER_OUTPUT) {
+        return Ok(None);
+    }
+
+    let mut value: Value = serde_json::from_str(output)?;
+    if remove_internal_power_output(&mut value) {
+        return Ok(Some(serde_json::to_string(&value)?));
+    }
+    Ok(None)
+}
+
+fn remove_internal_power_output(value: &mut Value) -> bool {
+    match value {
+        Value::Object(object) => {
+            let mut changed = false;
+            if let Some(Value::Array(outputs)) = object.get_mut("power_outputs") {
+                let original_len = outputs.len();
+                outputs.retain(|output| {
+                    output.get("name").and_then(Value::as_str) != Some(INTERNAL_POWER_OUTPUT)
+                });
+                changed |= outputs.len() != original_len;
+            }
+            for child in object.values_mut() {
+                changed |= remove_internal_power_output(child);
+            }
+            changed
+        }
+        Value::Array(values) => {
+            let mut changed = false;
+            for child in values {
+                changed |= remove_internal_power_output(child);
+            }
+            changed
+        }
+        _ => false,
     }
 }
 
@@ -671,13 +733,15 @@ fn switch_request(args: &[String]) -> Result<BoardRequest, String> {
         }
         "get" => {
             if args.len() != 3 {
-                return Err("usage: radxa-linkr-debuggerctl switch get sd|usb".to_string());
+                return Err("usage: radxa-linkr-debuggerctl switch get sd|usb|vin".to_string());
             }
             Ok(get_request(format!("/api/v1/switch/{}", args[2])))
         }
         "route" => {
             if args.len() != 4 {
-                return Err("usage: radxa-linkr-debuggerctl switch route sd|usb ROUTE".to_string());
+                return Err(
+                    "usage: radxa-linkr-debuggerctl switch route sd|usb|vin ROUTE".to_string(),
+                );
             }
             Ok(put_request(
                 format!("/api/v1/switch/{}", args[2]),
@@ -691,6 +755,11 @@ fn switch_request(args: &[String]) -> Result<BoardRequest, String> {
 fn is_switch_usb_route_command(args: &[String]) -> bool {
     let cleaned = strip_passthrough_flags(args);
     cleaned.len() >= 4 && cleaned[0] == "switch" && cleaned[1] == "route" && cleaned[2] == "usb"
+}
+
+fn is_switch_vin_route_command(args: &[String]) -> bool {
+    let cleaned = strip_passthrough_flags(args);
+    cleaned.len() >= 4 && cleaned[0] == "switch" && cleaned[1] == "route" && cleaned[2] == "vin"
 }
 
 fn run_switch_usb<TClient>(
@@ -728,15 +797,15 @@ where
         .collect();
 
     let target_route = switch_args.get(3).map(String::as_str).unwrap_or("");
-    let vbus_state = if target_route == "pc" { "on" } else { "off" };
-
-    let _ = client.send_text(BoardRequest {
-        method: Method::PUT,
-        path: "/api/v1/power/5v_ws".to_string(),
-        query: vec![],
-        body: Some(json!({ "state": vbus_state })),
-    });
-
+    if switch_args.len() != 4 || !matches!(target_route, "pc" | "target") {
+        let message = "usage: radxa-linkr-debuggerctl switch route usb pc|target --confirm";
+        if json_output {
+            write_json_error(stdout, "switch", "usage", message)?;
+        } else {
+            writeln!(stderr, "{message}")?;
+        }
+        return Ok(2);
+    }
     match request_from_args(&switch_args) {
         Ok(request) => run_standard(
             client,
@@ -746,6 +815,63 @@ where
             stdout,
             stderr,
         ),
+        Err(err) => {
+            if json_output {
+                write_json_error(stdout, "switch", "usage", &err)?;
+            } else {
+                writeln!(stderr, "{err}")?;
+            }
+            Ok(2)
+        }
+    }
+}
+
+fn run_switch_vin<TClient>(
+    client: &TClient,
+    args: &[String],
+    json_output: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8>
+where
+    TClient: BoardTransport,
+{
+    let has_confirm = args.iter().any(|arg| arg == "--confirm" || arg == "-y");
+    if !has_confirm {
+        if json_output {
+            write_json_error(
+                stdout,
+                "switch",
+                "confirm_required",
+                "switch route vin requires --confirm because it changes the CH347 I/O voltage.",
+            )?;
+        } else {
+            writeln!(
+                stderr,
+                "switch route vin: voltage change requires --confirm.\nusage: radxa-linkr-debuggerctl switch route vin 1.8v|3.3v --confirm"
+            )?;
+        }
+        return Ok(2);
+    }
+
+    let switch_args: Vec<String> = args
+        .iter()
+        .filter(|arg| *arg != "--confirm" && *arg != "-y")
+        .cloned()
+        .collect();
+    let route = switch_args.get(3).map(String::as_str).unwrap_or("");
+    if switch_args.len() != 4 || !matches!(route, "1.8v" | "3.3v") {
+        let message = "usage: radxa-linkr-debuggerctl switch route vin 1.8v|3.3v --confirm";
+        if json_output {
+            write_json_error(stdout, "switch", "usage", message)?;
+        } else {
+            writeln!(stderr, "{message}")?;
+        }
+        return Ok(2);
+    }
+
+    match switch_request(&switch_args) {
+        Ok(request) => run_standard(client, "switch", request, json_output, stdout, stderr),
         Err(err) => {
             if json_output {
                 write_json_error(stdout, "switch", "usage", &err)?;
@@ -1198,6 +1324,183 @@ mod tests {
         assert_eq!(requests[0].method, Method::PUT);
         assert_eq!(requests[0].path, "/api/v1/power/12v_out");
         assert_eq!(requests[0].body.as_ref().unwrap()["state"], "off");
+    }
+
+    #[test]
+    fn internal_power_output_is_rejected_without_board_access() {
+        for args in [
+            ["cmd", "power", "get", INTERNAL_POWER_OUTPUT, ""],
+            ["cmd", "power", "set", INTERNAL_POWER_OUTPUT, "off"],
+        ] {
+            let args: Vec<&str> = args.into_iter().filter(|arg| !arg.is_empty()).collect();
+            let cli = Cli::parse_from(args);
+            let client = FakeClient::default();
+            let tui = FakeTuiRunner::new(0);
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+
+            let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+            assert_eq!(code, 2);
+            assert!(client.requests.borrow().is_empty());
+            assert!(String::from_utf8(stderr)
+                .unwrap()
+                .contains("is internal and unavailable through the CLI"));
+        }
+    }
+
+    #[test]
+    fn status_output_hides_internal_power_output() {
+        let cli = Cli::parse_from(["cmd", "--json", "status"]);
+        let client = FakeClient {
+            response: format!(
+                r#"{{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","power_outputs":[{{"name":"12v_out","state":"off"}},{{"name":"{}","state":"on"}}]}}"#,
+                INTERNAL_POWER_OUTPUT
+            ),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        let output: Value = serde_json::from_slice(&stdout).unwrap();
+        let outputs = output["power_outputs"].as_array().unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0]["name"], "12v_out");
+    }
+
+    #[test]
+    fn nested_doctor_status_hides_internal_power_output() {
+        let mut output = serde_json::json!({
+            "status": {
+                "power_outputs": [
+                    {"name": INTERNAL_POWER_OUTPUT},
+                    {"name": "5v_out"}
+                ]
+            }
+        });
+
+        assert!(remove_internal_power_output(&mut output));
+        assert_eq!(
+            output["status"]["power_outputs"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(output["status"]["power_outputs"][0]["name"], "5v_out");
+    }
+
+    #[test]
+    fn run_switch_get_vin_maps_to_switch_endpoint() {
+        let cli = Cli::parse_from(["cmd", "switch", "get", "vin"]);
+        let client = FakeClient {
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"switch","action":"get","name":"vin","route":"3.3v"}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        let requests = client.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, Method::GET);
+        assert_eq!(requests[0].path, "/api/v1/switch/vin");
+    }
+
+    #[test]
+    fn run_switch_vin_requires_confirmation() {
+        let cli = Cli::parse_from(["cmd", "switch", "route", "vin", "1.8v"]);
+        let client = FakeClient::default();
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 2);
+        assert!(client.requests.borrow().is_empty());
+        assert!(String::from_utf8(stderr)
+            .unwrap()
+            .contains("requires --confirm"));
+    }
+
+    #[test]
+    fn run_switch_vin_sends_only_confirmed_switch_request() {
+        let cli = Cli::parse_from(["cmd", "switch", "route", "vin", "1.8v", "--confirm"]);
+        let client = FakeClient {
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"switch","action":"route","name":"vin","route":"1.8v"}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        let requests = client.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, Method::PUT);
+        assert_eq!(requests[0].path, "/api/v1/switch/vin");
+        assert_eq!(requests[0].body.as_ref().unwrap()["route"], "1.8v");
+    }
+
+    #[test]
+    fn run_switch_vin_rejects_invalid_route_before_board_access() {
+        let cli = Cli::parse_from(["cmd", "switch", "route", "vin", "1v8", "--confirm"]);
+        let client = FakeClient::default();
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 2);
+        assert!(client.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn run_switch_usb_rejects_invalid_request_before_power_side_effect() {
+        for args in [
+            vec!["cmd", "switch", "route", "usb", "invalid", "--confirm"],
+            vec![
+                "cmd",
+                "switch",
+                "route",
+                "usb",
+                "target",
+                "extra",
+                "--confirm",
+            ],
+        ] {
+            let cli = Cli::parse_from(args);
+            let client = FakeClient::default();
+            let tui = FakeTuiRunner::new(0);
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+
+            let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+            assert_eq!(code, 2);
+            assert!(client.requests.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn run_switch_usb_sends_only_confirmed_switch_request() {
+        let cli = Cli::parse_from(["cmd", "switch", "route", "usb", "pc", "--confirm"]);
+        let client = FakeClient {
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"switch","action":"route","name":"usb","route":"pc"}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        let requests = client.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, Method::PUT);
+        assert_eq!(requests[0].path, "/api/v1/switch/usb");
+        assert_eq!(requests[0].body.as_ref().unwrap()["route"], "pc");
     }
 
     #[test]

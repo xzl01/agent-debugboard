@@ -55,10 +55,15 @@ pub struct TuiModel {
     pub usb_route: String,
     pub actual_sd_route: String,
     pub actual_usb_route: String,
+    pub vin_available: bool,
+    pub vin_route: String,
+    pub actual_vin_route: String,
     pub pending_sd_route: Option<String>,
     pub pending_sd_route_until: Option<Instant>,
     pub pending_usb_route: Option<String>,
     pub pending_usb_route_until: Option<Instant>,
+    pub pending_vin_route: Option<String>,
+    pub pending_vin_route_until: Option<Instant>,
     pub switch_confirm_active: bool,
     pub switch_confirm_start: Option<Instant>,
     pub switch_confirm_kind: String,
@@ -92,10 +97,15 @@ impl TuiModel {
             usb_route: "pc".to_string(),
             actual_sd_route: "target".to_string(),
             actual_usb_route: "pc".to_string(),
+            vin_available: false,
+            vin_route: "3.3v".to_string(),
+            actual_vin_route: "3.3v".to_string(),
             pending_sd_route: None,
             pending_sd_route_until: None,
             pending_usb_route: None,
             pending_usb_route_until: None,
+            pending_vin_route: None,
+            pending_vin_route_until: None,
             switch_confirm_active: false,
             switch_confirm_start: None,
             switch_confirm_kind: String::new(),
@@ -116,6 +126,9 @@ impl TuiModel {
 
     fn apply_status_snapshot(&mut self, snapshot: WsStatusSnapshot) {
         for output in snapshot.power_outputs {
+            if output.name == "5v_ws" {
+                continue;
+            }
             self.power_states.insert(
                 output.name.clone(),
                 output.value != 0 || output.state == "on",
@@ -143,6 +156,27 @@ impl TuiModel {
                     self.pending_usb_route_until = None;
                 }
             }
+        }
+        self.vin_available = !snapshot.switches.vin.route.is_empty();
+        if self.vin_available {
+            self.actual_vin_route = snapshot.switches.vin.route.clone();
+            let now = Instant::now();
+            match (&self.pending_vin_route, self.pending_vin_route_until) {
+                (Some(pending), Some(_)) if snapshot.switches.vin.route == *pending => {
+                    self.vin_route = snapshot.switches.vin.route;
+                    self.pending_vin_route = None;
+                    self.pending_vin_route_until = None;
+                }
+                (Some(_), Some(until)) if now < until => {}
+                _ => {
+                    self.vin_route = snapshot.switches.vin.route;
+                    self.pending_vin_route = None;
+                    self.pending_vin_route_until = None;
+                }
+            }
+        } else {
+            self.pending_vin_route = None;
+            self.pending_vin_route_until = None;
         }
         self.gpio_names = snapshot
             .gpios
@@ -364,6 +398,34 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
                             model.switch_confirm_start = None;
                         }
                     }
+                    ControlItem::VinSwitch => {
+                        if !model.switch_confirm_active {
+                            let next_route = if model.vin_route == "1.8v" {
+                                "3.3v"
+                            } else {
+                                "1.8v"
+                            };
+                            model.switch_confirm_active = true;
+                            model.switch_confirm_start = Some(Instant::now());
+                            model.switch_confirm_kind = "vin".to_string();
+                            model.switch_confirm_target = next_route.to_string();
+                            model.status = format!(
+                                "Press Enter again within 3s to confirm VIN switch to {}",
+                                model.switch_confirm_target
+                            );
+                        } else if model.switch_confirm_kind == "vin" {
+                            let route = model.switch_confirm_target.clone();
+                            let action =
+                                set_switch_route(&model.base_url, model.timeout, "vin", &route)?;
+                            model.vin_route = route.clone();
+                            model.pending_vin_route = Some(route);
+                            model.pending_vin_route_until =
+                                Some(Instant::now() + Duration::from_secs(2));
+                            model.apply_action_msg(action);
+                            model.switch_confirm_active = false;
+                            model.switch_confirm_start = None;
+                        }
+                    }
                 }
             }
         }
@@ -501,15 +563,7 @@ fn set_switch_route(
 }
 
 fn usb_switch_coordinated(base_url: &str, timeout: Duration, route: &str) -> Result<TuiActionMsg> {
-    let vbus_state = if route == "pc" { "on" } else { "off" };
     let client = crate::client::BoardClient::new(base_url, timeout)?;
-
-    client.send_text(BoardRequest {
-        method: Method::PUT,
-        path: "/api/v1/power/5v_ws".to_string(),
-        query: vec![],
-        body: Some(serde_json::json!({ "state": vbus_state })),
-    })?;
 
     client.send_text(BoardRequest {
         method: Method::PUT,
@@ -519,7 +573,7 @@ fn usb_switch_coordinated(base_url: &str, timeout: Duration, route: &str) -> Res
     })?;
 
     Ok(TuiActionMsg {
-        status: format!("switch usb={route} (5v_ws={vbus_state})"),
+        status: format!("switch usb={route}"),
         err: None,
     })
 }
@@ -573,7 +627,7 @@ fn current_milliamp_estimate(reading: &AdcReading) -> i32 {
 }
 
 fn control_targets() -> &'static [&'static str] {
-    &["12v_out", "5v_out", "5v_ws", "20v_out"]
+    &["12v_out", "5v_out", "20v_out"]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -581,6 +635,7 @@ enum ControlItem {
     Power(String),
     SdSwitch,
     UsbSwitch,
+    VinSwitch,
     Gpio(String),
 }
 
@@ -591,6 +646,9 @@ fn control_items(model: &TuiModel) -> Vec<ControlItem> {
     }
     items.push(ControlItem::SdSwitch);
     items.push(ControlItem::UsbSwitch);
+    if model.vin_available {
+        items.push(ControlItem::VinSwitch);
+    }
     for gpio in &model.gpio_names {
         items.push(ControlItem::Gpio(gpio.clone()));
     }
@@ -598,7 +656,7 @@ fn control_items(model: &TuiModel) -> Vec<ControlItem> {
 }
 
 fn first_gpio_index(model: &TuiModel) -> Option<usize> {
-    let count = control_targets().len() + 2;
+    let count = control_targets().len() + 2 + usize::from(model.vin_available);
     if model.gpio_names.is_empty() {
         None
     } else {
@@ -672,6 +730,7 @@ fn build_control_chips(model: &TuiModel) -> Vec<String> {
             }
             ControlItem::SdSwitch => format!("switch sd [{}]", model.sd_route),
             ControlItem::UsbSwitch => format!("switch usb [{}]", model.usb_route),
+            ControlItem::VinSwitch => format!("switch vin [{}]", model.vin_route),
             ControlItem::Gpio(gpio) => {
                 let value = if *model.gpio_levels.get(&gpio).unwrap_or(&false) {
                     "1"
@@ -716,7 +775,9 @@ fn grouped_control_chips(
         };
         match item {
             ControlItem::Power(_) => power.push(chip),
-            ControlItem::SdSwitch | ControlItem::UsbSwitch => sd.push(chip),
+            ControlItem::SdSwitch | ControlItem::UsbSwitch | ControlItem::VinSwitch => {
+                sd.push(chip)
+            }
             ControlItem::Gpio(_) => gpio.push(chip),
         }
     }
@@ -969,6 +1030,21 @@ fn render_body(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
         "  usb actual  = {}",
         model.actual_usb_route
     )));
+    if model.vin_available {
+        lines.push(Line::from(format!(
+            "  vin desired = {}{}",
+            model.vin_route,
+            if model.pending_vin_route.is_some() {
+                " (pending)"
+            } else {
+                ""
+            }
+        )));
+        lines.push(Line::from(format!(
+            "  vin actual  = {}",
+            model.actual_vin_route
+        )));
+    }
     lines.push(Line::from(format!(
         "  {}",
         format_monitoring_summary(&model.monitoring)
@@ -1014,11 +1090,18 @@ mod tests {
         model.gpio_levels.insert("GP13".to_string(), true);
         model.gpio_is_input.insert("GP13".to_string(), false);
         model.apply_status_snapshot(WsStatusSnapshot {
-            power_outputs: vec![crate::ws_client::TuiStatusPowerOutput {
-                name: "5v_out".to_string(),
-                state: "on".to_string(),
-                value: 1,
-            }],
+            power_outputs: vec![
+                crate::ws_client::TuiStatusPowerOutput {
+                    name: "5v_out".to_string(),
+                    state: "on".to_string(),
+                    value: 1,
+                },
+                crate::ws_client::TuiStatusPowerOutput {
+                    name: "5v_ws".to_string(),
+                    state: "on".to_string(),
+                    value: 1,
+                },
+            ],
             gpios: vec![TuiStatusGpio {
                 name: "GP14".to_string(),
                 pin: 14,
@@ -1032,6 +1115,7 @@ mod tests {
 
         // Snapshot becomes authoritative under REST polling.
         assert_eq!(model.power_states.get("5v_out"), Some(&true));
+        assert_eq!(model.power_states.get("5v_ws"), None);
         assert_eq!(model.gpio_levels.get("GP14"), Some(&false));
         assert_eq!(model.gpio_is_input.get("GP14"), Some(&false));
         assert_eq!(model.gpio_notes.get("GP14"), Some(&"J17_PIN3".to_string()));
@@ -1161,6 +1245,49 @@ mod tests {
     }
 
     #[test]
+    fn vin_control_is_visible_only_when_reported_by_firmware() {
+        let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+        assert!(!control_items(&model).contains(&ControlItem::VinSwitch));
+
+        let mut snapshot = WsStatusSnapshot::default();
+        snapshot.switches.vin.route = "3.3v".to_string();
+        snapshot.gpios.push(TuiStatusGpio {
+            name: "GP13".to_string(),
+            pin: 13,
+            direction: "input".to_string(),
+            ..Default::default()
+        });
+        model.apply_status_snapshot(snapshot);
+
+        let items = control_items(&model);
+        assert!(model.vin_available);
+        assert_eq!(model.vin_route, "3.3v");
+        assert_eq!(items[control_targets().len() + 2], ControlItem::VinSwitch);
+        assert_eq!(first_gpio_index(&model), Some(control_targets().len() + 3));
+        assert!(build_control_chips(&model)
+            .iter()
+            .any(|chip| chip == "switch vin [3.3v]"));
+    }
+
+    #[test]
+    fn vin_control_uses_existing_confirmation_state() {
+        let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+        model.vin_available = true;
+        model.vin_route = "3.3v".to_string();
+        model.control_idx = control_targets().len() + 2;
+
+        handle_key(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        assert!(model.switch_confirm_active);
+        assert_eq!(model.switch_confirm_kind, "vin");
+        assert_eq!(model.switch_confirm_target, "1.8v");
+    }
+
+    #[test]
     fn build_control_chips_show_current_switch_routes() {
         let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
         model.sd_route = "usb-reader".to_string();
@@ -1177,6 +1304,7 @@ mod tests {
         let mut snapshot = WsStatusSnapshot::default();
         snapshot.switches.sd.route = "usb-reader".to_string();
         snapshot.switches.usb.route = "target".to_string();
+        snapshot.switches.vin.route = "1.8v".to_string();
 
         model.apply_status_snapshot(snapshot);
 
@@ -1184,6 +1312,9 @@ mod tests {
         assert_eq!(model.actual_usb_route, "target");
         assert_eq!(model.sd_route, "usb-reader");
         assert_eq!(model.usb_route, "target");
+        assert!(model.vin_available);
+        assert_eq!(model.actual_vin_route, "1.8v");
+        assert_eq!(model.vin_route, "1.8v");
     }
 
     #[test]

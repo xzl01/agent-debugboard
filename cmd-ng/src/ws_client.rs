@@ -68,6 +68,8 @@ pub struct TuiStatusSwitches {
     pub sd: TuiStatusSwitchRoute,
     #[serde(default)]
     pub usb: TuiStatusSwitchRoute,
+    #[serde(default)]
+    pub vin: TuiStatusSwitchRoute,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -302,6 +304,20 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
     use tungstenite::{accept, Message};
+
+    #[test]
+    fn status_switches_accept_optional_vin_route() {
+        let rp2040: WsStatusSnapshot =
+            serde_json::from_str(r#"{"switches":{"sd":{"route":"target"},"usb":{"route":"pc"}}}"#)
+                .unwrap();
+        assert!(rp2040.switches.vin.route.is_empty());
+
+        let rp2350: WsStatusSnapshot = serde_json::from_str(
+            r#"{"switches":{"sd":{"route":"target"},"usb":{"route":"pc"},"vin":{"route":"1.8v"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(rp2350.switches.vin.route, "1.8v");
+    }
 
     #[test]
     fn ws_client_close_advances_generation() {
