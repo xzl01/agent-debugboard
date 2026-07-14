@@ -221,9 +221,7 @@ export function useBoard(): UseBoard {
         // Use the session path returned by firmware, but keep the browser
         // connection same-origin so Vite's WebSocket proxy and deployed pages
         // both work without hard-coding the board address.
-        const sessionUrl = new URL(session.ws_url, location.href);
-        const proto = location.protocol === "https:" ? "wss" : "ws";
-        ws = new WebSocket(`${proto}://${location.host}${sessionUrl.pathname}${sessionUrl.search}`);
+        ws = new WebSocket(api.liveWebSocketUrl(session.ws_url));
         ws.onopen = () => {
           ws?.send(JSON.stringify({ type: "subscribe", topic: "live", rate_hz: 10, id: "web" }));
         };

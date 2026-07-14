@@ -96,7 +96,7 @@ export function SerialCard() {
 
   function connectBridge() {
     setError(null);
-    const url = `ws://${location.hostname}:${BRIDGE_PORT}`;
+    const url = `ws://127.0.0.1:${BRIDGE_PORT}/serial`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
     ws.onopen = () => ws.send(JSON.stringify({ type: "open", baud }));

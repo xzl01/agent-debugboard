@@ -25,7 +25,7 @@ const en: Dict = {
 
   "banner.unreachable": "Board unreachable",
   "banner.unreachable.detail":
-    "Cannot reach the firmware HTTP API — connect the USB cable, ensure the NCM interface is up at 172.29.203.1, and that the dev proxy targets the board.",
+    "Cannot reach the firmware API. On GitHub Pages, run `npm run device-bridge`; locally, verify the USB-NCM link at 172.29.203.1.",
   "banner.retry": "Retry",
 
   "loading": "Loading board state…",
@@ -147,7 +147,7 @@ const zh: Dict = {
 
   "banner.unreachable": "无法连接开发板",
   "banner.unreachable.detail":
-    "无法访问固件 HTTP 接口 — 请连接 USB 线缆，确认 NCM 网卡已在 172.29.203.1 上线，且 dev 代理指向该板。",
+    "无法访问固件 API。使用 GitHub Pages 时请运行 `npm run device-bridge`；本地使用时请确认 USB-NCM 链路 172.29.203.1 正常。",
   "banner.retry": "重试",
 
   "loading": "正在加载板子状态…",

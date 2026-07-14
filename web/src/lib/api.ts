@@ -1,7 +1,8 @@
-// Thin client for the Radxa Linkr Debugger firmware REST API.
-// All paths are served under /api/v1 (proxied to the board by the dev server).
+// Thin client for the Radxa Linkr Debugger firmware REST API. Local development
+// uses Vite's same-origin proxy. The Pages build points this at the loopback
+// device gateway started by `npm run device-bridge`.
 
-const BASE = "/api/v1";
+const BASE = import.meta.env.VITE_DEVICE_API_BASE || "/api/v1";
 
 export interface LiveSession {
   session_id: number;
@@ -22,17 +23,32 @@ async function request<T = any>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(BASE + path, {
-      headers: { "Content-Type": "application/json" },
       ...init,
+      headers: {
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...init?.headers,
+      },
     });
   } catch (e) {
     throw new BoardApiError(
-      e instanceof Error ? e.message : "Network request failed"
+      `${e instanceof Error ? e.message : "Network request failed"}. ` +
+        "If this page is hosted on GitHub Pages, start the local gateway with `npm run device-bridge`."
     );
   }
 
   const text = await res.text();
-  const data = text ? JSON.parse(text) : {};
+  let data: any = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new BoardApiError(
+        `Device endpoint returned ${res.status} ${res.statusText} instead of JSON. ` +
+          "Start the local device gateway and verify the configured API endpoint.",
+        "invalid_response"
+      );
+    }
+  }
 
   if (!res.ok || data.ok === false) {
     const err = data?.error;
@@ -43,6 +59,15 @@ async function request<T = any>(path: string, init?: RequestInit): Promise<T> {
   }
   return data as T;
 }
+
+export function liveWebSocketUrl(path: string): string {
+  const base = new URL(BASE, location.href);
+  const session = new URL(path, base);
+  const protocol = base.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${base.host}${session.pathname}${session.search}`;
+}
+
+export const apiEndpoint = () => BASE;
 
 export const getStatus = () => request("/status");
 export const getAdc = () => request("/adc/read");

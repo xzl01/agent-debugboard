@@ -9,6 +9,7 @@ import { BootCard } from "./components/BootCard";
 import { SerialCard } from "./components/SerialCard";
 import { Badge, Button } from "./components/ui";
 import { useI18n } from "@/lib/i18n";
+import { apiEndpoint } from "@/lib/api";
 
 export default function App() {
   const board = useBoard();
@@ -97,8 +98,7 @@ export default function App() {
         <footer className="mt-6 flex flex-wrap items-center justify-between gap-2 text-[11px] text-ink-dim">
           <span>
             {t("footer.endpoint")}{" "}
-            <span className="font-mono">http://172.29.203.1:8080/api/v1</span> (proxied by the
-            dev server)
+            <span className="font-mono">{apiEndpoint()}</span>
           </span>
           <Badge tone="neutral">
             {board.live ? t("footer.live") : t("footer.polling")}

@@ -45,6 +45,7 @@ jobs:
         working-directory: web
         env:
           VITE_BASE_PATH: ${{ steps.pages.outputs.base_path }}/
+          VITE_DEVICE_API_BASE: http://127.0.0.1:8787/api/v1
         run: npm run build
 
       - name: Upload Pages artifact
