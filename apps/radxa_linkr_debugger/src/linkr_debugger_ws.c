@@ -421,8 +421,18 @@ static int linkr_debugger_ws_emit_status_snapshot(struct linkr_debugger_ws_clien
 	}
 
 	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
-				 "\"switches\":{\"sd\":{\"route\":\"%s\"},\"usb\":{\"route\":\"%s\"}},",
+				 "\"switches\":{\"sd\":{\"route\":\"%s\"},\"usb\":{\"route\":\"%s\"}",
 				 linkr_debugger_sd_route_name(), linkr_debugger_usb_route_name()) < 0) {
+		return -ENOMEM;
+	}
+
+	if (linkr_debugger_vin_switch_available() &&
+	    linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+				     ",\"vin\":{\"route\":\"%s\"}", linkr_debugger_vin_route_name()) < 0) {
+		return -ENOMEM;
+	}
+
+	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor, "},") < 0) {
 		return -ENOMEM;
 	}
 
@@ -607,9 +617,16 @@ static int linkr_debugger_ws_handle_control_message(struct linkr_debugger_ws_cli
 						"usb route must be pc or target");
 			}
 			ret = linkr_debugger_usb_route_set(route);
+		} else if (strcmp(request->output, "vin") == 0 && linkr_debugger_vin_switch_available()) {
+			enum linkr_debugger_vin_route route;
+			if (!linkr_debugger_parse_vin_route(request->route, &route)) {
+				return linkr_debugger_ws_emit_error(client, "switch", "invalid_route",
+						"vin route must be 1.8v or 3.3v");
+			}
+			ret = linkr_debugger_vin_route_set(route);
 		} else {
 			return linkr_debugger_ws_emit_error(client, "switch", "unknown_switch",
-					"switch target must be sd or usb");
+					"switch target must be sd, usb, or an available vin switch");
 		}
 
 		if (ret < 0) {

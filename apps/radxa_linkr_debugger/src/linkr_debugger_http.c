@@ -477,6 +477,25 @@ static int linkr_debugger_http_json_watchdog_status(struct linkr_debugger_http_e
 	       linkr_debugger_http_append(env, "}") < 0 ? -ENOMEM : 0;
 }
 
+static int linkr_debugger_http_json_switches(struct linkr_debugger_http_env *env)
+{
+	if (linkr_debugger_http_append(env, "{\"sd\":{\"route\":") < 0 ||
+	    linkr_debugger_http_json_string(env, linkr_debugger_sd_route_name()) < 0 ||
+	    linkr_debugger_http_append(env, "},\"usb\":{\"route\":") < 0 ||
+	    linkr_debugger_http_json_string(env, linkr_debugger_usb_route_name()) < 0) {
+		return -ENOMEM;
+	}
+
+	if (linkr_debugger_vin_switch_available()) {
+		if (linkr_debugger_http_append(env, "},\"vin\":{\"route\":") < 0 ||
+		    linkr_debugger_http_json_string(env, linkr_debugger_vin_route_name()) < 0) {
+			return -ENOMEM;
+		}
+	}
+
+	return linkr_debugger_http_append(env, "}}") < 0 ? -ENOMEM : 0;
+}
+
 static int linkr_debugger_http_json_availability(struct linkr_debugger_http_env *env,
 						    bool available, const char *reason)
 {
@@ -611,17 +630,17 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 	k_mutex_lock(&linkr_debugger_http_lock, K_FOREVER);
 	if (linkr_debugger_http_json_begin(&env, "status", true) < 0 ||
 	    linkr_debugger_http_append(&env,
-				 ",\"project\":\"radxa-linkr-debugger\",\"mcu\":\"rp2040\",\"usb\":") < 0 ||
+				 ",\"project\":\"radxa-linkr-debugger\",\"mcu\":") < 0 ||
+	    linkr_debugger_http_json_string(&env, linkr_debugger_mcu_name()) < 0 ||
+	    linkr_debugger_http_append(&env, ",\"usb\":") < 0 ||
 	    linkr_debugger_http_json_string(&env, linkr_debugger_usb_mode()) < 0 ||
 	    linkr_debugger_http_append(&env,
 				 ",\"power_inputs\":[{\"name\":\"5v_fin\",\"controllable\":false,\"measured\":false}]"
 				 ",\"power_outputs\":") < 0 ||
 	    linkr_debugger_http_json_power_outputs(&env) < 0 ||
-	    linkr_debugger_http_append(&env, ",\"switches\":{\"sd\":{\"route\":") < 0 ||
-	    linkr_debugger_http_json_string(&env, linkr_debugger_sd_route_name()) < 0 ||
-	    linkr_debugger_http_append(&env, "},\"usb\":{\"route\":") < 0 ||
-	    linkr_debugger_http_json_string(&env, linkr_debugger_usb_route_name()) < 0 ||
-	    linkr_debugger_http_append(&env, "}},\"adc_channels\":") < 0 ||
+	    linkr_debugger_http_append(&env, ",\"switches\":") < 0 ||
+	    linkr_debugger_http_json_switches(&env) < 0 ||
+	    linkr_debugger_http_append(&env, ",\"adc_channels\":") < 0 ||
 	    linkr_debugger_http_json_adc_channels(&env) < 0 ||
 	    linkr_debugger_http_append(&env, ",\"watchdog\":") < 0 ||
 	    linkr_debugger_http_json_watchdog_status(&env) < 0 ||
@@ -882,11 +901,9 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 	case HTTP_GET:
 		if (path == NULL) {
 			if (linkr_debugger_http_json_begin(&env, "switch", true) < 0 ||
-			    linkr_debugger_http_append(&env, ",\"action\":\"list\",\"switches\":{\"sd\":{\"route\":") < 0 ||
-			    linkr_debugger_http_json_string(&env, linkr_debugger_sd_route_name()) < 0 ||
-			    linkr_debugger_http_append(&env, "},\"usb\":{\"route\":") < 0 ||
-			    linkr_debugger_http_json_string(&env, linkr_debugger_usb_route_name()) < 0 ||
-			    linkr_debugger_http_append(&env, "}}}\n") < 0) {
+			    linkr_debugger_http_append(&env, ",\"action\":\"list\",\"switches\":") < 0 ||
+			    linkr_debugger_http_json_switches(&env) < 0 ||
+			    linkr_debugger_http_append(&env, "}\n") < 0) {
 				break;
 			}
 		} else if (strcmp(path + 1, "sd") == 0) {
@@ -900,6 +917,13 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 			if (linkr_debugger_http_json_begin(&env, "switch", true) < 0 ||
 			    linkr_debugger_http_append(&env, ",\"action\":\"get\",\"name\":\"usb\",\"route\":") < 0 ||
 			    linkr_debugger_http_json_string(&env, linkr_debugger_usb_route_name()) < 0 ||
+			    linkr_debugger_http_append(&env, "}\n") < 0) {
+				break;
+			}
+		} else if (strcmp(path + 1, "vin") == 0 && linkr_debugger_vin_switch_available()) {
+			if (linkr_debugger_http_json_begin(&env, "switch", true) < 0 ||
+			    linkr_debugger_http_append(&env, ",\"action\":\"get\",\"name\":\"vin\",\"route\":") < 0 ||
+			    linkr_debugger_http_json_string(&env, linkr_debugger_vin_route_name()) < 0 ||
 			    linkr_debugger_http_append(&env, "}\n") < 0) {
 				break;
 			}
@@ -968,6 +992,16 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 				return 0;
 			}
 			ret = linkr_debugger_usb_route_set(route);
+		} else if (strcmp(path + 1, "vin") == 0 && linkr_debugger_vin_switch_available()) {
+			enum linkr_debugger_vin_route route;
+
+			if (!linkr_debugger_parse_vin_route(req.route, &route)) {
+				k_mutex_unlock(&linkr_debugger_http_lock);
+				linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+						     "switch", "invalid_route", "vin route must be 1.8v or 3.3v");
+				return 0;
+			}
+			ret = linkr_debugger_vin_route_set(route);
 		} else {
 			k_mutex_unlock(&linkr_debugger_http_lock);
 			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_404_NOT_FOUND,
@@ -989,7 +1023,9 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 		    linkr_debugger_http_json_string(&env, path + 1) < 0 ||
 		    linkr_debugger_http_append(&env, ",\"route\":") < 0 ||
 		    linkr_debugger_http_json_string(&env,
-			    strcmp(path + 1, "sd") == 0 ? linkr_debugger_sd_route_name() : linkr_debugger_usb_route_name()) < 0 ||
+			    strcmp(path + 1, "sd") == 0 ? linkr_debugger_sd_route_name() :
+			    strcmp(path + 1, "usb") == 0 ? linkr_debugger_usb_route_name() :
+			    linkr_debugger_vin_route_name()) < 0 ||
 		    linkr_debugger_http_append(&env, "}\n") < 0) {
 			break;
 		}
@@ -1085,8 +1121,8 @@ static int linkr_debugger_http_handle_gpio(struct http_client_ctx *client,
 					     ",\"pin\":%u,\"note\":", (unsigned int)desc->pin) < 0 ||
 			    linkr_debugger_http_json_string(&env, desc->note) < 0 ||
 			    linkr_debugger_http_append(&env, ",\"direction\":") < 0 ||
-			    linkr_debugger_http_json_string(&env, linkr_debugger_safe_gpio_direction_name(
-				    (size_t)(desc - linkr_debugger_safe_gpios))) < 0 ||
+			    linkr_debugger_http_json_string(&env,
+				    linkr_debugger_safe_gpio_direction(desc)) < 0 ||
 			    linkr_debugger_http_append(&env, ",\"value\":%d}}\n",
 					     value > 0 ? 1 : 0) < 0) {
 				break;
@@ -1229,7 +1265,8 @@ static int linkr_debugger_http_handle_bootloader(struct http_client_ctx *client,
 	}
 
 	if (linkr_debugger_http_json_begin(&env, "bootloader", true) < 0 ||
-	    linkr_debugger_http_append(&env, ",\"message\":\"entering RP2040 BOOTSEL in 250 ms\"}\n") < 0) {
+	    linkr_debugger_http_append(&env, ",\"message\":\"entering %s BOOTSEL in 250 ms\"}\n",
+				     linkr_debugger_mcu_name()) < 0) {
 		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
 				     "bootloader", "response_too_large",
 				     "failed to encode bootloader response");
