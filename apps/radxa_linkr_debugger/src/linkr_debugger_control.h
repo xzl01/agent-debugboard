@@ -10,6 +10,7 @@
 
 #include "linkr_debugger_model.h"
 
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -33,6 +34,8 @@ struct linkr_debugger_current_sample {
 	int32_t current_ua;
 	struct sensor_value value;
 };
+
+#define LINKR_DEBUGGER_CURRENT_BATCH_MAX 20U
 
 struct linkr_debugger_watchdog_status {
 	bool supported;
@@ -71,6 +74,13 @@ int linkr_debugger_vin_route_set(enum linkr_debugger_vin_route route);
 
 int linkr_debugger_current_read(const struct linkr_debugger_current_desc *current,
 				   struct linkr_debugger_current_sample *sample);
+int linkr_debugger_current_read_all(struct linkr_debugger_current_sample *samples,
+				       size_t sample_count);
+int linkr_debugger_current_read_batch(struct linkr_debugger_current_sample *samples,
+					 size_t batch_count,
+					 size_t channel_count,
+					 int64_t *timestamps_us,
+					 uint32_t interval_us);
 
 int linkr_debugger_gpio_get(const struct linkr_debugger_safe_gpio_desc *desc, int *value);
 int linkr_debugger_gpio_set_output(const struct linkr_debugger_safe_gpio_desc *desc, bool value);

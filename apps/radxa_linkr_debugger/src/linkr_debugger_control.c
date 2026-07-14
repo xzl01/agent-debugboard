@@ -13,6 +13,7 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/adc.h>
+#include <zephyr/drivers/adc/current_sense_amplifier.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/regulator.h>
 #include <zephyr/drivers/sensor.h>
@@ -21,6 +22,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/logging/log_ctrl.h>
 #include <zephyr/sys/util.h>
+#include <stdlib.h>
 #include <string.h>
 
 LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
@@ -149,8 +151,14 @@ static const struct device *const current_sensors[] = {
 	DEVICE_DT_GET(CURRENT_12V_OUT_NODE),
 	DEVICE_DT_GET(CURRENT_20V_OUT_NODE),
 };
+static const struct current_sense_amplifier_dt_spec current_amplifiers[] = {
+	CURRENT_SENSE_AMPLIFIER_DT_SPEC_GET(CURRENT_5V_OUT_NODE),
+	CURRENT_SENSE_AMPLIFIER_DT_SPEC_GET(CURRENT_12V_OUT_NODE),
+	CURRENT_SENSE_AMPLIFIER_DT_SPEC_GET(CURRENT_20V_OUT_NODE),
+};
 #else
 static const struct device *const current_sensors[] = {};
+static const struct current_sense_amplifier_dt_spec current_amplifiers[] = {};
 #endif
 
 #if DT_NODE_HAS_STATUS(DT_PATH(zephyr_user), okay) && \
@@ -1046,6 +1054,133 @@ int linkr_debugger_current_read(const struct linkr_debugger_current_desc *curren
 	k_mutex_unlock(&linkr_debugger_control_lock);
 
 	return 0;
+}
+
+struct linkr_debugger_current_batch_timing {
+	int64_t *timestamps_us;
+	size_t count;
+};
+
+static enum adc_action linkr_debugger_current_batch_callback(
+	const struct device *dev,
+	const struct adc_sequence *sequence,
+	uint16_t sampling_index)
+{
+	struct linkr_debugger_current_batch_timing *timing = sequence->options->user_data;
+
+	ARG_UNUSED(dev);
+	if (sampling_index < timing->count) {
+		timing->timestamps_us[sampling_index] =
+			k_ticks_to_us_floor64(k_uptime_ticks());
+	}
+
+	return ADC_ACTION_CONTINUE;
+}
+
+int linkr_debugger_current_read_batch(struct linkr_debugger_current_sample *samples,
+					 size_t batch_count,
+					 size_t channel_count,
+					 int64_t *timestamps_us,
+					 uint32_t interval_us)
+{
+	int16_t raw[LINKR_DEBUGGER_CURRENT_BATCH_MAX][ARRAY_SIZE(adc_channels)];
+	struct linkr_debugger_current_batch_timing timing = {
+		.timestamps_us = timestamps_us,
+		.count = batch_count,
+	};
+	struct adc_sequence_options options = {0};
+	struct adc_sequence sequence = {
+		.buffer = raw,
+		.options = &options,
+	};
+	uint8_t previous_channel = 0U;
+	int ret;
+
+	if (samples == NULL || timestamps_us == NULL || batch_count == 0U ||
+	    batch_count > LINKR_DEBUGGER_CURRENT_BATCH_MAX ||
+	    channel_count != ARRAY_SIZE(adc_channels) ||
+	    channel_count != ARRAY_SIZE(current_amplifiers) ||
+	    channel_count != linkr_debugger_current_count || channel_count == 0U) {
+		return -EINVAL;
+	}
+
+	options.interval_us = interval_us;
+	options.callback = linkr_debugger_current_batch_callback;
+	options.user_data = &timing;
+	options.extra_samplings = (uint16_t)(batch_count - 1U);
+	sequence.buffer_size = batch_count * channel_count * sizeof(raw[0][0]);
+	sequence.resolution = adc_channels[0].resolution;
+	sequence.oversampling = adc_channels[0].oversampling;
+	for (size_t i = 0; i < channel_count; i++) {
+		if (adc_channels[i].dev != adc_channels[0].dev ||
+		    adc_channels[i].resolution != sequence.resolution ||
+		    adc_channels[i].oversampling != sequence.oversampling ||
+		    (i > 0U && adc_channels[i].channel_id <= previous_channel)) {
+			return -EINVAL;
+		}
+		previous_channel = adc_channels[i].channel_id;
+		sequence.channels |= BIT(adc_channels[i].channel_id);
+	}
+
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	ret = adc_read(adc_channels[0].dev, &sequence);
+	if (ret < 0) {
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		return ret;
+	}
+
+	for (size_t sample_index = 0; sample_index < batch_count; sample_index++) {
+		for (size_t i = 0; i < channel_count; i++) {
+			struct linkr_debugger_current_sample *sample =
+				&samples[sample_index * channel_count + i];
+			const struct linkr_debugger_current_desc *current =
+				&linkr_debugger_currents[i];
+			const struct linkr_debugger_rail_desc *rail =
+				linkr_debugger_find_rail(current->name);
+			int32_t microvolts = raw[sample_index][i];
+			int32_t millivolts = raw[sample_index][i];
+
+			memset(sample, 0, sizeof(*sample));
+			sample->rail_enabled = rail == NULL || !rail->controllable ||
+				linkr_debugger_power_output_enabled(rail);
+			sample->raw_available = true;
+			sample->raw = raw[sample_index][i];
+
+			ret = adc_raw_to_millivolts_dt(&adc_channels[i], &millivolts);
+			if (ret < 0) {
+				uint8_t resolution = adc_channels[i].resolution != 0U ?
+					adc_channels[i].resolution : 12U;
+
+				millivolts = (raw[sample_index][i] * 3300) /
+					((1 << resolution) - 1);
+			}
+			sample->mv = millivolts;
+
+			ret = adc_raw_to_microvolts_dt(&current_amplifiers[i].port,
+						  &microvolts);
+			if (ret < 0) {
+				k_mutex_unlock(&linkr_debugger_control_lock);
+				return ret;
+			}
+			if (abs(raw[sample_index][i]) >= current_amplifiers[i].noise_threshold) {
+				sample->current_ua = current_sense_amplifier_scale_ua_dt(
+					&current_amplifiers[i], microvolts);
+			}
+			(void)sensor_value_from_micro(&sample->value, sample->current_ua);
+		}
+	}
+	k_mutex_unlock(&linkr_debugger_control_lock);
+
+	return 0;
+}
+
+int linkr_debugger_current_read_all(struct linkr_debugger_current_sample *samples,
+				       size_t sample_count)
+{
+	int64_t timestamp_us;
+
+	return linkr_debugger_current_read_batch(samples, 1U, sample_count,
+					       &timestamp_us, 0U);
 }
 
 int linkr_debugger_gpio_get(const struct linkr_debugger_safe_gpio_desc *desc, int *value)
