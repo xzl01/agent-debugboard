@@ -44,7 +44,7 @@ jobs:
           .\skills\radxa-linkr-debugger\scripts\install.ps1 -DryRun
 
   firmware:
-    name: Build RP2040 UF2 firmware
+    name: Build RP2040 and RP2350 UF2 firmware
     runs-on: ubuntu-latest
 
     steps:
@@ -65,7 +65,7 @@ jobs:
           toolchains: arm-zephyr-eabi
           sdk-version: "1.0.1"
 
-      - name: Build firmware
+      - name: Build RP2040 firmware
         run: |
           west build -p always -b rpi_pico/rp2040 app/apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
           mkdir -p dist/firmware
@@ -73,10 +73,17 @@ jobs:
           cp build/radxa_linkr_debugger/zephyr/zephyr.elf dist/firmware/radxa-linkr-debugger-rp2040.elf
           cp build/radxa_linkr_debugger/zephyr/zephyr.map dist/firmware/radxa-linkr-debugger-rp2040.map
 
+      - name: Build RP2350 firmware
+        run: |
+          west build -p always -b rpi_pico2/rp2350a/m33 app/apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+          cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 dist/firmware/radxa-linkr-debugger-rp2350.uf2
+          cp build/radxa_linkr_debugger/zephyr/zephyr.elf dist/firmware/radxa-linkr-debugger-rp2350.elf
+          cp build/radxa_linkr_debugger/zephyr/zephyr.map dist/firmware/radxa-linkr-debugger-rp2350.map
+
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: radxa-linkr-debugger-rp2040-firmware
+          name: radxa-linkr-debugger-firmware
           path: dist/firmware/
           if-no-files-found: error
 

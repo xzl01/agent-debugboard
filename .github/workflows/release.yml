@@ -148,6 +148,13 @@ jobs:
           cp build/radxa_linkr_debugger/zephyr/zephyr.elf release-assets/radxa-linkr-debugger-rp2040.elf
           cp build/radxa_linkr_debugger/zephyr/zephyr.map release-assets/radxa-linkr-debugger-rp2040.map
 
+      - name: Build RP2350 firmware
+        run: |
+          west build -p always -b rpi_pico2/rp2350a/m33 app/apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+          cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 release-assets/radxa-linkr-debugger-rp2350.uf2
+          cp build/radxa_linkr_debugger/zephyr/zephyr.elf release-assets/radxa-linkr-debugger-rp2350.elf
+          cp build/radxa_linkr_debugger/zephyr/zephyr.map release-assets/radxa-linkr-debugger-rp2350.map
+
       - name: Build legacy Go host CLI release archives
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -174,6 +181,7 @@ jobs:
         run: |
           mkdir -p dist/release
           cp ../release-assets/radxa-linkr-debugger-rp2040.* dist/release/
+          cp ../release-assets/radxa-linkr-debugger-rp2350.* dist/release/
           cp ../rust-release-downloads/radxa-linkr-debuggerctl-rust_* \
             dist/release/
           cp dist/*.tar.gz dist/release/
@@ -184,6 +192,9 @@ jobs:
             radxa-linkr-debugger-rp2040.elf \
             radxa-linkr-debugger-rp2040.map \
             radxa-linkr-debugger-rp2040.uf2 \
+            radxa-linkr-debugger-rp2350.elf \
+            radxa-linkr-debugger-rp2350.map \
+            radxa-linkr-debugger-rp2350.uf2 \
             radxa-linkr-debuggerctl-rust_* \
             radxa-linkr-debuggerctl_* \
             skills-radxa-linkr-debugger.tar.gz > SHA256SUMS.txt
@@ -196,6 +207,7 @@ jobs:
 
           Included assets:
           - RP2040 firmware: UF2, ELF, and MAP
+          - RP2350 firmware: UF2, ELF, and MAP
           - Primary Rust host CLI/TUI archives: radxa-linkr-debuggerctl-rust_{os}_{arch}
           - Legacy Go CLI compatibility archives: radxa-linkr-debuggerctl_{os}_{arch}
           - Agent skill bundle: skills-radxa-linkr-debugger.tar.gz
