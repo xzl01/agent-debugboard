@@ -12,10 +12,27 @@ import {
   Languages,
 } from "lucide-react";
 import { Badge, Button, Toggle } from "./ui";
-import type { BoardSnapshot } from "@/lib/types";
-import { formatBytes, formatUptime } from "@/lib/utils";
+import type { BoardSnapshot, MemoryPressureSnapshot } from "@/lib/types";
+import { cn, formatBytes, formatUptime } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
+
+function formatPctX100(value?: number): string {
+  if (value == null) return "—";
+  return `${(value / 100).toFixed(2)} %`;
+}
+
+function ramMetricTone(pressurePctX100?: number): string {
+  if (pressurePctX100 == null) return "text-ink-dim";
+  if (pressurePctX100 >= 9000) return "text-danger";
+  if (pressurePctX100 >= 7500) return "text-warn";
+  return "text-ink-dim";
+}
+
+function formatSince(value: MemoryPressureSnapshot["since"]): string | null {
+  if (value == null) return null;
+  return value;
+}
 
 export function StatusBar({
   snapshot,
@@ -43,6 +60,7 @@ export function StatusBar({
   const temp = m.temperature;
   const cpu = m.cpu;
   const heap = m.heap;
+  const memory = m.memory;
   const uptime = m.runtime.uptime_seconds;
 
   const tempStr =
@@ -51,10 +69,86 @@ export function StatusBar({
       : "—";
   const cpuStr =
     cpu.available && cpu.active_pct_x100 != null
-      ? `${(cpu.active_pct_x100 / 100).toFixed(0)} %`
+      ? formatPctX100(cpu.active_pct_x100)
       : "—";
   const heapStr =
     heap.available && heap.free_bytes != null ? formatBytes(heap.free_bytes) : "—";
+
+  const componentLabel = (component?: string): string | null => {
+    if (!component) return null;
+
+    const key = `status.memory.component.${component}`;
+    const label = t(key);
+    return label === key ? component : label;
+  };
+
+  const formatLimiter = (pressure?: MemoryPressureSnapshot): string | null => {
+    const label = componentLabel(pressure?.limiting_component);
+    if (!label) return null;
+    return pressure?.limiting_name ? `${label}: ${pressure.limiting_name}` : label;
+  };
+
+  const currentPressure: MemoryPressureSnapshot | undefined =
+    memory?.current_pressure?.available ? memory.current_pressure : undefined;
+  const peakPressure: MemoryPressureSnapshot | undefined =
+    memory?.peak_pressure?.available ? memory.peak_pressure : undefined;
+  const legacyPressure: MemoryPressureSnapshot | undefined =
+    memory?.available && memory.pressure_pct_x100 != null
+      ? {
+          available: true,
+          reason: memory.reason,
+          coverage: memory.coverage,
+          pressure_pct_x100: memory.pressure_pct_x100,
+          limiting_component: memory.limiting_component,
+          limiting_name: memory.limiting_name,
+        }
+      : undefined;
+
+  const primaryPressure: MemoryPressureSnapshot | undefined = currentPressure ?? legacyPressure;
+  const primaryPressurePct = primaryPressure?.pressure_pct_x100;
+  const primaryPressureStr =
+    primaryPressurePct != null ? formatPctX100(primaryPressurePct) : null;
+  const primaryLabel = currentPressure ? t("status.memory.currentRam") : t("status.ram");
+  const primaryLimiter = formatLimiter(primaryPressure);
+  const peakPressureStr =
+    peakPressure?.pressure_pct_x100 != null ? formatPctX100(peakPressure.pressure_pct_x100) : null;
+  const peakLimiter = formatLimiter(peakPressure);
+  const primarySince = formatSince(primaryPressure?.since);
+  const peakSince = formatSince(peakPressure?.since);
+  const ramTitle = primaryPressureStr
+    ? [
+        `${primaryLabel}: ${primaryPressureStr}`,
+        primaryLimiter ? `${t("status.memory.limiter")}: ${primaryLimiter}` : null,
+        primaryPressure?.coverage ? `${t("status.memory.coverage")}: ${primaryPressure.coverage}` : null,
+        primaryPressure?.tie_count != null ? `${t("status.memory.ties")}: ${primaryPressure.tie_count}` : null,
+        primarySince ? `${t("status.memory.since")}: ${primarySince}` : null,
+        primaryPressure?.reason ? `${t("status.memory.reason")}: ${primaryPressure.reason}` : null,
+        peakPressureStr ? `${t("status.memory.peak")}: ${peakPressureStr}` : null,
+        peakLimiter ? `${t("status.memory.peakLimiter")}: ${peakLimiter}` : null,
+        peakPressure?.coverage ? `${t("status.memory.peakCoverage")}: ${peakPressure.coverage}` : null,
+        peakPressure?.tie_count != null ? `${t("status.memory.peakTies")}: ${peakPressure.tie_count}` : null,
+        peakSince ? `${t("status.memory.peakSince")}: ${peakSince}` : null,
+        peakPressure?.reason ? `${t("status.memory.peakReason")}: ${peakPressure.reason}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : peakPressureStr
+      ? [
+          `${t("status.memory.peak")}: ${peakPressureStr}`,
+          peakLimiter ? `${t("status.memory.peakLimiter")}: ${peakLimiter}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : undefined;
+  const heapTitle = peakPressureStr
+    ? [
+        `${t("status.heap")}: ${heapStr}`,
+        `${t("status.memory.peak")}: ${peakPressureStr}`,
+        peakLimiter ? `${t("status.memory.peakLimiter")}: ${peakLimiter}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : undefined;
 
   return (
     <header className="sticky top-0 z-20 border-b border-line/70 bg-bg/90 shadow-sm backdrop-blur-md">
@@ -132,9 +226,28 @@ export function StatusBar({
           <span className="inline-flex items-center gap-1.5 text-xs text-ink-dim">
             <Cpu size={13} /> {cpuStr}
           </span>
-          <span className="inline-flex items-center gap-1.5 text-xs text-ink-dim">
-            <MemoryStick size={13} /> {heapStr} {t("status.heap")}
-          </span>
+          {primaryPressureStr ? (
+            <span
+              className={cn(
+                "inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs",
+                ramMetricTone(primaryPressurePct)
+              )}
+              title={ramTitle}
+              aria-label={ramTitle}
+            >
+              <MemoryStick size={13} className="shrink-0" />
+              <span className="truncate">{primaryPressureStr}</span>
+            </span>
+          ) : (
+            <span
+              className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs text-ink-dim"
+              title={heapTitle}
+              aria-label={heapTitle}
+            >
+              <MemoryStick size={13} className="shrink-0" />
+              <span className="truncate">{heapStr}</span>
+            </span>
+          )}
           <span className="inline-flex items-center gap-1.5 text-xs text-ink-dim">
             <Clock size={13} /> {uptime != null ? formatUptime(uptime) : "—"}
           </span>
