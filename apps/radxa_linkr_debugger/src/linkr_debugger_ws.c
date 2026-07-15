@@ -87,7 +87,7 @@ static const struct json_obj_descr linkr_debugger_ws_request_descr[] = {
 
 struct linkr_debugger_capture_sample {
 	uint64_t device_t_mono_us;
-	uint32_t sample_sequence;
+	uint64_t sample_sequence;
 	int32_t raw[LINKR_DEBUGGER_WS_ADC_CHANNELS];
 	int32_t mv[LINKR_DEBUGGER_WS_ADC_CHANNELS];
 	int32_t current_ua[LINKR_DEBUGGER_WS_ADC_CHANNELS];
@@ -152,16 +152,17 @@ struct linkr_debugger_ws_adc_sample {
 	int source_rate_hz;
 };
 
-struct linkr_debugger_ws_sample_batch {
-	struct linkr_debugger_ws_adc_sample samples[LINKR_DEBUGGER_WS_MAX_BATCH_SIZE];
-	uint32_t dropped_samples;
-	uint8_t count;
-};
-
 struct linkr_debugger_ws_client_thread_arg {
 	struct linkr_debugger_ws_client *client;
 	int ws_sock;
 	uint32_t session_id;
+};
+
+struct linkr_debugger_ws_sampler_workspace {
+	struct linkr_debugger_current_sample
+		readings[LINKR_DEBUGGER_CURRENT_BATCH_MAX][LINKR_DEBUGGER_WS_ADC_CHANNELS];
+	int64_t timestamps_us[LINKR_DEBUGGER_CURRENT_BATCH_MAX];
+	struct linkr_debugger_ws_adc_sample ingest_sample;
 };
 
 static struct linkr_debugger_ws_client linkr_debugger_ws_clients[LINKR_DEBUGGER_WS_MAX_CLIENTS];
@@ -177,6 +178,7 @@ static uint32_t linkr_debugger_next_capture_id = 1U;
 
 static struct linkr_debugger_ws_adc_sample
 	linkr_debugger_ws_sample_ring[LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE];
+static struct linkr_debugger_ws_sampler_workspace linkr_debugger_ws_sampler_workspace;
 static struct k_mutex linkr_debugger_ws_sample_ring_lock;
 static struct k_event linkr_debugger_ws_sampler_events;
 static uint64_t linkr_debugger_ws_latest_sample_sequence;
@@ -769,7 +771,7 @@ static void linkr_debugger_ws_adc_sample_to_capture_frame(
 {
 	memset(frame, 0, sizeof(*frame));
 	frame->device_t_mono_us = (uint64_t)sample->uptime_us;
-	frame->sample_sequence = (uint32_t)sample->sequence;
+	frame->sample_sequence = sample->sequence;
 	for (size_t i = 0; i < linkr_debugger_current_count; i++) {
 		const struct linkr_debugger_current_sample *reading = &sample->readings[i];
 
@@ -941,13 +943,10 @@ static void linkr_debugger_ws_store_adc_samples(
 	size_t sample_count,
 	int rate_hz)
 {
-	struct linkr_debugger_ws_adc_sample stored[LINKR_DEBUGGER_CURRENT_BATCH_MAX];
-
-	memset(stored, 0, sizeof(stored));
-	k_mutex_lock(&linkr_debugger_ws_sample_ring_lock, K_FOREVER);
 	for (size_t i = 0; i < sample_count; i++) {
 		struct linkr_debugger_ws_adc_sample *sample;
 
+		k_mutex_lock(&linkr_debugger_ws_sample_ring_lock, K_FOREVER);
 		linkr_debugger_ws_latest_sample_sequence++;
 		sample = &linkr_debugger_ws_sample_ring[
 			(linkr_debugger_ws_latest_sample_sequence - 1U) %
@@ -956,12 +955,11 @@ static void linkr_debugger_ws_store_adc_samples(
 		sample->sequence = linkr_debugger_ws_latest_sample_sequence;
 		sample->uptime_us = timestamps_us[i];
 		sample->source_rate_hz = rate_hz;
-		stored[i] = *sample;
-	}
-	k_mutex_unlock(&linkr_debugger_ws_sample_ring_lock);
+		linkr_debugger_ws_sampler_workspace.ingest_sample = *sample;
+		k_mutex_unlock(&linkr_debugger_ws_sample_ring_lock);
 
-	for (size_t i = 0; i < sample_count; i++) {
-		linkr_debugger_capture_ingest_sample(&stored[i]);
+		linkr_debugger_capture_ingest_sample(
+			&linkr_debugger_ws_sampler_workspace.ingest_sample);
 	}
 }
 
@@ -974,9 +972,6 @@ static void linkr_debugger_adc_sampler_thread(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p3);
 
 	while (true) {
-		struct linkr_debugger_current_sample
-			readings[LINKR_DEBUGGER_CURRENT_BATCH_MAX][LINKR_DEBUGGER_WS_ADC_CHANNELS];
-		int64_t timestamps_us[LINKR_DEBUGGER_CURRENT_BATCH_MAX];
 		int rate_hz = linkr_debugger_ws_requested_sample_rate();
 		uint32_t period_us;
 		size_t sample_count;
@@ -1004,28 +999,28 @@ static void linkr_debugger_adc_sampler_thread(void *p1, void *p2, void *p3)
 					   DIV_ROUND_UP((uint32_t)rate_hz, 50U));
 		}
 
-		ret = linkr_debugger_current_read_batch(&readings[0][0], sample_count,
-						 LINKR_DEBUGGER_WS_ADC_CHANNELS,
-						 timestamps_us,
-						 sample_count > 1U ? period_us : 0U);
+		ret = linkr_debugger_current_read_batch(
+			&linkr_debugger_ws_sampler_workspace.readings[0][0], sample_count,
+			LINKR_DEBUGGER_WS_ADC_CHANNELS,
+			linkr_debugger_ws_sampler_workspace.timestamps_us,
+			sample_count > 1U ? period_us : 0U);
 		if (ret < 0) {
 			LOG_ERR("ADC batch read failed: %d", ret);
 			k_msleep(10);
 			continue;
 		}
-		linkr_debugger_ws_store_adc_samples(readings, timestamps_us, sample_count,
-						     rate_hz);
+		linkr_debugger_ws_store_adc_samples(
+			linkr_debugger_ws_sampler_workspace.readings,
+			linkr_debugger_ws_sampler_workspace.timestamps_us,
+			sample_count, rate_hz);
 		if (sample_count > 1U) {
 			int64_t now_us;
 			int64_t next_batch_us;
 			uint32_t events = 0U;
 
 			linkr_debugger_ws_publish_batch_ready();
-		} else {
-			linkr_debugger_ws_publish(LINKR_DEBUGGER_WS_EVENT_SAMPLE);
-		}
-		if (sample_count > 1U) {
-			next_batch_us = timestamps_us[sample_count - 1U] + period_us;
+			next_batch_us = linkr_debugger_ws_sampler_workspace
+				.timestamps_us[sample_count - 1U] + period_us;
 			now_us = k_ticks_to_us_floor64(k_uptime_ticks());
 			if (now_us < next_batch_us - tick_us) {
 				events = k_event_wait(&linkr_debugger_ws_sampler_events,
@@ -1039,6 +1034,8 @@ static void linkr_debugger_adc_sampler_thread(void *p1, void *p2, void *p3)
 					k_busy_wait((uint32_t)(next_batch_us - now_us));
 				}
 			}
+		} else {
+			linkr_debugger_ws_publish(LINKR_DEBUGGER_WS_EVENT_SAMPLE);
 		}
 	}
 }
@@ -1054,46 +1051,31 @@ static uint64_t linkr_debugger_ws_latest_sequence(void)
 	return sequence;
 }
 
-static bool linkr_debugger_ws_latest_sample_get(struct linkr_debugger_ws_adc_sample *sample)
-{
-	uint64_t sequence;
-
-	k_mutex_lock(&linkr_debugger_ws_sample_ring_lock, K_FOREVER);
-	sequence = linkr_debugger_ws_latest_sample_sequence;
-	if (sequence != 0U) {
-		*sample = linkr_debugger_ws_sample_ring[(sequence - 1U) %
-						       LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE];
-	}
-	k_mutex_unlock(&linkr_debugger_ws_sample_ring_lock);
-
-	return sequence != 0U;
-}
-
-static void linkr_debugger_ws_sample_batch_get(struct linkr_debugger_ws_client *client,
-					       struct linkr_debugger_ws_sample_batch *batch)
+static bool linkr_debugger_ws_sample_get(struct linkr_debugger_ws_client *client,
+					 struct linkr_debugger_ws_adc_sample *out_sample,
+					 uint32_t *dropped_samples)
 {
 	uint32_t period_us = DIV_ROUND_UP(1000000U,
 					   (uint32_t)client->telemetry_rate_hz);
 	uint64_t latest;
 	uint64_t oldest;
 
-	memset(batch, 0, sizeof(*batch));
+	*dropped_samples = 0U;
 	k_mutex_lock(&linkr_debugger_ws_sample_ring_lock, K_FOREVER);
 	latest = linkr_debugger_ws_latest_sample_sequence;
 	if (latest == 0U) {
 		k_mutex_unlock(&linkr_debugger_ws_sample_ring_lock);
-		return;
+		return false;
 	}
 
 	oldest = latest >= LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE ?
 		 latest - LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE + 1U : 1U;
 	if (client->next_sample_sequence < oldest) {
-		batch->dropped_samples = (uint32_t)(oldest - client->next_sample_sequence);
+		*dropped_samples = (uint32_t)(oldest - client->next_sample_sequence);
 		client->next_sample_sequence = oldest;
 	}
 
-	while (client->next_sample_sequence <= latest &&
-	       batch->count < client->telemetry_batch_size) {
+	while (client->next_sample_sequence <= latest) {
 		const struct linkr_debugger_ws_adc_sample *sample =
 			&linkr_debugger_ws_sample_ring[(client->next_sample_sequence - 1U) %
 						       LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE];
@@ -1101,7 +1083,7 @@ static void linkr_debugger_ws_sample_batch_get(struct linkr_debugger_ws_client *
 
 		if (use_all_samples || client->next_sample_due_us == 0 ||
 		    sample->uptime_us >= client->next_sample_due_us) {
-			batch->samples[batch->count++] = *sample;
+			*out_sample = *sample;
 			if (!use_all_samples && client->next_sample_due_us == 0) {
 				client->next_sample_due_us = sample->uptime_us;
 			}
@@ -1110,10 +1092,15 @@ static void linkr_debugger_ws_sample_batch_get(struct linkr_debugger_ws_client *
 					client->next_sample_due_us += period_us;
 				} while (client->next_sample_due_us <= sample->uptime_us);
 			}
+			client->next_sample_sequence++;
+			k_mutex_unlock(&linkr_debugger_ws_sample_ring_lock);
+			return true;
 		}
 		client->next_sample_sequence++;
 	}
 	k_mutex_unlock(&linkr_debugger_ws_sample_ring_lock);
+
+	return false;
 }
 
 static int linkr_debugger_ws_append_adc_readings(char *buf, size_t size, size_t *cursor,
@@ -1138,15 +1125,19 @@ static int linkr_debugger_ws_append_adc_readings(char *buf, size_t size, size_t 
 
 	return 0;
 }
+
 static int linkr_debugger_ws_emit_adc_sample(struct linkr_debugger_ws_client *client)
 {
 	char *buf = (char *)client->tx_buffer;
 	struct linkr_debugger_ws_adc_sample sample;
+	uint32_t dropped_samples;
 	size_t cursor = 0U;
 
-	if (!linkr_debugger_ws_latest_sample_get(&sample)) {
+	if (!linkr_debugger_ws_sample_get(client, &sample, &dropped_samples)) {
 		return 0;
 	}
+	ARG_UNUSED(dropped_samples);
+
 	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
 				 "{\"type\":\"telemetry\",\"topic\":\"adc\","
 				 "\"schema\":\"%s\",\"sequence\":%llu,\"uptime_us\":%lld,"
@@ -1169,52 +1160,65 @@ static int linkr_debugger_ws_emit_adc_sample(struct linkr_debugger_ws_client *cl
 static int linkr_debugger_ws_emit_adc_batch(struct linkr_debugger_ws_client *client)
 {
 	char *buf = (char *)client->tx_buffer;
-	struct linkr_debugger_ws_sample_batch batch;
+	uint32_t total_dropped_samples = 0U;
+	size_t dropped_samples_offset = 0U;
+	uint8_t sample_count = 0U;
 	size_t cursor = 0U;
 
-	linkr_debugger_ws_sample_batch_get(client, &batch);
-	if (batch.count == 0U) {
-		return 0;
-	}
+	while (sample_count < client->telemetry_batch_size) {
+		struct linkr_debugger_ws_adc_sample sample;
+		uint32_t dropped_samples;
 
-	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
-				 "{\"type\":\"telemetry-batch\",\"topic\":\"adc\","
-				 "\"schema\":\"%s\",\"dropped_samples\":%u,\"channels\":[",
-				 linkr_debugger_json_schema(), batch.dropped_samples) < 0) {
-		return -ENOMEM;
-	}
-	for (size_t i = 0; i < linkr_debugger_current_count; i++) {
-		if (i > 0U && linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
-						    &cursor, ",") < 0) {
-			return -ENOMEM;
+		if (!linkr_debugger_ws_sample_get(client, &sample, &dropped_samples)) {
+			break;
 		}
-		if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
-					 "{\"name\":\"%s\",\"signal\":\"%s\"}",
-					 linkr_debugger_currents[i].name,
-					 linkr_debugger_currents[i].signal) < 0) {
-			return -ENOMEM;
+		total_dropped_samples += dropped_samples;
+
+		if (sample_count == 0U) {
+			if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+						 "{\"type\":\"telemetry-batch\",\"topic\":\"adc\","
+						 "\"schema\":\"%s\",\"dropped_samples\":",
+						 linkr_debugger_json_schema()) < 0) {
+				return -ENOMEM;
+			}
+			dropped_samples_offset = cursor;
+			if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+						 "0000000000,\"channels\":[") < 0) {
+				return -ENOMEM;
+			}
+			for (size_t i = 0; i < linkr_debugger_current_count; i++) {
+				if (i > 0U && linkr_debugger_ws_append(buf,
+								    LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+								    &cursor, ",") < 0) {
+					return -ENOMEM;
+				}
+				if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+							 &cursor,
+							 "{\"name\":\"%s\",\"signal\":\"%s\"}",
+							 linkr_debugger_currents[i].name,
+							 linkr_debugger_currents[i].signal) < 0) {
+					return -ENOMEM;
+				}
+			}
+			if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+						 &cursor, "],\"samples\":[") < 0) {
+				return -ENOMEM;
+			}
 		}
-	}
-	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
-				 "],\"samples\":[") < 0) {
-		return -ENOMEM;
-	}
 
-	for (uint8_t i = 0U; i < batch.count; i++) {
-		const struct linkr_debugger_ws_adc_sample *sample = &batch.samples[i];
-
-		if (i > 0U && linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
-						    &cursor, ",") < 0) {
+		if (sample_count > 0U && linkr_debugger_ws_append(buf,
+							      LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+							      &cursor, ",") < 0) {
 			return -ENOMEM;
 		}
 		if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
 					 "{\"sequence\":%llu,\"uptime_us\":%lld,\"values\":[",
-					 (unsigned long long)sample->sequence,
-					 (long long)sample->uptime_us) < 0) {
+					 (unsigned long long)sample.sequence,
+					 (long long)sample.uptime_us) < 0) {
 			return -ENOMEM;
 		}
 		for (size_t j = 0; j < linkr_debugger_current_count; j++) {
-			const struct linkr_debugger_current_sample *reading = &sample->readings[j];
+			const struct linkr_debugger_current_sample *reading = &sample.readings[j];
 
 			if (j > 0U && linkr_debugger_ws_append(buf,
 							    LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
@@ -1233,10 +1237,28 @@ static int linkr_debugger_ws_emit_adc_batch(struct linkr_debugger_ws_client *cli
 					     &cursor, "]}") < 0) {
 			return -ENOMEM;
 		}
+		sample_count++;
+	}
+	if (sample_count == 0U) {
+		return 0;
 	}
 	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
 				     &cursor, "]}") < 0) {
 		return -ENOMEM;
+	}
+	{
+		char dropped_buf[11];
+		int dropped_len = snprintk(dropped_buf, sizeof(dropped_buf), "%u",
+						 total_dropped_samples);
+
+		if (dropped_len < 0 || dropped_len >= (int)sizeof(dropped_buf)) {
+			return -ENOMEM;
+		}
+		memmove(buf + dropped_samples_offset + dropped_len,
+			buf + dropped_samples_offset + 10U,
+			cursor - dropped_samples_offset - 10U + 1U);
+		memcpy(buf + dropped_samples_offset, dropped_buf, (size_t)dropped_len);
+		cursor = cursor - 10U + (size_t)dropped_len;
 	}
 
 	return linkr_debugger_ws_send_json(client, buf);
@@ -1288,10 +1310,10 @@ static int linkr_debugger_ws_emit_capture_sample(struct linkr_debugger_ws_client
 	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
 				 "{\"type\":\"capture_sample\",\"schema\":\"%s\","
 				 "\"capture_id\":%u,\"offset\":%u,\"triggered\":%s,"
-				 "\"sample_sequence\":%u,\"device_t_mono_us\":%llu,\"readings\":[",
+				 "\"sample_sequence\":%llu,\"device_t_mono_us\":%llu,\"readings\":[",
 				 linkr_debugger_json_schema(), (unsigned int)capture->capture_id,
 				 (unsigned int)offset, offset == capture->trigger_offset ? "true" : "false",
-				 (unsigned int)frame->sample_sequence,
+				 (unsigned long long)frame->sample_sequence,
 				 (unsigned long long)frame->device_t_mono_us) < 0) {
 		return -ENOMEM;
 	}
