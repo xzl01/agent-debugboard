@@ -114,6 +114,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/web/package-lock.json
+
+
       - name: Set up Zephyr workspace
         uses: zephyrproject-rtos/action-zephyr-setup@v1
         with:
@@ -182,7 +190,7 @@ jobs:
           Included assets:
           - RP2040 firmware: UF2, ELF, and MAP
           - RP2350 firmware: UF2, ELF, and MAP
-          - Advanced/Agent Rust host CLI/TUI archives: radxa-linkr-debuggerctl-rust_{os}_{arch}
+          - Primary Rust host CLI/TUI archives: radxa-linkr-debuggerctl-rust_{os}_{arch}
           - Agent skill bundle: skills-radxa-linkr-debugger.tar.gz
           - SHA256SUMS.txt for release asset verification
           EOF
