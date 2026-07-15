@@ -396,7 +396,7 @@ the recorder preserves device time under `metadata.device_timing`. Prefer
 device time over host receive time when analyzing cadence, and treat
 `metadata.dropped_samples` as authoritative evidence that the per-client
 sampling ring overran. A `.csv` output path writes device time and three current
-channels directly.
+channels directly, using `device_t_mono_us` first, then `uptime_us`, then `0`.
 
 For triggered acquisition, arm the firmware ring buffer over the same live
 WebSocket. G3 supports 2048 samples and G2 supports 512; require
