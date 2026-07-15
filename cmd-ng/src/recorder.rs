@@ -149,17 +149,27 @@ fn write_csv_header(writer: &mut BufWriter<File>) -> Result<()> {
     Ok(())
 }
 
+fn csv_device_time_us(message: &WsTelemetryMessage) -> u64 {
+    message
+        .extra
+        .get("device_t_mono_us")
+        .and_then(|value| value.as_u64())
+        .or_else(|| {
+            message
+                .extra
+                .get("uptime_us")
+                .and_then(|value| value.as_u64())
+        })
+        .unwrap_or_default()
+}
+
 fn write_telemetry_csv_row(
     writer: &mut BufWriter<File>,
     message: &WsTelemetryMessage,
     elapsed: Duration,
     unix_ns: i128,
 ) -> Result<()> {
-    let device_t_mono_us = message
-        .extra
-        .get("device_t_mono_us")
-        .and_then(|value| value.as_u64())
-        .unwrap_or_default();
+    let device_t_mono_us = csv_device_time_us(message);
     write!(
         writer,
         "{},{},{},{}",
@@ -327,6 +337,33 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert!(data.contains("device_t_mono_us"));
         assert!(data.contains("9,2000000,77,55,true,123000"));
+    }
+
+    #[test]
+    fn csv_record_falls_back_to_uptime_when_device_time_is_missing() {
+        let path = temp_file_path("csv-uptime");
+        let mut writer = BufWriter::new(File::create(&path).unwrap());
+        let batch: WsTelemetryBatch = serde_json::from_value(serde_json::json!({
+            "type": "telemetry-batch",
+            "topic": "adc",
+            "schema": JSON_SCHEMA,
+            "channels": [{"name": "5v_out", "signal": "S_C_5V"}],
+            "samples": [{
+                "sequence": 10,
+                "uptime_us": 1234,
+                "values": [[1, 42, 180, 456000]]
+            }]
+        }))
+        .unwrap();
+        let message = expand_telemetry_batch(batch).unwrap().remove(0);
+
+        write_csv_header(&mut writer).unwrap();
+        write_telemetry_csv_row(&mut writer, &message, Duration::from_millis(3), 88).unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+        let data = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(data.contains("10,3000000,88,1234,true,456000"));
     }
 
     #[test]
