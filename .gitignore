@@ -17,8 +17,6 @@
 /build/
 /dist/
 /out/
-/radxa-linkr-debuggerctl
-/radxa-linkr-debuggerctl.exe
 **/target/
 
 # Skill-local generated host CLI binary
@@ -36,6 +34,7 @@
 /web/*.tsbuildinfo
 /web/vite.config.js
 /web/vite.config.d.ts
+/test-results/
 
 # Local schematic analysis scratch output
 .schematic-preview/
