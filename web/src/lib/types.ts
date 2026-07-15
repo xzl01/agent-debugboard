@@ -9,6 +9,15 @@ export interface Availability {
   error?: number;
 }
 
+export interface MemoryPressureSnapshot extends Availability {
+  coverage?: string;
+  pressure_pct_x100?: number;
+  limiting_component?: string;
+  limiting_name?: string;
+  tie_count?: number;
+  since?: string;
+}
+
 export interface PowerOutput {
   name: string;
   signal?: string;
@@ -95,6 +104,29 @@ export interface BoardMonitoring {
     allocated_bytes?: number;
     max_allocated_bytes?: number;
     total_bytes?: number;
+  };
+  memory?: Availability & {
+    coverage?: string;
+    pressure_pct_x100?: number;
+    limiting_component?: string;
+    limiting_name?: string;
+    current_pressure?: MemoryPressureSnapshot;
+    peak_pressure?: MemoryPressureSnapshot;
+    system_heap_pressure_pct_x100?: number;
+    physical?: {
+      total_bytes?: number;
+      image_reserved_bytes?: number;
+      reserved_pct_x100?: number;
+    };
+    stacks?: {
+      thread_count?: number;
+      measured_count?: number;
+      error_count?: number;
+      total_bytes?: number;
+      used_high_water_bytes?: number;
+      max_pressure_pct_x100?: number;
+      max_pressure_thread?: string;
+    };
   };
   runtime: Availability & { uptime_ms?: number; uptime_seconds?: number };
   cpu: Availability & {

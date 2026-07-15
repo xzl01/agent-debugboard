@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import type {
   AdcReading,
+  Availability,
   BoardSnapshot,
   BoardMonitoring,
   CaptureConfig,
   CaptureSample,
   PowerCapture,
+  MemoryPressureSnapshot,
   PowerOutput,
   SafeGpio,
   SwitchState,
@@ -35,63 +37,140 @@ const EMPTY: BoardSnapshot = {
   adc: [],
 };
 
-function parseMonitoring(raw: any): BoardMonitoring {
-  if (!raw) return EMPTY.monitoring;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function mergeAvailability<T extends Availability>(
+  prev: T,
+  raw: unknown,
+  defaults?: Partial<T>
+): T {
+  if (!isRecord(raw)) {
+    return prev;
+  }
+
   return {
-    temperature: raw.temperature ?? { available: false },
-    heap: raw.heap ?? { available: false },
-    runtime: raw.runtime ?? { available: false },
-    cpu: raw.cpu ?? { available: false },
+    ...defaults,
+    ...prev,
+    ...raw,
+  } as T;
+}
+
+function parseMemoryPressure(
+  raw: unknown,
+  prev?: MemoryPressureSnapshot
+): MemoryPressureSnapshot | undefined {
+  if (!isRecord(raw)) {
+    return prev;
+  }
+
+  return mergeAvailability(prev ?? { available: false }, raw);
+}
+
+function parseMonitoringMemory(
+  raw: unknown,
+  prev: BoardMonitoring["memory"]
+): BoardMonitoring["memory"] {
+  if (!isRecord(raw)) {
+    return prev;
+  }
+
+  const next = mergeAvailability(prev ?? { available: false }, raw);
+  const physical = isRecord(raw.physical)
+    ? {
+        ...prev?.physical,
+        ...raw.physical,
+      }
+    : prev?.physical;
+  const stacks = isRecord(raw.stacks)
+    ? {
+        ...prev?.stacks,
+        ...raw.stacks,
+      }
+    : prev?.stacks;
+  const current_pressure = parseMemoryPressure(raw.current_pressure, prev?.current_pressure);
+  const peak_pressure = parseMemoryPressure(raw.peak_pressure, prev?.peak_pressure);
+
+  return {
+    ...next,
+    physical,
+    stacks,
+    current_pressure,
+    peak_pressure,
   };
 }
 
-function parseWatchdog(raw: any): WatchdogStatus {
-  if (!raw) return EMPTY.watchdog;
+function parseMonitoring(raw: unknown, prev: BoardMonitoring = EMPTY.monitoring): BoardMonitoring {
+  if (!isRecord(raw)) return prev;
   return {
-    supported: !!raw.supported,
-    automatic: !!raw.automatic,
-    healthy: !!raw.healthy,
-    armed: !!raw.armed,
-    timeout_ms: raw.timeout_ms ?? 0,
-    bootloader_on_timeout: !!raw.bootloader_on_timeout,
-    failing_service: raw.failing_service ?? "",
+    temperature: mergeAvailability(prev.temperature, raw.temperature, { available: false }),
+    heap: mergeAvailability(prev.heap, raw.heap, { available: false }),
+    memory: parseMonitoringMemory(raw.memory, prev.memory),
+    runtime: mergeAvailability(prev.runtime, raw.runtime, { available: false }),
+    cpu: mergeAvailability(prev.cpu, raw.cpu, { available: false }),
   };
 }
 
-function mapStatus(status: any, adc: AdcReading[]): BoardSnapshot {
-  const rawOutputs: any[] = status?.power_outputs ?? [];
+function parseWatchdog(raw: unknown, prev: WatchdogStatus = EMPTY.watchdog): WatchdogStatus {
+  if (!isRecord(raw)) return prev;
+
+  return {
+    supported: typeof raw.supported === "boolean" ? raw.supported : prev.supported,
+    automatic: typeof raw.automatic === "boolean" ? raw.automatic : prev.automatic,
+    healthy: typeof raw.healthy === "boolean" ? raw.healthy : prev.healthy,
+    armed: typeof raw.armed === "boolean" ? raw.armed : prev.armed,
+    timeout_ms: typeof raw.timeout_ms === "number" ? raw.timeout_ms : prev.timeout_ms,
+    bootloader_on_timeout:
+      typeof raw.bootloader_on_timeout === "boolean"
+        ? raw.bootloader_on_timeout
+        : prev.bootloader_on_timeout,
+    failing_service:
+      typeof raw.failing_service === "string" ? raw.failing_service : prev.failing_service,
+  };
+}
+
+function mapStatus(status: unknown, adc: AdcReading[]): BoardSnapshot {
+  const record = isRecord(status) ? status : {};
+  const rawOutputs = Array.isArray(record.power_outputs)
+    ? record.power_outputs.filter(isRecord)
+    : [];
   const powerOutputs: PowerOutput[] = rawOutputs.map((o) => ({
-    name: o.name,
-    signal: o.signal,
-    gp: o.gp,
-    controllable: o.controllable,
-    state: o.state,
-    value: o.value,
+    name: typeof o.name === "string" ? o.name : "",
+    signal: typeof o.signal === "string" ? o.signal : undefined,
+    gp: typeof o.gp === "number" ? o.gp : undefined,
+    controllable: typeof o.controllable === "boolean" ? o.controllable : false,
+    state: typeof o.state === "string" ? o.state : "",
+    value: typeof o.value === "number" ? o.value : null,
   }));
 
-  const rawGpios: any[] = status?.gpios ?? [];
+  const rawGpios = Array.isArray(record.gpios) ? record.gpios.filter(isRecord) : [];
   const gpios: SafeGpio[] = rawGpios.map((g) => ({
-    name: g.name,
-    pin: g.pin,
-    note: g.note,
-    value: g.value,
-    direction: g.direction,
+    name: typeof g.name === "string" ? g.name : "",
+    pin: typeof g.pin === "number" ? g.pin : 0,
+    note: typeof g.note === "string" ? g.note : "",
+    value: typeof g.value === "number" ? g.value : 0,
+    direction: typeof g.direction === "string" ? g.direction : "input",
   }));
 
+  const rawSwitches = isRecord(record.switches) ? record.switches : undefined;
+  const rawSd = rawSwitches && isRecord(rawSwitches.sd) ? rawSwitches.sd : undefined;
+  const rawUsb = rawSwitches && isRecord(rawSwitches.usb) ? rawSwitches.usb : undefined;
+  const rawVin = rawSwitches && isRecord(rawSwitches.vin) ? rawSwitches.vin : undefined;
   const switches: SwitchState = {
-    sd: status?.switches?.sd?.route ?? "",
-    usb: status?.switches?.usb?.route ?? "",
-    vin: status?.switches?.vin?.route ?? "",
+    sd: typeof rawSd?.route === "string" ? rawSd.route : "",
+    usb: typeof rawUsb?.route === "string" ? rawUsb.route : "",
+    vin: typeof rawVin?.route === "string" ? rawVin.route : "",
   };
 
   return {
-    mcu: status?.mcu,
-    usb: status?.usb,
+    mcu: typeof record.mcu === "string" ? record.mcu : undefined,
+    usb: typeof record.usb === "string" ? record.usb : undefined,
     powerOutputs,
     switches,
     gpios,
-    watchdog: parseWatchdog(status?.watchdog),
-    monitoring: parseMonitoring(status?.board_monitoring),
+    watchdog: parseWatchdog(record.watchdog, EMPTY.watchdog),
+    monitoring: parseMonitoring(record.board_monitoring, EMPTY.monitoring),
     adc,
   };
 }
@@ -100,36 +179,47 @@ function mapStatus(status: any, adc: AdcReading[]): BoardSnapshot {
 // metadata (signal/gp/controllable) we only learned from the HTTP status poll.
 function mergeWsSnapshot(prev: BoardSnapshot, msg: any): BoardSnapshot {
   const meta = new Map(prev.powerOutputs.map((o) => [o.name, o]));
-  const powerOutputs: PowerOutput[] = (msg.power_outputs ?? []).map((o: any) => ({
-    name: o.name,
-    signal: meta.get(o.name)?.signal,
-    gp: meta.get(o.name)?.gp,
-    controllable: meta.get(o.name)?.controllable ?? true,
-    state: o.state,
-    value: o.value,
-  }));
+  const record = isRecord(msg) ? msg : {};
+  const powerOutputs: PowerOutput[] = Array.isArray(record.power_outputs)
+    ? record.power_outputs.filter(isRecord).map((o) => ({
+        name: typeof o.name === "string" ? o.name : "",
+        signal: meta.get(typeof o.name === "string" ? o.name : "")?.signal,
+        gp: meta.get(typeof o.name === "string" ? o.name : "")?.gp,
+        controllable:
+          meta.get(typeof o.name === "string" ? o.name : "")?.controllable ?? true,
+        state: typeof o.state === "string" ? o.state : "",
+        value: typeof o.value === "number" ? o.value : null,
+      }))
+    : prev.powerOutputs;
 
-  const gpios: SafeGpio[] = (msg.gpios ?? []).map((g: any) => ({
-    name: g.name,
-    pin: g.pin,
-    note: g.note,
-    value: g.value,
-    direction: g.direction,
-  }));
+  const gpios: SafeGpio[] = Array.isArray(record.gpios)
+    ? record.gpios.filter(isRecord).map((g) => ({
+        name: typeof g.name === "string" ? g.name : "",
+        pin: typeof g.pin === "number" ? g.pin : 0,
+        note: typeof g.note === "string" ? g.note : "",
+        value: typeof g.value === "number" ? g.value : 0,
+        direction: typeof g.direction === "string" ? g.direction : "input",
+      }))
+    : prev.gpios;
+
+  const rawSwitches = isRecord(record.switches) ? record.switches : undefined;
+  const rawSd = rawSwitches && isRecord(rawSwitches.sd) ? rawSwitches.sd : undefined;
+  const rawUsb = rawSwitches && isRecord(rawSwitches.usb) ? rawSwitches.usb : undefined;
+  const rawVin = rawSwitches && isRecord(rawSwitches.vin) ? rawSwitches.vin : undefined;
 
   return {
     ...prev,
     powerOutputs,
-    switches: msg.switches
+    switches: rawSwitches
       ? {
-          sd: msg.switches.sd?.route ?? prev.switches.sd,
-          usb: msg.switches.usb?.route ?? prev.switches.usb,
-          vin: msg.switches.vin?.route ?? prev.switches.vin,
+          sd: typeof rawSd?.route === "string" ? rawSd.route : prev.switches.sd,
+          usb: typeof rawUsb?.route === "string" ? rawUsb.route : prev.switches.usb,
+          vin: typeof rawVin?.route === "string" ? rawVin.route : prev.switches.vin,
         }
       : prev.switches,
     gpios,
-    watchdog: parseWatchdog(msg.watchdog),
-    monitoring: parseMonitoring(msg.board_monitoring),
+    watchdog: parseWatchdog(record.watchdog, prev.watchdog),
+    monitoring: parseMonitoring(record.board_monitoring, prev.monitoring),
   };
 }
 
