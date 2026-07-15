@@ -14,8 +14,8 @@
   --c-ink: 15 23 42;
   --c-ink-dim: 71 85 105;
   --c-scroll: 148 163 184;
-  --c-terminal: 15 23 42;
-  --c-terminal-ink: 226 232 240;
+  --c-terminal: 255 255 255;
+  --c-terminal-ink: 15 23 42;
   color-scheme: light;
 }
 
@@ -31,7 +31,7 @@
   --c-ink: 241 245 249;
   --c-ink-dim: 148 163 184;
   --c-scroll: 71 85 105;
-  --c-terminal: 2 6 23;
+  --c-terminal: 7 9 12;
   --c-terminal-ink: 226 232 240;
   color-scheme: dark;
 }

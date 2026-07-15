@@ -34,6 +34,7 @@ implementation.
 | USB control | Composite USB device: NCM HTTP/WS control plane + CDC ACM fallback console |
 | Host automation | Rust `cmd-ng` CLI/TUI with JSON output and `doctor` diagnostics |
 | Live telemetry | Bidirectional WebSocket stream on a live-session URL under `/api/v1/ws/<slot>` |
+| Triggered power capture | Device-timestamped current capture with pre/post ring buffer, manual/current/GPIO/power-on triggers, and CSV/NDJSON export |
 | Power outputs | `12v_out`, `5v_out`, `20v_out` |
 | ADC monitor | Current monitor reads for `5v_out`, `12v_out`, `20v_out` |
 | Board self-monitoring | `/api/v1/status` and status WebSocket snapshots report board CPU/runtime/heap/temperature availability and values when Zephyr exposes reliable sources; the watchdog supervisor also prints periodic heap diagnostics for short-reset debugging |
@@ -178,10 +179,13 @@ For high-rate capture, use `adc record`, which
 creates a live websocket session and records telemetry to an NDJSON file. It
 defaults to a 1000Hz websocket subscription and accepts `--rate-hz HZ` for lower
 rates. Each output record includes host receive timestamps plus
-`metadata.requested_rate_hz`; if firmware telemetry includes device-side timing
-fields, the recorder copies them into `metadata.device_timing`. Current ADC
-telemetry includes `sequence` but no explicit device timestamp, so
-`device_timing` may be absent.
+`metadata.requested_rate_hz`; firmware telemetry includes `sample_sequence` and
+`device_t_mono_us`, which the recorder copies into `metadata.device_timing`.
+
+Power-analyzer captures add a firmware ring buffer and device monotonic
+timestamps. G3 keeps 2048 samples and G2 keeps 512. The Web UI can arm manual,
+current-threshold, GPIO-edge, or power-on captures, overlay four runs, and
+export CSV or NDJSON. See [doc/power-analyzer.md](doc/power-analyzer.md).
 
 ## Build Firmware
 
@@ -373,6 +377,7 @@ Read current-monitor ADC channels:
 radxa-linkr-debuggerctl adc read
 radxa-linkr-debuggerctl adc read 5v_out
 radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 1000 --rate-hz 250
+radxa-linkr-debuggerctl adc record /tmp/adc.csv 1000 --rate-hz 250
 radxa-linkr-debuggerctl adc read -v 5v_out
 radxa-linkr-debuggerctl adc read 12v_out
 radxa-linkr-debuggerctl adc read 20v_out

@@ -322,14 +322,29 @@ accepts `--rate-hz HZ` for a 1..1000Hz requested websocket subscription rate:
 
 ```sh
 cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.ndjson 1000 --rate-hz 250
+cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.csv 1000 --rate-hz 250
 ```
 
-Each recorder output row keeps the existing JSON schema, records host receive
-timestamps, and includes `metadata.requested_rate_hz`. If firmware telemetry
-contains device-side timing fields, the recorder copies them into
-`metadata.device_timing`. Current ADC telemetry carries `sequence` but no
-explicit device timestamp, so do not assume `device_timing` is present when
-analyzing capture cadence.
+Each NDJSON row keeps the existing JSON schema, host receive timestamps, and
+`metadata.requested_rate_hz`. Firmware telemetry includes `sample_sequence` and
+`device_t_mono_us`; the recorder preserves device time under
+`metadata.device_timing`. Prefer device time over host receive time when
+analyzing cadence. A `.csv` output path writes device time and three current
+channels directly.
+
+For triggered acquisition, arm the firmware ring buffer over the same live
+WebSocket. G3 supports 2048 samples and G2 supports 512; require
+`pre_samples + post_samples + 1` to stay within capacity. Trigger names are
+`manual`, `current`, `gpio`, and `power_on`:
+
+```json
+{"type":"command","command":"capture_arm","id":"capture-1","trigger":"current","output":"5v_out","threshold_ua":500000,"rate_hz":100,"pre_samples":100,"post_samples":300}
+```
+
+For manual capture send `{"type":"command","command":"capture_trigger"}`.
+Cancel with `capture_cancel`. Firmware returns `capture_begin`, ordered
+`capture_sample` frames, and `capture_complete`; normalize time against the
+sample at `trigger_offset`. Only the owning WebSocket can trigger or cancel it.
 
 WebSocket clients can subscribe to telemetry and send control commands on the
 same connection. Example subscription payload:

@@ -21,6 +21,7 @@ export interface PowerOutput {
 export interface SwitchState {
   sd: string; // "target" | "usb-reader"
   usb: string; // "pc" | "target"
+  vin?: string; // "1.8v" | "3.3v"
 }
 
 export interface AdcReading {
@@ -33,6 +34,40 @@ export interface AdcReading {
   unit: string;
   sensor_value?: { val1: number; val2: number };
   current_ua: number;
+}
+
+export type CaptureTrigger = "manual" | "current" | "gpio" | "power_on";
+
+export interface CaptureConfig {
+  trigger: CaptureTrigger;
+  source: string;
+  edge: "rising" | "falling" | "either";
+  thresholdUa: number;
+  rateHz: number;
+  preSamples: number;
+  postSamples: number;
+}
+
+export interface CaptureSample {
+  offset: number;
+  triggered: boolean;
+  sampleSequence: number;
+  deviceTimeUs: number;
+  readings: AdcReading[];
+}
+
+export interface PowerCapture {
+  id: number;
+  trigger: string;
+  source: string;
+  edge: string;
+  thresholdUa: number;
+  rateHz: number;
+  preSamples: number;
+  postSamples: number;
+  triggerOffset: number;
+  samples: CaptureSample[];
+  capturedAt: number;
 }
 
 export interface SafeGpio {

@@ -4,6 +4,9 @@ import type {
   AdcReading,
   BoardSnapshot,
   BoardMonitoring,
+  CaptureConfig,
+  CaptureSample,
+  PowerCapture,
   PowerOutput,
   SafeGpio,
   SwitchState,
@@ -12,7 +15,7 @@ import type {
 
 const EMPTY: BoardSnapshot = {
   powerOutputs: [],
-  switches: { sd: "", usb: "" },
+  switches: { sd: "", usb: "", vin: "" },
   gpios: [],
   watchdog: {
     supported: false,
@@ -78,6 +81,7 @@ function mapStatus(status: any, adc: AdcReading[]): BoardSnapshot {
   const switches: SwitchState = {
     sd: status?.switches?.sd?.route ?? "",
     usb: status?.switches?.usb?.route ?? "",
+    vin: status?.switches?.vin?.route ?? "",
   };
 
   return {
@@ -117,7 +121,11 @@ function mergeWsSnapshot(prev: BoardSnapshot, msg: any): BoardSnapshot {
     ...prev,
     powerOutputs,
     switches: msg.switches
-      ? { sd: msg.switches.sd?.route ?? prev.switches.sd, usb: msg.switches.usb?.route ?? prev.switches.usb }
+      ? {
+          sd: msg.switches.sd?.route ?? prev.switches.sd,
+          usb: msg.switches.usb?.route ?? prev.switches.usb,
+          vin: msg.switches.vin?.route ?? prev.switches.vin,
+        }
       : prev.switches,
     gpios,
     watchdog: parseWatchdog(msg.watchdog),
@@ -137,9 +145,38 @@ export interface UseBoard {
   setLive: (v: boolean) => void;
   refresh: () => void;
   setPower: (name: string, on: boolean) => Promise<void>;
-  setSwitch: (name: "sd" | "usb", route: string) => Promise<void>;
+  readPower: (name: string) => Promise<{ state: string; currentUa: number }>;
+  setSwitch: (name: "sd" | "usb" | "vin", route: string) => Promise<void>;
   setGpio: (identifier: string, direction: "input" | "output", value?: number) => Promise<void>;
   enterBootloader: () => Promise<void>;
+  captureState: "idle" | "connecting" | "armed" | "receiving";
+  captureProgress: { received: number; total: number } | null;
+  captures: PowerCapture[];
+  armCapture: (config: CaptureConfig) => Promise<void>;
+  triggerCapture: () => void;
+  cancelCapture: () => void;
+  clearCaptures: () => void;
+}
+
+type CaptureBuilder = Omit<PowerCapture, "samples" | "capturedAt"> & {
+  samples: CaptureSample[];
+  expected: number;
+};
+
+function captureArmMessage(config: CaptureConfig) {
+  return {
+    type: "command",
+    command: "capture_arm",
+    id: "web-capture",
+    trigger: config.trigger,
+    output: config.trigger === "gpio" ? "" : config.source,
+    gpio: config.trigger === "gpio" ? config.source : "",
+    edge: config.edge,
+    threshold_ua: config.thresholdUa,
+    rate_hz: config.rateHz,
+    pre_samples: config.preSamples,
+    post_samples: config.postSamples,
+  };
 }
 
 export function useBoard(): UseBoard {
@@ -150,6 +187,27 @@ export function useBoard(): UseBoard {
   const [loading, setLoading] = useState(true);
   const [auto, setAuto] = useState(true);
   const [live, setLive] = useState(false);
+  const [captureState, setCaptureState] = useState<UseBoard["captureState"]>("idle");
+  const [captureProgress, setCaptureProgress] = useState<UseBoard["captureProgress"]>(null);
+  const [captures, setCaptures] = useState<PowerCapture[]>([]);
+  const wsRef = useRef<WebSocket | null>(null);
+  const pendingCaptureRef = useRef<CaptureConfig | null>(null);
+  const captureBuilderRef = useRef<CaptureBuilder | null>(null);
+  const captureArmPromiseRef = useRef<{
+    resolve: () => void;
+    reject: (reason: Error) => void;
+  } | null>(null);
+
+  const resetCapture = useCallback((reason?: Error) => {
+    if (captureArmPromiseRef.current) {
+      captureArmPromiseRef.current.reject(reason ?? new Error("Power capture arming was cancelled"));
+      captureArmPromiseRef.current = null;
+    }
+    pendingCaptureRef.current = null;
+    captureBuilderRef.current = null;
+    setCaptureProgress(null);
+    setCaptureState("idle");
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -222,8 +280,12 @@ export function useBoard(): UseBoard {
         // connection same-origin so Vite's WebSocket proxy and deployed pages
         // both work without hard-coding the board address.
         ws = new WebSocket(api.liveWebSocketUrl(session.ws_url));
+        wsRef.current = ws;
         ws.onopen = () => {
           ws?.send(JSON.stringify({ type: "subscribe", topic: "live", rate_hz: 10, id: "web" }));
+          if (pendingCaptureRef.current) {
+            ws?.send(JSON.stringify(captureArmMessage(pendingCaptureRef.current)));
+          }
         };
         ws.onmessage = (ev) => {
           try {
@@ -232,17 +294,87 @@ export function useBoard(): UseBoard {
               setSnapshot((prev) => mergeWsSnapshot(prev, msg));
             } else if (msg.type === "telemetry" && Array.isArray(msg.readings)) {
               setSnapshot((prev) => ({ ...prev, adc: msg.readings }));
+            } else if (msg.type === "result" && msg.command === "capture_arm") {
+              pendingCaptureRef.current = null;
+              setCaptureState("armed");
+              captureArmPromiseRef.current?.resolve();
+              captureArmPromiseRef.current = null;
+            } else if (msg.type === "capture_begin") {
+              captureBuilderRef.current = {
+                id: msg.capture_id,
+                trigger: msg.trigger,
+                source: msg.source,
+                edge: msg.edge,
+                thresholdUa: msg.threshold_ua,
+                rateHz: msg.rate_hz,
+                preSamples: msg.pre_samples,
+                postSamples: msg.post_samples,
+                triggerOffset: msg.trigger_offset,
+                expected: msg.sample_count,
+                samples: [],
+              };
+              setCaptureState("receiving");
+              setCaptureProgress({ received: 0, total: msg.sample_count });
+            } else if (msg.type === "capture_sample" && captureBuilderRef.current) {
+              const builder = captureBuilderRef.current;
+              builder.samples.push({
+                offset: msg.offset,
+                triggered: !!msg.triggered,
+                sampleSequence: msg.sample_sequence,
+                deviceTimeUs: msg.device_t_mono_us,
+                readings: (msg.readings ?? []).map((reading: any) => ({
+                  name: reading.name,
+                  signal: "",
+                  power_enabled: !!reading.power_enabled,
+                  raw: null,
+                  mv: 0,
+                  sensor_channel: "current",
+                  unit: "A",
+                  current_ua: reading.current_ua ?? 0,
+                })),
+              });
+              if (builder.samples.length % 20 === 0 || builder.samples.length === builder.expected) {
+                setCaptureProgress({ received: builder.samples.length, total: builder.expected });
+              }
+            } else if (msg.type === "capture_complete" && captureBuilderRef.current) {
+              const builder = captureBuilderRef.current;
+              const completed: PowerCapture = {
+                id: builder.id,
+                trigger: builder.trigger,
+                source: builder.source,
+                edge: builder.edge,
+                thresholdUa: builder.thresholdUa,
+                rateHz: builder.rateHz,
+                preSamples: builder.preSamples,
+                postSamples: builder.postSamples,
+                triggerOffset: builder.triggerOffset,
+                samples: builder.samples,
+                capturedAt: Date.now(),
+              };
+              setCaptures((previous) => [...previous, completed].slice(-4));
+              captureBuilderRef.current = null;
+              setCaptureProgress(null);
+              setCaptureState("idle");
+            } else if (msg.type === "error" && msg.command === "capture") {
+              const message = msg.error?.message ?? "Power capture failed";
+              resetCapture(new Error(message));
+              setError(message);
             }
           } catch {
             /* ignore malformed frames */
           }
         };
         ws.onerror = () => {
-          if (!cancelled) setError("Live WebSocket error");
+          if (!cancelled) {
+            resetCapture(new Error("Live WebSocket error"));
+            setError("Live WebSocket error");
+          }
         };
         ws.onclose = () => {
+          if (wsRef.current === ws) wsRef.current = null;
           void releaseSession();
           if (!cancelled) {
+            resetCapture(new Error("Live WebSocket disconnected"));
             setLive(false);
             setError("Live WebSocket disconnected");
           }
@@ -251,6 +383,8 @@ export function useBoard(): UseBoard {
 
       return () => {
         cancelled = true;
+        resetCapture();
+        if (wsRef.current === ws) wsRef.current = null;
         if (ws && ws.readyState < WebSocket.CLOSING) {
           ws.close();
         } else {
@@ -264,18 +398,33 @@ export function useBoard(): UseBoard {
     if (!auto) return;
     const id = setInterval(refresh, 2000);
     return () => clearInterval(id);
-  }, [auto, live, refresh]);
+  }, [auto, live, refresh, resetCapture]);
 
   const setPower = useCallback(
     async (name: string, on: boolean) => {
-      await api.setPower(name, on);
+      const response = await api.setPower(name, on);
+      const expectedState = on ? "on" : "off";
+      if (response?.power_output?.name !== name || response?.power_output?.state !== expectedState) {
+        throw new Error(`Power output ${name} did not confirm state ${expectedState}`);
+      }
       if (!live) refresh();
     },
     [live, refresh]
   );
 
+  const readPower = useCallback(async (name: string) => {
+    const [status, adcRes] = await Promise.all([api.getStatus(), api.getAdc()]);
+    const output = (status?.power_outputs ?? []).find((item: any) => item.name === name);
+    const reading = (adcRes?.readings ?? []).find((item: any) => item.name === name);
+    if (!output) throw new Error(`Power output ${name} was not reported by the device`);
+    return {
+      state: String(output.state ?? ""),
+      currentUa: Math.max(0, Number(reading?.current_ua ?? 0)),
+    };
+  }, []);
+
   const setSwitch = useCallback(
-    async (name: "sd" | "usb", route: string) => {
+    async (name: "sd" | "usb" | "vin", route: string) => {
       await api.setSwitch(name, route);
       if (!live) refresh();
     },
@@ -294,6 +443,36 @@ export function useBoard(): UseBoard {
     await api.enterBootloader();
   }, []);
 
+  const armCapture = useCallback((config: CaptureConfig) => new Promise<void>((resolve, reject) => {
+    captureArmPromiseRef.current?.reject(new Error("Power capture arming was superseded"));
+    captureArmPromiseRef.current = { resolve, reject };
+    pendingCaptureRef.current = config;
+    captureBuilderRef.current = null;
+    setCaptureProgress(null);
+    setCaptureState("connecting");
+    setError(null);
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(captureArmMessage(config)));
+    } else {
+      setLive(true);
+    }
+  }), []);
+
+  const triggerCapture = useCallback(() => {
+    wsRef.current?.send(JSON.stringify({
+      type: "command", command: "capture_trigger", id: "web-trigger",
+    }));
+  }, []);
+
+  const cancelCapture = useCallback(() => {
+    wsRef.current?.send(JSON.stringify({
+      type: "command", command: "capture_cancel", id: "web-cancel",
+    }));
+    resetCapture(new Error("Power capture was cancelled"));
+  }, [resetCapture]);
+
+  const clearCaptures = useCallback(() => setCaptures([]), []);
+
   return {
     snapshot,
     hasData,
@@ -306,8 +485,16 @@ export function useBoard(): UseBoard {
     setLive,
     refresh,
     setPower,
+    readPower,
     setSwitch,
     enterBootloader,
     setGpio,
+    captureState,
+    captureProgress,
+    captures,
+    armCapture,
+    triggerCapture,
+    cancelCapture,
+    clearCaptures,
   };
 }

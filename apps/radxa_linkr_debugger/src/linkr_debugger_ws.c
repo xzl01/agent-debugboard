@@ -30,6 +30,12 @@ LOG_MODULE_REGISTER(linkr_debugger_ws, LOG_LEVEL_INF);
 #define LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE 4096
 #define LINKR_DEBUGGER_WS_IDLE_WAIT_MS 100
 #define LINKR_DEBUGGER_WS_SESSION_IDLE_TIMEOUT_MS 30000U
+#define LINKR_DEBUGGER_CAPTURE_CHANNELS 3U
+#if defined(CONFIG_SOC_SERIES_RP2350)
+#define LINKR_DEBUGGER_CAPTURE_CAPACITY 2048U
+#else
+#define LINKR_DEBUGGER_CAPTURE_CAPACITY 512U
+#endif
 
 struct linkr_debugger_ws_request {
 	char type[16];
@@ -41,8 +47,13 @@ struct linkr_debugger_ws_request {
 	char route[16];
 	char gpio[64];
 	char direction[8];
+	char trigger[16];
+	char edge[8];
 	int value;
 	int rate_hz;
+	int threshold_ua;
+	int pre_samples;
+	int post_samples;
 	bool subscribed;
 	bool telemetry;
 };
@@ -57,10 +68,53 @@ static const struct json_obj_descr linkr_debugger_ws_request_descr[] = {
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, route, JSON_TOK_STRING_BUF),
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, gpio, JSON_TOK_STRING_BUF),
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, direction, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, trigger, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, edge, JSON_TOK_STRING_BUF),
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, value, JSON_TOK_NUMBER),
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, rate_hz, JSON_TOK_NUMBER),
+	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, threshold_ua, JSON_TOK_NUMBER),
+	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, pre_samples, JSON_TOK_NUMBER),
+	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, post_samples, JSON_TOK_NUMBER),
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, subscribed, JSON_TOK_TRUE),
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, telemetry, JSON_TOK_TRUE),
+};
+
+struct linkr_debugger_capture_sample {
+	uint64_t device_t_mono_us;
+	uint32_t sample_sequence;
+	int32_t raw[LINKR_DEBUGGER_CAPTURE_CHANNELS];
+	int32_t mv[LINKR_DEBUGGER_CAPTURE_CHANNELS];
+	int32_t current_ua[LINKR_DEBUGGER_CAPTURE_CHANNELS];
+	uint8_t power_enabled_mask;
+};
+
+enum linkr_debugger_capture_state {
+	LINKR_DEBUGGER_CAPTURE_IDLE,
+	LINKR_DEBUGGER_CAPTURE_ARMED,
+	LINKR_DEBUGGER_CAPTURE_TRIGGERED,
+	LINKR_DEBUGGER_CAPTURE_SENDING,
+};
+
+struct linkr_debugger_capture {
+	enum linkr_debugger_capture_state state;
+	char trigger[16];
+	char source[64];
+	char edge[8];
+	int32_t threshold_ua;
+	uint16_t rate_hz;
+	uint16_t pre_samples;
+	uint16_t post_samples;
+	uint16_t count;
+	uint16_t write_index;
+	uint16_t oldest_index;
+	uint16_t post_collected;
+	uint16_t send_offset;
+	uint16_t trigger_offset;
+	bool last_level;
+	bool trigger_pending;
+	bool begin_sent;
+	uint32_t capture_id;
+	struct linkr_debugger_capture_sample samples[LINKR_DEBUGGER_CAPTURE_CAPACITY];
 };
 
 struct linkr_debugger_ws_client {
@@ -72,6 +126,7 @@ struct linkr_debugger_ws_client {
 	bool telemetry_enabled;
 	int telemetry_rate_hz;
 	uint32_t sequence;
+	uint32_t sample_sequence;
 	int64_t session_created_ms;
 	struct k_event events;
 	struct k_mutex lock;
@@ -92,7 +147,11 @@ static struct linkr_debugger_ws_client_thread_arg linkr_debugger_ws_thread_args[
 static K_THREAD_STACK_ARRAY_DEFINE(linkr_debugger_ws_stacks, LINKR_DEBUGGER_WS_MAX_CLIENTS,
 	LINKR_DEBUGGER_WS_STACK_SIZE);
 static struct k_mutex linkr_debugger_ws_clients_lock;
+static struct k_mutex linkr_debugger_capture_lock;
 static uint32_t linkr_debugger_ws_next_session_id = 1U;
+static struct linkr_debugger_capture linkr_debugger_capture;
+static uint32_t linkr_debugger_capture_owner_session_id;
+static uint32_t linkr_debugger_next_capture_id = 1U;
 
 enum {
 	LINKR_DEBUGGER_WS_EVENT_STATE = BIT(0),
@@ -145,6 +204,7 @@ static void linkr_debugger_ws_client_reset(struct linkr_debugger_ws_client *clie
 	client->telemetry_enabled = false;
 	client->telemetry_rate_hz = 10;
 	client->sequence = 1U;
+	client->sample_sequence = 1U;
 	client->session_created_ms = 0;
 	client->thread = NULL;
 }
@@ -157,6 +217,12 @@ static void linkr_debugger_ws_client_release(struct linkr_debugger_ws_client *cl
 		return;
 	}
 	client->active = false;
+	k_mutex_lock(&linkr_debugger_capture_lock, K_FOREVER);
+	if (linkr_debugger_capture_owner_session_id == session_id) {
+		memset(&linkr_debugger_capture, 0, sizeof(linkr_debugger_capture));
+		linkr_debugger_capture_owner_session_id = 0U;
+	}
+	k_mutex_unlock(&linkr_debugger_capture_lock);
 	linkr_debugger_ws_client_reset(client);
 	k_event_clear(&client->events, UINT32_MAX);
 	k_mutex_unlock(&linkr_debugger_ws_clients_lock);
@@ -473,27 +539,158 @@ static int linkr_debugger_ws_emit_status_snapshot(struct linkr_debugger_ws_clien
 	return linkr_debugger_ws_send_json(client, buf);
 }
 
-static int linkr_debugger_ws_emit_adc_sample(struct linkr_debugger_ws_client *client)
+static int linkr_debugger_ws_read_adc_sample(struct linkr_debugger_ws_client *client,
+					     struct linkr_debugger_capture_sample *frame)
+{
+	if (linkr_debugger_current_count > LINKR_DEBUGGER_CAPTURE_CHANNELS) {
+		return -E2BIG;
+	}
+
+	memset(frame, 0, sizeof(*frame));
+	frame->device_t_mono_us = k_ticks_to_us_floor64(k_uptime_ticks());
+	frame->sample_sequence = client->sample_sequence++;
+	for (size_t i = 0; i < linkr_debugger_current_count; i++) {
+		struct linkr_debugger_current_sample sample;
+		int ret = linkr_debugger_current_read(&linkr_debugger_currents[i], &sample);
+
+		if (ret < 0) {
+			return ret;
+		}
+		frame->current_ua[i] = sample.rail_enabled ? sample.current_ua : 0;
+		frame->raw[i] = sample.raw;
+		frame->mv[i] = sample.mv;
+		if (sample.rail_enabled) {
+			frame->power_enabled_mask |= BIT(i);
+		}
+	}
+
+	return 0;
+}
+
+static int linkr_debugger_ws_current_index(const char *name)
+{
+	const struct linkr_debugger_current_desc *current = linkr_debugger_find_current(name);
+
+	if (current == NULL) {
+		return -1;
+	}
+	for (size_t i = 0; i < linkr_debugger_current_count; i++) {
+		if (&linkr_debugger_currents[i] == current) {
+			return (int)i;
+		}
+	}
+	return -1;
+}
+
+static void linkr_debugger_capture_store(struct linkr_debugger_capture *capture,
+					const struct linkr_debugger_capture_sample *frame)
+{
+	capture->samples[capture->write_index] = *frame;
+	capture->write_index = (uint16_t)((capture->write_index + 1U) % LINKR_DEBUGGER_CAPTURE_CAPACITY);
+	if (capture->count < LINKR_DEBUGGER_CAPTURE_CAPACITY) {
+		capture->count++;
+	} else {
+		capture->oldest_index = capture->write_index;
+	}
+}
+
+static bool linkr_debugger_capture_should_trigger(struct linkr_debugger_capture *capture,
+						  const struct linkr_debugger_capture_sample *frame)
+{
+	bool level = false;
+	bool triggered = capture->trigger_pending;
+
+	if (strcmp(capture->trigger, "current") == 0) {
+		int index = linkr_debugger_ws_current_index(capture->source);
+		triggered = index >= 0 && frame->current_ua[index] >= capture->threshold_ua;
+	} else if (strcmp(capture->trigger, "gpio") == 0) {
+		const struct linkr_debugger_safe_gpio_desc *gpio =
+			linkr_debugger_find_safe_gpio_by_identifier(capture->source);
+		int value = 0;
+
+		if (gpio != NULL && linkr_debugger_gpio_get(gpio, &value) == 0) {
+			level = value > 0;
+			if (strcmp(capture->edge, "rising") == 0) {
+				triggered = !capture->last_level && level;
+			} else if (strcmp(capture->edge, "falling") == 0) {
+				triggered = capture->last_level && !level;
+			} else {
+				triggered = capture->last_level != level;
+			}
+			capture->last_level = level;
+		}
+	} else if (strcmp(capture->trigger, "power_on") == 0) {
+		int index = linkr_debugger_ws_current_index(capture->source);
+
+		if (index >= 0) {
+			level = (frame->power_enabled_mask & BIT(index)) != 0U;
+			triggered = !capture->last_level && level;
+			capture->last_level = level;
+		}
+	}
+
+	capture->trigger_pending = false;
+	return triggered;
+}
+
+static void linkr_debugger_capture_ingest(struct linkr_debugger_ws_client *client,
+					  const struct linkr_debugger_capture_sample *frame)
+{
+	struct linkr_debugger_capture *capture = &linkr_debugger_capture;
+
+	if (linkr_debugger_capture_owner_session_id != client->session_id) {
+		return;
+	}
+
+	if (capture->state == LINKR_DEBUGGER_CAPTURE_ARMED) {
+		if (linkr_debugger_capture_should_trigger(capture, frame)) {
+			capture->trigger_offset = capture->count;
+			linkr_debugger_capture_store(capture, frame);
+			capture->state = capture->post_samples == 0U ?
+				LINKR_DEBUGGER_CAPTURE_SENDING : LINKR_DEBUGGER_CAPTURE_TRIGGERED;
+			return;
+		}
+
+		if (capture->pre_samples == 0U) {
+			return;
+		}
+		if (capture->count >= capture->pre_samples) {
+			capture->oldest_index = (uint16_t)((capture->oldest_index + 1U) %
+							     LINKR_DEBUGGER_CAPTURE_CAPACITY);
+			capture->count--;
+		}
+		linkr_debugger_capture_store(capture, frame);
+		return;
+	}
+
+	if (capture->state == LINKR_DEBUGGER_CAPTURE_TRIGGERED) {
+		linkr_debugger_capture_store(capture, frame);
+		capture->post_collected++;
+		if (capture->post_collected >= capture->post_samples) {
+			capture->state = LINKR_DEBUGGER_CAPTURE_SENDING;
+			capture->send_offset = 0U;
+		}
+	}
+}
+
+static int linkr_debugger_ws_emit_adc_sample(struct linkr_debugger_ws_client *client,
+					     const struct linkr_debugger_capture_sample *frame)
 {
 	char *buf = (char *)client->tx_buffer;
 	size_t cursor = 0U;
 
 	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
 				 "{\"type\":\"telemetry\",\"topic\":\"adc\","
-				 "\"schema\":\"%s\",\"sequence\":%u,\"readings\":[",
-				 linkr_debugger_json_schema(), client->sequence++) < 0) {
+				 "\"schema\":\"%s\",\"sequence\":%u,\"sample_sequence\":%u,"
+				 "\"device_t_mono_us\":%llu,\"readings\":[",
+				 linkr_debugger_json_schema(), client->sequence++,
+				 (unsigned int)frame->sample_sequence,
+				 (unsigned long long)frame->device_t_mono_us) < 0) {
 		return -ENOMEM;
 	}
 
 	for (size_t i = 0; i < linkr_debugger_current_count; i++) {
-		struct linkr_debugger_current_sample sample;
 		const struct linkr_debugger_current_desc *current = &linkr_debugger_currents[i];
-		int ret;
-
-		ret = linkr_debugger_current_read(current, &sample);
-		if (ret < 0) {
-			return ret;
-		}
 
 		if (i > 0U && linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor, ",") < 0) {
 			return -ENOMEM;
@@ -504,10 +701,9 @@ static int linkr_debugger_ws_emit_adc_sample(struct linkr_debugger_ws_client *cl
 					 "\"raw\":%d,\"mv\":%d,\"current_ua\":%d}",
 					 current->name,
 					 current->signal,
-					 sample.rail_enabled ? "true" : "false",
-					 sample.raw,
-					 sample.mv,
-					 sample.current_ua) < 0) {
+					 (frame->power_enabled_mask & BIT(i)) != 0U ? "true" : "false",
+					 frame->raw[i], frame->mv[i],
+					 frame->current_ua[i]) < 0) {
 			return -ENOMEM;
 		}
 	}
@@ -517,6 +713,111 @@ static int linkr_debugger_ws_emit_adc_sample(struct linkr_debugger_ws_client *cl
 	}
 
 	return linkr_debugger_ws_send_json(client, buf);
+}
+
+static int linkr_debugger_ws_emit_capture_begin(struct linkr_debugger_ws_client *client)
+{
+	struct linkr_debugger_capture *capture = &linkr_debugger_capture;
+	char *buf = (char *)client->tx_buffer;
+
+	snprintk(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+		 "{\"type\":\"capture_begin\",\"schema\":\"%s\",\"capture_id\":%u,"
+		 "\"trigger\":\"%.*s\",\"source\":\"%.*s\",\"edge\":\"%.*s\","
+		 "\"threshold_ua\":%d,\"pre_samples\":%u,\"post_samples\":%u,"
+		 "\"sample_count\":%u,\"trigger_offset\":%u,\"rate_hz\":%u}",
+		 linkr_debugger_json_schema(), (unsigned int)capture->capture_id,
+		 (int)sizeof(capture->trigger) - 1, capture->trigger,
+		 (int)sizeof(capture->source) - 1, capture->source,
+		 (int)sizeof(capture->edge) - 1, capture->edge,
+		 (int)capture->threshold_ua, (unsigned int)capture->pre_samples,
+		 (unsigned int)capture->post_samples,
+		 (unsigned int)capture->count,
+		 (unsigned int)capture->trigger_offset, (unsigned int)capture->rate_hz);
+	return linkr_debugger_ws_send_json(client, buf);
+}
+
+static int linkr_debugger_ws_emit_capture_sample(struct linkr_debugger_ws_client *client,
+						 uint16_t offset)
+{
+	struct linkr_debugger_capture *capture = &linkr_debugger_capture;
+	uint16_t index = (uint16_t)((capture->oldest_index + offset) %
+					    LINKR_DEBUGGER_CAPTURE_CAPACITY);
+	const struct linkr_debugger_capture_sample *frame = &capture->samples[index];
+	char *buf = (char *)client->tx_buffer;
+	size_t cursor = 0U;
+
+	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+				 "{\"type\":\"capture_sample\",\"schema\":\"%s\","
+				 "\"capture_id\":%u,\"offset\":%u,\"triggered\":%s,"
+				 "\"sample_sequence\":%u,\"device_t_mono_us\":%llu,\"readings\":[",
+				 linkr_debugger_json_schema(), (unsigned int)capture->capture_id,
+				 (unsigned int)offset, offset == capture->trigger_offset ? "true" : "false",
+				 (unsigned int)frame->sample_sequence,
+				 (unsigned long long)frame->device_t_mono_us) < 0) {
+		return -ENOMEM;
+	}
+
+	for (size_t i = 0; i < linkr_debugger_current_count; i++) {
+		if (i > 0U && linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+							 &cursor, ",") < 0) {
+			return -ENOMEM;
+		}
+		if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+					 "{\"name\":\"%s\",\"power_enabled\":%s,\"current_ua\":%d}",
+					 linkr_debugger_currents[i].name,
+					 (frame->power_enabled_mask & BIT(i)) != 0U ? "true" : "false",
+					 frame->current_ua[i]) < 0) {
+			return -ENOMEM;
+		}
+	}
+
+	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor, "]}") < 0) {
+		return -ENOMEM;
+	}
+	return linkr_debugger_ws_send_json(client, buf);
+}
+
+static int linkr_debugger_ws_emit_capture_pending(struct linkr_debugger_ws_client *client)
+{
+	struct linkr_debugger_capture *capture = &linkr_debugger_capture;
+	char *buf = (char *)client->tx_buffer;
+	int ret;
+
+	if (linkr_debugger_capture_owner_session_id != client->session_id) {
+		return 0;
+	}
+	if (capture->state != LINKR_DEBUGGER_CAPTURE_SENDING) {
+		return 0;
+	}
+	if (!capture->begin_sent) {
+		ret = linkr_debugger_ws_emit_capture_begin(client);
+		if (ret < 0) {
+			return ret;
+		}
+		capture->begin_sent = true;
+	}
+	if (capture->send_offset < capture->count) {
+		ret = linkr_debugger_ws_emit_capture_sample(client, capture->send_offset);
+		if (ret < 0) {
+			return ret;
+		}
+		capture->send_offset++;
+		return 0;
+	}
+
+	snprintk(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+		 "{\"type\":\"capture_complete\",\"schema\":\"%s\","
+		 "\"capture_id\":%u,\"sample_count\":%u,\"trigger_offset\":%u}",
+		 linkr_debugger_json_schema(), (unsigned int)capture->capture_id,
+		 (unsigned int)capture->count, (unsigned int)capture->trigger_offset);
+	ret = linkr_debugger_ws_send_json(client, buf);
+	if (ret >= 0) {
+		k_mutex_lock(&linkr_debugger_capture_lock, K_FOREVER);
+		capture->state = LINKR_DEBUGGER_CAPTURE_IDLE;
+		linkr_debugger_capture_owner_session_id = 0U;
+		k_mutex_unlock(&linkr_debugger_capture_lock);
+	}
+	return ret;
 }
 
 static int linkr_debugger_ws_emit_error(struct linkr_debugger_ws_client *client,
@@ -567,9 +868,123 @@ static int linkr_debugger_ws_emit_result_and_snapshot(struct linkr_debugger_ws_c
 	return ret;
 }
 
+static int linkr_debugger_ws_capture_arm(struct linkr_debugger_ws_client *client,
+					 const struct linkr_debugger_ws_request *request)
+{
+	struct linkr_debugger_capture *capture = &linkr_debugger_capture;
+	int pre_samples = request->pre_samples;
+	int post_samples = request->post_samples != 0 ? request->post_samples : 1;
+	int rate_hz = request->rate_hz > 0 ? request->rate_hz : 100;
+	const char *trigger = request->trigger[0] != '\0' ? request->trigger : "manual";
+
+	if (rate_hz < 1 || rate_hz > 1000) {
+		return linkr_debugger_ws_emit_error(client, "capture", "invalid_rate",
+						"rate_hz must be between 1 and 1000");
+	}
+	if (pre_samples < 0 || post_samples < 0 ||
+	    (size_t)pre_samples + (size_t)post_samples + 1U > LINKR_DEBUGGER_CAPTURE_CAPACITY) {
+		return linkr_debugger_ws_emit_error(client, "capture", "capture_too_large",
+						"pre_samples + post_samples + 1 exceeds capture capacity");
+	}
+	if (strcmp(trigger, "manual") != 0 && strcmp(trigger, "current") != 0 &&
+	    strcmp(trigger, "gpio") != 0 && strcmp(trigger, "power_on") != 0) {
+		return linkr_debugger_ws_emit_error(client, "capture", "invalid_trigger",
+						"trigger must be manual, current, gpio, or power_on");
+	}
+	if ((strcmp(trigger, "current") == 0 || strcmp(trigger, "power_on") == 0) &&
+	    linkr_debugger_find_current(request->output) == NULL) {
+		return linkr_debugger_ws_emit_error(client, "capture", "invalid_source",
+						"output must name a current-monitored power rail");
+	}
+	if (strcmp(trigger, "current") == 0 && request->threshold_ua < 0) {
+		return linkr_debugger_ws_emit_error(client, "capture", "invalid_threshold",
+						"threshold_ua must be zero or greater");
+	}
+	if (strcmp(trigger, "gpio") == 0 &&
+	    linkr_debugger_find_safe_gpio_by_identifier(request->gpio) == NULL) {
+		return linkr_debugger_ws_emit_error(client, "capture", "invalid_source",
+						"gpio must name an allowlisted GPIO");
+	}
+	if (strcmp(trigger, "gpio") == 0 && request->edge[0] != '\0' &&
+	    strcmp(request->edge, "rising") != 0 && strcmp(request->edge, "falling") != 0 &&
+	    strcmp(request->edge, "either") != 0) {
+		return linkr_debugger_ws_emit_error(client, "capture", "invalid_edge",
+						"edge must be rising, falling, or either");
+	}
+
+	k_mutex_lock(&linkr_debugger_capture_lock, K_FOREVER);
+	if (linkr_debugger_capture_owner_session_id != 0U ||
+	    capture->state != LINKR_DEBUGGER_CAPTURE_IDLE) {
+		k_mutex_unlock(&linkr_debugger_capture_lock);
+		return linkr_debugger_ws_emit_error(client, "capture", "capture_busy",
+						"cancel or finish the active capture first");
+	}
+
+	memset(capture, 0, sizeof(*capture));
+	linkr_debugger_capture_owner_session_id = client->session_id;
+	capture->state = LINKR_DEBUGGER_CAPTURE_ARMED;
+	capture->capture_id = linkr_debugger_next_capture_id++;
+	capture->rate_hz = (uint16_t)rate_hz;
+	capture->pre_samples = (uint16_t)pre_samples;
+	capture->post_samples = (uint16_t)post_samples;
+	capture->threshold_ua = request->threshold_ua;
+	strncpy(capture->trigger, trigger, sizeof(capture->trigger) - 1U);
+	strncpy(capture->edge, request->edge[0] != '\0' ? request->edge : "either",
+		sizeof(capture->edge) - 1U);
+	strncpy(capture->source,
+		strcmp(trigger, "gpio") == 0 ? request->gpio : request->output,
+		sizeof(capture->source) - 1U);
+
+	if (strcmp(trigger, "gpio") == 0) {
+		const struct linkr_debugger_safe_gpio_desc *gpio =
+			linkr_debugger_find_safe_gpio_by_identifier(capture->source);
+		int value = 0;
+		(void)linkr_debugger_gpio_get(gpio, &value);
+		capture->last_level = value > 0;
+	} else if (strcmp(trigger, "power_on") == 0) {
+		int index = linkr_debugger_ws_current_index(capture->source);
+		const struct linkr_debugger_current_desc *current = &linkr_debugger_currents[index];
+		const struct linkr_debugger_rail_desc *rail = linkr_debugger_find_rail(current->name);
+		capture->last_level = rail != NULL && linkr_debugger_power_output_enabled(rail);
+	}
+
+	client->telemetry_enabled = true;
+	client->telemetry_rate_hz = rate_hz;
+	k_mutex_unlock(&linkr_debugger_capture_lock);
+	return linkr_debugger_ws_emit_result(client, request->id, "capture_arm", "armed");
+}
+
 static int linkr_debugger_ws_handle_control_message(struct linkr_debugger_ws_client *client,
 					       const struct linkr_debugger_ws_request *request)
 {
+	if (strcmp(request->command, "capture_arm") == 0) {
+		return linkr_debugger_ws_capture_arm(client, request);
+	}
+	if (strcmp(request->command, "capture_trigger") == 0) {
+		k_mutex_lock(&linkr_debugger_capture_lock, K_FOREVER);
+		if (linkr_debugger_capture_owner_session_id != client->session_id ||
+		    linkr_debugger_capture.state != LINKR_DEBUGGER_CAPTURE_ARMED) {
+			k_mutex_unlock(&linkr_debugger_capture_lock);
+			return linkr_debugger_ws_emit_error(client, "capture", "not_armed",
+							"capture is not armed");
+		}
+		linkr_debugger_capture.trigger_pending = true;
+		k_mutex_unlock(&linkr_debugger_capture_lock);
+		return linkr_debugger_ws_emit_result(client, request->id, "capture_trigger", "triggered");
+	}
+	if (strcmp(request->command, "capture_cancel") == 0) {
+		k_mutex_lock(&linkr_debugger_capture_lock, K_FOREVER);
+		if (linkr_debugger_capture_owner_session_id != client->session_id) {
+			k_mutex_unlock(&linkr_debugger_capture_lock);
+			return linkr_debugger_ws_emit_error(client, "capture", "not_owner",
+							"this session does not own the active capture");
+		}
+		memset(&linkr_debugger_capture, 0, sizeof(linkr_debugger_capture));
+		linkr_debugger_capture_owner_session_id = 0U;
+		k_mutex_unlock(&linkr_debugger_capture_lock);
+		return linkr_debugger_ws_emit_result(client, request->id, "capture_cancel", "cancelled");
+	}
+
 	if (strcmp(request->command, "power_set") == 0) {
 		const struct linkr_debugger_rail_desc *output = linkr_debugger_find_rail(request->output);
 		bool enabled;
@@ -697,9 +1112,19 @@ static int linkr_debugger_ws_handle_message(struct linkr_debugger_ws_client *cli
 	}
 
 	if (strcmp(request.type, "subscribe") == 0) {
+		bool capture_active;
+
 		if (request.topic[0] != '\0' && strcmp(request.topic, "live") != 0) {
 			return linkr_debugger_ws_emit_error(client, "ws", "invalid_topic",
 						"topic must be live");
+		}
+		k_mutex_lock(&linkr_debugger_capture_lock, K_FOREVER);
+		capture_active = linkr_debugger_capture_owner_session_id == client->session_id &&
+				 linkr_debugger_capture.state != LINKR_DEBUGGER_CAPTURE_IDLE;
+		k_mutex_unlock(&linkr_debugger_capture_lock);
+		if (capture_active) {
+			return linkr_debugger_ws_emit_error(client, "capture", "capture_active",
+						"sampling rate cannot change during an active capture");
 		}
 		client->telemetry_enabled = true;
 		client->telemetry_rate_hz = request.rate_hz > 0 ? request.rate_hz : 10;
@@ -738,6 +1163,7 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 	ARG_UNUSED(arg3);
 
 	while (true) {
+		struct linkr_debugger_capture_sample frame;
 		uint32_t events;
 		uint32_t wait_ms;
 
@@ -764,9 +1190,20 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 		}
 
 		if (client->telemetry_enabled) {
-			ret = linkr_debugger_ws_emit_adc_sample(client);
+			ret = linkr_debugger_ws_read_adc_sample(client, &frame);
+			if (ret < 0) {
+				LOG_ERR("failed to read adc sample: %d", ret);
+				break;
+			}
+			linkr_debugger_capture_ingest(client, &frame);
+			ret = linkr_debugger_ws_emit_adc_sample(client, &frame);
 			if (ret < 0) {
 				LOG_ERR("failed to emit adc sample: %d", ret);
+				break;
+			}
+			ret = linkr_debugger_ws_emit_capture_pending(client);
+			if (ret < 0) {
+				LOG_ERR("failed to emit capture data: %d", ret);
 				break;
 			}
 		}
@@ -853,6 +1290,7 @@ int linkr_debugger_ws_setup(int ws_socket, struct http_request_ctx *request_ctx,
 	client->telemetry_enabled = false;
 	client->telemetry_rate_hz = 10;
 	client->sequence = 1U;
+	client->sample_sequence = 1U;
 	k_event_clear(&client->events, UINT32_MAX);
 	linkr_debugger_ws_thread_args[client->slot].client = client;
 	linkr_debugger_ws_thread_args[client->slot].ws_sock = ws_socket;
@@ -876,6 +1314,7 @@ int linkr_debugger_ws_setup(int ws_socket, struct http_request_ctx *request_ctx,
 int linkr_debugger_ws_init(void)
 {
 	k_mutex_init(&linkr_debugger_ws_clients_lock);
+	k_mutex_init(&linkr_debugger_capture_lock);
 	for (size_t i = 0; i < ARRAY_SIZE(linkr_debugger_ws_clients); i++) {
 		linkr_debugger_ws_clients[i].slot = (uint8_t)i;
 		k_mutex_init(&linkr_debugger_ws_clients[i].lock);

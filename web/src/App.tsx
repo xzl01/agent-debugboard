@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { ChevronDown, Loader2, ServerCrash, SlidersHorizontal } from "lucide-react";
 import { useBoard } from "@/hooks/useBoard";
 import { StatusBar } from "./components/StatusBar";
@@ -6,7 +7,8 @@ import { SwitchCard } from "./components/SwitchCard";
 import { GpioCard } from "./components/GpioCard";
 import { WatchdogCard } from "./components/WatchdogCard";
 import { BootCard } from "./components/BootCard";
-import { SerialCard } from "./components/SerialCard";
+import { SerialCard, type SerialAutomationHandle } from "./components/SerialCard";
+import { StartupPowerAnalysis } from "./components/StartupPowerAnalysis";
 import { Badge, Button } from "./components/ui";
 import { useI18n } from "@/lib/i18n";
 import { apiEndpoint } from "@/lib/api";
@@ -14,6 +16,7 @@ import { apiEndpoint } from "@/lib/api";
 export default function App() {
   const board = useBoard();
   const { t } = useI18n();
+  const serialAutomationRef = useRef<SerialAutomationHandle>(null);
 
   return (
     <div className="min-h-full bg-bg text-ink">
@@ -59,6 +62,15 @@ export default function App() {
                   outputs={board.snapshot.powerOutputs}
                   readings={board.snapshot.adc}
                   onSet={board.setPower}
+                  gpios={board.snapshot.gpios}
+                  captureState={board.captureState}
+                  captureProgress={board.captureProgress}
+                  captures={board.captures}
+                  onArmCapture={board.armCapture}
+                  onTriggerCapture={board.triggerCapture}
+                  onCancelCapture={board.cancelCapture}
+                  onClearCaptures={board.clearCaptures}
+                  captureCapacity={board.snapshot.mcu?.toLowerCase() === "rp2040" ? 512 : 2048}
                 />
               </div>
               <div className="min-w-0">
@@ -82,6 +94,19 @@ export default function App() {
                 </summary>
                 <div className="grid min-w-0 gap-4 border-t border-line/60 p-3 lg:grid-cols-2 xl:grid-cols-1">
                   <div className="min-w-0 lg:col-span-2 xl:col-span-1">
+                    <StartupPowerAnalysis
+                      outputs={board.snapshot.powerOutputs}
+                      captureState={board.captureState}
+                      captures={board.captures}
+                      captureCapacity={board.snapshot.mcu?.toLowerCase() === "rp2040" ? 512 : 2048}
+                      serialRef={serialAutomationRef}
+                      onSetPower={board.setPower}
+                      onReadPower={board.readPower}
+                      onArmCapture={board.armCapture}
+                      onCancelCapture={board.cancelCapture}
+                    />
+                  </div>
+                  <div className="min-w-0 lg:col-span-2 xl:col-span-1">
                     <GpioCard gpios={board.snapshot.gpios} onSet={board.setGpio} />
                   </div>
                   <WatchdogCard watchdog={board.snapshot.watchdog} />
@@ -90,7 +115,11 @@ export default function App() {
               </details>
             </aside>
             <div className="min-w-0 xl:sticky xl:top-[116px]">
-              <SerialCard />
+              <SerialCard
+                ref={serialAutomationRef}
+                vinRoute={board.snapshot.switches.vin}
+                onSetVin={(route) => board.setSwitch("vin", route)}
+              />
             </div>
           </div>
         )}

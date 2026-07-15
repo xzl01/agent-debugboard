@@ -19,6 +19,7 @@ pub const DEFAULT_ADC_RECORD_RATE_HZ: i32 = 1000;
 
 const DEVICE_TIMING_FIELDS: &[&str] = &[
     "device_t_mono_ns",
+    "device_t_mono_us",
     "device_t_unix_ns",
     "device_timestamp_ns",
     "sample_t_mono_ns",
@@ -30,6 +31,8 @@ const DEVICE_TIMING_FIELDS: &[&str] = &[
     "uptime_ms",
     "uptime_seconds",
 ];
+
+const CSV_RAILS: &[&str] = &["5v_out", "12v_out", "20v_out"];
 
 #[derive(Debug, Clone, Deserialize)]
 struct LiveSessionCreateResponse {
@@ -74,6 +77,13 @@ pub fn record_adc_ws_to_file(
 
     let file = File::create(Path::new(output_path))?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, file);
+    let csv = Path::new(output_path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"));
+    if csv {
+        write_csv_header(&mut writer)?;
+    }
     let started = Instant::now();
     let mut written = 0usize;
 
@@ -92,13 +102,65 @@ pub fn record_adc_ws_to_file(
             let mut message: WsTelemetryMessage = serde_json::from_value(value)?;
             message.readings =
                 crate::adc::transform_readings(message.readings).map_err(|e| anyhow!(e))?;
-            write_telemetry_record(&mut writer, &message, elapsed, unix_ns, requested_rate_hz)?;
+            if csv {
+                write_telemetry_csv_row(&mut writer, &message, elapsed, unix_ns)?;
+            } else {
+                write_telemetry_record(&mut writer, &message, elapsed, unix_ns, requested_rate_hz)?;
+            }
             written += 1;
         }
     }
 
     writer.flush()?;
     ws_client.close()?;
+    Ok(())
+}
+
+fn write_csv_header(writer: &mut BufWriter<File>) -> Result<()> {
+    write!(writer, "sequence,t_mono_ns,t_unix_ns,device_t_mono_us")?;
+    for rail in CSV_RAILS {
+        write!(writer, ",{rail}_power_enabled,{rail}_current_ua")?;
+    }
+    writer.write_all(b"\n")?;
+    Ok(())
+}
+
+fn write_telemetry_csv_row(
+    writer: &mut BufWriter<File>,
+    message: &WsTelemetryMessage,
+    elapsed: Duration,
+    unix_ns: i128,
+) -> Result<()> {
+    let device_t_mono_us = message
+        .extra
+        .get("device_t_mono_us")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    write!(
+        writer,
+        "{},{},{},{}",
+        message.sequence.unwrap_or_default(),
+        elapsed.as_nanos(),
+        unix_ns,
+        device_t_mono_us
+    )?;
+    for rail in CSV_RAILS {
+        let reading = message
+            .readings
+            .iter()
+            .find(|reading| reading.name == *rail);
+        write!(
+            writer,
+            ",{},{}",
+            reading
+                .and_then(|reading| reading.power_enabled)
+                .unwrap_or(false),
+            reading
+                .and_then(|reading| reading.current_ua)
+                .unwrap_or_default()
+        )?;
+    }
+    writer.write_all(b"\n")?;
     Ok(())
 }
 
@@ -184,7 +246,7 @@ mod tests {
         let path = temp_file_path("timing");
         let mut writer = BufWriter::new(File::create(&path).unwrap());
         let mut extra = serde_json::Map::new();
-        extra.insert("uptime_ms".to_string(), serde_json::json!(42));
+        extra.insert("device_t_mono_us".to_string(), serde_json::json!(42));
         let message = WsTelemetryMessage {
             r#type: "telemetry".to_string(),
             topic: "adc".to_string(),
@@ -202,7 +264,42 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let record: Value = serde_json::from_str(data.trim()).unwrap();
         assert_eq!(record["metadata"]["requested_rate_hz"], 500);
-        assert_eq!(record["metadata"]["device_timing"]["uptime_ms"], 42);
+        assert_eq!(record["metadata"]["device_timing"]["device_t_mono_us"], 42);
+    }
+
+    #[test]
+    fn csv_record_includes_device_time_and_rail_values() {
+        let path = temp_file_path("csv");
+        let mut writer = BufWriter::new(File::create(&path).unwrap());
+        let mut extra = serde_json::Map::new();
+        extra.insert("device_t_mono_us".to_string(), serde_json::json!(55));
+        let message = WsTelemetryMessage {
+            sequence: Some(9),
+            readings: vec![crate::adc::AdcReading {
+                name: "5v_out".to_string(),
+                signal: String::new(),
+                raw: None,
+                current_valid: None,
+                mv: None,
+                ma_est: None,
+                power_enabled: Some(true),
+                sensor_channel: String::new(),
+                unit: String::new(),
+                sensor_value: None,
+                current_ua: Some(123_000),
+            }],
+            extra,
+            ..Default::default()
+        };
+
+        write_csv_header(&mut writer).unwrap();
+        write_telemetry_csv_row(&mut writer, &message, Duration::from_millis(2), 77).unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+        let data = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(data.contains("device_t_mono_us"));
+        assert!(data.contains("9,2000000,77,55,true,123000"));
     }
 
     #[test]
