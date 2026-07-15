@@ -7,9 +7,9 @@ PC OpenOCD -> CH347F -> target JTAG/SWD
 PC radxa-linkr-debuggerctl -> RP2040/RP2350 -> target power / boot mode / ADC / SD / GPIO
 ```
 
-For normal use, prefer the released `radxa-linkr-debuggerctl` CLI. Use direct
-`curl` only when debugging the raw HTTP API or when following the separate,
-curl-first Agent skill.
+For this advanced workflow, use the released Rust `radxa-linkr-debuggerctl`
+CLI. Use direct `curl` only when debugging the raw HTTP API or when following
+the separate, curl-first Agent skill.
 
 CH347F is wired directly to the target debug connector. The MCU firmware does
 not sit in the JTAG/SWD path, does not mux those lines, and should not be treated as a

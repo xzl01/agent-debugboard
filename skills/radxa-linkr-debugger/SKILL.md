@@ -14,9 +14,9 @@ compatible IPv4 address automatically. mDNS is not required for the normal
 workflow.
 
 `curl` remains the lowest-common-denominator path across macOS, Linux, and
-Windows. The primary actively-developed host CLI/TUI path in this repository is
-now the Rust implementation under `./cmd-ng/`. The older Go
-`radxa-linkr-debuggerctl` path remains only as a deprecated legacy/reference path.
+Windows. The Rust implementation under `./cmd-ng/` is the supported CLI/TUI for
+advanced users, Agents, automation, and HIL validation. Ordinary interactive
+use should prefer the Web UI.
 The RP2040/RP2350 USB CDC ACM port is intentionally kept as a secondary path for
 Zephyr cmdline access and BOOTSEL fallback.
 
@@ -125,7 +125,7 @@ macOS/Linux:
 ```
 
 Install a specific release version. An explicit version always skips local
-source builds and downloads the requested primary Rust CLI release artifact:
+source builds and downloads the requested supported Rust CLI release artifact:
 
 ```sh
 ./skills/radxa-linkr-debugger/scripts/install.sh --version <tag>
@@ -143,9 +143,8 @@ Windows PowerShell specific release version:
 powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\radxa-linkr-debugger\scripts\install.ps1 -Version <tag>
 ```
 
-After installation, run the matching binary. The release download path prefers
-`radxa-linkr-debuggerctl-rust_<os>_<arch>.*`; legacy Go compatibility archives
-remain in the release only for transition/reference use.
+After installation, run the matching binary. Release downloads use the
+`radxa-linkr-debuggerctl-rust_<os>_<arch>.*` archives.
 
 macOS/Linux:
 
@@ -161,7 +160,7 @@ Windows CMD:
 .\skills\radxa-linkr-debugger\scripts\bin\radxa-linkr-debuggerctl.exe --json doctor
 ```
 
-## Build Primary Rust cmd-ng
+## Build Supported Rust cmd-ng
 
 The repository's primary host CLI/TUI path is the Rust `cmd-ng`
 implementation.

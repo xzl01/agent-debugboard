@@ -2,16 +2,16 @@
 
 `cmd-ng/` 是当前主力开发的 Rust 主机侧 CLI/TUI 实现。
 
-面向普通用户的 release 文档应优先使用已发布的 `radxa-linkr-debuggerctl` CLI；本文件只描述
-如何开发、构建和直接运行 `cmd-ng` 源码树。
+普通用户应优先使用 Web UI。已发布的 `radxa-linkr-debuggerctl` 面向高级用户、Agent、
+自动化和 HIL 验证；本文件只描述如何开发、构建和直接运行 `cmd-ng` 源码树。
 
-当前目标是把主机侧 CLI/TUI 的主线能力收敛到 Rust 实现，并保留“无参数进入 TUI、有参数进入传统 CLI”的入口契约。仓库里的旧 Go `cmd/radxa-linkr-debuggerctl` 路径进入 deprecated/legacy 维护状态，不再作为主力开发方向。
+主机侧 CLI/TUI 统一由 Rust 实现，并保留“无参数进入 TUI、有参数进入传统 CLI”的入口契约。
 
 ## 当前范围
 
 - CLI：`status`、`doctor`、`power list|get|set`、`switch list|get|route`、`adc read`、`adc record`、`gpio list|set|input`、`watchdog status`、`bootloader`
 - 输出：支持 `--json`，并校验 `radxa-linkr-debugger.v1` envelope
-- TUI：无参数启动，是当前主力交互入口，并持续向现有 Go 行为收敛
+- TUI：无参数启动，为高级用户提供终端交互入口
 - VIN：`switch get vin` 和带确认保护的 route 控制（仅 G3；RP2040 固件不暴露此 switch）
 
 ## 构建与运行
@@ -32,8 +32,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 - `adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]` 会创建 live websocket session；`.ndjson` 输出完整 telemetry 记录，`.csv` 输出设备时间戳和三路电流列；默认 1000Hz，`--rate-hz` 可指定 1..1000Hz 的订阅速率
 - 固件可同时维护多个 live websocket session，但触发式功耗采集使用全局硬件缓冲区，同一时间只能有一个 capture owner
 - recorder 每条 NDJSON 记录都会写入主机接收时间戳和 `metadata.requested_rate_hz`，并把 firmware 的 `device_t_mono_us` 放入 `metadata.device_timing`。分析采样间隔时应优先使用设备时间而不是主机接收时间
-- `raw` 模式与 Go 版一致：HTTP 路径下不支持
+- `raw` 模式在 HTTP 路径下不支持
 - `watchdog` 仍只暴露 `status`，不提供 host 侧 feed/控制
 - 板内 `5v_ws` 电源轨不会出现在 CLI/TUI 的状态或电源控制中；原始固件 API 兼容项仅供底层诊断
 - VIN 切换需要 `--confirm`（TUI 中为 Space/Enter 确认），因为电压切换有副作用；G3 的 GPIO1 VDD_5V 和 GPIO6 VDD_1V8 由固件 Device Tree 建模为常开，可选 CH347 VIO 电平由固件标准 `regulator-gpio` 节点建模并通过 Zephyr regulator API 切换。执行 1.8V 切换前必须确认目标支持该电平、连接 VIO 物理测量设备，并明确接受硬件副作用；默认验证只读取或保持 3.3V
-- 旧 Go `cmd/radxa-linkr-debuggerctl` 路径仅保留作 legacy 参考与回归对照

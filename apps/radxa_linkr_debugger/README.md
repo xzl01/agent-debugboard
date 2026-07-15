@@ -40,8 +40,9 @@ doc/radxa-linkr-debugger-schematic.pdf       (G2 / RP2040)
 
 The USB interface enumerates as a composite USB device. The board exposes its
 HTTP control API on the USB NCM interface at `http://172.29.203.1:8080` by
-default. Normal host-side use should prefer the released
-`radxa-linkr-debuggerctl` CLI; direct `curl` is mainly for raw HTTP/API checks.
+default. Ordinary users should prefer the Web UI. Advanced users, Agents,
+automation, and HIL validation should use the released Rust
+`radxa-linkr-debuggerctl`; direct `curl` remains the raw HTTP/API path.
 A USB CDC ACM serial port is also kept available for Zephyr cmdline access and
 BOOTSEL fallback.
 
@@ -64,7 +65,8 @@ command below enters the current MCU's ROM BOOTSEL path used by the HTTP API:
 linkr-debugger:~$ bootloader
 ```
 
-Normal host operations should use the released `radxa-linkr-debuggerctl` CLI.
+Advanced users, Agents, automation, and HIL checks should use the released
+Rust `radxa-linkr-debuggerctl` CLI.
 If you are developing `cmd-ng` itself, use `cargo run --manifest-path
 cmd-ng/Cargo.toml -- ...`. Raw HTTP examples below are only for firmware/API
 debugging. Full CLI examples are in the root [README.md](../../README.md), and
@@ -121,13 +123,13 @@ Safe GPIO names such as `GP13` are derived from the MCU pin number; the
 firmware allowlist keeps the connector note so users can map commands back to
 the exposed header position.
 
-Develop the primary Rust host CLI from source:
+Develop the Rust host CLI from source:
 
 ```sh
 cargo build --manifest-path cmd-ng/Cargo.toml
 ```
 
-For normal use, prefer the released CLI:
+For advanced, Agent, automation, or HIL use, prefer the released CLI:
 
 ```sh
 radxa-linkr-debuggerctl status
@@ -159,8 +161,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- watchdog status
 ```
 
 The released CLI and direct `curl` HTTP requests both use the same endpoint
-`http://172.29.203.1:8080`. The Go binary path (`go build -o radxa-linkr-debuggerctl ./cmd/radxa-linkr-debuggerctl`)
-is deprecated and kept only for reference.
+`http://172.29.203.1:8080`.
 
 OpenOCD:
 

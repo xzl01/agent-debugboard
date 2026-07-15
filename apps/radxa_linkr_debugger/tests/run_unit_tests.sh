@@ -29,8 +29,3 @@ cc -std=c11 -Wall -Wextra -Werror \
 	-o "${OUT}/linkr_debugger_model_rp2350_test"
 
 "${OUT}/linkr_debugger_model_rp2350_test"
-
-# Keep Go test package discovery inside real source directories only. Running
-# `go test ./...` from the repo root can recurse into Zephyr/CMake build output
-# trees under build/, which are not Go packages and can break discovery.
-(cd "${ROOT}" && go test ./cmd/... ./internal/...)

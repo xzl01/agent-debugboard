@@ -13,19 +13,17 @@ routing, current-monitor ADC channels, and a small safe GPIO surface.
 Radxa Linkr Debugger is designed for automated board bring-up, recovery, production
 test, and remote debugging workflows. The firmware enumerates as a composite
 USB device with a USB NCM network interface for the main control plane and a
-USB CDC ACM serial port reserved for Zephyr cmdline and BOOTSEL fallback; normal
-host-side workflows use the released Rust `radxa-linkr-debuggerctl` CLI/TUI,
-whose source lives under `cmd-ng/`.
+USB CDC ACM serial port reserved for Zephyr cmdline and BOOTSEL fallback.
+Ordinary users operate it through the Web UI; advanced users, Agents,
+automation, and HIL validation use the released Rust
+`radxa-linkr-debuggerctl` CLI/TUI, whose source lives under `cmd-ng/`.
 
-This repository contains the Zephyr application, the primary Rust host CLI/TUI,
-legacy Go host CLI sources kept for deprecated/reference use, unit tests,
-schematic copy, and project documentation.
+This repository contains the Zephyr application, Web UI, Rust host CLI/TUI,
+unit tests, schematic copy, and project documentation.
 
-The active host-side development path is [`cmd-ng/`](cmd-ng/). Released user
-workflows should use the published `radxa-linkr-debuggerctl` CLI, which speaks
-the board HTTP API over USB NCM. The older Go `cmd/radxa-linkr-debuggerctl` +
-`internal/hostcli` stack is deprecated and kept only as a legacy/reference
-implementation.
+The supported advanced host-side path is [`cmd-ng/`](cmd-ng/). The published
+`radxa-linkr-debuggerctl` speaks the board HTTP API over USB NCM and provides
+machine-readable automation, diagnostics, recording, and an interactive TUI.
 
 ## Features
 
@@ -82,15 +80,13 @@ skill's curl-first workflow. For automation through the CLI, prefer `--json`;
 parse `schema`, `ok`, `command`, and `error.code` instead of human-readable
 text.
 
-## Install Host CLI
+## Install Advanced/Agent Host CLI
 
-The normal host-side workflow uses the released `radxa-linkr-debuggerctl` CLI.
-Download the matching archive from GitHub Releases, or from a checkout use the
-repo-local installer scripts below with an explicit version so they fetch the
-published release artifact instead of building from source.
-
-The legacy Go install scripts are retained only for compatibility/transition
-workflows.
+Advanced users and Agents can install the released Rust
+`radxa-linkr-debuggerctl` CLI. Download the matching archive from GitHub
+Releases, or from a checkout use the repo-local installer scripts below with an
+explicit version so they fetch the published release artifact instead of
+building from source.
 
 Install a specific release version:
 
@@ -127,11 +123,6 @@ Manual downloads are also available from each GitHub Release:
 | Windows x64 | `radxa-linkr-debuggerctl-rust_windows_amd64.zip` |
 | Linux x64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
 | macOS Apple Silicon | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` |
-
-Legacy Go compatibility archives remain available in GitHub Releases as
-`radxa-linkr-debuggerctl_<os>_<arch>.*` when you need the deprecated host CLI for
-comparison or transition workflows. The installer and release download examples
-above prefer the published Rust CLI/TUI archives.
 
 On macOS, unsigned release binaries may trigger a Gatekeeper warning saying Apple
 cannot verify the software. The installer verifies `SHA256SUMS.txt` first and
@@ -286,22 +277,22 @@ GitHub Release, and uploads the fixed release assets.
 - `radxa-linkr-debugger-rp2350.uf2`: RP2350 firmware (G3) for drag-and-drop or `picotool`.
 - `radxa-linkr-debugger-rp2350.elf`: RP2350 ELF for debugging.
 - `radxa-linkr-debugger-rp2350.map`: RP2350 linker map.
-- `radxa-linkr-debuggerctl-rust_windows_amd64.zip`: primary Rust CLI/TUI for Windows x64.
-- `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz`: primary Rust CLI/TUI for Linux x64.
-- `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz`: primary Rust CLI/TUI for macOS Apple Silicon.
-- `radxa-linkr-debuggerctl_<os>_<arch>.*`: deprecated Go CLI compatibility archives.
+- `radxa-linkr-debuggerctl-rust_windows_amd64.zip`: advanced/Agent Rust CLI/TUI for Windows x64.
+- `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz`: advanced/Agent Rust CLI/TUI for Linux x64.
+- `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz`: advanced/Agent Rust CLI/TUI for macOS Apple Silicon.
 - `skills-radxa-linkr-debugger.tar.gz`: Agent skill bundle for `skills/radxa-linkr-debugger/`.
 - `SHA256SUMS.txt`: SHA256 checksums for all release assets.
 
-Normal users should download one of the `radxa-linkr-debuggerctl-rust_*`
-archives above. If you are developing `cmd-ng` itself from source:
+Advanced users and Agents should download one of the
+`radxa-linkr-debuggerctl-rust_*` archives above. If you are developing
+`cmd-ng` itself from source:
 
 ```sh
 cargo build --manifest-path cmd-ng/Cargo.toml
 ./cmd-ng/target/debug/radxa-linkr-debuggerctl --help
 ```
 
-## CLI Usage
+## Advanced/Agent CLI Usage
 
 Query board status:
 
@@ -491,13 +482,13 @@ runs a DHCPv4 server on the NCM link so the host can automatically obtain a
 compatible address; pass `radxa-linkr-debuggerctl --url ...` only if you
 intentionally override the default addressing in your environment.
 
-Normal user workflows should use the released CLI, which wraps the same HTTP
-JSON API. Direct `curl` is mainly for raw API debugging or for the Agent skill,
-which intentionally stays curl-first. The CDC ACM port is kept intentionally as
-a secondary path for Zephyr cmdline access and recovery workflows such as
-BOOTSEL fallback; it is not the primary automation/control transport. When the
-CDC ACM shell is available, the local `bootloader` shell command enters the
-same MCU ROM BOOTSEL path used by the HTTP API.
+Ordinary users should use the Web UI. Advanced users and Agents can use the
+released Rust CLI, which wraps the same HTTP JSON API; direct `curl` remains the
+raw API and curl-first Agent path. The CDC ACM port is kept intentionally as a
+secondary path for Zephyr cmdline access and recovery workflows such as BOOTSEL
+fallback; it is not the primary automation/control transport. When the CDC ACM
+shell is available, the local `bootloader` shell command enters the same MCU ROM
+BOOTSEL path used by the HTTP API.
 
 For long-lived telemetry and bidirectional control over a single socket, create
 a live session over HTTP first and then connect to the returned dedicated
@@ -581,10 +572,6 @@ Run unit tests:
 The test runner covers:
 
 - host C tests for the shared board model.
-- Go tests for the host CLI helper. The repo-local test script targets the real
-  Go source trees (`./cmd/...` and `./internal/...`) instead of `go test ./...`
-  from the repository root, so Zephyr/CMake build outputs under `build/` do not
-  get swept into Go package discovery.
 
 ## Repository Layout
 
@@ -592,12 +579,9 @@ The test runner covers:
 apps/radxa_linkr_debugger/        Zephyr application
 apps/radxa_linkr_debugger/src/    Firmware source and shared board model
 apps/radxa_linkr_debugger/tests/  Unit tests
-cmd-ng/                          Primary Rust host CLI/TUI
-cmd/radxa-linkr-debuggerctl/      Deprecated Go host CLI entrypoint
-internal/hostcli/                 Deprecated Go host CLI implementation
+cmd-ng/                          Rust host CLI/TUI for advanced users and Agents
+web/                             Web UI and local device/serial bridge
 doc/                          Hardware documents, OpenOCD configs, and marketing assets
 skills/radxa-linkr-debugger/      Agent-facing skill and operating guide
-.goreleaser.yaml              GoReleaser host CLI packaging config
-go.mod, go.sum                Go module for host CLI
 west.yml                      Zephyr workspace manifest
 ```

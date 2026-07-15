@@ -12,17 +12,15 @@
 
 Radxa Linkr Debugger 面向自动化 bring-up、远程恢复、产测和 AI agent 调试链路。
 固件会枚举为复合 USB 设备：以 USB NCM 网络接口作为主控制面，并保留一个
-USB CDC ACM 串口用于 Zephyr 通用 cmdline 和 BOOTSEL fallback；主机侧正常工作流
-优先使用 release 发布的 Rust `radxa-linkr-debuggerctl` CLI/TUI，其源码位于
-`cmd-ng/`。
+USB CDC ACM 串口用于 Zephyr 通用 cmdline 和 BOOTSEL fallback。普通用户通过 Web UI
+操作；高级用户、Agent、自动化和 HIL 验证使用 release 发布的 Rust
+`radxa-linkr-debuggerctl` CLI/TUI，其源码位于 `cmd-ng/`。
 
-本仓库包含 Zephyr 应用、主力 Rust 主机侧 CLI/TUI、保留作弃用参考的旧 Go 主机
-侧实现、单元测试、原理图副本和项目文档。
+本仓库包含 Zephyr 应用、Web UI、Rust 主机侧 CLI/TUI、单元测试、原理图副本和项目文档。
 
-当前主力主机侧开发路径是 [`cmd-ng/`](cmd-ng/)。面向用户的正常工作流应优先使用
-release 发布的 `radxa-linkr-debuggerctl` CLI，它通过 USB NCM 上的 HTTP API 与调试板
-通信。旧的 Go `cmd/radxa-linkr-debuggerctl` + `internal/hostcli` 已进入
-deprecated/legacy 维护状态，仅保留作参考实现与回归对照。
+高级主机侧工具路径是 [`cmd-ng/`](cmd-ng/)。release 发布的
+`radxa-linkr-debuggerctl` 通过 USB NCM 上的 HTTP API 与调试板通信，并提供机器可读
+自动化、诊断、录制和交互式 TUI。
 
 ## 功能范围
 
@@ -75,11 +73,11 @@ Agent skill 本身时，才继续遵循 skill 的 curl-first 工作流。通过 
 优先使用 `--json`，解析 `schema`、`ok`、`command` 和 `error.code`，不要解析面向
 人看的文本输出。
 
-## 安装主机侧 CLI
+## 安装高级用户/Agent 主机侧 CLI
 
-主机侧正常工作流优先使用 release 发布的 `radxa-linkr-debuggerctl` CLI。可以直接从
-GitHub Releases 下载匹配平台的归档，或者在 checkout 内使用下方 repo-local
-installer，并显式指定版本，让它下载已发布的 release 产物而不是从源码构建。
+高级用户和 Agent 可以安装 release 发布的 Rust `radxa-linkr-debuggerctl` CLI。可以
+直接从 GitHub Releases 下载匹配平台的归档，或者在 checkout 内使用下方
+repo-local installer，并显式指定版本，让它下载已发布的 release 产物而不是从源码构建。
 
 安装指定 release 版本：
 
@@ -115,10 +113,6 @@ powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 
 | Windows x64 | `radxa-linkr-debuggerctl-rust_windows_amd64.zip` |
 | Linux x64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
 | macOS Apple Silicon | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` |
-
-如果需要保留作对照或迁移用途的旧 Go host CLI，GitHub Release 中还会额外提供
-`radxa-linkr-debuggerctl_<os>_<arch>.*` 兼容归档；上面的安装与下载示例则优先使用
-已发布的 Rust CLI/TUI 归档。
 
 macOS 上未签名的 release 二进制可能触发 Gatekeeper，提示 Apple 无法验证软件。
 安装脚本会先校验 `SHA256SUMS.txt`，再移除安装后二进制的 quarantine 标记。
@@ -257,14 +251,13 @@ build/radxa_linkr_debugger/zephyr/zephyr.uf2
 - `radxa-linkr-debugger-rp2350.uf2`：用于拖拽刷写或 `picotool` 的 RP2350 固件。
 - `radxa-linkr-debugger-rp2350.elf`：用于调试的 RP2350 ELF。
 - `radxa-linkr-debugger-rp2350.map`：RP2350 链接 map。
-- `radxa-linkr-debuggerctl-rust_windows_amd64.zip`：Windows x64 主力 Rust CLI/TUI。
-- `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz`：Linux x64 主力 Rust CLI/TUI。
-- `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz`：macOS Apple Silicon 主力 Rust CLI/TUI。
-- `radxa-linkr-debuggerctl_<os>_<arch>.*`：弃用 Go CLI 的兼容归档。
+- `radxa-linkr-debuggerctl-rust_windows_amd64.zip`：Windows x64 高级用户/Agent Rust CLI/TUI。
+- `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz`：Linux x64 高级用户/Agent Rust CLI/TUI。
+- `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz`：macOS Apple Silicon 高级用户/Agent Rust CLI/TUI。
 - `skills-radxa-linkr-debugger.tar.gz`：`skills/radxa-linkr-debugger/` 的 Agent skill 打包。
 - `SHA256SUMS.txt`：所有 release assets 的 SHA256 校验文件。
 
-普通用户应优先下载上面的 `radxa-linkr-debuggerctl-rust_*` 归档。若你在开发
+高级用户和 Agent 可下载上面的 `radxa-linkr-debuggerctl-rust_*` 归档。若你在开发
 `cmd-ng` 本身，可从源码构建：
 
 ```sh
@@ -272,7 +265,7 @@ cargo build --manifest-path cmd-ng/Cargo.toml
 ./cmd-ng/target/debug/radxa-linkr-debuggerctl --help
 ```
 
-## CLI 使用
+## 高级用户/Agent CLI 使用
 
 查询调试板状态：
 
@@ -439,9 +432,9 @@ USB NCM 接口上的 HTTP 与调试板通信。默认设备 URL 为 `http://172.
 调试板会在 NCM 链路上运行一个小型 DHCPv4 server，让 host 自动拿到兼容地址；如
 果你修改了默认地址规划，可用 `radxa-linkr-debuggerctl --url ...` 显式指定。
 
-面向普通用户的正常工作流优先使用 release CLI，它只是对同一套 HTTP JSON API
-做了包装。直接 `curl` 更适合原始 API 调试，或者执行刻意保持 curl-first 的 Agent
-skill。MCU USB CDC ACM 串口会继续保留，作为 Zephyr 通用 cmdline 和
+普通用户应使用 Web UI。高级用户和 Agent 可以使用 release 发布的 Rust CLI，它对
+同一套 HTTP JSON API 做了包装；直接 `curl` 仍用于原始 API 调试和 curl-first 的
+Agent skill。MCU USB CDC ACM 串口会继续保留，作为 Zephyr 通用 cmdline 和
 BOOTSEL fallback 的辅助通道，但它不是主控制面。只要 CDC ACM shell 可用，本地
 `bootloader` shell 命令就会走与 HTTP API 相同的 MCU ROM BOOTSEL 路径。
 
@@ -521,10 +514,6 @@ G3 电流监测通道使用 INA139、10 mOhm 采样电阻和 50 kOhm 输出负�
 测试脚本覆盖：
 
 - 共享板级模型的 host C 单元测试。
-- 主机侧 CLI 辅助工具的 Go 测试。仓库内测试脚本会只跑真实 Go 源码目录
-  （`./cmd/...` 与 `./internal/...`），而不会在仓库根目录直接执行
-  `go test ./...`，以避免 Zephyr/CMake 在 `build/` 下生成的产物树被误扫进
-  Go 包发现流程。
 
 ## 仓库结构
 
@@ -532,12 +521,9 @@ G3 电流监测通道使用 INA139、10 mOhm 采样电阻和 50 kOhm 输出负�
 apps/radxa_linkr_debugger/        Zephyr 应用
 apps/radxa_linkr_debugger/src/    固件源码和共享板级模型
 apps/radxa_linkr_debugger/tests/  单元测试
-cmd-ng/                          主力 Rust 主机侧 CLI/TUI
-cmd/radxa-linkr-debuggerctl/      已弃用 Go 主机侧 CLI 入口
-internal/hostcli/                 已弃用 Go 主机侧 CLI 实现
+cmd-ng/                          面向高级用户和 Agent 的 Rust CLI/TUI
+web/                             Web UI 和本地设备/串口桥接
 doc/                          硬件文档、OpenOCD 配置和宣传素材
 skills/radxa-linkr-debugger/      面向 Agent 的 skill 和操作规程
-.goreleaser.yaml              GoReleaser 主机侧 CLI 打包配置
-go.mod, go.sum                主机侧 CLI Go module
 west.yml                      Zephyr workspace manifest
 ```

@@ -52,6 +52,9 @@ jobs:
           sh -n skills/radxa-linkr-debugger/scripts/install.sh
           sh -n apps/radxa_linkr_debugger/tests/run_unit_tests.sh
 
+      - name: Run firmware model unit tests
+        run: ./apps/radxa_linkr_debugger/tests/run_unit_tests.sh
+
   windows-installer:
     name: Check Windows installer
     runs-on: windows-latest
@@ -110,62 +113,19 @@ jobs:
           path: dist/firmware/
           if-no-files-found: error
 
-  host-cli-legacy:
-    name: Test legacy Go host CLI
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout application
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: "1.25.x"
-          cache: true
-
-      - name: Run unit tests
-        run: ./apps/radxa_linkr_debugger/tests/run_unit_tests.sh
-
-      - name: Smoke test local host CLI build
-        run: |
-          go build -trimpath -o /tmp/radxa-linkr-debuggerctl ./cmd/radxa-linkr-debuggerctl
-          /tmp/radxa-linkr-debuggerctl --help
-          /tmp/radxa-linkr-debuggerctl --version
-          /tmp/radxa-linkr-debuggerctl --json --version
-
-      - name: Build legacy Go host CLI release archives
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: release --snapshot --clean
-
-      - name: Upload legacy Go host CLI artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: radxa-linkr-debuggerctl-go-legacy-packages
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/checksums.txt
-          if-no-files-found: error
-
   host-cli:
-    name: Test primary Rust host CLI
+    name: Test advanced/Agent Rust host CLI
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            artifact_name: radxa-linkr-debuggerctl_linux_amd64.tar.gz
+            artifact_name: radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz
           - os: macos-latest
-            artifact_name: radxa-linkr-debuggerctl_darwin_arm64.tar.gz
+            artifact_name: radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz
           - os: windows-latest
-            artifact_name: radxa-linkr-debuggerctl_windows_amd64.zip
+            artifact_name: radxa-linkr-debuggerctl-rust_windows_amd64.zip
 
     steps:
       - name: Checkout application
@@ -190,7 +150,7 @@ jobs:
       - name: Run Rust tests
         run: cargo test --manifest-path cmd-ng/Cargo.toml --all-targets
 
-      - name: Smoke test primary Rust host CLI build
+      - name: Smoke test Rust host CLI build
         shell: bash
         run: |
           cargo build --release --manifest-path cmd-ng/Cargo.toml
@@ -202,20 +162,20 @@ jobs:
             ./cmd-ng/target/release/radxa-linkr-debuggerctl --version
           fi
 
-      - name: Package primary Rust host CLI artifact
+      - name: Package Rust host CLI artifact
         if: runner.os != 'Windows'
         run: |
           mkdir -p dist/rust-cli
           tar -C cmd-ng/target/release -czf dist/rust-cli/${{ matrix.artifact_name }} radxa-linkr-debuggerctl
 
-      - name: Package primary Rust host CLI artifact (Windows)
+      - name: Package Rust host CLI artifact (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/rust-cli | Out-Null
           Compress-Archive -Path cmd-ng/target/release/radxa-linkr-debuggerctl.exe -DestinationPath dist/rust-cli/${{ matrix.artifact_name }}
 
-      - name: Upload primary Rust host CLI artifacts
+      - name: Upload Rust host CLI artifacts
         uses: actions/upload-artifact@v6
         with:
           name: rust-host-cli-${{ runner.os }}

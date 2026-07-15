@@ -9,5 +9,5 @@ Public License version 3 or later (LGPL-3.0-or-later), as indicated by
 their SPDX-License-Identifier headers.
 
 This project uses and links to third-party open source software, including
-Rust crates, Go modules, Zephyr, and Zephyr west-imported modules. Those
-third-party components remain licensed under their respective terms.
+Rust crates, JavaScript packages, Zephyr, and Zephyr west-imported modules.
+Those third-party components remain licensed under their respective terms.
