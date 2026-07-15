@@ -35,6 +35,8 @@ The canonical firmware build runs `npm ci` and `npm run build:firmware`
 automatically, verifies the fixed embedded asset set, and converts the three
 production files into gzip-compressed Zephyr HTTP resources. Node.js 22 and npm
 must therefore be available when building firmware from a clean checkout.
+Run `npm run build:firmware` directly to reproduce that fixed-asset build from
+the Web workspace; unlike the normal build, it disables JavaScript code splitting.
 
 After flashing, connect the USB NCM interface and open:
 
