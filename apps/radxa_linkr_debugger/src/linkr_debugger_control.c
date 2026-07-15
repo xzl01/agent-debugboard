@@ -46,6 +46,7 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #define CURRENT_12V_OUT_NODE DT_NODELABEL(sense_12v_out)
 #define CURRENT_20V_OUT_NODE DT_NODELABEL(sense_20v_out)
 #define WATCHDOG_NODE DT_NODELABEL(wdt0)
+#define HEARTBEAT_LED_NODE DT_CHOSEN(zephyr_heartbeat_led)
 
 #define LINKR_DEBUGGER_JSON_SCHEMA "radxa-linkr-debugger.v1"
 #define LINKR_DEBUGGER_USB_MODE "ncm-http"
@@ -69,6 +70,7 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #define LINKR_DEBUGGER_WATCHDOG_CMDLINE_STALE_MS 2000U
 #define LINKR_DEBUGGER_WATCHDOG_WS_STALE_MS 1500U
 #define LINKR_DEBUGGER_WATCHDOG_DIAGNOSTIC_PERIOD_MS 500U
+#define LINKR_DEBUGGER_HEARTBEAT_TICKS_PER_TOGGLE 2U
 #define LINKR_DEBUGGER_WATCHDOG_SCRATCH_INDEX 0U
 #define LINKR_DEBUGGER_WATCHDOG_BOOTSEL_MARKER 0xadb00751U
 #define LINKR_DEBUGGER_WATCHDOG_SOURCE_SCRATCH 1U
@@ -110,6 +112,14 @@ BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_VIO_NODE, okay));
 #define HAS_VIN_SWITCH 0
 #endif
 
+#if DT_HAS_CHOSEN(zephyr_heartbeat_led) && \
+    DT_NODE_HAS_STATUS(HEARTBEAT_LED_NODE, okay) && \
+    DT_NODE_HAS_PROP(HEARTBEAT_LED_NODE, gpios)
+#define HAS_HEARTBEAT_LED 1
+#else
+#define HAS_HEARTBEAT_LED 0
+#endif
+
 static const struct device *const gpio0 = DEVICE_DT_GET(GPIO0_NODE);
 static const struct device *const watchdog_dev = DEVICE_DT_GET_OR_NULL(WATCHDOG_NODE);
 static bool regulator_states[REGULATOR_STATE_CAPACITY];
@@ -131,6 +141,7 @@ static int64_t linkr_debugger_watchdog_last_diagnostic_ms;
 static int64_t linkr_debugger_watchdog_last_feed_ms;
 static const char *linkr_debugger_watchdog_failing_service = NULL;
 static const char *linkr_debugger_watchdog_last_reported_service;
+static struct linkr_debugger_heartbeat_state linkr_debugger_watchdog_heartbeat;
 static K_THREAD_STACK_DEFINE(linkr_debugger_watchdog_supervisor_stack, 1536);
 static struct k_thread linkr_debugger_watchdog_supervisor_thread;
 
@@ -172,6 +183,10 @@ static const struct adc_dt_spec adc_channels[] = {};
 
 #if HAS_VIN_SWITCH
 static const struct device *const vio_regulator = DEVICE_DT_GET(REGULATOR_VIO_NODE);
+#endif
+
+#if HAS_HEARTBEAT_LED
+static const struct gpio_dt_spec heartbeat_led = GPIO_DT_SPEC_GET(HEARTBEAT_LED_NODE, gpios);
 #endif
 
 BUILD_ASSERT(ARRAY_SIZE(regulators) <= REGULATOR_STATE_CAPACITY);
@@ -390,6 +405,39 @@ static int setup_current_sensors(void)
 	return 0;
 }
 
+static int configure_heartbeat_led(void)
+{
+#if HAS_HEARTBEAT_LED
+	if (!gpio_is_ready_dt(&heartbeat_led)) {
+		return -ENODEV;
+	}
+
+	return gpio_pin_configure_dt(&heartbeat_led, GPIO_OUTPUT_INACTIVE);
+#else
+	return 0;
+#endif
+}
+
+static void linkr_debugger_heartbeat_led_set(bool active)
+{
+#if HAS_HEARTBEAT_LED
+	int ret = gpio_pin_set_dt(&heartbeat_led, active ? 1 : 0);
+
+	if (ret < 0) {
+		LOG_WRN("heartbeat LED set failed: %d", ret);
+	}
+#else
+	ARG_UNUSED(active);
+#endif
+}
+
+static bool linkr_debugger_watchdog_heartbeat_step_locked(bool feed_success)
+{
+	return linkr_debugger_heartbeat_step(&linkr_debugger_watchdog_heartbeat,
+					    feed_success,
+					    LINKR_DEBUGGER_HEARTBEAT_TICKS_PER_TOGGLE);
+}
+
 static void linkr_debugger_watchdog_marker_set(void)
 {
 #if defined(CONFIG_SOC_SERIES_RP2040) || defined(CONFIG_SOC_SERIES_RP2350)
@@ -551,6 +599,7 @@ static void linkr_debugger_watchdog_supervisor_thread_main(void *arg1, void *arg
 		bool armed;
 		const char *failing_service;
 		const char *feed_status;
+		bool heartbeat_active;
 		int feed_ret = 0;
 
 		diagnostic_due = linkr_debugger_watchdog_diagnostic_due(now);
@@ -609,8 +658,11 @@ static void linkr_debugger_watchdog_supervisor_thread_main(void *arg1, void *arg
 		} else {
 			feed_status = "skipped";
 		}
+		heartbeat_active = linkr_debugger_watchdog_heartbeat_step_locked(healthy && feed_ret == 0);
 		armed = linkr_debugger_watchdog_armed;
 		k_mutex_unlock(&linkr_debugger_control_lock);
+
+		linkr_debugger_heartbeat_led_set(heartbeat_active);
 
 		if (diagnostic_due) {
 			linkr_debugger_watchdog_log_diagnostics(now, feed_status, healthy, failing_service,
@@ -640,6 +692,8 @@ void linkr_debugger_watchdog_boot_check(void)
 		}
 		printk("boot to BOOTSEL: reason=timer marker=match source=%s(0x%08x)\n",
 		       desc, source);
+		(void)configure_heartbeat_led();
+		linkr_debugger_heartbeat_led_set(false);
 		linkr_debugger_watchdog_marker_clear();
 		reset_usb_boot(0, 0);
 	}
@@ -776,6 +830,11 @@ int linkr_debugger_control_init(void)
 	}
 
 	ret = setup_current_sensors();
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = configure_heartbeat_led();
 	if (ret < 0) {
 		return ret;
 	}
@@ -1316,8 +1375,11 @@ int linkr_debugger_watchdog_supervisor_start(void)
 	linkr_debugger_watchdog_last_feed_ms = 0;
 	linkr_debugger_watchdog_failing_service = NULL;
 	linkr_debugger_watchdog_last_reported_service = NULL;
+	(void)linkr_debugger_watchdog_heartbeat_step_locked(false);
 	linkr_debugger_watchdog_supervisor_started = true;
 	k_mutex_unlock(&linkr_debugger_control_lock);
+
+	linkr_debugger_heartbeat_led_set(false);
 
 	k_thread_create(&linkr_debugger_watchdog_supervisor_thread,
 				linkr_debugger_watchdog_supervisor_stack,
@@ -1348,7 +1410,9 @@ int linkr_debugger_bootloader_now(void)
 	}
 	ARG_UNUSED(ret);
 	linkr_debugger_watchdog_force_disable_locked();
+	(void)linkr_debugger_watchdog_heartbeat_step_locked(false);
 	k_mutex_unlock(&linkr_debugger_control_lock);
+	linkr_debugger_heartbeat_led_set(false);
 	printk("explicit %s BOOTSEL entry\n", linkr_debugger_mcu_name());
 	reset_usb_boot(0, 0);
 	return 0;

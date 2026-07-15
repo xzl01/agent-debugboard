@@ -32,6 +32,11 @@ struct linkr_debugger_safe_gpio_desc {
 	const char *note;
 };
 
+struct linkr_debugger_heartbeat_state {
+	uint32_t ticks;
+	bool active;
+};
+
 enum linkr_debugger_vin_route {
 	LINKR_DEBUGGER_VIN_ROUTE_1V8 = 0,
 	LINKR_DEBUGGER_VIN_ROUTE_3V3 = 1,
@@ -61,6 +66,9 @@ bool linkr_debugger_vin_route_from_microvolt(int32_t microvolt,
 bool linkr_debugger_rail_initial_enabled(const struct linkr_debugger_rail_desc *rail);
 bool linkr_debugger_rail_state_allowed(const struct linkr_debugger_rail_desc *rail,
 					      bool enabled);
+bool linkr_debugger_heartbeat_step(struct linkr_debugger_heartbeat_state *state,
+					 bool feed_success,
+					 uint32_t ticks_per_toggle);
 
 const struct linkr_debugger_rail_desc *linkr_debugger_find_rail(const char *name);
 const struct linkr_debugger_current_desc *linkr_debugger_find_current(const char *name);

@@ -257,6 +257,29 @@ bool linkr_debugger_rail_state_allowed(const struct linkr_debugger_rail_desc *ra
 	return !rail->always_on || enabled;
 }
 
+bool linkr_debugger_heartbeat_step(struct linkr_debugger_heartbeat_state *state,
+					 bool feed_success,
+					 uint32_t ticks_per_toggle)
+{
+	if (state == NULL) {
+		return false;
+	}
+
+	if (!feed_success || ticks_per_toggle == 0U) {
+		state->ticks = 0U;
+		state->active = false;
+		return false;
+	}
+
+	state->ticks++;
+	if (state->ticks >= ticks_per_toggle) {
+		state->ticks = 0U;
+		state->active = !state->active;
+	}
+
+	return state->active;
+}
+
 const struct linkr_debugger_rail_desc *linkr_debugger_find_rail(const char *name)
 {
 	if (name == NULL) {

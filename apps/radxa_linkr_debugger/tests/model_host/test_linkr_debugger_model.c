@@ -292,6 +292,45 @@ static void test_vin_route_parser(void)
 	assert(!linkr_debugger_vin_route_from_microvolt(LINKR_DEBUGGER_VIN_3V3_UV, NULL));
 }
 
+static void test_heartbeat_state(void)
+{
+	struct linkr_debugger_heartbeat_state state = {0};
+
+	assert(!linkr_debugger_heartbeat_step(&state, true, 2));
+	assert(!state.active);
+	assert(state.ticks == 1);
+
+	assert(linkr_debugger_heartbeat_step(&state, true, 2));
+	assert(state.active);
+	assert(state.ticks == 0);
+
+	assert(linkr_debugger_heartbeat_step(&state, true, 2));
+	assert(state.active);
+	assert(state.ticks == 1);
+
+	assert(!linkr_debugger_heartbeat_step(&state, true, 2));
+	assert(!state.active);
+	assert(state.ticks == 0);
+
+	assert(!linkr_debugger_heartbeat_step(&state, true, 2));
+	assert(!state.active);
+	assert(state.ticks == 1);
+	assert(!linkr_debugger_heartbeat_step(&state, false, 2));
+	assert(!state.active);
+	assert(state.ticks == 0);
+
+	assert(!linkr_debugger_heartbeat_step(&state, true, 2));
+	assert(!state.active);
+	assert(state.ticks == 1);
+	assert(linkr_debugger_heartbeat_step(&state, true, 2));
+	assert(state.active);
+
+	assert(!linkr_debugger_heartbeat_step(&state, true, 0));
+	assert(!state.active);
+	assert(state.ticks == 0);
+	assert(!linkr_debugger_heartbeat_step(NULL, true, 2));
+}
+
 int main(void)
 {
 	test_rail_table_matches_schematic();
@@ -302,6 +341,7 @@ int main(void)
 	test_bool_parser();
 	test_gpio_pin_parser();
 	test_vin_route_parser();
+	test_heartbeat_state();
 
 	puts("linkr_debugger_model: all tests passed");
 	return 0;
