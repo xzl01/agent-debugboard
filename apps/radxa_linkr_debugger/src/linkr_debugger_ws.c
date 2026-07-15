@@ -348,12 +348,66 @@ static int linkr_debugger_ws_append(char *buf, size_t size, size_t *cursor, cons
 	return 0;
 }
 
+static int linkr_debugger_ws_append_json_string(char *buf, size_t size, size_t *cursor,
+						const char *value)
+{
+	int ret;
+
+	ret = linkr_debugger_ws_append(buf, size, cursor, "\"");
+	if (ret < 0) {
+		return ret;
+	}
+
+	for (const unsigned char *p = (const unsigned char *)(value != NULL ? value : "");
+	     *p != '\0'; p++) {
+		switch (*p) {
+		case '"':
+			ret = linkr_debugger_ws_append(buf, size, cursor, "\\\"");
+			break;
+		case '\\':
+			ret = linkr_debugger_ws_append(buf, size, cursor, "\\\\");
+			break;
+		case '\b':
+			ret = linkr_debugger_ws_append(buf, size, cursor, "\\b");
+			break;
+		case '\f':
+			ret = linkr_debugger_ws_append(buf, size, cursor, "\\f");
+			break;
+		case '\n':
+			ret = linkr_debugger_ws_append(buf, size, cursor, "\\n");
+			break;
+		case '\r':
+			ret = linkr_debugger_ws_append(buf, size, cursor, "\\r");
+			break;
+		case '\t':
+			ret = linkr_debugger_ws_append(buf, size, cursor, "\\t");
+			break;
+		default:
+			if (*p < 0x20U) {
+				ret = linkr_debugger_ws_append(buf, size, cursor, "\\u%04x", *p);
+			} else {
+				ret = linkr_debugger_ws_append(buf, size, cursor, "%c", *p);
+			}
+			break;
+		}
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
+	return linkr_debugger_ws_append(buf, size, cursor, "\"");
+}
+
 static int linkr_debugger_ws_append_availability(char *buf, size_t size, size_t *cursor,
 					    bool available, const char *reason)
 {
-	return linkr_debugger_ws_append(buf, size, cursor,
-				 "{\"available\":%s,\"reason\":\"%s\"",
-				 available ? "true" : "false", reason != NULL ? reason : "");
+	if (linkr_debugger_ws_append(buf, size, cursor,
+				    "{\"available\":%s,\"reason\":",
+				    available ? "true" : "false") < 0) {
+		return -ENOMEM;
+	}
+
+	return linkr_debugger_ws_append_json_string(buf, size, cursor, reason);
 }
 
 static int linkr_debugger_ws_append_board_monitoring(char *buf, size_t size, size_t *cursor)
@@ -368,9 +422,11 @@ static int linkr_debugger_ws_append_board_monitoring(char *buf, size_t size, siz
 		return -ENOMEM;
 	}
 	if (snapshot.temperature.available) {
-		if (linkr_debugger_ws_append(buf, size, cursor,
-					     ",\"source\":\"%s\",\"celsius\":{\"val1\":%d,\"val2\":%d}}",
-					     snapshot.temperature.source,
+		if (linkr_debugger_ws_append(buf, size, cursor, ",\"source\":") < 0 ||
+		    linkr_debugger_ws_append_json_string(buf, size, cursor,
+						  snapshot.temperature.source) < 0 ||
+		    linkr_debugger_ws_append(buf, size, cursor,
+					     ",\"celsius\":{\"val1\":%d,\"val2\":%d}}",
 					     snapshot.temperature.celsius_val1,
 					     snapshot.temperature.celsius_val2) < 0) {
 			return -ENOMEM;
@@ -390,10 +446,11 @@ static int linkr_debugger_ws_append_board_monitoring(char *buf, size_t size, siz
 		return -ENOMEM;
 	}
 	if (snapshot.heap.available) {
-		if (linkr_debugger_ws_append(buf, size, cursor,
-					     ",\"source\":\"%s\",\"free_bytes\":%u,\"allocated_bytes\":%u,"
+		if (linkr_debugger_ws_append(buf, size, cursor, ",\"source\":") < 0 ||
+		    linkr_debugger_ws_append_json_string(buf, size, cursor, snapshot.heap.source) < 0 ||
+		    linkr_debugger_ws_append(buf, size, cursor,
+					     ",\"free_bytes\":%u,\"allocated_bytes\":%u,"
 					     "\"max_allocated_bytes\":%u,\"total_bytes\":%u}",
-					     snapshot.heap.source,
 					     (unsigned int)snapshot.heap.free_bytes,
 					     (unsigned int)snapshot.heap.allocated_bytes,
 					     (unsigned int)snapshot.heap.max_allocated_bytes,
@@ -405,6 +462,78 @@ static int linkr_debugger_ws_append_board_monitoring(char *buf, size_t size, siz
 			return -ENOMEM;
 		}
 	} else if (linkr_debugger_ws_append(buf, size, cursor, "}") < 0) {
+		return -ENOMEM;
+	}
+
+	if (linkr_debugger_ws_append(buf, size, cursor, ",\"memory\":") < 0 ||
+	    linkr_debugger_ws_append_availability(buf, size, cursor, snapshot.memory.available,
+					      snapshot.memory.reason) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor, ",\"source\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(buf, size, cursor, snapshot.memory.source) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor, ",\"coverage\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(buf, size, cursor, snapshot.memory.coverage) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor,
+				     ",\"pressure_pct_x100\":%u,\"limiting_component\":",
+				     (unsigned int)snapshot.memory.pressure_pct_x100) < 0 ||
+	    linkr_debugger_ws_append_json_string(buf, size, cursor,
+					  snapshot.memory.limiting_component) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor, ",\"limiting_name\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(buf, size, cursor, snapshot.memory.limiting_name) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor,
+				     ",\"system_heap_pressure_pct_x100\":%u,"
+				     "\"physical\":{\"total_bytes\":%u,\"image_reserved_bytes\":%u,"
+				     "\"reserved_pct_x100\":%u},"
+				     "\"stacks\":{\"thread_count\":%u,\"measured_count\":%u,"
+				     "\"error_count\":%u,\"total_bytes\":%u,"
+				     "\"used_high_water_bytes\":%u,\"max_pressure_pct_x100\":%u,"
+				     "\"max_pressure_thread\":",
+				     (unsigned int)snapshot.memory.system_heap_pressure_pct_x100,
+				     (unsigned int)snapshot.memory.physical.total_bytes,
+				     (unsigned int)snapshot.memory.physical.image_reserved_bytes,
+				     (unsigned int)snapshot.memory.physical.reserved_pct_x100,
+				     (unsigned int)snapshot.memory.stacks.thread_count,
+				     (unsigned int)snapshot.memory.stacks.measured_count,
+				     (unsigned int)snapshot.memory.stacks.error_count,
+				     (unsigned int)snapshot.memory.stacks.total_bytes,
+				     (unsigned int)snapshot.memory.stacks.used_high_water_bytes,
+				     (unsigned int)snapshot.memory.stacks.max_pressure_pct_x100) < 0 ||
+	    linkr_debugger_ws_append_json_string(buf, size, cursor,
+					  snapshot.memory.stacks.max_pressure_thread) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor, "},\"current_pressure\":") < 0 ||
+	    linkr_debugger_ws_append_availability(buf, size, cursor,
+					       snapshot.memory.current_pressure.available,
+					       snapshot.memory.current_pressure.reason) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor, ",\"coverage\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(buf, size, cursor,
+					  snapshot.memory.current_pressure.coverage) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor,
+				     ",\"pressure_pct_x100\":%u,\"limiting_component\":",
+				     (unsigned int)snapshot.memory.current_pressure.pressure_pct_x100) < 0 ||
+	    linkr_debugger_ws_append_json_string(buf, size, cursor,
+					  snapshot.memory.current_pressure.limiting_component) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor, ",\"limiting_name\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(buf, size, cursor,
+					  snapshot.memory.current_pressure.limiting_name) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor, ",\"tie_count\":%u},\"peak_pressure\":",
+				     (unsigned int)snapshot.memory.current_pressure.tie_count) < 0 ||
+	    linkr_debugger_ws_append_availability(buf, size, cursor,
+					       snapshot.memory.peak_pressure.available,
+					       snapshot.memory.peak_pressure.reason) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor, ",\"coverage\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(buf, size, cursor,
+					  snapshot.memory.peak_pressure.coverage) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor,
+				     ",\"pressure_pct_x100\":%u,\"limiting_component\":",
+				     (unsigned int)snapshot.memory.peak_pressure.pressure_pct_x100) < 0 ||
+	    linkr_debugger_ws_append_json_string(buf, size, cursor,
+					  snapshot.memory.peak_pressure.limiting_component) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor, ",\"limiting_name\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(buf, size, cursor,
+					  snapshot.memory.peak_pressure.limiting_name) < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor, ",\"tie_count\":%u,\"since\":",
+				     (unsigned int)snapshot.memory.peak_pressure.tie_count) < 0 ||
+	    linkr_debugger_ws_append_json_string(buf, size, cursor, "boot") < 0 ||
+	    linkr_debugger_ws_append(buf, size, cursor, "}}") < 0) {
 		return -ENOMEM;
 	}
 
