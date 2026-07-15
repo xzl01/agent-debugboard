@@ -31,7 +31,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 - GPIO 在 CLI/TUI 中会同时显示 `GPxx` 和 `note`；控制时可使用 `GPxx`、数字引脚（如 `4`）或精确 note（如 `CON_MAS`）
 - `adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]` 会创建 live websocket session；`.ndjson` 输出完整 telemetry 记录，`.csv` 输出设备时间戳和三路电流列；默认请求 1000Hz，`--rate-hz` 可指定 1..1000Hz，高于 100Hz 时 CLI 请求 batch JSON 并逐样本展开
 - 固件最多支持四个并发 websocket 客户端，多个 `adc record` 可以同时运行；触发式功耗采集使用全局硬件缓冲区，同一时间只能有一个 capture owner
-- recorder 会写入主机接收时间和 `metadata.requested_rate_hz`，并把设备 `sequence`、`sample_sequence`、`uptime_us` 和 `device_t_mono_us` 放入 `metadata.device_timing`；采样环覆盖通过 `metadata.dropped_samples` 显式报告，分析采样间隔时应优先使用设备时间
+- recorder 会写入主机接收时间和 `metadata.requested_rate_hz`，并把设备 `sequence`、`sample_sequence`、`uptime_us` 和 `device_t_mono_us` 放入 `metadata.device_timing`；CSV 时间列优先使用 `device_t_mono_us`，否则回退到 `uptime_us`，再否则为 0；采样环覆盖通过 `metadata.dropped_samples` 显式报告，分析采样间隔时应优先使用设备时间
 - `raw` 模式在 HTTP 路径下不支持
 - `watchdog` 仍只暴露 `status`，不提供 host 侧 feed/控制
 - 板内 `5v_ws` 电源轨不会出现在 CLI/TUI 的状态或电源控制中；原始固件 API 兼容项仅供底层诊断
