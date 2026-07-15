@@ -54,11 +54,16 @@ origins can be supplied as a comma-separated `LINKR_TRUSTED_ORIGINS` value.
 
 The power analyzer arms firmware-side manual, current-threshold, power-on, or
 GPIO-edge captures. It overlays the latest four runs and exports CSV/NDJSON with
-device timestamps and the complete trigger configuration.
+device timestamps and the complete trigger configuration. The latest capture
+also reports duration, mAh, and Wh for the selected rail using trapezoidal
+integration over the device monotonic timestamps.
 
-The serial card shows the current CH347F UART VIO level in its upper-right
-corner. Changing between 3.3V and 1.8V requires an explicit risk confirmation;
-an active serial connection is closed before the firmware VIN route is changed.
+The serial card keeps independent UART0 and UART1 sessions. Tab mode switches
+the visible terminal without disconnecting either channel; split mode shows both
+terminals and routes keyboard input only to the focused terminal. Both channels
+share the CH347F UART VIO level shown in the card header. Changing between 3.3V
+and 1.8V requires an explicit risk confirmation; both active serial connections
+are closed before the firmware VIN route is changed.
 The console uses an xterm-compatible terminal surface: click the terminal and
 type directly, without a separate command input. Terminal writes are serialized
 so fast typing cannot contend for the Web Serial writer lock. The terminal only
@@ -75,13 +80,15 @@ CH347F port, start the local fallback bridge in a second terminal:
 npm run device-bridge
 ```
 
-Then use the **Bridge** button in the serial console card.
+Then use the **Bridge** button in either serial terminal. The bridge prefers the
+CH347F `D1` device for UART0 and `D3` for UART1, with sorted device order as the
+fallback when those suffixes are unavailable.
 
 ## Startup power analysis
 
 The infrequent startup workflow lives under **Advanced & recovery** rather than
-on the primary dashboard. It requires an active target serial connection and an
-idle power-capture session. After one explicit confirmation it:
+on the primary dashboard. It requires the selected UART0 or UART1 connection and
+an idle power-capture session. After one explicit confirmation it:
 
 1. clears and records the target serial console;
 2. turns the selected rail off and waits for the configured discharge delay;

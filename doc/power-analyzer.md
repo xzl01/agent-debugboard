@@ -37,8 +37,9 @@ path selects CSV instead of NDJSON.
 ## Startup workflow
 
 The Web UI exposes a startup power-analysis task inside its advanced toolbox.
-The workflow requires an already connected target UART, powers the selected
-rail off, arms a `power_on` capture, and only then restores the rail. Serial RX
+The workflow requires the selected UART0 or UART1 session to already be
+connected, powers the selected rail off, arms a `power_on` capture, and only
+then restores the rail. Serial RX
 is recorded independently so the first post-power UART byte, U-Boot or UEFI,
 kernel, and login markers can span longer than the fixed firmware capture
 buffer. The first byte is used as the portable Boot milestone because many Boot

@@ -1,9 +1,10 @@
-import { useState } from "react";
-import { Activity, Power, Zap } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Activity, Clock3, Power, Zap } from "lucide-react";
 import { Badge, Card, Toggle } from "./ui";
 import type { AdcReading, CaptureConfig, PowerCapture, PowerOutput, SafeGpio } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import { formatUptime } from "@/lib/utils";
 import {
   formatPowerMetric,
   powerRailLabel,
@@ -43,11 +44,39 @@ export function PowerCard({
 }) {
   const { t } = useI18n();
   const [metric, setMetric] = useState<PowerMetric>("current");
+  const [clockMs, setClockMs] = useState(() => Date.now());
+  const railTimersRef = useRef(new Map<string, { startedAtMs: number; approximate: boolean }>());
+  const observedRailsRef = useRef(new Set<string>());
   const rows = USER_POWER_RAILS.map((name) => ({
     name,
     output: outputs.find((output) => output.name === name),
     reading: readings.find((reading) => reading.name === name),
   })).filter(({ output, reading }) => output || reading);
+
+  useEffect(() => {
+    const now = Date.now();
+    for (const name of USER_POWER_RAILS) {
+      const output = outputs.find((item) => item.name === name);
+      if (!output) continue;
+      const firstObservation = !observedRailsRef.current.has(name);
+      observedRailsRef.current.add(name);
+      if (output.state === "on") {
+        if (!railTimersRef.current.has(name)) {
+          railTimersRef.current.set(name, { startedAtMs: now, approximate: firstObservation });
+        }
+      } else {
+        railTimersRef.current.delete(name);
+      }
+    }
+    setClockMs(now);
+  }, [outputs]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (railTimersRef.current.size > 0) setClockMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   return (
     <Card
@@ -89,6 +118,7 @@ export function PowerCard({
               const locked = output ? !output.controllable || output.state === "locked" : false;
               const currentValue = reading ? readingMetric(reading, "current") : null;
               const powerValue = reading ? readingMetric(reading, "power") : null;
+              const onTiming = on ? railTimersRef.current.get(name) : undefined;
               return (
                 <li key={name} className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 py-3">
                 <div className="min-w-0">
@@ -105,6 +135,15 @@ export function PowerCard({
                       </span>
                     )}
                   </div>
+                  {onTiming && (
+                    <div
+                      className="mt-1 inline-flex items-center gap-1 text-[10px] text-ink-dim"
+                      title={t("power.onDurationHint")}
+                    >
+                      <Clock3 size={11} />
+                      {t("power.onDuration")} {onTiming.approximate ? "≥ " : ""}{formatUptime(Math.floor((clockMs - onTiming.startedAtMs) / 1000))}
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-3">
                   <div className="min-w-[82px] text-right">

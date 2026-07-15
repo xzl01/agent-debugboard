@@ -1,7 +1,7 @@
 import {
   RefreshCw,
-  Wifi,
-  WifiOff,
+  EthernetPort,
+  Unplug,
   Radio,
   Cpu,
   Thermometer,
@@ -111,11 +111,11 @@ export function StatusBar({
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
           {connected ? (
             <Badge tone="ok">
-              <Wifi size={12} /> {t("status.online")}
+              <EthernetPort size={12} /> {t("status.online")}
             </Badge>
           ) : (
             <Badge tone="danger">
-              <WifiOff size={12} /> {t("status.offline")}
+              <Unplug size={12} /> {t("status.offline")}
             </Badge>
           )}
           <Badge tone="neutral">

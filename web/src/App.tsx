@@ -4,8 +4,6 @@ import { useBoard } from "@/hooks/useBoard";
 import { StatusBar } from "./components/StatusBar";
 import { PowerCard } from "./components/PowerCard";
 import { SwitchCard } from "./components/SwitchCard";
-import { GpioCard } from "./components/GpioCard";
-import { WatchdogCard } from "./components/WatchdogCard";
 import { BootCard } from "./components/BootCard";
 import { SerialCard, type SerialAutomationHandle } from "./components/SerialCard";
 import { StartupPowerAnalysis } from "./components/StartupPowerAnalysis";
@@ -106,10 +104,6 @@ export default function App() {
                       onCancelCapture={board.cancelCapture}
                     />
                   </div>
-                  <div className="min-w-0 lg:col-span-2 xl:col-span-1">
-                    <GpioCard gpios={board.snapshot.gpios} onSet={board.setGpio} />
-                  </div>
-                  <WatchdogCard watchdog={board.snapshot.watchdog} />
                   <BootCard onBoot={board.enterBootloader} />
                 </div>
               </details>

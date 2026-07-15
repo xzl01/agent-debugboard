@@ -3,7 +3,7 @@ import type { RefObject } from "react";
 import { Activity, Download, Play, Square, TimerReset, Zap } from "lucide-react";
 import { Badge, Button, Card } from "./ui";
 import type { CaptureConfig, PowerCapture, PowerOutput } from "@/lib/types";
-import type { SerialAutomationHandle } from "./SerialCard";
+import type { SerialAutomationHandle, SerialChannelId } from "./SerialCard";
 import { nominalVoltage, powerRailLabel, USER_POWER_RAILS } from "@/lib/power";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -18,6 +18,7 @@ type MilestoneKey = "bootrom" | "firmware" | "kernel" | "login";
 interface StartupRun {
   id: number;
   rail: string;
+  serialChannel: SerialChannelId;
   rateHz: number;
   attempt: number;
   startedAt: number;
@@ -157,7 +158,7 @@ function downloadBlob(filename: string, content: string, type: string) {
 function downloadSerial(run: StartupRun) {
   // Preserve the target's byte-to-text stream exactly. Prefixing every USB
   // chunk with a timestamp can split and corrupt otherwise valid log lines.
-  downloadBlob(`linkr-startup-${run.id}-serial.log`, run.serial.join(""), "text/plain;charset=utf-8");
+  downloadBlob(`linkr-startup-${run.id}-${run.serialChannel}-serial.log`, run.serial.join(""), "text/plain;charset=utf-8");
 }
 
 function powerDataRows(run: StartupRun) {
@@ -175,6 +176,7 @@ function powerDataRows(run: StartupRun) {
       run_id: run.id,
       attempt: run.attempt,
       rail: run.rail,
+      serial_channel: run.serialChannel,
       detected_bootloader: run.detectedBootloader ?? run.bootloaderMode,
       sample_offset: sample.offset,
       sample_sequence: sample.sampleSequence,
@@ -241,6 +243,7 @@ export function StartupPowerAnalysis({
   const { t } = useI18n();
   const [phase, setPhase] = useState<Phase>("idle");
   const [rail, setRail] = useState("5v_out");
+  const [serialChannel, setSerialChannel] = useState<SerialChannelId>("uart0");
   const [offDelayMs, setOffDelayMs] = useState(3000);
   const [rateHz, setRateHz] = useState(50);
   const [timeoutSeconds, setTimeoutSeconds] = useState(90);
@@ -321,7 +324,7 @@ export function StartupPowerAnalysis({
       setError(null);
     } else {
       setPhase("partial");
-      const serialConnected = serialRef.current?.isConnected() ?? false;
+      const serialConnected = serialRef.current?.isConnected(run.serialChannel) ?? false;
       setError(t(!serialConnected ? "startup.error.disconnected" : run.postPowerBytes === 0 ? "startup.error.noSerial" : "startup.error.noLogin"));
     }
   };
@@ -366,8 +369,8 @@ export function StartupPowerAnalysis({
   const start = async () => {
     const serial = serialRef.current;
     const output = outputs.find((item) => item.name === rail);
-    if (!serial?.isConnected()) {
-      setError(t("startup.error.serial"));
+    if (!serial?.isConnected(serialChannel)) {
+      setError(t("startup.error.serial").replaceAll("{channel}", serialChannel.toUpperCase()));
       return;
     }
     if (!output?.controllable || output.state !== "on") {
@@ -383,10 +386,11 @@ export function StartupPowerAnalysis({
     const operation = operationRef.current + 1;
     operationRef.current = operation;
     setError(null);
-    serial.clear();
+    serial.clear(serialChannel);
     const run: StartupRun = {
       id: Date.now(),
       rail,
+      serialChannel,
       rateHz,
       attempt: 1,
       startedAt: Date.now(),
@@ -437,7 +441,7 @@ export function StartupPowerAnalysis({
       }
       schedulePublishRun(current);
       maybeCompleteRun(current);
-    });
+    }, serialChannel);
 
     const powerOffAndWait = async () => {
       setPhase("powering_off");
@@ -530,7 +534,7 @@ export function StartupPowerAnalysis({
         run.milestones = {};
         run.detectedBootloader = undefined;
         run.poweredOnAtMs = null;
-        serial.clear();
+        serial.clear(run.serialChannel);
         publishRun(run);
         await runMeasuredPowerCycle();
       }
@@ -625,6 +629,13 @@ export function StartupPowerAnalysis({
           <select value={rateHz} onChange={(event) => setRateHz(Number(event.target.value))} disabled={busy}
             className="mt-1 w-full rounded-lg border border-line bg-panel2 px-2 py-2 text-xs text-ink">
             {[50, 100, 250, 500, 1000].map((rate) => <option key={rate} value={rate}>{rate} Hz</option>)}
+          </select>
+        </label>
+        <label className="text-[11px] text-ink-dim">{t("startup.serialChannel")}
+          <select value={serialChannel} onChange={(event) => setSerialChannel(event.target.value as SerialChannelId)} disabled={busy}
+            className="mt-1 w-full rounded-lg border border-line bg-panel2 px-2 py-2 text-xs text-ink">
+            <option value="uart0">UART0</option>
+            <option value="uart1">UART1</option>
           </select>
         </label>
         <label className="text-[11px] text-ink-dim">{t("startup.bootloader")}

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Activity, Download, Play, Radio, Square, Trash2 } from "lucide-react";
+import { Activity, BatteryCharging, Clock3, Download, Play, Radio, Square, Trash2, Zap } from "lucide-react";
 import { Badge, Button } from "./ui";
 import type {
   CaptureConfig,
@@ -18,6 +18,39 @@ import { useI18n } from "@/lib/i18n";
 const COLORS = ["#4f7cff", "#f59e0b", "#22c55e", "#ef4444"];
 const WIDTH = 720;
 const HEIGHT = 180;
+
+function sampleCurrentA(capture: PowerCapture, sampleIndex: number, rail: string) {
+  const reading = capture.samples[sampleIndex]?.readings.find((item) => item.name === rail);
+  return reading?.power_enabled ? Math.max(0, reading.current_ua / 1_000_000) : 0;
+}
+
+function integrateCapture(capture: PowerCapture, rail: string) {
+  const voltage = nominalVoltage(rail) ?? 0;
+  let ampHours = 0;
+  let wattHours = 0;
+  for (let index = 1; index < capture.samples.length; index += 1) {
+    const previous = capture.samples[index - 1];
+    const current = capture.samples[index];
+    const hours = Math.max(0, current.deviceTimeUs - previous.deviceTimeUs) / 3_600_000_000;
+    const averageCurrent = (sampleCurrentA(capture, index - 1, rail) + sampleCurrentA(capture, index, rail)) / 2;
+    ampHours += averageCurrent * hours;
+    wattHours += averageCurrent * voltage * hours;
+  }
+  const first = capture.samples[0]?.deviceTimeUs ?? 0;
+  const last = capture.samples.at(-1)?.deviceTimeUs ?? first;
+  return {
+    milliampHours: ampHours * 1000,
+    wattHours,
+    durationMs: Math.max(0, last - first) / 1000,
+  };
+}
+
+function formatIntegrated(value: number) {
+  if (value >= 100) return value.toFixed(1);
+  if (value >= 1) return value.toFixed(3);
+  if (value >= 0.01) return value.toFixed(4);
+  return value.toFixed(6);
+}
 
 function download(name: string, content: string, type: string) {
   const url = URL.createObjectURL(new Blob([content], { type }));
@@ -123,6 +156,11 @@ export function PowerAnalyzer({
   const minX = Math.min(-1, ...allPoints.map((point) => point.x));
   const maxX = Math.max(1, ...allPoints.map((point) => point.x));
   const maxY = Math.max(metric === "current" ? 0.001 : 0.01, ...allPoints.map((point) => point.value)) * 1.1;
+  const latestCapture = captures.at(-1);
+  const latestSummary = useMemo(
+    () => latestCapture ? integrateCapture(latestCapture, rail) : null,
+    [latestCapture, rail]
+  );
 
   const arm = () => void onArm({
     trigger,
@@ -205,6 +243,25 @@ export function PowerAnalyzer({
             <Button variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => exportCapture(captures.at(-1)!, "ndjson")}><Download size={13} />NDJSON</Button>
             <Button variant="ghost" className="min-h-8 px-2 py-1" onClick={onClear} aria-label={t("analyzer.clear")}><Trash2 size={13} /></Button>
           </div>
+          {latestCapture && latestSummary && (
+            <div className="mb-3 grid gap-2 rounded-lg border border-line/60 bg-panel/70 p-2.5 sm:grid-cols-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 text-[10px] text-ink-dim"><BatteryCharging size={12} />{t("analyzer.charge")}</div>
+                <div className="mt-0.5 font-mono text-sm font-semibold text-brand">{formatIntegrated(latestSummary.milliampHours)} mAh</div>
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 text-[10px] text-ink-dim"><Zap size={12} />{t("analyzer.energy")}</div>
+                <div className="mt-0.5 font-mono text-sm font-semibold text-warn">{formatIntegrated(latestSummary.wattHours)} Wh</div>
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 text-[10px] text-ink-dim"><Clock3 size={12} />{t("analyzer.duration")}</div>
+                <div className="mt-0.5 font-mono text-sm font-semibold text-ink">{(latestSummary.durationMs / 1000).toFixed(3)} s</div>
+              </div>
+              <div className="text-[9px] text-ink-dim sm:col-span-3">
+                {t("analyzer.latestCapture").replaceAll("{id}", String(latestCapture.id))} · {powerRailLabel(rail)}
+              </div>
+            </div>
+          )}
           <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} preserveAspectRatio="none" className="h-44 w-full rounded-lg border border-line/60 bg-panel">
             {[0.25, 0.5, 0.75].map((ratio) => <line key={ratio} x1="0" x2={WIDTH} y1={HEIGHT * ratio} y2={HEIGHT * ratio} stroke="rgb(var(--c-line))" strokeDasharray="3 5" />)}
             <line x1={((-minX) / (maxX - minX)) * WIDTH} x2={((-minX) / (maxX - minX)) * WIDTH} y1="0" y2={HEIGHT} stroke="rgb(var(--c-danger))" strokeDasharray="4 3" />

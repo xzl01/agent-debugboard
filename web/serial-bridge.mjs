@@ -129,14 +129,25 @@ function send(ws, obj) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
-function openSerial(ws, baud) {
+function selectSerialPort(ports, channel) {
+  const sorted = [...ports].sort((left, right) => left.path.localeCompare(right.path));
+  const suffix = channel === "uart1" ? /D3$/i : /D1$/i;
+  return sorted.find((port) => suffix.test(port.path)) ??
+    sorted[channel === "uart1" ? 1 : 0];
+}
+
+function openSerial(ws, baud, channel) {
   SerialPort.list()
     .then((ports) => {
-      const target = ports.find((port) =>
+      const candidates = ports.filter((port) =>
         (port.vendorId || "").toLowerCase() === CH347_VID
       );
+      const target = selectSerialPort(candidates, channel);
       if (!target) {
-        send(ws, { type: "error", message: "No CH347F (VID 1a86) serial port found" });
+        send(ws, {
+          type: "error",
+          message: `No CH347F ${channel.toUpperCase()} serial port found`,
+        });
         return;
       }
 
@@ -144,7 +155,7 @@ function openSerial(ws, baud) {
       serial.on("data", (chunk) => send(ws, { type: "data", text: chunk.toString("utf8") }));
       serial.on("error", (error) => send(ws, { type: "error", message: error.message }));
       serial.on("close", () => send(ws, { type: "closed" }));
-      serial.on("open", () => send(ws, { type: "opened", path: target.path, baud }));
+      serial.on("open", () => send(ws, { type: "opened", channel, path: target.path, baud }));
       ws.__serial = serial;
     })
     .catch((error) => send(ws, { type: "error", message: `port list failed: ${error.message}` }));
@@ -164,7 +175,8 @@ serialWss.on("connection", (ws) => {
       }
       if (msg.type === "open") {
         opening = true;
-        openSerial(ws, msg.baud || 115200);
+        const channel = msg.channel === "uart1" ? "uart1" : "uart0";
+        openSerial(ws, msg.baud || 115200, channel);
         const check = setInterval(() => {
           if (ws.__serial?.isOpen) {
             opened = true;
