@@ -174,7 +174,8 @@ rates. Each output record includes host receive timestamps plus
 then the recorder expands each device sample into its own NDJSON or CSV row.
 Firmware telemetry includes `sequence`, `sample_sequence`, `uptime_us`, and
 `device_t_mono_us`; the recorder preserves device timing under
-`metadata.device_timing`, and reports ring overruns as
+`metadata.device_timing`, uses `device_t_mono_us` for CSV when present, falls
+back to `uptime_us` and then zero, and reports ring overruns as
 `metadata.dropped_samples` on the first affected row.
 
 Power-analyzer captures add a firmware ring buffer and device monotonic

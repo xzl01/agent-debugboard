@@ -150,11 +150,12 @@ TUI 本身只维持较温和的 60 Hz 重绘节奏，并改为通过 HTTP 轮询
 切换当前项，`i` 把当前 GPIO 切回输入模式；`t` / `u` 快捷键仍然直接作用于 SD switch。
 状态区现在会同时显示 switch 的 `desired`（本地目标状态）与 `actual`（后端回读状态），
 方便现场区分“看起来稳定”和“真实稳定”。高频采样改由 `adc record` 负责：它会创建 live websocket
-session，并把 telemetry 记录为 NDJSON 文件。默认订阅速率为 1000Hz，也可用
+session，并把 telemetry 记录为 NDJSON 或 CSV 文件。默认订阅速率为 1000Hz，也可用
 `--rate-hz HZ` 指定更低速率。每条输出记录都会包含主机接收时间戳和
 `metadata.requested_rate_hz`。请求速率高于 100Hz 时，固件在线路上使用 batch JSON，
-recorder 再把每个设备样本展开成独立 NDJSON 行。设备 `sequence` 和 `uptime_us` 会保留
-在 `metadata.device_timing` 中；采样环发生覆盖时，首个受影响记录会携带
+recorder 再把每个设备样本展开成独立 NDJSON 或 CSV 行。设备 `sequence` 和 `uptime_us` 会保留
+在 `metadata.device_timing` 中；CSV 的时间列优先使用 `device_t_mono_us`，缺失时回退到
+`uptime_us`，再否则为 0；采样环发生覆盖时，首个受影响记录会携带
 `metadata.dropped_samples`。
 
 ## 构建固件
