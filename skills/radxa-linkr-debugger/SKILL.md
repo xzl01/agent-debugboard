@@ -9,16 +9,19 @@ Prefer direct HTTP requests with `curl` for Agent-side automation. The board
 enumerates as a USB NCM network interface and exposes its control API at the
 default device URL `http://172.29.203.1:8080`.
 
+Production firmware also serves its embedded Web control panel from the root of
+that URL. The page talks to the same-origin `/api/v1` HTTP and WebSocket paths;
+Agent automation should continue to use curl because it is deterministic and
+machine-readable.
+
 The board also runs a DHCPv4 server on the NCM link so the host can acquire a
 compatible IPv4 address automatically. mDNS is not required for the normal
 workflow.
 
 `curl` remains the lowest-common-denominator path across macOS, Linux, and
-Windows. The Rust implementation under `./cmd-ng/` is the supported CLI/TUI for
-advanced users, Agents, automation, and HIL validation. Ordinary interactive
-use should prefer the Web UI.
-The RP2040/RP2350 USB CDC ACM port is intentionally kept as a secondary path for
-Zephyr cmdline access and BOOTSEL fallback.
+Windows. The host CLI/TUI path in this repository is the Rust implementation
+under `./cmd-ng/`. The RP2040/RP2350 USB CDC ACM port is intentionally kept as a
+secondary path for Zephyr cmdline access and BOOTSEL fallback.
 
 For long-lived telemetry and bidirectional control, the firmware also exposes a
 live-session workflow: create a live session over HTTP, then connect to the
@@ -74,6 +77,10 @@ When an agent builds or flashes firmware, always use that exact build directory
 and UF2 path. Do not switch to alternate build directories and do not flash a
 stale UF2 copied somewhere else, such as a temporary mount point.
 
+The canonical firmware build includes the Web UI and requires Node.js 22 plus
+npm. CMake runs the locked frontend build and embeds gzip-compressed assets in
+flash; do not bypass that step with stale files from `web/dist`.
+
 ## First Checks
 
 1. Confirm that curl is available.
@@ -104,6 +111,46 @@ stale UF2 copied somewhere else, such as a temporary mount point.
     curl.exe -fsS http://172.29.203.1:8080/api/v1/status
    ```
 
+   For interactive browser use, open `http://172.29.203.1:8080/`. The embedded
+   page controls the board without a gateway for normal HTTP/WS board features.
+   Its target serial panel has two supported paths:
+
+   - **Override path** (direct CH347 Web Serial): after manually adding
+       `http://172.29.203.1:8080` to
+       `chrome://flags/#unsafely-treat-insecure-origin-as-secure`, relaunching
+       the browser, and reopening the board page. Edge accepts this Chromium
+       address. Ordinary web pages cannot navigate to browser-internal URLs; the
+       address must be copied and pasted into the address bar. The board-hosted
+       setup dialog presents a three-step tutorial: copy the flag URL, copy the
+       exact origin, then enable the flag and relaunch. Both address surfaces
+       are independent copy buttons with their own feedback. Copy success only
+       confirms the text was placed in the clipboard; it does not confirm a
+       working serial connection. The chooser still appears when **Web Serial**
+       is clicked and must be accepted. Because the board page is served over
+       HTTP, the Clipboard API may not be available in all browser contexts;
+       the copy controls must use an HTTP-compatible fallback when that API is
+       unavailable. If copying still fails, the full address remains visible
+       for manual selection. The modal dialog
+       carries `role="dialog"` and `aria-modal="true"`, traps initial focus
+       inside, contains Tab/Shift+Tab navigation within the dialog, closes on
+       Escape with focus restored to the trigger element, and restores body
+       scroll on close. This override is experimental and weakens origin
+       security for that page; it does not remove the user gesture or chooser
+       requirement.
+   - **Bridge fallback**: when the override is not enabled or not available,
+       keep the board page open, run `npm run device-bridge` in a separate
+       terminal, and use the page's **Bridge** button.
+
+   When testing the board-hosted UI with Playwright, distinguish between two
+   failure modes. A `page.goto` failure or resource-load timeout points to a
+   board, NCM, HTTP server, or browser setup problem. An assertion failure after
+   the page loads points to a UI regression. The insecure-context test must
+   confirm that the red button opens the setup dialog without requesting a
+   serial port. The override-active test must confirm that the button uses the
+   direct Web Serial path. Actual chooser display, manual CH347 selection, and
+   serial I/O remain manual HIL because the chooser is a mandatory browser
+   security mechanism and cannot be bypassed programmatically.
+
 3. Treat these outcomes as follows:
    - Exit code `0` with valid JSON and `ok: true`: the board is ready.
    - Valid JSON with `ok: false`: read `error.code` and `error.message`; HTTP transport works, but the board rejected the operation.
@@ -125,7 +172,7 @@ macOS/Linux:
 ```
 
 Install a specific release version. An explicit version always skips local
-source builds and downloads the requested supported Rust CLI release artifact:
+source builds and downloads the requested primary Rust CLI release artifact:
 
 ```sh
 ./skills/radxa-linkr-debugger/scripts/install.sh --version <tag>
@@ -143,7 +190,7 @@ Windows PowerShell specific release version:
 powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\radxa-linkr-debugger\scripts\install.ps1 -Version <tag>
 ```
 
-After installation, run the matching binary. Release downloads use the
+After installation, run the matching binary. The release download path uses
 `radxa-linkr-debuggerctl-rust_<os>_<arch>.*` archives.
 
 macOS/Linux:
@@ -160,7 +207,7 @@ Windows CMD:
 .\skills\radxa-linkr-debugger\scripts\bin\radxa-linkr-debuggerctl.exe --json doctor
 ```
 
-## Build Supported Rust cmd-ng
+## Build Primary Rust cmd-ng
 
 The repository's primary host CLI/TUI path is the Rust `cmd-ng`
 implementation.
@@ -192,15 +239,32 @@ If `ok` is `false`, do not infer success from partial fields. Handle
 `error.code` first.
 
 `GET /api/v1/status` and WebSocket `snapshot/status` messages include the same
-`board_monitoring` object. Its `temperature`, `heap`, `runtime`, and `cpu`
+`board_monitoring` object. Its `temperature`, `heap`, `memory`, `runtime`, and `cpu`
 members each report `available` and a machine-readable `reason`. Treat
 `available: false` as authoritative; the firmware does not invent sensor,
 memory, runtime, or CPU values when Zephyr has no reliable source enabled. On
 the default RP2040/RP2350 configuration, the board should report internal CPU die
 temperature, system heap runtime statistics, real board uptime (`uptime_ms` /
-`uptime_seconds`), and CPU utilization deltas. The CPU percentage can still
-temporarily report `insufficient_runtime_window` until enough runtime delta has
-been collected.
+`uptime_seconds`), CPU utilization deltas, and the Phase 2 additive memory pressure objects.
+The CPU percentage can still temporarily report `insufficient_runtime_window`
+until enough runtime delta has been collected.
+
+The `memory` category carries three pressure-reporting fields:
+
+- `pressure_pct_x100` (legacy root, Phase 1 semantics) is `max(current system heap %, highest thread stack high-water %)` and remains for backward compatibility.
+- `current_pressure` is an additive object: `max(current heap %, RX packet slab %, TX packet slab %, RX data buffer pool %, TX data buffer pool %)`. It can rise and fall dynamically and is not total or free RAM.
+- `peak_pressure` is a boot-lifetime additive object with the same coverage as `current_pressure` plus thread stack high-water, plus a `since: "boot"` field.
+
+Both `current_pressure` and `peak_pressure` include:
+- `available: bool` and `reason: string` (fallback when the data source is absent)
+- `pressure_pct_x100: int` in the range 0..10000
+- `limiting_component: string` naming the component driving the maximum: `system_heap`, `net_pkt_rx`, `net_pkt_tx`, `net_buf_rx_data`, `net_buf_tx_data`, or `thread_stack` (peak only)
+- `limiting_name: string` describing the limiting instance (thread name or pool name)
+- `tie_count: int` when multiple components share the maximum value
+
+`physical` reports linker/Kconfig-reserved footprint (`total_bytes`, `image_reserved_bytes`, `reserved_pct_x100`) and is not live occupancy or free RAM. `stacks` reports aggregate high-water values with `thread_count`, `measured_count`, `error_count`, `total_bytes`, `used_high_water_bytes`, `max_pressure_pct_x100`, and `max_pressure_thread`. The root `memory.coverage` keeps the legacy heap/stack meaning; `current_pressure.coverage` and `peak_pressure.coverage` describe the Phase 2 sources instrumented by their respective objects.
+
+Rust and Web clients prefer `current_pressure` when available, fall back to the legacy root `pressure_pct_x100` for Phase 1 compatibility, and fall back again to heap-only when `memory` is absent entirely. Old firmware without `memory` is handled by the Rust CLI falling back to heap-only display and the Web UI falling back to heap free space. `memory` source is `zephyr` when emitted.
 
 For short reset debugging, the watchdog supervisor also prints periodic memory
 diagnostics in the firmware log. These lines prioritize heap allocated, free,
@@ -383,6 +447,11 @@ paths. Periodic memory diagnostics are log-only debug output and must not be
 treated as an additional watchdog participant or a change to BOOTSEL
 marker/reset semantics. The watchdog trace line is equally diagnostic-only.
 
+On G3 (RP2350A) boards, GPIO25 (the blue status LED) functions as a watchdog
+heartbeat. It blinks at approximately 1 Hz and advances only after a successful
+hardware watchdog feed. Skipped or failed feeds, watchdog disable, and BOOTSEL
+entry leave the LED inactive. G2 (RP2040) has no firmware heartbeat LED.
+
 ```sh
 curl -fsS "$BOARD_URL/api/v1/watchdog"
 ./skills/radxa-linkr-debugger/scripts/bin/radxa-linkr-debuggerctl --json watchdog status
@@ -464,7 +533,54 @@ numeric pins such as `4`, or board-specific exact notes such as `CON_MAS`,
 Enter BOOTSEL mode for flashing.
 
 ```sh
-curl -fsS -X POST "$BOARD_URL/api/v1/bootloader"
+timeout 5s curl -fsS -X POST "$BOARD_URL/api/v1/bootloader" || true
+```
+
+The USB connection can close while the MCU resets, so BOOTSEL enumeration is
+the authoritative success check. Use a bounded retry loop with `timeout 5s
+lsblk` to poll for a disk whose VENDOR column is exactly `RPI`:
+
+```sh
+RPI_DISK=
+attempts=10
+while [ "$attempts" -gt 0 ]; do
+  RPI_DISK=$(timeout 5s lsblk -dpno NAME,VENDOR | awk '$2 == "RPI" { print $1; exit }')
+  [ -n "$RPI_DISK" ] && break
+  attempts=$((attempts - 1))
+  sleep 1
+done
+[ -n "$RPI_DISK" ] || { echo "BOOTSEL device not found after 10s"; exit 1; }
+```
+
+Never assume a device letter such as `/dev/sdb`. The device name depends on
+how many other USB storage devices are connected. The `lsblk` approach with the
+exact `RPI` vendor match is the reliable discovery method.
+
+Mount the discovered partition and copy the canonical UF2:
+
+```sh
+RPI_PART=$(timeout 5s lsblk -lnpo NAME,TYPE "$RPI_DISK" | awk '$2 == "part" { print $1; exit }')
+[ -n "$RPI_PART" ] || { echo "BOOTSEL partition not found"; exit 1; }
+RPI_MOUNT=$(timeout 5s udisksctl mount -b "$RPI_PART" | awk -F" at " '{print $2}' | tr -d '[:space:]')
+cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 "$RPI_MOUNT/"
+```
+
+After copying, allow a settle period before declaring success. Use bounded
+retries against the HTTP endpoint to confirm the board has re-enumerated and is
+responding:
+
+```sh
+BOARD_READY=
+attempts=15
+while [ "$attempts" -gt 0 ]; do
+  if timeout 5s curl -fsS "$BOARD_URL/api/v1/status" >/dev/null; then
+    BOARD_READY=1
+    break
+  fi
+  attempts=$((attempts - 1))
+  sleep 2
+done
+[ "$BOARD_READY" = 1 ] || { echo "board HTTP did not recover"; exit 1; }
 ```
 
 After firmware changes, treat this HTTP BOOTSEL flow and the CDC ACM shell
@@ -489,17 +605,7 @@ On G2 firmware these `vin` commands return unavailable and do not change hardwar
 
 This shell command still uses the standard ROM USB BOOTSEL path, so the
 device should reappear as the usual `RP2 Boot` / `RPI-RP2` target for UF2 or
-`picotool` workflows. On Linux you can also flash without root by mounting the
-`RPI-RP2` volume with `udisksctl` and copying the canonical UF2:
-
-```sh
-RPI_RP2=$(udisksctl mount -b /dev/sdX1 | awk -F" at " '{print $2}' | tr -d '[:space:]')
-cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 "$RPI_RP2/"
-```
-
-Replace `/dev/sdX1` with the actual BOOTSEL block device path on your
-system (use `lsblk -o NAME,SIZE,VENDOR,MOUNTPOINT` and look for the `RPI` vendor
-entry).
+`picotool` workflows.
 
 If you want the TUI or convenience wrapper instead of raw HTTP, the CLI still
 works:
