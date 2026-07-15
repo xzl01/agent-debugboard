@@ -1,8 +1,8 @@
 # Power analyzer capture protocol
 
 The power analyzer uses the existing dedicated live WebSocket session. Normal
-ADC telemetry includes `sample_sequence` and `device_t_mono_us`, the MCU
-monotonic uptime at the ADC sampling instant.
+ADC telemetry and capture frames include a 64-bit `sample_sequence` plus
+`device_t_mono_us`, the MCU monotonic uptime at the ADC sampling instant.
 
 ## Capture capacity
 
@@ -32,7 +32,8 @@ The Web UI keeps four captures for overlays and exports CSV or NDJSON. Both
 formats preserve trigger, source, edge, threshold, sampling rate, and pre/post
 window sizes so an exported run retains its experiment conditions.
 Continuous CLI recording also preserves `device_t_mono_us`; a `.csv` output
-path selects CSV instead of NDJSON.
+path selects CSV instead of NDJSON and uses `device_t_mono_us` first, then
+`uptime_us`, then `0` for the CSV time column.
 
 ## Startup workflow
 
