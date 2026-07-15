@@ -52,14 +52,9 @@ picotool load -v -x build/radxa_linkr_debugger/zephyr/zephyr.uf2
 build/radxa_linkr_debugger/zephyr/zephyr.uf2
 ```
 
-Linux 下免 root 烧录：
-
-```sh
-RPI_RP2=$(udisksctl mount -b /dev/sdX1 | awk -F" at " '{print $2}' | tr -d '[:space:]')
-cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 "$RPI_RP2/"
-```
-
-将 `/dev/sdX1` 替换为实际 RP2040 / RP2350 BOOTSEL 块设备路径。
+Linux 下免 root 烧录必须按本规范第 9 节通过 VENDOR 为 `RPI` 发现实际磁盘和分区，
+再用 `udisksctl` 挂载；不得固定假设 `/dev/sdX1`。只复制 canonical artifact：
+`build/radxa_linkr_debugger/zephyr/zephyr.uf2`。
 
 ## 标准 HIL 验证 checklist
 
@@ -93,6 +88,240 @@ timeout 5s radxa-linkr-debuggerctl --json switch list
 
 G3 额外执行 `timeout 5s curl -fsS http://172.29.203.1:8080/api/v1/switch/vin`；
 RP2040 不暴露该 switch。
+
+### 2b. Memory monitoring (Phase 2)
+
+验证 HTTP `/api/v1/status` 返回的 `board_monitoring.memory` 字段形状和 Phase 2 加性对象：
+
+```sh
+timeout 5s curl -fsS http://172.29.203.1:8080/api/v1/status | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+mem = data.get('board_monitoring', {}).get('memory')
+print(json.dumps(mem, indent=2))
+assert mem is not None, 'memory field must be present'
+
+# Phase 1 legacy root must be present for backward compatibility
+p = mem.get('pressure_pct_x100')
+assert p is not None, 'pressure_pct_x100 (legacy root) required'
+assert 0 <= p <= 10000, f'pressure_pct_x100 must be 0..10000, got {p}'
+
+# Phase 2 additive objects
+cp = mem.get('current_pressure')
+assert cp is not None, 'current_pressure required'
+ap = mem.get('peak_pressure')
+assert ap is not None, 'peak_pressure required'
+
+# current_pressure fields
+assert cp.get('available') in (True, False), 'current_pressure.available must be bool'
+if cp.get('available'):
+    cpp = cp.get('pressure_pct_x100')
+    assert cpp is not None and 0 <= cpp <= 10000, f'current_pressure.pressure_pct_x100 must be 0..10000, got {cpp}'
+    lc = cp.get('limiting_component')
+    assert lc in ('system_heap', 'net_pkt_rx', 'net_pkt_tx', 'net_buf_rx_data', 'net_buf_tx_data'), f'unexpected current_pressure.limiting_component: {lc}'
+    assert isinstance(cp.get('limiting_name', ''), str), 'limiting_name must be string'
+    assert isinstance(cp.get('tie_count', 0), int), 'tie_count must be int'
+cov = mem.get('coverage')
+assert cov is not None, 'coverage required'
+
+# peak_pressure fields
+assert ap.get('available') in (True, False), 'peak_pressure.available must be bool'
+if ap.get('available'):
+    pp = ap.get('pressure_pct_x100')
+    assert pp is not None and 0 <= pp <= 10000, f'peak_pressure.pressure_pct_x100 must be 0..10000, got {pp}'
+    lc = ap.get('limiting_component')
+    assert lc in ('system_heap', 'net_pkt_rx', 'net_pkt_tx', 'net_buf_rx_data', 'net_buf_tx_data', 'thread_stack'), f'unexpected peak_pressure.limiting_component: {lc}'
+    assert isinstance(ap.get('limiting_name', ''), str), 'limiting_name must be string'
+    assert isinstance(ap.get('tie_count', 0), int), 'tie_count must be int'
+since = ap.get('since')
+assert since == 'boot', f'peak_pressure.since must be boot, got {since}'
+
+# physical and stacks remain unchanged from Phase 1
+phys = mem.get('physical', {})
+assert phys.get('total_bytes', 0) > 0, 'physical.total_bytes must be > 0'
+assert phys.get('reserved_pct_x100', 0) <= 10000, 'reserved_pct_x100 must be 0..10000'
+tb = phys.get('total_bytes', 0)
+assert 200_000 < tb < 1_000_000, f'physical.total_bytes({tb}) outside expected 200KB..1MB range'
+stacks = mem.get('stacks', {})
+mc = stacks.get('measured_count', 0)
+tc = stacks.get('thread_count', 0)
+assert mc <= tc, f'measured_count({mc}) must be <= thread_count({tc})'
+ec = stacks.get('error_count', 0)
+assert 0 <= ec <= tc, f'error_count({ec}) must be 0..thread_count({tc})'
+print('Phase 2 memory schema check passed')
+"
+```
+
+验证 HTTP 响应 JSON 长度低于 4096 字节（协议限制检查）：
+
+```sh
+LEN=$(timeout 5s curl -fsS http://172.29.203.1:8080/api/v1/status | wc -c)
+echo "status response size: $LEN bytes"
+[ "$LEN" -lt 4096 ] || { echo "status response must be below 4096 bytes"; exit 1; }
+```
+
+验证 WebSocket `snapshot/status` 包含相同的 `memory` 形状和 Phase 2 对象：
+
+```sh
+timeout 5s node <<'NODE'
+const base = 'http://172.29.203.1:8080';
+const httpMemory = await fetch(`${base}/api/v1/status`)
+  .then((r) => {
+    if (!r.ok) throw new Error(`status fetch failed: HTTP ${r.status}`);
+    return r.json();
+  })
+  .then((data) => data.board_monitoring?.memory);
+if (!httpMemory) throw new Error('HTTP status missing memory');
+
+const shape = (value) => {
+  if (Array.isArray(value)) return value.map(shape);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, shape(value[key])]));
+  }
+  return typeof value;
+};
+
+const session = await fetch(`${base}/api/v1/live-sessions`, { method: 'POST' }).then((r) => {
+  if (!r.ok) throw new Error(`session create failed: HTTP ${r.status}`);
+  return r.json();
+});
+const rawUrl = session.ws_url ?? session.session?.ws_url;
+if (!rawUrl) throw new Error('session response missing ws_url');
+const wsUrl = new URL(rawUrl, base);
+wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+
+let snapshotCount = 0;
+const MAX_SNAPSHOTS = 3;
+
+await new Promise((resolve, reject) => {
+  const ws = new WebSocket(wsUrl);
+  const timer = setTimeout(() => reject(new Error('status snapshot timeout')), 4000);
+  ws.addEventListener('open', () => {
+    ws.send(JSON.stringify({ type: 'subscribe', topic: 'live', rate_hz: 10, id: 'memory-hil' }));
+  });
+  ws.addEventListener('message', (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type !== 'snapshot' || data.topic !== 'status') return;
+    const mem = data.board_monitoring?.memory;
+    if (!mem) {
+      reject(new Error('WS status snapshot missing memory'));
+      return;
+    }
+    // Verify Phase 2 objects are present
+    if (mem.current_pressure == null || mem.peak_pressure == null) {
+      reject(new Error('WS status snapshot missing Phase 2 memory objects'));
+      return;
+    }
+    if (mem.peak_pressure.since !== 'boot') {
+      reject(new Error('WS peak_pressure.since must be boot'));
+      return;
+    }
+    if (JSON.stringify(shape(mem)) !== JSON.stringify(shape(httpMemory))) {
+      reject(new Error('HTTP and WS memory shapes differ'));
+      return;
+    }
+    snapshotCount++;
+    if (snapshotCount >= MAX_SNAPSHOTS) {
+      clearTimeout(timer);
+      ws.close();
+      resolve();
+    }
+  });
+  ws.addEventListener('error', () => reject(new Error('WebSocket error')));
+});
+console.log(`WS memory Phase 2 check passed (${snapshotCount} snapshots received)`);
+NODE
+```
+
+验证 Rust CLI JSON 透传 Phase 2 memory 对象：
+
+```sh
+timeout 5s radxa-linkr-debuggerctl --json status | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+m = d.get('board_monitoring', {})
+assert 'memory' in m or 'heap' in m, 'must have memory or heap'
+if m.get('memory'):
+    mem = m['memory']
+    # Legacy root
+    p = mem.get('pressure_pct_x100')
+    assert p is not None and 0 <= p <= 10000, f'pressure_pct_x100 out of range: {p}'
+    # Phase 2 current_pressure
+    cp = mem.get('current_pressure')
+    assert cp is not None, 'current_pressure required'
+    cpp = cp.get('pressure_pct_x100')
+    assert cpp is not None and 0 <= cpp <= 10000
+    # Phase 2 peak_pressure
+    pp = mem.get('peak_pressure')
+    assert pp is not None, 'peak_pressure required'
+    assert pp.get('since') == 'boot', 'peak_pressure.since must be boot'
+print('Rust CLI Phase 2 memory display check passed')
+"
+```
+
+动态采样验证：在 WebSocket 订阅期间多次轮询 HTTP 端点，观察 `current_pressure` 可以在不同时间点有不同的值（尽管在正常 idle 状态下值可能稳定）。此验证演示 Phase 2 字段在 HTTP 和 WS 两条通路上语义一致，不要求值在单次 HIL 中发生实际变化：
+
+```sh
+for i in 1 2 3; do
+  timeout 5s curl -fsS http://172.29.203.1:8080/api/v1/status | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+mem = d.get('board_monitoring', {}).get('memory', {})
+cp = mem.get('current_pressure', {})
+pp = mem.get('peak_pressure', {})
+print(f'sample $i: current={cp.get(\"pressure_pct_x100\")} peak={pp.get(\"pressure_pct_x100\")} lc={cp.get(\"limiting_component\")}')
+"
+  sleep 1
+done
+```
+
+旧固件降级路径无法在已经刷入新固件的同一轮 HIL 中直接复现；由 Rust 单元测试和
+Web UI mock 场景验证无 `memory` 字段时分别回退到 heap 摘要和 heap free 显示。
+
+验证固件内嵌 Web UI：
+
+```sh
+timeout 5s curl --compressed -fsS http://172.29.203.1:8080/ | grep -q 'Radxa Linkr Debugger'
+timeout 5s curl --compressed -fsS http://172.29.203.1:8080/assets/app.css >/dev/null
+timeout 5s curl --compressed -fsS http://172.29.203.1:8080/assets/app.js >/dev/null
+```
+
+再用 Edge/Chromium 打开 `http://172.29.203.1:8080/`，确认页面识别正确 MCU、状态轮询
+没有失败请求，并切换到实时模式验证 `/api/v1/ws/<slot>` 持续收帧。
+
+串口卡片必须按以下两个分支之一完成验证：
+
+**分支 A（override 已启用，直连 Web Serial）**：
+
+1. 在 `chrome://flags/#unsafely-treat-insecure-origin-as-secure` 中加入精确来源
+   `http://172.29.203.1:8080`（将地址复制后粘贴到浏览器地址栏，普通网页无法直接导航到
+   `chrome://` 页面）。Edge 同样接受该 Chromium 地址。
+2. 重启浏览器，重新打开板载页面 `http://172.29.203.1:8080/`。
+3. 确认卡片不再显示红色设置状态，**Web Serial** 按钮可发起浏览器设备选择器；手动选择
+   CH347 设备，验证可以收发串口数据。chooser 是浏览器的强制安全机制，测试中不可绕过。
+
+该 override 属于实验性配置，会降低该来源安全性；它不会移除用户手势或设备选择器要求。
+
+**分支 B（override 未启用，bridge 回退）**：
+
+1. 确认板载页面串口卡片显示红色 **Web Serial** 按钮；点击后弹出三步设置说明。
+2. 依次点击 Chromium 标志页地址块和精确来源地址块，确认两项都能独立复制并各自显示成功反馈。
+   copy 成功仅确认剪贴板写入，不代表串口连接建立。
+3. 因板载页面为 HTTP，Clipboard API 在部分浏览器上下文中可能不可用；此时复制控件必须
+   尝试 HTTP 兼容 fallback。若 fallback 也失败，完整地址仍需可见并允许手动选择复制。
+4. 弹窗需满足无障碍要求：`role="dialog"`、`aria-modal="true"`、初始焦点在弹窗内、
+   Tab/Shift+Tab 限于弹窗内、Escape 关闭弹窗并恢复焦点到触发元素、关闭后恢复 body 滚动。
+5. 另开终端在 `web/` 目录运行 `npm run device-bridge` 并保持进程存活，使用 **Bridge**
+   按钮连接 CH347，验证可以收发串口数据。
+
+**Playwright 自动化路径**：区分两类失败模式。`page.goto` 失败或资源加载超时，指向板子
+NCM、HTTP 服务或浏览器配置问题；页面加载成功后断言失败，指向 UI 回归。insecure-context
+（HTTP）测试必须确认红色按钮只打开设置弹窗、不请求串口；override-active 测试必须确认按钮
+进入直连 Web Serial 路径。chooser 展示、手动选择 CH347 和实际串口收发仍由分支 A 的人工 HIL
+完成，不得在自动化中绕过浏览器安全机制。
+
+**bounded retries 要求**：所有轮询检测均使用有界重试（有限次数 + 有限间隔），不得使用无限循环。
+超时时间使用 `timeout 5s` 前缀。
 
 WebSocket 订阅使用 Rust CLI 的 `adc record` 流程创建 live session：
 
@@ -215,10 +444,62 @@ timeout 5s radxa-linkr-debuggerctl --json gpio input GP13
 timeout 5s radxa-linkr-debuggerctl --json watchdog status
 ```
 
+G3 额外观察 GPIO25 心跳 LED：在 `/api/v1/watchdog` 返回 healthy 状态后，
+目视检查蓝色状态 LED 应在大约 1 秒周期内亮灭交替。视觉观察时间窗口
+bound 到 5 秒以内（足够看到 2-3 次完整周期）。
+
+G2 无固件心跳 LED，跳过 LED 观察项。
+
 ### 9. BOOTSEL 进入
 
 ```sh
-timeout 5s radxa-linkr-debuggerctl bootloader
+timeout 5s curl -fsS -X POST http://172.29.203.1:8080/api/v1/bootloader || true
+```
+
+G3 额外观察：进入 BOOTSEL 后，GPIO25 心跳 LED 必须熄灭（inactive）。
+BOOTSEL 运行期间 LED 保持熄灭是预期行为。
+
+MCU 重启时 USB 连接可能先断开，因此以 BOOTSEL 枚举结果作为成功判据。使用有界重试循环
+（最多 10 次，每次间隔 1 秒）通过 `timeout 5s lsblk` 轮询 VENDOR 列严格等于 `RPI` 的磁盘：
+
+```sh
+RPI_DISK=
+attempts=10
+while [ "$attempts" -gt 0 ]; do
+  RPI_DISK=$(timeout 5s lsblk -dpno NAME,VENDOR | awk '$2 == "RPI" { print $1; exit }')
+  [ -n "$RPI_DISK" ] && break
+  attempts=$((attempts - 1))
+  sleep 1
+done
+[ -n "$RPI_DISK" ] || { echo "BOOTSEL device not found after 10s"; exit 1; }
+```
+
+不得假设设备字母（如 `/dev/sdb`）。设备名称取决于当前连接的 USB 存储设备数量，`lsblk`
+加严格的 `RPI` vendor 匹配是可靠的发现方式。
+
+挂载发现的分区，复制 canonical UF2：
+
+```sh
+RPI_PART=$(timeout 5s lsblk -lnpo NAME,TYPE "$RPI_DISK" | awk '$2 == "part" { print $1; exit }')
+[ -n "$RPI_PART" ] || { echo "BOOTSEL partition not found"; exit 1; }
+RPI_MOUNT=$(timeout 5s udisksctl mount -b "$RPI_PART" | awk -F" at " '{print $2}' | tr -d '[:space:]')
+cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 "$RPI_MOUNT/"
+```
+
+烧录完成后，使用有界重试（最多 15 次，每次间隔 2 秒）轮询 HTTP 端点，确认板子已重新枚举并恢复响应：
+
+```sh
+BOARD_READY=
+attempts=15
+while [ "$attempts" -gt 0 ]; do
+  if timeout 5s curl -fsS http://172.29.203.1:8080/api/v1/status >/dev/null; then
+    BOARD_READY=1
+    break
+  fi
+  attempts=$((attempts - 1))
+  sleep 2
+done
+[ "$BOARD_READY" = 1 ] || { echo "board HTTP did not recover"; exit 1; }
 ```
 
 若 HTTP 不可用，使用串口 fallback：
@@ -227,7 +508,7 @@ timeout 5s radxa-linkr-debuggerctl bootloader
 linkr-debugger:~$ bootloader
 ```
 
-随后重新烧录：
+随后重新烧录（使用 canonical UF2 路径）：
 
 ```sh
 picotool load -v -x build/radxa_linkr_debugger/zephyr/zephyr.uf2
