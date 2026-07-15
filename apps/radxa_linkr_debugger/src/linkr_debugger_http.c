@@ -561,6 +561,70 @@ static int linkr_debugger_http_json_board_monitoring(struct linkr_debugger_http_
 		return -ENOMEM;
 	}
 
+	if (linkr_debugger_http_append(env, ",\"memory\":") < 0 ||
+	    linkr_debugger_http_json_availability(env, snapshot.memory.available,
+					      snapshot.memory.reason) < 0 ||
+	    linkr_debugger_http_append(env, ",\"source\":") < 0 ||
+	    linkr_debugger_http_json_string(env, snapshot.memory.source) < 0 ||
+	    linkr_debugger_http_append(env, ",\"coverage\":") < 0 ||
+	    linkr_debugger_http_json_string(env, snapshot.memory.coverage) < 0 ||
+	    linkr_debugger_http_append(env,
+				     ",\"pressure_pct_x100\":%u,\"limiting_component\":",
+				     (unsigned int)snapshot.memory.pressure_pct_x100) < 0 ||
+	    linkr_debugger_http_json_string(env, snapshot.memory.limiting_component) < 0 ||
+	    linkr_debugger_http_append(env, ",\"limiting_name\":") < 0 ||
+	    linkr_debugger_http_json_string(env, snapshot.memory.limiting_name) < 0 ||
+	    linkr_debugger_http_append(env,
+				     ",\"system_heap_pressure_pct_x100\":%u,"
+				     "\"physical\":{\"total_bytes\":%u,\"image_reserved_bytes\":%u,"
+				     "\"reserved_pct_x100\":%u},"
+				     "\"stacks\":{\"thread_count\":%u,\"measured_count\":%u,"
+				     "\"error_count\":%u,\"total_bytes\":%u,"
+				     "\"used_high_water_bytes\":%u,\"max_pressure_pct_x100\":%u,"
+				     "\"max_pressure_thread\":",
+				     (unsigned int)snapshot.memory.system_heap_pressure_pct_x100,
+				     (unsigned int)snapshot.memory.physical.total_bytes,
+				     (unsigned int)snapshot.memory.physical.image_reserved_bytes,
+				     (unsigned int)snapshot.memory.physical.reserved_pct_x100,
+				     (unsigned int)snapshot.memory.stacks.thread_count,
+				     (unsigned int)snapshot.memory.stacks.measured_count,
+				     (unsigned int)snapshot.memory.stacks.error_count,
+				     (unsigned int)snapshot.memory.stacks.total_bytes,
+				     (unsigned int)snapshot.memory.stacks.used_high_water_bytes,
+				     (unsigned int)snapshot.memory.stacks.max_pressure_pct_x100) < 0 ||
+	    linkr_debugger_http_json_string(env, snapshot.memory.stacks.max_pressure_thread) < 0 ||
+	    linkr_debugger_http_append(env, "},\"current_pressure\":") < 0 ||
+	    linkr_debugger_http_json_availability(env, snapshot.memory.current_pressure.available,
+						  snapshot.memory.current_pressure.reason) < 0 ||
+	    linkr_debugger_http_append(env, ",\"coverage\":") < 0 ||
+	    linkr_debugger_http_json_string(env, snapshot.memory.current_pressure.coverage) < 0 ||
+	    linkr_debugger_http_append(env,
+				     ",\"pressure_pct_x100\":%u,\"limiting_component\":",
+				     (unsigned int)snapshot.memory.current_pressure.pressure_pct_x100) < 0 ||
+	    linkr_debugger_http_json_string(env,
+					 snapshot.memory.current_pressure.limiting_component) < 0 ||
+	    linkr_debugger_http_append(env, ",\"limiting_name\":") < 0 ||
+	    linkr_debugger_http_json_string(env, snapshot.memory.current_pressure.limiting_name) < 0 ||
+	    linkr_debugger_http_append(env, ",\"tie_count\":%u},\"peak_pressure\":",
+				     (unsigned int)snapshot.memory.current_pressure.tie_count) < 0 ||
+	    linkr_debugger_http_json_availability(env, snapshot.memory.peak_pressure.available,
+						  snapshot.memory.peak_pressure.reason) < 0 ||
+	    linkr_debugger_http_append(env, ",\"coverage\":") < 0 ||
+	    linkr_debugger_http_json_string(env, snapshot.memory.peak_pressure.coverage) < 0 ||
+	    linkr_debugger_http_append(env,
+				     ",\"pressure_pct_x100\":%u,\"limiting_component\":",
+				     (unsigned int)snapshot.memory.peak_pressure.pressure_pct_x100) < 0 ||
+	    linkr_debugger_http_json_string(env,
+					 snapshot.memory.peak_pressure.limiting_component) < 0 ||
+	    linkr_debugger_http_append(env, ",\"limiting_name\":") < 0 ||
+	    linkr_debugger_http_json_string(env, snapshot.memory.peak_pressure.limiting_name) < 0 ||
+	    linkr_debugger_http_append(env, ",\"tie_count\":%u,\"since\":",
+				     (unsigned int)snapshot.memory.peak_pressure.tie_count) < 0 ||
+	    linkr_debugger_http_json_string(env, "boot") < 0 ||
+	    linkr_debugger_http_append(env, "}}") < 0) {
+		return -ENOMEM;
+	}
+
 	if (linkr_debugger_http_append(env, ",\"runtime\":") < 0 ||
 	    linkr_debugger_http_json_availability(env, snapshot.runtime.available,
 					      snapshot.runtime.reason) < 0) {
@@ -1339,6 +1403,48 @@ static void linkr_debugger_bootloader_work_handler(struct k_work *work)
 	ARG_UNUSED(work);
 	(void)linkr_debugger_bootloader_now();
 }
+
+static const uint8_t linkr_debugger_web_index_html_gz[] = {
+#include "linkr_debugger_web_index.html.gz.inc"
+};
+
+static const uint8_t linkr_debugger_web_app_css_gz[] = {
+#include "linkr_debugger_web_app.css.gz.inc"
+};
+
+static const uint8_t linkr_debugger_web_app_js_gz[] = {
+#include "linkr_debugger_web_app.js.gz.inc"
+};
+
+#define LINKR_DEBUGGER_WEB_RESOURCE_DETAIL(name_, content_type_, data_)                         \
+	static struct http_resource_detail_static name_ = {                                     \
+		.common = {                                                                      \
+			.type = HTTP_RESOURCE_TYPE_STATIC,                                        \
+			.bitmask_of_supported_http_methods = BIT(HTTP_GET),                       \
+			.content_encoding = "gzip",                                             \
+			.content_type = content_type_,                                           \
+		},                                                                               \
+		.static_data = data_,                                                              \
+		.static_data_len = sizeof(data_),                                                  \
+	}
+
+LINKR_DEBUGGER_WEB_RESOURCE_DETAIL(linkr_debugger_web_root_detail, "text/html",
+				   linkr_debugger_web_index_html_gz);
+LINKR_DEBUGGER_WEB_RESOURCE_DETAIL(linkr_debugger_web_index_detail, "text/html",
+				   linkr_debugger_web_index_html_gz);
+LINKR_DEBUGGER_WEB_RESOURCE_DETAIL(linkr_debugger_web_css_detail, "text/css",
+				   linkr_debugger_web_app_css_gz);
+LINKR_DEBUGGER_WEB_RESOURCE_DETAIL(linkr_debugger_web_js_detail, "text/javascript",
+				   linkr_debugger_web_app_js_gz);
+
+HTTP_RESOURCE_DEFINE(linkr_debugger_web_root_resource, linkr_debugger_http_service, "/",
+		     &linkr_debugger_web_root_detail);
+HTTP_RESOURCE_DEFINE(linkr_debugger_web_index_resource, linkr_debugger_http_service,
+		     "/index.html", &linkr_debugger_web_index_detail);
+HTTP_RESOURCE_DEFINE(linkr_debugger_web_css_resource, linkr_debugger_http_service,
+		     "/assets/app.css", &linkr_debugger_web_css_detail);
+HTTP_RESOURCE_DEFINE(linkr_debugger_web_js_resource, linkr_debugger_http_service,
+		     "/assets/app.js", &linkr_debugger_web_js_detail);
 
 static struct http_resource_detail_dynamic fallback_resource_detail = {
 	.common = {
