@@ -1,8 +1,10 @@
 # Radxa Linkr Debugger Web UI
 
 React/Vite control interface for the debugger firmware HTTP and WebSocket APIs.
-The UI is hosted locally and proxies `/api` to the board at
-`http://172.29.203.1:8080`; web assets are not embedded in firmware.
+Production firmware embeds the gzip-compressed UI and serves it from
+`http://172.29.203.1:8080/` over USB NCM. The page uses same-origin `/api/v1`
+HTTP and WebSocket endpoints, so normal board controls do not require a host
+proxy.
 
 ## Development
 
@@ -28,6 +30,17 @@ npm run build
 
 Generated files are written to `web/dist/` and are intentionally ignored by
 Git.
+
+The canonical firmware build runs `npm ci` and `npm run build:firmware`
+automatically, verifies the fixed embedded asset set, and converts the three
+production files into gzip-compressed Zephyr HTTP resources. Node.js 22 and npm
+must therefore be available when building firmware from a clean checkout.
+
+After flashing, connect the USB NCM interface and open:
+
+```text
+http://172.29.203.1:8080/
+```
 
 ## GitHub Pages
 
@@ -73,8 +86,44 @@ console; CR and LF modes are also available from the terminal toolbar.
 
 ## Target serial console
 
-Chromium browsers can use Web Serial directly. If the OS driver owns the
-CH347F port, start the local fallback bridge in a second terminal:
+Edge and Chrome/Chromium can use Web Serial directly from secure origins such as
+the local Vite server or GitHub Pages. Users must still click the **Web
+Serial** button and accept the browser device chooser.
+
+The board-hosted page runs at `http://172.29.203.1:8080/`, which is plain HTTP
+and therefore not a secure context by default. Ordinary web pages cannot
+navigate to browser-internal `chrome://` URLs; the address must be copied and
+pasted into the address bar manually. Edge also accepts this Chromium address.
+
+To enable direct CH347 Web Serial from the board-hosted page:
+
+1. Copy the Chromium flag-page address below.
+2. Copy the exact origin address.
+3. Enable the flag and relaunch the browser.
+
+```text
+chrome://flags/#unsafely-treat-insecure-origin-as-secure
+```
+
+Add exactly:
+
+```text
+http://172.29.203.1:8080
+```
+
+The board-hosted setup dialog surfaces both addresses as independent copy
+buttons. Copy success confirms the text was copied to the clipboard; it does not
+confirm that the serial connection works. The browser device chooser still
+appears when the **Web Serial** button is clicked and must be accepted manually.
+
+Because the board page is served over HTTP (not HTTPS), the Clipboard API may
+not be available in all browser contexts. The copy buttons therefore try an
+HTTP-compatible copy fallback; if copying still fails, the full address remains
+visible for manual selection. Chooser acceptance and user gesture requirements
+are never removed by the override.
+
+If you do not enable the override, keep the board page open and use the host-side
+bridge instead:
 
 ```sh
 npm run device-bridge
