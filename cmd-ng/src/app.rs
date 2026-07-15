@@ -1745,7 +1745,7 @@ mod tests {
     fn status_json_includes_board_monitoring_shape() {
         let cli = Cli::parse_from(["cmd", "--json", "status"]);
         let client = FakeClient {
-            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","project":"radxa-linkr-debugger","board_monitoring":{"temperature":{"available":false,"reason":"no_zephyr_temperature_device"},"heap":{"available":true,"reason":"","source":"system_heap","free_bytes":6144,"allocated_bytes":2048,"max_allocated_bytes":3072,"total_bytes":8192},"runtime":{"available":true,"reason":"","uptime_ms":12345,"uptime_seconds":12},"cpu":{"available":false,"reason":"thread_runtime_stats_disabled"}}}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","project":"radxa-linkr-debugger","board_monitoring":{"temperature":{"available":false,"reason":"no_zephyr_temperature_device"},"heap":{"available":true,"reason":"","source":"system_heap","free_bytes":6144,"allocated_bytes":2048,"max_allocated_bytes":3072,"total_bytes":8192},"memory":{"available":true,"reason":"","source":"zephyr","coverage":"heap_and_stacks","pressure_pct_x100":4250,"limiting_component":"thread_stack","limiting_name":"main","system_heap_pressure_pct_x100":3000,"current_pressure":{"available":true,"reason":"","coverage":"heap_and_stacks","pressure_pct_x100":3000,"limiting_component":"system_heap","limiting_name":"","tie_count":1},"peak_pressure":{"available":true,"reason":"","coverage":"heap_and_stacks","pressure_pct_x100":4250,"limiting_component":"thread_stack","limiting_name":"main","tie_count":1,"since":"boot"},"physical":{"total_bytes":270336,"image_reserved_bytes":98304,"reserved_pct_x100":3721},"stacks":{"thread_count":7,"measured_count":6,"error_count":1,"total_bytes":12288,"used_high_water_bytes":4096,"max_pressure_pct_x100":4250,"max_pressure_thread":"main"}},"runtime":{"available":true,"reason":"","uptime_ms":12345,"uptime_seconds":12},"cpu":{"available":false,"reason":"thread_runtime_stats_disabled"}}}"#.to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -1761,6 +1761,50 @@ mod tests {
             "no_zephyr_temperature_device"
         );
         assert_eq!(got["board_monitoring"]["heap"]["source"], "system_heap");
+        assert_eq!(got["board_monitoring"]["memory"]["pressure_pct_x100"], 4250);
+        assert_eq!(
+            got["board_monitoring"]["memory"]["current_pressure"]["pressure_pct_x100"],
+            3000
+        );
+        assert_eq!(
+            got["board_monitoring"]["memory"]["peak_pressure"]["limiting_component"],
+            "thread_stack"
+        );
+        assert_eq!(
+            got["board_monitoring"]["memory"]["peak_pressure"]["since"],
+            "boot"
+        );
+        assert_eq!(got["board_monitoring"]["memory"]["source"], "zephyr");
+        assert_eq!(
+            got["board_monitoring"]["memory"]["limiting_component"],
+            "thread_stack"
+        );
+        assert_eq!(
+            got["board_monitoring"]["memory"]["physical"]["total_bytes"],
+            270336
+        );
+        assert_eq!(
+            got["board_monitoring"]["memory"]["stacks"]["max_pressure_thread"],
+            "main"
+        );
         assert_eq!(got["board_monitoring"]["runtime"]["uptime_seconds"], 12);
+    }
+
+    #[test]
+    fn status_json_preserves_old_board_monitoring_shape_without_memory() {
+        let cli = Cli::parse_from(["cmd", "--json", "status"]);
+        let client = FakeClient {
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","project":"radxa-linkr-debugger","board_monitoring":{"heap":{"available":true,"reason":"","source":"system_heap","allocated_bytes":2048,"total_bytes":8192}}}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        let got: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(got["board_monitoring"]["heap"]["allocated_bytes"], 2048);
+        assert!(got["board_monitoring"].get("memory").is_none());
     }
 }

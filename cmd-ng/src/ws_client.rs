@@ -390,8 +390,8 @@ mod tests {
     };
     use crate::json_contract::JSON_SCHEMA;
     use crate::monitoring::{
-        BoardMonitoring, MonitoringAvailability, MonitoringCpu, MonitoringHeap, MonitoringRuntime,
-        MonitoringTemperature,
+        BoardMonitoring, MonitoringAvailability, MonitoringCpu, MonitoringHeap, MonitoringMemory,
+        MonitoringRuntime, MonitoringTemperature,
     };
     use std::net::TcpListener;
     use std::thread;
@@ -409,6 +409,90 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rp2350.switches.vin.route, "1.8v");
+    }
+
+    #[test]
+    fn status_snapshot_accepts_optional_memory_monitoring() {
+        let old: WsStatusSnapshot = serde_json::from_str(
+            r#"{
+                "type":"snapshot",
+                "topic":"status",
+                "schema":"radxa-linkr-debugger.v1",
+                "board_monitoring":{
+                    "heap":{"available":true,"allocated_bytes":2048,"total_bytes":8192}
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(old.board_monitoring.memory.is_none());
+        assert_eq!(old.board_monitoring.heap.allocated_bytes, Some(2048));
+
+        let new: WsStatusSnapshot = serde_json::from_str(
+            r#"{
+                "type":"snapshot",
+                "topic":"status",
+                "schema":"radxa-linkr-debugger.v1",
+                "board_monitoring":{
+                    "memory":{
+                        "available":true,
+                        "reason":"",
+                        "source":"zephyr",
+                        "coverage":"heap_and_stacks",
+                        "pressure_pct_x100":4250,
+                        "limiting_component":"thread_stack",
+                        "limiting_name":"main",
+                        "system_heap_pressure_pct_x100":3000,
+                        "current_pressure":{
+                            "available":true,
+                            "reason":"",
+                            "coverage":"heap_and_stacks",
+                            "pressure_pct_x100":3000,
+                            "limiting_component":"system_heap",
+                            "limiting_name":"",
+                            "tie_count":1
+                        },
+                        "peak_pressure":{
+                            "available":true,
+                            "reason":"",
+                            "coverage":"heap_and_stacks",
+                            "pressure_pct_x100":4250,
+                            "limiting_component":"thread_stack",
+                            "limiting_name":"main",
+                            "tie_count":1,
+                            "since":"boot"
+                        },
+                        "physical":{
+                            "total_bytes":270336,
+                            "image_reserved_bytes":98304,
+                            "reserved_pct_x100":3721
+                        },
+                        "stacks":{
+                            "thread_count":7,
+                            "measured_count":6,
+                            "error_count":1,
+                            "total_bytes":12288,
+                            "used_high_water_bytes":4096,
+                            "max_pressure_pct_x100":4250,
+                            "max_pressure_thread":"main"
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let memory = new.board_monitoring.memory.unwrap();
+        assert_eq!(memory.source, "zephyr");
+        assert_eq!(memory.pressure_pct_x100, Some(4250));
+        assert_eq!(memory.limiting_component, "thread_stack");
+        let current = memory.current_pressure.unwrap();
+        assert_eq!(current.pressure_pct_x100, Some(3000));
+        assert_eq!(current.limiting_component, "system_heap");
+        let peak = memory.peak_pressure.unwrap();
+        assert_eq!(peak.pressure_pct_x100, Some(4250));
+        assert_eq!(peak.since.as_deref(), Some("boot"));
+        assert_eq!(memory.physical.total_bytes, Some(270336));
+        assert_eq!(memory.physical.image_reserved_bytes, Some(98304));
+        assert_eq!(memory.stacks.measured_count, Some(6));
     }
 
     #[test]
@@ -463,6 +547,17 @@ mod tests {
                                 },
                                 ..Default::default()
                             },
+                            memory: Some(MonitoringMemory {
+                                availability: MonitoringAvailability {
+                                    available: true,
+                                    reason: String::new(),
+                                    error: None,
+                                },
+                                pressure_pct_x100: Some(4250),
+                                limiting_component: "thread_stack".to_string(),
+                                limiting_name: "main".to_string(),
+                                ..Default::default()
+                            }),
                             runtime: MonitoringRuntime {
                                 availability: MonitoringAvailability {
                                     available: true,
