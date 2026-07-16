@@ -6,6 +6,7 @@ import type { CaptureConfig, PowerCapture, PowerOutput } from "@/lib/types";
 import type { SerialAutomationHandle, SerialChannelId } from "./SerialCard";
 import { nominalVoltage, powerRailLabel, USER_POWER_RAILS } from "@/lib/power";
 import { useI18n } from "@/lib/i18n";
+import { appendStartupRunHistory } from "@/lib/startupRunHistory";
 import {
   detectStartupMilestones,
   type BootloaderMode,
@@ -438,7 +439,12 @@ export function StartupPowerAnalysis({
     automationPasswordRef.current = "";
     activeRunRef.current = null;
     setActiveRun(null);
-    setRuns((previous) => [...previous, { ...run, serial: [...run.serial], milestones: { ...run.milestones } }].slice(-2));
+    const completedRun = {
+      ...run,
+      serial: [...run.serial],
+      milestones: { ...run.milestones },
+    };
+    setRuns((previous) => appendStartupRunHistory(previous, completedRun));
     if (!run.capture) {
       setPhase("error");
       setError(t("startup.error.captureMissing"));
