@@ -11,6 +11,7 @@ proxy.
 ```sh
 cd web
 npm ci
+npm test
 npm run dev
 ```
 
@@ -116,7 +117,8 @@ http://172.29.203.1:8080
 The board-hosted setup dialog surfaces both addresses as independent copy
 buttons. Copy success confirms the text was copied to the clipboard; it does not
 confirm that the serial connection works. The browser device chooser still
-appears when the **Web Serial** button is clicked and must be accepted manually.
+appears when the **Web Serial** button beside **Bridge** is clicked and must be
+accepted manually.
 
 Because the board page is served over HTTP (not HTTPS), the Clipboard API may
 not be available in all browser contexts. The copy buttons therefore try an
@@ -147,7 +149,8 @@ an idle power-capture session. After one explicit confirmation it:
 4. timestamps the first post-power UART byte, U-Boot or UEFI, kernel, and login
    markers from returned serial data;
 5. reports peak current, average power, integrated energy, and the latest two
-   trigger-aligned power curves.
+   trigger-aligned power curves for the selected rail, retained independently
+   per rail.
 
 The boot firmware selector defaults to automatic detection and can be pinned to
 U-Boot or UEFI for boards such as Radxa O6N and Q6A. The task can be cancelled
