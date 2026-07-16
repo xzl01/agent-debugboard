@@ -14,6 +14,14 @@ const BRIDGE_HOST = "127.0.0.1";
 const BRIDGE_PORT = Number(process.env.LINKR_BRIDGE_PORT || 8787);
 const BOARD_HTTP = process.env.LINKR_BOARD_URL || "http://172.29.203.1:8080";
 const BOARD_WS = BOARD_HTTP.replace(/^http/, "ws");
+
+function durationFromEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 1_000 ? value : fallback;
+}
+
+const WS_HEARTBEAT_MS = durationFromEnv("LINKR_WS_HEARTBEAT_MS", 15_000);
+const WS_CONNECT_TIMEOUT_MS = durationFromEnv("LINKR_WS_CONNECT_TIMEOUT_MS", 10_000);
 const BOARD_HTTP_AGENT = new http.Agent({
   keepAlive: true,
   maxSockets: 1,
@@ -108,11 +116,66 @@ const server = http.createServer((req, res) => {
 
 const apiWss = new WebSocketServer({ noServer: true });
 const serialWss = new WebSocketServer({ noServer: true });
+const upstreamSockets = new Set();
+
+function trackHeartbeat(ws) {
+  ws.__heartbeatAlive = true;
+  ws.on("pong", () => {
+    ws.__heartbeatAlive = true;
+  });
+}
+
+function heartbeat(ws) {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  if (ws.__heartbeatAlive === false) {
+    ws.terminate();
+    return;
+  }
+  ws.__heartbeatAlive = false;
+  ws.ping();
+}
+
+function activityHeartbeat(ws) {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  if (ws.__heartbeatAlive === false) {
+    ws.terminate();
+    return;
+  }
+  ws.__heartbeatAlive = false;
+}
+
+function forwardedCloseCode(code) {
+  if (code >= 3_000 && code <= 4_999) return code;
+  if ([1_000, 1_001, 1_002, 1_003, 1_007, 1_008, 1_009, 1_010, 1_011, 1_012, 1_013, 1_014].includes(code)) {
+    return code;
+  }
+  return 1_011;
+}
+
+const heartbeatTimer = setInterval(() => {
+  for (const client of apiWss.clients) heartbeat(client);
+  for (const client of serialWss.clients) heartbeat(client);
+  // Zephyr's server does not currently answer protocol-level ping frames. A
+  // subscribed live session emits data continuously, so use received frames as
+  // the upstream liveness signal while retaining ping/pong for browser peers.
+  for (const upstream of upstreamSockets) activityHeartbeat(upstream);
+}, WS_HEARTBEAT_MS);
+heartbeatTimer.unref();
 
 apiWss.on("connection", (client, request) => {
   const target = new URL(request.url || "/", BOARD_WS);
   const upstream = new WebSocket(target);
   const pending = [];
+
+  trackHeartbeat(client);
+  upstream.__heartbeatAlive = true;
+  upstreamSockets.add(upstream);
+  const connectTimer = setTimeout(() => {
+    if (upstream.readyState !== WebSocket.CONNECTING) return;
+    upstream.terminate();
+    client.close(1011, "board websocket connection timed out");
+  }, WS_CONNECT_TIMEOUT_MS);
+  connectTimer.unref();
 
   client.on("message", (data, isBinary) => {
     if (upstream.readyState === WebSocket.OPEN) {
@@ -122,16 +185,35 @@ apiWss.on("connection", (client, request) => {
     }
   });
   upstream.on("open", () => {
+    clearTimeout(connectTimer);
+    upstream.__heartbeatAlive = true;
     for (const [data, isBinary] of pending.splice(0)) {
       upstream.send(data, { binary: isBinary });
     }
   });
   upstream.on("message", (data, isBinary) => {
+    upstream.__heartbeatAlive = true;
     if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
   });
-  upstream.on("error", () => client.close(1011, "board websocket unavailable"));
-  upstream.on("close", (code, reason) => client.close(code, reason));
-  client.on("close", () => upstream.close());
+  upstream.on("error", () => {
+    clearTimeout(connectTimer);
+    client.close(1011, "board websocket unavailable");
+  });
+  upstream.on("close", (code, reason) => {
+    clearTimeout(connectTimer);
+    upstreamSockets.delete(upstream);
+    if (client.readyState === WebSocket.OPEN) {
+      const safeCode = forwardedCloseCode(code);
+      client.close(safeCode, safeCode === code ? reason : "board websocket disconnected");
+    }
+  });
+  client.on("close", () => {
+    clearTimeout(connectTimer);
+    upstreamSockets.delete(upstream);
+    if (upstream.readyState === WebSocket.CONNECTING || upstream.readyState === WebSocket.OPEN) {
+      upstream.terminate();
+    }
+  });
 });
 
 function send(ws, obj) {
@@ -145,34 +227,46 @@ function selectSerialPort(ports, channel) {
     sorted[channel === "uart1" ? 1 : 0];
 }
 
-function openSerial(ws, baud, channel) {
-  SerialPort.list()
-    .then((ports) => {
-      const candidates = ports.filter((port) =>
-        (port.vendorId || "").toLowerCase() === CH347_VID
-      );
-      const target = selectSerialPort(candidates, channel);
-      if (!target) {
-        send(ws, {
-          type: "error",
-          message: `No CH347F ${channel.toUpperCase()} serial port found`,
-        });
-        return;
-      }
+async function openSerial(ws, baud, channel) {
+  const ports = await SerialPort.list();
+  const candidates = ports.filter((port) =>
+    (port.vendorId || "").toLowerCase() === CH347_VID
+  );
+  const target = selectSerialPort(candidates, channel);
+  if (!target) {
+    throw new Error(`No CH347F ${channel.toUpperCase()} serial port found`);
+  }
 
-      const serial = new SerialPort({ path: target.path, baudRate: baud });
-      serial.on("data", (chunk) => send(ws, { type: "data", text: chunk.toString("utf8") }));
-      serial.on("error", (error) => send(ws, { type: "error", message: error.message }));
-      serial.on("close", () => send(ws, { type: "closed" }));
-      serial.on("open", () => send(ws, { type: "opened", channel, path: target.path, baud }));
-      ws.__serial = serial;
-    })
-    .catch((error) => send(ws, { type: "error", message: `port list failed: ${error.message}` }));
+  const serial = new SerialPort({ path: target.path, baudRate: baud, autoOpen: false });
+  ws.__serial = serial;
+  serial.on("data", (chunk) => send(ws, { type: "data", text: chunk.toString("utf8") }));
+  serial.on("error", (error) => send(ws, { type: "error", message: error.message }));
+  serial.on("close", () => send(ws, { type: "closed" }));
+
+  try {
+    await new Promise((resolve, reject) => {
+      serial.open((error) => error ? reject(error) : resolve());
+    });
+  } catch (error) {
+    if (ws.__serial === serial) ws.__serial = undefined;
+    throw error;
+  }
+
+  if (ws.readyState !== WebSocket.OPEN) {
+    serial.close(() => {});
+    if (ws.__serial === serial) ws.__serial = undefined;
+    throw new Error("Serial client disconnected while opening the port");
+  }
+
+  send(ws, { type: "opened", channel, path: target.path, baud });
+  return serial;
 }
 
 serialWss.on("connection", (ws) => {
   let opening = false;
   let opened = false;
+
+  trackHeartbeat(ws);
 
   ws.on("message", (data) => {
     if (!opened && !opening) {
@@ -185,15 +279,23 @@ serialWss.on("connection", (ws) => {
       if (msg.type === "open") {
         opening = true;
         const channel = msg.channel === "uart1" ? "uart1" : "uart0";
-        openSerial(ws, msg.baud || 115200, channel);
-        const check = setInterval(() => {
-          if (ws.__serial?.isOpen) {
+        void openSerial(ws, msg.baud || 115200, channel)
+          .then((serial) => {
             opened = true;
-            clearInterval(check);
-          } else if (ws.readyState !== WebSocket.OPEN) {
-            clearInterval(check);
-          }
-        }, 50);
+            serial.once("close", () => {
+              if (ws.__serial === serial) ws.__serial = undefined;
+              opened = false;
+            });
+          })
+          .catch((error) => {
+            send(ws, {
+              type: "error",
+              message: `serial open failed: ${error instanceof Error ? error.message : String(error)}`,
+            });
+          })
+          .finally(() => {
+            opening = false;
+          });
       }
       return;
     }
@@ -225,3 +327,5 @@ server.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
   console.log(`Linkr device gateway listening on http://${BRIDGE_HOST}:${BRIDGE_PORT}`);
   console.log(`Forwarding board API to ${BOARD_HTTP}`);
 });
+
+server.on("close", () => clearInterval(heartbeatTimer));

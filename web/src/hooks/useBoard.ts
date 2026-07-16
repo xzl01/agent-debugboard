@@ -255,6 +255,7 @@ export function useBoard(): UseBoard {
           setHasData(true);
           setConnected(true);
           setError(null);
+          setLoading(false);
         } catch (e) {
           setLive(false);
           setConnected(false);
