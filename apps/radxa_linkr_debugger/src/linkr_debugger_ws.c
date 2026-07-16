@@ -1136,18 +1136,24 @@ static int linkr_debugger_ws_emit_adc_sample(struct linkr_debugger_ws_client *cl
 	if (!linkr_debugger_ws_sample_get(client, &sample, &dropped_samples)) {
 		return 0;
 	}
-	ARG_UNUSED(dropped_samples);
-
 	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
 				 "{\"type\":\"telemetry\",\"topic\":\"adc\","
 				 "\"schema\":\"%s\",\"sequence\":%llu,\"uptime_us\":%lld,"
-				 "\"sample_sequence\":%llu,\"device_t_mono_us\":%lld,"
-				 "\"readings\":[",
+				 "\"sample_sequence\":%llu,\"device_t_mono_us\":%lld",
 				 linkr_debugger_json_schema(),
 				 (unsigned long long)sample.sequence,
 				 (long long)sample.uptime_us,
 				 (unsigned long long)sample.sequence,
-				 (long long)sample.uptime_us) < 0 ||
+				 (long long)sample.uptime_us) < 0) {
+		return -ENOMEM;
+	}
+	if (dropped_samples > 0U &&
+	    linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+				     ",\"dropped_samples\":%u", dropped_samples) < 0) {
+		return -ENOMEM;
+	}
+	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+				 ",\"readings\":[") < 0 ||
 	    linkr_debugger_ws_append_adc_readings(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
 					     &cursor, sample.readings) < 0 ||
 	    linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor, "]}") < 0) {
