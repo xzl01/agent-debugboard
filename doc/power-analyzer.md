@@ -1,8 +1,11 @@
 # Power analyzer capture protocol
 
-The power analyzer uses the existing dedicated live WebSocket session. Normal
-ADC telemetry and capture frames include a 64-bit `sample_sequence` plus
-`device_t_mono_us`, the MCU monotonic uptime at the ADC sampling instant.
+The power analyzer uses the existing dedicated live WebSocket session.
+Single-sample ADC telemetry keeps `sequence` and `uptime_us` and also includes a
+64-bit `sample_sequence` plus `device_t_mono_us`, the MCU monotonic uptime at
+the ADC sampling instant. Compact batch samples carry `sequence` and
+`uptime_us`; host clients normalize them to the same timing aliases while also
+accepting explicit aliases under the `radxa-linkr-debugger.v1` schema.
 
 ## Capture capacity
 
@@ -31,9 +34,10 @@ reliable sampling clock.
 The Web UI keeps four captures for overlays and exports CSV or NDJSON. Both
 formats preserve trigger, source, edge, threshold, sampling rate, and pre/post
 window sizes so an exported run retains its experiment conditions.
-Continuous CLI recording also preserves `device_t_mono_us`; a `.csv` output
-path selects CSV instead of NDJSON and uses `device_t_mono_us` first, then
-`uptime_us`, then `0` for the CSV time column.
+Continuous CLI recording preserves `sample_sequence`, `uptime_us`, and
+`device_t_mono_us` in `metadata.device_timing`; a `.csv` output path selects CSV
+instead of NDJSON and uses `device_t_mono_us` first, then `uptime_us`, then `0`
+for the CSV time column.
 
 ## Startup workflow
 

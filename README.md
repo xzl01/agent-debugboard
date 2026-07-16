@@ -13,17 +13,16 @@ routing, current-monitor ADC channels, and a small safe GPIO surface.
 Radxa Linkr Debugger is designed for automated board bring-up, recovery, production
 test, and remote debugging workflows. The firmware enumerates as a composite
 USB device with a USB NCM network interface for the main control plane and a
-USB CDC ACM serial port reserved for Zephyr cmdline and BOOTSEL fallback.
-Ordinary users operate it through the Web UI; advanced users, Agents,
-automation, and HIL validation use the released Rust
-`radxa-linkr-debuggerctl` CLI/TUI, whose source lives under `cmd-ng/`.
+USB CDC ACM serial port reserved for Zephyr cmdline and BOOTSEL fallback; normal
+host-side workflows use the released Rust `radxa-linkr-debuggerctl` CLI/TUI,
+whose source lives under `cmd-ng/`.
 
-This repository contains the Zephyr application, Web UI, Rust host CLI/TUI,
+This repository contains the Zephyr application, the primary Rust host CLI/TUI,
 unit tests, schematic copy, and project documentation.
 
-The supported advanced host-side path is [`cmd-ng/`](cmd-ng/). The published
-`radxa-linkr-debuggerctl` speaks the board HTTP API over USB NCM and provides
-machine-readable automation, diagnostics, recording, and an interactive TUI.
+The active host-side development path is [`cmd-ng/`](cmd-ng/). Released user
+workflows should use the published Rust `radxa-linkr-debuggerctl` CLI, which
+speaks the board HTTP API over USB NCM.
 
 ## Features
 
@@ -31,11 +30,12 @@ machine-readable automation, diagnostics, recording, and an interactive TUI.
 | --- | --- |
 | USB control | Composite USB device: NCM HTTP/WS control plane + CDC ACM fallback console |
 | Host automation | Rust `cmd-ng` CLI/TUI with JSON output and `doctor` diagnostics |
+| Embedded Web UI | Gzip-compressed dashboard served directly from `http://172.29.203.1:8080/` |
 | Live telemetry | Bidirectional WebSocket stream on a live-session URL under `/api/v1/ws/<slot>` |
 | Triggered power capture | Device-timestamped current capture with pre/post ring buffer, manual/current/GPIO/power-on triggers, and CSV/NDJSON export |
 | Power outputs | `12v_out`, `5v_out`, `20v_out` |
 | ADC monitor | Current monitor reads for `5v_out`, `12v_out`, `20v_out` |
-| Board self-monitoring | `/api/v1/status` and status WebSocket snapshots report board CPU/runtime/heap/temperature availability and values when Zephyr exposes reliable sources; the watchdog supervisor also prints periodic heap diagnostics for short-reset debugging |
+| Board self-monitoring | `/api/v1/status` and status WebSocket snapshots report board CPU/runtime/heap/memory/temperature availability and values when Zephyr exposes reliable sources; memory reports additive `current_pressure` and `peak_pressure` objects using max-not-sum semantics across system heap, network packet slabs, and data buffer pools, with the legacy root `pressure_pct_x100` preserving Phase 1 max(heap, stack) backward compatibility; the watchdog supervisor also prints periodic heap diagnostics for short-reset debugging |
 | TF/SD routing | Switch route between `target` and `usb-reader` |
 | VIN control (G3 only) | Switch route between `1.8v` and `3.3v`; firmware uses a Device Tree VIO regulator |
 | GPIO | G2: `GP4`, `GP7`, `GP8`, `GP13`-`GP24`; G3: `GP7`, `GP8`, `GP9`, `GP10`-`GP20`, `GP29` |
@@ -80,13 +80,12 @@ skill's curl-first workflow. For automation through the CLI, prefer `--json`;
 parse `schema`, `ok`, `command`, and `error.code` instead of human-readable
 text.
 
-## Install Advanced/Agent Host CLI
+## Install Host CLI
 
-Advanced users and Agents can install the released Rust
-`radxa-linkr-debuggerctl` CLI. Download the matching archive from GitHub
-Releases, or from a checkout use the repo-local installer scripts below with an
-explicit version so they fetch the published release artifact instead of
-building from source.
+The normal host-side workflow uses the released `radxa-linkr-debuggerctl` CLI.
+Download the matching archive from GitHub Releases, or from a checkout use the
+repo-local installer scripts below with an explicit version so they fetch the
+published release artifact instead of building from source.
 
 Install a specific release version:
 
@@ -172,8 +171,10 @@ defaults to a 1000Hz websocket subscription and accepts `--rate-hz HZ` for lower
 rates. Each output record includes host receive timestamps plus
 `metadata.requested_rate_hz`. Requests above 100Hz use batch JSON on the wire,
 then the recorder expands each device sample into its own NDJSON or CSV row.
-Firmware telemetry includes `sequence`, `sample_sequence`, `uptime_us`, and
-`device_t_mono_us`; the recorder preserves device timing under
+Single-sample firmware telemetry keeps `sequence` and `uptime_us` and also emits
+`sample_sequence` plus `device_t_mono_us`. Compact batch samples carry
+`sequence` and `uptime_us`; the recorder normalizes those fields to the same
+timing aliases while accepting explicit aliases from compatible firmware. It preserves device timing under
 `metadata.device_timing`, uses `device_t_mono_us` for CSV when present, falls
 back to `uptime_us` and then zero, and reports ring overruns as
 `metadata.dropped_samples` on the first affected row.
@@ -184,6 +185,10 @@ current-threshold, GPIO-edge, or power-on captures, overlay four runs, and
 export CSV or NDJSON. See [doc/power-analyzer.md](doc/power-analyzer.md).
 
 ## Build Firmware
+
+Firmware builds include the production Web UI. Install Node.js 22 and npm in
+addition to the Zephyr prerequisites below; CMake runs the locked Web build and
+embeds its gzip-compressed output automatically.
 
 Create the Python environment and fetch Zephyr:
 
@@ -282,22 +287,21 @@ GitHub Release, and uploads the fixed release assets.
 - `radxa-linkr-debugger-rp2350.uf2`: RP2350 firmware (G3) for drag-and-drop or `picotool`.
 - `radxa-linkr-debugger-rp2350.elf`: RP2350 ELF for debugging.
 - `radxa-linkr-debugger-rp2350.map`: RP2350 linker map.
-- `radxa-linkr-debuggerctl-rust_windows_amd64.zip`: advanced/Agent Rust CLI/TUI for Windows x64.
-- `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz`: advanced/Agent Rust CLI/TUI for Linux x64.
-- `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz`: advanced/Agent Rust CLI/TUI for macOS Apple Silicon.
+- `radxa-linkr-debuggerctl-rust_windows_amd64.zip`: primary Rust CLI/TUI for Windows x64.
+- `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz`: primary Rust CLI/TUI for Linux x64.
+- `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz`: primary Rust CLI/TUI for macOS Apple Silicon.
 - `skills-radxa-linkr-debugger.tar.gz`: Agent skill bundle for `skills/radxa-linkr-debugger/`.
 - `SHA256SUMS.txt`: SHA256 checksums for all release assets.
 
-Advanced users and Agents should download one of the
-`radxa-linkr-debuggerctl-rust_*` archives above. If you are developing
-`cmd-ng` itself from source:
+Normal users should download one of the `radxa-linkr-debuggerctl-rust_*`
+archives above. If you are developing `cmd-ng` itself from source:
 
 ```sh
 cargo build --manifest-path cmd-ng/Cargo.toml
 ./cmd-ng/target/debug/radxa-linkr-debuggerctl --help
 ```
 
-## Advanced/Agent CLI Usage
+## CLI Usage
 
 Query board status:
 
@@ -325,15 +329,32 @@ allowlisted GPIO also carries a board-specific `note` such as `CON_MAS` or
 raw numeric pins like `4`, or exact notes such as `CON_MAS`.
 
 Status JSON also includes `board_monitoring`. Each category (`temperature`,
-`heap`, `runtime`, and `cpu`) carries `available` plus a machine-readable
+`heap`, `memory`, `runtime`, and `cpu`) carries `available` plus a machine-readable
 `reason`. Firmware only reports values from Zephyr devices or runtime-stat APIs
 that are actually enabled; on the default RP2040/RP2350 configuration this includes the
 internal CPU die temperature sensor, system heap runtime statistics, real board
-uptime (`uptime_ms` / `uptime_seconds`), and CPU utilization deltas. The first
-CPU sample can still report `insufficient_runtime_window` until the board has
-accumulated enough runtime delta to derive a percentage.
-WebSocket `snapshot/status` messages carry the same `board_monitoring` object as
-`GET /api/v1/status`.
+uptime (`uptime_ms` / `uptime_seconds`), CPU utilization deltas, and the Phase 2
+additive memory pressure objects. The first CPU sample can still report `insufficient_runtime_window`
+until the board has accumulated enough runtime delta to derive a percentage.
+
+The `memory` category carries three pressure-reporting fields:
+
+- `pressure_pct_x100` (legacy root, Phase 1 semantics) is `max(current system heap %, highest thread stack high-water %)` and remains for backward compatibility.
+- `current_pressure` is an additive object: `max(current heap %, RX packet slab %, TX packet slab %, RX data buffer pool %, TX data buffer pool %)`. It can rise and fall dynamically and is not total or free RAM.
+- `peak_pressure` is a boot-lifetime additive object with the same coverage as `current_pressure` plus thread stack high-water, plus a `since: "boot"` field.
+
+Both `current_pressure` and `peak_pressure` include:
+- `available: bool` and `reason: string` (fallback when the data source is absent)
+- `pressure_pct_x100: int` in the range 0..10000
+- `limiting_component: string` naming the component driving the maximum: `system_heap`, `net_pkt_rx`, `net_pkt_tx`, `net_buf_rx_data`, `net_buf_tx_data`, or `thread_stack` (peak only)
+- `limiting_name: string` describing the limiting instance (thread name or pool name)
+- `tie_count: int` when multiple components share the maximum value
+
+`physical` reports linker/Kconfig-reserved footprint (`total_bytes`, `image_reserved_bytes`, `reserved_pct_x100`) and is not live occupancy or free RAM. `stacks` reports aggregate high-water values with `thread_count`, `measured_count`, `error_count`, `total_bytes`, `used_high_water_bytes`, `max_pressure_pct_x100`, and `max_pressure_thread`. The root `memory.coverage` keeps the legacy heap/stack meaning; `current_pressure.coverage` and `peak_pressure.coverage` describe the Phase 2 sources instrumented by their respective objects.
+
+Rust and Web clients prefer `current_pressure` when available, fall back to the legacy root `pressure_pct_x100` for Phase 1 compatibility, and fall back again to heap-only when `memory` is absent from the status response entirely. Old firmware without `memory` is handled by the Rust CLI falling back to heap-only display, and the Web UI falling back to heap free space. The `memory` source is `zephyr` when emitted.
+
+WebSocket `snapshot/status` messages carry the same `board_monitoring` object as `GET /api/v1/status`.
 
 For short reset debugging, the watchdog supervisor thread also prints periodic
 memory diagnostics to the firmware log. Those lines prioritize system-heap
@@ -446,6 +467,11 @@ log-only debug output and do not add watchdog participants or change BOOTSEL
 marker/reset behavior. The watchdog trace line is also log-only and does not
 change feed policy.
 
+On G3 (RP2350A) boards, the blue status LED on GPIO25 acts as a watchdog
+heartbeat. It blinks approximately once per second and advances only after a
+successful hardware watchdog feed; skipped or failed feeds reset it to the
+inactive state while firmware owns the GPIO. G2 (RP2040) has no heartbeat LED.
+
 ## OpenOCD / JTAG
 
 Radxa Linkr Debugger can be used together with OpenOCD by using the Linkr Debugger for
@@ -487,13 +513,13 @@ runs a DHCPv4 server on the NCM link so the host can automatically obtain a
 compatible address; pass `radxa-linkr-debuggerctl --url ...` only if you
 intentionally override the default addressing in your environment.
 
-Ordinary users should use the Web UI. Advanced users and Agents can use the
-released Rust CLI, which wraps the same HTTP JSON API; direct `curl` remains the
-raw API and curl-first Agent path. The CDC ACM port is kept intentionally as a
-secondary path for Zephyr cmdline access and recovery workflows such as BOOTSEL
-fallback; it is not the primary automation/control transport. When the CDC ACM
-shell is available, the local `bootloader` shell command enters the same MCU ROM
-BOOTSEL path used by the HTTP API.
+Normal user workflows should use the released CLI, which wraps the same HTTP
+JSON API. Direct `curl` is mainly for raw API debugging or for the Agent skill,
+which intentionally stays curl-first. The CDC ACM port is kept intentionally as
+a secondary path for Zephyr cmdline access and recovery workflows such as
+BOOTSEL fallback; it is not the primary automation/control transport. When the
+CDC ACM shell is available, the local `bootloader` shell command enters the
+same MCU ROM BOOTSEL path used by the HTTP API.
 
 For long-lived telemetry and bidirectional control over a single socket, create
 a live session over HTTP first and then connect to the returned dedicated
@@ -547,6 +573,13 @@ normal use.
 | 12 V current monitor | `adc read 12v_out` | `S_C_12V` | 27 (ADC1) |
 | 20 V current monitor | `adc read 20v_out` | `S_C_20V` | 28 (ADC2) |
 
+G3 (RP2350A) GPIO25 is the blue status LED, active-low. It operates as a watchdog
+heartbeat driven through Device Tree chosen properties rather than a Zephyr built-in
+heartbeat driver or `CONFIG_LED`. The LED blinks at approximately 1 Hz (full on/off
+cycle) and advances only after the hardware watchdog feed succeeds. Skipped or failed
+feeds reset the LED to the inactive state while firmware owns the GPIO. G2 (RP2040)
+has no heartbeat chosen in Device Tree and no firmware heartbeat LED.
+
 VIN defaults to 3.3V at boot. GPIO1 VDD_5V and its GPIO6 VDD_1V8 child rail are
 always on in the G3 Device Tree model. The selectable CH347 VIO level is modeled
 as a standard `regulator-gpio` regulator with exact 1.8V and 3.3V states, and
@@ -574,9 +607,8 @@ Run unit tests:
 ./apps/radxa_linkr_debugger/tests/run_unit_tests.sh
 ```
 
-The test runner covers:
-
-- host C tests for the shared board model.
+The test runner covers host C tests for the shared board model. Rust host CLI
+checks live under `cmd-ng/` and are run with Cargo.
 
 ## Repository Layout
 
@@ -584,8 +616,7 @@ The test runner covers:
 apps/radxa_linkr_debugger/        Zephyr application
 apps/radxa_linkr_debugger/src/    Firmware source and shared board model
 apps/radxa_linkr_debugger/tests/  Unit tests
-cmd-ng/                          Rust host CLI/TUI for advanced users and Agents
-web/                             Web UI and local device/serial bridge
+cmd-ng/                          Primary Rust host CLI/TUI
 doc/                          Hardware documents, OpenOCD configs, and marketing assets
 skills/radxa-linkr-debugger/      Agent-facing skill and operating guide
 west.yml                      Zephyr workspace manifest

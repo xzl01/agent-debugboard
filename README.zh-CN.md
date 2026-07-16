@@ -153,9 +153,11 @@ TUI 本身只维持较温和的 60 Hz 重绘节奏，并改为通过 HTTP 轮询
 session，并把 telemetry 记录为 NDJSON 或 CSV 文件。默认订阅速率为 1000Hz，也可用
 `--rate-hz HZ` 指定更低速率。每条输出记录都会包含主机接收时间戳和
 `metadata.requested_rate_hz`。请求速率高于 100Hz 时，固件在线路上使用 batch JSON，
-recorder 再把每个设备样本展开成独立 NDJSON 或 CSV 行。设备 `sequence` 和 `uptime_us` 会保留
-在 `metadata.device_timing` 中；CSV 的时间列优先使用 `device_t_mono_us`，缺失时回退到
-`uptime_us`，再否则为 0；采样环发生覆盖时，首个受影响记录会携带
+recorder 再把每个设备样本展开成独立 NDJSON 或 CSV 行。固件单样本 telemetry 保留
+`sequence` 与 `uptime_us`，并同时提供 `sample_sequence` 和 `device_t_mono_us`；紧凑 batch
+样本在线路上保留 `sequence` 与 `uptime_us`，recorder 会将其归一化为相同的别名，并兼容
+显式提供别名的固件。设备时间字段会保留在 `metadata.device_timing` 中；CSV 的时间列优先使用
+`device_t_mono_us`，缺失时回退到 `uptime_us`，再否则为 0；采样环发生覆盖时，首个受影响记录会携带
 `metadata.dropped_samples`。
 
 ## 构建固件

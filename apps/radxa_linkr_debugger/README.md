@@ -40,11 +40,15 @@ doc/radxa-linkr-debugger-schematic.pdf       (G2 / RP2040)
 
 The USB interface enumerates as a composite USB device. The board exposes its
 HTTP control API on the USB NCM interface at `http://172.29.203.1:8080` by
-default. Ordinary users should prefer the Web UI. Advanced users, Agents,
-automation, and HIL validation should use the released Rust
-`radxa-linkr-debuggerctl`; direct `curl` remains the raw HTTP/API path.
+default. Normal host-side use should prefer the released
+`radxa-linkr-debuggerctl` CLI; direct `curl` is mainly for raw HTTP/API checks.
 A USB CDC ACM serial port is also kept available for Zephyr cmdline access and
 BOOTSEL fallback.
+
+The same HTTP service exposes the embedded production Web UI at
+`http://172.29.203.1:8080/`. A clean firmware build requires Node.js 22 and npm;
+CMake builds the Vite application, verifies its fixed asset set, and stores the
+gzip-compressed resources in flash.
 
 The board also runs a DHCPv4 server on the NCM link so the host can acquire a
 compatible address automatically.
@@ -55,8 +59,12 @@ HTTP first and connect to the returned dedicated WebSocket URL under
 clients; each live session gets a dedicated slot URL. Subscriptions may request
 `batch_size` from 1 through 20, with independent per-client sequence cursors so
 one slow subscriber cannot consume another subscriber's samples.
-ADC telemetry includes `sample_sequence` and device-side monotonic
-`device_t_mono_us`. The same session can arm a triggered power capture with a
+Single-sample ADC telemetry keeps `sequence` and `uptime_us` and also includes
+`sample_sequence` plus device-side monotonic `device_t_mono_us`. Compact batch
+samples carry `sequence` and `uptime_us`; host clients normalize those values to
+the same timing aliases. Single-sample telemetry
+includes `dropped_samples` only when the per-client ring skipped one or more
+samples. The same session can arm a triggered power capture with a
 firmware ring buffer: 2048 samples on G3 and 512 on G2. Manual, current
 threshold, allowlisted GPIO edge, and power-output off-to-on triggers are
 supported. Triggered capture uses one global hardware buffer and therefore has
@@ -69,8 +77,7 @@ command below enters the current MCU's ROM BOOTSEL path used by the HTTP API:
 linkr-debugger:~$ bootloader
 ```
 
-Advanced users, Agents, automation, and HIL checks should use the released
-Rust `radxa-linkr-debuggerctl` CLI.
+Normal host operations should use the released `radxa-linkr-debuggerctl` CLI.
 If you are developing `cmd-ng` itself, use `cargo run --manifest-path
 cmd-ng/Cargo.toml -- ...`. Raw HTTP examples below are only for firmware/API
 debugging. Full CLI examples are in the root [README.md](../../README.md), and
@@ -100,14 +107,31 @@ and physical measurement setup before use.
 
 `GET /api/v1/status` includes `board_monitoring`, and WebSocket
 `snapshot/status` messages include the same object. The categories are
-`temperature`, `heap`, `runtime`, and `cpu`; each one reports `available` and a
-machine-readable `reason`. Values are emitted only when Zephyr exposes a real
+`temperature`, `heap`, `memory`, `runtime`, and `cpu`; each one reports `available`
+and a machine-readable `reason`. Values are emitted only when Zephyr exposes a real
 device or runtime-stat API. With the default RP2040 and RP2350 configurations,
 the board reports internal MCU die temperature, system heap runtime statistics,
-real board uptime (`uptime_ms` / `uptime_seconds`), and CPU utilization deltas
-when those readings are available. The CPU utilization field can still report
-`insufficient_runtime_window` until the firmware has accumulated enough runtime
-delta to derive a percentage.
+real board uptime (`uptime_ms` / `uptime_seconds`), CPU utilization deltas, and
+the Phase 2 additive memory pressure objects when those readings are available. The CPU
+utilization field can still report `insufficient_runtime_window` until the
+firmware has accumulated enough runtime delta to derive a percentage.
+
+The `memory` category carries three pressure-reporting fields:
+
+- `pressure_pct_x100` (legacy root, Phase 1 semantics) is `max(current system heap %, highest thread stack high-water %)` and remains for backward compatibility.
+- `current_pressure` is an additive object: `max(current heap %, RX packet slab %, TX packet slab %, RX data buffer pool %, TX data buffer pool %)`. It can rise and fall dynamically and is not total or free RAM.
+- `peak_pressure` is a boot-lifetime additive object with the same coverage as `current_pressure` plus thread stack high-water, plus a `since: "boot"` field.
+
+Both `current_pressure` and `peak_pressure` include:
+- `available: bool` and `reason: string` (fallback when the data source is absent)
+- `pressure_pct_x100: int` in the range 0..10000
+- `limiting_component: string` naming the component driving the maximum: `system_heap`, `net_pkt_rx`, `net_pkt_tx`, `net_buf_rx_data`, `net_buf_tx_data`, or `thread_stack` (peak only)
+- `limiting_name: string` describing the limiting instance (thread name or pool name)
+- `tie_count: int` when multiple components share the maximum value
+
+`physical` reports linker/Kconfig-reserved footprint (`total_bytes`, `image_reserved_bytes`, `reserved_pct_x100`) and is not live occupancy or free RAM. `stacks` reports aggregate high-water values with `thread_count`, `measured_count`, `error_count`, `total_bytes`, `used_high_water_bytes`, `max_pressure_pct_x100`, and `max_pressure_thread`. The root `memory.coverage` keeps the legacy heap/stack meaning; `current_pressure.coverage` and `peak_pressure.coverage` describe the Phase 2 sources instrumented by their respective objects.
+
+Rust and Web clients prefer `current_pressure` when available, fall back to the legacy root `pressure_pct_x100` for Phase 1 compatibility, and fall back again to heap-only when `memory` is absent entirely. Old firmware without `memory` is handled by the Rust CLI falling back to heap-only display, and the Web UI falling back to heap free space. `memory` source is `zephyr` when emitted.
 
 `GET /api/v1/watchdog` reports the autonomous firmware watchdog state. Firmware
 itself owns watchdog arming and feeding. If core firmware, API service, or the
@@ -127,13 +151,13 @@ Safe GPIO names such as `GP13` are derived from the MCU pin number; the
 firmware allowlist keeps the connector note so users can map commands back to
 the exposed header position.
 
-Develop the Rust host CLI from source:
+Develop the primary Rust host CLI from source:
 
 ```sh
 cargo build --manifest-path cmd-ng/Cargo.toml
 ```
 
-For advanced, Agent, automation, or HIL use, prefer the released CLI:
+For normal use, prefer the released CLI:
 
 ```sh
 radxa-linkr-debuggerctl status
@@ -164,7 +188,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- switch get vin
 cargo run --manifest-path cmd-ng/Cargo.toml -- watchdog status
 ```
 
-The released CLI and direct `curl` HTTP requests both use the same endpoint
+The released Rust CLI and direct `curl` HTTP requests both use the same endpoint
 `http://172.29.203.1:8080`.
 
 OpenOCD:
@@ -193,6 +217,14 @@ Current schematic mapping (G3 / RP2350A):
 - CH347 VIO voltage select: `VIO_SEL` (GPIO 23, `switch vin`)
 - Test point: `TP15` (GPIO 24)
 - Status LED: `LED_BLUE` (GPIO 25)
+
+G3 GPIO25 operates as a watchdog heartbeat LED, active-low, blinking at roughly
+1 Hz. The cycle advances only after a successful hardware watchdog feed. Skipped
+or failed feeds reset it to the inactive state while firmware owns the GPIO. This
+behavior is driven through Device Tree chosen properties and the existing watchdog
+supervisor, not through a Zephyr `CONFIG_LED` or built-in heartbeat driver. G2 has
+no firmware heartbeat LED.
+
 - GPIO aliases: `CON_MAS` (GP7), `CON_REST` (GP8), `CON_USER` (GP9)
 - J16 GPIO: `GP10`-`GP20`
 - J16 ADC3/GPIO: `GP29` (ADC3)
