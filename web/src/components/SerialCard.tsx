@@ -14,7 +14,6 @@ import {
   LayoutPanelTop,
   ShieldAlert,
   Terminal as TerminalIcon,
-  Usb,
   X,
 } from "lucide-react";
 import { Button, Card } from "./ui";
@@ -76,10 +75,7 @@ export const SerialCard = forwardRef<
   const { t } = useI18n();
   const isSecureContext = typeof window !== "undefined" && window.isSecureContext;
   const hasWebSerialApi = typeof navigator !== "undefined" && "serial" in navigator;
-  const isBoardHttpOrigin =
-    typeof window !== "undefined" && window.location.origin === BOARD_HTTP_ORIGIN;
   const webSerialSupported = isSecureContext && hasWebSerialApi;
-  const needsInsecureOriginSetup = isBoardHttpOrigin && !isSecureContext;
 
   const [activeChannel, setActiveChannel] = useState<SerialChannelId>("uart0");
   const [layout, setLayout] = useState<LayoutMode>("tabs");
@@ -333,14 +329,6 @@ export const SerialCard = forwardRef<
   }
 
   const connectedCount = CHANNELS.filter((channel) => statuses[channel].connected).length;
-  const serialNotice = needsInsecureOriginSetup
-    ? t("serial.insecureOrigin")
-    : isBoardHttpOrigin && webSerialSupported
-      ? t("serial.insecureOriginActive")
-      : webSerialSupported
-        ? t("serial.webSerialHint")
-        : t("serial.noWebSerial");
-  const showSerialNotice = needsInsecureOriginSetup || isBoardHttpOrigin || !webSerialSupported;
 
   return (
     <>
@@ -391,15 +379,6 @@ export const SerialCard = forwardRef<
                   );
                 })}
               </div>
-            )}
-            {needsInsecureOriginSetup && (
-              <Button
-                variant="danger"
-                className="min-h-9 rounded-xl px-3 py-2 text-xs"
-                onClick={openSetupModal}
-              >
-                <Usb size={14} /> {t("serial.webSerial")}
-              </Button>
             )}
             <div
               className="inline-flex rounded-xl border border-line/70 bg-panel2 p-1"
@@ -458,24 +437,6 @@ export const SerialCard = forwardRef<
           </div>
         }
       >
-        {showSerialNotice && (
-          <div className="mb-3 flex flex-wrap items-start justify-between gap-3 rounded-lg border border-line/70 bg-panel2/50 px-3 py-2 text-xs text-ink-dim">
-            <div className="min-w-0 flex-1">
-              <p>{t("serial.connect")}</p>
-              <p className="mt-1 break-all">{serialNotice}</p>
-            </div>
-            {needsInsecureOriginSetup && (
-              <Button
-                variant="danger"
-                className="min-h-8 shrink-0 rounded-lg px-3 py-1 text-xs"
-                onClick={openSetupModal}
-              >
-                <Usb size={14} /> {t("serial.webSerial")}
-              </Button>
-            )}
-          </div>
-        )}
-
         {sharedError && (
           <div className="mb-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
             {sharedError}
@@ -500,6 +461,7 @@ export const SerialCard = forwardRef<
                 requestPort={requestPort}
                 releasePort={releasePort}
                 onStatus={onStatus}
+                onOpenWebSerialSetup={openSetupModal}
               />
             </div>
           ))}

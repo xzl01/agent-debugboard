@@ -8,6 +8,7 @@ import {
 import type {
   ClipboardEvent as ReactClipboardEvent,
   KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
 } from "react";
 import {
   Copy,
@@ -122,6 +123,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   requestPort: (channel: SerialChannelId) => Promise<SerialPort>;
   releasePort: (channel: SerialChannelId, port: SerialPort, physicalDisconnect: boolean) => void;
   onStatus: (channel: SerialChannelId, status: SerialChannelStatus) => void;
+  onOpenWebSerialSetup: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 }>(function SerialTerminalPane({
   channel,
   visible,
@@ -130,6 +132,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   requestPort,
   releasePort,
   onStatus,
+  onOpenWebSerialSetup,
 }, ref) {
   const { t } = useI18n();
   const [source, setSource] = useState<Source>(null);
@@ -483,6 +486,14 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     enqueueSerial(normalized.replaceAll("\n", LINE_ENDINGS[lineEnding]));
   }
 
+  function handleWebSerialClick(event: ReactMouseEvent<HTMLButtonElement>) {
+    if (webSerialSupported) {
+      void connectWebSerial();
+      return;
+    }
+    onOpenWebSerialSetup(event);
+  }
+
   const channelLabel = channel.toUpperCase();
 
   return (
@@ -502,11 +513,13 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
         <div className="flex flex-wrap items-center justify-end gap-1">
           {!source && !connecting && (
             <>
-              {webSerialSupported && (
-                <Button variant="primary" className="min-h-7 rounded-md px-2 py-1 text-[10px]" onClick={() => void connectWebSerial()}>
-                  <Usb size={12} /> {t("serial.webSerial")}
-                </Button>
-              )}
+              <Button
+                variant={webSerialSupported ? "primary" : "danger"}
+                className="min-h-7 rounded-md px-2 py-1 text-[10px]"
+                onClick={handleWebSerialClick}
+              >
+                <Usb size={12} /> {t("serial.webSerial")}
+              </Button>
               <Button variant="default" className="min-h-7 rounded-md px-2 py-1 text-[10px]" onClick={connectBridge}>
                 <Plug size={12} /> {t("serial.bridge")}
               </Button>
