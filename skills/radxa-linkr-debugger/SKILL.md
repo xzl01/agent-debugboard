@@ -125,12 +125,14 @@ flash; do not bypass that step with stale files from `web/dist`.
        exact origin, then enable the flag and relaunch. Both address surfaces
        are independent copy buttons with their own feedback. Copy success only
        confirms the text was placed in the clipboard; it does not confirm a
-       working serial connection. The chooser still appears when **Web Serial**
-       is clicked and must be accepted. Because the board page is served over
-       HTTP, the Clipboard API may not be available in all browser contexts;
-       the copy controls must use an HTTP-compatible fallback when that API is
-       unavailable. If copying still fails, the full address remains visible
-       for manual selection. The modal dialog
+       working serial connection. The only Web Serial action is beside
+       **Bridge** in each visible UART pane; the card does not render a separate
+       serial guidance control. The chooser still appears when **Web Serial** is
+       clicked and must be accepted. Because the board page is
+       served over HTTP, the Clipboard API may not be available in all browser
+       contexts; the copy controls must use an HTTP-compatible fallback when
+       that API is unavailable. If copying still fails, the full address remains
+       visible for manual selection. The modal dialog
        carries `role="dialog"` and `aria-modal="true"`, traps initial focus
        inside, contains Tab/Shift+Tab navigation within the dialog, closes on
        Escape with focus restored to the trigger element, and restores body
@@ -390,10 +392,14 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- adc record /tmp/adc.csv 1000 --ra
 
 Each recorder row keeps the existing JSON schema, host receive timestamps, and
 `metadata.requested_rate_hz`. Requests above 100Hz use batch JSON on the wire,
-while the recorder still writes one row per device sample. Firmware telemetry
-includes `sequence`, `sample_sequence`, `uptime_us`, and `device_t_mono_us`;
-the recorder preserves device time under `metadata.device_timing`. Prefer
-device time over host receive time when analyzing cadence, and treat
+while the recorder still writes one row per device sample. Single-sample
+firmware telemetry keeps `sequence` and `uptime_us` and also emits
+`sample_sequence` plus `device_t_mono_us`. Compact batch samples carry
+`sequence` and `uptime_us`; the recorder normalizes them to the same aliases and
+also accepts explicit aliases from compatible firmware. It preserves device time
+under `metadata.device_timing` and deletes its live session on both successful
+completion and error paths. Prefer device time over host receive time when
+analyzing cadence, and treat
 `metadata.dropped_samples` as authoritative evidence that the per-client
 sampling ring overran. A `.csv` output path writes device time and three current
 channels directly, using `device_t_mono_us` first, then `uptime_us`, then `0`.
@@ -449,8 +455,8 @@ marker/reset semantics. The watchdog trace line is equally diagnostic-only.
 
 On G3 (RP2350A) boards, GPIO25 (the blue status LED) functions as a watchdog
 heartbeat. It blinks at approximately 1 Hz and advances only after a successful
-hardware watchdog feed. Skipped or failed feeds, watchdog disable, and BOOTSEL
-entry leave the LED inactive. G2 (RP2040) has no firmware heartbeat LED.
+hardware watchdog feed. Skipped or failed feeds reset it to the inactive state
+while firmware owns the GPIO. G2 (RP2040) has no firmware heartbeat LED.
 
 ```sh
 curl -fsS "$BOARD_URL/api/v1/watchdog"
