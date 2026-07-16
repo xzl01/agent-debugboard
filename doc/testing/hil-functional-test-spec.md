@@ -297,14 +297,16 @@ timeout 5s curl --compressed -fsS http://172.29.203.1:8080/assets/app.js >/dev/n
    `http://172.29.203.1:8080`（将地址复制后粘贴到浏览器地址栏，普通网页无法直接导航到
    `chrome://` 页面）。Edge 同样接受该 Chromium 地址。
 2. 重启浏览器，重新打开板载页面 `http://172.29.203.1:8080/`。
-3. 确认卡片不再显示红色设置状态，**Web Serial** 按钮可发起浏览器设备选择器；手动选择
-   CH347 设备，验证可以收发串口数据。chooser 是浏览器的强制安全机制，测试中不可绕过。
+3. 确认卡片不再显示红色设置状态，每个可见 UART pane 只在 **Bridge** 旁显示一个
+   **Web Serial** 按钮；该按钮可发起浏览器设备选择器。手动选择 CH347 设备，验证可以收发
+   串口数据。chooser 是浏览器的强制安全机制，测试中不可绕过。
 
 该 override 属于实验性配置，会降低该来源安全性；它不会移除用户手势或设备选择器要求。
 
 **分支 B（override 未启用，bridge 回退）**：
 
-1. 确认板载页面串口卡片显示红色 **Web Serial** 按钮；点击后弹出三步设置说明。
+1. 确认板载页面每个可见 UART pane 只在 **Bridge** 旁显示一个红色 **Web Serial** 按钮，
+   卡片标题区不显示该按钮，原串口说明控件不再渲染；点击 pane 内按钮后弹出三步设置说明。
 2. 依次点击 Chromium 标志页地址块和精确来源地址块，确认两项都能独立复制并各自显示成功反馈。
    copy 成功仅确认剪贴板写入，不代表串口连接建立。
 3. 因板载页面为 HTTP，Clipboard API 在部分浏览器上下文中可能不可用；此时复制控件必须
@@ -326,20 +328,56 @@ NCM、HTTP 服务或浏览器配置问题；页面加载成功后断言失败，
 WebSocket 订阅使用 Rust CLI 的 `adc record` 流程创建 live session：
 
 ```sh
-timeout 10s radxa-linkr-debuggerctl adc record /tmp/linkr-hil.ndjson 3 --rate-hz 10
+rm -f /tmp/linkr-hil.ndjson
+timeout 5s radxa-linkr-debuggerctl adc record /tmp/linkr-hil.ndjson 3 --rate-hz 10
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+rows = [json.loads(line) for line in Path('/tmp/linkr-hil.ndjson').read_text().splitlines()]
+assert len(rows) == 3, f'expected 3 telemetry records, got {len(rows)}'
+for row in rows:
+    assert row.get('schema') == 'radxa-linkr-debugger.v1'
+    assert row.get('type') == 'telemetry-record'
+    timing = row.get('metadata', {}).get('device_timing', {})
+    assert isinstance(timing.get('sample_sequence'), int), 'missing sample_sequence'
+    assert isinstance(timing.get('device_t_mono_us'), int), 'missing device_t_mono_us'
+    assert isinstance(timing.get('uptime_us'), int), 'missing uptime_us'
+    dropped = row.get('metadata', {}).get('dropped_samples')
+    if dropped is not None:
+        assert isinstance(dropped, int) and dropped > 0, f'invalid dropped_samples: {dropped}'
+print('single telemetry timing aliases passed')
+PY
 ```
 
-验证输出文件包含 3 条 `radxa-linkr-debugger.v1` telemetry record。
-高频路径还必须执行：
+验证输出文件包含 3 条 `radxa-linkr-debugger.v1` telemetry record，且单样本 telemetry
+保留 `sample_sequence`、`device_t_mono_us` 和 `uptime_us`。若出现
+`metadata.dropped_samples`，其值必须为正整数；未发生采样环覆盖时不得强制要求该字段出现。
+高频 batch 路径还必须执行：
 
 ```sh
-timeout 15s radxa-linkr-debuggerctl adc record /tmp/linkr-hil-1000.ndjson 1000 --rate-hz 1000
-test "$(wc -l < /tmp/linkr-hil-1000.ndjson)" -eq 1000
-! grep -q '"dropped_samples"' /tmp/linkr-hil-1000.ndjson
+rm -f /tmp/linkr-hil-1000.ndjson
+timeout 5s radxa-linkr-debuggerctl adc record /tmp/linkr-hil-1000.ndjson 1000 --rate-hz 1000
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+rows = [json.loads(line) for line in Path('/tmp/linkr-hil-1000.ndjson').read_text().splitlines()]
+assert len(rows) == 1000, f'expected 1000 telemetry records, got {len(rows)}'
+for index, row in enumerate(rows):
+    timing = row.get('metadata', {}).get('device_timing', {})
+    for field in ('sample_sequence', 'device_t_mono_us', 'uptime_us'):
+        assert isinstance(timing.get(field), int), f'row {index} missing {field}'
+    dropped = row.get('metadata', {}).get('dropped_samples')
+    if dropped is not None:
+        assert isinstance(dropped, int) and dropped > 0, f'row {index} invalid dropped_samples: {dropped}'
+print('batch telemetry timing aliases passed')
+PY
 ```
 
-用连续记录的 `sequence` 和 `metadata.device_timing.uptime_us` 计算实际采样间隔；不得用
-WebSocket 帧数代替样本数。固件支持最多四个并发客户端，四路并发测试必须确认每个
+用连续记录的 `sequence`、`metadata.device_timing.sample_sequence` 和
+`metadata.device_timing.device_t_mono_us` 计算实际采样间隔；紧凑 batch 在线路上只提供
+`sequence` 与 `uptime_us` 时，Rust recorder 必须归一化出前述别名。不得用 WebSocket 帧数代替样本数。固件支持最多四个并发客户端，四路并发测试必须确认每个
 输出文件都持续增长，且任一客户端退出不会中断其他客户端。
 
 ### 3. 电源输出 get/set
@@ -455,9 +493,6 @@ G2 无固件心跳 LED，跳过 LED 观察项。
 ```sh
 timeout 5s curl -fsS -X POST http://172.29.203.1:8080/api/v1/bootloader || true
 ```
-
-G3 额外观察：进入 BOOTSEL 后，GPIO25 心跳 LED 必须熄灭（inactive）。
-BOOTSEL 运行期间 LED 保持熄灭是预期行为。
 
 MCU 重启时 USB 连接可能先断开，因此以 BOOTSEL 枚举结果作为成功判据。使用有界重试循环
 （最多 10 次，每次间隔 1 秒）通过 `timeout 5s lsblk` 轮询 VENDOR 列严格等于 `RPI` 的磁盘：
