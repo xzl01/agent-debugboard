@@ -26,6 +26,7 @@ const DEVICE_TIMING_FIELDS: &[&str] = &[
     "device_t_mono_us",
     "device_t_unix_ns",
     "device_timestamp_ns",
+    "sample_sequence",
     "sample_t_mono_ns",
     "sample_t_unix_ns",
     "sample_timestamp_ns",
@@ -42,10 +43,17 @@ const CSV_RAILS: &[&str] = &["5v_out", "12v_out", "20v_out"];
 struct LiveSessionCreateResponse {
     ok: bool,
     #[serde(default)]
+    session_id: Option<u32>,
+    #[serde(default)]
     ws_url: String,
 }
 
-fn request_live_session_ws_url(base_url: &str, timeout: Duration) -> Result<String> {
+struct LiveSession {
+    id: u32,
+    ws_url: String,
+}
+
+fn request_live_session(base_url: &str, timeout: Duration) -> Result<LiveSession> {
     let client = BoardClient::new(base_url, timeout)?;
     let data = client.send_text(BoardRequest {
         method: Method::POST,
@@ -57,7 +65,54 @@ fn request_live_session_ws_url(base_url: &str, timeout: Duration) -> Result<Stri
     if !response.ok || response.ws_url.trim().is_empty() {
         return Err(anyhow!("missing websocket URL in live session response"));
     }
-    Ok(response.ws_url)
+    let session_id = response
+        .session_id
+        .ok_or_else(|| anyhow!("missing session_id in live session response"))?;
+    Ok(LiveSession {
+        id: session_id,
+        ws_url: response.ws_url,
+    })
+}
+
+fn delete_live_session(base_url: &str, timeout: Duration, session_id: u32) -> Result<()> {
+    let client = BoardClient::new(base_url, timeout)?;
+    client.send_text(BoardRequest {
+        method: Method::DELETE,
+        path: format!("/api/v1/live-sessions/{session_id}"),
+        query: vec![],
+        body: None,
+    })?;
+    Ok(())
+}
+
+fn cleanup_live_session(
+    base_url: &str,
+    timeout: Duration,
+    session_id: u32,
+    ws_client: Option<&WsClient>,
+) -> Result<()> {
+    let delete_result = delete_live_session(base_url, timeout, session_id);
+    let close_result = if let Some(ws_client) = ws_client {
+        ws_client.close()
+    } else {
+        Ok(())
+    };
+
+    delete_result?;
+    close_result?;
+    Ok(())
+}
+
+fn finish_with_cleanup(primary: Result<()>, cleanup: Result<()>) -> Result<()> {
+    match primary {
+        Ok(()) => cleanup,
+        Err(primary_err) => {
+            if let Err(cleanup_err) = cleanup {
+                eprintln!("live session cleanup failed after recorder error: {cleanup_err:#}");
+            }
+            Err(primary_err)
+        }
+    }
 }
 
 fn unix_time_ns() -> i128 {
@@ -74,8 +129,20 @@ pub fn record_adc_ws_to_file(
     max_samples: Option<usize>,
     requested_rate_hz: i32,
 ) -> Result<()> {
-    let ws_url = request_live_session_ws_url(base_url, timeout)?;
-    let ws_client = WsClient::with_ws_url(base_url.to_string(), ws_url);
+    let session = request_live_session(base_url, timeout)?;
+    let ws_client = WsClient::with_ws_url(base_url.to_string(), session.ws_url);
+    let result =
+        record_adc_ws_to_file_with_session(&ws_client, output_path, max_samples, requested_rate_hz);
+    let cleanup = cleanup_live_session(base_url, timeout, session.id, Some(&ws_client));
+    finish_with_cleanup(result, cleanup)
+}
+
+fn record_adc_ws_to_file_with_session(
+    ws_client: &WsClient,
+    output_path: &str,
+    max_samples: Option<usize>,
+    requested_rate_hz: i32,
+) -> Result<()> {
     ws_client.connect()?;
     let subscribe = if requested_rate_hz > 100 {
         subscribe_batch_request(requested_rate_hz, ADC_RECORD_BATCH_SIZE)
@@ -136,7 +203,6 @@ pub fn record_adc_ws_to_file(
     }
 
     writer.flush()?;
-    ws_client.close()?;
     Ok(())
 }
 
@@ -248,6 +314,10 @@ mod tests {
     use super::*;
     use crate::json_contract::JSON_SCHEMA;
     use serde_json::Value;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
 
     #[test]
     fn telemetry_record_includes_requested_rate_metadata() {
@@ -284,6 +354,7 @@ mod tests {
         let mut writer = BufWriter::new(File::create(&path).unwrap());
         let mut extra = serde_json::Map::new();
         extra.insert("device_t_mono_us".to_string(), serde_json::json!(42));
+        extra.insert("sample_sequence".to_string(), serde_json::json!(99));
         let message = WsTelemetryMessage {
             r#type: "telemetry".to_string(),
             topic: "adc".to_string(),
@@ -302,6 +373,40 @@ mod tests {
         let record: Value = serde_json::from_str(data.trim()).unwrap();
         assert_eq!(record["metadata"]["requested_rate_hz"], 500);
         assert_eq!(record["metadata"]["device_timing"]["device_t_mono_us"], 42);
+        assert_eq!(record["metadata"]["device_timing"]["sample_sequence"], 99);
+    }
+
+    #[test]
+    fn telemetry_record_preserves_batch_timing_aliases() {
+        let path = temp_file_path("batch-aliases");
+        let mut writer = BufWriter::new(File::create(&path).unwrap());
+        let batch: WsTelemetryBatch = serde_json::from_value(serde_json::json!({
+            "type": "telemetry-batch",
+            "topic": "adc",
+            "schema": JSON_SCHEMA,
+            "channels": [{"name": "5v_out", "signal": "S_C_5V"}],
+            "samples": [{
+                "sequence": 10,
+                "uptime_us": 1234,
+                "sample_sequence": 210,
+                "device_t_mono_us": 2234,
+                "values": [[1, 42, 180, 456000]]
+            }]
+        }))
+        .unwrap();
+        let message = expand_telemetry_batch(batch).unwrap().remove(0);
+
+        write_telemetry_record(&mut writer, &message, Duration::from_millis(5), 999, 1000).unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+
+        let data = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let record: Value = serde_json::from_str(data.trim()).unwrap();
+        let timing = &record["metadata"]["device_timing"];
+        assert_eq!(timing["uptime_us"], 1234);
+        assert_eq!(timing["sample_sequence"], 210);
+        assert_eq!(timing["device_t_mono_us"], 2234);
     }
 
     #[test]
@@ -403,6 +508,49 @@ mod tests {
         assert!(timing.get("ignored").is_none());
     }
 
+    #[test]
+    fn record_connect_failure_deletes_live_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            let (mut create_stream, _) = listener.accept().unwrap();
+            let create_request = read_http_request(&mut create_stream);
+            tx.send(create_request).unwrap();
+            let create_body = r#"{"ok":true,"schema":"radxa-linkr-debugger.v1","command":"live-sessions","action":"create","session_id":42,"ws_url":"ws://127.0.0.1:0/api/v1/ws/0"}"#;
+            write_http_response(&mut create_stream, create_body);
+
+            let (mut delete_stream, _) = listener.accept().unwrap();
+            let delete_request = read_http_request(&mut delete_stream);
+            tx.send(delete_request).unwrap();
+            let delete_body = r#"{"ok":true,"schema":"radxa-linkr-debugger.v1","command":"live-sessions","action":"delete","session_id":42}"#;
+            write_http_response(&mut delete_stream, delete_body);
+        });
+
+        let path = temp_file_path("connect-cleanup");
+        let result = record_adc_ws_to_file(
+            &format!("http://{}", addr),
+            Duration::from_secs(2),
+            path.to_str().unwrap(),
+            Some(1),
+            10,
+        );
+        let _ = std::fs::remove_file(&path);
+
+        assert!(result.is_err());
+        let create_request = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let delete_request = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            create_request.starts_with("POST /api/v1/live-sessions HTTP/1.1"),
+            "{create_request}"
+        );
+        assert!(
+            delete_request.starts_with("DELETE /api/v1/live-sessions/42 HTTP/1.1"),
+            "{delete_request}"
+        );
+    }
+
     fn temp_file_path(name: &str) -> std::path::PathBuf {
         let mut path = std::env::temp_dir();
         path.push(format!(
@@ -410,5 +558,20 @@ mod tests {
             std::process::id(),
         ));
         path
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+        let mut buf = [0u8; 2048];
+        let n = stream.read(&mut buf).unwrap();
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    }
+
+    fn write_http_response(stream: &mut std::net::TcpStream, body: &str) {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
     }
 }

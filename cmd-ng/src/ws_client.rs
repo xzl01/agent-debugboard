@@ -159,6 +159,10 @@ pub struct WsTelemetryBatchChannel {
 pub struct WsTelemetryBatchSample {
     pub sequence: u64,
     pub uptime_us: u64,
+    #[serde(default)]
+    pub sample_sequence: Option<u64>,
+    #[serde(default)]
+    pub device_t_mono_us: Option<u64>,
     pub values: Vec<[i32; 4]>,
 }
 
@@ -350,8 +354,15 @@ pub fn expand_telemetry_batch(batch: WsTelemetryBatch) -> Result<Vec<WsTelemetry
                 current_ua: Some(values[3]),
             })
             .collect();
+        let sample_sequence = sample.sample_sequence.unwrap_or(sample.sequence);
+        let device_t_mono_us = sample.device_t_mono_us.unwrap_or(sample.uptime_us);
         let mut extra = Map::new();
         extra.insert("uptime_us".to_string(), Value::from(sample.uptime_us));
+        extra.insert("sample_sequence".to_string(), Value::from(sample_sequence));
+        extra.insert(
+            "device_t_mono_us".to_string(),
+            Value::from(device_t_mono_us),
+        );
         if sample_index == 0 && batch.dropped_samples != 0 {
             extra.insert(
                 "dropped_samples".to_string(),
@@ -606,8 +617,8 @@ mod tests {
                 "dropped_samples":2,
                 "channels":[{"name":"5v_out","signal":"S_C_5V"}],
                 "samples":[
-                    {"sequence":10,"uptime_us":1000,"values":[[1,12,34,56]]},
-                    {"sequence":11,"uptime_us":2000,"values":[[0,13,35,57]]}
+                    {"sequence":10,"uptime_us":1000,"sample_sequence":110,"device_t_mono_us":1001,"values":[[1,12,34,56]]},
+                    {"sequence":11,"uptime_us":2000,"sample_sequence":111,"device_t_mono_us":2001,"values":[[0,13,35,57]]}
                 ]
             }"#,
         )
@@ -621,13 +632,38 @@ mod tests {
         assert_eq!(messages[0].readings[0].raw, Some(12));
         assert_eq!(messages[0].readings[0].current_ua, Some(56));
         assert_eq!(messages[0].extra["uptime_us"], 1000);
+        assert_eq!(messages[0].extra["sample_sequence"], 110);
+        assert_eq!(messages[0].extra["device_t_mono_us"], 1001);
         assert_eq!(messages[0].extra["dropped_samples"], 2);
         assert_eq!(messages[1].sequence, Some(11));
+        assert_eq!(messages[1].extra["sample_sequence"], 111);
+        assert_eq!(messages[1].extra["device_t_mono_us"], 2001);
         assert!(messages[1].extra.get("dropped_samples").is_none());
 
         let request = subscribe_batch_request(1000, 10);
         assert_eq!(request.rate_hz, Some(1000));
         assert_eq!(request.batch_size, Some(10));
+    }
+
+    #[test]
+    fn expands_old_telemetry_batch_using_legacy_timing_fields() {
+        let batch: WsTelemetryBatch = serde_json::from_str(
+            r#"{
+                "type":"telemetry-batch",
+                "topic":"adc",
+                "schema":"radxa-linkr-debugger.v1",
+                "channels":[{"name":"5v_out","signal":"S_C_5V"}],
+                "samples":[{"sequence":12,"uptime_us":3000,"values":[[1,14,36,58]]}]
+            }"#,
+        )
+        .unwrap();
+
+        let messages = expand_telemetry_batch(batch).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].sequence, Some(12));
+        assert_eq!(messages[0].extra["uptime_us"], 3000);
+        assert_eq!(messages[0].extra["sample_sequence"], 12);
+        assert_eq!(messages[0].extra["device_t_mono_us"], 3000);
     }
 
     #[test]
