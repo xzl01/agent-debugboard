@@ -14,6 +14,11 @@ const BRIDGE_HOST = "127.0.0.1";
 const BRIDGE_PORT = Number(process.env.LINKR_BRIDGE_PORT || 8787);
 const BOARD_HTTP = process.env.LINKR_BOARD_URL || "http://172.29.203.1:8080";
 const BOARD_WS = BOARD_HTTP.replace(/^http/, "ws");
+const BOARD_HTTP_AGENT = new http.Agent({
+  keepAlive: true,
+  maxSockets: 1,
+  maxFreeSockets: 1,
+});
 const CH347_VID = "1a86";
 const TRUSTED_ORIGINS = new Set(
   (process.env.LINKR_TRUSTED_ORIGINS || "https://xzl01.github.io")
@@ -69,8 +74,12 @@ const server = http.createServer((req, res) => {
   const target = new URL(req.url, BOARD_HTTP);
   const headers = { ...req.headers, host: target.host };
   delete headers.origin;
+  headers.connection = "keep-alive";
 
-  const upstream = http.request(target, { method: req.method, headers }, (upstreamResponse) => {
+  // The firmware HTTP service intentionally has a small client pool and keeps
+  // clients alive. Reuse one upstream socket instead of consuming a new slot
+  // for every browser poll.
+  const upstream = http.request(target, { method: req.method, headers, agent: BOARD_HTTP_AGENT }, (upstreamResponse) => {
     res.writeHead(upstreamResponse.statusCode || 502, {
       ...upstreamResponse.headers,
       ...corsHeaders(req),

@@ -23,6 +23,7 @@ type LayoutMode = "tabs" | "split";
 const EMPTY_STATUS: SerialChannelStatus = {
   connected: false,
   connecting: false,
+  automationActive: false,
   source: null,
   portInfo: "",
   rxBytes: 0,
@@ -35,6 +36,8 @@ export interface SerialAutomationHandle {
   isConnected: (channel?: SerialChannelId) => boolean;
   connectedChannels: () => SerialChannelId[];
   clear: (channel?: SerialChannelId) => void;
+  write: (data: string, channel?: SerialChannelId) => Promise<void>;
+  setAutomationActive: (active: boolean, channel?: SerialChannelId) => void;
   subscribe: (
     listener: (text: string, receivedAtMs: number) => void,
     channel?: SerialChannelId
@@ -114,6 +117,10 @@ export const SerialCard = forwardRef<SerialAutomationHandle, {
       channelHandle(channel)?.isConnected()
     ),
     clear: (channel = activeChannelRef.current) => channelHandle(channel)?.clear(),
+    write: (data, channel = activeChannelRef.current) =>
+      channelHandle(channel)?.write(data) ?? Promise.reject(new Error(t("serial.disconnectedWrite"))),
+    setAutomationActive: (active, channel = activeChannelRef.current) =>
+      channelHandle(channel)?.setAutomationActive(active),
     subscribe: (listener, channel = activeChannelRef.current) =>
       channelHandle(channel)?.subscribe(listener) ?? (() => {}),
   }), []);
@@ -143,6 +150,7 @@ export const SerialCard = forwardRef<SerialAutomationHandle, {
   }
 
   const connectedCount = CHANNELS.filter((channel) => statuses[channel].connected).length;
+  const automationActive = CHANNELS.some((channel) => statuses[channel].automationActive);
 
   return (
     <Card
@@ -203,7 +211,7 @@ export const SerialCard = forwardRef<SerialAutomationHandle, {
               aria-label={t("serial.vioLabel")}
               value={vinRoute === "1.8v" || vinRoute === "3.3v" ? vinRoute : ""}
               onChange={(event) => void changeVin(event.target.value as "1.8v" | "3.3v")}
-              disabled={!vinRoute || changingVoltage}
+              disabled={!vinRoute || changingVoltage || automationActive}
               className="rounded-md border border-warn/30 bg-panel px-2 py-1 text-xs font-semibold text-ink outline-none focus-visible:ring-2 focus-visible:ring-warn/40 disabled:opacity-50"
             >
               <option value="" disabled>—</option>

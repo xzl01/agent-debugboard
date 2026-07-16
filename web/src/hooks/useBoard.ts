@@ -211,7 +211,8 @@ export function useBoard(): UseBoard {
 
   const refresh = useCallback(async () => {
     try {
-      const [status, adcRes] = await Promise.all([api.getStatus(), api.getAdc()]);
+      const status = await api.getStatus();
+      const adcRes = await api.getAdc();
       const readings: AdcReading[] = adcRes?.readings ?? [];
       setSnapshot(mapStatus(status, readings));
       setHasData(true);
@@ -247,7 +248,8 @@ export function useBoard(): UseBoard {
       (async () => {
         // Seed metadata from an HTTP poll before switching to live stream.
         try {
-          const [status, adcRes] = await Promise.all([api.getStatus(), api.getAdc()]);
+          const status = await api.getStatus();
+          const adcRes = await api.getAdc();
           if (cancelled) return;
           setSnapshot(mapStatus(status, adcRes?.readings ?? []));
           setHasData(true);
@@ -413,7 +415,12 @@ export function useBoard(): UseBoard {
   );
 
   const readPower = useCallback(async (name: string) => {
-    const [status, adcRes] = await Promise.all([api.getStatus(), api.getAdc()]);
+    // Keep these reads sequential. The firmware HTTP server has a deliberately
+    // small client pool and the live WebSocket already owns one slot; opening
+    // two more requests at once can cause a transient connection refusal
+    // exactly while a power-cycle task is verifying the shutdown edge.
+    const status = await api.getStatus();
+    const adcRes = await api.getAdc();
     const output = (status?.power_outputs ?? []).find((item: any) => item.name === name);
     const reading = (adcRes?.readings ?? []).find((item: any) => item.name === name);
     if (!output) throw new Error(`Power output ${name} was not reported by the device`);

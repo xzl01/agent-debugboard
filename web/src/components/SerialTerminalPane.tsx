@@ -36,6 +36,7 @@ type LineEnding = "crlf" | "cr" | "lf";
 export interface SerialChannelStatus {
   connected: boolean;
   connecting: boolean;
+  automationActive: boolean;
   source: Source;
   portInfo: string;
   rxBytes: number;
@@ -46,6 +47,8 @@ export interface SerialChannelHandle {
   isConnected: () => boolean;
   disconnect: () => Promise<void>;
   clear: () => void;
+  write: (data: string) => Promise<void>;
+  setAutomationActive: (active: boolean) => void;
   subscribe: (listener: (text: string, receivedAtMs: number) => void) => () => void;
 }
 
@@ -138,6 +141,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   const [error, setError] = useState<string | null>(null);
   const [rxBytes, setRxBytes] = useState(0);
   const [txBytes, setTxBytes] = useState(0);
+  const [automationActive, setAutomationActive] = useState(false);
 
   const sourceRef = useRef<Source>(null);
   const portRef = useRef<SerialPort | null>(null);
@@ -152,6 +156,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   const receiveListenersRef = useRef(new Set<(text: string, receivedAtMs: number) => void>());
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const writeGenerationRef = useRef(0);
+  const automationActiveRef = useRef(false);
 
   const append = (text: string) => {
     if (termRef.current) termRef.current.write(text);
@@ -168,6 +173,11 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     setRxBytes(0);
     termRef.current?.clear();
     termRef.current?.write("\u001b[2J\u001b[H");
+  };
+
+  const updateAutomationActive = (active: boolean) => {
+    automationActiveRef.current = active;
+    setAutomationActive(active);
   };
 
   async function disconnect(physicalDisconnect = false) {
@@ -193,16 +203,6 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     setPortInfo("");
   }
 
-  useImperativeHandle(ref, () => ({
-    isConnected: () => !!sourceRef.current,
-    disconnect: () => disconnect(),
-    clear,
-    subscribe: (listener) => {
-      receiveListenersRef.current.add(listener);
-      return () => receiveListenersRef.current.delete(listener);
-    },
-  }), []); // eslint-disable-line react-hooks/exhaustive-deps
-
   useEffect(() => {
     sourceRef.current = source;
     if (termRef.current) {
@@ -212,15 +212,20 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   }, [source, visible]);
 
   useEffect(() => {
+    automationActiveRef.current = automationActive;
+  }, [automationActive]);
+
+  useEffect(() => {
     onStatus(channel, {
       connected: !!source,
       connecting,
+      automationActive,
       source,
       portInfo,
       rxBytes,
       txBytes,
     });
-  }, [channel, connecting, onStatus, portInfo, rxBytes, source, txBytes]);
+  }, [automationActive, channel, connecting, onStatus, portInfo, rxBytes, source, txBytes]);
 
   useEffect(() => {
     const host = terminalHostRef.current;
@@ -395,7 +400,8 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
 
   async function writeSerial(data: string) {
     const activeSource = sourceRef.current;
-    if (!activeSource || !data) return;
+    if (!activeSource) throw new Error(t("serial.disconnectedWrite"));
+    if (!data) return;
     const bytes = new TextEncoder().encode(data);
     try {
       if (activeSource === "webserial" && portRef.current?.writable) {
@@ -409,18 +415,33 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       setTxBytes((count) => count + bytes.byteLength);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+      throw reason;
     }
   }
 
-  function enqueueSerial(data: string) {
-    if (!sourceRef.current || !data) return;
+  function enqueueSerial(data: string): Promise<void> {
+    if (!sourceRef.current) return Promise.reject(new Error(t("serial.disconnectedWrite")));
+    if (!data) return Promise.resolve();
     const generation = writeGenerationRef.current;
     const operation = writeQueueRef.current.then(() => {
       if (generation !== writeGenerationRef.current) return;
       return writeSerial(data);
     });
     writeQueueRef.current = operation.catch(() => {});
+    return operation;
   }
+
+  useImperativeHandle(ref, () => ({
+    isConnected: () => !!sourceRef.current,
+    disconnect: () => disconnect(),
+    clear,
+    write: enqueueSerial,
+    setAutomationActive: updateAutomationActive,
+    subscribe: (listener) => {
+      receiveListenersRef.current.add(listener);
+      return () => receiveListenersRef.current.delete(listener);
+    },
+  }), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function copySelection() {
     const selection = termRef.current?.getSelection();
@@ -436,6 +457,11 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   }
 
   function handleTerminalKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (automationActiveRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     const data = terminalKeyData(event, lineEnding);
     if (!data || !sourceRef.current) return;
     event.preventDefault();
@@ -444,6 +470,11 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   }
 
   function handleTerminalPaste(event: ReactClipboardEvent<HTMLDivElement>) {
+    if (automationActiveRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     const data = event.clipboardData.getData("text");
     if (!data || !sourceRef.current) return;
     event.preventDefault();
@@ -482,7 +513,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
             </>
           )}
           {(source || connecting) && (
-            <Button variant="ghost" className="min-h-7 rounded-md px-2 py-1 text-[10px]" onClick={() => void disconnect()}>
+            <Button variant="ghost" disabled={automationActive} className="min-h-7 rounded-md px-2 py-1 text-[10px]" onClick={() => void disconnect()}>
               {t("serial.disconnect")}
             </Button>
           )}
@@ -535,10 +566,10 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
         />
 
         <div className="flex min-h-9 flex-wrap items-center gap-x-4 gap-y-1 border-t border-line/70 bg-terminal px-3 py-1.5 text-[10px] text-ink-dim transition-colors">
-          <span>{source ? t("serial.directInput") : t("serial.connectToInput")}</span>
+          <span>{automationActive ? t("serial.automationInputLocked") : source ? t("serial.directInput") : t("serial.connectToInput")}</span>
           <span className="ml-auto font-mono">RX {rxBytes.toLocaleString()}</span>
           <span className="font-mono">TX {txBytes.toLocaleString()}</span>
-          <button type="button" disabled={!source} onClick={() => enqueueSerial("\u0003")} className="rounded border border-line/80 px-1.5 py-0.5 font-mono text-ink-dim transition-colors hover:bg-panel2 hover:text-ink disabled:opacity-30">Ctrl-C</button>
+          <button type="button" disabled={!source || automationActive} onClick={() => void enqueueSerial("\u0003")} className="rounded border border-line/80 px-1.5 py-0.5 font-mono text-ink-dim transition-colors hover:bg-panel2 hover:text-ink disabled:opacity-30">Ctrl-C</button>
         </div>
       </div>
     </section>

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "node --experimental-strip-types --test src/lib/serialTask.test.ts",
     "preview": "vite preview --host",
     "device-bridge": "node serial-bridge.mjs",
     "serial-bridge": "node serial-bridge.mjs"
