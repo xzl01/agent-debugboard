@@ -692,8 +692,6 @@ void linkr_debugger_watchdog_boot_check(void)
 		}
 		printk("boot to BOOTSEL: reason=timer marker=match source=%s(0x%08x)\n",
 		       desc, source);
-		(void)configure_heartbeat_led();
-		linkr_debugger_heartbeat_led_set(false);
 		linkr_debugger_watchdog_marker_clear();
 		reset_usb_boot(0, 0);
 	}
@@ -1410,9 +1408,7 @@ int linkr_debugger_bootloader_now(void)
 	}
 	ARG_UNUSED(ret);
 	linkr_debugger_watchdog_force_disable_locked();
-	(void)linkr_debugger_watchdog_heartbeat_step_locked(false);
 	k_mutex_unlock(&linkr_debugger_control_lock);
-	linkr_debugger_heartbeat_led_set(false);
 	printk("explicit %s BOOTSEL entry\n", linkr_debugger_mcu_name());
 	reset_usb_boot(0, 0);
 	return 0;
