@@ -9,7 +9,7 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(radxa_linkr_debugger)
 
 zephyr_linker_sources(SECTIONS sections-rom.ld)
-zephyr_linker_section(NAME http_resource_desc_linkr_debugger_http_service
+zephyr_iterable_section(NAME http_resource_desc_linkr_debugger_http_service
   KVMA RAM_REGION GROUP RODATA_REGION)
 
 find_program(NPM_EXECUTABLE NAMES npm REQUIRED)
@@ -21,13 +21,19 @@ set(linkr_debugger_web_dist_files
   ${linkr_debugger_web_dist_dir}/index.html
   ${linkr_debugger_web_dist_dir}/assets/app.css
   ${linkr_debugger_web_dist_dir}/assets/app.js
+  ${linkr_debugger_web_dist_dir}/assets/decoder/logic-decoder.js
+  ${linkr_debugger_web_dist_dir}/assets/decoder/logic-decoder_bg.wasm
 )
 
 file(GLOB_RECURSE linkr_debugger_web_sources CONFIGURE_DEPENDS
   ${linkr_debugger_web_dir}/src/*
   ${linkr_debugger_web_dir}/scripts/*
+  ${linkr_debugger_web_dir}/decoder/src/*
+  ${linkr_debugger_web_dir}/decoder/tests/*
 )
 list(APPEND linkr_debugger_web_sources
+  ${linkr_debugger_web_dir}/decoder/Cargo.lock
+  ${linkr_debugger_web_dir}/decoder/Cargo.toml
   ${linkr_debugger_web_dir}/index.html
   ${linkr_debugger_web_dir}/package-lock.json
   ${linkr_debugger_web_dir}/package.json
@@ -64,11 +70,25 @@ generate_inc_file_for_target(app
   ${linkr_debugger_web_gen_dir}/linkr_debugger_web_app.js.gz.inc
   --gzip
 )
+generate_inc_file_for_target(app
+  ${linkr_debugger_web_dist_dir}/assets/decoder/logic-decoder.js
+  ${linkr_debugger_web_gen_dir}/linkr_debugger_web_logic_decoder.js.gz.inc
+  --gzip
+)
+generate_inc_file_for_target(app
+  ${linkr_debugger_web_dist_dir}/assets/decoder/logic-decoder_bg.wasm
+  ${linkr_debugger_web_gen_dir}/linkr_debugger_web_logic_decoder_bg.wasm.gz.inc
+  --gzip
+)
 
 target_sources(app PRIVATE
   src/main.c
+  src/linkr_debugger_captive_portal.c
   src/linkr_debugger_control.c
+  src/linkr_debugger_dns.c
+  src/linkr_debugger_http_body.c
   src/linkr_debugger_http.c
+  src/linkr_debugger_logic_analyzer.c
   src/linkr_debugger_monitoring.c
   src/linkr_debugger_model.c
   src/linkr_debugger_network.c
@@ -76,3 +96,24 @@ target_sources(app PRIVATE
   src/linkr_debugger_ws.c
   src/linkr_debugger_usb_net.c
 )
+
+target_sources_ifdef(CONFIG_LINKR_DEBUGGER_OTA app PRIVATE
+  src/linkr_debugger_ota.c
+)
+
+# Zephyr emits zephyr.uf2 from the raw header-less app hex, which MCUboot
+# refuses to boot; BOOTSEL-flashing that file bricks the board. Regenerate
+# the app-only UF2 from the imgtool-formatted hex and merge MCUboot + app
+# into the canonical combined UF2 after every build.
+if(CONFIG_BOOTLOADER_MCUBOOT)
+  add_custom_target(linkr_debugger_merge_uf2 ALL
+    COMMAND ${CMAKE_COMMAND}
+      -DAPP_BUILD_DIR=${CMAKE_BINARY_DIR}
+      -DSYSBUILD_DIR=${CMAKE_BINARY_DIR}/..
+      -DZEPHYR_BASE=${ZEPHYR_BASE}
+      -DPYTHON=${Python3_EXECUTABLE}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/merge_uf2.cmake
+    DEPENDS ${CMAKE_BINARY_DIR}/zephyr/zephyr.signed.hex
+    COMMENT "Generating MCUboot-bootable and combined UF2 artifacts"
+  )
+endif()

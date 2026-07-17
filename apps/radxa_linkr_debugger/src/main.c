@@ -8,7 +8,9 @@
 
 #include "linkr_debugger_control.h"
 #include "linkr_debugger_http.h"
+#include "linkr_debugger_logic_analyzer.h"
 #include "linkr_debugger_network.h"
+#include "linkr_debugger_ota.h"
 #include "linkr_debugger_shell.h"
 #include "linkr_debugger_ws.h"
 #include "linkr_debugger_usb_net.h"
@@ -90,6 +92,11 @@ int main(void)
 		return 0;
 	}
 
+	ret = linkr_debugger_logic_analyzer_init();
+	if (ret < 0) {
+		LOG_WRN("Logic analyzer init failed: %d (non-fatal)", ret);
+	}
+
 	ret = http_server_start();
 	if (ret < 0) {
 		LOG_ERR("HTTP server start failed: %d", ret);
@@ -102,6 +109,10 @@ int main(void)
 	if (ret < 0) {
 		LOG_ERR("Watchdog supervisor start failed: %d", ret);
 		return 0;
+	}
+
+	if (IS_ENABLED(CONFIG_LINKR_DEBUGGER_OTA)) {
+		linkr_debugger_ota_auto_confirm_ready();
 	}
 
 	LOG_INF("radxa-linkr-debugger controller ready over NCM HTTP with CDC ACM fallback");

@@ -31,5 +31,18 @@ int linkr_debugger_ws_setup(int ws_socket, struct http_request_ctx *request_ctx,
 int linkr_debugger_ws_session_create(struct linkr_debugger_ws_session_info *info);
 int linkr_debugger_ws_session_delete(uint32_t session_id);
 int linkr_debugger_ws_session_lookup(uint32_t session_id, struct linkr_debugger_ws_session_info *info);
+struct linkr_debugger_ws_logic_chunk_debug {
+	uint32_t calls;
+	uint32_t no_client;
+	uint32_t dropped_busy;
+	uint32_t sent;
+	uint32_t failed;
+	int32_t last_error;
+	uint8_t pending_mask;
+	uint8_t formatting;
+};
+
+int linkr_debugger_ws_send_logic_chunk(uint32_t sequence, const uint16_t *values, uint32_t count);
+void linkr_debugger_ws_get_logic_chunk_debug(struct linkr_debugger_ws_logic_chunk_debug *out);
 
 #endif /* RADXA_LINKR_DEBUGGER_WS_H_ */

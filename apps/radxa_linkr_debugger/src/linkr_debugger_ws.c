@@ -8,6 +8,7 @@
 #include "linkr_debugger_ws.h"
 
 #include "linkr_debugger_control.h"
+#include "linkr_debugger_logic_analyzer.h"
 #include "linkr_debugger_monitoring.h"
 #include "linkr_debugger_model.h"
 
@@ -27,14 +28,10 @@ LOG_MODULE_REGISTER(linkr_debugger_ws, LOG_LEVEL_INF);
 
 #define LINKR_DEBUGGER_WS_STACK_SIZE 4096
 #define LINKR_DEBUGGER_WS_PRIORITY K_PRIO_PREEMPT(8)
-#define LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE 4096
+#define LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE 6144
 #define LINKR_DEBUGGER_WS_IDLE_WAIT_MS 100
 #define LINKR_DEBUGGER_WS_SESSION_IDLE_TIMEOUT_MS 30000U
-#if defined(CONFIG_SOC_SERIES_RP2350)
 #define LINKR_DEBUGGER_CAPTURE_CAPACITY 2048U
-#else
-#define LINKR_DEBUGGER_CAPTURE_CAPACITY 512U
-#endif
 #define LINKR_DEBUGGER_WS_ADC_CHANNELS 3U
 #define LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE 256U
 #define LINKR_DEBUGGER_WS_MAX_BATCH_SIZE 20U
@@ -188,25 +185,47 @@ static struct k_thread linkr_debugger_adc_sampler_thread_data;
 enum {
 	LINKR_DEBUGGER_WS_EVENT_STATE = BIT(0),
 	LINKR_DEBUGGER_WS_EVENT_SAMPLE = BIT(1),
+	LINKR_DEBUGGER_WS_EVENT_LOGIC_CHUNK = BIT(2),
 };
 
 enum {
 	LINKR_DEBUGGER_WS_SAMPLER_EVENT_CONFIG = BIT(0),
 };
 
-static int linkr_debugger_ws_send_json(struct linkr_debugger_ws_client *client, const char *payload)
+/* Single-slot logic-chunk mailbox. The LA stream workqueue (sole producer)
+ * only formats chunks and posts events; each WS client thread sends on its
+ * own socket, keeping every socket single-sender. pending_mask tracks which
+ * client slots have not consumed the buffered chunk yet.
+ *
+ * FIXME: with multiple subscribed clients the fastest consumer wins each
+ * slot and slower clients see sequence gaps more often; per-client queues
+ * would be needed for gapless multi-client delivery.
+ */
+static char linkr_debugger_ws_logic_chunk_buf[LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE];
+static volatile uint8_t linkr_debugger_ws_logic_chunk_pending_mask;
+static volatile bool linkr_debugger_ws_logic_chunk_formatting;
+static struct k_mutex linkr_debugger_ws_logic_chunk_send_lock;
+static struct linkr_debugger_ws_logic_chunk_debug linkr_debugger_ws_logic_chunk_debug;
+
+static int linkr_debugger_ws_send_json_timeout(struct linkr_debugger_ws_client *client,
+					       const char *payload, int32_t timeout_ms)
 {
 	int ret;
 
 	ret = websocket_send_msg(client->ws_sock, (const uint8_t *)payload,
 				 strlen(payload), WEBSOCKET_OPCODE_DATA_TEXT,
-				 false, true, SYS_FOREVER_MS);
+				 false, true, timeout_ms);
 	if (ret < 0) {
 		LOG_ERR("websocket_send_msg failed: %d", ret);
 		client->telemetry_enabled = false;
 	}
 
 	return ret;
+}
+
+static int linkr_debugger_ws_send_json(struct linkr_debugger_ws_client *client, const char *payload)
+{
+	return linkr_debugger_ws_send_json_timeout(client, payload, SYS_FOREVER_MS);
 }
 
 static struct linkr_debugger_ws_client *linkr_debugger_ws_client_allocate(void)
@@ -247,6 +266,30 @@ static void linkr_debugger_ws_client_reset(struct linkr_debugger_ws_client *clie
 	client->thread = NULL;
 }
 
+static void linkr_debugger_ws_stop_stream_if_unwatched(void)
+{
+	bool any_watcher = false;
+
+	k_mutex_lock(&linkr_debugger_ws_clients_lock, K_FOREVER);
+	for (size_t i = 0; i < ARRAY_SIZE(linkr_debugger_ws_clients); i++) {
+		struct linkr_debugger_ws_client *c = &linkr_debugger_ws_clients[i];
+
+		if (c->active && c->connected && c->telemetry_enabled) {
+			any_watcher = true;
+			break;
+		}
+	}
+	k_mutex_unlock(&linkr_debugger_ws_clients_lock);
+
+	/* A stream whose last chunk consumer disconnected would otherwise run
+	 * forever, blocking every later start with already_armed.
+	 */
+	if (!any_watcher && linkr_debugger_logic_analyzer_is_streaming()) {
+		(void)linkr_debugger_logic_analyzer_stop_stream();
+		LOG_INF("logic stream auto-stopped: no subscribed websocket client");
+	}
+}
+
 static void linkr_debugger_ws_client_release(struct linkr_debugger_ws_client *client, uint32_t session_id)
 {
 	k_mutex_lock(&linkr_debugger_ws_clients_lock, K_FOREVER);
@@ -267,6 +310,8 @@ static void linkr_debugger_ws_client_release(struct linkr_debugger_ws_client *cl
 	k_mutex_unlock(&linkr_debugger_capture_lock);
 	k_event_post(&linkr_debugger_ws_sampler_events,
 		     LINKR_DEBUGGER_WS_SAMPLER_EVENT_CONFIG);
+
+	linkr_debugger_ws_stop_stream_if_unwatched();
 }
 
 static struct linkr_debugger_ws_client *linkr_debugger_ws_client_find_by_session_id(uint32_t session_id)
@@ -609,9 +654,14 @@ static int linkr_debugger_ws_append_safe_gpios(char *buf, size_t size, size_t *c
 
 		if (linkr_debugger_ws_append(buf, size, cursor,
 					"{\"name\":\"%s\",\"pin\":%u,\"note\":\"%s\","
+					"\"layoutGroup\":\"%s\",\"layoutLabel\":\"%s\","
+					"\"layoutRow\":%u,\"layoutColumn\":%u,"
 					"\"value\":%d,\"direction\":\"%s\"}",
 					name, (unsigned int)desc->pin,
-					desc->note, value > 0 ? 1 : 0,
+					desc->note, desc->layout_group, desc->layout_label,
+					(unsigned int)desc->layout_row,
+					(unsigned int)desc->layout_column,
+					value > 0 ? 1 : 0,
 					linkr_debugger_safe_gpio_direction_name(i)) < 0) {
 			return -ENOMEM;
 		}
@@ -1750,6 +1800,28 @@ static int linkr_debugger_ws_handle_message(struct linkr_debugger_ws_client *cli
 					"unknown websocket message type");
 }
 
+static int linkr_debugger_ws_emit_logic_chunk(struct linkr_debugger_ws_client *client)
+{
+	uint8_t my_bit = BIT(client->slot);
+	int ret = 0;
+
+	k_mutex_lock(&linkr_debugger_ws_logic_chunk_send_lock, K_FOREVER);
+	if (!linkr_debugger_ws_logic_chunk_formatting &&
+	    (linkr_debugger_ws_logic_chunk_pending_mask & my_bit) != 0U) {
+		ret = linkr_debugger_ws_send_json(client, linkr_debugger_ws_logic_chunk_buf);
+		if (ret < 0) {
+			linkr_debugger_ws_logic_chunk_debug.failed++;
+			linkr_debugger_ws_logic_chunk_debug.last_error = ret;
+		} else {
+			linkr_debugger_ws_logic_chunk_debug.sent++;
+		}
+		linkr_debugger_ws_logic_chunk_pending_mask &= (uint8_t)~my_bit;
+	}
+	k_mutex_unlock(&linkr_debugger_ws_logic_chunk_send_lock);
+
+	return ret;
+}
+
 static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 {
 	struct linkr_debugger_ws_client_thread_arg *thread_arg = arg1;
@@ -1781,9 +1853,23 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 					       (uint32_t)client->telemetry_rate_hz)) :
 			LINKR_DEBUGGER_WS_IDLE_WAIT_MS;
 
-		events = k_event_wait(&client->events,
-			LINKR_DEBUGGER_WS_EVENT_STATE | LINKR_DEBUGGER_WS_EVENT_SAMPLE,
-			true, K_MSEC(wait_ms));
+		/* wait_safe consumes only the reported bits: a plain k_event_wait
+		 * with reset=true wipes pending bits unreported at entry and on
+		 * timeout, which would permanently lose one-shot LOGIC_CHUNK
+		 * posts and jam the single-slot chunk mailbox.
+		 */
+		events = k_event_wait_safe(&client->events,
+			LINKR_DEBUGGER_WS_EVENT_STATE | LINKR_DEBUGGER_WS_EVENT_SAMPLE |
+			LINKR_DEBUGGER_WS_EVENT_LOGIC_CHUNK,
+			false, K_MSEC(wait_ms));
+
+		if (events & LINKR_DEBUGGER_WS_EVENT_LOGIC_CHUNK) {
+			ret = linkr_debugger_ws_emit_logic_chunk(client);
+			if (ret < 0) {
+				LOG_ERR("failed to emit logic chunk: %d", ret);
+				break;
+			}
+		}
 
 		if (events & LINKR_DEBUGGER_WS_EVENT_STATE) {
 			ret = linkr_debugger_ws_emit_status_snapshot(client);
@@ -1825,7 +1911,6 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 			break;
 		}
 		if ((message_type & WEBSOCKET_FLAG_CLOSE) != 0U) {
-			(void)websocket_send_msg(ws_sock, NULL, 0, WEBSOCKET_OPCODE_CLOSE, false, true, 200);
 			break;
 		}
 		if ((message_type & WEBSOCKET_FLAG_TEXT) == 0U) {
@@ -1846,10 +1931,12 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 		}
 	}
 
-	(void)websocket_send_msg(ws_sock, NULL, 0, WEBSOCKET_OPCODE_CLOSE, false, true, 200);
-	(void)zsock_shutdown(ws_sock, ZSOCK_SHUT_RDWR);
-	k_msleep(500);
-	(void)zsock_close(ws_sock);
+	/* The close handshake is answered by websocket_unregister: closing the
+	 * websocket fd emits exactly one CLOSE frame through its vtable. Sending
+	 * an explicit close here too would put a second frame on the wire and
+	 * trip Chromium's "Close received after close" warning.
+	 */
+	(void)websocket_unregister(ws_sock);
 	linkr_debugger_ws_client_release(client, session_id);
 }
 
@@ -1919,8 +2006,9 @@ int linkr_debugger_ws_setup(int ws_socket, struct http_request_ctx *request_ctx,
 
 int linkr_debugger_ws_init(void)
 {
-	k_mutex_init(&linkr_debugger_ws_clients_lock);
-	k_mutex_init(&linkr_debugger_capture_lock);
+k_mutex_init(&linkr_debugger_ws_clients_lock);
+k_mutex_init(&linkr_debugger_capture_lock);
+k_mutex_init(&linkr_debugger_ws_logic_chunk_send_lock);
 	for (size_t i = 0; i < ARRAY_SIZE(linkr_debugger_ws_clients); i++) {
 		linkr_debugger_ws_clients[i].slot = (uint8_t)i;
 		k_mutex_init(&linkr_debugger_ws_clients[i].lock);
@@ -2029,4 +2117,108 @@ void linkr_debugger_ws_publish_state_change(void)
 void linkr_debugger_ws_publish_sample(void)
 {
 	linkr_debugger_ws_publish(LINKR_DEBUGGER_WS_EVENT_SAMPLE);
+}
+
+void linkr_debugger_ws_get_logic_chunk_debug(struct linkr_debugger_ws_logic_chunk_debug *out)
+{
+	if (out != NULL) {
+		*out = linkr_debugger_ws_logic_chunk_debug;
+		out->pending_mask = linkr_debugger_ws_logic_chunk_pending_mask;
+		out->formatting = linkr_debugger_ws_logic_chunk_formatting ? 1U : 0U;
+	}
+}
+
+int linkr_debugger_ws_send_logic_chunk(uint32_t sequence, const uint16_t *values, uint32_t count)
+{
+	uint8_t eligible = 0U;
+	int offset = 0;
+	int written;
+
+	if (values == NULL || count == 0U) {
+		return -EINVAL;
+	}
+
+	linkr_debugger_ws_logic_chunk_debug.calls++;
+
+	if (k_mutex_lock(&linkr_debugger_ws_logic_chunk_send_lock, K_NO_WAIT) != 0) {
+		linkr_debugger_ws_logic_chunk_debug.dropped_busy++;
+		return 0;
+	}
+	k_mutex_lock(&linkr_debugger_ws_clients_lock, K_FOREVER);
+	for (size_t i = 0U; i < LINKR_DEBUGGER_WS_MAX_CLIENTS; i++) {
+		struct linkr_debugger_ws_client *c = &linkr_debugger_ws_clients[i];
+		if (c->active && c->connected && c->telemetry_enabled) {
+			eligible |= BIT(i);
+		}
+	}
+	linkr_debugger_ws_logic_chunk_pending_mask &= eligible;
+	if (eligible == 0U) {
+		k_mutex_unlock(&linkr_debugger_ws_clients_lock);
+		k_mutex_unlock(&linkr_debugger_ws_logic_chunk_send_lock);
+		linkr_debugger_ws_logic_chunk_debug.no_client++;
+		return 0;
+	}
+	if (linkr_debugger_ws_logic_chunk_formatting ||
+	    linkr_debugger_ws_logic_chunk_pending_mask != 0U) {
+		k_mutex_unlock(&linkr_debugger_ws_clients_lock);
+		k_mutex_unlock(&linkr_debugger_ws_logic_chunk_send_lock);
+		linkr_debugger_ws_logic_chunk_debug.dropped_busy++;
+		return 0;
+	}
+	linkr_debugger_ws_logic_chunk_formatting = true;
+	k_mutex_unlock(&linkr_debugger_ws_clients_lock);
+	k_mutex_unlock(&linkr_debugger_ws_logic_chunk_send_lock);
+
+	written = snprintk(linkr_debugger_ws_logic_chunk_buf + offset,
+		sizeof(linkr_debugger_ws_logic_chunk_buf) - (size_t)offset,
+		"{\"type\":\"logic-chunk\",\"seq\":%u,\"count\":%u,\"values\":[",
+		(unsigned)sequence, (unsigned)count);
+	if (written < 0 ||
+	    (size_t)written >= sizeof(linkr_debugger_ws_logic_chunk_buf) - (size_t)offset) {
+		goto out_overflow;
+	}
+	offset += written;
+
+	for (uint32_t i = 0U; i < count; i++) {
+		if (i > 0U) {
+			if ((size_t)offset >= sizeof(linkr_debugger_ws_logic_chunk_buf) - 1U) {
+				goto out_overflow;
+			}
+			linkr_debugger_ws_logic_chunk_buf[offset++] = ',';
+		}
+		written = snprintk(linkr_debugger_ws_logic_chunk_buf + offset,
+			sizeof(linkr_debugger_ws_logic_chunk_buf) - (size_t)offset,
+			"%u", (unsigned)values[i]);
+		if (written < 0 ||
+		    (size_t)written >= sizeof(linkr_debugger_ws_logic_chunk_buf) - (size_t)offset) {
+			goto out_overflow;
+		}
+		offset += written;
+	}
+
+	written = snprintk(linkr_debugger_ws_logic_chunk_buf + offset,
+		sizeof(linkr_debugger_ws_logic_chunk_buf) - (size_t)offset, "]}\n");
+	if (written < 0 ||
+	    (size_t)written >= sizeof(linkr_debugger_ws_logic_chunk_buf) - (size_t)offset) {
+		goto out_overflow;
+	}
+
+	k_mutex_lock(&linkr_debugger_ws_clients_lock, K_FOREVER);
+	linkr_debugger_ws_logic_chunk_pending_mask = eligible;
+	linkr_debugger_ws_logic_chunk_formatting = false;
+	for (size_t i = 0U; i < LINKR_DEBUGGER_WS_MAX_CLIENTS; i++) {
+		if ((eligible & BIT(i)) != 0U) {
+			k_event_post(&linkr_debugger_ws_clients[i].events,
+				     LINKR_DEBUGGER_WS_EVENT_LOGIC_CHUNK);
+		}
+	}
+	k_mutex_unlock(&linkr_debugger_ws_clients_lock);
+
+	return 0;
+
+out_overflow:
+	k_mutex_lock(&linkr_debugger_ws_clients_lock, K_FOREVER);
+	linkr_debugger_ws_logic_chunk_formatting = false;
+	k_mutex_unlock(&linkr_debugger_ws_clients_lock);
+	return -ENOMEM;
 }

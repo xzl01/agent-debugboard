@@ -9,6 +9,7 @@
 #include <zephyr/dt-bindings/gpio/gpio.h>
 #include <zephyr/dt-bindings/i2c/i2c.h>
 #include <zephyr/dt-bindings/pinctrl/rpi-pico-rp2350a-pinctrl.h>
+#include <zephyr/dt-bindings/dma/rpi-pico-dma-rp2350.h>
 
 / {
 	chosen {
@@ -153,4 +154,20 @@
 		compatible = "zephyr,cdc-acm-uart";
 		label = "Radxa Linkr Debugger USB CDC ACM";
 	};
+};
+
+&pio0 {
+	status = "okay";
+};
+
+&pio1 {
+	status = "okay";
+};
+
+&pio2 {
+	status = "okay";
+};
+
+&dma {
+	status = "okay";
 };
