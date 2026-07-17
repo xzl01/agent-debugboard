@@ -35,22 +35,13 @@ static void test_rail_table_matches_schematic(void)
 	ws_rail = linkr_debugger_find_rail("GP09_5V_WS_EN");
 	assert(ws_rail != NULL);
 	assert_str_eq(ws_rail->name, "5v_ws");
-#if defined(CONFIG_SOC_SERIES_RP2350)
 	assert(ws_rail->pin == 1);
 	assert(ws_rail->always_on);
-#else
-	assert(ws_rail->pin == 9);
-	assert(!ws_rail->always_on);
-#endif
 	assert(ws_rail->controllable);
 
 	rail = linkr_debugger_find_rail("20v_out");
 	assert(rail != NULL);
-#if defined(CONFIG_SOC_SERIES_RP2350)
 	assert(rail->pin == 3);
-#else
-	assert(rail->pin == 10);
-#endif
 	assert_str_eq(rail->signal, "GP10_20V_EN");
 	assert(!rail->always_on);
 
@@ -63,13 +54,8 @@ static void test_5v_ws_state_contract_matches_board_revision(void)
 
 	assert(rail != NULL);
 	assert(linkr_debugger_rail_state_allowed(rail, true));
-#if defined(CONFIG_SOC_SERIES_RP2350)
 	assert(linkr_debugger_rail_initial_enabled(rail));
 	assert(!linkr_debugger_rail_state_allowed(rail, false));
-#else
-	assert(!linkr_debugger_rail_initial_enabled(rail));
-	assert(linkr_debugger_rail_state_allowed(rail, false));
-#endif
 }
 
 static void test_current_table(void)
@@ -101,38 +87,63 @@ static void test_current_table(void)
 static void test_safe_gpio_allowlist(void)
 {
 	const struct linkr_debugger_safe_gpio_desc *gpio;
+	static const uint8_t expected_order[] = {
+		8, 9, 7, 15, 29, 14, 20, 13, 19, 12, 18, 11, 17, 10, 16,
+	};
 	char name[LINKR_DEBUGGER_GPIO_NAME_BUFSZ];
-
-#if defined(CONFIG_SOC_SERIES_RP2350)
 	assert(linkr_debugger_safe_gpio_count == 15);
+	for (size_t i = 0; i < linkr_debugger_safe_gpio_count; i++) {
+		assert(linkr_debugger_safe_gpios[i].pin == expected_order[i]);
+	}
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(7);
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "CON_MAS");
+	assert_str_eq(gpio->layout_group, "J13");
+	assert_str_eq(gpio->layout_label, "MASKROM");
+	assert(gpio->layout_row == 1);
+	assert(gpio->layout_column == 1);
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(8);
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "CON_REST");
+	assert_str_eq(gpio->layout_label, "RSET");
+	assert(gpio->layout_row == 0);
+	assert(gpio->layout_column == 0);
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(9);
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "CON_USER");
+	assert_str_eq(gpio->layout_label, "USER");
+	assert(gpio->layout_row == 0);
+	assert(gpio->layout_column == 1);
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(10);
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "J16_PIN1");
+	assert_str_eq(gpio->layout_group, "J16");
+	assert_str_eq(gpio->layout_label, "GP10");
+	assert(gpio->layout_row == 5);
+	assert(gpio->layout_column == 0);
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(15);
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "J16_PIN11");
+	assert(gpio->layout_row == 0);
+	assert(gpio->layout_column == 0);
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(20);
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "J16_PIN10");
+	assert(gpio->layout_row == 1);
+	assert(gpio->layout_column == 1);
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(29);
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "J16_PIN12");
+	assert_str_eq(gpio->layout_label, "ADC3");
+	assert(gpio->layout_row == 0);
+	assert(gpio->layout_column == 1);
 	assert(linkr_debugger_format_gpio_name(gpio->pin, name, sizeof(name)));
 	assert_str_eq(name, "GP29");
 
@@ -150,57 +161,6 @@ static void test_safe_gpio_allowlist(void)
 	gpio = linkr_debugger_find_safe_gpio_by_identifier("J16_PIN12");
 	assert(gpio != NULL);
 	assert(gpio->pin == 29);
-#else
-	assert(linkr_debugger_safe_gpio_count == 15);
-
-	gpio = linkr_debugger_find_safe_gpio_by_pin(4);
-	assert(gpio != NULL);
-	assert(gpio->pin == 4);
-	assert_str_eq(gpio->note, "CON_MAS");
-
-	gpio = linkr_debugger_find_safe_gpio_by_pin(13);
-	assert(gpio != NULL);
-	assert(gpio->pin == 13);
-	assert_str_eq(gpio->note, "J17_PIN1");
-	assert(linkr_debugger_format_gpio_name(gpio->pin, name, sizeof(name)));
-	assert_str_eq(name, "GP13");
-
-	gpio = linkr_debugger_find_safe_gpio_by_pin(24);
-	assert(gpio != NULL);
-	assert(gpio->pin == 24);
-	assert_str_eq(gpio->note, "J17_PIN12");
-	assert(linkr_debugger_format_gpio_name(gpio->pin, name, sizeof(name)));
-	assert_str_eq(name, "GP24");
-
-	gpio = linkr_debugger_find_safe_gpio_by_pin(16);
-	assert(gpio != NULL);
-	assert(gpio->pin == 16);
-	assert_str_eq(gpio->note, "J17_PIN7");
-
-	gpio = linkr_debugger_find_safe_gpio_by_pin(21);
-	assert(gpio != NULL);
-	assert(gpio->pin == 21);
-	assert_str_eq(gpio->note, "J17_PIN6");
-
-	assert(linkr_debugger_find_safe_gpio_by_pin(10) == NULL);
-	assert(linkr_debugger_find_safe_gpio_by_pin(26) == NULL);
-
-	gpio = linkr_debugger_find_safe_gpio_by_identifier("GP4");
-	assert(gpio != NULL);
-	assert_str_eq(gpio->note, "CON_MAS");
-
-	gpio = linkr_debugger_find_safe_gpio_by_identifier("4");
-	assert(gpio != NULL);
-	assert_str_eq(gpio->note, "CON_MAS");
-
-	gpio = linkr_debugger_find_safe_gpio_by_identifier("CON_MAS");
-	assert(gpio != NULL);
-	assert(gpio->pin == 4);
-
-	gpio = linkr_debugger_find_safe_gpio_by_identifier("J17_PIN1");
-	assert(gpio != NULL);
-	assert(gpio->pin == 13);
-#endif
 
 	assert(linkr_debugger_find_safe_gpio_by_identifier("not-a-gpio") == NULL);
 }
