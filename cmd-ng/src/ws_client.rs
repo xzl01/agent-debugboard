@@ -410,16 +410,16 @@ mod tests {
 
     #[test]
     fn status_switches_accept_optional_vin_route() {
-        let rp2040: WsStatusSnapshot =
+        let legacy: WsStatusSnapshot =
             serde_json::from_str(r#"{"switches":{"sd":{"route":"target"},"usb":{"route":"pc"}}}"#)
                 .unwrap();
-        assert!(rp2040.switches.vin.route.is_empty());
+        assert!(legacy.switches.vin.route.is_empty());
 
-        let rp2350: WsStatusSnapshot = serde_json::from_str(
+        let current: WsStatusSnapshot = serde_json::from_str(
             r#"{"switches":{"sd":{"route":"target"},"usb":{"route":"pc"},"vin":{"route":"1.8v"}}}"#,
         )
         .unwrap();
-        assert_eq!(rp2350.switches.vin.route, "1.8v");
+        assert_eq!(current.switches.vin.route, "1.8v");
     }
 
     #[test]
@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn ws_client_close_advances_generation() {
         let client = WsClient::with_ws_url(
-            "http://172.29.203.1:8080".to_string(),
+            "http://172.29.203.1".to_string(),
             "ws://example.invalid".to_string(),
         );
         let before = client.generation();
@@ -596,7 +596,7 @@ mod tests {
         });
 
         let ws_url = format!("ws://{}", addr);
-        let client = WsClient::with_ws_url("http://172.29.203.1:8080".to_string(), ws_url);
+        let client = WsClient::with_ws_url("http://172.29.203.1".to_string(), ws_url);
         client.connect().unwrap();
         client.send(&subscribe_request(60)).unwrap();
         let raw = rx.recv().unwrap();
@@ -690,7 +690,7 @@ mod tests {
         });
 
         let ws_url = format!("ws://{}", addr);
-        let client = WsClient::with_ws_url("http://172.29.203.1:8080".to_string(), ws_url);
+        let client = WsClient::with_ws_url("http://172.29.203.1".to_string(), ws_url);
         client.connect().unwrap();
         match client.recv().unwrap() {
             WsMessage::Result(result) => {
@@ -732,7 +732,7 @@ mod tests {
         });
 
         let ws_url = format!("ws://{}", addr);
-        let client = WsClient::with_ws_url("http://172.29.203.1:8080".to_string(), ws_url);
+        let client = WsClient::with_ws_url("http://172.29.203.1".to_string(), ws_url);
         client.connect().unwrap();
         match client.recv().unwrap() {
             WsMessage::Telemetry(message) => {

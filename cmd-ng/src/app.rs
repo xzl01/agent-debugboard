@@ -6,7 +6,8 @@
 use crate::adc;
 use crate::cli::Cli;
 use crate::client::{
-    resolve_base_url, BoardClient, BoardRequest, BoardTransport, DEFAULT_BASE_URL,
+    resolve_base_url, BoardBinaryUpload, BoardClient, BoardRequest, BoardTransport,
+    DEFAULT_BASE_URL,
 };
 use crate::json_contract::{parse_envelope, render_failure, EnvelopeError, JsonError, JSON_SCHEMA};
 use crate::tui;
@@ -16,7 +17,9 @@ use reqwest::Method;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::ffi::OsString;
+use std::fs::File;
 use std::io::{self, Write};
+use std::path::Path;
 use std::time::Duration;
 
 const INTERNAL_POWER_OUTPUT: &str = "5v_ws";
@@ -211,6 +214,10 @@ where
             stdout,
             stderr,
         );
+    }
+
+    if is_ota_upload_command(&cli.command_args) {
+        return run_ota_upload(client, &cli.command_args, cli.json, stdout, stderr);
     }
 
     let request = match request_from_args(&wire_args) {
@@ -472,6 +479,12 @@ fn is_adc_record_command(args: &[String]) -> bool {
         && cleaned.get(1).map(String::as_str) == Some("record")
 }
 
+fn is_ota_upload_command(args: &[String]) -> bool {
+    let cleaned = strip_passthrough_flags(args);
+    cleaned.first().map(String::as_str) == Some("ota")
+        && cleaned.get(1).map(String::as_str) == Some("upload")
+}
+
 fn strip_passthrough_flags(args: &[String]) -> Vec<String> {
     args.iter()
         .filter(|arg| {
@@ -526,6 +539,132 @@ fn run_adc_record(
     )?;
     writeln!(stdout, "recorded adc websocket stream to {}", parsed.output)?;
     Ok(0)
+}
+
+fn run_ota_upload<TClient>(
+    client: &TClient,
+    args: &[String],
+    json_output: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8>
+where
+    TClient: BoardTransport,
+{
+    let cleaned = strip_passthrough_flags(args);
+    let usage = "usage: radxa-linkr-debuggerctl ota upload PATH";
+    if cleaned.len() != 3 {
+        if json_output {
+            write_json_error(stdout, "ota", "usage", usage)?;
+        } else {
+            writeln!(stderr, "{usage}")?;
+        }
+        return Ok(2);
+    }
+
+    let upload = match prepare_ota_upload(&cleaned[2]) {
+        Ok(upload) => upload,
+        Err(err) => {
+            if json_output {
+                write_json_error(stdout, "ota", "invalid_file", &err)?;
+            } else {
+                writeln!(stderr, "{err}")?;
+            }
+            return Ok(2);
+        }
+    };
+    let size = upload.size;
+    let sha256 = upload.sha256.clone();
+
+    let output = match client.upload_binary(upload) {
+        Ok(output) => output,
+        Err(err) => {
+            if json_output {
+                write_json_error(stdout, "ota", "transport_error", &err.to_string())?;
+            } else {
+                writeln!(stderr, "{err}")?;
+            }
+            return Ok(1);
+        }
+    };
+
+    match parse_envelope(&output, true) {
+        Ok(envelope) => {
+            if json_output {
+                writeln!(stdout, "{}", output.trim())?;
+            } else if envelope.ok == Some(false) {
+                if let Some(error) = envelope.error {
+                    writeln!(stderr, "{}: {}", error.code, error.message)?;
+                } else {
+                    writeln!(stderr, "ota upload failed")?;
+                }
+            } else {
+                writeln!(stdout, "ota upload ok: {size} bytes sha256={sha256}")?;
+            }
+            Ok(if envelope.ok == Some(false) { 1 } else { 0 })
+        }
+        Err(err) => {
+            if json_output {
+                write_json_error(stdout, "ota", "invalid_json", &err.to_string())?;
+            } else {
+                writeln!(stderr, "{err}")?;
+            }
+            Ok(1)
+        }
+    }
+}
+
+fn prepare_ota_upload(path: &str) -> Result<BoardBinaryUpload, String> {
+    let path_ref = Path::new(path);
+    let metadata = std::fs::metadata(path_ref)
+        .map_err(|err| format!("cannot access OTA image {path:?}: {err}"))?;
+    if !metadata.is_file() {
+        return Err(format!("OTA image {path:?} is not a regular file"));
+    }
+    let size = metadata.len();
+    if size == 0 {
+        return Err(format!("OTA image {path:?} is empty"));
+    }
+
+    let sha256 = sha256_file(path_ref)?;
+    let file =
+        File::open(path_ref).map_err(|err| format!("cannot open OTA image {path:?}: {err}"))?;
+    Ok(BoardBinaryUpload {
+        path: "/api/v1/ota/upload".to_string(),
+        file,
+        size,
+        sha256,
+    })
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let mut file = File::open(path)
+        .map_err(|err| format!("cannot open OTA image {}: {err}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buffer)
+            .map_err(|err| format!("cannot read OTA image {}: {err}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(hex_lower(&hasher.finalize()))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -614,6 +753,7 @@ fn request_from_args(args: &[String]) -> Result<BoardRequest, String> {
         "power" => power_request(&cleaned),
         "switch" => switch_request(&cleaned),
         "adc" => adc_request(&cleaned),
+        "ota" => ota_request(&cleaned),
         "gpio" => gpio_request(&cleaned),
         "watchdog" => watchdog_request(&cleaned),
         "bootloader" => {
@@ -930,6 +1070,36 @@ fn watchdog_request(args: &[String]) -> Result<BoardRequest, String> {
     }
 }
 
+fn ota_request(args: &[String]) -> Result<BoardRequest, String> {
+    if args.len() < 2 {
+        return Err(
+            "usage: radxa-linkr-debuggerctl ota status|upload|test|confirm ...".to_string(),
+        );
+    }
+    match args[1].as_str() {
+        "status" => {
+            if args.len() != 2 {
+                return Err("usage: radxa-linkr-debuggerctl ota status".to_string());
+            }
+            Ok(get_request("/api/v1/ota"))
+        }
+        "upload" => Err("usage: radxa-linkr-debuggerctl ota upload PATH".to_string()),
+        "test" => {
+            if args.len() != 2 {
+                return Err("usage: radxa-linkr-debuggerctl ota test".to_string());
+            }
+            Ok(post_request("/api/v1/ota/test"))
+        }
+        "confirm" => {
+            if args.len() != 2 {
+                return Err("usage: radxa-linkr-debuggerctl ota confirm".to_string());
+            }
+            Ok(post_request("/api/v1/ota/confirm"))
+        }
+        other => Err(format!("unsupported ota action {:?}", other)),
+    }
+}
+
 fn get_request(path: impl Into<String>) -> BoardRequest {
     BoardRequest {
         method: Method::GET,
@@ -1045,6 +1215,11 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
         writer,
         "  radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 1000 --rate-hz 250"
     )?;
+    writeln!(writer, "  radxa-linkr-debuggerctl ota status")?;
+    writeln!(
+        writer,
+        "  radxa-linkr-debuggerctl ota upload /tmp/firmware.bin"
+    )?;
     writeln!(writer, "  radxa-linkr-debuggerctl watchdog status\n")?;
     writeln!(writer, "      --url <URL>")?;
     writeln!(writer, "      --addr <ADDR>")?;
@@ -1064,13 +1239,25 @@ mod tests {
     use clap::Parser;
     use serde_json::Value;
     use std::cell::RefCell;
+    use std::io::Read;
 
     #[derive(Default)]
     struct FakeClient {
         requests: RefCell<Vec<BoardRequest>>,
+        uploads: RefCell<Vec<FakeUpload>>,
         response: String,
+        upload_response: String,
         err: Option<String>,
+        upload_err: Option<String>,
         base_url: String,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct FakeUpload {
+        path: String,
+        size: u64,
+        sha256: String,
+        body: Vec<u8>,
     }
 
     impl BoardTransport for FakeClient {
@@ -1080,6 +1267,21 @@ mod tests {
                 return Err(anyhow::anyhow!(err.clone()));
             }
             Ok(self.response.clone())
+        }
+
+        fn upload_binary(&self, mut request: BoardBinaryUpload) -> Result<String> {
+            let mut body = Vec::new();
+            request.file.read_to_end(&mut body)?;
+            self.uploads.borrow_mut().push(FakeUpload {
+                path: request.path,
+                size: request.size,
+                sha256: request.sha256,
+                body,
+            });
+            if let Some(err) = &self.upload_err {
+                return Err(anyhow::anyhow!(err.clone()));
+            }
+            Ok(self.upload_response.clone())
         }
 
         fn base_url(&self) -> &str {
@@ -1554,6 +1756,174 @@ mod tests {
     }
 
     #[test]
+    fn run_ota_standard_commands_map_to_frozen_endpoints() {
+        let tests = [
+            (vec!["cmd", "ota", "status"], Method::GET, "/api/v1/ota"),
+            (vec!["cmd", "ota", "test"], Method::POST, "/api/v1/ota/test"),
+            (
+                vec!["cmd", "ota", "confirm"],
+                Method::POST,
+                "/api/v1/ota/confirm",
+            ),
+        ];
+
+        for (args, method, path) in tests {
+            let cli = Cli::parse_from(args.clone());
+            let client = FakeClient {
+                response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ota"}"#
+                    .to_string(),
+                ..Default::default()
+            };
+            let tui = FakeTuiRunner::new(0);
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+
+            let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+            assert_eq!(code, 0, "args={args:?}");
+            let requests = client.requests.borrow();
+            assert_eq!(requests.len(), 1, "args={args:?}");
+            assert_eq!(requests[0].method, method, "args={args:?}");
+            assert_eq!(requests[0].path, path, "args={args:?}");
+            assert!(client.uploads.borrow().is_empty(), "args={args:?}");
+        }
+    }
+
+    #[test]
+    fn run_ota_upload_streams_file_with_size_and_sha256() {
+        let path = temp_file_path("ota-upload");
+        std::fs::write(&path, b"abc123").unwrap();
+        let cli = Cli::parse_from(["cmd", "ota", "upload", path.to_str().unwrap()]);
+        let client = FakeClient {
+            upload_response:
+                r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ota","action":"upload"}"#
+                    .to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(code, 0);
+        assert!(client.requests.borrow().is_empty());
+        let uploads = client.uploads.borrow();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0].path, "/api/v1/ota/upload");
+        assert_eq!(uploads[0].size, 6);
+        assert_eq!(uploads[0].body, b"abc123");
+        assert_eq!(
+            uploads[0].sha256,
+            "6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"
+        );
+        assert_eq!(
+            String::from_utf8(stdout).unwrap().trim(),
+            "ota upload ok: 6 bytes sha256=6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"
+        );
+    }
+
+    #[test]
+    fn run_json_ota_upload_returns_board_response() {
+        let path = temp_file_path("ota-upload-json");
+        std::fs::write(&path, b"abc123").unwrap();
+        let cli = Cli::parse_from(["cmd", "--json", "ota", "upload", path.to_str().unwrap()]);
+        let response =
+            r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ota","action":"upload"}"#;
+        let client = FakeClient {
+            upload_response: response.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(code, 0);
+        assert_eq!(String::from_utf8(stdout).unwrap().trim(), response);
+    }
+
+    #[test]
+    fn run_json_ota_upload_preserves_board_error_envelope() {
+        let path = temp_file_path("ota-json-board-error");
+        std::fs::write(&path, b"abc123").unwrap();
+        let cli = Cli::parse_from(["cmd", "--json", "ota", "upload", path.to_str().unwrap()]);
+        let response = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"ota","error":{"code":"image_too_large","message":"OTA upload failed validation"}}"#;
+        let client = FakeClient {
+            upload_response: response.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(code, 1);
+        assert_eq!(String::from_utf8(stdout).unwrap().trim(), response);
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn run_ota_upload_rejects_missing_and_empty_files_before_board_access() {
+        let missing = temp_file_path("ota-missing");
+        let empty = temp_file_path("ota-empty");
+        std::fs::write(&empty, b"").unwrap();
+
+        for path in [&missing, &empty] {
+            let cli = Cli::parse_from(["cmd", "ota", "upload", path.to_str().unwrap()]);
+            let client = FakeClient::default();
+            let tui = FakeTuiRunner::new(0);
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+
+            let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+            assert_eq!(code, 2);
+            assert!(client.requests.borrow().is_empty());
+            assert!(client.uploads.borrow().is_empty());
+            assert!(!String::from_utf8(stderr).unwrap().trim().is_empty());
+        }
+        let _ = std::fs::remove_file(&empty);
+    }
+
+    #[test]
+    fn run_json_ota_upload_reports_structured_local_and_transport_errors() {
+        let missing = temp_file_path("ota-json-missing");
+        let cli = Cli::parse_from(["cmd", "--json", "ota", "upload", missing.to_str().unwrap()]);
+        let client = FakeClient::default();
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 2);
+        let got: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(got["command"], "ota");
+        assert_eq!(got["error"]["code"], "invalid_file");
+
+        let path = temp_file_path("ota-json-transport");
+        std::fs::write(&path, b"abc123").unwrap();
+        let cli = Cli::parse_from(["cmd", "--json", "ota", "upload", path.to_str().unwrap()]);
+        let client = FakeClient {
+            upload_err: Some("upload failed".to_string()),
+            ..Default::default()
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(code, 1);
+        let got: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(got["command"], "ota");
+        assert_eq!(got["error"]["code"], "transport_error");
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
     fn run_watchdog_feed_is_rejected_locally() {
         let cli = Cli::parse_from(["cmd", "watchdog", "feed"]);
         let client = FakeClient {
@@ -1705,16 +2075,10 @@ mod tests {
 
     #[test]
     fn doctor_json_reports_http_status() {
-        let cli = Cli::parse_from([
-            "cmd",
-            "--json",
-            "--url",
-            "http://172.29.203.1:8080",
-            "doctor",
-        ]);
+        let cli = Cli::parse_from(["cmd", "--json", "--url", "http://172.29.203.1", "doctor"]);
         let client = FakeClient {
             response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","project":"radxa-linkr-debugger"}"#.to_string(),
-            base_url: "http://172.29.203.1:8080".to_string(),
+            base_url: "http://172.29.203.1".to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -1725,7 +2089,7 @@ mod tests {
         assert_eq!(code, 0);
         let got: Value = serde_json::from_slice(&stdout).unwrap();
         assert_eq!(got["ok"], true);
-        assert_eq!(got["base_url"], "http://172.29.203.1:8080");
+        assert_eq!(got["base_url"], "http://172.29.203.1");
         assert_eq!(got["probe_ok"], true);
     }
 
@@ -1812,5 +2176,14 @@ mod tests {
         let got: Value = serde_json::from_slice(&stdout).unwrap();
         assert_eq!(got["board_monitoring"]["heap"]["allocated_bytes"], 2048);
         assert!(got["board_monitoring"].get("memory").is_none());
+    }
+
+    fn temp_file_path(name: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "radxa-linkr-debugger-app-test-{name}-{}",
+            std::process::id(),
+        ));
+        path
     }
 }

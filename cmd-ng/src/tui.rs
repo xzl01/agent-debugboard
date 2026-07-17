@@ -1083,12 +1083,12 @@ mod tests {
     #[test]
     fn apply_status_snapshot_updates_gpio_and_power_state() {
         let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
-        model.gpio_names = vec!["GP13".to_string()];
+        model.gpio_names = vec!["GP10".to_string()];
         model
             .gpio_notes
-            .insert("GP13".to_string(), "J17_PIN1".to_string());
-        model.gpio_levels.insert("GP13".to_string(), true);
-        model.gpio_is_input.insert("GP13".to_string(), false);
+            .insert("GP10".to_string(), "J16_PIN1".to_string());
+        model.gpio_levels.insert("GP10".to_string(), true);
+        model.gpio_is_input.insert("GP10".to_string(), false);
         model.apply_status_snapshot(WsStatusSnapshot {
             power_outputs: vec![
                 crate::ws_client::TuiStatusPowerOutput {
@@ -1103,11 +1103,11 @@ mod tests {
                 },
             ],
             gpios: vec![TuiStatusGpio {
-                name: "GP14".to_string(),
-                pin: 14,
+                name: "GP11".to_string(),
+                pin: 11,
                 value: Some(0),
                 direction: "output".to_string(),
-                note: "J17_PIN3".to_string(),
+                note: "J16_PIN2".to_string(),
             }],
             board_monitoring: BoardMonitoring::default(),
             ..Default::default()
@@ -1116,10 +1116,10 @@ mod tests {
         // Snapshot becomes authoritative under REST polling.
         assert_eq!(model.power_states.get("5v_out"), Some(&true));
         assert_eq!(model.power_states.get("5v_ws"), None);
-        assert_eq!(model.gpio_levels.get("GP14"), Some(&false));
-        assert_eq!(model.gpio_is_input.get("GP14"), Some(&false));
-        assert_eq!(model.gpio_notes.get("GP14"), Some(&"J17_PIN3".to_string()));
-        assert_eq!(model.gpio_levels.get("GP13"), None);
+        assert_eq!(model.gpio_levels.get("GP11"), Some(&false));
+        assert_eq!(model.gpio_is_input.get("GP11"), Some(&false));
+        assert_eq!(model.gpio_notes.get("GP11"), Some(&"J16_PIN2".to_string()));
+        assert_eq!(model.gpio_levels.get("GP10"), None);
     }
 
     #[test]
@@ -1351,12 +1351,12 @@ mod tests {
     #[test]
     fn render_body_shows_unified_control_grid_and_hides_redundant_channel_lines() {
         let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
-        model.gpio_names = vec!["GP13".to_string()];
+        model.gpio_names = vec!["GP10".to_string()];
         model
             .gpio_notes
-            .insert("GP13".to_string(), "J17_PIN1".to_string());
-        model.gpio_levels.insert("GP13".to_string(), true);
-        model.gpio_is_input.insert("GP13".to_string(), false);
+            .insert("GP10".to_string(), "J16_PIN1".to_string());
+        model.gpio_levels.insert("GP10".to_string(), true);
+        model.gpio_is_input.insert("GP10".to_string(), false);
         let mut lines = vec![
             Line::from("Controls"),
             Line::from("  ↑/↓/←/→ select item   Enter/Space toggle   i selected GPIO to input   g jump to first GPIO   t target route   u usb-reader route"),
@@ -1384,7 +1384,7 @@ mod tests {
         assert!(rendered.contains("Power"));
         assert!(rendered.contains("Switch"));
         assert!(rendered.contains("GPIO"));
-        assert!(rendered.contains("gpio GP13 [J17_PIN1] out=1"));
+        assert!(rendered.contains("gpio GP10 [J16_PIN1] out=1"));
         assert!(rendered.contains("power 12v_out [off]"));
         assert!(rendered.contains("switch sd [target]"));
         assert!(rendered.contains("switch usb [pc]"));
