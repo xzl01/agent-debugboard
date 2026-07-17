@@ -1,0 +1,22 @@
+[package]
+name = "radxa-logic-decoder"
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-3.0-or-later"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+wasm = ["dep:wasm-bindgen"]
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+wasm-bindgen = { version = "0.2.121", optional = true }
+
+[dev-dependencies]
+serde_json = "1.0.150"

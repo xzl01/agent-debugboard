@@ -27,7 +27,7 @@ import { useI18n } from "@/lib/i18n";
 
 const CH347_VID = 0x1a86;
 const CHANNELS: SerialChannelId[] = ["uart0", "uart1"];
-const BOARD_HTTP_ORIGIN = "http://172.29.203.1:8080";
+const BOARD_HTTP_ORIGIN = "http://172.29.203.1";
 const CHROMIUM_FLAG_URL = "chrome://flags/#unsafely-treat-insecure-origin-as-secure";
 const FOCUSABLE_SELECTOR = [
   "button:not([disabled])",
@@ -52,6 +52,7 @@ const EMPTY_STATUS: SerialChannelStatus = {
   portInfo: "",
   rxBytes: 0,
   txBytes: 0,
+  automationActive: false,
 };
 
 export type { SerialChannelId } from "./SerialTerminalPane";
@@ -66,6 +67,8 @@ export interface SerialAutomationHandle {
     listener: (text: string, receivedAtMs: number) => void,
     channel?: SerialChannelId
   ) => () => void;
+  setAutomationActive: (active: boolean, channel?: SerialChannelId) => void;
+  write: (data: string, channel?: SerialChannelId) => Promise<void>;
 }
 
 export const SerialCard = forwardRef<
@@ -171,6 +174,10 @@ export const SerialCard = forwardRef<
         channelHandle(channel)?.setAutomationActive(active),
       subscribe: (listener, channel = activeChannelRef.current) =>
         channelHandle(channel)?.subscribe(listener) ?? (() => {}),
+      setAutomationActive: (active: boolean, channel = activeChannelRef.current) =>
+        channelHandle(channel)?.setAutomationActive(active),
+      write: (data: string, channel = activeChannelRef.current) =>
+        channelHandle(channel)?.write(data) ?? Promise.reject(new Error("No channel")),
     }),
     []
   );

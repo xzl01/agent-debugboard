@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -53,11 +53,14 @@ export function Card({
 
 type ButtonVariant = "default" | "primary" | "danger" | "ghost";
 
-export function Button({
+export const Button = forwardRef<
+  HTMLButtonElement,
+  ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant }
+>(function Button({
   variant = "default",
   className,
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant }) {
+}, ref) {
   const variants: Record<ButtonVariant, string> = {
     default:
       "bg-panel2 text-ink hover:bg-line/50 border border-line/70 hover:border-line",
@@ -70,6 +73,7 @@ export function Button({
   };
   return (
     <button
+      ref={ref}
       className={cn(
         "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100",
         variants[variant],
@@ -78,7 +82,7 @@ export function Button({
       {...props}
     />
   );
-}
+});
 
 export function Toggle({
   checked,
