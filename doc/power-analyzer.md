@@ -9,8 +9,7 @@ accepting explicit aliases under the `radxa-linkr-debugger.v1` schema.
 
 ## Capture capacity
 
-- G3 / RP2350: 2048 samples
-- G2 / RP2040: 512 samples
+- RP2350: 2048 samples
 
 `pre_samples + post_samples + 1` must not exceed the board capacity. Capture
 storage is a firmware-owned global ring buffer because only one hardware ADC

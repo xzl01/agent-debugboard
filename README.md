@@ -2,7 +2,7 @@
 
 [中文](README.zh-CN.md)
 
-RP2040 / RP2350 firmware for **Radxa Linkr Debugger**, a USB-controlled hardware
+RP2350 firmware for **Radxa Linkr Debugger**, a USB-controlled hardware
 bridge that lets a PC-side Agent/AI operate target-board power, boot-mode, TF/SD
 routing, current-monitor ADC channels, and a small safe GPIO surface.
 
@@ -30,17 +30,20 @@ speaks the board HTTP API over USB NCM.
 | --- | --- |
 | USB control | Composite USB device: NCM HTTP/WS control plane + CDC ACM fallback console |
 | Host automation | Rust `cmd-ng` CLI/TUI with JSON output and `doctor` diagnostics |
-| Embedded Web UI | Gzip-compressed dashboard served directly from `http://172.29.203.1:8080/` |
+| Embedded Web UI | Gzip-compressed dashboard served directly from `http://172.29.203.1/` |
 | Live telemetry | Bidirectional WebSocket stream on a live-session URL under `/api/v1/ws/<slot>` |
 | Triggered power capture | Device-timestamped current capture with pre/post ring buffer, manual/current/GPIO/power-on triggers, and CSV/NDJSON export |
+| Logic analyzer | RP2350 PIO2+DMA high-speed single-shot capture; 1-125MHz requested rates; 512-sample bursts; safe pins GP7-GP20/GP29; none/rising/falling/either PIO triggers; pre-trigger sampling (edge triggers, ≤25 MHz); continuous streaming mode (1-25 MHz) with live-session `logic-chunk` WebSocket delivery and a rolling in-browser live waveform; CSV/PulseView (.sr) export; actual rate and period in response metadata |
 | Power outputs | `12v_out`, `5v_out`, `20v_out` |
 | ADC monitor | Current monitor reads for `5v_out`, `12v_out`, `20v_out` |
 | Board self-monitoring | `/api/v1/status` and status WebSocket snapshots report board CPU/runtime/heap/memory/temperature availability and values when Zephyr exposes reliable sources; memory reports additive `current_pressure` and `peak_pressure` objects using max-not-sum semantics across system heap, network packet slabs, and data buffer pools, with the legacy root `pressure_pct_x100` preserving Phase 1 max(heap, stack) backward compatibility; the watchdog supervisor also prints periodic heap diagnostics for short-reset debugging |
 | TF/SD routing | Switch route between `target` and `usb-reader` |
-| VIN control (G3 only) | Switch route between `1.8v` and `3.3v`; firmware uses a Device Tree VIO regulator |
-| GPIO | G2: `GP4`, `GP7`, `GP8`, `GP13`-`GP24`; G3: `GP7`, `GP8`, `GP9`, `GP10`-`GP20`, `GP29` |
+| VIN control | Switch route between `1.8v` and `3.3v`; firmware uses a Device Tree VIO regulator |
+| GPIO | `GP7`, `GP8`, `GP9`, `GP10`-`GP20`, `GP29` |
+| Captive portal discovery | DHCPv4 option 114, wildcard A, AAAA NOERROR/NODATA on UDP 53, and HTTP port 80 listener maximize OS auto-open probability; port 80/DNS are compatibility helpers; auto-open is best-effort, not guaranteed |
 | Autonomous watchdog recovery | Firmware-supervised watchdog resets into ROM BOOTSEL when core services stop reporting healthy liveness |
-| Firmware update | USB command to reboot RP2040/RP2350 into BOOTSEL |
+| Firmware update | USB command to reboot RP2350 into BOOTSEL |
+| MCUboot OTA | Unsigned RP2350-only MCUboot OTA; SHA256 integrity check only; no signature, authentication, secure boot, or anti-rollback; test image auto-confirms after 16-second watchdog health gate; watchdog reset during unconfirmed test period allows MCUboot rollback instead of forcing ROM BOOTSEL |
 
 `5V_FIN` is intentionally treated as a separate input/source power input. It is
 not exposed as a controllable output.
@@ -180,17 +183,96 @@ back to `uptime_us` and then zero, and reports ring overruns as
 `metadata.dropped_samples` on the first affected row.
 
 Power-analyzer captures add a firmware ring buffer and device monotonic
-timestamps. G3 keeps 2048 samples and G2 keeps 512. The Web UI can arm manual,
+timestamps. The RP2350 keeps 2048 samples. The Web UI can arm manual,
 current-threshold, GPIO-edge, or power-on captures, overlay four runs, and
 export CSV or NDJSON. See [doc/power-analyzer.md](doc/power-analyzer.md).
 
+## Logic Analyzer
+
+The firmware logic analyzer uses RP2350 PIO2+DMA for high-speed single-shot
+capture. It is intended for short-burst diagnostics at PIO rates, not sustained
+streaming. HTTP configuration accepts up to 16 GPIO channels from the safe pin
+allowlist, a requested `sample_rate_hz` from 1,000,000 through 125,000,000
+(1-125MHz), and `post_samples` from 1 through 512. The capture is capped at 512
+samples.
+
+Safe GPIO pins are: `GP7` (`CON_MAS`), `GP8` (`CON_REST`), `GP9` (`CON_USER`),
+`GP10`-`GP20` (J16 header), and `GP29` (ADC3). No other pins are available for
+logic analyzer capture.
+
+Supported trigger modes are `none`, `rising`, `falling`, and `either`. PIO
+triggers wait for the selected edge before capture starts. Pre-trigger
+sampling is supported for edge triggers at ≤25 MHz: set `pre_samples > 0`
+with an edge trigger to capture samples before and after the trigger edge
+(capped at 512 total). `pre_samples > 0` with `trigger: "none"` or with
+`sample_rate_hz > 25000000` is rejected with HTTP 400 `invalid_config`.
+Repeated `POST /api/v1/logic-analyzer` while the analyzer is
+`armed` or `capturing` returns HTTP 409 with `error.code: "already_armed"`.
+Invalid JSON, invalid parameters, and unsupported configurations return HTTP 400
+with `error.code: "invalid_config"`; true internal arm failures remain HTTP 500
+with `error.code: "arm_failed"`.
+
+The arm response includes `requestedSampleRateHz`, `actualSampleRateHz`,
+`samplePeriodPs`, and `backend`. The capture response additionally includes
+`sampleCount`, `triggerIndex`, and a `config` object with the full capture
+configuration and samples. 50MHz and 125MHz are very short single-shot bursts;
+the firmware does not claim sustained streaming at those rates.
+
+The logic analyzer is available in the Web UI under the **Terminal workspace**,
+alongside the serial terminal. Captured samples can be decoded in the browser using
+the project-owned Rust/WASM logic decoder: the stable decoder URLs are
+`/assets/decoder/logic-decoder.js` and `/assets/decoder/logic-decoder_bg.wasm`,
+served with `application/wasm` MIME for the WASM asset and gzip-compressed.
+The decoder supports UART, I2C, and SPI protocols only; it is not a
+libsigrokdecode Python plugin compatibility layer. For PulseView compatibility,
+export captures in .sr format and open them directly in PulseView with the
+configured sample rate. See [doc/logic-analyzer.md](doc/logic-analyzer.md).
+
+The canonical firmware build at the first integrated measurement used 605476 of
+847832 available flash bytes (71.41%); no A/B repartition was needed.
+Actual usage varies with configuration and build options.
+
 ## Build Firmware
 
-Firmware builds include the production Web UI. Install Node.js 22 and npm in
-addition to the Zephyr prerequisites below; CMake runs the locked Web build and
-embeds its gzip-compressed output automatically.
+Firmware builds include the production Web UI and board-hosted protocol decoder.
+CMake runs the locked Web/WASM build and embeds its gzip-compressed output
+automatically. The following tools are required:
 
-Create the Python environment and fetch Zephyr:
+| Tool | Version | Purpose |
+|---|---|---|
+| cmake, ninja, dtc, gperf | — | Zephyr build system |
+| python3 + west | ≥1.5 | Zephyr meta-tool |
+| python3 intelhex, click, cbor2 | — | MCUboot image tools |
+| nodejs 22 + npm | 22.x | Web UI build |
+| rustc + cargo | stable | Rust CLI + WASM decoder |
+| wasm-bindgen-cli | 0.2.121 | WASM decoder glue |
+| Zephyr SDK | 1.0.1 | ARM cross-compiler |
+
+### Nix (recommended)
+
+The repo provides a `shell.nix` that bundles all dependencies. Set
+`ZEPHYR_SDK_INSTALL_DIR` to your local Zephyr SDK path before entering:
+
+```sh
+export ZEPHYR_SDK_INSTALL_DIR=/path/to/zephyr-sdk-1.0.1
+nix-shell
+```
+
+Inside the shell, initialize the west workspace once:
+
+```sh
+scripts/setup-zephyr.sh
+```
+
+Then build:
+
+```sh
+west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+```
+
+### Manual (without Nix)
+
+Create a Python environment and fetch Zephyr:
 
 ```sh
 python3 -m venv .venv
@@ -201,47 +283,51 @@ west init -l .
 west update
 west zephyr-export
 pip install -r zephyr/scripts/requirements.txt
+pip install -r bootloader/mcuboot/scripts/requirements.txt
 ```
 
 Install the Zephyr SDK if it is not already installed. The current local build
 has been verified with Zephyr SDK `1.0.1`.
 
-Build the RP2040 firmware (G2 revision boards):
+Build:
 
 ```sh
 source .venv/bin/activate
-west build -p always -b rpi_pico/rp2040 apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
 ```
 
-Build the RP2350 firmware (G3 revision boards):
-
-```sh
-source .venv/bin/activate
-west build -p always -b rpi_pico2/rp2350a/m33 apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
-```
-
-The generated UF2 is:
+For RP2350 sysbuild, the application artifacts are under:
 
 ```text
-build/radxa_linkr_debugger/zephyr/zephyr.uf2
+build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.bin
+build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.hex
 ```
 
+The `zephyr.signed.bin` filename is Zephyr/MCUboot's format name; with this
+project configuration it is an unsigned MCUboot-format application binary for
+OTA, not a cryptographically signed image.
+
 For this repository, keep the firmware build/flash path fixed: always build
-into `build/radxa_linkr_debugger/` and always flash
-`build/radxa_linkr_debugger/zephyr/zephyr.uf2`. Do not switch to alternate build
-directories or stale UF2 copies from temporary mount points.
+into `build/radxa_linkr_debugger/`. For RP2350 initial install or recovery, use
+the combined MCUboot plus application UF2 published as
+`radxa-linkr-debugger-rp2350.uf2`. Do not switch to alternate build directories
+or stale UF2 copies from temporary mount points.
 
 ## Flashing
 
+Firmware can be updated in two ways depending on the current state of the board.
+
+### ROM BOOTSEL flashing (initial install or recovery)
+
 If the board is already running this firmware, ask it to enter BOOTSEL and then
-load the new UF2:
+load the new combined RP2350 UF2:
 
 ```sh
 radxa-linkr-debuggerctl bootloader
-picotool load -v -x build/radxa_linkr_debugger/zephyr/zephyr.uf2
+picotool load -v -x radxa-linkr-debugger-rp2350.uf2
 ```
 
-After firmware changes, treat this BOOTSEL flow and the RP2040/RP2350 CDC ACM shell
+After firmware changes, treat this BOOTSEL flow and the CDC ACM shell
 fallback below as required validation paths; do not conclude the change until
 you have verified the serial fallback path still works.
 
@@ -255,7 +341,7 @@ linkr-debugger:~$ bootloader
 If the board is already mounted as `RPI-RP2`, only run:
 
 ```sh
-picotool load -v -x build/radxa_linkr_debugger/zephyr/zephyr.uf2
+picotool load -v -x radxa-linkr-debugger-rp2350.uf2
 ```
 
 On Linux you can also flash without root by using `udisksctl` to mount the
@@ -263,17 +349,41 @@ On Linux you can also flash without root by using `udisksctl` to mount the
 
 ```sh
 RPI_RP2=$(udisksctl mount -b /dev/sdX1 | awk -F" at " '{print $2}' | tr -d '[:space:]')
-cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 "$RPI_RP2/"
+cp radxa-linkr-debugger-rp2350.uf2 "$RPI_RP2/"
 ```
 
 Replace `/dev/sdX1` with the actual BOOTSEL block device path on your
 system (use `lsblk -o NAME,SIZE,VENDOR,MOUNTPOINT` and look for the `RPI` vendor
 entry). If you use drag-and-drop flashing through the `RPI-RP2` volume instead of
-`picotool`, copy this same canonical artifact:
+`picotool`, copy this same initial-install/recovery artifact:
 
 ```text
-build/radxa_linkr_debugger/zephyr/zephyr.uf2
+radxa-linkr-debugger-rp2350.uf2
 ```
+
+### OTA flashing (after initial MCUboot install)
+
+After the MCUboot-capable firmware is installed on RP2350, subsequent firmware
+updates can be delivered via OTA using a MCUboot-format application binary.
+Upload the firmware binary, trigger a test boot, and confirm:
+
+```sh
+radxa-linkr-debuggerctl ota upload /path/to/firmware.bin
+radxa-linkr-debuggerctl ota test
+# After verifying the test boot succeeded:
+radxa-linkr-debuggerctl ota confirm
+```
+
+Or, after a successful test boot, wait for the 16-second watchdog health gate
+to auto-confirm the image. If the test image is not confirmed and the watchdog
+resets, the retained marker drives MCUboot rollback rather than ROM BOOTSEL.
+
+Do not upload a `.uf2` or `.elf` file via OTA. OTA expects a MCUboot-format
+application binary. Use the release asset `radxa-linkr-debugger-rp2350-ota.bin`,
+which is copied from the sysbuild application output
+`build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.bin`.
+Despite the `signed.bin` build filename, this project config uses unsigned
+MCUboot format.
 
 ## GitHub Actions Artifacts
 
@@ -281,10 +391,8 @@ The `Build` workflow checks every push and pull request. Tagging `v*` triggers
 the `Release` workflow, which builds firmware, packages the host CLI, creates a
 GitHub Release, and uploads the fixed release assets.
 
-- `radxa-linkr-debugger-rp2040.uf2`: RP2040 firmware (G2) for drag-and-drop or `picotool`.
-- `radxa-linkr-debugger-rp2040.elf`: RP2040 ELF for debugging.
-- `radxa-linkr-debugger-rp2040.map`: RP2040 linker map.
-- `radxa-linkr-debugger-rp2350.uf2`: RP2350 firmware (G3) for drag-and-drop or `picotool`.
+- `radxa-linkr-debugger-rp2350.uf2`: combined RP2350 MCUboot plus application firmware for initial install, recovery, drag-and-drop, or `picotool`.
+- `radxa-linkr-debugger-rp2350-ota.bin`: RP2350 OTA application payload copied from sysbuild `zephyr.signed.bin`; unsigned MCUboot format under this project config.
 - `radxa-linkr-debugger-rp2350.elf`: RP2350 ELF for debugging.
 - `radxa-linkr-debugger-rp2350.map`: RP2350 linker map.
 - `radxa-linkr-debuggerctl-rust_windows_amd64.zip`: primary Rust CLI/TUI for Windows x64.
@@ -331,7 +439,7 @@ raw numeric pins like `4`, or exact notes such as `CON_MAS`.
 Status JSON also includes `board_monitoring`. Each category (`temperature`,
 `heap`, `memory`, `runtime`, and `cpu`) carries `available` plus a machine-readable
 `reason`. Firmware only reports values from Zephyr devices or runtime-stat APIs
-that are actually enabled; on the default RP2040/RP2350 configuration this includes the
+that are actually enabled; on the default RP2350 configuration this includes the
 internal CPU die temperature sensor, system heap runtime statistics, real board
 uptime (`uptime_ms` / `uptime_seconds`), CPU utilization deltas, and the Phase 2
 additive memory pressure objects. The first CPU sample can still report `insufficient_runtime_window`
@@ -417,7 +525,7 @@ radxa-linkr-debuggerctl switch route sd usb-reader
 radxa-linkr-debuggerctl switch route usb target --confirm
 ```
 
-VIN control (G3 only, RP2040 omits this switch):
+VIN control:
 
 ```sh
 radxa-linkr-debuggerctl switch get vin
@@ -442,8 +550,7 @@ Use safe GPIOs:
 radxa-linkr-debuggerctl gpio list
 radxa-linkr-debuggerctl gpio set GP13 1
 radxa-linkr-debuggerctl gpio set CON_MAS 1
-radxa-linkr-debuggerctl gpio input J17_PIN1  # G2
-radxa-linkr-debuggerctl gpio input J16_PIN1  # G3
+radxa-linkr-debuggerctl gpio input J16_PIN1
 radxa-linkr-debuggerctl gpio input GP13
 ```
 
@@ -467,16 +574,74 @@ log-only debug output and do not add watchdog participants or change BOOTSEL
 marker/reset behavior. The watchdog trace line is also log-only and does not
 change feed policy.
 
-On G3 (RP2350A) boards, the blue status LED on GPIO25 acts as a watchdog
+On RP2350A boards, the blue status LED on GPIO25 acts as a watchdog
 heartbeat. It blinks approximately once per second and advances only after a
 successful hardware watchdog feed; skipped or failed feeds reset it to the
-inactive state while firmware owns the GPIO. G2 (RP2040) has no heartbeat LED.
+inactive state while firmware owns the GPIO.
+
+## MCUboot OTA Firmware Update
+
+The firmware supports unsigned MCUboot over-the-air firmware update.
+
+**Important security facts**: This OTA path provides no signature verification,
+no authentication, no secure boot, and no anti-rollback protection. Any host
+with USB NCM access to the board can submit a firmware image. SHA256 is used
+only to verify the integrity of the uploaded payload, not to authenticate the
+sender.
+
+### Initial installation
+
+Initial installation of the MCUboot-capable firmware requires ROM BOOTSEL
+flashing with a combined bootable artifact. After the first MCUboot install,
+subsequent updates can be delivered via OTA using MCUboot-format application
+binaries.
+
+### OTA workflow
+
+The OTA workflow has three steps:
+
+1. Upload the MCUboot-format application binary to the board.
+2. Request a test boot of the newly uploaded image.
+3. Confirm the image after verifying it boots correctly, or let the 16-second
+   watchdog health gate auto-confirm it.
+
+If the test image is not confirmed and a watchdog reset occurs, the dedicated
+retained marker allows MCUboot to perform a rollback to the previous confirmed
+image instead of forcing entry into ROM BOOTSEL. Explicit `bootloader` commands
+and ordinary non-OTA watchdog resets still enter ROM BOOTSEL normally.
+
+### CLI commands
+
+```sh
+radxa-linkr-debuggerctl ota status
+radxa-linkr-debuggerctl ota upload /path/to/firmware.bin
+radxa-linkr-debuggerctl ota test
+radxa-linkr-debuggerctl ota confirm
+```
+
+`ota status` reports the current OTA state (`idle`, `uploading`, `verified`,
+`pending_test`, `rebooting`, `failed`), flash sizes, and MCUboot swap type.
+`ota upload` sends a MCUboot-format `.bin` file; the CLI computes the SHA256
+and sends it along with the byte size as headers. `ota test` requests a
+test boot of the verified image; the board reboots after a short delay. If
+the watchdog reports healthy after the test boot, the image auto-confirms
+after a 16-second gate. `ota confirm` manually confirms the running image
+immediately, clearing the auto-confirm timer.
+
+Agent or automation code should prefer JSON output:
+
+```sh
+radxa-linkr-debuggerctl --json ota status
+radxa-linkr-debuggerctl --json ota upload /path/to/firmware.bin
+radxa-linkr-debuggerctl --json ota test
+radxa-linkr-debuggerctl --json ota confirm
+```
 
 ## OpenOCD / JTAG
 
 Radxa Linkr Debugger can be used together with OpenOCD by using the Linkr Debugger for
 target power and recovery control while the onboard CH347F path handles target
-JTAG/SWD. The CH347F is wired directly to the target debug connector; RP2040/RP2350
+JTAG/SWD. The CH347F is wired directly to the target debug connector; RP2350
 does not sit in that path and does not act as a CMSIS-DAP or JTAG probe.
 
 Install OpenOCD, then verify it:
@@ -508,7 +673,7 @@ See [doc/openocd/README.md](doc/openocd/README.md) for the full workflow.
 
 The firmware enumerates as a composite USB device. The released
 `radxa-linkr-debuggerctl` CLI talks to the board over HTTP on the USB NCM
-interface, with the default device URL `http://172.29.203.1:8080`. The board
+interface, with the default device URL `http://172.29.203.1`. The board
 runs a DHCPv4 server on the NCM link so the host can automatically obtain a
 compatible address; pass `radxa-linkr-debuggerctl --url ...` only if you
 intentionally override the default addressing in your environment.
@@ -533,23 +698,57 @@ solves the plug-and-play addressing problem across operating systems; mDNS is a
 possible future enhancement for friendlier naming, not a requirement for
 normal use.
 
+## Captive Portal Discovery
+
+The firmware implements a multi-path captive portal detection helper that
+maximizes the probability of an OS opening the board Web UI automatically when
+a host connects to the NCM link.
+
+**DHCP**: the DHCPv4 server running on the NCM interface advertises the router
+and DNS address as `172.29.203.1`. It also sends DHCP option 114 (Captive Portal
+URI) with the value `http://172.29.203.1/captive-portal/api`. This is a
+compatibility-oriented HTTP endpoint, not a trusted HTTPS signal.
+
+**DNS**: the firmware runs a lightweight DNS responder bound to the NCM interface
+on UDP port 53. For any incoming query, it returns a wildcard A record
+pointing to `172.29.203.1`. For AAAA queries it returns a NOERROR response with
+zero answers (NODATA). There is no recursion, forwarding, or caching; responses
+are served only for names queried against this NCM-local server. The DNS TTL is
+set to 30 seconds to allow host caches to expire relatively quickly.
+
+**HTTP port 80**: a single Zephyr HTTP service bound to the NCM-local
+`172.29.203.1` address on port 80 routes by URL path:
+`/`, `/assets/*`, `/api/v1/*`, `/api/v1/ws/*`, `/captive-portal/api`, and
+legacy detection probes. When a GET request arrives at `/captive-portal/api`,
+it responds with HTTP 200 and a JSON body carrying `Content-Type:
+application/captive+json`. The body contains
+`{"captive":true,"user-portal-url":"http://172.29.203.1/","venue-info-url":"http://172.29.203.1/"}`.
+For any other GET path not matching the routed paths, the server returns
+HTTP 302 with a `Location` header pointing to `http://172.29.203.1/`. Unknown API
+paths return JSON 404. Other HTTP methods receive HTTP 405.
+
+The pinned Zephyr HTTP/1 server handles `HEAD` for dynamic resources before the
+application callback and returns its default headers-only HTTP 200 response.
+Captive portal diagnostics and compatibility claims therefore use `GET`.
+
+**Auto-open probability**: most modern operating systems check for captive
+portals by performing a DNS lookup for a known detection name and then making
+an HTTP request to the returned address. The combination of DHCP option 114,
+wildcard DNS A records, and a port 80 listener that answers the expected
+`/captive-portal/api` path is designed to maximize the chance that the OS opens
+the board Web UI automatically. This is a best-effort mechanism, not a
+guarantee. Results vary by operating system version, network configuration,
+and whether the host has other active network interfaces; a host with a
+preferred default route over a different adapter may not trigger the detection
+sequence. Because the NCM lease advertises a default router and DNS server,
+hosts may also change route or DNS priority while the board is connected;
+multi-homed deployments should verify that their existing Internet path remains
+preferred. Users who need the Web UI can always open `http://172.29.203.1/`
+directly in a browser, use `curl`, or rely on the CLI/TUI.
+
 ## Hardware Mapping
 
-### G2 (RP2040) Revision
-
-| Function | Firmware name | Schematic signal | GPIO |
-|---|---|---|---|
-| 12 V output enable | `12v_out` | `GP02_12V_EN` | 2 |
-| 5 V output enable | `5v_out` | `GP05_5V_EN` | 5 |
-| 5 V WS enable | `5v_ws` | `GP09_5V_WS_EN` | 9 |
-| 20 V output enable | `20v_out` | `GP10_20V_EN` | 10 |
-| TF/SD route switch | `switch sd` | `GP06_TF_SW` | 6 |
-| USB mux switch | `switch usb` | `GP03_USB_MUX` | 3 |
-| 5 V current monitor | `adc read 5v_out` | `S_C_5V` | 26 (ADC0) |
-| 12 V current monitor | `adc read 12v_out` | `S_C_12V` | 27 (ADC1) |
-| 20 V current monitor | `adc read 20v_out` | `S_C_20V` | 28 (ADC2) |
-
-### G3 (RP2350A) Revision
+### RP2350A Revision
 
 | Function | Firmware name | Schematic signal | GPIO |
 |---|---|---|---|
@@ -573,21 +772,20 @@ normal use.
 | 12 V current monitor | `adc read 12v_out` | `S_C_12V` | 27 (ADC1) |
 | 20 V current monitor | `adc read 20v_out` | `S_C_20V` | 28 (ADC2) |
 
-G3 (RP2350A) GPIO25 is the blue status LED, active-low. It operates as a watchdog
+GPIO25 is the blue status LED, active-low. It operates as a watchdog
 heartbeat driven through Device Tree chosen properties rather than a Zephyr built-in
 heartbeat driver or `CONFIG_LED`. The LED blinks at approximately 1 Hz (full on/off
 cycle) and advances only after the hardware watchdog feed succeeds. Skipped or failed
-feeds reset the LED to the inactive state while firmware owns the GPIO. G2 (RP2040)
-has no heartbeat chosen in Device Tree and no firmware heartbeat LED.
+feeds reset the LED to the inactive state while firmware owns the GPIO.
 
 VIN defaults to 3.3V at boot. GPIO1 VDD_5V and its GPIO6 VDD_1V8 child rail are
-always on in the G3 Device Tree model. The selectable CH347 VIO level is modeled
+always on in the Device Tree model. The selectable CH347 VIO level is modeled
 as a standard `regulator-gpio` regulator with exact 1.8V and 3.3V states, and
 firmware selects it through the Zephyr regulator API. Confirm your target
 supports the selected voltage before applying it.
 
-The G3 current monitor channels use INA139 with a 10 mOhm shunt and 50 kOhm
-output load. (G2 uses 51 kOhm.) The MCU reports raw ADC diagnostics plus
+The current monitor channels use INA139 with a 10 mOhm shunt and 50 kOhm
+output load. The MCU reports raw ADC diagnostics plus
 standard sensor current values from Zephyr's `current-sense-amplifier`
 interface, and the host CLI now presents those values directly without any
 host-side calibration table or zero-point correction.
@@ -595,9 +793,11 @@ See the public
 [TI INA139 datasheet](https://www.ti.com/product/INA139) for the sensor
 transfer function.
 
-The current schematic copies are stored at:
-- G3 revision: [doc/radxa-linkr-debugger-schematic-x1.1.pdf](doc/radxa-linkr-debugger-schematic-x1.1.pdf)
-- G2 revision: [doc/radxa-linkr-debugger-schematic.pdf](doc/radxa-linkr-debugger-schematic.pdf)
+The current schematic copy is stored at:
+- [doc/radxa-linkr-debugger-schematic-x1.1.pdf](doc/radxa-linkr-debugger-schematic-x1.1.pdf)
+
+The older G2 (RP2040) schematic at `doc/radxa-linkr-debugger-schematic.pdf` is
+retained as archival reference only; G2 hardware is not supported by this firmware.
 
 ## Development
 

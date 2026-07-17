@@ -4,7 +4,7 @@ Radxa Linkr Debugger works with OpenOCD through the onboard CH347F path:
 
 ```text
 PC OpenOCD -> CH347F -> target JTAG/SWD
-PC radxa-linkr-debuggerctl -> RP2040/RP2350 -> target power / boot mode / ADC / SD / GPIO
+PC radxa-linkr-debuggerctl -> RP2350 -> target power / boot mode / ADC / SD / GPIO
 ```
 
 For this advanced workflow, use the released Rust `radxa-linkr-debuggerctl`
@@ -57,8 +57,8 @@ equivalent fallback is:
 ```sh
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"state":"on"}' \
-  http://172.29.203.1:8080/api/v1/power/5v_out
-curl -fsS http://172.29.203.1:8080/api/v1/power
+  http://172.29.203.1/api/v1/power/5v_out
+curl -fsS http://172.29.203.1/api/v1/power
 ```
 
 Start OpenOCD with the CH347F interface from your OpenOCD installation and the
