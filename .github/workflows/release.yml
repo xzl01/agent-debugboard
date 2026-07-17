@@ -124,6 +124,14 @@ jobs:
           cache: npm
           cache-dependency-path: app/web/package-lock.json
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
+
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
 
       - name: Set up Zephyr workspace
         uses: zephyrproject-rtos/action-zephyr-setup@v1
@@ -132,24 +140,28 @@ jobs:
           toolchains: arm-zephyr-eabi
           sdk-version: "1.0.1"
 
+      - name: Install MCUboot image tool dependencies
+        run: python3 -m pip install -r bootloader/mcuboot/scripts/requirements.txt
+
       - name: Run unit tests
         working-directory: app
         run: ./apps/radxa_linkr_debugger/tests/run_unit_tests.sh
 
-      - name: Build firmware
-        run: |
-          west build -p always -b rpi_pico/rp2040 app/apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
-          mkdir -p release-assets
-          cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 release-assets/radxa-linkr-debugger-rp2040.uf2
-          cp build/radxa_linkr_debugger/zephyr/zephyr.elf release-assets/radxa-linkr-debugger-rp2040.elf
-          cp build/radxa_linkr_debugger/zephyr/zephyr.map release-assets/radxa-linkr-debugger-rp2040.map
-
       - name: Build RP2350 firmware
         run: |
-          west build -p always -b rpi_pico2/rp2350a/m33 app/apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
-          cp build/radxa_linkr_debugger/zephyr/zephyr.uf2 release-assets/radxa-linkr-debugger-rp2350.uf2
-          cp build/radxa_linkr_debugger/zephyr/zephyr.elf release-assets/radxa-linkr-debugger-rp2350.elf
-          cp build/radxa_linkr_debugger/zephyr/zephyr.map release-assets/radxa-linkr-debugger-rp2350.map
+          mkdir -p release-assets
+          west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild app/apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+          python3 "$ZEPHYR_BASE/scripts/build/mergehex.py" \
+            -o build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-combined.hex \
+            build/radxa_linkr_debugger/mcuboot/zephyr/zephyr.hex \
+            build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.hex
+          python3 "$ZEPHYR_BASE/scripts/build/uf2conv.py" \
+            -c -f 0xe48bff57 \
+            -o release-assets/radxa-linkr-debugger-rp2350.uf2 \
+            build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-combined.hex
+          cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.bin release-assets/radxa-linkr-debugger-rp2350-ota.bin
+          cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.elf release-assets/radxa-linkr-debugger-rp2350.elf
+          cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.map release-assets/radxa-linkr-debugger-rp2350.map
 
       - name: Download Rust release archives
         uses: actions/download-artifact@v6
@@ -168,18 +180,16 @@ jobs:
         working-directory: app
         run: |
           mkdir -p dist/release
-          cp ../release-assets/radxa-linkr-debugger-rp2040.* dist/release/
           cp ../release-assets/radxa-linkr-debugger-rp2350.* dist/release/
+          cp ../release-assets/radxa-linkr-debugger-rp2350-ota.bin dist/release/
           cp ../rust-release-downloads/radxa-linkr-debuggerctl-rust_* \
             dist/release/
           cp dist/skill-bundle/skills-radxa-linkr-debugger.tar.gz dist/release/
           cd dist/release
           sha256sum \
-            radxa-linkr-debugger-rp2040.elf \
-            radxa-linkr-debugger-rp2040.map \
-            radxa-linkr-debugger-rp2040.uf2 \
             radxa-linkr-debugger-rp2350.elf \
             radxa-linkr-debugger-rp2350.map \
+            radxa-linkr-debugger-rp2350-ota.bin \
             radxa-linkr-debugger-rp2350.uf2 \
             radxa-linkr-debuggerctl-rust_* \
             skills-radxa-linkr-debugger.tar.gz > SHA256SUMS.txt
@@ -191,8 +201,7 @@ jobs:
           Radxa Linkr Debugger ${{ steps.release.outputs.tag }}
 
           Included assets:
-          - RP2040 firmware: UF2, ELF, and MAP
-          - RP2350 firmware: UF2, ELF, and MAP
+          - RP2350 firmware: combined initial/recovery UF2, OTA BIN, ELF, and MAP
           - Primary Rust host CLI/TUI archives: radxa-linkr-debuggerctl-rust_{os}_{arch}
           - Agent skill bundle: skills-radxa-linkr-debugger.tar.gz
           - SHA256SUMS.txt for release asset verification
