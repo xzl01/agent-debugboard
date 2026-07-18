@@ -33,7 +33,7 @@ speaks the board HTTP API over USB NCM.
 | Embedded Web UI | Gzip-compressed dashboard served directly from `http://172.29.203.1/` |
 | Live telemetry | Bidirectional WebSocket stream on a live-session URL under `/api/v1/ws/<slot>` |
 | Triggered power capture | Device-timestamped current capture with pre/post ring buffer, manual/current/GPIO/power-on triggers, and CSV/NDJSON export |
-| Logic analyzer | RP2350 PIO2+DMA high-speed single-shot capture; 1-125MHz requested rates; 512-sample bursts; safe pins GP7-GP20/GP29; none/rising/falling/either PIO triggers; pre-trigger sampling (edge triggers, ≤25 MHz); continuous streaming mode (1-25 MHz) with a rolling in-browser live waveform driven by SCPI-over-WebSocket scope frames (`ws://<board>/api/v1/scpi`); CSV/PulseView (.sr) export; **PulseView native** via Rigol DS1102D SCPI emulation (rigol-ds driver over `tcp-raw` on port 80, 15 digital channels + GP29 analog CH1, ≤25 MHz hardware pre-trigger, >25 MHz burst trigger, AUTO fallback); **deep capture** up to one million samples into the 2 MB SPI-flash storage partition (vendor SCPI `:LINKR:DEEP:*`, ≤25 kHz digital / ≤10 kHz analog, edge or level trigger with mid-window alignment, Web UI Deep button with .sr/CSV export); actual rate and period in response metadata |
+| Logic analyzer | RP2350 PIO2+DMA high-speed single-shot capture; 100 kHz-125 MHz requested rates; 512-sample bursts; safe pins GP7-GP20/GP29; none/rising/falling/either PIO triggers; pre-trigger sampling (edge triggers, ≤25 MHz); continuous streaming mode (1-25 MHz) with a rolling in-browser live waveform driven by SCPI-over-WebSocket scope frames (`ws://<board>/api/v1/scpi`); CSV/PulseView (.sr) export; **PulseView native** via Rigol DS1102D SCPI emulation (rigol-ds driver over `tcp-raw` on port 80, 14 digital channels + GP29 analog CH1, ≤25 MHz hardware pre-trigger, >25 MHz burst trigger, AUTO fallback); **deep capture** up to one million samples into the 2 MB SPI-flash storage partition (vendor SCPI `:LINKR:DEEP:*`, ≤25 kHz digital / ≤10 kHz analog, edge or level trigger with mid-window alignment, Web UI Deep button with .sr/CSV export); **BeagleLogic emulation** on TCP port 5555 for the unlimited continuous-acquisition view in PulseView (14 digital channels GP7-GP20, 8/16-bit samples, full rate to ~150 kHz 16-bit / 100 kHz 8-bit, ONE_SHOT host-side triggers); actual rate and period in response metadata |
 | Power outputs | `12v_out`, `5v_out`, `20v_out` |
 | ADC monitor | Current monitor reads for `5v_out`, `12v_out`, `20v_out` |
 | Board self-monitoring | `/api/v1/status` and status WebSocket snapshots report board CPU/runtime/heap/memory/temperature availability and values when Zephyr exposes reliable sources; memory reports additive `current_pressure` and `peak_pressure` objects using max-not-sum semantics across system heap, network packet slabs, and data buffer pools, with the legacy root `pressure_pct_x100` preserving Phase 1 max(heap, stack) backward compatibility; the watchdog supervisor also prints periodic heap diagnostics for short-reset debugging |
@@ -192,8 +192,8 @@ export CSV or NDJSON. See [doc/power-analyzer.md](doc/power-analyzer.md).
 The firmware logic analyzer uses RP2350 PIO2+DMA for high-speed single-shot
 capture. It is intended for short-burst diagnostics at PIO rates, not sustained
 streaming. HTTP configuration accepts up to 16 GPIO channels from the safe pin
-allowlist, a requested `sample_rate_hz` from 1,000,000 through 125,000,000
-(1-125MHz), and `post_samples` from 1 through 512. The capture is capped at 512
+allowlist, a requested `sample_rate_hz` from 100,000 through 125,000,000
+(100 kHz-125 MHz), and `post_samples` from 1 through 512. The capture is capped at 512
 samples.
 
 Safe GPIO pins are: `GP7` (`CON_MAS`), `GP8` (`CON_REST`), `GP9` (`CON_USER`),
@@ -229,7 +229,7 @@ export captures in .sr format and open them directly in PulseView with the
 configured sample rate, or connect PulseView / sigrok-cli directly to the
 board: the firmware emulates a Rigol DS1102D (rigol-ds driver) over
 `tcp-raw/172.29.203.1/80`, multiplexed with the web server on the same port.
-The emulation exposes 15 digital channels (D0-D14 → GP7-GP20/GP29) plus a
+The emulation exposes 14 digital channels (D0-D13 → GP7-GP20) plus a
 GP29 analog channel (CH1), real hardware pre-trigger at ≤25 MHz, burst
 trigger at >25 MHz, and AUTO fallback when no edge arrives. See
 [doc/logic-analyzer.md](doc/logic-analyzer.md).

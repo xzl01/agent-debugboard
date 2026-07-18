@@ -404,8 +404,8 @@ curl -fsS "$BOARD_URL/api/v1/adc/read?channel=20v_out"
 Use the firmware logic analyzer for RP2350 PIO2+DMA high-speed single-shot
 capture. It is not sustained streaming; 50MHz and 125MHz are very short bursts.
 HTTP capture is capped at 512 samples, supports up to 16 GPIO channels from the
-safe allowlist (GP7-GP9, GP10-GP20, GP29), sample rates from 1,000,000 through
-125,000,000 Hz (1-125MHz), and accepts edge trigger names `none`, `rising`,
+safe allowlist (GP7-GP9, GP10-GP20, GP29), sample rates from 100,000 through
+125,000,000 Hz (100 kHz-125 MHz), and accepts edge trigger names `none`, `rising`,
 `falling`, and `either`. Pre-trigger sampling is supported for edge triggers at
 ≤25 MHz: set `pre_samples > 0` with `rising`, `falling`, or `either` to capture
 samples before and after the trigger edge (capped at 512 total). The arm
@@ -426,7 +426,7 @@ PulseView / sigrok-cli can also connect directly with no client-side changes:
 the firmware emulates a Rigol DS1102D (rigol-ds driver) over raw TCP on port 80
 (shared with the web server via first-byte multiplexing). Use
 `sigrok-cli -d rigol-ds:conn=tcp-raw/<board-ip>/80 ...`; digital channels
-D0-D14 map to GP7-GP9/GP10-GP20/GP29 and CH1 is the GP29 analog input. Edge
+D0-D13 map to GP7-GP9/GP10-GP20 and CH1 is the GP29 analog input. Edge
 triggers use scope-style config keys (`--config triggersource=D3
 --config triggerslope=f`) with real hardware pre-trigger at ≤25 MHz, burst
 trigger at >25 MHz, and AUTO fallback when no edge arrives. Use `--frames`,
@@ -435,7 +435,10 @@ SPI-flash storage partition, ≤25 kHz digital / ≤10 kHz analog with edge or
 level trigger) use vendor SCPI commands `:LINKR:DEEP:START <rate> [seconds]`,
 `:LINKR:DEEP:STATUS?`, `:LINKR:DEEP:DATA? <off> <count>`, `:LINKR:DEEP:STOP`
 on the same channel; stock sigrok memory mode is not usable with the DS1102D
-identity (driver V2 samplerate limitation). Full semantics and limits:
+identity (driver V2 samplerate limitation). For the unlimited continuous
+view in PulseView use the BeagleLogic emulation on TCP port 5555
+(`-d beaglelogic:conn=tcp-raw/<board-ip>/5555`, 14 digital channels GP7-GP20,
+8/16-bit samples, full rate to ~150 kHz 16-bit). Full semantics and limits:
 `doc/logic-analyzer.md`.
 
  ```sh

@@ -29,7 +29,7 @@ USB CDC ACM 串口用于 Zephyr 通用 cmdline 和 BOOTSEL fallback。普通用�
 | USB 控制 | 复合 USB 设备：NCM HTTP/WS 主控制面 + CDC ACM fallback 控制台 |
 | 主机自动化 | Rust `cmd-ng` CLI/TUI，支持 JSON 输出和 `doctor` 诊断 |
 | 实时遥测 | live session 返回的 `/api/v1/ws/<slot>` 双向 WebSocket 长连接 |
-| 逻辑分析仪 | RP2350 PIO2+DMA 高速单次捕获；1-125MHz 可调采样率；512 样本上限；安全引脚 GP7-GP20/GP29；none/rising/falling/either 边沿触发；边沿触发 ≤25 MHz 支持预触发采样；1-25 MHz 连续流式采样（SCPI-over-WebSocket 示波器协议帧驱动浏览器实时波形，`ws://<board>/api/v1/scpi`）；支持 CSV 和 PulseView (.sr) 导出；**PulseView 原生接入**：Rigol DS1102D SCPI 仿真（rigol-ds 驱动，端口 80 `tcp-raw`，15 路数字通道 + GP29 模拟 CH1，≤25 MHz 硬件预触发，>25 MHz 突发触发，无沿 AUTO 回退）；**深采集**：写入 2 MB SPI flash 存储分区可达 100 万样本（厂商 SCPI `:LINKR:DEEP:*`，数字 ≤25 kHz / 模拟 ≤10 kHz，边沿或电平触发并对齐到窗口中部，Web UI Deep 按钮支持 .sr/CSV 导出）；板载 Web UI 中有浏览器内 Rust/WASM 解码器，支持 UART/I2C/SPI 协议 |
+| 逻辑分析仪 | RP2350 PIO2+DMA 高速单次捕获；100 kHz-125 MHz 可调采样率；512 样本上限；安全引脚 GP7-GP20/GP29；none/rising/falling/either 边沿触发；边沿触发 ≤25 MHz 支持预触发采样；1-25 MHz 连续流式采样（SCPI-over-WebSocket 示波器协议帧驱动浏览器实时波形，`ws://<board>/api/v1/scpi`）；支持 CSV 和 PulseView (.sr) 导出；**PulseView 原生接入**：Rigol DS1102D SCPI 仿真（rigol-ds 驱动，端口 80 `tcp-raw`，14 路数字通道 + GP29 模拟 CH1，≤25 MHz 硬件预触发，>25 MHz 突发触发，无沿 AUTO 回退）；**深采集**：写入 2 MB SPI flash 存储分区可达 100 万样本（厂商 SCPI `:LINKR:DEEP:*`，数字 ≤25 kHz / 模拟 ≤10 kHz，边沿或电平触发并对齐到窗口中部，Web UI Deep 按钮支持 .sr/CSV 导出）；**BeagleLogic 仿真**（TCP 5555 端口，PulseView 无限连续采集视图，14 路数字通道 GP7-GP20，8/16 位样本，16 位 ~150 kHz / 8 位 100 kHz 满速率，ONE_SHOT 主机侧触发）；板载 Web UI 中有浏览器内 Rust/WASM 解码器，支持 UART/I2C/SPI 协议 |
 | 电源输出 | `12v_out`、`5v_out`、`20v_out` |
 | ADC 监测 | 读取 `5v_out`、`12v_out`、`20v_out` 的电流监测通道 |
 | 调试板自监控 | `/api/v1/status` 和 WebSocket 状态快照会报告板自身 CPU/runtime/heap/temperature 的可用性，并在 Zephyr 暴露可靠来源时给出数值；watchdog supervisor 也会周期性打印 heap 诊断，方便排查短复位 |
@@ -178,7 +178,7 @@ recorder 再把每个设备样本展开成独立 NDJSON 或 CSV 行。固件单�
  也不提供完整的插件兼容性。
 
  HTTP 配置接受最多 16 个安全引脚（GP7、GP8、GP9、GP10-GP20、GP29）
- 的通道数组，采样率从 1,000,000 到 125,000,000 Hz（1-125MHz），
+ 的通道数组，采样率从 100,000 到 125,000,000 Hz（100 kHz-125 MHz），
  post_samples 从 1 到 512。捕获上限为 512 样本。
 
  支持的触发模式为 `none`、`rising`、`falling` 和 `either`。

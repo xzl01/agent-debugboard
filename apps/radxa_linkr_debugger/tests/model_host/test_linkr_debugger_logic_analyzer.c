@@ -34,7 +34,8 @@ static void test_rate_quantization(void)
 	assert(linkr_debugger_logic_analyzer_actual_rate(1000000U) == 1000000U);
 	assert(linkr_debugger_logic_analyzer_actual_rate(125000000U) == 125000000U);
 	assert(linkr_debugger_logic_analyzer_actual_rate(100000000U) == 100000000U);
-	assert(linkr_debugger_logic_analyzer_actual_rate(999999U) == 0U);
+	assert(linkr_debugger_logic_analyzer_actual_rate(100000U) == 100000U);
+	assert(linkr_debugger_logic_analyzer_actual_rate(99999U) == 0U);
 	assert(linkr_debugger_logic_analyzer_actual_rate(125000001U) == 0U);
 	assert(linkr_debugger_logic_analyzer_sample_period_ps(1000000U) == 1000000ULL);
 	assert(linkr_debugger_logic_analyzer_sample_period_ps(125000000U) == 8000ULL);

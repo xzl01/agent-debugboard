@@ -25,7 +25,7 @@ compatibility.
 
 - **Implementation**: RP2350 PIO2 state machines with DMA transfer
 - **Capture buffer**: 512 samples maximum per single-shot burst
-- **Sample rate**: Requested rates from 1,000,000 through 125,000,000 Hz (1-125MHz);
+- **Sample rate**: Requested rates from 100,000 through 125,000,000 Hz (100 kHz-125 MHz);
   actual rate is derived from PIO clock divider and reported in response metadata
 - **Trigger modes**: `none`, `rising`, `falling`, `either` via PIO edge detection
 - **Pre-trigger**: Supported for edge triggers at ≤25 MHz; uses DMA ping-pong
@@ -165,7 +165,7 @@ Cancel or release capture.
 
 - `selected_pins`: Array of GPIO pin numbers from the safe allowlist (GP7, GP8,
   GP9, GP10-GP20, GP29), maximum 16 channels
-- `sample_rate_hz`: Requested sample rate from 1,000,000 through 125,000,000 Hz
+- `sample_rate_hz`: Requested sample rate from 100,000 through 125,000,000 Hz
 - `pre_samples`: Pre-trigger sample count (0-512 total); requires an edge trigger
   and rate ≤25 MHz. Ignored for `trigger: "none"`.
 - `post_samples`: Number of samples after trigger (0-512 total); the total
@@ -310,8 +310,12 @@ Identity: `Rigol Technologies,DS1102D,DS1ZA999000001,00.04.04` (protocol V2,
 
 | sigrok channel | Board pin |
 | --- | --- |
-| D0-D14 | GP7, GP8, GP9, GP10-GP20, GP29 |
+| D0-D13 | GP7, GP8, GP9, GP10-GP20 |
+| D14-D15 | unused (read as 0) |
 | CH1 (analog) | GP29 (ADC3) |
+
+The LA samples a contiguous pin window (GP7-GP20); GP29 lives outside that
+window, so it is exposed only as the analog CH1 rather than a digital channel.
 
 ### Behavior
 
@@ -409,6 +413,36 @@ The Web UI exposes this as the **Deep** button on the Logic Analyzer card
 (25 kHz, 2 s window default): it shows PREPARING/CAPTURING progress, downloads
 the window into the rolling waveform view, decodes the visible window, and
 exports CSV or PulseView `.sr` of up to one million samples.
+
+## BeagleLogic Emulation (Unlimited Continuous View)
+
+A second sigrok personality lives on TCP port **5555**, emulating the
+BeagleLogic kernel driver's TCP protocol (text commands, raw sample stream).
+Use `-d beaglelogic:conn=tcp-raw/<board-ip>/5555`. This is the path for the
+"unlimited continuous acquisition" view in PulseView: in continuous mode the
+acquisition never ends, so PulseView shows a single ever-growing segment.
+
+| Command | Behavior |
+| --- | --- |
+| `version` | `BeagleLogic LinkrDebugger 1.0` (probe response) |
+| `samplerate [hz]` | get / set rate (clamped 1-204800) |
+| `sampleunit [0|1]` | 0 = 16-bit samples, 1 = 8-bit samples |
+| `triggerflags [0|1]` | stored (0 = ONE_SHOT, 1 = CONTINUOUS; semantics are host-side) |
+| `memalloc [bytes]` | reports 2097152 (flash region) |
+| `bufunitsize [bytes]` | reports 65536 |
+| `get` | start streaming samples (16-bit or 8-bit little-endian, no headers) |
+| `close` | stop streaming |
+
+Channels: 14 digital channels in pin order GP7-GP20 (driver names them
+P8_45, P8_46, P8_43, P8_44, P8_41, P8_42, P8_39, P8_40, P8_27, P8_29,
+P8_28, P8_30, P8_21, P8_20). GP10 (UART test pin) is channel 3 (P8_44).
+
+Production: rates >= 100 kHz use the LA PIO+DMA path (hardware-timed);
+lower rates use a paced GPIO-register loop. Sustained throughput measured:
+8-bit full rate to 100 kHz, 16-bit full rate to ~150 kHz (network-bound,
+~200-280 KiB/s); above that the pipeline keeps up best-effort with drops
+counted firmware-side. ONE_SHOT (`--samples N`) triggers are evaluated on
+the host by the driver, exactly like real BeagleLogic hardware.
 
 ## Usage
 

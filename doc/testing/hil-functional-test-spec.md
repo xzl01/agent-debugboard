@@ -1133,6 +1133,42 @@ PREPARING/CAPTURING/download 进度，完成后徽标显示 "deep <rate> <count>
 samples" 与 trigger@ 位置，实时波形出现且可窗口解码，CSV/.sr 导出可用
 （导出文件应包含与徽标一致的样本数）。
 
+### 8e. BeagleLogic 仿真（TCP 5555，无限连续视图）
+
+固件在 TCP 5555 端口仿真 BeagleLogic TCP 协议（文本命令 + 裸样本流，
+`-d beaglelogic:conn=tcp-raw/172.29.203.1/5555`）。GP10（P8_44，通道 3）
+注入 115200 'U'。
+
+#### 8e.1 扫描与协商
+
+```sh
+sigrok-cli -d beaglelogic:conn=tcp-raw/172.29.203.1/5555 --scan
+# 期望：beaglelogic - BeagleLogic 1.0 with 14 channels
+```
+
+#### 8e.2 ONE_SHOT 采集
+
+```sh
+sigrok-cli -d beaglelogic:conn=tcp-raw/172.29.203.1/5555 \
+  --config samplerate=100000 --samples 200000 --channels P8_44 -o /tmp/bl.sr
+sigrok-cli -i /tmp/bl.sr -O csv
+# 期望：200000 样本，P8_44 呈现 115200 'U' 的 2-3 样本交替边沿模式
+```
+
+#### 8e.3 连续流式持续速率（原始 socket）
+
+手工连接 5555：`version`→`samplerate <N>`→`get`，计 5 秒接收字节数：
+- 8-bit @100kHz：应 ≥95 kHz
+- 16-bit @100kHz：应 ≥95 kHz；@150kHz：应 ≥140 kHz
+- @204800：best-effort（≥100 kHz，允许 dropped）
+关闭应干净（`close` 后 LA 状态 idle，下一次连接立即可用）。
+
+#### 8e.4 单会话互斥与清理
+
+一路流式会话存活期间第二连接应被拒绝/不可用；首连接关闭后（即使客户端
+异常断开无 `close`），新连接应在秒级内可用，且不得遗留 LA 占用
+（GET /api/v1/logic-analyzer 显示 idle）。
+
 ### 10. USB CDC ACM fallback
 
 验证：

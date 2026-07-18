@@ -17,6 +17,8 @@
 #include <zephyr/drivers/adc.h>
 #include <zephyr/drivers/flash.h>
 #include <zephyr/drivers/gpio.h>
+
+#include <hardware/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/http/server.h>
@@ -49,8 +51,9 @@ LOG_MODULE_REGISTER(linkr_debugger_rigol, CONFIG_LINKR_DEBUGGER_LOG_LEVEL);
 static const struct adc_dt_spec linkr_debugger_rigol_adc_gp29 =
 	ADC_DT_SPEC_STRUCT(DT_NODELABEL(adc), 3);
 
-static const uint8_t linkr_debugger_rigol_pins[15] = {
-	7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 29,
+#define LINKR_DEBUGGER_RIGOL_PIN_COUNT 14U
+static const uint8_t linkr_debugger_rigol_pins[LINKR_DEBUGGER_RIGOL_PIN_COUNT] = {
+	7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
 };
 
 static uint16_t linkr_debugger_rigol_buf[LINKR_DEBUGGER_RIGOL_BUFFER_SAMPLES];
@@ -561,11 +564,11 @@ static void linkr_debugger_rigol_fill_la_config(struct linkr_debugger_la_config 
 	uint32_t rate_hz)
 {
 	memset(la, 0, sizeof(*la));
-	for (uint8_t i = 0U; i < 15U; i++) {
+	for (uint8_t i = 0U; i < LINKR_DEBUGGER_RIGOL_PIN_COUNT; i++) {
 		la->selected_pins[i] = linkr_debugger_rigol_pins[i];
 	}
-	la->selected_pin_count = 15U;
-	la->pin_count = 15U;
+	la->selected_pin_count = (uint8_t)LINKR_DEBUGGER_RIGOL_PIN_COUNT;
+	la->pin_count = (uint8_t)LINKR_DEBUGGER_RIGOL_PIN_COUNT;
 	la->pin_base = la->selected_pins[0];
 	la->sample_rate_hz = rate_hz;
 	la->post_samples = LINKR_DEBUGGER_LA_MAX_EXPORTED_SAMPLES;
@@ -598,7 +601,7 @@ static int linkr_debugger_rigol_arm_async(struct linkr_debugger_rigol_state *sta
 	struct linkr_debugger_la_config la;
 	int ret;
 
-	if (state->trigger_source >= 15U ||
+	if (state->trigger_source >= LINKR_DEBUGGER_RIGOL_PIN_COUNT ||
 	    rate_hz > LINKR_DEBUGGER_LA_MAX_STREAM_RATE_HZ) {
 		return -ENOTSUP;
 	}
@@ -812,6 +815,49 @@ static int linkr_debugger_rigol_pump_analog(struct linkr_debugger_rigol_state *s
 #define LINKR_DEBUGGER_RIGOL_DEEP_STAGE_BYTES 8192U
 #define LINKR_DEBUGGER_RIGOL_DEEP_SECTOR 4096U
 #define LINKR_DEBUGGER_RIGOL_DEEP_PAGE 256U
+#define LINKR_DEBUGGER_RIGOL_BL_PORT 5555U
+#define LINKR_DEBUGGER_RIGOL_BL_MAX_RATE_HZ 204800U
+#define LINKR_DEBUGGER_RIGOL_BL_CHANNEL_COUNT 14U
+#define LINKR_DEBUGGER_RIGOL_BL_BUFFER_SIZE 2097152U
+
+enum linkr_debugger_rigol_bl_sampleunit {
+	LINKR_DEBUGGER_RIGOL_BL_UNIT_16_BITS = 0,
+	LINKR_DEBUGGER_RIGOL_BL_UNIT_8_BITS = 1,
+};
+
+enum linkr_debugger_rigol_staging_owner {
+	LINKR_DEBUGGER_RIGOL_STAGING_NONE = 0,
+	LINKR_DEBUGGER_RIGOL_STAGING_DEEP,
+	LINKR_DEBUGGER_RIGOL_STAGING_BL,
+};
+
+struct linkr_debugger_rigol_bl_state {
+	int listen_fd;
+	int client_fd;
+	uint32_t rate_hz;
+	uint32_t sampleunit;
+	uint32_t triggerflags;
+	bool streaming;
+	bool use_la;
+	uint32_t dropped;
+};
+
+static struct linkr_debugger_rigol_bl_state linkr_debugger_rigol_bl = {
+	.listen_fd = -1,
+	.client_fd = -1,
+	.rate_hz = 100000U,
+	.sampleunit = LINKR_DEBUGGER_RIGOL_BL_UNIT_16_BITS,
+	.triggerflags = 1U,
+	.streaming = false,
+	.dropped = 0U,
+};
+static enum linkr_debugger_rigol_staging_owner linkr_debugger_rigol_staging_owner =
+	LINKR_DEBUGGER_RIGOL_STAGING_NONE;
+
+static const uint8_t linkr_debugger_rigol_bl_pins[
+	LINKR_DEBUGGER_RIGOL_BL_CHANNEL_COUNT] = {
+	7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+};
 
 enum linkr_debugger_rigol_deep_state {
 	LINKR_DEBUGGER_RIGOL_DEEP_IDLE = 0,
@@ -864,20 +910,24 @@ static uint32_t linkr_debugger_rigol_deep_stage_used(void)
 static void linkr_debugger_rigol_deep_stage_push(const uint8_t *data, uint32_t len)
 {
 	struct linkr_debugger_rigol_deep *deep = &linkr_debugger_rigol_deep_inst;
+	bool wake = false;
 
 	k_mutex_lock(&deep->stage_lock, K_FOREVER);
 	if (LINKR_DEBUGGER_RIGOL_DEEP_STAGE_BYTES - 1U -
 	    linkr_debugger_rigol_deep_stage_used() < len) {
 		deep->dropped += len;
-		k_mutex_unlock(&deep->stage_lock);
-		return;
-	}
-	for (uint32_t i = 0U; i < len; i++) {
-		deep->stage[deep->stage_head] = data[i];
-		deep->stage_head = (deep->stage_head + 1U) % LINKR_DEBUGGER_RIGOL_DEEP_STAGE_BYTES;
+		wake = true;
+	} else {
+		for (uint32_t i = 0U; i < len; i++) {
+			deep->stage[deep->stage_head] = data[i];
+			deep->stage_head = (deep->stage_head + 1U) % LINKR_DEBUGGER_RIGOL_DEEP_STAGE_BYTES;
+		}
+		wake = true;
 	}
 	k_mutex_unlock(&deep->stage_lock);
-	k_sem_give(&deep->stage_data);
+	if (wake) {
+		k_sem_give(&deep->stage_data);
+	}
 }
 
 static void linkr_debugger_rigol_deep_stream_callback(
@@ -891,7 +941,7 @@ static void linkr_debugger_rigol_deep_stream_callback(
 		uint16_t v = chunk->values[i];
 
 		if (!deep->triggered && state != NULL &&
-		    state->trigger_source < 15U) {
+		    state->trigger_source < LINKR_DEBUGGER_RIGOL_PIN_COUNT) {
 			uint16_t mask = (uint16_t)(1U << state->trigger_source);
 			bool level = (v & mask) != 0U;
 			bool rising = deep->last_level == 0U && level;
@@ -956,6 +1006,45 @@ static int linkr_debugger_rigol_deep_flash_write(uint32_t offset,
 		len -= chunk;
 	}
 	return 0;
+}
+
+static void linkr_debugger_rigol_bl_produce(void)
+{
+	struct linkr_debugger_rigol_bl_state *bl = &linkr_debugger_rigol_bl;
+	static uint8_t local[256];
+	static uint32_t used;
+	static int64_t next_due_us;
+	uint32_t period_us = bl->rate_hz > 0U ? 1000000U / bl->rate_hz : 1U;
+	uint32_t port;
+	uint16_t v;
+
+	if (used == 0U) {
+		next_due_us = (int64_t)k_cyc_to_us_near32(k_cycle_get_32()) + period_us;
+	}
+	for (uint8_t i = 0U; i < 32U && bl->streaming; i++) {
+		v = 0U;
+		port = gpio_get_all();
+		for (uint8_t ch = 0U; ch < LINKR_DEBUGGER_RIGOL_BL_CHANNEL_COUNT; ch++) {
+			if ((port & (1UL << linkr_debugger_rigol_bl_pins[ch])) != 0U) {
+				v |= (uint16_t)(1U << ch);
+			}
+		}
+		local[used++] = (uint8_t)(v & 0xffU);
+		if (bl->sampleunit != LINKR_DEBUGGER_RIGOL_BL_UNIT_8_BITS) {
+			local[used++] = (uint8_t)(v >> 8U);
+		}
+		if (used >= sizeof(local)) {
+			linkr_debugger_rigol_deep_stage_push(local, used);
+			used = 0U;
+		}
+		while ((int64_t)k_cyc_to_us_near32(k_cycle_get_32()) < next_due_us) {
+		}
+		next_due_us += period_us;
+	}
+	if (used >= 64U) {
+		linkr_debugger_rigol_deep_stage_push(local, used);
+		used = 0U;
+	}
 }
 
 static void linkr_debugger_rigol_deep_produce_digital(
@@ -1041,9 +1130,22 @@ static void linkr_debugger_rigol_deep_flash_thread(void *p1, void *p2, void *p3)
 			}
 			continue;
 		}
+		if (deep->state == LINKR_DEBUGGER_RIGOL_DEEP_DONE &&
+		    linkr_debugger_rigol_staging_owner == LINKR_DEBUGGER_RIGOL_STAGING_DEEP) {
+			if (linkr_debugger_rigol_deep_stage_used() == 0U) {
+				linkr_debugger_rigol_staging_owner =
+					LINKR_DEBUGGER_RIGOL_STAGING_NONE;
+			}
+		}
 		if (deep->state == LINKR_DEBUGGER_RIGOL_DEEP_CAPTURING &&
 		    !deep->analog) {
 			linkr_debugger_rigol_deep_produce_digital(deep);
+			if (k_sem_take(&deep->stage_data, K_NO_WAIT) != 0) {
+				continue;
+			}
+		} else if (linkr_debugger_rigol_bl.streaming &&
+		    !linkr_debugger_rigol_bl.use_la) {
+			linkr_debugger_rigol_bl_produce();
 			if (k_sem_take(&deep->stage_data, K_NO_WAIT) != 0) {
 				continue;
 			}
@@ -1101,6 +1203,59 @@ static void linkr_debugger_rigol_deep_flash_thread(void *p1, void *p2, void *p3)
 			}
 		} else {
 			k_sem_take(&deep->stage_data, K_FOREVER);
+		}
+		if (linkr_debugger_rigol_staging_owner == LINKR_DEBUGGER_RIGOL_STAGING_BL) {
+			static uint8_t bl_carry[1024];
+			static uint32_t bl_carry_len;
+
+			for (;;) {
+				k_mutex_lock(&deep->stage_lock, K_FOREVER);
+				while (bl_carry_len < sizeof(bl_carry) &&
+				       linkr_debugger_rigol_deep_stage_used() > 0U) {
+					bl_carry[bl_carry_len++] = deep->stage[deep->stage_tail];
+					deep->stage_tail = (deep->stage_tail + 1U) %
+						LINKR_DEBUGGER_RIGOL_DEEP_STAGE_BYTES;
+				}
+				uint32_t still = linkr_debugger_rigol_deep_stage_used();
+				k_mutex_unlock(&deep->stage_lock);
+
+				if (bl_carry_len >= 512U ||
+				    (bl_carry_len > 0U && still == 0U)) {
+					uint32_t n = bl_carry_len;
+					int sent = 0;
+
+					for (uint8_t attempt = 0U; attempt < 50U; attempt++) {
+						sent = linkr_debugger_rigol_sock_send_all(
+							linkr_debugger_rigol_bl.client_fd,
+							bl_carry, n);
+						if (sent >= 0) {
+							break;
+						}
+						if (errno != ENOMEM && errno != EAGAIN &&
+						    errno != EWOULDBLOCK) {
+							break;
+						}
+						k_msleep(2);
+					}
+					if (sent < 0) {
+						LOG_WRN("rigol bl: send failed ret=%d errno=%d",
+							sent, errno);
+						linkr_debugger_rigol_bl.streaming = false;
+						if (linkr_debugger_rigol_bl.use_la) {
+							(void)linkr_debugger_logic_analyzer_stop_stream();
+							linkr_debugger_rigol_bl.use_la = false;
+						}
+						linkr_debugger_rigol_staging_owner =
+							LINKR_DEBUGGER_RIGOL_STAGING_NONE;
+						break;
+					}
+					memmove(bl_carry, &bl_carry[n], bl_carry_len - n);
+					bl_carry_len -= n;
+					continue;
+				}
+				break;
+			}
+			continue;
 		}
 		if (deep->area == NULL &&
 		    flash_area_open(PARTITION_ID(storage_partition), &deep->area) < 0) {
@@ -1165,6 +1320,10 @@ static int linkr_debugger_rigol_deep_start(struct linkr_debugger_rigol_state *st
 	uint32_t bps;
 	uint64_t want;
 
+	if (linkr_debugger_rigol_staging_owner == LINKR_DEBUGGER_RIGOL_STAGING_BL) {
+		return -EBUSY;
+	}
+	linkr_debugger_rigol_staging_owner = LINKR_DEBUGGER_RIGOL_STAGING_DEEP;
 	linkr_debugger_rigol_deep_reset();
 	deep->rate_hz = rate_hz > LINKR_DEBUGGER_RIGOL_DEEP_MAX_RATE_HZ ?
 		LINKR_DEBUGGER_RIGOL_DEEP_MAX_RATE_HZ : rate_hz;
@@ -1206,6 +1365,9 @@ static int linkr_debugger_rigol_deep_start(struct linkr_debugger_rigol_state *st
 static void linkr_debugger_rigol_deep_abort(void)
 {
 	linkr_debugger_rigol_deep_inst.state = LINKR_DEBUGGER_RIGOL_DEEP_IDLE;
+	if (linkr_debugger_rigol_staging_owner == LINKR_DEBUGGER_RIGOL_STAGING_DEEP) {
+		linkr_debugger_rigol_staging_owner = LINKR_DEBUGGER_RIGOL_STAGING_NONE;
+	}
 }
 
 static void linkr_debugger_rigol_deep_poll(struct linkr_debugger_rigol_state *state)
@@ -1495,7 +1657,7 @@ static int linkr_debugger_rigol_produce_frame(int fd,
 	int count;
 	int ret;
 
-	use_trigger = use_trigger && state->trigger_source < 15U;
+	use_trigger = use_trigger && state->trigger_source < LINKR_DEBUGGER_RIGOL_PIN_COUNT;
 	if (use_trigger) {
 		if (!state->capture_done) {
 			if (state->capture_pending) {
@@ -1606,7 +1768,7 @@ static int linkr_debugger_rigol_handle_query(int fd, const char *line,
 				idx = idx * 10U + (uint32_t)(*num - '0');
 			}
 		}
-		bool enabled = idx < 15U && (state->digital_enabled & (1U << idx)) != 0U;
+		bool enabled = idx < LINKR_DEBUGGER_RIGOL_PIN_COUNT && (state->digital_enabled & (1U << idx)) != 0U;
 
 		return linkr_debugger_rigol_send_str(fd, enabled ? "1\n" : "0\n");
 	}
@@ -1876,7 +2038,7 @@ static void linkr_debugger_rigol_handle_set(const char *line,
 			idx = idx * 10U + (uint32_t)(*p - '0');
 			p++;
 		}
-		if (idx < 15U) {
+		if (idx < LINKR_DEBUGGER_RIGOL_PIN_COUNT) {
 			if (strstr(line, "ON") != NULL) {
 				state->digital_enabled |= 1U << idx;
 			} else {
@@ -2125,6 +2287,305 @@ static void linkr_debugger_rigol_dispatch_thread(void *p1, void *p2, void *p3)
 	}
 }
 
+static int linkr_debugger_rigol_bl_send_str(int fd, const char *str)
+{
+	return linkr_debugger_rigol_sock_send_all(fd, str, strlen(str));
+}
+
+static bool linkr_debugger_rigol_bl_read_line(int fd, char *line, size_t cap,
+	bool streaming)
+{
+	size_t used = 0U;
+
+	while (used + 1U < cap) {
+		uint8_t ch;
+		struct zsock_pollfd pfd = { .fd = fd, .events = ZSOCK_POLLIN };
+		int pret = zsock_poll(&pfd, 1U, streaming ? 20 : 2000);
+		ssize_t ret;
+
+		if (pret <= 0) {
+			if (streaming && linkr_debugger_rigol_bl.streaming) {
+				continue;
+			}
+			return false;
+		}
+		ret = zsock_recv(fd, &ch, 1U, 0);
+		if (ret <= 0) {
+			return false;
+		}
+		if (ch == '\n') {
+			break;
+		}
+		if (ch != '\r') {
+			line[used++] = (char)ch;
+		}
+	}
+	line[used] = '\0';
+	return true;
+}
+
+static void linkr_debugger_rigol_bl_stream_callback(
+	const struct linkr_debugger_la_stream_chunk *chunk, void *user_data)
+{
+	ARG_UNUSED(user_data);
+
+	if (linkr_debugger_rigol_bl.sampleunit == LINKR_DEBUGGER_RIGOL_BL_UNIT_8_BITS) {
+		uint8_t packed[64];
+		uint32_t n = 0U;
+
+		for (uint32_t i = 0U; i < chunk->sample_count; i++) {
+			packed[n++] = (uint8_t)(chunk->values[i] & 0xffU);
+			if (n == sizeof(packed)) {
+				linkr_debugger_rigol_deep_stage_push(packed, n);
+				n = 0U;
+			}
+		}
+		if (n > 0U) {
+			linkr_debugger_rigol_deep_stage_push(packed, n);
+		}
+		return;
+	}
+	linkr_debugger_rigol_deep_stage_push((const uint8_t *)chunk->values,
+		chunk->sample_count * 2U);
+}
+
+static void linkr_debugger_rigol_bl_stream_start(void)
+{
+	struct linkr_debugger_rigol_deep *deep = &linkr_debugger_rigol_deep_inst;
+
+	if (linkr_debugger_rigol_staging_owner != LINKR_DEBUGGER_RIGOL_STAGING_NONE) {
+		LOG_WRN("rigol bl: stream start while staging busy (owner %d)",
+			(int)linkr_debugger_rigol_staging_owner);
+		return;
+	}
+	linkr_debugger_rigol_staging_owner = LINKR_DEBUGGER_RIGOL_STAGING_BL;
+	k_mutex_lock(&deep->stage_lock, K_FOREVER);
+	deep->stage_head = 0U;
+	deep->stage_tail = 0U;
+	k_mutex_unlock(&deep->stage_lock);
+	k_sem_reset(&deep->stage_data);
+	linkr_debugger_rigol_bl.streaming = true;
+	linkr_debugger_rigol_bl.dropped = 0U;
+	linkr_debugger_rigol_bl.use_la = false;
+	if (linkr_debugger_rigol_bl.rate_hz >=
+	    LINKR_DEBUGGER_LA_MIN_SAMPLE_RATE_HZ) {
+		struct linkr_debugger_la_config la;
+
+		memset(&la, 0, sizeof(la));
+		for (uint8_t i = 0U; i < LINKR_DEBUGGER_RIGOL_BL_CHANNEL_COUNT; i++) {
+			la.selected_pins[i] = linkr_debugger_rigol_bl_pins[i];
+		}
+		la.selected_pin_count = (uint8_t)LINKR_DEBUGGER_RIGOL_BL_CHANNEL_COUNT;
+		la.pin_count = (uint8_t)LINKR_DEBUGGER_RIGOL_BL_CHANNEL_COUNT;
+		la.pin_base = la.selected_pins[0];
+		la.sample_rate_hz = linkr_debugger_rigol_bl.rate_hz;
+		la.post_samples = LINKR_DEBUGGER_LA_MAX_EXPORTED_SAMPLES;
+		if (linkr_debugger_logic_analyzer_start_stream(&la,
+			linkr_debugger_rigol_bl_stream_callback, NULL) == 0) {
+			linkr_debugger_rigol_bl.use_la = true;
+		} else {
+			LOG_WRN("rigol bl: LA stream start failed, GPIO loop fallback");
+		}
+	}
+}
+
+static void linkr_debugger_rigol_bl_stream_stop(void)
+{
+	linkr_debugger_rigol_bl.streaming = false;
+	if (linkr_debugger_rigol_bl.use_la) {
+		(void)linkr_debugger_logic_analyzer_stop_stream();
+		linkr_debugger_rigol_bl.use_la = false;
+	}
+	if (linkr_debugger_rigol_staging_owner == LINKR_DEBUGGER_RIGOL_STAGING_BL) {
+		linkr_debugger_rigol_staging_owner = LINKR_DEBUGGER_RIGOL_STAGING_NONE;
+	}
+}
+
+static void linkr_debugger_rigol_bl_session(int fd)
+{
+	struct zsock_timeval tv;
+
+	tv.tv_sec = LINKR_DEBUGGER_RIGOL_RECV_TIMEOUT_MS / 1000U;
+	tv.tv_usec = 0;
+	(void)zsock_setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+	while (true) {
+		char line[64];
+		char resp[24];
+		int len;
+
+		if (!linkr_debugger_rigol_bl_read_line(fd, line, sizeof(line),
+			linkr_debugger_rigol_bl.streaming)) {
+			break;
+		}
+		if (line[0] == '\0') {
+			continue;
+		}
+		if (strcmp(line, "version") == 0) {
+			if (linkr_debugger_rigol_bl_send_str(fd,
+				"BeagleLogic LinkrDebugger 1.0\n") < 0) {
+				break;
+			}
+			continue;
+		}
+		if (strcmp(line, "get") == 0) {
+			linkr_debugger_rigol_bl_stream_start();
+			continue;
+		}
+		if (strcmp(line, "close") == 0) {
+			linkr_debugger_rigol_bl_stream_stop();
+			continue;
+		}
+		if (strncmp(line, "samplerate ", 11) == 0) {
+			uint32_t rate = (uint32_t)strtoul(line + 11, NULL, 10);
+
+			if (rate == 0U) {
+				rate = 1U;
+			}
+			if (rate > LINKR_DEBUGGER_RIGOL_BL_MAX_RATE_HZ) {
+				rate = LINKR_DEBUGGER_RIGOL_BL_MAX_RATE_HZ;
+			}
+			linkr_debugger_rigol_bl.rate_hz = rate;
+			if (linkr_debugger_rigol_bl_send_str(fd, "ok\n") < 0) {
+				break;
+			}
+			continue;
+		}
+		if (strcmp(line, "samplerate") == 0) {
+			len = snprintk(resp, sizeof(resp), "%u\n",
+				(unsigned)linkr_debugger_rigol_bl.rate_hz);
+			if (len <= 0 || linkr_debugger_rigol_sock_send_all(fd,
+				resp, (size_t)len) < 0) {
+				break;
+			}
+			continue;
+		}
+		if (strncmp(line, "sampleunit ", 11) == 0) {
+			linkr_debugger_rigol_bl.sampleunit =
+				strtoul(line + 11, NULL, 10) == 1U ?
+				LINKR_DEBUGGER_RIGOL_BL_UNIT_8_BITS :
+				LINKR_DEBUGGER_RIGOL_BL_UNIT_16_BITS;
+			if (linkr_debugger_rigol_bl_send_str(fd, "ok\n") < 0) {
+				break;
+			}
+			continue;
+		}
+		if (strcmp(line, "sampleunit") == 0) {
+			len = snprintk(resp, sizeof(resp), "%u\n",
+				(unsigned)linkr_debugger_rigol_bl.sampleunit);
+			if (len <= 0 || linkr_debugger_rigol_sock_send_all(fd,
+				resp, (size_t)len) < 0) {
+				break;
+			}
+			continue;
+		}
+		if (strncmp(line, "triggerflags ", 13) == 0) {
+			linkr_debugger_rigol_bl.triggerflags =
+				(uint32_t)strtoul(line + 13, NULL, 10);
+			if (linkr_debugger_rigol_bl_send_str(fd, "ok\n") < 0) {
+				break;
+			}
+			continue;
+		}
+		if (strcmp(line, "triggerflags") == 0) {
+			len = snprintk(resp, sizeof(resp), "%u\n",
+				(unsigned)linkr_debugger_rigol_bl.triggerflags);
+			if (len <= 0 || linkr_debugger_rigol_sock_send_all(fd,
+				resp, (size_t)len) < 0) {
+				break;
+			}
+			continue;
+		}
+		if (strncmp(line, "memalloc ", 9) == 0) {
+			if (linkr_debugger_rigol_bl_send_str(fd, "ok\n") < 0) {
+				break;
+			}
+			continue;
+		}
+		if (strcmp(line, "memalloc") == 0) {
+			len = snprintk(resp, sizeof(resp), "%u\n",
+				(unsigned)LINKR_DEBUGGER_RIGOL_BL_BUFFER_SIZE);
+			if (len <= 0 || linkr_debugger_rigol_sock_send_all(fd,
+				resp, (size_t)len) < 0) {
+				break;
+			}
+			continue;
+		}
+		if (strncmp(line, "bufunitsize ", 12) == 0) {
+			if (linkr_debugger_rigol_bl_send_str(fd, "ok\n") < 0) {
+				break;
+			}
+			continue;
+		}
+		if (strcmp(line, "bufunitsize") == 0) {
+			if (linkr_debugger_rigol_bl_send_str(fd, "65536\n") < 0) {
+				break;
+			}
+			continue;
+		}
+		if (linkr_debugger_rigol_bl_send_str(fd, "ERR\n") < 0) {
+			break;
+		}
+	}
+	linkr_debugger_rigol_bl_stream_stop();
+}
+
+static K_THREAD_STACK_DEFINE(linkr_debugger_rigol_bl_stack, 2048U);
+static struct k_thread linkr_debugger_rigol_bl_thread_data;
+
+static void linkr_debugger_rigol_bl_thread(void *p1, void *p2, void *p3)
+{
+	struct sockaddr_in addr;
+
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	while (linkr_debugger_rigol_bl.listen_fd < 0) {
+		int fd = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+		if (fd < 0) {
+			k_msleep(500);
+			continue;
+		}
+		int reuse = 1;
+
+		(void)zsock_setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
+			&reuse, sizeof(reuse));
+		memset(&addr, 0, sizeof(addr));
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons(LINKR_DEBUGGER_RIGOL_BL_PORT);
+		(void)zsock_inet_pton(NET_AF_INET, LINKR_DEBUGGER_RIGOL_BIND_ADDR,
+			&addr.sin_addr);
+		if (zsock_bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
+		    zsock_listen(fd, 1U) < 0) {
+			linkr_debugger_rigol_close_fd(&fd);
+			k_msleep(500);
+			continue;
+		}
+		linkr_debugger_rigol_bl.listen_fd = fd;
+	}
+
+	while (true) {
+		struct sockaddr_in client_addr;
+		socklen_t client_len = sizeof(client_addr);
+		int client_fd = zsock_accept(linkr_debugger_rigol_bl.listen_fd,
+			(struct sockaddr *)&client_addr, &client_len);
+
+		if (client_fd < 0) {
+			k_msleep(20);
+			continue;
+		}
+		if (linkr_debugger_rigol_bl.client_fd >= 0) {
+			linkr_debugger_rigol_close_fd(&client_fd);
+			continue;
+		}
+		linkr_debugger_rigol_bl.client_fd = client_fd;
+		linkr_debugger_rigol_bl_session(client_fd);
+		linkr_debugger_rigol_close_fd(&linkr_debugger_rigol_bl.client_fd);
+	}
+}
+
 #define LINKR_DEBUGGER_RIGOL_THREAD_STACK 4096U
 static K_THREAD_STACK_DEFINE(linkr_debugger_rigol_dispatch_stack,
 	LINKR_DEBUGGER_RIGOL_THREAD_STACK);
@@ -2163,4 +2624,10 @@ void linkr_debugger_rigol_server_init(void)
 		linkr_debugger_rigol_deep_flash_thread, NULL, NULL, NULL,
 		K_LOWEST_APPLICATION_THREAD_PRIO, 0, K_NO_WAIT);
 	(void)k_thread_name_set(&linkr_debugger_rigol_deep_thread_data, "rigol_deep");
+
+	(void)k_thread_create(&linkr_debugger_rigol_bl_thread_data,
+		linkr_debugger_rigol_bl_stack, 2048U,
+		linkr_debugger_rigol_bl_thread, NULL, NULL, NULL,
+		K_LOWEST_APPLICATION_THREAD_PRIO, 0, K_NO_WAIT);
+	(void)k_thread_name_set(&linkr_debugger_rigol_bl_thread_data, "rigol_bl");
 }
