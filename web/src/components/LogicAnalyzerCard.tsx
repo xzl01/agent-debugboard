@@ -104,6 +104,9 @@ const STREAM_BUFFER_CAP = 1000000;
 const STREAM_FLUSH_MS = 150;
 const STREAM_DECODE_MS = 600;
 const STREAM_DECODE_MAX_SAMPLES = 8192;
+const DEEP_RATE_HZ = 25000;
+const DEEP_DURATION_S = 2;
+const DEEP_CHUNK_SAMPLES = 16384;
 const STREAM_SPAN_OPTIONS = [1024, 4096, 16384, 65536, 262144] as const;
 const PROTOCOL_OPTIONS: Array<{ id: LogicDecoderProtocolName; label: string }> = [
   { id: "uart", label: "UART" },
@@ -252,11 +255,20 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
   const {
     close: scpiClose,
     command: scpiCommand,
+    query: scpiQuery,
     ensureConnected: scpiEnsureConnected,
     readDigitalFrame: scpiReadDigitalFrame,
+    readDeepData: scpiReadDeepData,
   } = useScpiScope();
   const [streaming, setStreaming] = useState(false);
   const streamingRef = useRef(false);
+  const [deepView, setDeepView] = useState<{
+    rate: number;
+    count: number;
+    triggerIndex: number;
+    dropped: number;
+  } | null>(null);
+  const [deepBusy, setDeepBusy] = useState<string | null>(null);
 
   useEffect(() => {
     const flush = () => {
@@ -452,6 +464,99 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
     })();
   }, [config, configureScope, scpiClose, scpiCommand, scpiEnsureConnected, scpiReadDigitalFrame]);
 
+  const runDeep = useCallback(async () => {
+    if (deepBusy) return;
+    setError(null);
+
+    const cfg = normalizeLogicAnalyzerConfig(config);
+    if (cfg.selectedPins.length === 0) {
+      setError("Select at least one pin");
+      return;
+    }
+
+    setDeepView(null);
+    streamSamplesRef.current = [];
+    streamSequenceRef.current = 0;
+    streamTotalRef.current = 0;
+    setStreamSampleCount(0);
+    setDeepBusy("start");
+    try {
+      await scpiEnsureConnected();
+      await configureScope(cfg);
+      const startResp = await scpiQuery(`:LINKR:DEEP:START ${DEEP_RATE_HZ} ${DEEP_DURATION_S}`);
+      if (!startResp.startsWith("OK")) {
+        throw new Error(`deep start: ${startResp.trim()}`);
+      }
+      let doneLine: string | null = null;
+      for (let i = 0; i < 200 && !doneLine; i++) {
+        const status = await scpiQuery(":LINKR:DEEP:STATUS?");
+        if (status.startsWith("DONE ")) {
+          doneLine = status;
+        } else {
+          setDeepBusy(status.trim());
+          await new Promise((resolve) => window.setTimeout(resolve, 300));
+        }
+      }
+      if (!doneLine) {
+        throw new Error("deep capture timeout");
+      }
+      const parts = doneLine.trim().split(/\s+/);
+      const written = Number(parts[1]);
+      const triggerIndex = Number(parts[2]);
+      const rate = Number(parts[3]);
+      const dropped = Number(parts[4]);
+      const arr = streamSamplesRef.current;
+      for (let off = 0; off < written; off += DEEP_CHUNK_SAMPLES) {
+        const count = Math.min(DEEP_CHUNK_SAMPLES, written - off);
+        const frame = await scpiReadDeepData(off, count);
+        const values = repackFrameBits(frame, cfg.selectedPins);
+        for (const value of values) {
+          arr.push(value);
+        }
+        if (arr.length > STREAM_BUFFER_CAP) {
+          arr.splice(0, arr.length - STREAM_BUFFER_CAP);
+        }
+        streamTotalRef.current = arr.length;
+        setDeepBusy(`download ${arr.length}/${written}`);
+        setStreamSampleCount(arr.length);
+      }
+      setDeepView({ rate, count: arr.length, triggerIndex, dropped });
+      streamDirtyRef.current = true;
+      setStreamWaveformVersion((version) => version + 1);
+      scpiClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "deep capture failed");
+      scpiClose();
+    } finally {
+      setDeepBusy(null);
+    }
+  }, [config, configureScope, deepBusy, scpiClose, scpiEnsureConnected, scpiQuery, scpiReadDeepData]);
+
+  const exportDeep = useCallback((kind: "csv" | "sr") => {
+    if (!deepView) return;
+    const arr = streamSamplesRef.current;
+    const capture = normalizeLogicAnalyzerCapture({
+      state: "done",
+      config: {
+        pinCount: config.selectedPins.length,
+        pinBase: config.selectedPins[0] ?? 0,
+        selectedPins: [...config.selectedPins],
+        actualSampleRateHz: deepView.rate,
+      },
+      sampleCount: arr.length,
+      triggerIndex: deepView.triggerIndex >= 0 ? deepView.triggerIndex : 0,
+      samples: arr.map((value, index) => ({
+        timestampUs: (index * 1_000_000) / deepView.rate,
+        values: value,
+      })),
+    });
+    if (kind === "csv") {
+      exportToCsv(capture);
+    } else {
+      exportToSr(capture);
+    }
+  }, [config.selectedPins, deepView]);
+
   useEffect(() => {
     return () => {
       streamingRef.current = false;
@@ -503,7 +608,7 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
   }, [streamWaveformVersion, streamFollow, streamSpan, streamAnchor]);
 
   const streamWaveformData = useMemo(() => {
-    if (!streaming) return [];
+    if (!streaming && !deepView) return [];
     const pins = config.selectedPins;
     if (pins.length === 0 || streamWindow.len === 0) return [];
     const { samples, start, span, stride, pointCount, plotWidth } = streamWindow;
@@ -521,7 +626,7 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
       }
       return channelPoints;
     });
-  }, [streaming, config.selectedPins, streamWindow]);
+  }, [streaming, deepView, config.selectedPins, streamWindow]);
 
   const liveAnnotationLayout = useMemo(
     () => layoutLogicDecoderAnnotations(liveAnnotations),
@@ -547,7 +652,7 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
   const streamDecodeBase = streamWindow.end - Math.min(streamWindow.span, STREAM_DECODE_MAX_SAMPLES);
 
   useEffect(() => {
-    if (!streaming) {
+    if (!streaming && !deepView) {
       setLiveAnnotations([]);
       return;
     }
@@ -565,7 +670,7 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
             pinCount: config.selectedPins.length,
             pinBase: config.selectedPins[0] ?? 0,
             selectedPins: [...config.selectedPins],
-            actualSampleRateHz: actualRate,
+            actualSampleRateHz: deepView && !streaming ? deepView.rate : actualRate,
           },
           sampleCount: decodeLen,
           triggerIndex: 0,
@@ -586,7 +691,7 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [streaming, decoderProtocol, decoderConfigs, config.selectedPins, actualRate]);
+  }, [streaming, deepView, decoderProtocol, decoderConfigs, config.selectedPins, actualRate]);
 
   const uartConfig: LogicDecoderProtocolConfigs["uart"] = decoderConfigs.uart;
   const i2cConfig: LogicDecoderProtocolConfigs["i2c"] = decoderConfigs.i2c;
@@ -948,7 +1053,7 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
             )}
           </div>
 
-          {streaming && streamWaveformData.length > 0 && (
+          {(streaming || deepView) && streamWaveformData.length > 0 && (
             // FIXME: the step-path lane rendering below duplicates the capture
             // waveform svg almost verbatim; extract a shared StepWaveform
             // component when the live view gains more features.
@@ -1291,6 +1396,15 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
               <Zap size={15} />
               {t("logicAnalyzer.startStream")}
             </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => { void runDeep(); }}
+              disabled={config.selectedPins.length === 0 || deepBusy !== null}
+            >
+              <Binary size={15} />
+              {t("logicAnalyzer.deep")}
+            </Button>
             {streamRateExceeded && (
               <span className="self-center text-[10px] text-ink-dim">
                 {t("logicAnalyzer.streamRateLimit")}
@@ -1321,11 +1435,36 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
         )}
       </div>
 
-      {streaming && (
+      {deepBusy && (
+        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line/60 bg-panel2/60 px-3 py-2 text-xs text-ink-dim">
+          <Loader2 size={13} className="animate-spin" />
+          <span>{deepBusy}</span>
+        </div>
+      )}
+
+      {(streaming || deepView) && (
         <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-brand/30 bg-brand/5 px-3 py-2 text-xs text-ink">
-          <Badge tone="brand">{t("logicAnalyzer.streaming")}</Badge>
-          <span>{formatSampleRate(actualRate)}</span>
+          <Badge tone="brand">{streaming ? t("logicAnalyzer.streaming") : t("logicAnalyzer.deepResult")}</Badge>
+          <span>{formatSampleRate(deepView && !streaming ? deepView.rate : actualRate)}</span>
           <span>{formatSampleCount(streamSampleCount)} {t("logicAnalyzer.samples")}</span>
+          {deepView && !streaming && deepView.triggerIndex >= 0 && (
+            <span>trigger@{formatSampleCount(deepView.triggerIndex)}</span>
+          )}
+          {deepView && !streaming && deepView.dropped > 0 && (
+            <span className="text-danger">dropped {deepView.dropped}</span>
+          )}
+          {deepView && !streaming && (
+            <>
+              <Button type="button" variant="ghost" onClick={() => exportDeep("csv")}>
+                <Download size={13} />
+                CSV
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => exportDeep("sr")}>
+                <Download size={13} />
+                .sr
+              </Button>
+            </>
+          )}
           {error && (
             <span className="text-danger">{error}</span>
           )}

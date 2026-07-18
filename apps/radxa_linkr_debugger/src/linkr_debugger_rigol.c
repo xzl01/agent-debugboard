@@ -15,6 +15,8 @@
 #include <string.h>
 
 #include <zephyr/drivers/adc.h>
+#include <zephyr/drivers/flash.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/http/server.h>
@@ -23,6 +25,7 @@
 #include <zephyr/net/websocket.h>
 #include <zephyr/posix/poll.h>
 #include <zephyr/posix/sys/socket.h>
+#include <zephyr/storage/flash_map.h>
 
 LOG_MODULE_REGISTER(linkr_debugger_rigol, CONFIG_LINKR_DEBUGGER_LOG_LEVEL);
 
@@ -62,6 +65,7 @@ static int linkr_debugger_rigol_pump_analog(struct linkr_debugger_rigol_state *s
 	uint32_t budget_ms);
 static void linkr_debugger_rigol_cancel_capture(
 	struct linkr_debugger_rigol_state *state);
+static void linkr_debugger_rigol_deep_abort(void);
 
 struct linkr_debugger_rigol_state {
 	double timebase;
@@ -76,6 +80,7 @@ struct linkr_debugger_rigol_state {
 	bool capture_done;
 	bool capture_owns_la;
 	bool want_arm;
+	bool chan1_enabled;
 	int64_t arm_deadline;
 	uint32_t capture_rate;
 	uint16_t analog_ring_head;
@@ -685,6 +690,7 @@ static void linkr_debugger_rigol_cancel_capture(
 	}
 	state->capture_pending = false;
 	state->capture_owns_la = false;
+	linkr_debugger_rigol_deep_abort();
 }
 
 static int linkr_debugger_rigol_arm_analog(struct linkr_debugger_rigol_state *state,
@@ -797,6 +803,481 @@ static int linkr_debugger_rigol_pump_analog(struct linkr_debugger_rigol_state *s
 		}
 	}
 	return state->capture_done ? 1 : 0;
+}
+
+#define LINKR_DEBUGGER_RIGOL_DEEP_SAMPLES 1048576U
+#define LINKR_DEBUGGER_RIGOL_DEEP_DIGITAL_BYTES (LINKR_DEBUGGER_RIGOL_DEEP_SAMPLES * 2U)
+#define LINKR_DEBUGGER_RIGOL_DEEP_MAX_RATE_HZ 25000U
+#define LINKR_DEBUGGER_RIGOL_DEEP_AUTO_MS 2200U
+#define LINKR_DEBUGGER_RIGOL_DEEP_STAGE_BYTES 8192U
+#define LINKR_DEBUGGER_RIGOL_DEEP_SECTOR 4096U
+#define LINKR_DEBUGGER_RIGOL_DEEP_PAGE 256U
+
+enum linkr_debugger_rigol_deep_state {
+	LINKR_DEBUGGER_RIGOL_DEEP_IDLE = 0,
+	LINKR_DEBUGGER_RIGOL_DEEP_PREPARING,
+	LINKR_DEBUGGER_RIGOL_DEEP_CAPTURING,
+	LINKR_DEBUGGER_RIGOL_DEEP_DONE,
+};
+
+struct linkr_debugger_rigol_deep {
+	enum linkr_debugger_rigol_deep_state state;
+	const struct flash_area *area;
+	uint32_t rate_hz;
+	uint32_t written_samples;
+	uint32_t window_bytes;
+	uint32_t limit_samples;
+	uint32_t trigger_sample;
+	uint32_t post_remaining;
+	uint32_t read_sample;
+	uint32_t read_byte;
+	uint32_t erase_offset;
+	uint32_t program_offset;
+	uint32_t dropped;
+	bool analog;
+	bool triggered;
+	bool stop_requested;
+	uint8_t last_level;
+	uint8_t last_bytes[2];
+	uint32_t trigger_source;
+	enum linkr_debugger_la_trigger_type trigger_slope;
+	int trigger_level_raw;
+	int analog_prev_raw;
+	uint32_t stage_head;
+	uint32_t stage_tail;
+	struct k_mutex stage_lock;
+	struct k_sem stage_data;
+	uint8_t stage[LINKR_DEBUGGER_RIGOL_DEEP_STAGE_BYTES];
+};
+
+static struct linkr_debugger_rigol_deep linkr_debugger_rigol_deep_inst;
+static uint8_t linkr_debugger_rigol_deep_block[LINKR_DEBUGGER_RIGOL_LIVE_FRAME_BYTES];
+
+static uint32_t linkr_debugger_rigol_deep_stage_used(void)
+{
+	struct linkr_debugger_rigol_deep *deep = &linkr_debugger_rigol_deep_inst;
+
+	return (deep->stage_head + LINKR_DEBUGGER_RIGOL_DEEP_STAGE_BYTES - deep->stage_tail) %
+		LINKR_DEBUGGER_RIGOL_DEEP_STAGE_BYTES;
+}
+
+static void linkr_debugger_rigol_deep_stage_push(const uint8_t *data, uint32_t len)
+{
+	struct linkr_debugger_rigol_deep *deep = &linkr_debugger_rigol_deep_inst;
+
+	k_mutex_lock(&deep->stage_lock, K_FOREVER);
+	if (LINKR_DEBUGGER_RIGOL_DEEP_STAGE_BYTES - 1U -
+	    linkr_debugger_rigol_deep_stage_used() < len) {
+		deep->dropped += len;
+		k_mutex_unlock(&deep->stage_lock);
+		return;
+	}
+	for (uint32_t i = 0U; i < len; i++) {
+		deep->stage[deep->stage_head] = data[i];
+		deep->stage_head = (deep->stage_head + 1U) % LINKR_DEBUGGER_RIGOL_DEEP_STAGE_BYTES;
+	}
+	k_mutex_unlock(&deep->stage_lock);
+	k_sem_give(&deep->stage_data);
+}
+
+static void linkr_debugger_rigol_deep_stream_callback(
+	const struct linkr_debugger_la_stream_chunk *chunk, void *user_data)
+{
+	struct linkr_debugger_rigol_deep *deep = &linkr_debugger_rigol_deep_inst;
+	struct linkr_debugger_rigol_state *state = user_data;
+	uint8_t packed[2];
+
+	for (uint32_t i = 0U; i < chunk->sample_count; i++) {
+		uint16_t v = chunk->values[i];
+
+		if (!deep->triggered && state != NULL &&
+		    state->trigger_source < 15U) {
+			uint16_t mask = (uint16_t)(1U << state->trigger_source);
+			bool level = (v & mask) != 0U;
+			bool rising = deep->last_level == 0U && level;
+			bool falling = deep->last_level != 0U && !level;
+			bool hit = state->trigger_slope == LINKR_DEBUGGER_LA_TRIGGER_RISING ? rising :
+				state->trigger_slope == LINKR_DEBUGGER_LA_TRIGGER_FALLING ? falling :
+				rising || falling;
+
+			if (hit && deep->written_samples > 0U) {
+				deep->triggered = true;
+				deep->trigger_sample = deep->written_samples;
+				deep->post_remaining =
+					LINKR_DEBUGGER_RIGOL_DEEP_SAMPLES / 2U;
+			}
+			deep->last_level = level ? 1U : 0U;
+		}
+		deep->last_bytes[0] = (uint8_t)(v & 0xffU);
+		deep->last_bytes[1] = (uint8_t)(v >> 8U);
+		packed[0] = deep->last_bytes[0];
+		packed[1] = deep->last_bytes[1];
+		linkr_debugger_rigol_deep_stage_push(packed, 2U);
+		deep->written_samples++;
+		if (deep->triggered) {
+			if (deep->post_remaining > 0U) {
+				deep->post_remaining--;
+			}
+			if (deep->post_remaining == 0U) {
+				deep->stop_requested = true;
+				break;
+			}
+		}
+	}
+}
+
+static int linkr_debugger_rigol_deep_flash_write(uint32_t offset,
+	const uint8_t *data, uint32_t len)
+{
+	struct linkr_debugger_rigol_deep *deep = &linkr_debugger_rigol_deep_inst;
+	int ret = 0;
+
+	while (len > 0U) {
+		while (offset + LINKR_DEBUGGER_RIGOL_DEEP_PAGE > deep->erase_offset) {
+			if (deep->erase_offset >= LINKR_DEBUGGER_RIGOL_DEEP_DIGITAL_BYTES) {
+				return -ENOSPC;
+			}
+			ret = flash_area_erase(deep->area, deep->erase_offset,
+				LINKR_DEBUGGER_RIGOL_DEEP_SECTOR);
+			if (ret < 0) {
+				return ret;
+			}
+			deep->erase_offset += LINKR_DEBUGGER_RIGOL_DEEP_SECTOR;
+		}
+		uint32_t chunk = len < LINKR_DEBUGGER_RIGOL_DEEP_PAGE ?
+			len : LINKR_DEBUGGER_RIGOL_DEEP_PAGE;
+
+		ret = flash_area_write(deep->area, offset, data, chunk);
+		if (ret < 0) {
+			return ret;
+		}
+		offset += chunk;
+		data += chunk;
+		len -= chunk;
+	}
+	return 0;
+}
+
+static void linkr_debugger_rigol_deep_produce_digital(
+	struct linkr_debugger_rigol_deep *deep)
+{
+	static const struct device *gpio0;
+	gpio_port_value_t port = 0;
+	uint16_t v = 0U;
+	uint8_t packed[2];
+
+	if (gpio0 == NULL) {
+		gpio0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+	}
+	(void)gpio_port_get_raw(gpio0, &port);
+	for (uint8_t i = 0U; i < 15U; i++) {
+		if ((port & ((gpio_port_value_t)1U << linkr_debugger_rigol_pins[i])) != 0U) {
+			v |= (uint16_t)(1U << i);
+		}
+	}
+	if (!deep->triggered && deep->trigger_source < 15U) {
+		uint16_t mask = (uint16_t)(1U << deep->trigger_source);
+		bool level = (v & mask) != 0U;
+		bool rising = deep->last_level == 0U && level;
+		bool falling = deep->last_level != 0U && !level;
+		bool hit = deep->trigger_slope == LINKR_DEBUGGER_LA_TRIGGER_RISING ? rising :
+			deep->trigger_slope == LINKR_DEBUGGER_LA_TRIGGER_FALLING ? falling :
+			rising || falling;
+
+		if (hit && deep->written_samples > 0U) {
+			deep->triggered = true;
+			deep->trigger_sample = deep->written_samples;
+			deep->post_remaining = deep->limit_samples / 2U;
+		}
+		deep->last_level = level ? 1U : 0U;
+	}
+	deep->last_bytes[0] = (uint8_t)(v & 0xffU);
+	deep->last_bytes[1] = (uint8_t)(v >> 8U);
+	packed[0] = deep->last_bytes[0];
+	packed[1] = deep->last_bytes[1];
+	linkr_debugger_rigol_deep_stage_push(packed, 2U);
+	deep->written_samples++;
+	if (deep->triggered && deep->post_remaining > 0U) {
+		deep->post_remaining--;
+		if (deep->post_remaining == 0U) {
+			deep->stop_requested = true;
+		}
+	}
+	if (deep->stop_requested || deep->written_samples >= deep->limit_samples) {
+		deep->state = LINKR_DEBUGGER_RIGOL_DEEP_DONE;
+	}
+	if (deep->rate_hz > 0U) {
+		k_busy_wait(1000000U / deep->rate_hz);
+	}
+}
+
+static void linkr_debugger_rigol_deep_flash_thread(void *p1, void *p2, void *p3)
+{
+	struct linkr_debugger_rigol_deep *deep = &linkr_debugger_rigol_deep_inst;
+	uint8_t page[LINKR_DEBUGGER_RIGOL_DEEP_PAGE];
+
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	while (true) {
+		if (deep->state == LINKR_DEBUGGER_RIGOL_DEEP_PREPARING) {
+			if (deep->area == NULL &&
+			    flash_area_open(PARTITION_ID(storage_partition), &deep->area) < 0) {
+				deep->state = LINKR_DEBUGGER_RIGOL_DEEP_IDLE;
+				continue;
+			}
+			if (deep->erase_offset < deep->window_bytes) {
+				if (flash_area_erase(deep->area, deep->erase_offset,
+				    LINKR_DEBUGGER_RIGOL_DEEP_SECTOR) < 0) {
+					LOG_WRN("rigol deep: erase failed at %u",
+						(unsigned)deep->erase_offset);
+					deep->state = LINKR_DEBUGGER_RIGOL_DEEP_IDLE;
+					continue;
+				}
+				deep->erase_offset += LINKR_DEBUGGER_RIGOL_DEEP_SECTOR;
+			} else {
+				deep->state = LINKR_DEBUGGER_RIGOL_DEEP_CAPTURING;
+			}
+			continue;
+		}
+		if (deep->state == LINKR_DEBUGGER_RIGOL_DEEP_CAPTURING &&
+		    !deep->analog) {
+			linkr_debugger_rigol_deep_produce_digital(deep);
+			if (k_sem_take(&deep->stage_data, K_NO_WAIT) != 0) {
+				continue;
+			}
+		} else if (deep->state == LINKR_DEBUGGER_RIGOL_DEEP_CAPTURING &&
+		    deep->analog) {
+			uint32_t pace_us = linkr_debugger_rigol_analog_pace_us(deep->rate_hz);
+			int raw = linkr_debugger_rigol_read_gp29_raw();
+			uint8_t v;
+
+			if (deep->area == NULL &&
+			    flash_area_open(PARTITION_ID(storage_partition), &deep->area) < 0) {
+				deep->state = LINKR_DEBUGGER_RIGOL_DEEP_IDLE;
+				continue;
+			}
+			if (raw < 0) {
+				raw = deep->analog_prev_raw >= 0 ? deep->analog_prev_raw : 0;
+			}
+			v = linkr_debugger_rigol_gp29_to_scope(raw);
+			if (!deep->triggered) {
+				bool rising = deep->analog_prev_raw >= 0 &&
+					deep->analog_prev_raw < deep->trigger_level_raw &&
+					raw >= deep->trigger_level_raw;
+				bool falling = deep->analog_prev_raw >= deep->trigger_level_raw &&
+					raw < deep->trigger_level_raw;
+				bool hit = deep->trigger_slope == LINKR_DEBUGGER_LA_TRIGGER_RISING ? rising :
+					deep->trigger_slope == LINKR_DEBUGGER_LA_TRIGGER_FALLING ? falling :
+					rising || falling;
+
+				if (hit && deep->written_samples > 0U) {
+					deep->triggered = true;
+					deep->trigger_sample = deep->written_samples;
+					deep->post_remaining =
+						LINKR_DEBUGGER_RIGOL_DEEP_SAMPLES / 2U;
+				}
+			}
+			deep->analog_prev_raw = raw;
+			deep->last_bytes[0] = v;
+			linkr_debugger_rigol_deep_stage_push(&v, 1U);
+			deep->written_samples++;
+			if (deep->triggered && deep->post_remaining > 0U) {
+				deep->post_remaining--;
+				if (deep->post_remaining == 0U) {
+					deep->stop_requested = true;
+				}
+			}
+			if (deep->stop_requested ||
+			    deep->written_samples >= deep->limit_samples) {
+				deep->state = LINKR_DEBUGGER_RIGOL_DEEP_DONE;
+			}
+			if (pace_us > 0U) {
+				k_busy_wait(pace_us);
+			}
+			if (k_sem_take(&deep->stage_data, K_NO_WAIT) != 0) {
+				continue;
+			}
+		} else {
+			k_sem_take(&deep->stage_data, K_FOREVER);
+		}
+		if (deep->area == NULL &&
+		    flash_area_open(PARTITION_ID(storage_partition), &deep->area) < 0) {
+			k_mutex_lock(&deep->stage_lock, K_FOREVER);
+			deep->stage_tail = deep->stage_head;
+			k_mutex_unlock(&deep->stage_lock);
+			continue;
+		}
+
+		uint32_t base;
+		uint32_t n = 0U;
+
+		k_mutex_lock(&deep->stage_lock, K_FOREVER);
+		while (n < sizeof(page) && linkr_debugger_rigol_deep_stage_used() > 0U) {
+			page[n++] = deep->stage[deep->stage_tail];
+			deep->stage_tail = (deep->stage_tail + 1U) %
+				LINKR_DEBUGGER_RIGOL_DEEP_STAGE_BYTES;
+		}
+		base = deep->program_offset;
+		deep->program_offset += n;
+		k_mutex_unlock(&deep->stage_lock);
+
+		if (n > 0U && base + n <= LINKR_DEBUGGER_RIGOL_DEEP_DIGITAL_BYTES) {
+			if (linkr_debugger_rigol_deep_flash_write(base, page, n) < 0) {
+				LOG_WRN("rigol deep: flash write failed at %u",
+					(unsigned)base);
+			}
+		}
+	}
+}
+
+static void linkr_debugger_rigol_deep_reset(void)
+{
+	struct linkr_debugger_rigol_deep *deep = &linkr_debugger_rigol_deep_inst;
+
+	deep->state = LINKR_DEBUGGER_RIGOL_DEEP_IDLE;
+	deep->written_samples = 0U;
+	deep->trigger_sample = 0U;
+	deep->post_remaining = 0U;
+	deep->read_sample = 0U;
+	deep->read_byte = 0U;
+	deep->erase_offset = 0U;
+	deep->program_offset = 0U;
+	deep->dropped = 0U;
+	deep->window_bytes = 0U;
+	deep->limit_samples = 0U;
+	deep->triggered = false;
+	deep->stop_requested = false;
+	deep->analog = false;
+	deep->last_level = 0U;
+	k_mutex_lock(&deep->stage_lock, K_FOREVER);
+	deep->stage_head = 0U;
+	deep->stage_tail = 0U;
+	k_mutex_unlock(&deep->stage_lock);
+	k_sem_reset(&deep->stage_data);
+}
+
+static int linkr_debugger_rigol_deep_start(struct linkr_debugger_rigol_state *state,
+	uint32_t rate_hz, uint32_t duration_s)
+{
+	struct linkr_debugger_rigol_deep *deep = &linkr_debugger_rigol_deep_inst;
+	uint32_t bps;
+	uint64_t want;
+
+	linkr_debugger_rigol_deep_reset();
+	deep->rate_hz = rate_hz > LINKR_DEBUGGER_RIGOL_DEEP_MAX_RATE_HZ ?
+		LINKR_DEBUGGER_RIGOL_DEEP_MAX_RATE_HZ : rate_hz;
+	if (deep->rate_hz == 0U) {
+		deep->rate_hz = 1U;
+	}
+	deep->analog = state->digital_enabled == 0U && state->chan1_enabled;
+	if (deep->analog && deep->rate_hz > LINKR_DEBUGGER_RIGOL_GP29_ADC_CAP_HZ) {
+		deep->rate_hz = LINKR_DEBUGGER_RIGOL_GP29_ADC_CAP_HZ;
+	}
+	deep->trigger_source = state->trigger_source;
+	deep->trigger_slope = state->trigger_slope;
+	deep->trigger_level_raw = (int)(state->trigger_level * 4095.0f / 3.3f);
+	if (deep->trigger_level_raw < 0) {
+		deep->trigger_level_raw = 0;
+	} else if (deep->trigger_level_raw > 4095) {
+		deep->trigger_level_raw = 4095;
+	}
+	deep->analog_prev_raw = -1;
+	bps = deep->analog ? 1U : 2U;
+	want = (uint64_t)deep->rate_hz * (uint64_t)(duration_s > 0U ? duration_s : 2U);
+	if (want == 0U) {
+		want = 1U;
+	}
+	if (want > LINKR_DEBUGGER_RIGOL_DEEP_DIGITAL_BYTES / bps) {
+		want = LINKR_DEBUGGER_RIGOL_DEEP_DIGITAL_BYTES / bps;
+	}
+	deep->limit_samples = (uint32_t)want;
+	deep->window_bytes = (uint32_t)((want * bps +
+		LINKR_DEBUGGER_RIGOL_DEEP_SECTOR - 1U) /
+		LINKR_DEBUGGER_RIGOL_DEEP_SECTOR * LINKR_DEBUGGER_RIGOL_DEEP_SECTOR);
+	if (deep->window_bytes > LINKR_DEBUGGER_RIGOL_DEEP_DIGITAL_BYTES) {
+		deep->window_bytes = LINKR_DEBUGGER_RIGOL_DEEP_DIGITAL_BYTES;
+	}
+	deep->state = LINKR_DEBUGGER_RIGOL_DEEP_PREPARING;
+	return 0;
+}
+
+static void linkr_debugger_rigol_deep_abort(void)
+{
+	linkr_debugger_rigol_deep_inst.state = LINKR_DEBUGGER_RIGOL_DEEP_IDLE;
+}
+
+static void linkr_debugger_rigol_deep_poll(struct linkr_debugger_rigol_state *state)
+{
+	ARG_UNUSED(state);
+}
+
+static int linkr_debugger_rigol_deep_serve_data(int fd, uint32_t off, uint32_t count)
+{
+	struct linkr_debugger_rigol_deep *deep = &linkr_debugger_rigol_deep_inst;
+	uint32_t bps = deep->analog ? 1U : 2U;
+	uint32_t total = count * bps;
+	uint32_t sent = 0U;
+	uint8_t header[20];
+	int header_len;
+
+	if (count == 0U || total > (1U << 20)) {
+		return linkr_debugger_rigol_send_str(fd, "ERR\n");
+	}
+
+	int64_t deadline = k_uptime_get() + 2000;
+
+	while (deep->program_offset < (uint64_t)off * bps + total &&
+	       deep->program_offset < (uint64_t)deep->written_samples * bps &&
+	       k_uptime_get() < deadline) {
+		k_msleep(5);
+	}
+
+	header_len = snprintk(header, sizeof(header), "#%u%u",
+		total >= 1000000U ? 7U : total >= 100000U ? 6U :
+		total >= 10000U ? 5U : total >= 1000U ? 4U :
+		total >= 100U ? 3U : total >= 10U ? 2U : 1U,
+		(unsigned)total);
+	if (header_len <= 0 ||
+	    linkr_debugger_rigol_send_all(fd, header, (size_t)header_len) < 0) {
+		return -1;
+	}
+
+	while (sent < total) {
+		uint32_t chunk = total - sent;
+		uint32_t sample_pos = off + sent / bps;
+		uint32_t real = 0U;
+
+		if (chunk > sizeof(linkr_debugger_rigol_deep_block)) {
+			chunk = sizeof(linkr_debugger_rigol_deep_block);
+		}
+		if (sample_pos < deep->written_samples) {
+			uint32_t avail = (deep->written_samples - sample_pos) * bps;
+
+			real = chunk < avail ? chunk : avail;
+		}
+		if (real > 0U && deep->area != NULL &&
+		    flash_area_read(deep->area, (uint32_t)(off * bps) + sent,
+			linkr_debugger_rigol_deep_block, real) < 0) {
+			memset(linkr_debugger_rigol_deep_block, 0, real);
+		}
+		if (deep->analog) {
+			memset(&linkr_debugger_rigol_deep_block[real], deep->last_bytes[0],
+				chunk - real);
+		} else {
+			for (uint32_t i = real; i < chunk; i += 2U) {
+				linkr_debugger_rigol_deep_block[i] = deep->last_bytes[0];
+				linkr_debugger_rigol_deep_block[i + 1U] = deep->last_bytes[1];
+			}
+		}
+		if (linkr_debugger_rigol_send_all(fd, linkr_debugger_rigol_deep_block,
+			chunk) < 0) {
+			return -1;
+		}
+		sent += chunk;
+	}
+	return 0;
 }
 
 struct linkr_debugger_rigol_stream_sink {
@@ -1217,6 +1698,66 @@ static int linkr_debugger_rigol_handle_query(int fd, const char *line,
 	if (strcmp(line, ":WAV:DATA? DIG") == 0) {
 		return linkr_debugger_rigol_produce_frame(fd, state, state->armed);
 	}
+	if (strncmp(line, ":LINKR:DEEP:START", 17) == 0) {
+		const char *p = line + 17;
+		uint32_t rate = (uint32_t)strtoul(p, (char **)&p, 10);
+		uint32_t duration_s = (uint32_t)strtoul(p, NULL, 10);
+
+		if (rate == 0U) {
+			rate = LINKR_DEBUGGER_RIGOL_DEEP_MAX_RATE_HZ;
+		}
+		if (duration_s > 30U) {
+			duration_s = 30U;
+		}
+		if (linkr_debugger_rigol_deep_inst.state ==
+		    LINKR_DEBUGGER_RIGOL_DEEP_CAPTURING ||
+		    linkr_debugger_rigol_deep_inst.state ==
+		    LINKR_DEBUGGER_RIGOL_DEEP_PREPARING) {
+			return linkr_debugger_rigol_send_str(fd, "BUSY\n");
+		}
+		linkr_debugger_rigol_cancel_capture(state);
+		if (linkr_debugger_rigol_deep_start(state, rate, duration_s) < 0) {
+			return linkr_debugger_rigol_send_str(fd, "ERR\n");
+		}
+		return linkr_debugger_rigol_send_str(fd, "OK\n");
+	}
+	if (strcmp(line, ":LINKR:DEEP:STOP") == 0) {
+		linkr_debugger_rigol_deep_abort();
+		return linkr_debugger_rigol_send_str(fd, "OK\n");
+	}
+	if (strcmp(line, ":LINKR:DEEP:STATUS?") == 0) {
+		char resp[80];
+		int len;
+		struct linkr_debugger_rigol_deep *deep = &linkr_debugger_rigol_deep_inst;
+
+		linkr_debugger_rigol_deep_poll(state);
+		if (deep->state == LINKR_DEBUGGER_RIGOL_DEEP_PREPARING) {
+			len = snprintk(resp, sizeof(resp), "PREPARING %u %u\n",
+				(unsigned)deep->erase_offset, (unsigned)deep->window_bytes);
+		} else if (deep->state == LINKR_DEBUGGER_RIGOL_DEEP_CAPTURING) {
+			len = snprintk(resp, sizeof(resp), "CAPTURING %u\n",
+				(unsigned)deep->written_samples);
+		} else if (deep->state == LINKR_DEBUGGER_RIGOL_DEEP_DONE) {
+			len = snprintk(resp, sizeof(resp), "DONE %u %ld %u %u\n",
+				(unsigned)deep->written_samples,
+				deep->triggered ? (long)deep->trigger_sample : -1L,
+				(unsigned)deep->rate_hz, (unsigned)deep->dropped);
+		} else {
+			len = snprintk(resp, sizeof(resp), "IDLE\n");
+		}
+		if (len <= 0) {
+			return -1;
+		}
+		return linkr_debugger_rigol_send_all(fd, resp, (size_t)len);
+	}
+	if (strncmp(line, ":LINKR:DEEP:DATA?", 17) == 0) {
+		const char *p = line + 17;
+		uint32_t off = (uint32_t)strtoul(p, (char **)&p, 10);
+		uint32_t count = (uint32_t)strtoul(p, (char **)&p, 10);
+
+		linkr_debugger_rigol_deep_poll(state);
+		return linkr_debugger_rigol_deep_serve_data(fd, off, count);
+	}
 	return 1;
 }
 
@@ -1314,6 +1855,10 @@ static void linkr_debugger_rigol_handle_set(const char *line,
 			LINKR_DEBUGGER_LA_TRIGGER_FALLING : LINKR_DEBUGGER_LA_TRIGGER_RISING;
 		return;
 	}
+	if (strncmp(line, ":CHAN1:DISP ", 12) == 0) {
+		state->chan1_enabled = strstr(line + 12, "ON") != NULL;
+		return;
+	}
 	if (strncmp(line, ":TRIG:EDGE:LEV ", 15) == 0) {
 		char *end = NULL;
 		float v = strtof(line + 15, &end);
@@ -1375,6 +1920,7 @@ static void linkr_debugger_rigol_handle_set(const char *line,
 		state->trigger_source = 0U;
 		state->trigger_level = LINKR_DEBUGGER_RIGOL_DEFAULT_TRIG_LEVEL;
 		state->digital_enabled = 0xffffU;
+		state->chan1_enabled = true;
 		linkr_debugger_rigol_cancel_capture(state);
 		state->capture_done = false;
 		return;
@@ -1397,6 +1943,7 @@ static void linkr_debugger_rigol_scpi_run(const struct linkr_debugger_rigol_io *
 		.capture_done = false,
 		.capture_owns_la = false,
 		.want_arm = false,
+		.chan1_enabled = true,
 	};
 
 	linkr_debugger_rigol_io_current = *io;
@@ -1583,8 +2130,10 @@ static K_THREAD_STACK_DEFINE(linkr_debugger_rigol_dispatch_stack,
 	LINKR_DEBUGGER_RIGOL_THREAD_STACK);
 static K_THREAD_STACK_DEFINE(linkr_debugger_rigol_pump_stack,
 	LINKR_DEBUGGER_RIGOL_THREAD_STACK);
+static K_THREAD_STACK_DEFINE(linkr_debugger_rigol_deep_stack, 2048U);
 static struct k_thread linkr_debugger_rigol_dispatch_thread_data;
 static struct k_thread linkr_debugger_rigol_pump_thread_data;
+static struct k_thread linkr_debugger_rigol_deep_thread_data;
 
 void linkr_debugger_rigol_server_init(void)
 {
@@ -1592,6 +2141,10 @@ void linkr_debugger_rigol_server_init(void)
 	    adc_channel_setup_dt(&linkr_debugger_rigol_adc_gp29) < 0) {
 		LOG_WRN("rigol: GP29 ADC setup failed, CH1 will read zero");
 	}
+
+	k_mutex_init(&linkr_debugger_rigol_deep_inst.stage_lock);
+	k_sem_init(&linkr_debugger_rigol_deep_inst.stage_data, 0U,
+		LINKR_DEBUGGER_RIGOL_DEEP_STAGE_BYTES);
 
 	(void)k_thread_create(&linkr_debugger_rigol_pump_thread_data,
 		linkr_debugger_rigol_pump_stack, LINKR_DEBUGGER_RIGOL_THREAD_STACK,
@@ -1604,4 +2157,10 @@ void linkr_debugger_rigol_server_init(void)
 		linkr_debugger_rigol_dispatch_thread, NULL, NULL, NULL,
 		K_LOWEST_APPLICATION_THREAD_PRIO, 0, K_NO_WAIT);
 	(void)k_thread_name_set(&linkr_debugger_rigol_dispatch_thread_data, "rigol_dispatch");
+
+	(void)k_thread_create(&linkr_debugger_rigol_deep_thread_data,
+		linkr_debugger_rigol_deep_stack, 2048U,
+		linkr_debugger_rigol_deep_flash_thread, NULL, NULL, NULL,
+		K_LOWEST_APPLICATION_THREAD_PRIO, 0, K_NO_WAIT);
+	(void)k_thread_name_set(&linkr_debugger_rigol_deep_thread_data, "rigol_deep");
 }

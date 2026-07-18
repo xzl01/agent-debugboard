@@ -149,6 +149,23 @@ export function useScpiScope() {
     [ensureConnected, exclusive, nextEvent]
   );
 
+  const readDeepData = useCallback(
+    (offset: number, count: number, timeoutMs = FRAME_TIMEOUT_MS) =>
+      exclusive(async () => {
+        await ensureConnected();
+        wsRef.current?.send(`:LINKR:DEEP:DATA? ${offset} ${count}\n`);
+        const ev = await nextEvent((e) => e.type === "block", timeoutMs);
+        if (ev.type !== "block") throw new Error("scpi deep data type mismatch");
+        const payload = ev.payload;
+        const out = new Uint16Array(payload.byteLength / 2);
+        for (let i = 0; i < out.length; i++) {
+          out[i] = payload[i * 2] | (payload[i * 2 + 1] << 8);
+        }
+        return out;
+      }),
+    [ensureConnected, exclusive, nextEvent]
+  );
+
   return {
     connected,
     error,
@@ -158,5 +175,6 @@ export function useScpiScope() {
     command,
     query,
     readDigitalFrame,
+    readDeepData,
   };
 }

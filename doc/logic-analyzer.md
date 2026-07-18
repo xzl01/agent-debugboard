@@ -364,11 +364,51 @@ sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
   `triggerslope`), not LA-style `--triggers`.
 - One SCPI session at a time; a second connection waits in the listen backlog
   until the first session closes.
-- Memory/RAW download mode (`:WAV:POIN:MODE RAW`) and analog trigger sources
-  are not emulated; analog-source triggers fall back to untriggered frames.
+- **sigrok memory mode (`datasource=Memory`) is not usable with the DS1102D
+  identity**: the driver hard-codes "Cannot get samplerate (below V3)" for all
+  PROTOCOL_V2 models, so deep captures cannot go through stock sigrok. Deep
+  capture is therefore exposed via vendor SCPI commands (next section) used by
+  the Web UI; migrating the emulated identity to an MSO5000-series model
+  (PROTOCOL_V5, `ACQ:MDEP?`-reported depth) is the documented path if stock
+  sigrok memory mode is ever required.
 - libsigrok may log `Read should have been completed` after a full live
   frame; that is a cosmetic tcp-raw heuristic in the driver, frames still
   complete normally.
+
+## Deep Capture (Vendor SCPI, SPI Flash)
+
+Deep captures record into the 2 MB `storage` flash partition instead of RAM.
+Control and download use the same SCPI channel (TCP or WebSocket) via these
+vendor commands:
+
+| Command | Description |
+| --- | --- |
+| `:LINKR:DEEP:START <rate_hz> [duration_s]` | Erase the window (status `PREPARING`), then capture `rate_hz × duration_s` samples (duration default 2, max 30). Rate clamps to 25 kHz digital / 10 kHz analog (GP29). Returns `OK` / `BUSY` / `ERR`. |
+| `:LINKR:DEEP:STATUS?` | `IDLE`, `PREPARING <erased> <window>`, `CAPTURING <written>`, or `DONE <written> <trigger_idx|-1> <rate> <dropped>`. |
+| `:LINKR:DEEP:DATA? <offset> <count>` | IEEE488 block of `count` samples (2 bytes each digital, 1 byte analog), flash-backed, padded with the last sample beyond `written`. Max 1M samples per request. |
+| `:LINKR:DEEP:STOP` | Abort the current capture (`OK`). |
+
+Semantics and honest limits:
+
+- The window is erased up front (~40-400 ms per 4 KB sector; a 100 KB window
+  takes ~1-10 s of `PREPARING`); during capture the producer writes
+  program-only pages. Page-program stalls make sample timing best-effort:
+  at ≤1 kHz effectively gap-free, at 25 kHz up to ~15 % of samples may be
+  lost in bursts (visible as `dropped` in the status). Digital sampling reads
+  the GPIO input register at the configured pace; analog reads GP29 via ADC.
+- Edge trigger (digital slope on the selected channel, or analog level
+  crossing on GP29) stops the capture after half the window of post samples,
+  so the trigger edge sits mid-window when it fires early. Without an edge,
+  the full `rate × duration` window is captured.
+- Trigger configuration reuses the scope `:TRIG:EDGE:SOUR/SLOP/LEV` state on
+  the same session.
+- Flash wear: a full 2 MB rewrite is 512 sector erases; the device is rated
+  for 100k erase cycles per sector, which is ample for a debug tool.
+
+The Web UI exposes this as the **Deep** button on the Logic Analyzer card
+(25 kHz, 2 s window default): it shows PREPARING/CAPTURING progress, downloads
+the window into the rolling waveform view, decodes the visible window, and
+exports CSV or PulseView `.sr` of up to one million samples.
 
 ## Usage
 

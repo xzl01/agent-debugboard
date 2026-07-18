@@ -430,7 +430,13 @@ D0-D14 map to GP7-GP9/GP10-GP20/GP29 and CH1 is the GP29 analog input. Edge
 triggers use scope-style config keys (`--config triggersource=D3
 --config triggerslope=f`) with real hardware pre-trigger at ≤25 MHz, burst
 trigger at >25 MHz, and AUTO fallback when no edge arrives. Use `--frames`,
-not `--samples`. Full semantics and limits: `doc/logic-analyzer.md`.
+not `--samples`. Deep captures (up to one million samples into the 2 MB
+SPI-flash storage partition, ≤25 kHz digital / ≤10 kHz analog with edge or
+level trigger) use vendor SCPI commands `:LINKR:DEEP:START <rate> [seconds]`,
+`:LINKR:DEEP:STATUS?`, `:LINKR:DEEP:DATA? <off> <count>`, `:LINKR:DEEP:STOP`
+on the same channel; stock sigrok memory mode is not usable with the DS1102D
+identity (driver V2 samplerate limitation). Full semantics and limits:
+`doc/logic-analyzer.md`.
 
  ```sh
  timeout 5s curl -fsS -X DELETE "$BOARD_URL/api/v1/logic-analyzer"

@@ -1097,6 +1097,42 @@ SCPI 会话期间与之后，浏览器/CLI 路径（HTTP 经泵转发到 8080）
 测试结束后 GET /api/v1/logic-analyzer 应显示 `state: "idle"`（rigol 会话
 不得泄漏 LA 所有权）。
 
+### 8d. 深采集（SPI flash，厂商 SCPI）
+
+深采集把采样写入 2 MB storage flash 分区（数字 ≤25 kHz、模拟 ≤10 kHz，
+GP10 注入 115200 'U' 用于触发验证）。
+
+#### 8d.1 触发深采集全流程
+
+用 WS 或 TCP SCPI 客户端执行：
+
+```text
+:TRIG:EDGE:SOUR D3
+:TRIG:EDGE:SLOP NEG
+:LINKR:DEEP:START 25000 2
+# 轮询 :LINKR:DEEP:STATUS? 直到 DONE（PREPARING 阶段约 1-10 秒）
+:LINKR:DEEP:STATUS?
+# 期望：DONE <written> <trig_idx> 25000 0，触发时 written ≈ trig_idx + 25000
+:LINKR:DEEP:DATA? 0 8192
+# 期望：8192×2 字节块，D3 位呈现 115200 'U' 周期边沿
+```
+
+验证：同一窗口重复 DATA? 返回完全相同（flash 持久化）；`written` 之后的
+区域返回统一的末样本填充；STATUS 中 `dropped` 为 0；LA 状态保持 idle
+（深采集不占用 LA）。
+
+#### 8d.2 无信号满窗口
+
+不给触发源信号时 START 应在 `rate × duration` 满窗口后 DONE
+（如 25000 Hz × 2 s = 50000 样本）。
+
+#### 8d.3 浏览器 Deep 按钮 E2E
+
+Logic Analyzer 页签选择 GP10 并设 falling 触发后点 **Deep**：应依次显示
+PREPARING/CAPTURING/download 进度，完成后徽标显示 "deep <rate> <count>
+samples" 与 trigger@ 位置，实时波形出现且可窗口解码，CSV/.sr 导出可用
+（导出文件应包含与徽标一致的样本数）。
+
 ### 10. USB CDC ACM fallback
 
 验证：
