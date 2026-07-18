@@ -1048,6 +1048,79 @@ linkr-debugger:~$ bootloader
 picotool load -v -x "$FLASH_UF2"
 ```
 
+### 8c. PulseView 原生接入（rigol-ds 仿真）
+
+固件在端口 80 上以首字节分流复用 HTTP 与 Rigol DS1102D SCPI 仿真
+（rigol-ds 驱动，`tcp-raw`）。验证使用 sigrok-cli，配合 GP10（D3）上的
+115200 波特 'U' 连续注入（start bit 提供周期性下降沿）。
+
+前提：`nix-shell -p sigrok-cli`，注入脚本写 `/dev/ttyACM1`（115200 连续
+'U'）。下述命令中 `$SIG` 为 sigrok-cli 路径。
+
+#### 8c.1 扫描识别
+
+```sh
+$SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 --scan
+# 应识别出 "Rigol Technologies DS1102D"，18 通道（CH1/CH2 + D0-D15）
+```
+
+#### 8c.2 快时基硬件预触发（≤25 MHz）
+
+```sh
+$SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
+  --config timebase='20 us' --config triggersource=D3 --config triggerslope=f \
+  --frames 1 --channels D3 -o /tmp/cap.sr
+$SIG -i /tmp/cap.sr -O csv
+# 验证：600 样本，D3 下降沿精确位于样本 300（pre=300/post=212），
+# 波形呈现 115200 'U' 的周期位型（约 43 样本一对同向边沿）
+```
+
+#### 8c.3 慢时基 :TRIG:STAT? 轮询路径（≥50 ms/div）
+
+```sh
+$SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
+  --config timebase='50 ms' --config triggersource=D3 --config triggerslope=f \
+  --frames 3 --channels D3 -o /tmp/cap.sr
+# 验证：3 帧均返回（驱动两阶段等待 RUN->TD 不超时），每帧边沿位于样本 300
+```
+
+#### 8c.4 AUTO 回退（无有效触发源）
+
+```sh
+$SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
+  --config timebase='20 us' --frames 1 --channels D3 -o /tmp/cap.sr
+# 验证：默认触发源 D0 无边沿时约 100ms 后仍返回一帧非触发数据，
+# 不应出现采集超时或连接断开
+```
+
+#### 8c.5 >25 MHz 突发触发
+
+```sh
+$SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
+  --config timebase='1 us' --config triggersource=D3 --config triggerslope=f \
+  --frames 1 --channels D3 -o /tmp/cap.sr
+# 验证：返回 600 样本（单次 burst 512 + 软件边沿对齐到 300 并填充）；
+# 无边沿窗口时同样返回数据（AUTO），不得报错断开
+```
+
+#### 8c.6 GP29 模拟通道（CH1）
+
+```sh
+$SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
+  --config timebase='1 ms' --frames 1 --channels CH1 -o /tmp/cap.sr
+$SIG -i /tmp/cap.sr -O csv
+# 验证：600 个模拟电压样本（浮空引脚应为缓变中电平），
+# 板端日志不得出现 "GP29 ADC setup failed"
+```
+
+#### 8c.7 端口 80 复用回归
+
+SCPI 会话期间与之后，浏览器/CLI 路径（HTTP 经泵转发到 8080）必须正常：
+`curl http://172.29.203.1/api/v1/status` 返回 200；WS 流式采样
+（logic-chunk）在 SCPI 会话关闭后照常工作；全部 sigrok 测试结束后
+GET /api/v1/logic-analyzer 应显示 `state: "idle"`（rigol 会话不得泄漏
+LA 所有权）。
+
 ### 10. USB CDC ACM fallback
 
 验证：

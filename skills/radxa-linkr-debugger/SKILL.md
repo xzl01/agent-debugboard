@@ -422,6 +422,16 @@ project-owned Rust/WASM decoder served at stable URLs:
 The decoder supports UART, I2C, and SPI protocols only; it is not a
 libsigrokdecode Python plugin compatibility layer.
 
+PulseView / sigrok-cli can also connect directly with no client-side changes:
+the firmware emulates a Rigol DS1102D (rigol-ds driver) over raw TCP on port 80
+(shared with the web server via first-byte multiplexing). Use
+`sigrok-cli -d rigol-ds:conn=tcp-raw/<board-ip>/80 ...`; digital channels
+D0-D14 map to GP7-GP9/GP10-GP20/GP29 and CH1 is the GP29 analog input. Edge
+triggers use scope-style config keys (`--config triggersource=D3
+--config triggerslope=f`) with real hardware pre-trigger at ≤25 MHz, burst
+trigger at >25 MHz, and AUTO fallback when no edge arrives. Use `--frames`,
+not `--samples`. Full semantics and limits: `doc/logic-analyzer.md`.
+
  ```sh
  timeout 5s curl -fsS -X DELETE "$BOARD_URL/api/v1/logic-analyzer"
  timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \

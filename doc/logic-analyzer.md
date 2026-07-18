@@ -308,6 +308,81 @@ samples after it, with `triggerIndex = pre_samples`.
   ≤25 MHz). The edge must appear within the stream's sample window; at1 MHz
   the ring holds ~500 µs of history.
 
+## PulseView Native (rigol-ds Emulation)
+
+The firmware emulates a Rigol DS1102D mixed-signal oscilloscope over raw TCP,
+so stock PulseView / sigrok-cli connect directly with no client-side changes.
+Port 80 multiplexes by first byte: uppercase-ASCII traffic (HTTP) is pumped to
+the internal web server on `127.0.0.1:8080`, everything else (SCPI) is answered
+by the emulation. Use `tcp-raw/<board-ip>/80` as the sigrok connection string.
+
+Identity: `Rigol Technologies,DS1102D,DS1ZA999000001,00.04.04` (protocol V2,
+600-sample live frames, 12 horizontal divisions).
+
+### Channel Map
+
+| sigrok channel | Board pin |
+| --- | --- |
+| D0-D14 | GP7, GP8, GP9, GP10-GP20, GP29 |
+| CH1 (analog) | GP29 (ADC3) |
+
+### Behavior
+
+- Sample rate derives from timebase: `rate = 600 / (12 * timebase)`.
+- ≤25 MHz: frames come from live streaming or, with an edge trigger
+  configured, from a real hardware pre-trigger capture (300 pre + 212 post
+  samples, edge aligned to sample 300 of 600). Slow timebases (≥50 ms/div)
+  report `:TRIG:STAT?` as `RUN` while waiting and `TD` when the frame is
+  ready; faster timebases skip status polling, matching the real scope.
+- >25 MHz (burst trigger): each frame is a single-shot burst of 512 samples at
+  up to 125 MHz; the trigger edge is located in software and aligned to sample
+  300 (head/tail padding included). Continuous streaming is not available
+  above 25 MHz.
+- AUTO fallback: if no edge arrives within `2 frame times + 100 ms` (clamped
+  to 100 ms-2 s), an untriggered frame is returned, mirroring Rigol AUTO
+  trigger mode.
+- Analog CH1 samples GP29 at up to 10 kHz (paced at or below that rate).
+
+### sigrok-cli Examples
+
+```sh
+# Scan
+sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 --scan
+
+# Digital frame with hardware pre-trigger on GP10 (D3), falling edge
+sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
+  --config timebase='20 us' --config triggersource=D3 \
+  --config triggerslope=f --frames 1 --channels D3 -o capture.sr
+
+# Slow timebase (exercises the :TRIG:STAT? polling path)
+sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
+  --config timebase='50 ms' --config triggersource=D3 \
+  --config triggerslope=f --frames 1 --channels D3 -o capture.sr
+
+# >25 MHz burst trigger (single-shot burst, software edge alignment)
+sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
+  --config timebase='1 us' --config triggersource=D3 \
+  --config triggerslope=f --frames 1 --channels D3 -o capture.sr
+
+# Analog GP29 channel
+sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
+  --config timebase='1 ms' --frames 1 --channels CH1 -o analog.sr
+```
+
+### Limitations
+
+- `--samples` is not supported by the rigol-ds driver for this model; use
+  `--frames` (and timebase to control the rate).
+- Trigger configuration uses scope-style config keys (`triggersource`,
+  `triggerslope`), not LA-style `--triggers`.
+- One SCPI session at a time; a second connection waits in the listen backlog
+  until the first session closes.
+- Memory/RAW download mode (`:WAV:POIN:MODE RAW`) and analog trigger sources
+  are not emulated; analog-source triggers fall back to untriggered frames.
+- libsigrok may log `Read should have been completed` after a full live
+  frame; that is a cosmetic tcp-raw heuristic in the driver, frames still
+  complete normally.
+
 ## Usage
 
  1. Open Web UI: `http://172.29.203.1/`
@@ -323,6 +398,8 @@ samples after it, with `triggerIndex = pre_samples`.
 
 - `apps/radxa_linkr_debugger/src/linkr_debugger_logic_analyzer.h`
 - `apps/radxa_linkr_debugger/src/linkr_debugger_logic_analyzer.c`
+- `apps/radxa_linkr_debugger/src/linkr_debugger_rigol.h`
+- `apps/radxa_linkr_debugger/src/linkr_debugger_rigol.c`
 - `web/src/components/LogicAnalyzerCard.tsx`
 
 ## Resources

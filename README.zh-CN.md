@@ -29,7 +29,7 @@ USB CDC ACM 串口用于 Zephyr 通用 cmdline 和 BOOTSEL fallback。普通用�
 | USB 控制 | 复合 USB 设备：NCM HTTP/WS 主控制面 + CDC ACM fallback 控制台 |
 | 主机自动化 | Rust `cmd-ng` CLI/TUI，支持 JSON 输出和 `doctor` 诊断 |
 | 实时遥测 | live session 返回的 `/api/v1/ws/<slot>` 双向 WebSocket 长连接 |
-| 逻辑分析仪 | RP2350 PIO2+DMA 高速单次捕获；1-125MHz 可调采样率；512 样本上限；安全引脚 GP7-GP20/GP29；none/rising/falling/either 边沿触发；无预触发；支持 CSV 和 PulseView (.sr) 导出；板载 Web UI 中有浏览器内 Rust/WASM 解码器，支持 UART/I2C/SPI 协议 |
+| 逻辑分析仪 | RP2350 PIO2+DMA 高速单次捕获；1-125MHz 可调采样率；512 样本上限；安全引脚 GP7-GP20/GP29；none/rising/falling/either 边沿触发；边沿触发 ≤25 MHz 支持预触发采样；1-25 MHz 连续流式采样（live-session `logic-chunk` WebSocket 投递 + 浏览器实时波形）；支持 CSV 和 PulseView (.sr) 导出；**PulseView 原生接入**：Rigol DS1102D SCPI 仿真（rigol-ds 驱动，端口 80 `tcp-raw`，15 路数字通道 + GP29 模拟 CH1，≤25 MHz 硬件预触发，>25 MHz 突发触发，无沿 AUTO 回退）；板载 Web UI 中有浏览器内 Rust/WASM 解码器，支持 UART/I2C/SPI 协议 |
 | 电源输出 | `12v_out`、`5v_out`、`20v_out` |
 | ADC 监测 | 读取 `5v_out`、`12v_out`、`20v_out` 的电流监测通道 |
 | 调试板自监控 | `/api/v1/status` 和 WebSocket 状态快照会报告板自身 CPU/runtime/heap/temperature 的可用性，并在 Zephyr 暴露可靠来源时给出数值；watchdog supervisor 也会周期性打印 heap 诊断，方便排查短复位 |

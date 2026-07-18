@@ -12,6 +12,7 @@
 #include "linkr_debugger_network.h"
 #include "linkr_debugger_ota.h"
 #include "linkr_debugger_shell.h"
+#include "linkr_debugger_rigol.h"
 #include "linkr_debugger_ws.h"
 #include "linkr_debugger_usb_net.h"
 
@@ -102,6 +103,8 @@ int main(void)
 		LOG_ERR("HTTP server start failed: %d", ret);
 		return 0;
 	}
+
+	linkr_debugger_rigol_server_init();
 
 	linkr_debugger_shell_watchdog_start();
 

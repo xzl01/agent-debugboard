@@ -93,6 +93,7 @@ target_sources(app PRIVATE
   src/linkr_debugger_model.c
   src/linkr_debugger_network.c
   src/linkr_debugger_shell.c
+  src/linkr_debugger_rigol.c
   src/linkr_debugger_ws.c
   src/linkr_debugger_usb_net.c
 )
