@@ -10,6 +10,7 @@
 #include "linkr_debugger_logic_analyzer.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/drivers/adc.h>
@@ -36,6 +37,8 @@ LOG_MODULE_REGISTER(linkr_debugger_rigol, CONFIG_LINKR_DEBUGGER_LOG_LEVEL);
 #define LINKR_DEBUGGER_RIGOL_TRIG_WAIT_MS 30000U
 #define LINKR_DEBUGGER_RIGOL_ARM_TIMEOUT_MS 10000U
 #define LINKR_DEBUGGER_RIGOL_GP29_ADC_CAP_HZ 10000U
+#define LINKR_DEBUGGER_RIGOL_ANALOG_PRE (LINKR_DEBUGGER_RIGOL_LIVE_SAMPLES / 2U)
+#define LINKR_DEBUGGER_RIGOL_DEFAULT_TRIG_LEVEL 1.65f
 
 static const struct adc_dt_spec linkr_debugger_rigol_adc_gp29 =
 	ADC_DT_SPEC_STRUCT(DT_NODELABEL(adc), 3);
@@ -46,20 +49,37 @@ static const uint8_t linkr_debugger_rigol_pins[15] = {
 
 static uint16_t linkr_debugger_rigol_buf[LINKR_DEBUGGER_RIGOL_BUFFER_SAMPLES];
 static uint8_t linkr_debugger_rigol_analog_buf[LINKR_DEBUGGER_RIGOL_LIVE_SAMPLES];
+static uint8_t linkr_debugger_rigol_analog_ring[LINKR_DEBUGGER_RIGOL_ANALOG_PRE];
+
+struct linkr_debugger_rigol_state;
+
+static int linkr_debugger_rigol_arm_analog(struct linkr_debugger_rigol_state *state,
+	uint32_t rate_hz);
+static int linkr_debugger_rigol_pump_analog(struct linkr_debugger_rigol_state *state,
+	uint32_t budget_ms);
+static void linkr_debugger_rigol_cancel_capture(
+	struct linkr_debugger_rigol_state *state);
 
 struct linkr_debugger_rigol_state {
 	double timebase;
 	uint32_t trigger_source;
 	enum linkr_debugger_la_trigger_type trigger_slope;
+	float trigger_level;
 	uint32_t digital_enabled;
 	bool armed;
 	bool sweep_single;
 	bool frame_ready;
 	bool capture_pending;
 	bool capture_done;
+	bool capture_owns_la;
 	bool want_arm;
 	int64_t arm_deadline;
 	uint32_t capture_rate;
+	uint16_t analog_ring_head;
+	uint16_t analog_ring_count;
+	uint16_t analog_post_count;
+	bool analog_triggered;
+	int analog_prev_raw;
 };
 
 struct linkr_debugger_rigol_pump_pair {
@@ -331,13 +351,18 @@ static uint8_t linkr_debugger_rigol_gp29_to_scope(int raw)
 	return (uint8_t)value;
 }
 
-static int linkr_debugger_rigol_produce_analog_frame(int fd, uint32_t rate_hz)
+static uint32_t linkr_debugger_rigol_analog_pace_us(uint32_t rate_hz)
 {
-	uint32_t pace_us = rate_hz > 0U && rate_hz <= LINKR_DEBUGGER_RIGOL_GP29_ADC_CAP_HZ ?
+	return rate_hz > 0U && rate_hz <= LINKR_DEBUGGER_RIGOL_GP29_ADC_CAP_HZ ?
 		1000000U / rate_hz : 0U;
-	uint8_t header[16];
-	int header_len;
+}
 
+static void linkr_debugger_rigol_fill_analog(struct linkr_debugger_rigol_state *state,
+	uint32_t rate_hz)
+{
+	uint32_t pace_us = linkr_debugger_rigol_analog_pace_us(rate_hz);
+
+	ARG_UNUSED(state);
 	for (uint32_t i = 0U; i < LINKR_DEBUGGER_RIGOL_LIVE_SAMPLES; i++) {
 		int raw = linkr_debugger_rigol_read_gp29_raw();
 
@@ -346,15 +371,50 @@ static int linkr_debugger_rigol_produce_analog_frame(int fd, uint32_t rate_hz)
 			k_busy_wait(pace_us);
 		}
 	}
+}
 
-	header_len = snprintk(header, sizeof(header), "#3%u",
+static int linkr_debugger_rigol_send_analog_frame(int fd)
+{
+	uint8_t header[16];
+	int header_len = snprintk(header, sizeof(header), "#3%u",
 		(unsigned)LINKR_DEBUGGER_RIGOL_LIVE_SAMPLES);
+
 	if (header_len <= 0 ||
 	    linkr_debugger_rigol_send_all(fd, header, (size_t)header_len) < 0) {
 		return -1;
 	}
 	return linkr_debugger_rigol_send_all(fd, linkr_debugger_rigol_analog_buf,
 		LINKR_DEBUGGER_RIGOL_LIVE_SAMPLES);
+}
+
+static int linkr_debugger_rigol_produce_analog_frame(int fd,
+	struct linkr_debugger_rigol_state *state, uint32_t rate_hz)
+{
+	if (state->armed && state->trigger_source == 16U) {
+		int64_t deadline;
+		int p;
+
+		if (!state->capture_pending && !state->capture_done &&
+		    linkr_debugger_rigol_arm_analog(state, rate_hz) < 0) {
+			return -1;
+		}
+		deadline = k_uptime_get() + LINKR_DEBUGGER_RIGOL_ARM_TIMEOUT_MS;
+		p = linkr_debugger_rigol_pump_analog(state, 10U);
+		while (p == 0 && k_uptime_get() < deadline) {
+			p = linkr_debugger_rigol_pump_analog(state, 10U);
+		}
+		if (p != 1) {
+			linkr_debugger_rigol_cancel_capture(state);
+			return -1;
+		}
+	} else {
+		linkr_debugger_rigol_fill_analog(state, rate_hz);
+	}
+	state->capture_done = false;
+	if (state->armed) {
+		state->want_arm = true;
+	}
+	return linkr_debugger_rigol_send_analog_frame(fd);
 }
 
 static uint32_t linkr_debugger_rigol_rate_from_timebase(double timebase)
@@ -430,6 +490,7 @@ static int linkr_debugger_rigol_arm_async(struct linkr_debugger_rigol_state *sta
 	}
 	state->capture_pending = true;
 	state->capture_done = false;
+	state->capture_owns_la = true;
 	state->capture_rate = rate_hz;
 	state->arm_deadline = k_uptime_get() +
 		linkr_debugger_rigol_auto_timeout_ms(rate_hz);
@@ -493,6 +554,128 @@ static int linkr_debugger_rigol_poll_capture(struct linkr_debugger_rigol_state *
 	}
 	state->capture_done = true;
 	return 1;
+}
+
+static void linkr_debugger_rigol_cancel_capture(
+	struct linkr_debugger_rigol_state *state)
+{
+	if (state->capture_pending && state->capture_owns_la) {
+		(void)linkr_debugger_logic_analyzer_cancel();
+	}
+	state->capture_pending = false;
+	state->capture_owns_la = false;
+}
+
+static int linkr_debugger_rigol_arm_analog(struct linkr_debugger_rigol_state *state,
+	uint32_t rate_hz)
+{
+	if (state->trigger_source != 16U) {
+		return -ENOTSUP;
+	}
+	state->analog_ring_head = 0U;
+	state->analog_ring_count = 0U;
+	state->analog_post_count = 0U;
+	state->analog_triggered = false;
+	state->analog_prev_raw = -1;
+	state->capture_pending = true;
+	state->capture_done = false;
+	state->capture_owns_la = false;
+	state->capture_rate = rate_hz;
+	state->arm_deadline = k_uptime_get() +
+		linkr_debugger_rigol_auto_timeout_ms(rate_hz);
+	return 0;
+}
+
+static int linkr_debugger_rigol_pump_analog(struct linkr_debugger_rigol_state *state,
+	uint32_t budget_ms)
+{
+	uint32_t pace_us = linkr_debugger_rigol_analog_pace_us(state->capture_rate);
+	int level_raw = (int)(state->trigger_level * 4095.0f / 3.3f);
+	int64_t end = k_uptime_get() + (int64_t)budget_ms;
+
+	if (!state->capture_pending) {
+		return state->capture_done ? 1 : 0;
+	}
+	if (level_raw < 0) {
+		level_raw = 0;
+	} else if (level_raw > 4095) {
+		level_raw = 4095;
+	}
+
+	while (state->capture_pending) {
+		if (state->analog_triggered &&
+		    state->analog_post_count >= LINKR_DEBUGGER_RIGOL_LIVE_SAMPLES -
+					    LINKR_DEBUGGER_RIGOL_ANALOG_PRE) {
+			state->capture_pending = false;
+			state->capture_done = true;
+			return 1;
+		}
+		if (!state->analog_triggered &&
+		    k_uptime_get() >= state->arm_deadline) {
+			linkr_debugger_rigol_fill_analog(state, state->capture_rate);
+			state->capture_pending = false;
+			state->capture_done = true;
+			return 1;
+		}
+		if (k_uptime_get() >= end) {
+			return 0;
+		}
+
+		int raw = linkr_debugger_rigol_read_gp29_raw();
+		uint8_t v;
+
+		if (raw < 0) {
+			raw = state->analog_prev_raw >= 0 ? state->analog_prev_raw : 0;
+		}
+		v = linkr_debugger_rigol_gp29_to_scope(raw);
+
+		if (!state->analog_triggered) {
+			bool rising = state->analog_prev_raw >= 0 &&
+				state->analog_prev_raw < level_raw && raw >= level_raw;
+			bool falling = state->analog_prev_raw >= level_raw &&
+				raw < level_raw;
+			bool hit = state->trigger_slope == LINKR_DEBUGGER_LA_TRIGGER_RISING ? rising :
+				state->trigger_slope == LINKR_DEBUGGER_LA_TRIGGER_FALLING ? falling :
+				rising || falling;
+
+			linkr_debugger_rigol_analog_ring[state->analog_ring_head] = v;
+			state->analog_ring_head = (state->analog_ring_head + 1U) %
+				LINKR_DEBUGGER_RIGOL_ANALOG_PRE;
+			if (state->analog_ring_count < LINKR_DEBUGGER_RIGOL_ANALOG_PRE) {
+				state->analog_ring_count++;
+			}
+			if (hit) {
+				uint16_t n = state->analog_ring_count;
+				uint16_t pre_n = n > 1U ? (uint16_t)(n - 1U) : 0U;
+				uint16_t back = LINKR_DEBUGGER_RIGOL_ANALOG_PRE - pre_n;
+				uint16_t start = (state->analog_ring_head +
+					LINKR_DEBUGGER_RIGOL_ANALOG_PRE - n) %
+					LINKR_DEBUGGER_RIGOL_ANALOG_PRE;
+				uint8_t first = linkr_debugger_rigol_analog_ring[start];
+
+				for (uint32_t i = 0U; i < LINKR_DEBUGGER_RIGOL_ANALOG_PRE; i++) {
+					linkr_debugger_rigol_analog_buf[i] = i < back ? first :
+						linkr_debugger_rigol_analog_ring[
+							(start + i - back) %
+							LINKR_DEBUGGER_RIGOL_ANALOG_PRE];
+				}
+				linkr_debugger_rigol_analog_buf[
+					LINKR_DEBUGGER_RIGOL_ANALOG_PRE] = v;
+				state->analog_post_count = 1U;
+				state->analog_triggered = true;
+			}
+		} else if (state->analog_post_count <
+			   LINKR_DEBUGGER_RIGOL_LIVE_SAMPLES - LINKR_DEBUGGER_RIGOL_ANALOG_PRE) {
+			linkr_debugger_rigol_analog_buf[LINKR_DEBUGGER_RIGOL_ANALOG_PRE +
+				state->analog_post_count] = v;
+			state->analog_post_count++;
+		}
+		state->analog_prev_raw = raw;
+		if (pace_us > 0U) {
+			k_busy_wait(pace_us);
+		}
+	}
+	return state->capture_done ? 1 : 0;
 }
 
 struct linkr_debugger_rigol_stream_sink {
@@ -696,10 +879,7 @@ static int linkr_debugger_rigol_capture_triggered(
 		p = linkr_debugger_rigol_poll_capture(state);
 	}
 	if (p != 1) {
-		if (state->capture_pending) {
-			(void)linkr_debugger_logic_analyzer_cancel();
-			state->capture_pending = false;
-		}
+		linkr_debugger_rigol_cancel_capture(state);
 		LOG_WRN("rigol: trigger timeout");
 		return -1;
 	}
@@ -726,10 +906,7 @@ static int linkr_debugger_rigol_produce_frame(int fd,
 					p = linkr_debugger_rigol_poll_capture(state);
 				}
 				if (p != 1) {
-					if (state->capture_pending) {
-						(void)linkr_debugger_logic_analyzer_cancel();
-						state->capture_pending = false;
-					}
+					linkr_debugger_rigol_cancel_capture(state);
 					return -1;
 				}
 			} else if (linkr_debugger_rigol_capture_triggered(state,
@@ -850,7 +1027,14 @@ static int linkr_debugger_rigol_handle_query(int fd, const char *line,
 			state->trigger_slope == LINKR_DEBUGGER_LA_TRIGGER_FALLING ? "NEG\n" : "POS\n");
 	}
 	if (strcmp(line, ":TRIG:EDGE:LEV?") == 0) {
-		return linkr_debugger_rigol_send_str(fd, "0.0\n");
+		int len = linkr_debugger_rigol_format_double(resp, sizeof(resp),
+			(double)state->trigger_level);
+
+		if (len <= 0) {
+			return -1;
+		}
+		resp[len++] = '\n';
+		return linkr_debugger_rigol_send_all(fd, resp, (size_t)len);
 	}
 	if (strcmp(line, ":TRIG:MODE?") == 0) {
 		return linkr_debugger_rigol_send_str(fd, "EDGE\n");
@@ -860,15 +1044,26 @@ static int linkr_debugger_rigol_handle_query(int fd, const char *line,
 		    !state->capture_done) {
 			uint32_t rate_hz = linkr_debugger_rigol_rate_from_timebase(
 				state->timebase);
+			int rc;
 
 			state->want_arm = false;
-			if (linkr_debugger_rigol_arm_async(state, rate_hz) < 0) {
+			if (state->trigger_source == 16U) {
+				rc = linkr_debugger_rigol_arm_analog(state, rate_hz);
+			} else {
+				rc = linkr_debugger_rigol_arm_async(state, rate_hz);
+			}
+			if (rc < 0) {
 				state->frame_ready = true;
 			}
 		}
-		if (state->capture_pending &&
-		    linkr_debugger_rigol_poll_capture(state) == 0) {
-			return linkr_debugger_rigol_send_str(fd, "RUN\n");
+		if (state->capture_pending) {
+			int p = state->trigger_source == 16U ?
+				linkr_debugger_rigol_pump_analog(state, 4U) :
+				linkr_debugger_rigol_poll_capture(state);
+
+			if (p == 0) {
+				return linkr_debugger_rigol_send_str(fd, "RUN\n");
+			}
 		}
 		if (state->frame_ready || state->capture_done) {
 			return linkr_debugger_rigol_send_str(fd,
@@ -896,7 +1091,7 @@ static int linkr_debugger_rigol_handle_query(int fd, const char *line,
 	if (strcmp(line, ":WAV:DATA? CHAN1") == 0) {
 		uint32_t rate_hz = linkr_debugger_rigol_rate_from_timebase(state->timebase);
 
-		return linkr_debugger_rigol_produce_analog_frame(fd, rate_hz);
+		return linkr_debugger_rigol_produce_analog_frame(fd, state, rate_hz);
 	}
 	if (strcmp(line, ":WAV:DATA? DIG") == 0) {
 		return linkr_debugger_rigol_produce_frame(fd, state, state->armed);
@@ -969,6 +1164,8 @@ static void linkr_debugger_rigol_handle_set(const char *line,
 	if (strncmp(line, ":TRIG:EDGE:SOUR ", 16) == 0) {
 		const char *p = line + 16;
 
+		linkr_debugger_rigol_cancel_capture(state);
+
 		if (strcmp(p, "CH1") == 0 || strcmp(p, "CHAN1") == 0) {
 			state->trigger_source = 16U;
 		} else if (strcmp(p, "CH2") == 0 || strcmp(p, "CHAN2") == 0) {
@@ -996,6 +1193,15 @@ static void linkr_debugger_rigol_handle_set(const char *line,
 			LINKR_DEBUGGER_LA_TRIGGER_FALLING : LINKR_DEBUGGER_LA_TRIGGER_RISING;
 		return;
 	}
+	if (strncmp(line, ":TRIG:EDGE:LEV ", 15) == 0) {
+		char *end = NULL;
+		float v = strtof(line + 15, &end);
+
+		if (end != line + 15) {
+			state->trigger_level = v;
+		}
+		return;
+	}
 	if (strncmp(line, ":DIG", 4) == 0 && strstr(line, ":TURN ") != NULL) {
 		const char *p = line + 4;
 		uint32_t idx = 0U;
@@ -1017,10 +1223,7 @@ static void linkr_debugger_rigol_handle_set(const char *line,
 		state->armed = true;
 		state->frame_ready = false;
 		state->capture_done = false;
-		if (state->capture_pending) {
-			(void)linkr_debugger_logic_analyzer_cancel();
-			state->capture_pending = false;
-		}
+		linkr_debugger_rigol_cancel_capture(state);
 		state->want_arm = true;
 		return;
 	}
@@ -1029,10 +1232,7 @@ static void linkr_debugger_rigol_handle_set(const char *line,
 		state->armed = true;
 		state->frame_ready = false;
 		state->capture_done = false;
-		if (state->capture_pending) {
-			(void)linkr_debugger_logic_analyzer_cancel();
-			state->capture_pending = false;
-		}
+		linkr_debugger_rigol_cancel_capture(state);
 		state->want_arm = true;
 		return;
 	}
@@ -1040,10 +1240,7 @@ static void linkr_debugger_rigol_handle_set(const char *line,
 		state->armed = false;
 		state->sweep_single = false;
 		state->want_arm = false;
-		if (state->capture_pending) {
-			(void)linkr_debugger_logic_analyzer_cancel();
-			state->capture_pending = false;
-		}
+		linkr_debugger_rigol_cancel_capture(state);
 		state->capture_done = false;
 		return;
 	}
@@ -1055,11 +1252,9 @@ static void linkr_debugger_rigol_handle_set(const char *line,
 		state->timebase = 0.0001;
 		state->trigger_slope = LINKR_DEBUGGER_LA_TRIGGER_RISING;
 		state->trigger_source = 0U;
+		state->trigger_level = LINKR_DEBUGGER_RIGOL_DEFAULT_TRIG_LEVEL;
 		state->digital_enabled = 0xffffU;
-		if (state->capture_pending) {
-			(void)linkr_debugger_logic_analyzer_cancel();
-			state->capture_pending = false;
-		}
+		linkr_debugger_rigol_cancel_capture(state);
 		state->capture_done = false;
 		return;
 	}
@@ -1071,12 +1266,14 @@ static void linkr_debugger_rigol_session(int fd, uint8_t first)
 		.timebase = 0.0001,
 		.trigger_source = 0U,
 		.trigger_slope = LINKR_DEBUGGER_LA_TRIGGER_RISING,
+		.trigger_level = LINKR_DEBUGGER_RIGOL_DEFAULT_TRIG_LEVEL,
 		.digital_enabled = 0xffffU,
 		.armed = false,
 		.sweep_single = false,
 		.frame_ready = true,
 		.capture_pending = false,
 		.capture_done = false,
+		.capture_owns_la = false,
 		.want_arm = false,
 	};
 	struct zsock_timeval tv;
@@ -1112,9 +1309,7 @@ static void linkr_debugger_rigol_session(int fd, uint8_t first)
 			state.frame_ready = true;
 		}
 	}
-	if (state.capture_pending) {
-		(void)linkr_debugger_logic_analyzer_cancel();
-	}
+	linkr_debugger_rigol_cancel_capture(&state);
 }
 
 static void linkr_debugger_rigol_dispatch_thread(void *p1, void *p2, void *p3)
