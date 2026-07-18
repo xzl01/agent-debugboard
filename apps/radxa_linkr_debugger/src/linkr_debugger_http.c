@@ -14,6 +14,7 @@
 #include "linkr_debugger_monitoring.h"
 #include "linkr_debugger_model.h"
 #include "linkr_debugger_ota.h"
+#include "linkr_debugger_rigol.h"
 #include "linkr_debugger_ws.h"
 
 #include <errno.h>
@@ -1669,6 +1670,20 @@ LINKR_DEBUGGER_WS_RESOURCE_DETAIL(1);
 LINKR_DEBUGGER_WS_RESOURCE_DETAIL(2);
 LINKR_DEBUGGER_WS_RESOURCE_DETAIL(3);
 
+static uint8_t linkr_debugger_scpi_ws_resource_buffer[LINKR_DEBUGGER_WS_RECV_BUFFER_SIZE];
+static struct http_resource_detail_websocket linkr_debugger_scpi_ws_resource_detail = {
+	.common = {
+		.type = HTTP_RESOURCE_TYPE_WEBSOCKET,
+		.bitmask_of_supported_http_methods = BIT(HTTP_GET),
+	},
+	.cb = linkr_debugger_rigol_scpi_ws_setup,
+	.data_buffer = linkr_debugger_scpi_ws_resource_buffer,
+	.data_buffer_len = sizeof(linkr_debugger_scpi_ws_resource_buffer),
+	.user_data = NULL,
+};
+HTTP_RESOURCE_DEFINE(linkr_debugger_scpi_ws_resource, linkr_debugger_http_service,
+		     "/api/v1/scpi", &linkr_debugger_scpi_ws_resource_detail);
+
 static int linkr_debugger_http_handle_live_sessions(struct http_client_ctx *client,
 					 enum http_transaction_status status,
 					 const struct http_request_ctx *request_ctx,
@@ -1862,30 +1877,20 @@ static int linkr_debugger_http_handle_logic_analyzer(struct http_client_ctx *cli
 		}
 
 		struct linkr_debugger_la_debug la_debug;
-		struct linkr_debugger_ws_logic_chunk_debug ws_chunk_debug;
 		char la_debug_buf[448];
 
 		linkr_debugger_logic_analyzer_get_debug(&la_debug);
-		linkr_debugger_ws_get_logic_chunk_debug(&ws_chunk_debug);
 		snprintk(la_debug_buf, sizeof(la_debug_buf),
 			 ",\"debug\":{\"stream_irqs\":%u,\"stream_chunks\":%u,"
 			 "\"pre_write_index\":%u,\"pre_post_remaining\":%u,"
 			 "\"stream_values_or\":%u,\"stream_values_and\":%u,"
-			 "\"pre_active\":%s,\"pre_triggered\":%s,\"stream_active\":%s,"
-			 "\"ws_chunk\":{\"calls\":%u,\"no_client\":%u,\"busy\":%u,\"sent\":%u,"
-			 "\"failed\":%u,\"last_err\":%d,\"mask\":%u,\"fmt\":%u}}",
+			 "\"pre_active\":%s,\"pre_triggered\":%s,\"stream_active\":%s}",
 			 (unsigned)la_debug.stream_irqs, (unsigned)la_debug.stream_chunks,
 			 (unsigned)la_debug.pre_write_index, (unsigned)la_debug.pre_post_remaining,
 			 (unsigned)la_debug.stream_values_or, (unsigned)la_debug.stream_values_and,
 			 la_debug.pre_active ? "true" : "false",
 			 la_debug.pre_triggered ? "true" : "false",
-			 la_debug.stream_active ? "true" : "false",
-			 (unsigned)ws_chunk_debug.calls, (unsigned)ws_chunk_debug.no_client,
-			 (unsigned)ws_chunk_debug.dropped_busy,
-			 (unsigned)ws_chunk_debug.sent, (unsigned)ws_chunk_debug.failed,
-			 (int)ws_chunk_debug.last_error,
-			 (unsigned)ws_chunk_debug.pending_mask,
-			 (unsigned)ws_chunk_debug.formatting);
+			 la_debug.stream_active ? "true" : "false");
 		if (linkr_debugger_http_append(&env, la_debug_buf) < 0 ||
 		    linkr_debugger_http_append(&env, "}\n") < 0) {
 			break;
@@ -2314,233 +2319,6 @@ static int linkr_debugger_http_handle_logic_analyzer_capture(struct http_client_
 	return 0;
 }
 
-static void linkr_debugger_http_logic_stream_callback(
-	const struct linkr_debugger_la_stream_chunk *chunk, void *user_data)
-{
-	ARG_UNUSED(user_data);
-
-	(void)linkr_debugger_ws_send_logic_chunk(chunk->sequence, chunk->values,
-		chunk->sample_count);
-}
-
-static int linkr_debugger_http_handle_logic_analyzer_stream(struct http_client_ctx *client,
-					 enum http_transaction_status status,
-					 const struct http_request_ctx *request_ctx,
-					 struct http_response_ctx *response_ctx,
-					 void *user_data)
-{
-	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
-	struct linkr_debugger_http_env env = {
-		.buf = (char *)json_buf,
-		.cap = sizeof(json_buf),
-	};
-	enum linkr_debugger_http_body_event body_event =
-		linkr_debugger_http_body_event_from_status(status);
-
-	ARG_UNUSED(user_data);
-
-	if (!linkr_debugger_http_body_should_handle(client->method == HTTP_POST, body_event)) {
-		return 0;
-	}
-
-	k_mutex_lock(&linkr_debugger_http_lock, K_FOREVER);
-
-	if (client->method == HTTP_DELETE) {
-		int ret = linkr_debugger_logic_analyzer_stop_stream();
-
-		if (linkr_debugger_http_json_begin(&env, "logic-analyzer", ret == 0) < 0 ||
-		    linkr_debugger_http_append(&env, ",\"action\":\"stream_stopped\"}\n") < 0) {
-			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
-				HTTP_500_INTERNAL_SERVER_ERROR, "logic-analyzer",
-				"response_too_large", "failed to encode response");
-			return 0;
-		}
-
-		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf),
-			ret == 0 ? HTTP_200_OK : HTTP_500_INTERNAL_SERVER_ERROR);
-		return 0;
-	}
-
-	if (client->method == HTTP_POST) {
-		struct la_request {
-			int pin_base;
-			int pin_count;
-			int selected_pins[LINKR_DEBUGGER_LA_MAX_CHANNELS];
-			size_t selected_pins_len;
-			int sample_rate_hz;
-			int pre_samples;
-			int post_samples;
-			char trigger[16];
-			int trigger_pin;
-		} req = {0};
-
-		const struct json_obj_descr la_descr[] = {
-			JSON_OBJ_DESCR_PRIM(struct la_request, pin_base, JSON_TOK_NUMBER),
-			JSON_OBJ_DESCR_PRIM(struct la_request, pin_count, JSON_TOK_NUMBER),
-			JSON_OBJ_DESCR_ARRAY(struct la_request, selected_pins,
-				LINKR_DEBUGGER_LA_MAX_CHANNELS,
-				selected_pins_len, JSON_TOK_NUMBER),
-			JSON_OBJ_DESCR_PRIM(struct la_request, sample_rate_hz, JSON_TOK_NUMBER),
-			JSON_OBJ_DESCR_PRIM(struct la_request, pre_samples, JSON_TOK_NUMBER),
-			JSON_OBJ_DESCR_PRIM(struct la_request, post_samples, JSON_TOK_NUMBER),
-			JSON_OBJ_DESCR_PRIM(struct la_request, trigger, JSON_TOK_STRING_BUF),
-			JSON_OBJ_DESCR_PRIM(struct la_request, trigger_pin, JSON_TOK_NUMBER),
-		};
-
-		struct linkr_debugger_la_config config = {0};
-		struct linkr_debugger_http_body_view body = {0};
-		enum linkr_debugger_http_body_result body_ret;
-		const uint8_t *request_data = request_ctx != NULL ? request_ctx->data : NULL;
-		size_t request_len = request_ctx != NULL ? request_ctx->data_len : 0U;
-		bool bad_request = false;
-
-		body_ret = linkr_debugger_http_body_accumulate((uintptr_t)client, client->method,
-			LINKR_DEBUGGER_HTTP_ROUTE_LOGIC_ANALYZER,
-			body_event, request_data, request_len, &body);
-		if (body_ret == LINKR_DEBUGGER_HTTP_BODY_CLEARED ||
-		    body_ret == LINKR_DEBUGGER_HTTP_BODY_WAITING) {
-			k_mutex_unlock(&linkr_debugger_http_lock);
-			return 0;
-		}
-		if (body_ret == LINKR_DEBUGGER_HTTP_BODY_TOO_LARGE) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
-				HTTP_413_PAYLOAD_TOO_LARGE,
-				"logic-analyzer", "body_too_large",
-				"request body too large");
-			k_mutex_unlock(&linkr_debugger_http_lock);
-			return 0;
-		}
-		if (body_ret != LINKR_DEBUGGER_HTTP_BODY_READY) {
-			char diag[64];
-
-			snprintk(diag, sizeof(diag), "invalid stream configuration (body_ret=%d)",
-				(int)body_ret);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
-				HTTP_400_BAD_REQUEST, "logic-analyzer", "invalid_config", diag);
-			k_mutex_unlock(&linkr_debugger_http_lock);
-			return 0;
-		}
-
-		uint8_t body_preview[24];
-		size_t body_preview_len = 0U;
-
-		if (body.data != NULL && body.len > 0U) {
-			body_preview_len = body.len < sizeof(body_preview) ? body.len : sizeof(body_preview);
-			memcpy(body_preview, body.data, body_preview_len);
-
-			int ret = json_obj_parse((char *)body.data, body.len,
-				la_descr, ARRAY_SIZE(la_descr), &req);
-			if (ret < 0) {
-				bad_request = true;
-			}
-		}
-
-		linkr_debugger_http_body_clear((uintptr_t)client, client->method,
-			LINKR_DEBUGGER_HTTP_ROUTE_LOGIC_ANALYZER);
-
-		config.sample_rate_hz = LINKR_DEBUGGER_LA_MIN_SAMPLE_RATE_HZ;
-		config.post_samples = LINKR_DEBUGGER_LA_MAX_EXPORTED_SAMPLES;
-		config.trigger = LINKR_DEBUGGER_LA_TRIGGER_NONE;
-		config.pin_base = 13;
-		config.pin_count = 1;
-
-		if (req.sample_rate_hz > 0) {
-			config.sample_rate_hz = (uint32_t)req.sample_rate_hz;
-		}
-		if (req.selected_pins_len > 0U) {
-			config.selected_pin_count = (uint8_t)req.selected_pins_len;
-			for (size_t i = 0; i < req.selected_pins_len; i++) {
-				config.selected_pins[i] = (uint8_t)req.selected_pins[i];
-			}
-			config.pin_base = config.selected_pins[0];
-			config.pin_count = config.selected_pin_count;
-		}
-
-		if (bad_request) {
-			char diag[96];
-			size_t preview = body_preview_len;
-			size_t off = (size_t)snprintk(diag, sizeof(diag),
-				"invalid stream configuration (json_parse failed, body[0:%u]=", (unsigned)preview);
-			for (size_t i = 0U; i < preview && off < sizeof(diag) - 4U; i++) {
-				off += (size_t)snprintk(diag + off, sizeof(diag) - off, "%02x", body_preview[i]);
-			}
-			if (off < sizeof(diag) - 2U) {
-				diag[off++] = ')';
-				diag[off] = '\0';
-			}
-			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
-				HTTP_400_BAD_REQUEST, "logic-analyzer", "invalid_config", diag);
-			return 0;
-		}
-
-		if (config.sample_rate_hz > LINKR_DEBUGGER_LA_MAX_STREAM_RATE_HZ) {
-			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
-				HTTP_400_BAD_REQUEST, "logic-analyzer", "invalid_config",
-				"stream rate exceeds 25 MHz maximum; single-shot captures support up to 125 MHz");
-			return 0;
-		}
-
-		int ret = linkr_debugger_logic_analyzer_start_stream(
-			&config,
-			linkr_debugger_http_logic_stream_callback,
-			NULL);
-
-		if (ret == -EBUSY) {
-			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
-				HTTP_409_CONFLICT, "logic-analyzer", "already_armed",
-				"logic analyzer already active");
-			return 0;
-		}
-		if (ret < 0) {
-			char diag[64];
-
-			k_mutex_unlock(&linkr_debugger_http_lock);
-			snprintk(diag, sizeof(diag), "invalid stream configuration (arm_ret=%d)", ret);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
-				HTTP_400_BAD_REQUEST, "logic-analyzer", "invalid_config", diag);
-			return 0;
-		}
-
-		enum linkr_debugger_la_state state = linkr_debugger_logic_analyzer_get_state();
-		uint32_t actual_rate = linkr_debugger_logic_analyzer_actual_rate(config.sample_rate_hz);
-
-		if (linkr_debugger_http_json_begin(&env, "logic-analyzer", true) < 0 ||
-		    linkr_debugger_http_append(&env,
-			",\"action\":\"stream_started\",\"state\":") < 0 ||
-		    linkr_debugger_http_json_string(&env, "streaming") < 0 ||
-		    linkr_debugger_http_append(&env,
-			",\"requestedSampleRateHz\":%u,\"actualSampleRateHz\":%u,"
-			"\"backend\":",
-			(unsigned)config.sample_rate_hz,
-			(unsigned)actual_rate) < 0 ||
-		    linkr_debugger_http_json_string(&env,
-			linkr_debugger_logic_analyzer_backend()) < 0 ||
-		    linkr_debugger_http_append(&env, "}\n") < 0) {
-			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
-				HTTP_500_INTERNAL_SERVER_ERROR, "logic-analyzer",
-				"response_too_large", "failed to encode response");
-			return 0;
-		}
-
-		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf),
-			HTTP_200_OK);
-		return 0;
-	}
-
-	linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
-		HTTP_405_METHOD_NOT_ALLOWED, "logic-analyzer", "method_not_allowed",
-		"method not allowed");
-	k_mutex_unlock(&linkr_debugger_http_lock);
-	return 0;
-}
-
 static enum linkr_debugger_captive_method linkr_debugger_http_captive_method(
 	enum http_method method)
 {
@@ -2577,11 +2355,6 @@ static int linkr_debugger_http_route_request(struct http_client_ctx *client,
 	if (linkr_debugger_http_path_matches(path, "/api/v1/logic-analyzer", false)) {
 		return linkr_debugger_http_handle_logic_analyzer(client, status, request_ctx,
 							 response_ctx, user_data);
-	}
-
-	if (linkr_debugger_http_path_matches(path, "/api/v1/logic-analyzer/stream", false)) {
-		return linkr_debugger_http_handle_logic_analyzer_stream(client, status,
-							request_ctx, response_ctx, user_data);
 	}
 
 	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {

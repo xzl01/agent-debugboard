@@ -244,9 +244,9 @@ test("normalizes capture payload bounds and unsafe pin metadata", () => {
   assert.equal(capture.config.pinCount, 3);
   assert.equal(capture.config.pinBase, 8);
   assert.equal(capture.config.triggerPin, 2);
-  assert.equal(capture.sampleCount, 512);
-  assert.equal(capture.triggerIndex, 511);
-  assert.equal(capture.samples.length, 512);
+  assert.equal(capture.sampleCount, 520);
+  assert.equal(capture.triggerIndex, 519);
+  assert.equal(capture.samples.length, 520);
 });
 
 test("reads API errors from either the root message or error.message", () => {

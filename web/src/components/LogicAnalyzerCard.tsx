@@ -19,7 +19,16 @@ import {
 } from "lucide-react";
 import { Badge, Button, Card, Toggle } from "./ui";
 import { GpioPinoutSvg } from "./GpioPinoutSvg";
-import { useLogicStream } from "@/hooks/useLogicStream";
+import { useScpiScope } from "@/hooks/useScpiScope";
+import {
+  RIGOL_LIVE_SAMPLES,
+  RIGOL_TRIGGER_SAMPLE,
+  formatScpiNumber,
+  repackFrameBits,
+  rigolSlopeForTrigger,
+  rigolSourceIndexForPin,
+  timebaseForRate,
+} from "@/lib/scpiScope";
 import type {
   LogicAnalyzerCapture,
   LogicAnalyzerConfig,
@@ -31,10 +40,7 @@ import {
   AVAILABLE_PINS,
   DEFAULT_CONFIG,
   SAMPLE_RATES,
-  buildLogicAnalyzerArmRequest,
   calculateActualSampleRate,
-  calculateMaxSamples,
-  extractLogicAnalyzerErrorMessage,
   exportToCsv,
   exportToSr,
   formatDuration,
@@ -99,13 +105,6 @@ const STREAM_FLUSH_MS = 150;
 const STREAM_DECODE_MS = 600;
 const STREAM_DECODE_MAX_SAMPLES = 8192;
 const STREAM_SPAN_OPTIONS = [1024, 4096, 16384, 65536, 262144] as const;
-const LOGIC_ANALYZER_STATES: LogicAnalyzerState[] = [
-  "idle",
-  "armed",
-  "capturing",
-  "done",
-  "error",
-];
 const PROTOCOL_OPTIONS: Array<{ id: LogicDecoderProtocolName; label: string }> = [
   { id: "uart", label: "UART" },
   { id: "i2c", label: "I2C" },
@@ -130,10 +129,6 @@ const INITIAL_DECODER_STATE: DecoderRunState = {
   error: null,
   lastRequestSignature: null,
 };
-
-function isLogicAnalyzerState(value: unknown): value is LogicAnalyzerState {
-  return typeof value === "string" && LOGIC_ANALYZER_STATES.includes(value as LogicAnalyzerState);
-}
 
 function pinLabel(pin: number | null): string {
   return pin == null ? "—" : `GP${pin}`;
@@ -240,7 +235,6 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
     createDefaultLogicDecoderConfigs(DEFAULT_CONFIG.selectedPins)
   );
   const [decoderState, setDecoderState] = useState<DecoderRunState>(INITIAL_DECODER_STATE);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const armInFlightRef = useRef(false);
   const currentDecodeSignatureRef = useRef<string | null>(null);
   const streamSamplesRef = useRef<number[]>([]);
@@ -256,28 +250,13 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
   const [liveAnnotations, setLiveAnnotations] = useState<LogicDecoderAnnotation[]>([]);
 
   const {
-    streaming,
-    streamRate,
-    streamError,
-    startStream,
-    stopStream,
-    onChunk,
-  } = useLogicStream();
-
-  useEffect(() => {
-    onChunk((chunk) => {
-      const arr = streamSamplesRef.current;
-      for (let i = 0; i < chunk.count; i++) {
-        arr.push(chunk.values[i]);
-      }
-      if (arr.length > STREAM_BUFFER_CAP) {
-        arr.splice(0, arr.length - STREAM_BUFFER_CAP);
-      }
-      streamSequenceRef.current = chunk.seq + 1;
-      streamTotalRef.current += chunk.count;
-      streamDirtyRef.current = true;
-    });
-  }, [onChunk]);
+    close: scpiClose,
+    command: scpiCommand,
+    ensureConnected: scpiEnsureConnected,
+    readDigitalFrame: scpiReadDigitalFrame,
+  } = useScpiScope();
+  const [streaming, setStreaming] = useState(false);
+  const streamingRef = useRef(false);
 
   useEffect(() => {
     const flush = () => {
@@ -305,8 +284,8 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
 
   const streamRateExceeded = config.sampleRateHz > 25000000;
 
-  const maxSamples = calculateMaxSamples();
-  const totalSamples = config.preSamples + config.postSamples;
+  const maxSamples = RIGOL_LIVE_SAMPLES;
+  const totalSamples = RIGOL_LIVE_SAMPLES;
   const controlsDisabled = state !== "idle" || isArming;
   const captureRequestedRate = capture ? getLogicAnalyzerRequestedSampleRate(capture.config) : null;
   const captureActualRate = capture ? getLogicAnalyzerActualSampleRate(capture.config) : null;
@@ -337,90 +316,18 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
     [capturePins, capturePinsKey]
   );
 
-  const readResponseErrorMessage = useCallback(async (res: Response) => {
-    try {
-      const payload: unknown = await res.json();
-      return extractLogicAnalyzerErrorMessage(payload);
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const fetchCapture = useCallback(async () => {
-    try {
-      const res = await fetch("/api/v1/logic-analyzer/capture");
-      if (!res.ok) return null;
-      const data: LogicAnalyzerCapture = normalizeLogicAnalyzerCapture(await res.json());
-      setCapture(data);
-      return data;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const fetchStatus = useCallback(async () => {
-    try {
-      const res = await fetch("/api/v1/logic-analyzer");
-      if (!res.ok) return null;
-      const data: unknown = await res.json();
-      if (!data || typeof data !== "object") return null;
-
-      const nextState = (data as Record<string, unknown>).state;
-      if (isLogicAnalyzerState(nextState)) {
-        setState(nextState);
-        if (nextState === "done") {
-          await fetchCapture();
-        }
-        return nextState;
+  const configureScope = useCallback(
+    async (cfg: LogicAnalyzerConfig) => {
+      await scpiCommand(`:TIM:SCAL ${formatScpiNumber(timebaseForRate(cfg.sampleRateHz))}`);
+      await scpiCommand(":ACQ:MEMD LONG");
+      if (cfg.triggerType !== "none") {
+        const sourcePin = cfg.selectedPins[cfg.triggerPin] ?? cfg.selectedPins[0];
+        await scpiCommand(`:TRIG:EDGE:SOUR D${rigolSourceIndexForPin(sourcePin)}`);
+        await scpiCommand(`:TRIG:EDGE:SLOP ${rigolSlopeForTrigger(cfg.triggerType)}`);
       }
-    } catch {
-      return null;
-    }
-    return null;
-  }, [fetchCapture]);
-
-  useEffect(() => {
-    if (state === "armed" || state === "capturing") {
-      pollingRef.current = setInterval(fetchStatus, 200);
-    } else if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-      pollingRef.current = null;
-    }
-
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-      }
-    };
-  }, [state, fetchStatus]);
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const res = await fetch("/api/v1/logic-analyzer");
-        if (!res.ok) return;
-        const data: unknown = await res.json();
-        if (!data || typeof data !== "object") return;
-
-        const nextState = (data as Record<string, unknown>).state;
-        if (!isLogicAnalyzerState(nextState)) return;
-
-        if (nextState === "armed" || nextState === "capturing") {
-          await fetch("/api/v1/logic-analyzer", { method: "DELETE" });
-          setState("idle");
-          setCapture(null);
-          return;
-        }
-
-        setState(nextState);
-        if (nextState === "done") {
-          await fetchCapture();
-        }
-      } catch {
-        /* ignore initial state sync failure */
-      }
-    })();
-  }, [fetchCapture]);
+    },
+    [scpiCommand]
+  );
 
   const handleArm = useCallback(async () => {
     if (armInFlightRef.current) return;
@@ -434,53 +341,123 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
       setError("Select at least one pin");
       return;
     }
-    const armRequest = buildLogicAnalyzerArmRequest(nextConfig);
 
     armInFlightRef.current = true;
     setIsArming(true);
 
     try {
-      const res = await fetch("/api/v1/logic-analyzer", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(armRequest),
+      await scpiEnsureConnected();
+      await configureScope(nextConfig);
+      const triggered = nextConfig.triggerType !== "none";
+      await scpiCommand(triggered ? ":RUN" : ":STOP");
+      setState("capturing");
+      const frame = await scpiReadDigitalFrame();
+      const rate = calculateActualSampleRate(nextConfig.sampleRateHz);
+      const values = repackFrameBits(frame, nextConfig.selectedPins);
+      const data = normalizeLogicAnalyzerCapture({
+        state: "done",
+        config: {
+          pinCount: nextConfig.selectedPins.length,
+          pinBase: nextConfig.selectedPins[0] ?? 0,
+          selectedPins: [...nextConfig.selectedPins],
+          requestedSampleRateHz: nextConfig.sampleRateHz,
+          actualSampleRateHz: rate,
+          triggerType: nextConfig.triggerType,
+          triggerPin: nextConfig.triggerPin,
+        },
+        sampleCount: values.length,
+        triggerIndex: triggered ? RIGOL_TRIGGER_SAMPLE : 0,
+        samples: values.map((value, index) => ({
+          timestampUs: (index * 1_000_000) / rate,
+          values: value,
+        })),
       });
-      if (!res.ok) {
-        const message = await readResponseErrorMessage(res);
-        if (res.status === 409) {
-          await fetchStatus();
-          if (message) {
-            setError(message);
-          }
-          return;
-        }
-        setError(message || "Failed to arm");
-        return;
-      }
-      setState("armed");
+      setCapture(data);
+      setState("done");
+      scpiClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
+      setState("idle");
+      scpiClose();
     } finally {
       armInFlightRef.current = false;
       setIsArming(false);
     }
-  }, [config, fetchStatus, readResponseErrorMessage]);
+  }, [config, configureScope, scpiClose, scpiEnsureConnected, scpiReadDigitalFrame]);
 
   const handleCancel = useCallback(async () => {
     setError(null);
+    try {
+      await scpiCommand(":STOP");
+    } catch {
+      /* best-effort stop while closing */
+    }
+    scpiClose();
+    setState("idle");
+  }, [scpiClose, scpiCommand]);
+
+  const stopStream = useCallback(async () => {
+    streamingRef.current = false;
+    setStreaming(false);
+    scpiClose();
+  }, [scpiClose]);
+
+  const startStream = useCallback(async () => {
+    if (streamingRef.current) return;
+    setError(null);
+
+    const cfg = normalizeLogicAnalyzerConfig(config);
+    if (cfg.selectedPins.length === 0) {
+      setError("Select at least one pin");
+      return;
+    }
 
     try {
-      const res = await fetch("/api/v1/logic-analyzer", { method: "DELETE" });
-      if (!res.ok) {
-        const message = await readResponseErrorMessage(res);
-        setError(message || "Failed to cancel");
-        return;
-      }
-      setState("idle");
+      await scpiEnsureConnected();
+      await configureScope(cfg);
+      await scpiCommand(cfg.triggerType !== "none" ? ":RUN" : ":STOP");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
+      scpiClose();
+      return;
     }
-  }, [readResponseErrorMessage]);
+
+    streamingRef.current = true;
+    setStreaming(true);
+    void (async () => {
+      try {
+        while (streamingRef.current) {
+          const frame = await scpiReadDigitalFrame(8000);
+          const values = repackFrameBits(frame, cfg.selectedPins);
+          const arr = streamSamplesRef.current;
+          for (let i = 0; i < values.length; i++) {
+            arr.push(values[i]);
+          }
+          if (arr.length > STREAM_BUFFER_CAP) {
+            arr.splice(0, arr.length - STREAM_BUFFER_CAP);
+          }
+          streamSequenceRef.current += 1;
+          streamTotalRef.current += values.length;
+          streamDirtyRef.current = true;
+        }
+      } catch (err) {
+        if (streamingRef.current) {
+          setError(err instanceof Error ? err.message : "stream failed");
+        }
+      } finally {
+        streamingRef.current = false;
+        setStreaming(false);
+        scpiClose();
+      }
+    })();
+  }, [config, configureScope, scpiClose, scpiCommand, scpiEnsureConnected, scpiReadDigitalFrame]);
+
+  useEffect(() => {
+    return () => {
+      streamingRef.current = false;
+      scpiClose();
+    };
+  }, [scpiClose]);
 
   const handleClear = useCallback(() => {
     setCapture(null);
@@ -588,7 +565,7 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
             pinCount: config.selectedPins.length,
             pinBase: config.selectedPins[0] ?? 0,
             selectedPins: [...config.selectedPins],
-            actualSampleRateHz: streamRate ?? actualRate,
+            actualSampleRateHz: actualRate,
           },
           sampleCount: decodeLen,
           triggerIndex: 0,
@@ -609,7 +586,7 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [streaming, decoderProtocol, decoderConfigs, config.selectedPins, streamRate, actualRate]);
+  }, [streaming, decoderProtocol, decoderConfigs, config.selectedPins, actualRate]);
 
   const uartConfig: LogicDecoderProtocolConfigs["uart"] = decoderConfigs.uart;
   const i2cConfig: LogicDecoderProtocolConfigs["i2c"] = decoderConfigs.i2c;
@@ -933,36 +910,24 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
                 type="text"
                 inputMode="numeric"
                 pattern="[0-9]*"
-                placeholder="0"
-                value={config.preSamples || ""}
-                onChange={(event) => {
-                  const value = event.target.value.replace(/[^0-9]/g, "");
-                  updateConfig((current) => ({ ...current, preSamples: value ? Number(value) : 0 }));
-                }}
-                disabled={controlsDisabled || config.triggerType === "none"}
-                className="mt-1 w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-xs text-ink"
+                value="300"
+                disabled
+                className="mt-1 w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-xs text-ink opacity-60"
               />
-              {config.triggerType === "none" && (
-                <span className="mt-0.5 block text-[9px] text-ink-dim/60">
-                  {t("logicAnalyzer.preTriggerOnlyEdge")}
-                </span>
-              )}
             </label>
 
             <label className="text-[11px] text-ink-dim">
               {t("logicAnalyzer.postSamples")}
               <input
                 type="number"
-                min="1"
-                max={maxSamples - config.preSamples}
-                value={config.postSamples}
-                onChange={(event) =>
-                  updateConfig((current) => ({ ...current, postSamples: Number(event.target.value) }))
-                }
-                disabled={controlsDisabled}
-                className="mt-1 w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-xs text-ink"
+                value="300"
+                disabled
+                className="mt-1 w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-xs text-ink opacity-60"
               />
             </label>
+            <span className="col-span-2 -mt-1 block text-[9px] text-ink-dim/60">
+              {t("logicAnalyzer.scopeFrameFixed")}
+            </span>
 
             {config.triggerType !== "none" && (
               <label className="col-span-2 text-[11px] text-ink-dim">
@@ -1305,12 +1270,7 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
               type="button"
               variant="primary"
               onClick={handleArm}
-              disabled={
-                controlsDisabled ||
-                totalSamples > maxSamples ||
-                totalSamples === 0 ||
-                config.selectedPins.length === 0
-              }
+              disabled={controlsDisabled || config.selectedPins.length === 0}
             >
               {isArming ? <Loader2 size={15} className="animate-spin" /> : <Radio size={15} />}
               {isArming ? t("logicAnalyzer.arming") : t("logicAnalyzer.arm")}
@@ -1324,12 +1284,7 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
                 streamSequenceRef.current = 0;
                 streamTotalRef.current = 0;
                 setStreamSampleCount(0);
-                void startStream({
-                  sampleRateHz: config.sampleRateHz,
-                  selectedPins: config.selectedPins,
-                  pinCount: config.selectedPins.length,
-                  pinBase: config.selectedPins[0] ?? 0,
-                });
+                void startStream();
               }}
               disabled={config.selectedPins.length === 0 || streamRateExceeded}
             >
@@ -1369,10 +1324,10 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
       {streaming && (
         <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-brand/30 bg-brand/5 px-3 py-2 text-xs text-ink">
           <Badge tone="brand">{t("logicAnalyzer.streaming")}</Badge>
-          <span>{formatSampleRate(streamRate ?? actualRate)}</span>
+          <span>{formatSampleRate(actualRate)}</span>
           <span>{formatSampleCount(streamSampleCount)} {t("logicAnalyzer.samples")}</span>
-          {streamError && (
-            <span className="text-danger">{streamError}</span>
+          {error && (
+            <span className="text-danger">{error}</span>
           )}
         </div>
       )}

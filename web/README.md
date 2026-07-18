@@ -87,10 +87,12 @@ up to 512 exported samples total. Edge-triggered captures do not support
 pre-trigger samples, so the UI keeps `pre_samples=0` for those modes.
 Completed captures can be previewed in the waveform view and exported as CSV or
 PulseView `.sr` files. For live monitoring there is also a continuous streaming
-mode (**Stream** button, 1-25 MHz): the firmware pushes `logic-chunk` messages
-over a live-session WebSocket and the card shows a streaming status line plus a
-rolling live waveform of the most recent 4096 buffered samples per pin. Chunk
-delivery is best-effort; dropped chunks appear as sequence gaps. The decoder
+mode (**Stream** button, 1-25 MHz): the card speaks the same Rigol-style
+SCPI scope protocol used by PulseView over a binary WebSocket
+(`ws://<board>/api/v1/scpi`), pulls 600-sample live frames in a loop, and
+shows a streaming status line plus a rolling live waveform of the buffered
+sample history per pin. Frames are gap-free 600-sample islands delivered at
+tens of milliseconds cadence, not a contiguous multi-MHz record. The decoder
 still operates on single-shot captures only, not on stream data.
 
 The logic analyzer lives in the **Terminal workspace** alongside the serial

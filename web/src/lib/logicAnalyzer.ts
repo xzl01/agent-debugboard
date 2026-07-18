@@ -336,7 +336,7 @@ export function normalizeLogicAnalyzerCapture(
   const sampleCount = clampInteger(
     capture.sampleCount,
     0,
-    Math.min(LOGIC_ANALYZER_MAX_SAMPLES, capture.samples.length)
+    capture.samples.length
   );
   const samples = normalizeLogicAnalyzerCaptureSamples(capture.samples, sampleCount);
   const triggerIndex =

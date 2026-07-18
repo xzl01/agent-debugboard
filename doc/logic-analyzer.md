@@ -230,41 +230,21 @@ without expanding the static RAM allocation.
 
 ## Continuous Streaming Mode
 
-For real-time waveform monitoring at lower sample rates, use the continuous
-streaming mode. This mode uses DMA ping-pong buffers and pushes chunks over
-the existing WebSocket session.
+For real-time waveform monitoring at lower sample rates, use continuous
+streaming. The transport is the same SCPI scope protocol used by
+PulseView/sigrok (see below), carried over a WebSocket so browsers can use it:
+the Web UI speaks SCPI to `ws://<board>/api/v1/scpi` and pulls 600-sample live
+frames in a loop, exactly like sigrok-cli does over raw TCP.
 
-**Supported rates**: 1 MHz through 25 MHz (single channel recommended for
-rates above 8 MHz). Higher requested rates are rejected with HTTP 400
-("stream rate exceeds 25 MHz maximum") because the per-block DMA interrupt
-path cannot sustain more; single-shot captures support up to 125 MHz.
-WebSocket delivery is decoupled from the sample rate: chunks are compressed
-and formatted only for a bounded share of DMA blocks (~200 per second), so
-multi-MHz streaming cannot saturate the system workqueue.
-
-**Endpoint**: `POST /api/v1/logic-analyzer/stream`
-
-**Request body**: Same as single-shot arm, but `trigger` must be `none`.
-
-**Response**: Returns `action: "stream_started"` with `actualSampleRateHz`.
-
-**Stop**: `DELETE /api/v1/logic-analyzer/stream`. The stream also stops
-automatically when the last subscribed WebSocket client disconnects (for
-example when the browser tab closes), so an abandoned stream never blocks a
-later start with `already_armed`.
-
-**WebSocket**: Subscribe to the live session with `type: "subscribe"` to
-receive `logic-chunk` messages:
-
-```json
-{"type":"logic-chunk","seq":0,"count":1024,"values":[0,1,3,2,...]}
-```
-
-Each chunk contains 1024 compressed 16-bit sample words. The `seq` field
-increments with each chunk. Chunks are produced at sample rate and delivered
-best-effort: when the firmware cannot keep up (for example a slow client),
-chunks are dropped and the loss is visible as `seq` gaps. Clients should not
-expect a contiguous sample stream at multi-MHz rates.
+**Rates**: frames are contiguous captures at up to 25 MHz; faster timebases
+fall back to ≤125 MHz single-shot bursts per frame. There is no separate
+stream endpoint any more (`POST/DELETE /api/v1/logic-analyzer/stream` and the
+`logic-chunk` WebSocket messages were removed in favor of the unified scope
+protocol). With an edge trigger configured each frame is a fresh hardware
+pre-trigger capture; without a trigger each frame is a contiguous capture.
+Frame cadence is tens of milliseconds per 600-sample frame, so the rolling
+waveform is a series of gap-free 600-sample islands rather than a contiguous
+multi-MHz record.
 
 **Browser UI**: Click the **Stream** button in the Logic Analyzer card to
 start continuous capture (disabled above 25 MHz with a hint). A live status
@@ -315,6 +295,13 @@ so stock PulseView / sigrok-cli connect directly with no client-side changes.
 Port 80 multiplexes by first byte: uppercase-ASCII traffic (HTTP) is pumped to
 the internal web server on `127.0.0.1:8080`, everything else (SCPI) is answered
 by the emulation. Use `tcp-raw/<board-ip>/80` as the sigrok connection string.
+
+The same SCPI engine is also reachable over WebSocket at
+`ws://<board>/api/v1/scpi` for clients that cannot open raw TCP (browsers).
+Send SCPI commands as text or binary frames; responses arrive as binary
+frames with stream semantics (concatenate frame payloads, then parse lines
+and `#`-prefixed IEEE488 blocks). TCP and WebSocket sessions are mutually
+exclusive: one SCPI session at a time across both transports.
 
 Identity: `Rigol Technologies,DS1102D,DS1ZA999000001,00.04.04` (protocol V2,
 600-sample live frames, 12 horizontal divisions).
@@ -386,13 +373,14 @@ sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
 ## Usage
 
  1. Open Web UI: `http://172.29.203.1/`
- 2. Select the **Terminal workspace** tab
- 3. Find **Logic Analyzer** card
- 4. Configure parameters (optional)
- 5. Click **Arm capture** to start acquisition
- 6. Wait for capture to complete
- 7. Click **CSV** or **PulseView (.sr)** to export data
- 8. Open the .sr file in PulseView to view waveforms
+ 2. Select the **Logic Analyzer** tab of the right workspace
+ 3. Configure pins/rate/trigger (frame geometry is fixed by the scope
+    protocol: 600 samples per frame, 300 pre + 300 post when triggered)
+ 4. Click **Arm capture** to fetch one scope frame over SCPI-over-WebSocket
+ 5. Click **CSV** or **PulseView (.sr)** to export data
+ 6. Or click **Stream** for a rolling live waveform
+ 7. Or connect PulseView / sigrok-cli directly
+   (`-d rigol-ds:conn=tcp-raw/172.29.203.1/80`)
 
 ## File Reference
 

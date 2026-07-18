@@ -821,58 +821,34 @@ timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
 # 验证返回 HTTP 400 和 error.code: "invalid_config"
 ```
 
-#### 8b.8 Stream endpoint
+#### 8b.8 SCPI-over-WebSocket 桥
 
-连续采样端点使用 body accumulator 处理浏览器分片请求。
-验证 POST stream 启动、状态查询、DELETE 停止的完整流程，且板子不挂起。
+`/api/v1/logic-analyzer/stream` REST 端点与 `logic-chunk` WebSocket 消息已
+移除，浏览器统一走与 PulseView 相同的示波器协议：`ws://<board>/api/v1/scpi`
+（文本或二进制帧发命令，二进制帧收响应，流式语义拼接后按行与 IEEE488 块
+解析）。TCP（tcp-raw 端口 80）与 WebSocket 两种传输互斥，同一时间只允许
+一个 SCPI 会话。
 
-```sh
-# 启动 stream
-timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-  --data '{"selected_pins":[13],"sample_rate_hz":1000000}' \
-  http://172.29.203.1/api/v1/logic-analyzer/stream
-# 验证返回 HTTP 200 和 action:stream_started
-# 查询状态
-timeout 5s curl -fsS http://172.29.203.1/api/v1/logic-analyzer
-# 验证 state 为空字符串（streaming 模式）
-# 停止 stream
-timeout 5s curl -fsS -X DELETE http://172.29.203.1/api/v1/logic-analyzer/stream
-# 验证返回 HTTP 200 和 action:stream_stopped
-# 再次启动应成功（无 EBUSY 卡死）
-timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-  --data '{"selected_pins":[13],"sample_rate_hz":1000000}' \
-  http://172.29.203.1/api/v1/logic-analyzer/stream
-timeout 5s curl -fsS -X DELETE http://172.29.203.1/api/v1/logic-analyzer/stream
-```
+WS 桥功能回归：用 WebSocket 客户端连接 `/api/v1/scpi`，发送 `*IDN?` 应收
+到 DS1102D 身份串；依次发送 `:TIM:SCAL 0.00002`、`:TRIG:EDGE:SOUR D3`、
+`:TRIG:EDGE:SLOP NEG`、`:RUN` 后 `:WAV:DATA? DIG`，应收到 `#41200` 头加
+1200 字节帧，D3 下降沿位于样本 300（GP10 注入 115200 'U'）；连续请求 6
+帧全部成功，关闭后 GET /api/v1/logic-analyzer 显示 `state: "idle"`（会话
+收尾不得泄漏 LA 所有权）。
 
-分片 body 回归（浏览器把 75 字节 JSON 拆成两个 TCP 段的场景）：用原始
-socket 在 keep-alive 连接上以 58+17 字节分片重复 POST /stream，全部应
-返回 200（回归：路由层曾吞掉 MORE 事件导致只读到末尾分片、400
-json_parse failed）。
+单会话互斥回归：一个 SCPI-over-WS 会话存活期间，第二个 WS 或 TCP SCPI 连
+接应被拒绝/关闭，首个会话结束后新连接应立即可用。
 
-WS chunk 投递回归：POST /stream 后创建 live-session 并订阅
-`{"type":"subscribe","topic":"live","rate_hz":100}`，3 秒内应收到若干
-`logic-chunk` 消息（回归：timeout-0 发送失败曾永久关闭 telemetry；
-k_event_wait 的 reset 语义曾吞掉一次性 LOGIC_CHUNK 事件）。GET
-/api/v1/logic-analyzer 的 `debug.ws_chunk` 计数器（calls/sent/failed/
-last_err）可用于判定投递链路状态。
+浏览器端到端回归（Playwright 或手动）：右侧工作区 **Logic Analyzer** 页
+签选择引脚后点 **Arm capture**，应显示 "Captured 600 samples"（scope 帧
+固定 600 样本，触发时 300 前 + 300 后）与波形；点 **Stream** 应出现
+"streaming"徽章、持续增长的样本计数与实时波形（svg path）；点
+**Stop stream** 徽章消失，控制台不应出现 `Close received after close`。
+连续 3 次启停循环均应正常。
 
-浏览器端到端回归（Playwright 或手动）：Logic Analyzer 卡选择引脚后点
-**连续采样**，应出现"采样中"徽章、持续增长的样本计数与"实时波形"区
-（回归：流式信息块曾嵌套在单次捕获条件内而不渲染；流数据曾无波形渲
-染）；点**停止采样**，控制台不应出现 `Close received after close`
-（回归：WS 关闭路径曾发出两个 CLOSE 帧）。连续 3 次启停循环均应正常。
-
-自动停止回归：POST /stream 后建立 WS 会话并订阅，然后直接断开 WS（不
-DELETE stream），1-2 秒内 GET /api/v1/logic-analyzer 应显示
-`state: "idle"`、`debug.stream_active: false`（回归：无属主流曾永久运
-行，导致后续启动全部 409 already_armed）。
-
-速率边界回归：5 MHz 流式在 WS 订阅下连续运行 6 秒板子不应复位（回归：
-发射与采样率解耦前，5 MHz 的每块压缩+JSON 格式化曾饱和系统工作队列
-并触发看门狗复位进 BOOTSEL）；25 MHz 可启动（高负载下允许瞬时 HTTP
-超时但不应复位）；>25 MHz（如 125 MHz）应返回 HTTP 400 且消息明确指
-出 25 MHz 上限（single-shot 支持 125 MHz），UI 流式按钮同步禁用。
+速率边界回归：流式帧循环（trigger none）在 1 MHz 下连续运行 30 秒板子
+不应复位；UI 在 >25 MHz 时禁用流式按钮（帧循环在上位机侧节流，固件不再
+有独立的流式速率上限）。
 
 #### 8b.8 HTTP/watchdog responsiveness during capture
 
@@ -1116,10 +1092,10 @@ $SIG -i /tmp/cap.sr -O csv
 #### 8c.7 端口 80 复用回归
 
 SCPI 会话期间与之后，浏览器/CLI 路径（HTTP 经泵转发到 8080）必须正常：
-`curl http://172.29.203.1/api/v1/status` 返回 200；WS 流式采样
-（logic-chunk）在 SCPI 会话关闭后照常工作；全部 sigrok 测试结束后
-GET /api/v1/logic-analyzer 应显示 `state: "idle"`（rigol 会话不得泄漏
-LA 所有权）。
+`curl http://172.29.203.1/api/v1/status` 返回 200；SCPI-over-WebSocket
+（`/api/v1/scpi`）与 TCP SCPI 会话在各自关闭后均照常工作；全部 sigrok
+测试结束后 GET /api/v1/logic-analyzer 应显示 `state: "idle"`（rigol 会话
+不得泄漏 LA 所有权）。
 
 ### 10. USB CDC ACM fallback
 

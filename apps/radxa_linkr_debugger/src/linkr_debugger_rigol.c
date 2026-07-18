@@ -9,6 +9,7 @@
 
 #include "linkr_debugger_logic_analyzer.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,8 +17,10 @@
 #include <zephyr/drivers/adc.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/net/http/server.h>
 #include <zephyr/net/net_ip.h>
 #include <zephyr/net/socket.h>
+#include <zephyr/net/websocket.h>
 #include <zephyr/posix/poll.h>
 #include <zephyr/posix/sys/socket.h>
 
@@ -113,7 +116,89 @@ static void linkr_debugger_rigol_close_fd(int *fd)
 	}
 }
 
-static int linkr_debugger_rigol_send_all(int fd, const void *data, size_t len)
+struct linkr_debugger_rigol_io {
+	int (*recv)(void *ctx, uint8_t *buf, size_t max);
+	int (*send)(void *ctx, const uint8_t *buf, size_t len);
+	void *ctx;
+};
+
+struct linkr_debugger_rigol_ws_rx {
+	int sock;
+	bool closed;
+	uint16_t pos;
+	uint16_t len;
+	uint8_t buf[512];
+};
+
+static struct linkr_debugger_rigol_io linkr_debugger_rigol_io_current;
+static bool linkr_debugger_rigol_io_active;
+static K_MUTEX_DEFINE(linkr_debugger_rigol_scpi_lock);
+
+static int linkr_debugger_rigol_tcp_recv(void *ctx, uint8_t *buf, size_t max)
+{
+	ssize_t ret = zsock_recv((int)(intptr_t)ctx, buf, max, 0);
+
+	if (ret < 0) {
+		return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : -1;
+	}
+	return ret == 0 ? -1 : (int)ret;
+}
+
+static int linkr_debugger_rigol_tcp_send(void *ctx, const uint8_t *buf, size_t len)
+{
+	ssize_t ret = zsock_send((int)(intptr_t)ctx, buf, len, 0);
+
+	return ret < 0 ? -1 : (int)ret;
+}
+
+static int linkr_debugger_rigol_ws_recv(void *ctx, uint8_t *out, size_t max)
+{
+	struct linkr_debugger_rigol_ws_rx *rx = ctx;
+
+	if (rx->pos >= rx->len) {
+		uint32_t message_type = 0U;
+		uint64_t remaining = 0U;
+		int ret;
+
+		if (rx->closed) {
+			return -1;
+		}
+		ret = websocket_recv_msg(rx->sock, rx->buf, sizeof(rx->buf),
+					 &message_type, &remaining, 2000);
+		if (ret == -EAGAIN) {
+			return 0;
+		}
+		if (ret < 0 || (message_type & WEBSOCKET_FLAG_CLOSE) != 0U) {
+			rx->closed = true;
+			return -1;
+		}
+		if (remaining != 0U || ret == 0) {
+			rx->closed = true;
+			return -1;
+		}
+		rx->pos = 0U;
+		rx->len = (uint16_t)ret;
+	}
+	size_t n = rx->len - rx->pos;
+
+	if (n > max) {
+		n = max;
+	}
+	memcpy(out, &rx->buf[rx->pos], n);
+	rx->pos += (uint16_t)n;
+	return (int)n;
+}
+
+static int linkr_debugger_rigol_ws_send(void *ctx, const uint8_t *buf, size_t len)
+{
+	struct linkr_debugger_rigol_ws_rx *rx = ctx;
+	int ret = websocket_send_msg(rx->sock, buf, len,
+		WEBSOCKET_OPCODE_DATA_BINARY, false, true, 2000);
+
+	return ret < 0 ? -1 : ret;
+}
+
+static int linkr_debugger_rigol_sock_send_all(int fd, const void *data, size_t len)
 {
 	const uint8_t *ptr = data;
 
@@ -133,9 +218,40 @@ static int linkr_debugger_rigol_send_all(int fd, const void *data, size_t len)
 	return 0;
 }
 
+static int linkr_debugger_rigol_send_all(int fd, const void *data, size_t len)
+{
+	const uint8_t *ptr = data;
+
+	ARG_UNUSED(fd);
+	while (len > 0U) {
+		int ret = linkr_debugger_rigol_io_current.send(
+			linkr_debugger_rigol_io_current.ctx, ptr, len);
+
+		if (ret <= 0) {
+			return -1;
+		}
+		ptr += (size_t)ret;
+		len -= (size_t)ret;
+	}
+	return 0;
+}
+
 static int linkr_debugger_rigol_send_str(int fd, const char *str)
 {
 	return linkr_debugger_rigol_send_all(fd, str, strlen(str));
+}
+
+static bool linkr_debugger_rigol_scpi_try_lock(void)
+{
+	bool ok = false;
+
+	k_mutex_lock(&linkr_debugger_rigol_scpi_lock, K_FOREVER);
+	if (!linkr_debugger_rigol_io_active) {
+		linkr_debugger_rigol_io_active = true;
+		ok = true;
+	}
+	k_mutex_unlock(&linkr_debugger_rigol_scpi_lock);
+	return ok;
 }
 
 static int linkr_debugger_rigol_format_double(char *buf, size_t cap, double value)
@@ -190,7 +306,7 @@ static int linkr_debugger_rigol_pump_pair_open(int client_fd, int pending_first)
 	if (pending_first >= 0) {
 		uint8_t first = (uint8_t)pending_first;
 
-		if (linkr_debugger_rigol_send_all(upstream_fd, &first, 1U) < 0) {
+		if (linkr_debugger_rigol_sock_send_all(upstream_fd, &first, 1U) < 0) {
 			linkr_debugger_rigol_close_fd(&upstream_fd);
 			return -1;
 		}
@@ -285,7 +401,7 @@ static void linkr_debugger_rigol_pump_thread(void *p1, void *p2, void *p3)
 				linkr_debugger_rigol_pump_pair_close(pair_index);
 				continue;
 			}
-			if (linkr_debugger_rigol_send_all(dst, buf, (size_t)got) < 0) {
+			if (linkr_debugger_rigol_sock_send_all(dst, buf, (size_t)got) < 0) {
 				linkr_debugger_rigol_pump_pair_close(pair_index);
 			}
 		}
@@ -297,6 +413,7 @@ static bool linkr_debugger_rigol_read_line(int fd, char *line, size_t cap,
 {
 	size_t used = 0U;
 
+	ARG_UNUSED(fd);
 	if (*have_first) {
 		line[used++] = (char)*first;
 		*have_first = false;
@@ -304,10 +421,14 @@ static bool linkr_debugger_rigol_read_line(int fd, char *line, size_t cap,
 
 	while (used + 1U < cap) {
 		uint8_t ch;
-		ssize_t ret = zsock_recv(fd, &ch, 1U, 0);
+		int ret = linkr_debugger_rigol_io_current.recv(
+			linkr_debugger_rigol_io_current.ctx, &ch, 1U);
 
-		if (ret <= 0) {
+		if (ret < 0) {
 			return false;
+		}
+		if (ret == 0) {
+			continue;
 		}
 		if (ch == '\n') {
 			break;
@@ -455,10 +576,10 @@ static int64_t linkr_debugger_rigol_auto_timeout_ms(uint32_t rate_hz)
 	uint32_t t = 2000U;
 
 	if (rate_hz > 0U) {
-		t = 2U * 1000U * LINKR_DEBUGGER_RIGOL_LIVE_SAMPLES / rate_hz + 100U;
+		t = 4U * 1000U * LINKR_DEBUGGER_RIGOL_LIVE_SAMPLES / rate_hz + 20U;
 	}
-	if (t < 100U) {
-		t = 100U;
+	if (t < 20U) {
+		t = 20U;
 	}
 	if (t > 2000U) {
 		t = 2000U;
@@ -1260,7 +1381,8 @@ static void linkr_debugger_rigol_handle_set(const char *line,
 	}
 }
 
-static void linkr_debugger_rigol_session(int fd, uint8_t first)
+static void linkr_debugger_rigol_scpi_run(const struct linkr_debugger_rigol_io *io,
+	bool have_first, uint8_t first)
 {
 	struct linkr_debugger_rigol_state state = {
 		.timebase = 0.0001,
@@ -1276,18 +1398,14 @@ static void linkr_debugger_rigol_session(int fd, uint8_t first)
 		.capture_owns_la = false,
 		.want_arm = false,
 	};
-	struct zsock_timeval tv;
-	bool have_first = true;
 
-	tv.tv_sec = LINKR_DEBUGGER_RIGOL_RECV_TIMEOUT_MS / 1000U;
-	tv.tv_usec = 0;
-	(void)zsock_setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	linkr_debugger_rigol_io_current = *io;
 
 	while (true) {
 		char line[128];
 		size_t len = 0U;
 
-		if (!linkr_debugger_rigol_read_line(fd, line, sizeof(line), &len,
+		if (!linkr_debugger_rigol_read_line(0, line, sizeof(line), &len,
 			&have_first, &first)) {
 			break;
 		}
@@ -1295,7 +1413,7 @@ static void linkr_debugger_rigol_session(int fd, uint8_t first)
 			continue;
 		}
 
-		int qret = linkr_debugger_rigol_handle_query(fd, line, &state);
+		int qret = linkr_debugger_rigol_handle_query(0, line, &state);
 
 		if (qret < 0) {
 			break;
@@ -1310,6 +1428,75 @@ static void linkr_debugger_rigol_session(int fd, uint8_t first)
 		}
 	}
 	linkr_debugger_rigol_cancel_capture(&state);
+	linkr_debugger_rigol_io_current.recv = NULL;
+	linkr_debugger_rigol_io_current.send = NULL;
+	linkr_debugger_rigol_io_current.ctx = NULL;
+	linkr_debugger_rigol_io_active = false;
+}
+
+static void linkr_debugger_rigol_tcp_session(int client_fd, uint8_t first)
+{
+	struct linkr_debugger_rigol_io io = {
+		.recv = linkr_debugger_rigol_tcp_recv,
+		.send = linkr_debugger_rigol_tcp_send,
+		.ctx = (void *)(intptr_t)client_fd,
+	};
+	struct zsock_timeval tv;
+
+	tv.tv_sec = LINKR_DEBUGGER_RIGOL_RECV_TIMEOUT_MS / 1000U;
+	tv.tv_usec = 0;
+	(void)zsock_setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+	if (!linkr_debugger_rigol_scpi_try_lock()) {
+		return;
+	}
+	linkr_debugger_rigol_scpi_run(&io, true, first);
+}
+
+static K_THREAD_STACK_DEFINE(linkr_debugger_rigol_ws_scpi_stack, 4096);
+static struct k_thread linkr_debugger_rigol_ws_scpi_thread_data;
+static int linkr_debugger_rigol_ws_scpi_sock = -1;
+
+static void linkr_debugger_rigol_ws_scpi_thread(void *p1, void *p2, void *p3)
+{
+	struct linkr_debugger_rigol_ws_rx rx = {
+		.sock = linkr_debugger_rigol_ws_scpi_sock,
+	};
+	struct linkr_debugger_rigol_io io = {
+		.recv = linkr_debugger_rigol_ws_recv,
+		.send = linkr_debugger_rigol_ws_send,
+		.ctx = &rx,
+	};
+
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	linkr_debugger_rigol_scpi_run(&io, false, 0U);
+	(void)websocket_unregister(rx.sock);
+	linkr_debugger_rigol_ws_scpi_sock = -1;
+}
+
+int linkr_debugger_rigol_scpi_ws_setup(int ws_socket,
+	struct http_request_ctx *request_ctx, void *user_data)
+{
+	ARG_UNUSED(request_ctx);
+	ARG_UNUSED(user_data);
+
+	if (!linkr_debugger_rigol_scpi_try_lock()) {
+		(void)websocket_send_msg(ws_socket, (const uint8_t *)"busy\n", 5U,
+			WEBSOCKET_OPCODE_DATA_TEXT, false, true, 1000);
+		return -EBUSY;
+	}
+	linkr_debugger_rigol_ws_scpi_sock = ws_socket;
+	(void)k_thread_create(&linkr_debugger_rigol_ws_scpi_thread_data,
+		linkr_debugger_rigol_ws_scpi_stack,
+		K_THREAD_STACK_SIZEOF(linkr_debugger_rigol_ws_scpi_stack),
+		linkr_debugger_rigol_ws_scpi_thread, NULL, NULL, NULL,
+		K_PRIO_PREEMPT(8), 0, K_NO_WAIT);
+	(void)k_thread_name_set(&linkr_debugger_rigol_ws_scpi_thread_data,
+		"rigol_scpi_ws");
+	return 0;
 }
 
 static void linkr_debugger_rigol_dispatch_thread(void *p1, void *p2, void *p3)
@@ -1364,7 +1551,7 @@ static void linkr_debugger_rigol_dispatch_thread(void *p1, void *p2, void *p3)
 		}
 
 		if (got > 0 && !linkr_debugger_rigol_first_byte_is_http(first)) {
-			linkr_debugger_rigol_session(client_fd, first);
+			linkr_debugger_rigol_tcp_session(client_fd, first);
 			linkr_debugger_rigol_close_fd(&client_fd);
 			continue;
 		}
