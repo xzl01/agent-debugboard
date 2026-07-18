@@ -426,8 +426,8 @@ PulseView / sigrok-cli can also connect directly with no client-side changes:
 the firmware emulates a Rigol DS1102D (rigol-ds driver) over raw TCP on port 80
 (shared with the web server via first-byte multiplexing). Use
 `sigrok-cli -d rigol-ds:conn=tcp-raw/<board-ip>/80 ...`; digital channels
-D0-D13 map to GP7-GP9/GP10-GP20 and CH1 is the GP29 analog input. Edge
-triggers use scope-style config keys (`--config triggersource=D3
+channels follow physical J16 connector order: D0-D11 = J16_PIN1-PIN12 (GP10..GP15 pattern ending with GP29), D12-D14 = J13 CON pins (GP7/GP8/GP9), and CH1 is the GP29 analog input. GP10 (J16_PIN1) is channel D0. Edge
+triggers use scope-style config keys (`--config triggersource=D0
 --config triggerslope=f`) with real hardware pre-trigger at ≤25 MHz, burst
 trigger at >25 MHz, and AUTO fallback when no edge arrives. Use `--frames`,
 not `--samples`. Deep captures (up to one million samples into the 2 MB

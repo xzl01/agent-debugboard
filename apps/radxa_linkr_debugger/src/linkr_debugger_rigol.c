@@ -51,10 +51,37 @@ LOG_MODULE_REGISTER(linkr_debugger_rigol, CONFIG_LINKR_DEBUGGER_LOG_LEVEL);
 static const struct adc_dt_spec linkr_debugger_rigol_adc_gp29 =
 	ADC_DT_SPEC_STRUCT(DT_NODELABEL(adc), 3);
 
-#define LINKR_DEBUGGER_RIGOL_PIN_COUNT 14U
+#define LINKR_DEBUGGER_RIGOL_PIN_COUNT 15U
+#define LINKR_DEBUGGER_RIGOL_WINDOW_BASE 7U
+#define LINKR_DEBUGGER_RIGOL_WINDOW_COUNT 14U
 static const uint8_t linkr_debugger_rigol_pins[LINKR_DEBUGGER_RIGOL_PIN_COUNT] = {
-	7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+	10, 16, 11, 17, 12, 18, 13, 19, 14, 20, 15, 29, 7, 8, 9,
 };
+
+static uint16_t linkr_debugger_rigol_remap_pins(const uint8_t *pins, uint8_t count,
+	uint16_t window, bool gp29_high)
+{
+	uint16_t out = 0U;
+
+	for (uint8_t i = 0U; i < count; i++) {
+		uint8_t pin = pins[i];
+		uint16_t bit;
+
+		if (pin == 29U) {
+			bit = gp29_high ? 1U : 0U;
+		} else {
+			bit = (uint16_t)((window >> (pin - LINKR_DEBUGGER_RIGOL_WINDOW_BASE)) & 1U);
+		}
+		out |= (uint16_t)(bit << i);
+	}
+	return out;
+}
+
+static uint16_t linkr_debugger_rigol_remap(uint16_t window, bool gp29_high)
+{
+	return linkr_debugger_rigol_remap_pins(linkr_debugger_rigol_pins,
+		LINKR_DEBUGGER_RIGOL_PIN_COUNT, window, gp29_high);
+}
 
 static uint16_t linkr_debugger_rigol_buf[LINKR_DEBUGGER_RIGOL_BUFFER_SAMPLES];
 static uint8_t linkr_debugger_rigol_analog_buf[LINKR_DEBUGGER_RIGOL_LIVE_SAMPLES];
@@ -564,11 +591,11 @@ static void linkr_debugger_rigol_fill_la_config(struct linkr_debugger_la_config 
 	uint32_t rate_hz)
 {
 	memset(la, 0, sizeof(*la));
-	for (uint8_t i = 0U; i < LINKR_DEBUGGER_RIGOL_PIN_COUNT; i++) {
-		la->selected_pins[i] = linkr_debugger_rigol_pins[i];
+	for (uint8_t i = 0U; i < LINKR_DEBUGGER_RIGOL_WINDOW_COUNT; i++) {
+		la->selected_pins[i] = (uint8_t)(LINKR_DEBUGGER_RIGOL_WINDOW_BASE + i);
 	}
-	la->selected_pin_count = (uint8_t)LINKR_DEBUGGER_RIGOL_PIN_COUNT;
-	la->pin_count = (uint8_t)LINKR_DEBUGGER_RIGOL_PIN_COUNT;
+	la->selected_pin_count = (uint8_t)LINKR_DEBUGGER_RIGOL_WINDOW_COUNT;
+	la->pin_count = (uint8_t)LINKR_DEBUGGER_RIGOL_WINDOW_COUNT;
 	la->pin_base = la->selected_pins[0];
 	la->sample_rate_hz = rate_hz;
 	la->post_samples = LINKR_DEBUGGER_LA_MAX_EXPORTED_SAMPLES;
@@ -602,12 +629,14 @@ static int linkr_debugger_rigol_arm_async(struct linkr_debugger_rigol_state *sta
 	int ret;
 
 	if (state->trigger_source >= LINKR_DEBUGGER_RIGOL_PIN_COUNT ||
+	    linkr_debugger_rigol_pins[state->trigger_source] == 29U ||
 	    rate_hz > LINKR_DEBUGGER_LA_MAX_STREAM_RATE_HZ) {
 		return -ENOTSUP;
 	}
 	linkr_debugger_rigol_fill_la_config(&la, rate_hz);
 	la.trigger = state->trigger_slope;
-	la.trigger_pin = state->trigger_source;
+	la.trigger_pin = linkr_debugger_rigol_pins[state->trigger_source] -
+		LINKR_DEBUGGER_RIGOL_WINDOW_BASE;
 	la.pre_samples = LINKR_DEBUGGER_RIGOL_LIVE_SAMPLES / 2U;
 	la.post_samples = LINKR_DEBUGGER_LA_MAX_EXPORTED_SAMPLES - la.pre_samples;
 
@@ -673,8 +702,13 @@ static int linkr_debugger_rigol_poll_capture(struct linkr_debugger_rigol_state *
 		return -1;
 	}
 	real = capture.sample_count;
-	for (uint32_t i = 0U; i < real; i++) {
-		linkr_debugger_rigol_buf[i] = snapshot[i].values;
+	{
+		bool gp29_high = (gpio_get_all() & (1UL << 29)) != 0U;
+
+		for (uint32_t i = 0U; i < real; i++) {
+			linkr_debugger_rigol_buf[i] =
+				linkr_debugger_rigol_remap(snapshot[i].values, gp29_high);
+		}
 	}
 	linkr_debugger_logic_analyzer_release();
 	last = real > 0U ? linkr_debugger_rigol_buf[real - 1U] : 0U;
@@ -856,7 +890,7 @@ static enum linkr_debugger_rigol_staging_owner linkr_debugger_rigol_staging_owne
 
 static const uint8_t linkr_debugger_rigol_bl_pins[
 	LINKR_DEBUGGER_RIGOL_BL_CHANNEL_COUNT] = {
-	7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+	10, 16, 11, 17, 12, 18, 13, 19, 14, 20, 15, 29, 7, 8,
 };
 
 enum linkr_debugger_rigol_deep_state {
@@ -930,51 +964,6 @@ static void linkr_debugger_rigol_deep_stage_push(const uint8_t *data, uint32_t l
 	}
 }
 
-static void linkr_debugger_rigol_deep_stream_callback(
-	const struct linkr_debugger_la_stream_chunk *chunk, void *user_data)
-{
-	struct linkr_debugger_rigol_deep *deep = &linkr_debugger_rigol_deep_inst;
-	struct linkr_debugger_rigol_state *state = user_data;
-	uint8_t packed[2];
-
-	for (uint32_t i = 0U; i < chunk->sample_count; i++) {
-		uint16_t v = chunk->values[i];
-
-		if (!deep->triggered && state != NULL &&
-		    state->trigger_source < LINKR_DEBUGGER_RIGOL_PIN_COUNT) {
-			uint16_t mask = (uint16_t)(1U << state->trigger_source);
-			bool level = (v & mask) != 0U;
-			bool rising = deep->last_level == 0U && level;
-			bool falling = deep->last_level != 0U && !level;
-			bool hit = state->trigger_slope == LINKR_DEBUGGER_LA_TRIGGER_RISING ? rising :
-				state->trigger_slope == LINKR_DEBUGGER_LA_TRIGGER_FALLING ? falling :
-				rising || falling;
-
-			if (hit && deep->written_samples > 0U) {
-				deep->triggered = true;
-				deep->trigger_sample = deep->written_samples;
-				deep->post_remaining =
-					LINKR_DEBUGGER_RIGOL_DEEP_SAMPLES / 2U;
-			}
-			deep->last_level = level ? 1U : 0U;
-		}
-		deep->last_bytes[0] = (uint8_t)(v & 0xffU);
-		deep->last_bytes[1] = (uint8_t)(v >> 8U);
-		packed[0] = deep->last_bytes[0];
-		packed[1] = deep->last_bytes[1];
-		linkr_debugger_rigol_deep_stage_push(packed, 2U);
-		deep->written_samples++;
-		if (deep->triggered) {
-			if (deep->post_remaining > 0U) {
-				deep->post_remaining--;
-			}
-			if (deep->post_remaining == 0U) {
-				deep->stop_requested = true;
-				break;
-			}
-		}
-	}
-}
 
 static int linkr_debugger_rigol_deep_flash_write(uint32_t offset,
 	const uint8_t *data, uint32_t len)
@@ -1205,7 +1194,7 @@ static void linkr_debugger_rigol_deep_flash_thread(void *p1, void *p2, void *p3)
 			k_sem_take(&deep->stage_data, K_FOREVER);
 		}
 		if (linkr_debugger_rigol_staging_owner == LINKR_DEBUGGER_RIGOL_STAGING_BL) {
-			static uint8_t bl_carry[1024];
+			static uint8_t bl_carry[2048];
 			static uint32_t bl_carry_len;
 
 			for (;;) {
@@ -1453,8 +1442,12 @@ static void linkr_debugger_rigol_stream_callback(
 	struct linkr_debugger_rigol_stream_sink *sink = user_data;
 	uint32_t room = LINKR_DEBUGGER_RIGOL_BUFFER_SAMPLES - sink->count;
 	uint32_t n = chunk->sample_count < room ? chunk->sample_count : room;
+	bool gp29_high = (gpio_get_all() & (1UL << 29)) != 0U;
 
-	memcpy(&linkr_debugger_rigol_buf[sink->count], chunk->values, n * sizeof(uint16_t));
+	for (uint32_t i = 0U; i < n; i++) {
+		linkr_debugger_rigol_buf[sink->count + i] =
+			linkr_debugger_rigol_remap(chunk->values[i], gp29_high);
+	}
 	sink->count += n;
 }
 
@@ -1496,8 +1489,13 @@ static uint32_t linkr_debugger_rigol_capture_burst(uint32_t rate_hz, uint32_t co
 		return 0U;
 	}
 	real = capture.sample_count;
-	for (uint32_t i = 0U; i < real; i++) {
-		linkr_debugger_rigol_buf[i] = snapshot[i].values;
+	{
+		bool gp29_high = (gpio_get_all() & (1UL << 29)) != 0U;
+
+		for (uint32_t i = 0U; i < real; i++) {
+			linkr_debugger_rigol_buf[i] =
+				linkr_debugger_rigol_remap(snapshot[i].values, gp29_high);
+		}
 	}
 	linkr_debugger_logic_analyzer_release();
 	return real;
@@ -1657,7 +1655,8 @@ static int linkr_debugger_rigol_produce_frame(int fd,
 	int count;
 	int ret;
 
-	use_trigger = use_trigger && state->trigger_source < LINKR_DEBUGGER_RIGOL_PIN_COUNT;
+	use_trigger = use_trigger && state->trigger_source < LINKR_DEBUGGER_RIGOL_PIN_COUNT &&
+		linkr_debugger_rigol_pins[state->trigger_source] != 29U;
 	if (use_trigger) {
 		if (!state->capture_done) {
 			if (state->capture_pending) {
@@ -2327,6 +2326,8 @@ static bool linkr_debugger_rigol_bl_read_line(int fd, char *line, size_t cap,
 static void linkr_debugger_rigol_bl_stream_callback(
 	const struct linkr_debugger_la_stream_chunk *chunk, void *user_data)
 {
+	bool gp29_high = (gpio_get_all() & (1UL << 29)) != 0U;
+
 	ARG_UNUSED(user_data);
 
 	if (linkr_debugger_rigol_bl.sampleunit == LINKR_DEBUGGER_RIGOL_BL_UNIT_8_BITS) {
@@ -2334,7 +2335,12 @@ static void linkr_debugger_rigol_bl_stream_callback(
 		uint32_t n = 0U;
 
 		for (uint32_t i = 0U; i < chunk->sample_count; i++) {
-			packed[n++] = (uint8_t)(chunk->values[i] & 0xffU);
+			uint16_t v = linkr_debugger_rigol_remap_pins(
+				linkr_debugger_rigol_bl_pins,
+				LINKR_DEBUGGER_RIGOL_BL_CHANNEL_COUNT,
+				chunk->values[i], gp29_high);
+
+			packed[n++] = (uint8_t)(v & 0xffU);
 			if (n == sizeof(packed)) {
 				linkr_debugger_rigol_deep_stage_push(packed, n);
 				n = 0U;
@@ -2345,8 +2351,27 @@ static void linkr_debugger_rigol_bl_stream_callback(
 		}
 		return;
 	}
-	linkr_debugger_rigol_deep_stage_push((const uint8_t *)chunk->values,
-		chunk->sample_count * 2U);
+	{
+		uint8_t packed[64];
+		uint32_t n = 0U;
+
+		for (uint32_t i = 0U; i < chunk->sample_count; i++) {
+			uint16_t v = linkr_debugger_rigol_remap_pins(
+				linkr_debugger_rigol_bl_pins,
+				LINKR_DEBUGGER_RIGOL_BL_CHANNEL_COUNT,
+				chunk->values[i], gp29_high);
+
+			packed[n++] = (uint8_t)(v & 0xffU);
+			packed[n++] = (uint8_t)(v >> 8U);
+			if (n >= sizeof(packed) - 1U) {
+				linkr_debugger_rigol_deep_stage_push(packed, n);
+				n = 0U;
+			}
+		}
+		if (n > 0U) {
+			linkr_debugger_rigol_deep_stage_push(packed, n);
+		}
+	}
 }
 
 static void linkr_debugger_rigol_bl_stream_start(void)
@@ -2372,12 +2397,12 @@ static void linkr_debugger_rigol_bl_stream_start(void)
 		struct linkr_debugger_la_config la;
 
 		memset(&la, 0, sizeof(la));
-		for (uint8_t i = 0U; i < LINKR_DEBUGGER_RIGOL_BL_CHANNEL_COUNT; i++) {
-			la.selected_pins[i] = linkr_debugger_rigol_bl_pins[i];
+		for (uint8_t i = 0U; i < LINKR_DEBUGGER_RIGOL_WINDOW_COUNT; i++) {
+			la.selected_pins[i] = (uint8_t)(LINKR_DEBUGGER_RIGOL_WINDOW_BASE + i);
 		}
-		la.selected_pin_count = (uint8_t)LINKR_DEBUGGER_RIGOL_BL_CHANNEL_COUNT;
-		la.pin_count = (uint8_t)LINKR_DEBUGGER_RIGOL_BL_CHANNEL_COUNT;
-		la.pin_base = la.selected_pins[0];
+		la.selected_pin_count = (uint8_t)LINKR_DEBUGGER_RIGOL_WINDOW_COUNT;
+		la.pin_count = (uint8_t)LINKR_DEBUGGER_RIGOL_WINDOW_COUNT;
+		la.pin_base = LINKR_DEBUGGER_RIGOL_WINDOW_BASE;
 		la.sample_rate_hz = linkr_debugger_rigol_bl.rate_hz;
 		la.post_samples = LINKR_DEBUGGER_LA_MAX_EXPORTED_SAMPLES;
 		if (linkr_debugger_logic_analyzer_start_stream(&la,

@@ -308,14 +308,19 @@ Identity: `Rigol Technologies,DS1102D,DS1ZA999000001,00.04.04` (protocol V2,
 
 ### Channel Map
 
-| sigrok channel | Board pin |
-| --- | --- |
-| D0-D13 | GP7, GP8, GP9, GP10-GP20 |
-| D14-D15 | unused (read as 0) |
-| CH1 (analog) | GP29 (ADC3) |
+| sigrok channel | J16 pin | Board pin |
+| --- | --- | --- |
+| D0-D11 | J16_PIN1-PIN12 | GP10, GP16, GP11, GP17, GP12, GP18, GP13, GP19, GP14, GP20, GP15, GP29 |
+| D12-D14 | J13 CON pins | GP7 (CON_MAS), GP8 (CON_REST), GP9 (CON_USER) |
+| D15 | unused (reads 0) | — |
+| CH1 (analog) | J16_PIN12 | GP29 (ADC3) |
 
-The LA samples a contiguous pin window (GP7-GP20); GP29 lives outside that
-window, so it is exposed only as the analog CH1 rather than a digital channel.
+Channels follow the physical J16 connector order shown in the Web UI pinout.
+The LA samples a contiguous GP7-GP20 window and firmware re-packs bits into
+connector order; GP29 sits outside that window, so its digital value is
+latched per frame/chunk (it is a slow analog pin by design) while the analog
+CH1 samples it properly. GP29 is not available as a digital trigger source
+(use CH1 analog level triggering instead).
 
 ### Behavior
 
@@ -340,20 +345,20 @@ window, so it is exposed only as the analog CH1 rather than a digital channel.
 # Scan
 sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 --scan
 
-# Digital frame with hardware pre-trigger on GP10 (D3), falling edge
+# Digital frame with hardware pre-trigger on GP10 (D0, J16_PIN1), falling edge
 sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
-  --config timebase='20 us' --config triggersource=D3 \
-  --config triggerslope=f --frames 1 --channels D3 -o capture.sr
+  --config timebase='20 us' --config triggersource=D0 \
+  --config triggerslope=f --frames 1 --channels D0 -o capture.sr
 
 # Slow timebase (exercises the :TRIG:STAT? polling path)
 sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
-  --config timebase='50 ms' --config triggersource=D3 \
-  --config triggerslope=f --frames 1 --channels D3 -o capture.sr
+  --config timebase='50 ms' --config triggersource=D0 \
+  --config triggerslope=f --frames 1 --channels D0 -o capture.sr
 
 # >25 MHz burst trigger (single-shot burst, software edge alignment)
 sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
-  --config timebase='1 us' --config triggersource=D3 \
-  --config triggerslope=f --frames 1 --channels D3 -o capture.sr
+  --config timebase='1 us' --config triggersource=D0 \
+  --config triggerslope=f --frames 1 --channels D0 -o capture.sr
 
 # Analog GP29 channel
 sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
@@ -433,9 +438,12 @@ acquisition never ends, so PulseView shows a single ever-growing segment.
 | `get` | start streaming samples (16-bit or 8-bit little-endian, no headers) |
 | `close` | stop streaming |
 
-Channels: 14 digital channels in pin order GP7-GP20 (driver names them
+Channels: 14 digital channels in physical J16 connector order: ch0-11 =
+J16_PIN1-PIN12 (GP10, GP16, GP11, GP17, GP12, GP18, GP13, GP19, GP14,
+GP20, GP15, GP29), ch12-13 = J13 CON pins (GP7, GP8). The driver names them
 P8_45, P8_46, P8_43, P8_44, P8_41, P8_42, P8_39, P8_40, P8_27, P8_29,
-P8_28, P8_30, P8_21, P8_20). GP10 (UART test pin) is channel 3 (P8_44).
+P8_28, P8_30, P8_21, P8_20 in index order, so GP10 (UART test pin) is
+channel 0 (P8_45).
 
 Production: rates >= 100 kHz use the LA PIO+DMA path (hardware-timed);
 lower rates use a paced GPIO-register loop. Sustained throughput measured:

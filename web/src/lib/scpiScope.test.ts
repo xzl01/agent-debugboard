@@ -58,10 +58,11 @@ test("formatScpiNumber emits exponent notation the firmware parser accepts", () 
   assert.match(formatScpiNumber(0.00005), /^5\.0000000e-5$/);
 });
 
-test("rigolSourceIndexForPin maps connector pins to channel indexes", () => {
-  assert.equal(rigolSourceIndexForPin(7), 0);
-  assert.equal(rigolSourceIndexForPin(10), 3);
-  assert.equal(rigolSourceIndexForPin(29), 14);
+test("rigolSourceIndexForPin maps J16 connector order to channel indexes", () => {
+  assert.equal(rigolSourceIndexForPin(10), 0);
+  assert.equal(rigolSourceIndexForPin(17), 3);
+  assert.equal(rigolSourceIndexForPin(29), 11);
+  assert.equal(rigolSourceIndexForPin(9), 14);
   assert.equal(rigolSourceIndexForPin(99), 0);
 });
 

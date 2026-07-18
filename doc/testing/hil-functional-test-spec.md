@@ -830,9 +830,9 @@ timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
 一个 SCPI 会话。
 
 WS 桥功能回归：用 WebSocket 客户端连接 `/api/v1/scpi`，发送 `*IDN?` 应收
-到 DS1102D 身份串；依次发送 `:TIM:SCAL 0.00002`、`:TRIG:EDGE:SOUR D3`、
+到 DS1102D 身份串；依次发送 `:TIM:SCAL 0.00002`、`:TRIG:EDGE:SOUR D0`、
 `:TRIG:EDGE:SLOP NEG`、`:RUN` 后 `:WAV:DATA? DIG`，应收到 `#41200` 头加
-1200 字节帧，D3 下降沿位于样本 300（GP10 注入 115200 'U'）；连续请求 6
+1200 字节帧，D0 下降沿位于样本 300（GP10 注入 115200 'U'）；连续请求 6
 帧全部成功，关闭后 GET /api/v1/logic-analyzer 显示 `state: "idle"`（会话
 收尾不得泄漏 LA 所有权）。
 
@@ -1027,7 +1027,7 @@ picotool load -v -x "$FLASH_UF2"
 ### 8c. PulseView 原生接入（rigol-ds 仿真）
 
 固件在端口 80 上以首字节分流复用 HTTP 与 Rigol DS1102D SCPI 仿真
-（rigol-ds 驱动，`tcp-raw`）。验证使用 sigrok-cli，配合 GP10（D3）上的
+（rigol-ds 驱动，`tcp-raw`）。验证使用 sigrok-cli，配合 GP10（D0，J16_PIN1）上的
 115200 波特 'U' 连续注入（start bit 提供周期性下降沿）。
 
 前提：`nix-shell -p sigrok-cli`，注入脚本写 `/dev/ttyACM1`（115200 连续
@@ -1044,10 +1044,10 @@ $SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 --scan
 
 ```sh
 $SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
-  --config timebase='20 us' --config triggersource=D3 --config triggerslope=f \
-  --frames 1 --channels D3 -o /tmp/cap.sr
+  --config timebase='20 us' --config triggersource=D0 --config triggerslope=f \
+  --frames 1 --channels D0 -o /tmp/cap.sr
 $SIG -i /tmp/cap.sr -O csv
-# 验证：600 样本，D3 下降沿精确位于样本 300（pre=300/post=212），
+# 验证：600 样本，D0 下降沿精确位于样本 300（pre=300/post=212），
 # 波形呈现 115200 'U' 的周期位型（约 43 样本一对同向边沿）
 ```
 
@@ -1055,8 +1055,8 @@ $SIG -i /tmp/cap.sr -O csv
 
 ```sh
 $SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
-  --config timebase='50 ms' --config triggersource=D3 --config triggerslope=f \
-  --frames 3 --channels D3 -o /tmp/cap.sr
+  --config timebase='50 ms' --config triggersource=D0 --config triggerslope=f \
+  --frames 3 --channels D0 -o /tmp/cap.sr
 # 验证：3 帧均返回（驱动两阶段等待 RUN->TD 不超时），每帧边沿位于样本 300
 ```
 
@@ -1064,7 +1064,7 @@ $SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
 
 ```sh
 $SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
-  --config timebase='20 us' --frames 1 --channels D3 -o /tmp/cap.sr
+  --config timebase='20 us' --frames 1 --channels D0 -o /tmp/cap.sr
 # 验证：默认触发源 D0 无边沿时约 100ms 后仍返回一帧非触发数据，
 # 不应出现采集超时或连接断开
 ```
@@ -1073,8 +1073,8 @@ $SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
 
 ```sh
 $SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
-  --config timebase='1 us' --config triggersource=D3 --config triggerslope=f \
-  --frames 1 --channels D3 -o /tmp/cap.sr
+  --config timebase='1 us' --config triggersource=D0 --config triggerslope=f \
+  --frames 1 --channels D0 -o /tmp/cap.sr
 # 验证：返回 600 样本（单次 burst 512 + 软件边沿对齐到 300 并填充）；
 # 无边沿窗口时同样返回数据（AUTO），不得报错断开
 ```
@@ -1107,14 +1107,14 @@ GP10 注入 115200 'U' 用于触发验证）。
 用 WS 或 TCP SCPI 客户端执行：
 
 ```text
-:TRIG:EDGE:SOUR D3
+:TRIG:EDGE:SOUR D0
 :TRIG:EDGE:SLOP NEG
 :LINKR:DEEP:START 25000 2
 # 轮询 :LINKR:DEEP:STATUS? 直到 DONE（PREPARING 阶段约 1-10 秒）
 :LINKR:DEEP:STATUS?
 # 期望：DONE <written> <trig_idx> 25000 0，触发时 written ≈ trig_idx + 25000
 :LINKR:DEEP:DATA? 0 8192
-# 期望：8192×2 字节块，D3 位呈现 115200 'U' 周期边沿
+# 期望：8192×2 字节块，D0 位呈现 115200 'U' 周期边沿
 ```
 
 验证：同一窗口重复 DATA? 返回完全相同（flash 持久化）；`written` 之后的
@@ -1136,7 +1136,7 @@ samples" 与 trigger@ 位置，实时波形出现且可窗口解码，CSV/.sr �
 ### 8e. BeagleLogic 仿真（TCP 5555，无限连续视图）
 
 固件在 TCP 5555 端口仿真 BeagleLogic TCP 协议（文本命令 + 裸样本流，
-`-d beaglelogic:conn=tcp-raw/172.29.203.1/5555`）。GP10（P8_44，通道 3）
+`-d beaglelogic:conn=tcp-raw/172.29.203.1/5555`）。GP10（P8_45，通道 0）
 注入 115200 'U'。
 
 #### 8e.1 扫描与协商
@@ -1150,9 +1150,9 @@ sigrok-cli -d beaglelogic:conn=tcp-raw/172.29.203.1/5555 --scan
 
 ```sh
 sigrok-cli -d beaglelogic:conn=tcp-raw/172.29.203.1/5555 \
-  --config samplerate=100000 --samples 200000 --channels P8_44 -o /tmp/bl.sr
+  --config samplerate=100000 --samples 200000 --channels P8_45 -o /tmp/bl.sr
 sigrok-cli -i /tmp/bl.sr -O csv
-# 期望：200000 样本，P8_44 呈现 115200 'U' 的 2-3 样本交替边沿模式
+# 期望：200000 样本，P8_45 呈现 115200 'U' 的 2-3 样本交替边沿模式
 ```
 
 #### 8e.3 连续流式持续速率（原始 socket）

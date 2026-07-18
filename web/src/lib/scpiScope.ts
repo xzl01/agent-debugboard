@@ -1,6 +1,6 @@
 import type { LogicAnalyzerTriggerType } from "./types";
 
-export const RIGOL_PINS = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 29] as const;
+export const RIGOL_PINS = [10, 16, 11, 17, 12, 18, 13, 19, 14, 20, 15, 29, 7, 8, 9] as const;
 export const RIGOL_LIVE_SAMPLES = 600;
 export const RIGOL_TRIGGER_SAMPLE = RIGOL_LIVE_SAMPLES / 2;
 export const RIGOL_HORIZONTAL_DIVS = 12;
