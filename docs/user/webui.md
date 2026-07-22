@@ -2,25 +2,21 @@
 
 # Web UI
 
-React/Vite control interface for the Radxa Linkr Debugger firmware HTTP and
-WebSocket APIs. Production firmware embeds the gzip-compressed UI and serves it
-from `http://172.29.203.1/` over USB NCM. The page uses same-origin `/api/v1`
-HTTP and WebSocket endpoints, so normal board controls do not require a host
-proxy.
+The board serves a React/Vite dashboard at `http://172.29.203.1/` over USB NCM. No proxy or extra software needed — the page talks directly to the board's `/api/v1` endpoints.
 
 ## Access
 
-Connect the USB NCM interface and open:
+Plug in the USB cable and open:
 
 ```text
 http://172.29.203.1/
 ```
 
-## Captive Portal Discovery
+On most operating systems, the board's captive portal detection will prompt the browser to open this page automatically. If it doesn't, navigate to the URL manually.
 
-The firmware implements a multi-path captive portal detection helper that
-maximizes the probability of the OS opening the board Web UI automatically when
-a host connects to the NCM link.
+## How auto-open works
+
+The board uses three mechanisms to trigger the OS captive portal prompt:
 
 - **DHCP**: the DHCPv4 server on the NCM interface advertises the router and
   DNS address as `172.29.203.1` and sends DHCP option 114 (Captive Portal URI)
@@ -79,7 +75,7 @@ The Terminal workspace lives alongside the primary dashboard and contains:
   API. See [ota.md](ota.md) for the full OTA workflow.
 - **Startup power analysis** — see the dedicated section below.
 
-## Serial Console
+## Connecting Target Serial
 
 ### Web Serial (secure origins)
 

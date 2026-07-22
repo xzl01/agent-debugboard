@@ -21,96 +21,50 @@ All JSON responses include `"schema": "radxa-linkr-debugger.v1"` and `Cache-Cont
 
 ## Status
 
-### `GET /api/v1/status`
-
-Full board status snapshot including power outputs, switches, ADC channels, watchdog, board monitoring, and GPIOs.
-
 ```sh
 curl http://172.29.203.1/api/v1/status
 ```
 
-Response fields: `project`, `mcu`, `usb`, `power_inputs`, `power_outputs`, `switches`, `adc_channels`, `watchdog`, `board_monitoring`, `gpios`.
+Returns everything in one shot: `project`, `mcu`, `usb`, `power_inputs`, `power_outputs`, `switches`, `adc_channels`, `watchdog`, `board_monitoring`, `gpios`.
 
-## Power Control
-
-### `GET /api/v1/power`
-
-List all power outputs.
-
-### `GET /api/v1/power/{name}`
-
-Get single power output state. `{name}` is `12v_out`, `5v_out`, or `20v_out`.
-
-### `PUT /api/v1/power/{name}`
-
-Set power output state.
+## Power
 
 ```sh
-curl -X PUT http://172.29.203.1/api/v1/power/12v_out -d '{"state":"on"}'
+curl http://172.29.203.1/api/v1/power                    # list all
+curl http://172.29.203.1/api/v1/power/12v_out             # read one
+curl -X PUT http://172.29.203.1/api/v1/power/12v_out -d '{"state":"on"}'  # set
 ```
 
-Request body: `{"state": "on"}` or `{"state": "off"}`
-
-Errors: 400 (`missing_power_output`, `invalid_state`), 403 (`power_output_locked`), 500 (`set_failed`)
+`{name}` is `12v_out`, `5v_out`, or `20v_out`. Body: `{"state": "on"}` or `{"state": "off"}`.
 
 ## ADC (Current Monitor)
 
-### `GET /api/v1/adc/read`
-
-Read current-monitor ADC channels.
-
 ```sh
-curl http://172.29.203.1/api/v1/adc/read
-curl http://172.29.203.1/api/v1/adc/read?channel=5v_out
+curl http://172.29.203.1/api/v1/adc/read                    # all channels
+curl http://172.29.203.1/api/v1/adc/read?channel=5v_out      # single channel
 ```
 
-Query parameter: `channel=<name>` (optional, e.g. `5v_out`, `12v_out`, `20v_out`)
-
-Response `readings` array fields: `name`, `signal`, `power_enabled`, `raw`, `mv`, `current_ua`, `sensor_value`, `unit`.
+Each reading in the response carries: `name`, `signal`, `power_enabled`, `raw`, `mv`, `current_ua`, `sensor_value`, `unit`.
 
 ## Switch Routes
 
-### `GET /api/v1/switch`
-
-List all switch routes.
-
-### `GET /api/v1/switch/{name}`
-
-Get single switch route. `{name}` is `sd`, `usb`, or `vin`.
-
-### `PUT /api/v1/switch/{name}`
-
-Set switch route.
-
 ```sh
+curl http://172.29.203.1/api/v1/switch                       # list all
+curl http://172.29.203.1/api/v1/switch/sd                    # read one
 curl -X PUT http://172.29.203.1/api/v1/switch/sd -d '{"route":"usb-reader"}'
 curl -X PUT http://172.29.203.1/api/v1/switch/vin -d '{"route":"1.8v"}'
 ```
 
-Valid routes:
-- `sd`: `target`, `usb-reader`
-- `usb`: `pc`, `target`
-- `vin`: `1.8v`, `3.3v`
+`{name}` is `sd`, `usb`, or `vin`. Valid routes: `sd` → `target`/`usb-reader`; `usb` → `pc`/`target`; `vin` → `1.8v`/`3.3v`.
 
 ## GPIO
 
-### `GET /api/v1/gpio`
-
-List all safe GPIOs. Response includes `reserved` field listing unavailable pins.
-
-### `GET /api/v1/gpio/{identifier}`
-
-Get single GPIO state. `{identifier}` accepts `GPxx`, raw pin number, or board note (e.g. `CON_MAS`).
-
-### `PUT /api/v1/gpio/{identifier}`
-
-Configure GPIO.
+`{identifier}` accepts `GPxx`, raw pin number, or board note (e.g. `CON_MAS`).
 
 ```sh
-# Set output high
+curl http://172.29.203.1/api/v1/gpio                         # list all
+curl http://172.29.203.1/api/v1/gpio/GP13                    # read one
 curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"output","value":1}'
-
-# Set to input mode
 curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"input"}'
 ```
 
