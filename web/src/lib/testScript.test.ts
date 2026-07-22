@@ -169,6 +169,14 @@ describe("serializeTestScript / parseTestScript", () => {
     assert.throws(() => parseTestScript(ndjson), /missing or invalid "id"/);
   });
 
+  it("rejects step with non-object params", () => {
+    const ndjson = [
+      JSON.stringify({ schema: "linkr-test.v1", name: "Bad" }),
+      JSON.stringify({ id: "s1", type: "delay", params: "invalid" }),
+    ].join("\n") + "\n";
+    assert.throws(() => parseTestScript(ndjson), /params.*must be an object/);
+  });
+
   it("preserves continue_on_error", () => {
     const ndjson = [
       JSON.stringify({ schema: "linkr-test.v1", name: "COE" }),

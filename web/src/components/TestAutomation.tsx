@@ -10,6 +10,7 @@ import type { TestScript, StepResult, StepStatus, RunSummary, AdcSampleEntry, Se
 import { defaultScript, parseTestScript, serializeTestScript } from "@/lib/testScript";
 import { createTestRunner, type RunnerCallbacks, type RunnerHandle } from "@/lib/testRunner";
 import { useI18n } from "@/lib/i18n";
+import type { AutomationTaskControl } from "@/lib/automationTask";
 
 type Tab = "editor" | "running" | "report";
 
@@ -28,9 +29,11 @@ const TAB_ICONS = { editor: PenLine, running: Play, report: ScrollText } as cons
 export function TestAutomation({
   board,
   serialRef,
+  taskControl,
 }: {
   board: UseBoard;
   serialRef: React.RefObject<SerialAutomationHandle>;
+  taskControl: AutomationTaskControl;
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>("editor");
@@ -46,12 +49,16 @@ export function TestAutomation({
   const [runSummary, setRunSummary] = useState<RunSummary | null>(null);
   const [startedAtMs, setStartedAtMs] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
   const runnerRef = useRef<RunnerHandle | null>(null);
   const runningRef = useRef(false);
   const boardRef = useRef(board);
   boardRef.current = board;
 
-  useEffect(() => () => runnerRef.current?.abort(), []);
+  useEffect(() => () => {
+    runnerRef.current?.abort();
+    taskControl.release("test");
+  }, [taskControl.release]);
 
   const callbacks: RunnerCallbacks = useMemo(
     () => ({
@@ -71,20 +78,33 @@ export function TestAutomation({
           return next.length > 5000 ? next.slice(-2500) : next;
         }),
       onComplete: (summary) => {
+        taskControl.release("test");
         runningRef.current = false;
         runnerRef.current = null;
         setIsRunning(false);
         setRunSummary(summary);
         setTab("report");
       },
-      onError: (err) => console.error("[TestRunner]", err),
+      onError: (err) => {
+        console.error("[TestRunner]", err);
+        taskControl.release("test");
+        runningRef.current = false;
+        runnerRef.current = null;
+        setIsRunning(false);
+        setRunError(err);
+      },
     }),
-    [],
+    [taskControl.release],
   );
 
   const handleRun = useCallback(() => {
     if (runningRef.current) return;
+    if (!taskControl.acquire("test")) {
+      setRunError(t("test.error.taskBusy"));
+      return;
+    }
     runningRef.current = true;
+    setRunError(null);
     setIsRunning(true);
     setTab("running");
     setStepStates(new Map());
@@ -96,8 +116,10 @@ export function TestAutomation({
     setStartedAtMs(now);
     const runner = createTestRunner(script, boardRef, serialRef, callbacks);
     runnerRef.current = runner;
-    void runner.start();
-  }, [script, serialRef, callbacks]);
+    void runner.start().catch((reason) => callbacks.onError(
+      reason instanceof Error ? reason.message : String(reason),
+    ));
+  }, [callbacks, script, serialRef, t, taskControl.acquire]);
 
   const handleAbort = useCallback(() => {
     runnerRef.current?.abort();
@@ -141,8 +163,18 @@ export function TestAutomation({
         </div>
       }
     >
+      {runError && (
+        <div className="mb-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+          {runError}
+        </div>
+      )}
       {tab === "editor" && (
-        <TestEditor script={script} onChange={setScript} onRun={handleRun} />
+        <TestEditor
+          script={script}
+          onChange={setScript}
+          onRun={handleRun}
+          runDisabled={taskControl.owner != null && taskControl.owner !== "test"}
+        />
       )}
       {tab === "running" && (
         <TestRunnerView

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Activity, Loader2, Square, Terminal as TerminalIcon } from "lucide-react";
 import { Badge, Button } from "./ui";
 import type { TestStep, StepStatus, StepResult, SerialLogEntry, AdcSampleEntry } from "@/lib/testScript";
@@ -72,6 +72,7 @@ export function TestRunnerView({
   const runningIndex = steps.findIndex((s) => stepStates.get(s.id) === "running");
   const doneCount = stepResults.length;
   const currentA = adcSamples.length > 0 ? (adcSamples[adcSamples.length - 1].currentUa / 1_000_000).toFixed(3) : "—";
+  const resultMap = useMemo(() => new Map(stepResults.map((r) => [r.stepId, r])), [stepResults]);
 
   return (
     <div className="space-y-3">
@@ -99,7 +100,7 @@ export function TestRunnerView({
       <div className="space-y-1">
         {steps.map((step, i) => {
           const status = stepStates.get(step.id) ?? "pending";
-          const result = stepResults.find((r) => r.stepId === step.id);
+          const result = resultMap.get(step.id);
           return (
             <div
               key={step.id}

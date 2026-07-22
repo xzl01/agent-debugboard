@@ -210,6 +210,7 @@ export function parseTestScript(ndjson: string): TestScript {
     const obj = JSON.parse(lines[i]);
     if (!obj.id || typeof obj.id !== "string") throw new Error(`Line ${i + 1}: missing or invalid "id"`);
     if (!STEP_TYPES.includes(obj.type)) throw new Error(`Line ${i + 1}: unknown step type "${obj.type}"`);
+    if (obj.params != null && typeof obj.params !== "object") throw new Error(`Line ${i + 1}: "params" must be an object`);
     const type = obj.type as StepType;
     steps.push({
       id: obj.id,

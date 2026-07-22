@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { ChevronDown, Loader2, ServerCrash, SlidersHorizontal } from "lucide-react";
 import { useBoard } from "@/hooks/useBoard";
 import { StatusBar } from "./components/StatusBar";
@@ -11,11 +11,32 @@ import { TestAutomation } from "./components/TestAutomation";
 import { Badge, Button } from "./components/ui";
 import { useI18n } from "@/lib/i18n";
 import { apiEndpoint } from "@/lib/api";
+import {
+  createAutomationTaskLock,
+  type AutomationTaskControl,
+  type AutomationTaskOwner,
+} from "@/lib/automationTask";
 
 export default function App() {
   const board = useBoard();
   const { t } = useI18n();
   const serialAutomationRef = useRef<SerialAutomationHandle>(null);
+  const automationTaskLockRef = useRef(createAutomationTaskLock());
+  const [automationOwner, setAutomationOwner] = useState<AutomationTaskOwner | null>(null);
+  const acquireAutomation = useCallback((owner: AutomationTaskOwner) => {
+    const acquired = automationTaskLockRef.current.acquire(owner);
+    if (acquired) setAutomationOwner(automationTaskLockRef.current.owner());
+    return acquired;
+  }, []);
+  const releaseAutomation = useCallback((owner: AutomationTaskOwner) => {
+    automationTaskLockRef.current.release(owner);
+    setAutomationOwner(automationTaskLockRef.current.owner());
+  }, []);
+  const automationTaskControl = useMemo<AutomationTaskControl>(() => ({
+    owner: automationOwner,
+    acquire: acquireAutomation,
+    release: releaseAutomation,
+  }), [acquireAutomation, automationOwner, releaseAutomation]);
 
   return (
     <div className="min-h-full bg-bg text-ink">
@@ -103,12 +124,14 @@ export default function App() {
                       onReadPower={board.readPower}
                       onArmCapture={board.armCapture}
                       onCancelCapture={board.cancelCapture}
+                      taskControl={automationTaskControl}
                     />
                   </div>
                   <div className="min-w-0 lg:col-span-2 xl:col-span-1">
                     <TestAutomation
                       board={board}
                       serialRef={serialAutomationRef}
+                      taskControl={automationTaskControl}
                     />
                   </div>
                   <BootCard onBoot={board.enterBootloader} />

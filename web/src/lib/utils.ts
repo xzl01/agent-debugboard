@@ -45,6 +45,7 @@ export function downloadBlob(filename: string, content: string, type: string) {
 }
 
 export function formatMs(ms: number): string {
+  if (ms < 0) return `-${formatMs(-ms)}`;
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
   const m = Math.floor(ms / 60000);

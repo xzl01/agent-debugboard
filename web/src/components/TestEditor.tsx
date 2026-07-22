@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { memo, useCallback, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronUp,
@@ -77,8 +77,8 @@ function StepParams({
         <>
           <ParamRow label={t("test.param.channel")}>
             <select className={inputCls} value={p.channel} onChange={(e) => onParamChange("channel", e.target.value)}>
-              <option value="uart0">UART0</option>
-              <option value="uart1">UART1</option>
+              <option value="uart0">{t("test.opt.uart0")}</option>
+              <option value="uart1">{t("test.opt.uart1")}</option>
             </select>
           </ParamRow>
           <ParamRow label={t("test.param.pattern")}>
@@ -96,8 +96,8 @@ function StepParams({
         <>
           <ParamRow label={t("test.param.channel")}>
             <select className={inputCls} value={p.channel} onChange={(e) => onParamChange("channel", e.target.value)}>
-              <option value="uart0">UART0</option>
-              <option value="uart1">UART1</option>
+              <option value="uart0">{t("test.opt.uart0")}</option>
+              <option value="uart1">{t("test.opt.uart1")}</option>
             </select>
           </ParamRow>
           <ParamRow label={t("test.param.text")}>
@@ -112,8 +112,8 @@ function StepParams({
         <>
           <ParamRow label={t("test.param.channel")}>
             <select className={inputCls} value={p.channel} onChange={(e) => onParamChange("channel", e.target.value)}>
-              <option value="uart0">UART0</option>
-              <option value="uart1">UART1</option>
+              <option value="uart0">{t("test.opt.uart0")}</option>
+              <option value="uart1">{t("test.opt.uart1")}</option>
             </select>
           </ParamRow>
           <ParamRow label={t("test.param.command")}>
@@ -147,8 +147,8 @@ function StepParams({
           </ParamRow>
           <ParamRow label={t("test.param.value")}>
             <select className={inputCls} value={p.value} onChange={(e) => onParamChange("value", Number(e.target.value))}>
-              <option value="1">1 (HIGH)</option>
-              <option value="0">0 (LOW)</option>
+              <option value="1">{t("test.opt.high")}</option>
+              <option value="0">{t("test.opt.low")}</option>
             </select>
           </ParamRow>
         </>
@@ -163,8 +163,8 @@ function StepParams({
           </ParamRow>
           <ParamRow label={t("test.param.direction")}>
             <select className={inputCls} value={p.direction} onChange={(e) => onParamChange("direction", e.target.value)}>
-              <option value="input">input</option>
-              <option value="output">output</option>
+              <option value="input">{t("test.opt.input")}</option>
+              <option value="output">{t("test.opt.output")}</option>
             </select>
           </ParamRow>
           <ParamRow label={t("test.param.value")}>
@@ -182,9 +182,9 @@ function StepParams({
         <>
           <ParamRow label={t("test.param.switch")}>
             <select className={inputCls} value={p.switch} onChange={(e) => onParamChange("switch", e.target.value)}>
-              <option value="sd">SD</option>
-              <option value="usb">USB</option>
-              <option value="vin">VIN</option>
+              <option value="sd">{t("test.opt.sd")}</option>
+              <option value="usb">{t("test.opt.usb")}</option>
+              <option value="vin">{t("test.opt.vin")}</option>
             </select>
           </ParamRow>
           <ParamRow label={t("test.param.route")}>
@@ -257,10 +257,6 @@ function StepAssertions({
     availableFields.push({ key: "contains", label: t("test.assert.contains"), default: "" });
     availableFields.push({ key: "exit_code", label: t("test.assert.exitCode"), default: 0 });
   }
-  if (step.type === "gpio_assert") {
-    availableFields.push({ key: "pin_direction", label: t("test.assert.pinDirection"), default: "output" });
-    availableFields.push({ key: "pin_value", label: t("test.assert.pinValue"), default: 1 });
-  }
   if (step.type === "capture") {
     availableFields.push({ key: "peak_current_max_a", label: t("test.assert.peakCurrentMax"), default: 5 });
     availableFields.push({ key: "energy_max_j", label: t("test.assert.energyMax"), default: 10 });
@@ -277,6 +273,8 @@ function StepAssertions({
           <div key={f.key} className="flex items-center gap-2 py-0.5">
             <button
               type="button"
+              role="checkbox"
+              aria-checked={active}
               onClick={() => toggleField(f.key, f.default)}
               className={`h-4 w-4 rounded border text-[10px] leading-none ${active ? "border-brand bg-brand text-white" : "border-line bg-panel2 text-transparent"}`}
             >
@@ -312,7 +310,7 @@ function StepAssertions({
   );
 }
 
-function StepCard({
+const StepCard = memo(function StepCard({
   step,
   index,
   total,
@@ -427,7 +425,7 @@ function StepCard({
       )}
     </div>
   );
-}
+});
 
 const inputCls =
   "rounded-md border border-line/50 bg-panel px-2 py-1 text-xs text-ink outline-none focus-visible:ring-1 focus-visible:ring-brand/40 w-full";
@@ -445,9 +443,10 @@ export interface TestEditorProps {
   script: TestScript;
   onChange: (script: TestScript) => void;
   onRun: () => void;
+  runDisabled?: boolean;
 }
 
-export function TestEditor({ script, onChange, onRun }: TestEditorProps) {
+export function TestEditor({ script, onChange, onRun, runDisabled = false }: TestEditorProps) {
   const { t } = useI18n();
   const fileRef = useRef<HTMLInputElement>(null);
   const [addType, setAddType] = useState<StepType>("power_on");
@@ -509,6 +508,7 @@ export function TestEditor({ script, onChange, onRun }: TestEditorProps) {
           setImportError(err instanceof Error ? err.message : String(err));
         }
       };
+      reader.onerror = () => setImportError("Failed to read file");
       reader.readAsText(file);
       e.target.value = "";
     },
@@ -524,7 +524,7 @@ export function TestEditor({ script, onChange, onRun }: TestEditorProps) {
           onChange={(e) => onChange({ ...script, name: e.target.value })}
           placeholder={t("test.name")}
         />
-        <Button variant="primary" onClick={onRun} disabled={script.steps.length === 0}>
+        <Button variant="primary" onClick={onRun} disabled={script.steps.length === 0 || runDisabled}>
           <Play size={14} />
           {t("test.run")}
         </Button>
@@ -541,7 +541,7 @@ export function TestEditor({ script, onChange, onRun }: TestEditorProps) {
           {t("test.export")}
         </Button>
         <span className="flex-1" />
-        <span className="text-[11px] text-ink-dim">{script.steps.length} steps</span>
+        <span className="text-[11px] text-ink-dim">{t("test.stepCount", { n: script.steps.length })}</span>
       </div>
 
       {importError && (

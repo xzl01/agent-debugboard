@@ -20,6 +20,7 @@ import {
   stripTerminalControl,
   type SerialLoginState,
 } from "@/lib/serialTask";
+import type { AutomationTaskControl } from "@/lib/automationTask";
 
 type Phase = "idle" | "powering_off" | "waiting" | "arming" | "capturing" | "retrying" | "logging_in" | "executing" | "finalizing" | "complete" | "partial" | "error" | "cancelled";
 type MilestoneKey = "bootrom" | "firmware" | "kernel" | "login";
@@ -331,6 +332,7 @@ export function StartupPowerAnalysis({
   onReadPower,
   onArmCapture,
   onCancelCapture,
+  taskControl,
 }: {
   outputs: PowerOutput[];
   captureState: "idle" | "connecting" | "armed" | "receiving";
@@ -341,6 +343,7 @@ export function StartupPowerAnalysis({
   onReadPower: (name: string) => Promise<{ state: string; currentUa: number }>;
   onArmCapture: (config: CaptureConfig) => Promise<void>;
   onCancelCapture: () => void;
+  taskControl: AutomationTaskControl;
 }) {
   const { t } = useI18n();
   const [phase, setPhase] = useState<Phase>("idle");
@@ -425,6 +428,7 @@ export function StartupPowerAnalysis({
     } catch (reason) {
       serialRef.current?.setAutomationActive(false, run.serialChannel);
       automationPasswordRef.current = "";
+      taskControl.release("startup");
       run.finishedAt = Date.now();
       activeRunRef.current = null;
       setActiveRun(null);
@@ -437,6 +441,7 @@ export function StartupPowerAnalysis({
     run.timedOut = timedOut;
     serialRef.current?.setAutomationActive(false, run.serialChannel);
     automationPasswordRef.current = "";
+    taskControl.release("startup");
     activeRunRef.current = null;
     setActiveRun(null);
     const completedRun = {
@@ -469,6 +474,7 @@ export function StartupPowerAnalysis({
     const run = activeRunRef.current;
     if (run) serialRef.current?.setAutomationActive(false, run.serialChannel);
     automationPasswordRef.current = "";
+    taskControl.release("startup");
     activeRunRef.current = null;
     setActiveRun(null);
     setPhase("error");
@@ -488,7 +494,8 @@ export function StartupPowerAnalysis({
       void onSetPowerRef.current(run.rail, true);
     }
     automationPasswordRef.current = "";
-  }, []);
+    taskControl.release("startup");
+  }, [taskControl.release]);
 
   useEffect(() => {
     const run = activeRunRef.current;
@@ -522,6 +529,10 @@ export function StartupPowerAnalysis({
       return;
     }
     if (!window.confirm(t("startup.confirm").replaceAll("{rail}", powerRailLabel(rail)).replaceAll("{delay}", String(offDelayMs)))) return;
+    if (!taskControl.acquire("startup")) {
+      setError(t("startup.error.taskBusy"));
+      return;
+    }
 
     const operation = operationRef.current + 1;
     operationRef.current = operation;
@@ -816,6 +827,7 @@ export function StartupPowerAnalysis({
     activeRunRef.current = null;
     setActiveRun(null);
     setPhase("cancelled");
+    taskControl.release("startup");
     if (run) {
       serialRef.current?.setAutomationActive(false, run.serialChannel);
       automationPasswordRef.current = "";
@@ -849,6 +861,7 @@ export function StartupPowerAnalysis({
   const currentStats = current ? calculateStats(current) : null;
   const previousStats = previous ? calculateStats(previous) : null;
   const busy = ["powering_off", "waiting", "arming", "capturing", "retrying", "logging_in", "executing", "finalizing"].includes(phase);
+  const blockedByOtherTask = taskControl.owner != null && taskControl.owner !== "startup";
   const displayRun = activeRun ?? current;
   const firmwareLabel = displayRun?.detectedBootloader === "uefi" || displayRun?.bootloaderMode === "uefi"
     ? "UEFI"
@@ -960,7 +973,7 @@ export function StartupPowerAnalysis({
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {!busy ? (
-          <Button variant="primary" onClick={() => void start()}><Play size={15} />{t("startup.start")}</Button>
+          <Button variant="primary" disabled={blockedByOtherTask} onClick={() => void start()}><Play size={15} />{t("startup.start")}</Button>
         ) : (
           <Button onClick={() => void cancel()}><Square size={15} />{t("startup.cancel")}</Button>
         )}

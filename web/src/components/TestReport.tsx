@@ -108,7 +108,7 @@ function PowerChart({
         <Activity size={10} className="mr-1 inline" />
         {t("test.report.powerChart")}
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 150 }}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 150 }} role="img" aria-label={t("test.report.powerChart")}>
 
         {results.map((r) => {
           const x1 = sx(r.startedAtMs - startedAtMs);

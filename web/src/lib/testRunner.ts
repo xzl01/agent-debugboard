@@ -12,6 +12,7 @@ import { evaluateAssertion, type AssertionContext } from "./testAssertions.ts";
 import type {
   TestScript,
   TestStep,
+  StepAssertion,
   StepResult,
   RunSummary,
   AdcSampleEntry,
@@ -39,12 +40,42 @@ class RunnerAbortedError extends Error {
   }
 }
 
+const SERIAL_BUFFER_LIMIT = 65_536;
+
+function appendBoundedText(current: string, text: string): string {
+  const combined = current + text;
+  return combined.length > SERIAL_BUFFER_LIMIT
+    ? combined.slice(-SERIAL_BUFFER_LIMIT)
+    : combined;
+}
+
+function rawPatternMatchEnd(text: string, regex: RegExp): number | null {
+  let clean = "";
+  const rawEnds: number[] = [];
+  for (let index = 0; index < text.length;) {
+    const ansi = /^\x1b\[[0-?]*[ -/]*[@-~]/.exec(text.slice(index));
+    if (ansi) {
+      index += ansi[0].length;
+      continue;
+    }
+    const code = text.charCodeAt(index);
+    if (text[index] === "\uFFFD" || code <= 0x08 || code === 0x0b || code === 0x0c
+      || (code >= 0x0e && code <= 0x1f) || code === 0x7f) {
+      index += 1;
+      continue;
+    }
+    clean += text[index];
+    rawEnds.push(index + 1);
+    index += 1;
+  }
+  const match = regex.exec(clean);
+  if (!match || match.index == null) return null;
+  const cleanEnd = match.index + match[0].length;
+  return cleanEnd === 0 ? 0 : (rawEnds[cleanEnd - 1] ?? text.length);
+}
+
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new RunnerAbortedError());
-      return;
-    }
     if (signal.aborted) {
       reject(new RunnerAbortedError());
       return;
@@ -66,13 +97,13 @@ function waitForPattern(
   channel: SerialChannelId,
   pattern: string,
   timeoutMs: number,
-  onRx: (text: string) => void,
+  getInitialText: () => string,
   signal: AbortSignal,
-): Promise<{ matched: boolean; text: string }> {
+): Promise<{ matched: boolean; text: string; consumedLength: number }> {
   return new Promise((resolve, reject) => {
     const handle = serialRef.current;
     if (!handle?.isConnected(channel)) {
-      resolve({ matched: false, text: "" });
+      resolve({ matched: false, text: "", consumedLength: 0 });
       return;
     }
 
@@ -81,14 +112,15 @@ function waitForPattern(
     let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
     let regex: RegExp;
     try {
+      if (pattern.length > 500) throw new Error("pattern too long");
       regex = new RegExp(pattern, "im");
     } catch {
-      resolve({ matched: false, text: "" });
+      reject(new Error(`invalid serial wait pattern: ${pattern}`));
       return;
     }
 
     let unsub = () => {};
-    const finish = (result: { matched: boolean; text: string }) => {
+    const finish = (result: { matched: boolean; text: string; consumedLength: number }) => {
       if (resolved) return;
       resolved = true;
       unsub();
@@ -105,16 +137,22 @@ function waitForPattern(
     };
 
     unsub = handle.subscribe((text: string) => {
-      onRx(text);
-      buffer += text;
-      if (!resolved && regex.test(stripTerminalControl(buffer))) {
-        finish({ matched: true, text: buffer });
+      buffer = appendBoundedText(buffer, text);
+      const matchEnd = rawPatternMatchEnd(buffer, regex);
+      if (!resolved && matchEnd != null) {
+        finish({ matched: true, text: buffer, consumedLength: matchEnd });
       }
     }, channel);
 
+    buffer = getInitialText();
+    const initialMatchEnd = rawPatternMatchEnd(buffer, regex);
+    if (initialMatchEnd != null) {
+      finish({ matched: true, text: buffer, consumedLength: initialMatchEnd });
+    }
+
     if (!resolved) {
       timer = globalThis.setTimeout(() => {
-        finish({ matched: false, text: buffer });
+        finish({ matched: false, text: buffer, consumedLength: buffer.length });
       }, timeoutMs);
       signal.addEventListener("abort", onAbort, { once: true });
     }
@@ -127,7 +165,6 @@ async function sendAndExpect(
   command: string,
   pattern: string,
   timeoutMs: number,
-  onRx: (text: string) => void,
   onTx: (text: string) => void,
   signal: AbortSignal,
 ): Promise<{ completed: boolean; matched: boolean; exitCode: number; output: string }> {
@@ -138,6 +175,7 @@ async function sendAndExpect(
 
   let regex: RegExp;
   try {
+    if (pattern.length > 500) throw new Error("pattern too long");
     regex = new RegExp(pattern, "im");
   } catch {
     throw new Error(`invalid expected pattern: ${pattern}`);
@@ -148,7 +186,7 @@ async function sendAndExpect(
       reject(new RunnerAbortedError());
       return;
     }
-    const runId = Math.floor(Math.random() * 100000);
+    const runId = crypto.getRandomValues(new Uint32Array(1))[0];
     const marker = commandMarker(runId);
     const envelope = commandEnvelope(command, marker);
     let buffer = "";
@@ -169,8 +207,7 @@ async function sendAndExpect(
     };
 
     unsub = handle.subscribe((text: string) => {
-      onRx(text);
-      buffer += text;
+      buffer = appendBoundedText(buffer, text);
       if (!resolved) {
         const completion = parseCommandCompletion(buffer, marker);
         if (completion) {
@@ -237,9 +274,36 @@ export function createTestRunner(
   const { signal } = abortController;
   const results: StepResult[] = [];
   const startedAtMs = Date.now();
+  const serialBuffers = new Map<SerialChannelId, { text: string; cursor: number }>();
+  let activeStepId = "run";
   const getBoard = () => {
     if (!boardRef.current) throw new Error("device state is unavailable");
     return boardRef.current;
+  };
+  const getSerialBuffer = (channel: SerialChannelId) => {
+    let state = serialBuffers.get(channel);
+    if (!state) {
+      state = { text: "", cursor: 0 };
+      serialBuffers.set(channel, state);
+    }
+    return state;
+  };
+  const appendSerialBuffer = (channel: SerialChannelId, text: string) => {
+    const state = getSerialBuffer(channel);
+    const combined = state.text + text;
+    const trim = Math.max(0, combined.length - SERIAL_BUFFER_LIMIT);
+    state.text = trim > 0 ? combined.slice(trim) : combined;
+    state.cursor = Math.max(0, state.cursor - trim);
+  };
+  const unreadSerialBuffer = (channel: SerialChannelId) => {
+    const state = getSerialBuffer(channel);
+    return state.text.slice(state.cursor);
+  };
+  const consumeSerialBuffer = (channel: SerialChannelId, consumedLength?: number) => {
+    const state = getSerialBuffer(channel);
+    state.cursor = consumedLength == null
+      ? state.text.length
+      : Math.min(state.text.length, state.cursor + consumedLength);
   };
 
   async function executeStep(step: TestStep): Promise<StepResult> {
@@ -248,6 +312,7 @@ export function createTestRunner(
     let error: string | undefined;
     let serialOutput: string | undefined;
     let adcValueUa: number | undefined;
+    let implicitAssertion: StepAssertion | undefined;
 
     try {
       switch (step.type) {
@@ -280,11 +345,12 @@ export function createTestRunner(
               channel,
               p.pattern,
               p.timeout_ms,
-              (text) => callbacks.onSerialLog(step.id, text, "rx"),
+              () => unreadSerialBuffer(channel),
               signal,
             );
             serialOutput = result.text;
             ctx.serialOutput = result.text;
+            consumeSerialBuffer(channel, result.consumedLength);
             if (!result.matched) {
               error = `timeout waiting for pattern: ${p.pattern}`;
             }
@@ -317,7 +383,6 @@ export function createTestRunner(
               p.command,
               p.pattern,
               p.timeout_ms,
-              (text) => callbacks.onSerialLog(step.id, text, "rx"),
               (text) => callbacks.onSerialLog(step.id, text, "tx"),
               signal,
             );
@@ -330,6 +395,7 @@ export function createTestRunner(
               error = `command output did not match: ${p.pattern}`;
             }
           } finally {
+            consumeSerialBuffer(channel);
             serialRef.current?.setAutomationActive(false, channel);
           }
           break;
@@ -360,6 +426,10 @@ export function createTestRunner(
           }
           ctx.pinDirection = gpio.direction;
           ctx.pinValue = gpio.value;
+          implicitAssertion = {
+            pin_direction: p.direction,
+            pin_value: p.value,
+          };
           break;
         }
         case "switch_route": {
@@ -371,7 +441,16 @@ export function createTestRunner(
           const p = step.params as import("./testScript").CaptureParams;
           const { rail, trigger, duration_ms: durationMs } = p;
           const rateHz = 100;
-          const samples = Math.min(2000, Math.max(2, Math.ceil((durationMs / 1000) * rateHz)));
+          if (!Number.isFinite(durationMs) || durationMs <= 0) {
+            throw new Error("capture duration must be greater than zero");
+          }
+          const samples = Math.max(2, Math.ceil((durationMs / 1000) * rateHz));
+          const captureCapacity = getBoard().snapshot.mcu?.toLowerCase().startsWith("rp2350") ? 2048 : 512;
+          if (samples > captureCapacity) {
+            throw new Error(
+              `capture requires ${samples} samples, but this device supports ${captureCapacity}`,
+            );
+          }
           const preSamples = Math.min(64, Math.floor(samples / 4));
           const captureStartedAt = Date.now();
           await getBoard().armCapture({
@@ -394,11 +473,11 @@ export function createTestRunner(
             throw new Error("GPIO-triggered capture is not supported by this task step");
           }
           const capture = await waitForCapture(getBoard, captureStartedAt, durationMs + 10000, signal);
-          captureActive = false;
           if (!capture) {
             error = "capture timed out";
             break;
           }
+          captureActive = false;
           const railReadings = capture.samples.flatMap((s) => {
             const r = s.readings.find((rd) => rd.name === rail);
             return r ? [r.current_ua] : [];
@@ -436,12 +515,15 @@ export function createTestRunner(
       error = e instanceof Error ? e.message : String(e);
     } finally {
       if (captureActive) {
-        getBoard().cancelCapture();
+        boardRef.current?.cancelCapture?.();
         captureActive = false;
       }
     }
 
-    const assertResult = error ? undefined : evaluateAssertion(step.assert, ctx);
+    const effectiveAssertion = implicitAssertion
+      ? { ...step.assert, ...implicitAssertion }
+      : step.assert;
+    const assertResult = error ? undefined : evaluateAssertion(effectiveAssertion, ctx);
     const hasError = !!error;
     const assertFailed = assertResult ? !assertResult.passed : false;
 
@@ -479,9 +561,20 @@ export function createTestRunner(
 
   return {
     async start() {
+      const serialUnsubscribers: Array<() => void> = [];
+      const serial = serialRef.current;
+      if (serial) {
+        for (const channel of ["uart0", "uart1"] as const) {
+          serialUnsubscribers.push(serial.subscribe((text) => {
+            appendSerialBuffer(channel, text);
+            callbacks.onSerialLog(activeStepId, text, "rx");
+          }, channel));
+        }
+      }
       try {
         for (const step of script.steps) {
           if (aborted) break;
+          activeStepId = step.id;
           callbacks.onStepStart(step.id);
           const result = await executeStep(step);
           results.push(result);
@@ -497,6 +590,8 @@ export function createTestRunner(
         }
       } catch (e) {
         callbacks.onError(e instanceof Error ? e.message : String(e));
+      } finally {
+        for (const unsubscribe of serialUnsubscribers) unsubscribe();
       }
 
       const finishedAtMs = Date.now();
@@ -521,7 +616,7 @@ export function createTestRunner(
       aborted = true;
       abortController.abort();
       if (captureActive) {
-        getBoard().cancelCapture();
+        boardRef.current?.cancelCapture?.();
         captureActive = false;
       }
     },
