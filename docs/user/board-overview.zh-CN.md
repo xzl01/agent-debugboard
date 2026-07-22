@@ -79,9 +79,9 @@ GPIO25 上的蓝色 LED。作为 watchdog 心跳指示——固件健康时约 1
 ## 快速参考
 
 ```
-radxa-linkr-debugctl power set 5v_out on       # 给目标板上电
-radxa-linkr-debugctl switch route sd usb-reader  # 从主机读取 SD
-radxa-linkr-debugctl gpio set GP13 1             # 驱动 GPIO
-radxa-linkr-debugctl adc read                    # 查看电流
-radxa-linkr-debugctl doctor                      # 完整连接检查
+radxa-linkr-debuggerctl power set 5v_out on       # 给目标板上电
+radxa-linkr-debuggerctl switch route sd usb-reader  # 从主机读取 SD
+radxa-linkr-debuggerctl gpio set GP13 1             # 驱动 GPIO
+radxa-linkr-debuggerctl adc read                    # 查看电流
+radxa-linkr-debuggerctl doctor                      # 完整连接检查
 ```

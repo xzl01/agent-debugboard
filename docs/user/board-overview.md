@@ -79,9 +79,9 @@ Blue LED on GPIO25. Acts as a watchdog heartbeat — blinks at ~1 Hz when firmwa
 ## Quick reference
 
 ```
-radxa-linkr-debugctl power set 5v_out on       # power the target
-radxa-linkr-debugctl switch route sd usb-reader  # read SD from host
-radxa-linkr-debugctl gpio set GP13 1             # drive a GPIO
-radxa-linkr-debugctl adc read                    # check current draw
-radxa-linkr-debugctl doctor                      # full connection check
+radxa-linkr-debuggerctl power set 5v_out on       # power the target
+radxa-linkr-debuggerctl switch route sd usb-reader  # read SD from host
+radxa-linkr-debuggerctl gpio set GP13 1             # drive a GPIO
+radxa-linkr-debuggerctl adc read                    # check current draw
+radxa-linkr-debuggerctl doctor                      # full connection check
 ```
