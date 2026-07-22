@@ -4,8 +4,8 @@ import http from "node:http";
 import path from "path";
 
 // The Radxa Linkr Debugger firmware serves its HTTP/WebSocket control API on the
-// USB-NCM link at http://172.29.203.1:8080. The dev server proxies /api to that
-// address (including WebSocket upgrades) so the browser can talk to the device
+// USB-NCM link at http://172.29.203.1. The dev server proxies /api to that
+// address (including WebSocket upgrades) so the browser can talk to the board
 // same-origin and avoid CORS. Point this at a different host when needed.
 export default defineConfig(({ mode }) => {
   const isFirmwareBuild = mode === "firmware" || Boolean(process.env.VITE_OUT_DIR);
@@ -33,12 +33,13 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         "/api": {
-          target: "http://172.29.203.1:8080",
+          target: "http://172.29.203.1",
           changeOrigin: true,
           ws: true,
           // The firmware exposes only a small client pool. Reuse one upstream
           // connection instead of consuming an additional slot per poll.
           agent: new http.Agent({ keepAlive: true, maxSockets: 1, maxFreeSockets: 1 }),
+          headers: { connection: "keep-alive" },
         },
       },
     },

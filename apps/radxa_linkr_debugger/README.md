@@ -9,21 +9,20 @@ Unless noted otherwise, run the commands below from the repository root.
 Agent/AI operators should read the repository skill first:
 [skills/radxa-linkr-debugger/SKILL.md](../../skills/radxa-linkr-debugger/SKILL.md).
 
-Build (G2 / RP2040):
+Build (RP2350):
 
 ```sh
-west build -p always -b rpi_pico/rp2040 apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
-```
-
-Build (G3 / RP2350):
-
-```sh
-west build -p always -b rpi_pico2/rp2350a/m33 apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+pip install -r bootloader/mcuboot/scripts/requirements.txt
+west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
 ```
 
 Use `build/radxa_linkr_debugger/` as the only canonical build directory for this
-app, and use `build/radxa_linkr_debugger/zephyr/zephyr.uf2` as the only canonical
-flash artifact.
+app. RP2350 sysbuild places the MCUboot image at
+`build/radxa_linkr_debugger/mcuboot/zephyr/zephyr.hex` and the application
+artifacts under `build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/`,
+including `zephyr.signed.hex` and `zephyr.signed.bin`. Under this project
+configuration, `zephyr.signed.bin` is an unsigned MCUboot-format OTA payload
+despite the filename.
 
 Tests:
 
@@ -34,21 +33,26 @@ Tests:
 Schematics:
 
 ```text
-doc/radxa-linkr-debugger-schematic-x1.1.pdf  (G3 / RP2350A)
-doc/radxa-linkr-debugger-schematic.pdf       (G2 / RP2040)
+doc/radxa-linkr-debugger-schematic-x1.1.pdf  (RP2350A)
+doc/radxa-linkr-debugger-schematic.pdf       (RP2040 - archival only)
 ```
 
 The USB interface enumerates as a composite USB device. The board exposes its
-HTTP control API on the USB NCM interface at `http://172.29.203.1:8080` by
+HTTP control API on the USB NCM interface at `http://172.29.203.1` by
 default. Normal host-side use should prefer the released
 `radxa-linkr-debuggerctl` CLI; direct `curl` is mainly for raw HTTP/API checks.
 A USB CDC ACM serial port is also kept available for Zephyr cmdline access and
 BOOTSEL fallback.
 
 The same HTTP service exposes the embedded production Web UI at
-`http://172.29.203.1:8080/`. A clean firmware build requires Node.js 22 and npm;
-CMake builds the Vite application, verifies its fixed asset set, and stores the
-gzip-compressed resources in flash.
+`http://172.29.203.1/`. A clean firmware build requires Node.js 22, npm,
+the Rust toolchain, the `wasm32-unknown-unknown` target, and `wasm-bindgen-cli
+0.2.121`; CMake builds the Vite application, verifies its fixed asset set, and
+stores the gzip-compressed resources in flash. The embedded logic decoder is served at the
+stable browser URLs `/assets/decoder/logic-decoder.js` and
+`/assets/decoder/logic-decoder_bg.wasm`, with `application/wasm` MIME for the
+WASM binary. The project-owned Rust/WASM decoder supports UART, I2C, and SPI
+protocols only; it is not a libsigrokdecode Python plugin compatibility layer.
 
 The board also runs a DHCPv4 server on the NCM link so the host can acquire a
 compatible address automatically.
@@ -65,7 +69,7 @@ samples carry `sequence` and `uptime_us`; host clients normalize those values to
 the same timing aliases. Single-sample telemetry
 includes `dropped_samples` only when the per-client ring skipped one or more
 samples. The same session can arm a triggered power capture with a
-firmware ring buffer: 2048 samples on G3 and 512 on G2. Manual, current
+firmware ring buffer: 2048 samples on RP2350. Manual, current
 threshold, allowlisted GPIO edge, and power-output off-to-on triggers are
 supported. Triggered capture uses one global hardware buffer and therefore has
 only one capture owner at a time. See
@@ -87,19 +91,67 @@ Agent workflow.
 Raw HTTP checks for firmware/API debugging:
 
 ```sh
-curl -fsS http://172.29.203.1:8080/api/v1/status
-curl -fsS http://172.29.203.1:8080/api/v1/power
+curl -fsS http://172.29.203.1/api/v1/status
+curl -fsS http://172.29.203.1/api/v1/power
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"state":"on"}' \
-  http://172.29.203.1:8080/api/v1/power/12v_out
-curl -fsS http://172.29.203.1:8080/api/v1/adc/read?channel=5v_out
-curl -fsS http://172.29.203.1:8080/api/v1/watchdog
-curl -fsS http://172.29.203.1:8080/api/v1/switch
-curl -fsS http://172.29.203.1:8080/api/v1/switch/vin   # G3: returns 1.8v or 3.3v; G2: unavailable
+  http://172.29.203.1/api/v1/power/12v_out
+curl -fsS http://172.29.203.1/api/v1/adc/read?channel=5v_out
+curl -fsS http://172.29.203.1/api/v1/watchdog
+curl -fsS http://172.29.203.1/api/v1/switch
+curl -fsS http://172.29.203.1/api/v1/switch/vin   # returns 1.8v or 3.3v
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"route":"3.3v"}' \
-  http://172.29.203.1:8080/api/v1/switch/vin   # safe default; G3 only
+  http://172.29.203.1/api/v1/switch/vin   # safe default
 ```
+
+Raw MCUboot OTA API (RP2350 only; SHA256 only, no signature/authentication/secure boot/anti-rollback):
+
+```sh
+# Check OTA state
+curl -fsS http://172.29.203.1/api/v1/ota
+
+# Upload MCUboot-format application binary
+curl -fsS -X POST \
+  -H 'Content-Type: application/octet-stream' \
+  -H 'X-Linkr-Ota-Size: <byte_size>' \
+  -H 'X-Linkr-Ota-Sha256: <hex_sha256>' \
+  --data-binary @/path/to/firmware.bin \
+  http://172.29.203.1/api/v1/ota/upload
+
+# Request test boot of verified image
+curl -fsS -X POST http://172.29.203.1/api/v1/ota/test
+
+# Manually confirm the running image
+curl -fsS -X POST http://172.29.203.1/api/v1/ota/confirm
+```
+
+`GET /api/v1/ota` returns the OTA state machine state, expected/written/max byte
+sizes, the MCUboot upload area ID, swap type, and whether the current image is
+confirmed. OTA upload requires `X-Linkr-Ota-Size` and `X-Linkr-Ota-Sha256` headers.
+The test image auto-confirms after a 16-second watchdog health gate; if unconfirmed
+and a watchdog reset occurs, the retained marker allows MCUboot rollback instead
+of forcing ROM BOOTSEL. Do not use OTA to upload `.uf2` or `.elf` files; use a
+MCUboot-format application binary such as the release asset
+`radxa-linkr-debugger-rp2350-ota.bin`.
+
+Captive portal discovery: the firmware runs a DHCPv4 server that advertises
+router and DNS as `172.29.203.1` and sends DHCP option 114 (Captive Portal URI)
+with value `http://172.29.203.1/captive-portal/api`. A DNS responder bound to the
+NCM interface on UDP 53 returns wildcard A records pointing to `172.29.203.1`
+and NOERROR/NODATA for AAAA queries, with no forwarding or caching. A single HTTP
+service bound to the NCM-local `172.29.203.1` address on port 80 routes by URL
+path (`/`, `/assets/*`, `/api/v1/*`,
+`/api/v1/ws/*`, `/captive-portal/api`, and legacy detection probes). It answers
+GET `/captive-portal/api` with `application/captive+json` and a JSON body
+carrying the portal URL; all other GET paths not matching the routed paths
+return HTTP 302 redirecting to `http://172.29.203.1/`. OS auto-open is best-effort;
+results vary by OS version and network configuration. Users can always open
+`http://172.29.203.1/` directly or use curl/CLI.
+
+The pinned Zephyr HTTP/1 server short-circuits dynamic-resource `HEAD` requests
+before the application callback and returns a default headers-only HTTP 200.
+Use `GET` when validating captive portal behavior.
 
 VIN defaults to 3.3V at boot. G3-only VIN 1.8V switching is documented in the
 expert gated section below; it requires target voltage compatibility confirmation
@@ -109,7 +161,7 @@ and physical measurement setup before use.
 `snapshot/status` messages include the same object. The categories are
 `temperature`, `heap`, `memory`, `runtime`, and `cpu`; each one reports `available`
 and a machine-readable `reason`. Values are emitted only when Zephyr exposes a real
-device or runtime-stat API. With the default RP2040 and RP2350 configurations,
+device or runtime-stat API. With the default RP2350 configuration,
 the board reports internal MCU die temperature, system heap runtime statistics,
 real board uptime (`uptime_ms` / `uptime_seconds`), CPU utilization deltas, and
 the Phase 2 additive memory pressure objects when those readings are available. The CPU
@@ -140,12 +192,13 @@ feeding the hardware watchdog and the retained recovery marker drives the next
 boot into ROM BOOTSEL. The CDC ACM `bootloader` shell command remains available
 as an independent fallback path.
 
-FIXME: add a safe fault-injection path for validation of daemon/service failure
-scenarios. The current firmware and manual validation confirm websocket
-recovery, autonomous watchdog status reporting, and CDC ACM `bootloader`
-fallback into ROM BOOTSEL, but they do not yet provide a controlled way to
-intentionally wedge HTTP/WS/cmdline liveness and prove automatic watchdog
-timeout into BOOTSEL without using ad hoc destructive test methods.
+Watchdog rollback is BLOCKED: no safe fault-injection path exists for
+validating daemon/service failure scenarios. The current firmware and HIL
+confirmation validate WebSocket recovery, autonomous watchdog status reporting,
+and CDC ACM `bootloader` fallback into ROM BOOTSEL, but they do not provide a
+controlled way to intentionally wedge HTTP/WS/cmdline liveness and prove
+automatic watchdog timeout into BOOTSEL without ad hoc destructive methods.
+Do not claim rollback behavior was HIL-verified.
 
 Safe GPIO names such as `GP13` are derived from the MCU pin number; the
 firmware allowlist keeps the connector note so users can map commands back to
@@ -168,7 +221,7 @@ radxa-linkr-debuggerctl adc read -v 5v_out
 radxa-linkr-debuggerctl power set 12v_out on
 radxa-linkr-debuggerctl power set 20v_out on
 radxa-linkr-debuggerctl switch route sd usb-reader
-radxa-linkr-debuggerctl switch get vin   # G3: returns 1.8v/3.3v; G2: unavailable
+radxa-linkr-debuggerctl switch get vin   # returns 1.8v/3.3v
 radxa-linkr-debuggerctl watchdog status
 ```
 
@@ -189,7 +242,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- watchdog status
 ```
 
 The released Rust CLI and direct `curl` HTTP requests both use the same endpoint
-`http://172.29.203.1:8080`.
+`http://172.29.203.1`.
 
 OpenOCD:
 
@@ -199,7 +252,7 @@ openocd -f interface/<ch347-interface>.cfg -f target/<target>.cfg
 ```
 
 JTAG/SWD goes through the onboard CH347F path, which is wired directly to the
-target debug connector. The RP2040/RP2350 firmware does not act as a debug probe.
+target debug connector. The RP2350 firmware does not act as a debug probe.
 
 Power-output naming intentionally distinguishes controllable 5V outputs from
 `5V_FIN`. The firmware does not control `5V_FIN`.
@@ -222,7 +275,7 @@ G3 GPIO25 operates as a watchdog heartbeat LED, active-low, blinking at roughly
 1 Hz. The cycle advances only after a successful hardware watchdog feed. Skipped
 or failed feeds reset it to the inactive state while firmware owns the GPIO. This
 behavior is driven through Device Tree chosen properties and the existing watchdog
-supervisor, not through a Zephyr `CONFIG_LED` or built-in heartbeat driver. G2 has
+supervisor, not through a Zephyr `CONFIG_LED` or built-in heartbeat driver.
 no firmware heartbeat LED.
 
 - GPIO aliases: `CON_MAS` (GP7), `CON_REST` (GP8), `CON_USER` (GP9)
@@ -237,18 +290,18 @@ firmware selects it through the Zephyr regulator API.
 
 The raw firmware API retains `5v_ws` as a compatibility name for GPIO1 VDD_5V.
 The host CLI and TUI intentionally filter this board-internal rail from status,
-power lists, and controls. On G3 it remains always on; G2 firmware keeps its
+power lists, and controls. On RP2350 it remains always on;
 original raw API behavior.
 
 G3 ADC current monitor inputs use an INA139 with a 10 mOhm shunt and a
-50 kOhm output load. (G2 uses 51 kOhm.) The Rust CLI and `curl` both report the
+50 kOhm output load. The Rust CLI and `curl` both report the
 firmware's raw current-monitor chain directly; no host-side ADC calibration
 tables or zero-point correction are applied.
 
 ## Expert: G3 VIN 1.8V Switching
 
 VIN 1.8V switching applies only to G3 (RP2350A) boards and is not available on
-G2 (RP2040). This operation is side-effectful and requires confirmed target
+This operation is side-effectful and requires confirmed target
 voltage compatibility and physical measurement setup before use.
 
 Prerequisites before any 1.8V switch:
@@ -260,7 +313,7 @@ Prerequisites before any 1.8V switch:
 To inspect current VIN state:
 
 ```sh
-curl -fsS http://172.29.203.1:8080/api/v1/switch/vin
+curl -fsS http://172.29.203.1/api/v1/switch/vin
 radxa-linkr-debuggerctl switch get vin
 ```
 
@@ -278,7 +331,7 @@ radxa-linkr-debuggerctl switch route vin 3.3v --confirm
 # Then immediately measure target VIO pin — expect ~3.3V
 ```
 
-CDC ACM shell equivalent (G3 only; returns unavailable on G2):
+CDC ACM shell equivalent:
 
 ```text
 linkr-debugger:~$ vin get

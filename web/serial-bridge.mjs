@@ -12,7 +12,7 @@ import { SerialPort } from "serialport";
 
 const BRIDGE_HOST = "127.0.0.1";
 const BRIDGE_PORT = Number(process.env.LINKR_BRIDGE_PORT || 8787);
-const BOARD_HTTP = process.env.LINKR_BOARD_URL || "http://172.29.203.1:8080";
+const BOARD_HTTP = process.env.LINKR_BOARD_URL || "http://172.29.203.1";
 const BOARD_WS = BOARD_HTTP.replace(/^http/, "ws");
 
 function durationFromEnv(name, fallback) {
@@ -51,7 +51,7 @@ function corsHeaders(req) {
   return {
     "access-control-allow-origin": req.headers.origin || "*",
     "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "access-control-allow-headers": "Content-Type",
+    "access-control-allow-headers": "Content-Type, X-Linkr-Ota-Size, X-Linkr-Ota-Sha256",
     "access-control-allow-private-network": "true",
     vary: "Origin",
   };

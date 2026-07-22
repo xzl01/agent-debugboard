@@ -2,7 +2,7 @@
 // uses Vite's same-origin proxy. The Pages build points this at the loopback
 // device gateway started by `npm run device-bridge`.
 
-const BASE = import.meta.env.VITE_DEVICE_API_BASE || "/api/v1";
+const BASE = import.meta.env?.VITE_DEVICE_API_BASE || "/api/v1";
 
 export interface LiveSession {
   session_id: number;

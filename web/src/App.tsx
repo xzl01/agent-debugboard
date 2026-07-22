@@ -1,5 +1,12 @@
-import { useCallback, useMemo, useRef, useState } from "react";
-import { ChevronDown, Loader2, ServerCrash, SlidersHorizontal } from "lucide-react";
+import { useCallback, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  Activity,
+  ChevronDown,
+  Loader2,
+  ServerCrash,
+  SlidersHorizontal,
+  Terminal,
+} from "lucide-react";
 import { useBoard } from "@/hooks/useBoard";
 import { StatusBar } from "./components/StatusBar";
 import { PowerCard } from "./components/PowerCard";
@@ -8,6 +15,8 @@ import { BootCard } from "./components/BootCard";
 import { SerialCard, type SerialAutomationHandle } from "./components/SerialCard";
 import { StartupPowerAnalysis } from "./components/StartupPowerAnalysis";
 import { TestAutomation } from "./components/TestAutomation";
+import { LogicAnalyzerCard } from "./components/LogicAnalyzerCard";
+import { OtaCard } from "./components/OtaCard";
 import { Badge, Button } from "./components/ui";
 import { useI18n } from "@/lib/i18n";
 import { apiEndpoint } from "@/lib/api";
@@ -16,6 +25,14 @@ import {
   type AutomationTaskControl,
   type AutomationTaskOwner,
 } from "@/lib/automationTask";
+import {
+  getNextWorkspaceTabIndex,
+  getWorkspacePanelId,
+  getWorkspaceTabId,
+  type WorkspaceTabId,
+} from "@/lib/workspaceTabs";
+
+const RP2350_CAPTURE_CAPACITY = 2048;
 
 export default function App() {
   const board = useBoard();
@@ -37,6 +54,37 @@ export default function App() {
     acquire: acquireAutomation,
     release: releaseAutomation,
   }), [acquireAutomation, automationOwner, releaseAutomation]);
+
+  const workspaceTabRefs = useRef<Record<WorkspaceTabId, HTMLButtonElement | null>>({
+    terminal: null,
+    logicAnalyzer: null,
+  });
+  const [selectedWorkspaceTab, setSelectedWorkspaceTab] = useState<WorkspaceTabId>("terminal");
+  const workspaceTabs = [
+    { id: "terminal" as const, icon: Terminal, label: t("workspace.terminalTab") },
+    {
+      id: "logicAnalyzer" as const,
+      icon: Activity,
+      label: t("workspace.logicAnalyzerTab"),
+    },
+  ];
+
+  const onWorkspaceTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    currentIndex: number
+  ) => {
+    const nextIndex = getNextWorkspaceTabIndex(
+      currentIndex,
+      event.key,
+      workspaceTabs.length
+    );
+    if (nextIndex == null) return;
+    event.preventDefault();
+    const nextTab = workspaceTabs[nextIndex]?.id;
+    if (!nextTab) return;
+    workspaceTabRefs.current[nextTab]?.focus();
+    setSelectedWorkspaceTab(nextTab);
+  };
 
   return (
     <div className="min-h-full bg-bg text-ink">
@@ -90,7 +138,7 @@ export default function App() {
                   onTriggerCapture={board.triggerCapture}
                   onCancelCapture={board.cancelCapture}
                   onClearCaptures={board.clearCaptures}
-                  captureCapacity={board.snapshot.mcu?.toLowerCase() === "rp2040" ? 512 : 2048}
+                  captureCapacity={RP2350_CAPTURE_CAPACITY}
                 />
               </div>
               <div className="min-w-0">
@@ -118,7 +166,7 @@ export default function App() {
                       outputs={board.snapshot.powerOutputs}
                       captureState={board.captureState}
                       captures={board.captures}
-                      captureCapacity={board.snapshot.mcu?.toLowerCase() === "rp2040" ? 512 : 2048}
+                      captureCapacity={RP2350_CAPTURE_CAPACITY}
                       serialRef={serialAutomationRef}
                       onSetPower={board.setPower}
                       onReadPower={board.readPower}
@@ -134,16 +182,75 @@ export default function App() {
                       taskControl={automationTaskControl}
                     />
                   </div>
+                  <OtaCard />
                   <BootCard onBoot={board.enterBootloader} />
                 </div>
               </details>
             </aside>
             <div className="min-w-0 xl:sticky xl:top-[116px]">
-              <SerialCard
-                ref={serialAutomationRef}
-                vinRoute={board.snapshot.switches.vin}
-                onSetVin={(route) => board.setSwitch("vin", route)}
-              />
+              <div className="flex min-h-0 min-w-0 flex-col gap-3">
+                <div className="overflow-x-auto pb-1">
+                  <div
+                    role="tablist"
+                    aria-label={t("workspace.tabs")}
+                    aria-orientation="horizontal"
+                    className="inline-flex min-w-full rounded-xl border border-line/70 bg-panel p-1 shadow-sm sm:min-w-0"
+                  >
+                    {workspaceTabs.map((tab, index) => {
+                      const Icon = tab.icon;
+                      const selected = selectedWorkspaceTab === tab.id;
+                      return (
+                        <button
+                          key={tab.id}
+                          ref={(node) => {
+                            workspaceTabRefs.current[tab.id] = node;
+                          }}
+                          id={getWorkspaceTabId(tab.id)}
+                          type="button"
+                          role="tab"
+                          tabIndex={selected ? 0 : -1}
+                          aria-selected={selected}
+                          aria-controls={getWorkspacePanelId(tab.id)}
+                          onClick={() => setSelectedWorkspaceTab(tab.id)}
+                          onKeyDown={(event) => onWorkspaceTabKeyDown(event, index)}
+                          className={`flex min-h-10 flex-1 items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium transition-colors sm:flex-none sm:justify-start ${
+                            selected
+                              ? "bg-brand/12 text-brand shadow-sm"
+                              : "text-ink-dim hover:text-ink"
+                          }`}
+                        >
+                          <Icon size={16} />
+                          <span className="whitespace-nowrap">{tab.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div
+                  id={getWorkspacePanelId("terminal")}
+                  role="tabpanel"
+                  aria-labelledby={getWorkspaceTabId("terminal")}
+                  hidden={selectedWorkspaceTab !== "terminal"}
+                  className="min-h-0 min-w-0"
+                >
+                  <SerialCard
+                    ref={serialAutomationRef}
+                    vinRoute={board.snapshot.switches.vin}
+                    onSetVin={(route) => board.setSwitch("vin", route)}
+                  />
+                </div>
+
+                <div
+                  id={getWorkspacePanelId("logicAnalyzer")}
+                  role="tabpanel"
+                  aria-labelledby={getWorkspaceTabId("logicAnalyzer")}
+                  hidden={selectedWorkspaceTab !== "logicAnalyzer"}
+                  className="min-h-0 min-w-0"
+                >
+                  <LogicAnalyzerCard boardGpios={board.snapshot?.gpios} />
+                </div>
+              </div>
             </div>
           </div>
         )}

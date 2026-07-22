@@ -85,6 +85,10 @@ export interface SafeGpio {
   note: string;
   value: number;
   direction: string; // "input" | "output"
+  layoutGroup?: string;
+  layoutLabel?: string;
+  layoutRow?: number;
+  layoutColumn?: number;
 }
 
 export interface WatchdogStatus {
@@ -146,4 +150,43 @@ export interface BoardSnapshot {
   watchdog: WatchdogStatus;
   monitoring: BoardMonitoring;
   adc: AdcReading[];
+}
+
+export type LogicAnalyzerTriggerType = "none" | "rising" | "falling" | "either";
+
+export interface LogicAnalyzerConfig {
+  selectedPins: number[];
+  sampleRateHz: number;
+  preSamples: number;
+  postSamples: number;
+  triggerType: LogicAnalyzerTriggerType;
+  triggerPin: number;
+}
+
+export interface LogicAnalyzerCaptureConfig {
+  pinCount: number;
+  pinBase: number;
+  sampleRateHz?: number;
+  requestedSampleRateHz?: number;
+  actualSampleRateHz?: number;
+  samplePeriodPs?: number;
+  backend?: string;
+  selectedPins?: number[];
+  triggerType?: LogicAnalyzerTriggerType;
+  triggerPin?: number;
+}
+
+export type LogicAnalyzerState = "idle" | "armed" | "capturing" | "done" | "error";
+
+export interface LogicAnalyzerSample {
+  timestampUs: number;
+  values: number;
+}
+
+export interface LogicAnalyzerCapture {
+  state: LogicAnalyzerState;
+  config: LogicAnalyzerCaptureConfig;
+  sampleCount: number;
+  triggerIndex: number;
+  samples: LogicAnalyzerSample[];
 }

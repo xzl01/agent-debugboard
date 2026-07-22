@@ -9,6 +9,7 @@
 #include <zephyr/dt-bindings/gpio/gpio.h>
 #include <zephyr/dt-bindings/i2c/i2c.h>
 #include <zephyr/dt-bindings/pinctrl/rpi-pico-rp2350a-pinctrl.h>
+#include <zephyr/dt-bindings/dma/rpi-pico-dma-rp2350.h>
 
 / {
 	chosen {
@@ -132,6 +133,14 @@
 		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
 		zephyr,resolution = <12>;
 	};
+
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
 };
 
 &die_temp {
@@ -153,4 +162,20 @@
 		compatible = "zephyr,cdc-acm-uart";
 		label = "Radxa Linkr Debugger USB CDC ACM";
 	};
+};
+
+&pio0 {
+	status = "okay";
+};
+
+&pio1 {
+	status = "okay";
+};
+
+&pio2 {
+	status = "okay";
+};
+
+&dma {
+	status = "okay";
 };

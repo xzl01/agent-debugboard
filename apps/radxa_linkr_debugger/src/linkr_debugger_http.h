@@ -15,5 +15,6 @@ void linkr_debugger_http_publish_state_change(void);
 int linkr_debugger_http_listener_fd(void);
 uint16_t linkr_debugger_http_listener_port(void);
 const char *linkr_debugger_http_listener_host(void);
+void linkr_debugger_http_reap_stale_holders(void);
 
 #endif /* RADXA_LINKR_DEBUGGER_HTTP_H_ */

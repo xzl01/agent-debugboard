@@ -14,14 +14,6 @@ OUT="${ROOT}/build/radxa_linkr_debugger_unit"
 mkdir -p "${OUT}"
 
 cc -std=c11 -Wall -Wextra -Werror \
-	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
-	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_model.c" \
-	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_model.c" \
-	-o "${OUT}/linkr_debugger_model_rp2040_test"
-
-"${OUT}/linkr_debugger_model_rp2040_test"
-
-cc -std=c11 -Wall -Wextra -Werror \
 	-DCONFIG_SOC_SERIES_RP2350 \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_model.c" \
@@ -29,3 +21,41 @@ cc -std=c11 -Wall -Wextra -Werror \
 	-o "${OUT}/linkr_debugger_model_rp2350_test"
 
 "${OUT}/linkr_debugger_model_rp2350_test"
+
+cc -std=c11 -Wall -Wextra -Werror \
+	-DLINKR_DEBUGGER_OTA_HOST_TEST \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_ota.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_ota.c" \
+	-o "${OUT}/linkr_debugger_ota_parser_test"
+
+"${OUT}/linkr_debugger_ota_parser_test"
+
+cc -std=c11 -Wall -Wextra -Werror \
+	-DLINKR_DEBUGGER_DNS_HOST_TEST \
+	-DLINKR_DEBUGGER_CAPTIVE_PORTAL_HOST_TEST \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_dns.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_captive_portal.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_portal.c" \
+	-o "${OUT}/linkr_debugger_portal_test"
+
+"${OUT}/linkr_debugger_portal_test"
+
+cc -std=c11 -Wall -Wextra -Werror \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_http_body.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_http_body.c" \
+	-o "${OUT}/linkr_debugger_http_body_test"
+
+"${OUT}/linkr_debugger_http_body_test"
+
+cc -std=c11 -Wall -Wextra -Werror \
+	-DLINKR_DEBUGGER_LA_HOST_TEST \
+	-DCONFIG_SOC_SERIES_RP2350 \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_logic_analyzer.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_logic_analyzer.c" \
+	-o "${OUT}/linkr_debugger_logic_analyzer_test"
+
+"${OUT}/linkr_debugger_logic_analyzer_test"

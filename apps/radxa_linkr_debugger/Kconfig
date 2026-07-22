@@ -8,5 +8,27 @@ mainmenu "radxa-linkr-debugger controller"
 
 source "Kconfig.zephyr"
 
+config LINKR_DEBUGGER_LOG_LEVEL
+	int "Radxa Linkr Debugger log level"
+	default 2
+	range 0 4
+	help
+	  Log level for Radxa Linkr Debugger modules.
+
 config REGULATOR_GPIO
 	default y if DT_HAS_REGULATOR_GPIO_ENABLED
+
+config LINKR_DEBUGGER_OTA
+	bool "RP2350 MCUboot OTA update API"
+	depends on BOARD_RPI_PICO2_RP2350A_M33_MCUBOOT
+	depends on BOOTLOADER_MCUBOOT
+	depends on STREAM_FLASH
+	depends on FLASH_MAP
+	depends on IMG_MANAGER
+	depends on MCUBOOT_IMG_MANAGER
+	depends on IMG_ENABLE_IMAGE_CHECK
+	depends on REBOOT
+	help
+	  Enables the unsigned MCUboot HTTP OTA endpoints for the RP2350 mcuboot
+	  board target. The upload path writes a complete MCUboot binary into
+	  slot1 and verifies the declared SHA-256 before allowing a test upgrade.

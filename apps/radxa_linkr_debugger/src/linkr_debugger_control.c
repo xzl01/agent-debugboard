@@ -27,7 +27,7 @@
 
 LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 
-#if defined(CONFIG_SOC_SERIES_RP2040) || defined(CONFIG_SOC_SERIES_RP2350)
+#if defined(CONFIG_SOC_SERIES_RP2350)
 #include <hardware/regs/watchdog.h>
 #include <hardware/watchdog.h>
 #include <hardware/gpio.h>
@@ -50,13 +50,8 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 
 #define LINKR_DEBUGGER_JSON_SCHEMA "radxa-linkr-debugger.v1"
 #define LINKR_DEBUGGER_USB_MODE "ncm-http"
-#if defined(CONFIG_SOC_SERIES_RP2350)
 #define LINKR_DEBUGGER_MCU_NAME "rp2350"
 #define LINKR_DEBUGGER_RESERVED_GPIOS "GP00-GP06 GP22-GP25 GP26-GP28"
-#else
-#define LINKR_DEBUGGER_MCU_NAME "rp2040"
-#define LINKR_DEBUGGER_RESERVED_GPIOS "GP02 GP03 GP05 GP06 GP09 GP10 GP26-GP28"
-#endif
 
 #define LINKR_DEBUGGER_GPIO_DIR_INPUT 1
 #define LINKR_DEBUGGER_GPIO_DIR_OUTPUT 2
@@ -74,8 +69,10 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #define LINKR_DEBUGGER_WATCHDOG_SCRATCH_INDEX 0U
 #define LINKR_DEBUGGER_WATCHDOG_BOOTSEL_MARKER 0xadb00751U
 #define LINKR_DEBUGGER_WATCHDOG_SOURCE_SCRATCH 1U
+#define LINKR_DEBUGGER_WATCHDOG_OTA_TEST_SCRATCH 2U
 #define LINKR_DEBUGGER_BOOTLOADER_SOURCE_EXPLICIT 0xbfeed001U
 #define LINKR_DEBUGGER_BOOTLOADER_SOURCE_WATCHDOG  0xbfeed002U
+#define LINKR_DEBUGGER_OTA_TEST_MARKER 0x07a7e571U
 
 #define ADC_SPEC_AND_COMMA(node_id, prop, idx) \
 	COND_CODE_1(DT_PHA_HAS_CELL_AT_IDX(node_id, prop, idx, input), \
@@ -130,6 +127,7 @@ static uint8_t linkr_debugger_gpio_directions[SAFE_GPIO_STATE_CAPACITY];
 static bool linkr_debugger_gpio_output_levels[SAFE_GPIO_STATE_CAPACITY];
 static struct k_mutex linkr_debugger_control_lock;
 static bool linkr_debugger_watchdog_armed;
+static bool linkr_debugger_watchdog_planned_reboot_pending;
 static int linkr_debugger_watchdog_channel = -1;
 static bool linkr_debugger_watchdog_supervisor_started;
 static bool linkr_debugger_watchdog_ws_client_active;
@@ -326,21 +324,13 @@ static int configure_regulator_defaults(void)
 static int configure_sd_default(void)
 {
 	linkr_debugger_sd_route = LINKR_DEBUGGER_SD_ROUTE_TARGET;
-#ifdef CONFIG_SOC_SERIES_RP2350
 	return gpio_pin_configure(gpio0, 4, GPIO_OUTPUT_ACTIVE);
-#else
-	return gpio_pin_configure(gpio0, 6, GPIO_OUTPUT_INACTIVE);
-#endif
 }
 
 static int configure_usb_mux_default(void)
 {
 	linkr_debugger_usb_route = LINKR_DEBUGGER_USB_ROUTE_TARGET;
-#ifdef CONFIG_SOC_SERIES_RP2350
 	return gpio_pin_configure(gpio0, 5, GPIO_OUTPUT_ACTIVE);
-#else
-	return gpio_pin_configure(gpio0, 3, GPIO_OUTPUT_ACTIVE);
-#endif
 }
 
 static int configure_vin_default(void)
@@ -365,13 +355,9 @@ static int configure_vin_default(void)
 
 static void linkr_debugger_gpio_apply_safe_drive_strength(const struct linkr_debugger_safe_gpio_desc *desc)
 {
-	ARG_UNUSED(desc);
-
-#if defined(CONFIG_SOC_SERIES_RP2040) || defined(CONFIG_SOC_SERIES_RP2350)
 	if (desc != NULL) {
 		gpio_set_drive_strength(desc->pin, GPIO_DRIVE_STRENGTH_4MA);
 	}
-#endif
 }
 
 static int setup_current_sensors(void)
@@ -440,25 +426,70 @@ static bool linkr_debugger_watchdog_heartbeat_step_locked(bool feed_success)
 
 static void linkr_debugger_watchdog_marker_set(void)
 {
-#if defined(CONFIG_SOC_SERIES_RP2040) || defined(CONFIG_SOC_SERIES_RP2350)
 	watchdog_hw->scratch[LINKR_DEBUGGER_WATCHDOG_SCRATCH_INDEX] = LINKR_DEBUGGER_WATCHDOG_BOOTSEL_MARKER;
-#endif
 }
 
 static void linkr_debugger_watchdog_marker_clear(void)
 {
-#if defined(CONFIG_SOC_SERIES_RP2040) || defined(CONFIG_SOC_SERIES_RP2350)
 	watchdog_hw->scratch[LINKR_DEBUGGER_WATCHDOG_SCRATCH_INDEX] = 0U;
+}
+
+bool linkr_debugger_watchdog_ota_test_marker_present(void)
+{
+#if defined(CONFIG_SOC_SERIES_RP2350)
+	return watchdog_hw->scratch[LINKR_DEBUGGER_WATCHDOG_OTA_TEST_SCRATCH] ==
+		LINKR_DEBUGGER_OTA_TEST_MARKER;
+#else
+	return false;
+#endif
+}
+
+void linkr_debugger_watchdog_ota_test_marker_set(void)
+{
+#if defined(CONFIG_SOC_SERIES_RP2350)
+	watchdog_hw->scratch[LINKR_DEBUGGER_WATCHDOG_OTA_TEST_SCRATCH] =
+		LINKR_DEBUGGER_OTA_TEST_MARKER;
+#endif
+}
+
+void linkr_debugger_watchdog_ota_test_marker_clear(void)
+{
+#if defined(CONFIG_SOC_SERIES_RP2350)
+	watchdog_hw->scratch[LINKR_DEBUGGER_WATCHDOG_OTA_TEST_SCRATCH] = 0U;
 #endif
 }
 
 static void linkr_debugger_watchdog_force_disable_locked(void)
 {
-#if defined(CONFIG_SOC_SERIES_RP2040) || defined(CONFIG_SOC_SERIES_RP2350)
 	hw_clear_bits(&watchdog_hw->ctrl, WATCHDOG_CTRL_ENABLE_BITS);
-#endif
 	linkr_debugger_watchdog_armed = false;
 	linkr_debugger_watchdog_channel = -1;
+}
+
+int linkr_debugger_watchdog_prepare_planned_reboot(void)
+{
+	int ret = 0;
+
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	linkr_debugger_watchdog_planned_reboot_pending = true;
+	if (linkr_debugger_watchdog_armed && watchdog_dev != NULL && device_is_ready(watchdog_dev)) {
+		(void)wdt_feed(watchdog_dev, linkr_debugger_watchdog_channel);
+		ret = wdt_disable(watchdog_dev);
+		if (ret < 0) {
+			LOG_WRN("watchdog disable before planned reboot failed: %d", ret);
+		}
+	}
+	hw_clear_bits(&watchdog_hw->ctrl, WATCHDOG_CTRL_ENABLE_BITS);
+	if ((watchdog_hw->ctrl & WATCHDOG_CTRL_ENABLE_BITS) != 0U) {
+		linkr_debugger_watchdog_planned_reboot_pending = false;
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		return ret < 0 ? ret : -EIO;
+	}
+	linkr_debugger_watchdog_force_disable_locked();
+	linkr_debugger_watchdog_marker_clear();
+	watchdog_hw->scratch[LINKR_DEBUGGER_WATCHDOG_SOURCE_SCRATCH] = 0U;
+	k_mutex_unlock(&linkr_debugger_control_lock);
+	return 0;
 }
 
 static void linkr_debugger_watchdog_set_failing_service_locked(const char *service)
@@ -605,6 +636,11 @@ static void linkr_debugger_watchdog_supervisor_thread_main(void *arg1, void *arg
 		diagnostic_due = linkr_debugger_watchdog_diagnostic_due(now);
 
 		k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+		if (linkr_debugger_watchdog_planned_reboot_pending) {
+			k_mutex_unlock(&linkr_debugger_control_lock);
+			k_sleep(K_MSEC(LINKR_DEBUGGER_WATCHDOG_SUPERVISOR_PERIOD_MS));
+			continue;
+		}
 		healthy = linkr_debugger_watchdog_services_healthy_locked();
 		core_age_ms = linkr_debugger_watchdog_age_ms(now, linkr_debugger_watchdog_core_alive_ms);
 		cmdline_age_ms = linkr_debugger_watchdog_age_ms(now, linkr_debugger_watchdog_cmdline_alive_ms);
@@ -614,6 +650,7 @@ static void linkr_debugger_watchdog_supervisor_thread_main(void *arg1, void *arg
 			grace_remaining_ms = 0;
 		}
 		listener_fd = linkr_debugger_http_listener_fd();
+		linkr_debugger_http_reap_stale_holders();
 		failing_service = linkr_debugger_watchdog_failing_service;
 		if (linkr_debugger_watchdog_failing_service != linkr_debugger_watchdog_last_reported_service) {
 			linkr_debugger_watchdog_last_reported_service = linkr_debugger_watchdog_failing_service;
@@ -633,10 +670,8 @@ static void linkr_debugger_watchdog_supervisor_thread_main(void *arg1, void *arg
 			}
 		}
 		if (!healthy) {
-#if defined(CONFIG_SOC_SERIES_RP2040) || defined(CONFIG_SOC_SERIES_RP2350)
 			watchdog_hw->scratch[LINKR_DEBUGGER_WATCHDOG_SOURCE_SCRATCH] =
 				LINKR_DEBUGGER_BOOTLOADER_SOURCE_WATCHDOG;
-#endif
 			{
 				int64_t since_feed_ms = linkr_debugger_watchdog_last_feed_ms != 0 ?
 					(now - linkr_debugger_watchdog_last_feed_ms) : -1;
@@ -676,12 +711,17 @@ static void linkr_debugger_watchdog_supervisor_thread_main(void *arg1, void *arg
 
 void linkr_debugger_watchdog_boot_check(void)
 {
-#if defined(CONFIG_SOC_SERIES_RP2040) || defined(CONFIG_SOC_SERIES_RP2350)
 	if ((watchdog_hw->reason & WATCHDOG_REASON_TIMER_BITS) != 0U &&
 	    watchdog_hw->scratch[LINKR_DEBUGGER_WATCHDOG_SCRATCH_INDEX] ==
 	    LINKR_DEBUGGER_WATCHDOG_BOOTSEL_MARKER) {
 		uint32_t source = watchdog_hw->scratch[LINKR_DEBUGGER_WATCHDOG_SOURCE_SCRATCH];
 		const char *desc;
+
+		if (linkr_debugger_watchdog_ota_test_marker_present()) {
+			printk("watchdog reset after OTA test: allowing MCUboot rollback path\n");
+			linkr_debugger_watchdog_marker_clear();
+			return;
+		}
 
 		if (source == LINKR_DEBUGGER_BOOTLOADER_SOURCE_EXPLICIT) {
 			desc = "explicit";
@@ -695,7 +735,6 @@ void linkr_debugger_watchdog_boot_check(void)
 		linkr_debugger_watchdog_marker_clear();
 		reset_usb_boot(0, 0);
 	}
-#endif
 }
 
 static int linkr_debugger_watchdog_arm_locked(void)
@@ -946,11 +985,7 @@ int linkr_debugger_sd_route_set(enum linkr_debugger_sd_route route)
 	}
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
-#ifdef CONFIG_SOC_SERIES_RP2350
 	ret = gpio_pin_set(gpio0, 4, route == LINKR_DEBUGGER_SD_ROUTE_TARGET ? 1 : 0);
-#else
-	ret = gpio_pin_set(gpio0, 6, route == LINKR_DEBUGGER_SD_ROUTE_USB_READER ? 1 : 0);
-#endif
 	if (ret < 0) {
 		k_mutex_unlock(&linkr_debugger_control_lock);
 		return ret;
@@ -972,11 +1007,7 @@ int linkr_debugger_usb_route_set(enum linkr_debugger_usb_route route)
 	}
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
-#ifdef CONFIG_SOC_SERIES_RP2350
 	ret = gpio_pin_set(gpio0, 5, route == LINKR_DEBUGGER_USB_ROUTE_TARGET ? 1 : 0);
-#else
-	ret = gpio_pin_set(gpio0, 3, route == LINKR_DEBUGGER_USB_ROUTE_TARGET ? 1 : 0);
-#endif
 	if (ret < 0) {
 		k_mutex_unlock(&linkr_debugger_control_lock);
 		return ret;
@@ -1395,7 +1426,6 @@ int linkr_debugger_watchdog_supervisor_start(void)
 
 int linkr_debugger_bootloader_now(void)
 {
-#if defined(CONFIG_SOC_SERIES_RP2040) || defined(CONFIG_SOC_SERIES_RP2350)
 	int ret = 0;
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
@@ -1403,6 +1433,7 @@ int linkr_debugger_bootloader_now(void)
 		(void)wdt_feed(watchdog_dev, linkr_debugger_watchdog_channel);
 	}
 	linkr_debugger_watchdog_marker_clear();
+	linkr_debugger_watchdog_ota_test_marker_clear();
 	if (linkr_debugger_watchdog_armed && watchdog_dev != NULL && device_is_ready(watchdog_dev)) {
 		ret = wdt_disable(watchdog_dev);
 	}
@@ -1412,7 +1443,4 @@ int linkr_debugger_bootloader_now(void)
 	printk("explicit %s BOOTSEL entry\n", linkr_debugger_mcu_name());
 	reset_usb_boot(0, 0);
 	return 0;
-#else
-	return -ENOTSUP;
-#endif
 }

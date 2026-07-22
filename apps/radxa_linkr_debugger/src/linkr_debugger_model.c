@@ -27,32 +27,20 @@ const struct linkr_debugger_rail_desc linkr_debugger_rails[] = {
 	{
 		.name = "5v_out",
 		.signal = "GP05_5V_EN",
-#if defined(CONFIG_SOC_SERIES_RP2350)
 		.pin = 0,
-#else
-		.pin = 5,
-#endif
 		.controllable = true,
 	},
 	{
 		.name = "5v_ws",
 		.signal = "GP09_5V_WS_EN",
-#if defined(CONFIG_SOC_SERIES_RP2350)
 		.pin = 1,
 		.always_on = true,
-#else
-		.pin = 9,
-#endif
 		.controllable = true,
 	},
 	{
 		.name = "20v_out",
 		.signal = "GP10_20V_EN",
-#if defined(CONFIG_SOC_SERIES_RP2350)
 		.pin = 3,
-#else
-		.pin = 10,
-#endif
 		.controllable = true,
 	},
 };
@@ -83,39 +71,21 @@ const struct linkr_debugger_current_desc linkr_debugger_currents[] = {
 const size_t linkr_debugger_current_count = ARRAY_SIZE_LOCAL(linkr_debugger_currents);
 
 const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[] = {
-#if defined(CONFIG_SOC_SERIES_RP2350)
-	{ .pin = 7,  .note = "CON_MAS" },
-	{ .pin = 8,  .note = "CON_REST" },
-	{ .pin = 9,  .note = "CON_USER" },
-	{ .pin = 10, .note = "J16_PIN1" },
-	{ .pin = 11, .note = "J16_PIN3" },
-	{ .pin = 12, .note = "J16_PIN5" },
-	{ .pin = 13, .note = "J16_PIN7" },
-	{ .pin = 14, .note = "J16_PIN9" },
-	{ .pin = 15, .note = "J16_PIN11" },
-	{ .pin = 16, .note = "J16_PIN2" },
-	{ .pin = 17, .note = "J16_PIN4" },
-	{ .pin = 18, .note = "J16_PIN6" },
-	{ .pin = 19, .note = "J16_PIN8" },
-	{ .pin = 20, .note = "J16_PIN10" },
-	{ .pin = 29, .note = "J16_PIN12" },
-#else
-	{ .pin = 4,  .note = "CON_MAS" },
-	{ .pin = 7,  .note = "CON_REST" },
-	{ .pin = 8,  .note = "CON_USER" },
-	{ .pin = 13, .note = "J17_PIN1" },
-	{ .pin = 14, .note = "J17_PIN3" },
-	{ .pin = 15, .note = "J17_PIN5" },
-	{ .pin = 16, .note = "J17_PIN7" },
-	{ .pin = 17, .note = "J17_PIN9" },
-	{ .pin = 18, .note = "J17_PIN11" },
-	{ .pin = 19, .note = "J17_PIN2" },
-	{ .pin = 20, .note = "J17_PIN4" },
-	{ .pin = 21, .note = "J17_PIN6" },
-	{ .pin = 22, .note = "J17_PIN8" },
-	{ .pin = 23, .note = "J17_PIN10" },
-	{ .pin = 24, .note = "J17_PIN12" },
-#endif
+	{ .pin = 8,  .note = "CON_REST", .layout_group = "J13", .layout_label = "RSET",    .layout_row = 0, .layout_column = 0 },
+	{ .pin = 9,  .note = "CON_USER", .layout_group = "J13", .layout_label = "USER",    .layout_row = 0, .layout_column = 1 },
+	{ .pin = 7,  .note = "CON_MAS",  .layout_group = "J13", .layout_label = "MASKROM", .layout_row = 1, .layout_column = 1 },
+	{ .pin = 15, .note = "J16_PIN11", .layout_group = "J16", .layout_label = "GP15", .layout_row = 0, .layout_column = 0 },
+	{ .pin = 29, .note = "J16_PIN12", .layout_group = "J16", .layout_label = "ADC3", .layout_row = 0, .layout_column = 1 },
+	{ .pin = 14, .note = "J16_PIN9",  .layout_group = "J16", .layout_label = "GP14", .layout_row = 1, .layout_column = 0 },
+	{ .pin = 20, .note = "J16_PIN10", .layout_group = "J16", .layout_label = "GP20", .layout_row = 1, .layout_column = 1 },
+	{ .pin = 13, .note = "J16_PIN7",  .layout_group = "J16", .layout_label = "GP13", .layout_row = 2, .layout_column = 0 },
+	{ .pin = 19, .note = "J16_PIN8",  .layout_group = "J16", .layout_label = "GP19", .layout_row = 2, .layout_column = 1 },
+	{ .pin = 12, .note = "J16_PIN5",  .layout_group = "J16", .layout_label = "GP12", .layout_row = 3, .layout_column = 0 },
+	{ .pin = 18, .note = "J16_PIN6",  .layout_group = "J16", .layout_label = "GP18", .layout_row = 3, .layout_column = 1 },
+	{ .pin = 11, .note = "J16_PIN3",  .layout_group = "J16", .layout_label = "GP11", .layout_row = 4, .layout_column = 0 },
+	{ .pin = 17, .note = "J16_PIN4",  .layout_group = "J16", .layout_label = "GP17", .layout_row = 4, .layout_column = 1 },
+	{ .pin = 10, .note = "J16_PIN1",  .layout_group = "J16", .layout_label = "GP10", .layout_row = 5, .layout_column = 0 },
+	{ .pin = 16, .note = "J16_PIN2",  .layout_group = "J16", .layout_label = "GP16", .layout_row = 5, .layout_column = 1 },
 };
 
 const size_t linkr_debugger_safe_gpio_count = ARRAY_SIZE_LOCAL(linkr_debugger_safe_gpios);

@@ -151,6 +151,10 @@ function mapStatus(status: unknown, adc: AdcReading[]): BoardSnapshot {
     note: typeof g.note === "string" ? g.note : "",
     value: typeof g.value === "number" ? g.value : 0,
     direction: typeof g.direction === "string" ? g.direction : "input",
+    layoutGroup: typeof g.layoutGroup === "string" ? g.layoutGroup : undefined,
+    layoutLabel: typeof g.layoutLabel === "string" ? g.layoutLabel : undefined,
+    layoutRow: typeof g.layoutRow === "number" ? g.layoutRow : undefined,
+    layoutColumn: typeof g.layoutColumn === "number" ? g.layoutColumn : undefined,
   }));
 
   const rawSwitches = isRecord(record.switches) ? record.switches : undefined;
@@ -199,6 +203,10 @@ function mergeWsSnapshot(prev: BoardSnapshot, msg: any): BoardSnapshot {
         note: typeof g.note === "string" ? g.note : "",
         value: typeof g.value === "number" ? g.value : 0,
         direction: typeof g.direction === "string" ? g.direction : "input",
+        layoutGroup: typeof g.layoutGroup === "string" ? g.layoutGroup : undefined,
+        layoutLabel: typeof g.layoutLabel === "string" ? g.layoutLabel : undefined,
+        layoutRow: typeof g.layoutRow === "number" ? g.layoutRow : undefined,
+        layoutColumn: typeof g.layoutColumn === "number" ? g.layoutColumn : undefined,
       }))
     : prev.gpios;
 

@@ -6,7 +6,13 @@ const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const distRoot = process.env.VITE_OUT_DIR
   ? path.resolve(process.env.VITE_OUT_DIR)
   : path.join(webRoot, "dist");
-const expectedFiles = ["assets/app.css", "assets/app.js", "index.html"];
+const expectedFiles = [
+  "assets/app.css",
+  "assets/app.js",
+  "assets/decoder/logic-decoder.js",
+  "assets/decoder/logic-decoder_bg.wasm",
+  "index.html",
+];
 
 async function listFiles(directory, prefix = "") {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -24,16 +30,27 @@ async function listFiles(directory, prefix = "") {
   return files;
 }
 
-const actualFiles = (await listFiles(distRoot)).sort();
-if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
-  throw new Error(
-    `Firmware Web build must contain exactly ${expectedFiles.join(", ")}; got ${actualFiles.join(", ")}`
-  );
+export async function verifyFirmwareBuild(root = distRoot) {
+  const actualFiles = (await listFiles(root)).sort();
+  if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
+    throw new Error(
+      `Firmware Web build must contain exactly ${expectedFiles.join(", ")}; got ${actualFiles.join(", ")}`
+    );
+  }
+
+  const indexHtml = await readFile(path.join(root, "index.html"), "utf8");
+  for (const asset of ["/assets/app.css", "/assets/app.js"]) {
+    if (!indexHtml.includes(asset)) {
+      throw new Error(`Firmware Web build does not reference ${asset}`);
+    }
+  }
+
+  const decoderJs = await readFile(path.join(root, "assets/decoder/logic-decoder.js"), "utf8");
+  if (!decoderJs.includes("logic-decoder_bg.wasm")) {
+    throw new Error("Decoder JS glue must load /assets/decoder/logic-decoder_bg.wasm relative to itself");
+  }
 }
 
-const indexHtml = await readFile(path.join(distRoot, "index.html"), "utf8");
-for (const asset of ["/assets/app.css", "/assets/app.js"]) {
-  if (!indexHtml.includes(asset)) {
-    throw new Error(`Firmware Web build does not reference ${asset}`);
-  }
+if (import.meta.url === `file://${process.argv[1]}`) {
+  await verifyFirmwareBuild();
 }

@@ -93,6 +93,10 @@ void linkr_debugger_watchdog_note_core_alive(void);
 void linkr_debugger_watchdog_note_cmdline_alive(void);
 void linkr_debugger_watchdog_note_ws_alive(void);
 void linkr_debugger_watchdog_note_ws_client_active(bool active);
+bool linkr_debugger_watchdog_ota_test_marker_present(void);
+void linkr_debugger_watchdog_ota_test_marker_set(void);
+void linkr_debugger_watchdog_ota_test_marker_clear(void);
+int linkr_debugger_watchdog_prepare_planned_reboot(void);
 
 int linkr_debugger_bootloader_now(void);
 

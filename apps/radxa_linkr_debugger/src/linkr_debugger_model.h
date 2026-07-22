@@ -30,6 +30,10 @@ struct linkr_debugger_current_desc {
 struct linkr_debugger_safe_gpio_desc {
 	uint8_t pin;
 	const char *note;
+	const char *layout_group;
+	const char *layout_label;
+	uint8_t layout_row;
+	uint8_t layout_column;
 };
 
 struct linkr_debugger_heartbeat_state {

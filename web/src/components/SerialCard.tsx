@@ -27,7 +27,7 @@ import { useI18n } from "@/lib/i18n";
 
 const CH347_VID = 0x1a86;
 const CHANNELS: SerialChannelId[] = ["uart0", "uart1"];
-const BOARD_HTTP_ORIGIN = "http://172.29.203.1:8080";
+const BOARD_HTTP_ORIGIN = "http://172.29.203.1";
 const CHROMIUM_FLAG_URL = "chrome://flags/#unsafely-treat-insecure-origin-as-secure";
 const FOCUSABLE_SELECTOR = [
   "button:not([disabled])",
