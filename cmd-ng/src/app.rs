@@ -22,7 +22,7 @@ use std::time::Duration;
 const INTERNAL_POWER_OUTPUT: &str = "5v_ws";
 
 fn version() -> &'static str {
-    option_env!("AGENT_DEBUGBOARDCTL_VERSION").unwrap_or("dev")
+    env!("CARGO_PKG_VERSION")
 }
 
 #[derive(Serialize, Debug)]
@@ -1682,6 +1682,12 @@ mod tests {
             String::from_utf8(stdout).unwrap().trim(),
             format!("radxa-linkr-debuggerctl {}", version())
         );
+    }
+
+    #[test]
+    fn version_matches_the_cargo_package_version() {
+        assert_eq!(version(), env!("CARGO_PKG_VERSION"));
+        assert_ne!(version(), "dev");
     }
 
     #[test]

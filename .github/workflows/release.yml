@@ -58,13 +58,16 @@ jobs:
         shell: bash
         run: |
           cargo build --release --manifest-path app/cmd-ng/Cargo.toml
+          expected_version="${{ steps.release.outputs.tag }}"
+          expected_version="${expected_version#v}"
           if [ "${{ runner.os }}" = "Windows" ]; then
             ./app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe --help
-            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe --version
+            version_output="$(./app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe --version)"
           else
             ./app/cmd-ng/target/release/radxa-linkr-debuggerctl --help
-            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl --version
+            version_output="$(./app/cmd-ng/target/release/radxa-linkr-debuggerctl --version)"
           fi
+          test "$version_output" = "radxa-linkr-debuggerctl $expected_version"
 
       - name: Package Rust release archive
         if: runner.os != 'Windows'
