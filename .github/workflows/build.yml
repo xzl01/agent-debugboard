@@ -37,6 +37,10 @@ jobs:
         working-directory: web
         run: npm run build
 
+      - name: Test frontend
+        working-directory: web
+        run: npm test
+
   scripts:
     name: Check install and helper scripts
     runs-on: ubuntu-latest

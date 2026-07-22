@@ -7,6 +7,7 @@ import { SwitchCard } from "./components/SwitchCard";
 import { BootCard } from "./components/BootCard";
 import { SerialCard, type SerialAutomationHandle } from "./components/SerialCard";
 import { StartupPowerAnalysis } from "./components/StartupPowerAnalysis";
+import { TestAutomation } from "./components/TestAutomation";
 import { Badge, Button } from "./components/ui";
 import { useI18n } from "@/lib/i18n";
 import { apiEndpoint } from "@/lib/api";
@@ -47,7 +48,7 @@ export default function App() {
       )}
 
       <main className="mx-auto max-w-[1400px] px-4 py-5">
-        {board.loading && board.connected ? (
+        {board.loading && !board.hasData ? (
           <div className="flex flex-col items-center justify-center gap-3 py-24 text-ink-dim">
             <Loader2 size={24} className="animate-spin text-brand" />
             <span className="text-sm">{t("loading")}</span>
@@ -102,6 +103,12 @@ export default function App() {
                       onReadPower={board.readPower}
                       onArmCapture={board.armCapture}
                       onCancelCapture={board.cancelCapture}
+                    />
+                  </div>
+                  <div className="min-w-0 lg:col-span-2 xl:col-span-1">
+                    <TestAutomation
+                      board={board}
+                      serialRef={serialAutomationRef}
                     />
                   </div>
                   <BootCard onBoot={board.enterBootloader} />

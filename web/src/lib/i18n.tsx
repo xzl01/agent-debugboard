@@ -52,7 +52,7 @@ const en: Dict = {
 
   "advanced.title": "Advanced & recovery",
   "advanced.subtitle": "Startup analysis and firmware recovery tools",
-  "advanced.count": "2 tools",
+  "advanced.count": "3 tools",
 
   "power.title": "Power Outputs",
   "power.subtitle": "Controllable rails",
@@ -309,6 +309,83 @@ const en: Dict = {
   "theme.light": "Light",
   "theme.dark": "Dark",
   "lang.toggle": "中文",
+
+  "test.title": "Test Automation",
+  "test.subtitle": "Target device test scripts",
+  "test.editor": "Editor",
+  "test.running": "Running",
+  "test.report": "Report",
+  "test.run": "Run Test",
+  "test.abort": "Abort",
+  "test.addStep": "Add Step",
+  "test.import": "Import",
+  "test.export": "Export",
+  "test.name": "Test Name",
+  "test.noSteps": "Add at least one step to run the test.",
+  "test.step.power_on": "Power On",
+  "test.step.power_off": "Power Off",
+  "test.step.delay": "Delay",
+  "test.step.serial_wait": "Serial Wait",
+  "test.step.serial_send": "Serial Send",
+  "test.step.serial_expect": "Serial Expect",
+  "test.step.adc_read": "ADC Read",
+  "test.step.gpio_set": "GPIO Set",
+  "test.step.gpio_assert": "GPIO Assert",
+  "test.step.switch_route": "Switch Route",
+  "test.step.capture": "Power Capture",
+  "test.step.up": "Move up",
+  "test.step.down": "Move down",
+  "test.step.delete": "Delete step",
+  "test.step.assert": "Assertion",
+  "test.status.pass": "PASS",
+  "test.status.fail": "FAIL",
+  "test.status.skip": "SKIP",
+  "test.status.error": "ERROR",
+  "test.status.aborted": "ABORTED",
+  "test.report.overall": "Overall",
+  "test.report.duration": "Duration",
+  "test.report.exportJson": "Export JSON",
+  "test.report.exportCsv": "Export CSV",
+  "test.report.exportNdjson": "Export NDJSON",
+  "test.report.rerun": "Re-run",
+  "test.report.timeline": "Timeline",
+  "test.report.powerChart": "Power Chart",
+  "test.report.serialLog": "Serial Log",
+  "test.report.stepResults": "Step Results",
+  "test.report.entries": "{n} entries",
+  "test.report.colType": "Type",
+  "test.report.colStatus": "Status",
+  "test.report.colDuration": "Duration",
+  "test.report.colDetail": "Detail",
+  "test.report.passedCount": "{n}/{total} passed",
+  "test.running.step": "Step {current}/{total}",
+
+  "test.param.rail": "Rail",
+  "test.param.ms": "ms",
+  "test.param.channel": "Channel",
+  "test.param.pattern": "Pattern",
+  "test.param.timeout": "Timeout",
+  "test.param.text": "Text",
+  "test.param.command": "Command",
+  "test.param.pin": "Pin",
+  "test.param.value": "Value",
+  "test.param.direction": "Direction",
+  "test.param.switch": "Switch",
+  "test.param.route": "Route",
+  "test.param.trigger": "Trigger",
+  "test.param.duration": "Duration",
+  "test.param.manual": "Manual",
+  "test.param.currentThreshold": "Current threshold",
+  "test.param.threshold": "Threshold (A)",
+  "test.param.powerOn": "Power on",
+
+  "test.assert.currentRange": "Current range",
+  "test.assert.contains": "Contains",
+  "test.assert.exitCode": "Exit code",
+  "test.assert.pinDirection": "Pin direction",
+  "test.assert.pinValue": "Pin value",
+  "test.assert.peakCurrentMax": "Peak current max",
+  "test.assert.energyMax": "Energy max (J)",
 };
 
 const zh: Dict = {
@@ -353,7 +430,7 @@ const zh: Dict = {
 
   "advanced.title": "高级与恢复",
   "advanced.subtitle": "启动分析与固件恢复工具",
-  "advanced.count": "2 项工具",
+  "advanced.count": "3 项工具",
 
   "power.title": "电源输出",
   "power.subtitle": "可控制电源轨",
@@ -606,6 +683,83 @@ const zh: Dict = {
   "theme.light": "明亮",
   "theme.dark": "暗色",
   "lang.toggle": "EN",
+
+  "test.title": "自动化测试",
+  "test.subtitle": "目标设备测试脚本",
+  "test.editor": "编辑器",
+  "test.running": "运行中",
+  "test.report": "报告",
+  "test.run": "运行测试",
+  "test.abort": "中止",
+  "test.addStep": "添加步骤",
+  "test.import": "导入",
+  "test.export": "导出",
+  "test.name": "测试名称",
+  "test.noSteps": "请至少添加一个步骤后再运行测试。",
+  "test.step.power_on": "上电",
+  "test.step.power_off": "断电",
+  "test.step.delay": "延时",
+  "test.step.serial_wait": "串口等待",
+  "test.step.serial_send": "串口发送",
+  "test.step.serial_expect": "串口期望",
+  "test.step.adc_read": "ADC 读取",
+  "test.step.gpio_set": "GPIO 设置",
+  "test.step.gpio_assert": "GPIO 断言",
+  "test.step.switch_route": "路由切换",
+  "test.step.capture": "功耗采集",
+  "test.step.up": "上移",
+  "test.step.down": "下移",
+  "test.step.delete": "删除步骤",
+  "test.step.assert": "断言条件",
+  "test.status.pass": "通过",
+  "test.status.fail": "失败",
+  "test.status.skip": "跳过",
+  "test.status.error": "错误",
+  "test.status.aborted": "已中止",
+  "test.report.overall": "总体",
+  "test.report.duration": "耗时",
+  "test.report.exportJson": "导出 JSON",
+  "test.report.exportCsv": "导出 CSV",
+  "test.report.exportNdjson": "导出 NDJSON",
+  "test.report.rerun": "重新运行",
+  "test.report.timeline": "时间线",
+  "test.report.powerChart": "功耗图表",
+  "test.report.serialLog": "串口日志",
+  "test.report.stepResults": "步骤结果",
+  "test.report.entries": "{n} 条",
+  "test.report.colType": "类型",
+  "test.report.colStatus": "状态",
+  "test.report.colDuration": "耗时",
+  "test.report.colDetail": "详情",
+  "test.report.passedCount": "{n}/{total} 通过",
+  "test.running.step": "步骤 {current}/{total}",
+
+  "test.param.rail": "电源轨",
+  "test.param.ms": "毫秒",
+  "test.param.channel": "通道",
+  "test.param.pattern": "匹配模式",
+  "test.param.timeout": "超时",
+  "test.param.text": "文本",
+  "test.param.command": "命令",
+  "test.param.pin": "引脚",
+  "test.param.value": "值",
+  "test.param.direction": "方向",
+  "test.param.switch": "开关",
+  "test.param.route": "路由",
+  "test.param.trigger": "触发",
+  "test.param.duration": "时长",
+  "test.param.manual": "手动",
+  "test.param.currentThreshold": "电流阈值",
+  "test.param.threshold": "阈值（A）",
+  "test.param.powerOn": "上电",
+
+  "test.assert.currentRange": "电流范围",
+  "test.assert.contains": "包含",
+  "test.assert.exitCode": "退出码",
+  "test.assert.pinDirection": "引脚方向",
+  "test.assert.pinValue": "引脚值",
+  "test.assert.peakCurrentMax": "峰值电流上限",
+  "test.assert.energyMax": "能量上限（J）",
 };
 
 const dicts: Record<Lang, Dict> = { en, zh };
@@ -613,7 +767,7 @@ const dicts: Record<Lang, Dict> = { en, zh };
 interface I18nContextValue {
   lang: Lang;
   setLang: (l: Lang) => void;
-  t: (key: string) => string;
+  t: (key: string, params?: Record<string, string | number>) => string;
 }
 
 const I18nContext = createContext<I18nContextValue | null>(null);
@@ -638,7 +792,11 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   }, [lang]);
 
   const setLang = (l: Lang) => setLangState(l);
-  const t = (key: string) => dicts[lang][key] ?? dicts.en[key] ?? key;
+  const t = (key: string, params?: Record<string, string | number>) => {
+    const template = dicts[lang][key] ?? dicts.en[key] ?? key;
+    if (!params) return template;
+    return template.replace(/\{(\w+)\}/g, (_, k: string) => String(params[k] ?? ""));
+  };
 
   return (
     <I18nContext.Provider value={{ lang, setLang, t }}>{children}</I18nContext.Provider>

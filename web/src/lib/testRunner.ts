@@ -1,0 +1,529 @@
+import type { RefObject } from "react";
+import type { UseBoard } from "../hooks/useBoard";
+import type { SerialAutomationHandle, SerialChannelId } from "../components/SerialCard";
+import type { PowerCapture } from "./types";
+import {
+  commandEnvelope,
+  commandMarker,
+  parseCommandCompletion,
+  stripTerminalControl,
+} from "./serialTask.ts";
+import { evaluateAssertion, type AssertionContext } from "./testAssertions.ts";
+import type {
+  TestScript,
+  TestStep,
+  StepResult,
+  RunSummary,
+  AdcSampleEntry,
+  SerialLogEntry,
+} from "./testScript";
+
+export interface RunnerCallbacks {
+  onStepStart(stepId: string): void;
+  onStepResult(result: StepResult): void;
+  onSerialLog(stepId: string, text: string, direction: "rx" | "tx"): void;
+  onAdcSample(stepId: string, channel: string, currentUa: number, timestampMs: number): void;
+  onComplete(summary: RunSummary): void;
+  onError(error: string): void;
+}
+
+export interface RunnerHandle {
+  start(): Promise<void>;
+  abort(): void;
+}
+
+class RunnerAbortedError extends Error {
+  constructor() {
+    super("aborted");
+    this.name = "AbortError";
+  }
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new RunnerAbortedError());
+      return;
+    }
+    if (signal.aborted) {
+      reject(new RunnerAbortedError());
+      return;
+    }
+    const timer = globalThis.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      globalThis.clearTimeout(timer);
+      reject(new RunnerAbortedError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function waitForPattern(
+  serialRef: RefObject<SerialAutomationHandle>,
+  channel: SerialChannelId,
+  pattern: string,
+  timeoutMs: number,
+  onRx: (text: string) => void,
+  signal: AbortSignal,
+): Promise<{ matched: boolean; text: string }> {
+  return new Promise((resolve, reject) => {
+    const handle = serialRef.current;
+    if (!handle?.isConnected(channel)) {
+      resolve({ matched: false, text: "" });
+      return;
+    }
+
+    let buffer = "";
+    let resolved = false;
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    let regex: RegExp;
+    try {
+      regex = new RegExp(pattern, "im");
+    } catch {
+      resolve({ matched: false, text: "" });
+      return;
+    }
+
+    let unsub = () => {};
+    const finish = (result: { matched: boolean; text: string }) => {
+      if (resolved) return;
+      resolved = true;
+      unsub();
+      if (timer != null) globalThis.clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve(result);
+    };
+    const onAbort = () => {
+      if (resolved) return;
+      resolved = true;
+      unsub();
+      if (timer != null) globalThis.clearTimeout(timer);
+      reject(new RunnerAbortedError());
+    };
+
+    unsub = handle.subscribe((text: string) => {
+      onRx(text);
+      buffer += text;
+      if (!resolved && regex.test(stripTerminalControl(buffer))) {
+        finish({ matched: true, text: buffer });
+      }
+    }, channel);
+
+    if (!resolved) {
+      timer = globalThis.setTimeout(() => {
+        finish({ matched: false, text: buffer });
+      }, timeoutMs);
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+}
+
+async function sendAndExpect(
+  serialRef: RefObject<SerialAutomationHandle>,
+  channel: SerialChannelId,
+  command: string,
+  pattern: string,
+  timeoutMs: number,
+  onRx: (text: string) => void,
+  onTx: (text: string) => void,
+  signal: AbortSignal,
+): Promise<{ completed: boolean; matched: boolean; exitCode: number; output: string }> {
+  const handle = serialRef.current;
+  if (!handle?.isConnected(channel)) {
+    return { completed: false, matched: false, exitCode: -1, output: "" };
+  }
+
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern, "im");
+  } catch {
+    throw new Error(`invalid expected pattern: ${pattern}`);
+  }
+
+  const result = await new Promise<{ completed: boolean; matched: boolean; exitCode: number; output: string }>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new RunnerAbortedError());
+      return;
+    }
+    const runId = Math.floor(Math.random() * 100000);
+    const marker = commandMarker(runId);
+    const envelope = commandEnvelope(command, marker);
+    let buffer = "";
+    let resolved = false;
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+
+    let unsub = () => {};
+    const cleanup = () => {
+      unsub();
+      if (timer != null) globalThis.clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      reject(new RunnerAbortedError());
+    };
+
+    unsub = handle.subscribe((text: string) => {
+      onRx(text);
+      buffer += text;
+      if (!resolved) {
+        const completion = parseCommandCompletion(buffer, marker);
+        if (completion) {
+          resolved = true;
+          cleanup();
+          resolve({
+            completed: true,
+            matched: regex.test(stripTerminalControl(completion.output)),
+            exitCode: completion.exitCode,
+            output: completion.output,
+          });
+        }
+      }
+    }, channel);
+
+    onTx(envelope);
+    handle.write(envelope, channel).catch((err) => {
+      if (!resolved) {
+        resolved = true;
+        cleanup();
+        resolve({ completed: false, matched: false, exitCode: -1, output: `write failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    });
+
+    if (!resolved) {
+      timer = globalThis.setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          resolve({ completed: false, matched: false, exitCode: -1, output: buffer });
+        }
+      }, timeoutMs);
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+
+  return result;
+}
+
+async function waitForCapture(
+  getBoard: () => UseBoard,
+  startedAtMs: number,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<PowerCapture | null> {
+  while (Date.now() - startedAtMs <= timeoutMs) {
+    const captures = getBoard().captures;
+    const latest = captures[captures.length - 1];
+    if (latest?.capturedAt >= startedAtMs) return latest;
+    await sleep(100, signal);
+  }
+  return null;
+}
+
+export function createTestRunner(
+  script: TestScript,
+  boardRef: RefObject<UseBoard>,
+  serialRef: RefObject<SerialAutomationHandle>,
+  callbacks: RunnerCallbacks,
+): RunnerHandle {
+  let aborted = false;
+  let captureActive = false;
+  const abortController = new AbortController();
+  const { signal } = abortController;
+  const results: StepResult[] = [];
+  const startedAtMs = Date.now();
+  const getBoard = () => {
+    if (!boardRef.current) throw new Error("device state is unavailable");
+    return boardRef.current;
+  };
+
+  async function executeStep(step: TestStep): Promise<StepResult> {
+    const stepStartedAt = Date.now();
+    let ctx: AssertionContext = {};
+    let error: string | undefined;
+    let serialOutput: string | undefined;
+    let adcValueUa: number | undefined;
+
+    try {
+      switch (step.type) {
+        case "power_on": {
+          const p = step.params as import("./testScript").PowerOnParams;
+          await getBoard().setPower(p.rail, true);
+          await sleep(500, signal);
+          break;
+        }
+        case "power_off": {
+          const p = step.params as import("./testScript").PowerOffParams;
+          await getBoard().setPower(p.rail, false);
+          break;
+        }
+        case "delay": {
+          const p = step.params as import("./testScript").DelayParams;
+          await sleep(p.ms, signal);
+          break;
+        }
+        case "serial_wait": {
+          const p = step.params as import("./testScript").SerialWaitParams;
+          const channel = p.channel as SerialChannelId;
+          if (!serialRef.current?.isConnected(channel)) {
+            return makeSkip(step, stepStartedAt, "no serial connection");
+          }
+          serialRef.current?.setAutomationActive(true, channel);
+          try {
+            const result = await waitForPattern(
+              serialRef,
+              channel,
+              p.pattern,
+              p.timeout_ms,
+              (text) => callbacks.onSerialLog(step.id, text, "rx"),
+              signal,
+            );
+            serialOutput = result.text;
+            ctx.serialOutput = result.text;
+            if (!result.matched) {
+              error = `timeout waiting for pattern: ${p.pattern}`;
+            }
+          } finally {
+            serialRef.current?.setAutomationActive(false, channel);
+          }
+          break;
+        }
+        case "serial_send": {
+          const p = step.params as import("./testScript").SerialSendParams;
+          const channel = p.channel as SerialChannelId;
+          if (!serialRef.current?.isConnected(channel)) {
+            return makeSkip(step, stepStartedAt, "no serial connection");
+          }
+          callbacks.onSerialLog(step.id, p.text, "tx");
+          await serialRef.current.write(p.text, channel);
+          break;
+        }
+        case "serial_expect": {
+          const p = step.params as import("./testScript").SerialExpectParams;
+          const channel = p.channel as SerialChannelId;
+          if (!serialRef.current?.isConnected(channel)) {
+            return makeSkip(step, stepStartedAt, "no serial connection");
+          }
+          serialRef.current?.setAutomationActive(true, channel);
+          try {
+            const result = await sendAndExpect(
+              serialRef,
+              channel,
+              p.command,
+              p.pattern,
+              p.timeout_ms,
+              (text) => callbacks.onSerialLog(step.id, text, "rx"),
+              (text) => callbacks.onSerialLog(step.id, text, "tx"),
+              signal,
+            );
+            serialOutput = result.output;
+            ctx.serialOutput = result.output;
+            ctx.exitCode = result.exitCode;
+            if (!result.completed) {
+              error = "timeout waiting for command completion";
+            } else if (!result.matched) {
+              error = `command output did not match: ${p.pattern}`;
+            }
+          } finally {
+            serialRef.current?.setAutomationActive(false, channel);
+          }
+          break;
+        }
+        case "adc_read": {
+          const p = step.params as import("./testScript").AdcReadParams;
+          const reading = await getBoard().readPower(p.channel);
+          adcValueUa = reading.currentUa;
+          ctx.adcValueUa = reading.currentUa;
+          callbacks.onAdcSample(step.id, p.channel, reading.currentUa, Date.now());
+          break;
+        }
+        case "gpio_set": {
+          const p = step.params as import("./testScript").GpioSetParams;
+          await getBoard().setGpio(p.pin, "output", p.value);
+          break;
+        }
+        case "gpio_assert": {
+          const p = step.params as import("./testScript").GpioAssertParams;
+          const pin = p.pin;
+          await sleep(100, signal);
+          const gpio = getBoard().snapshot.gpios.find(
+            (g) => g.name === pin || g.note === pin || String(g.pin) === pin,
+          );
+          if (!gpio) {
+            error = `GPIO ${pin} not found`;
+            break;
+          }
+          ctx.pinDirection = gpio.direction;
+          ctx.pinValue = gpio.value;
+          break;
+        }
+        case "switch_route": {
+          const p = step.params as import("./testScript").SwitchRouteParams;
+          await getBoard().setSwitch(p.switch, p.route);
+          break;
+        }
+        case "capture": {
+          const p = step.params as import("./testScript").CaptureParams;
+          const { rail, trigger, duration_ms: durationMs } = p;
+          const rateHz = 100;
+          const samples = Math.min(2000, Math.max(2, Math.ceil((durationMs / 1000) * rateHz)));
+          const preSamples = Math.min(64, Math.floor(samples / 4));
+          const captureStartedAt = Date.now();
+          await getBoard().armCapture({
+            trigger,
+            source: rail,
+            edge: "rising",
+            thresholdUa: trigger === "current" ? Math.max(0, p.threshold_a ?? 0.1) * 1_000_000 : 0,
+            rateHz,
+            preSamples,
+            postSamples: Math.max(1, samples - preSamples - 1),
+          });
+          captureActive = true;
+          if (trigger === "manual") {
+            getBoard().triggerCapture();
+          } else if (trigger === "power_on") {
+            await getBoard().setPower(rail, false);
+            await sleep(500, signal);
+            await getBoard().setPower(rail, true);
+          } else if (trigger === "gpio") {
+            throw new Error("GPIO-triggered capture is not supported by this task step");
+          }
+          const capture = await waitForCapture(getBoard, captureStartedAt, durationMs + 10000, signal);
+          captureActive = false;
+          if (!capture) {
+            error = "capture timed out";
+            break;
+          }
+          const railReadings = capture.samples.flatMap((s) => {
+            const r = s.readings.find((rd) => rd.name === rail);
+            return r ? [r.current_ua] : [];
+          });
+          ctx.peakCurrentUa = railReadings.length > 0 ? railReadings.reduce((max, v) => Math.max(max, v), 0) : 0;
+          const nominalVoltage = rail.startsWith("12v") ? 12 : rail.startsWith("20v") ? 20 : 5;
+          const samplePeriodSeconds = 1 / Math.max(1, capture.rateHz);
+          ctx.energyUj = railReadings.reduce(
+            (sum, currentUa) => sum + currentUa * nominalVoltage * samplePeriodSeconds,
+            0,
+          );
+          const lastDeviceTimeUs = capture.samples.at(-1)?.deviceTimeUs ?? 0;
+          for (const sample of capture.samples) {
+            const reading = sample.readings.find((item) => item.name === rail);
+            if (!reading) continue;
+            const timestampMs = capture.capturedAt - (lastDeviceTimeUs - sample.deviceTimeUs) / 1000;
+            callbacks.onAdcSample(step.id, rail, reading.current_ua, timestampMs);
+          }
+          break;
+        }
+      }
+    } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") {
+        const finishedAtMs = Date.now();
+        return {
+          stepId: step.id,
+          stepType: step.type,
+          status: "aborted",
+          startedAtMs: stepStartedAt,
+          finishedAtMs,
+          durationMs: finishedAtMs - stepStartedAt,
+          error: "aborted",
+        };
+      }
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (captureActive) {
+        getBoard().cancelCapture();
+        captureActive = false;
+      }
+    }
+
+    const assertResult = error ? undefined : evaluateAssertion(step.assert, ctx);
+    const hasError = !!error;
+    const assertFailed = assertResult ? !assertResult.passed : false;
+
+    let status: StepResult["status"];
+    if (hasError) status = "error";
+    else if (assertFailed) status = "fail";
+    else status = "pass";
+
+    const finishedAtMs = Date.now();
+    return {
+      stepId: step.id,
+      stepType: step.type,
+      status,
+      startedAtMs: stepStartedAt,
+      finishedAtMs,
+      durationMs: finishedAtMs - stepStartedAt,
+      error,
+      assertionResult: assertResult,
+      adcValueUa,
+      serialOutput,
+    };
+  }
+
+  function makeSkip(step: TestStep, startMs: number, reason: string): StepResult {
+    return {
+      stepId: step.id,
+      stepType: step.type,
+      status: "skip",
+      startedAtMs: startMs,
+      finishedAtMs: Date.now(),
+      durationMs: 0,
+      error: reason,
+    };
+  }
+
+  return {
+    async start() {
+      try {
+        for (const step of script.steps) {
+          if (aborted) break;
+          callbacks.onStepStart(step.id);
+          const result = await executeStep(step);
+          results.push(result);
+          callbacks.onStepResult(result);
+          if (result.status === "aborted") break;
+          if (
+            (result.status === "fail" || result.status === "error") &&
+            !step.continue_on_error &&
+            !step.assert?.continue_on_error
+          ) {
+            break;
+          }
+        }
+      } catch (e) {
+        callbacks.onError(e instanceof Error ? e.message : String(e));
+      }
+
+      const finishedAtMs = Date.now();
+      const summary: RunSummary = {
+        totalSteps: script.steps.length,
+        passed: results.filter((r) => r.status === "pass").length,
+        failed: results.filter((r) => r.status === "fail").length,
+        skipped: results.filter((r) => r.status === "skip").length,
+        errored: results.filter((r) => r.status === "error").length,
+        aborted,
+        completed: !aborted && results.length === script.steps.length,
+        durationMs: finishedAtMs - startedAtMs,
+        startedAtMs,
+        finishedAtMs,
+        results,
+      };
+      callbacks.onComplete(summary);
+    },
+
+    abort() {
+      if (aborted) return;
+      aborted = true;
+      abortController.abort();
+      if (captureActive) {
+        getBoard().cancelCapture();
+        captureActive = false;
+      }
+    },
+  };
+}

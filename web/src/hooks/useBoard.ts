@@ -233,7 +233,7 @@ export interface UseBoard {
   setAuto: (v: boolean) => void;
   live: boolean;
   setLive: (v: boolean) => void;
-  refresh: () => void;
+  refresh: () => Promise<void>;
   setPower: (name: string, on: boolean) => Promise<void>;
   readPower: (name: string) => Promise<{ state: string; currentUa: number }>;
   setSwitch: (name: "sd" | "usb" | "vin", route: string) => Promise<void>;
@@ -500,7 +500,7 @@ export function useBoard(): UseBoard {
       if (response?.power_output?.name !== name || response?.power_output?.state !== expectedState) {
         throw new Error(`Power output ${name} did not confirm state ${expectedState}`);
       }
-      if (!live) refresh();
+      if (!live) await refresh();
     },
     [live, refresh]
   );
@@ -524,7 +524,7 @@ export function useBoard(): UseBoard {
   const setSwitch = useCallback(
     async (name: "sd" | "usb" | "vin", route: string) => {
       await api.setSwitch(name, route);
-      if (!live) refresh();
+      if (!live) await refresh();
     },
     [live, refresh]
   );
@@ -532,7 +532,7 @@ export function useBoard(): UseBoard {
   const setGpio = useCallback(
     async (identifier: string, direction: "input" | "output", value?: number) => {
       await api.setGpio(identifier, direction, value);
-      if (!live) refresh();
+      if (!live) await refresh();
     },
     [live, refresh]
   );

@@ -47,6 +47,7 @@ type CopyTarget = "flag" | "origin";
 const EMPTY_STATUS: SerialChannelStatus = {
   connected: false,
   connecting: false,
+  automationActive: false,
   source: null,
   portInfo: "",
   rxBytes: 0,
@@ -59,6 +60,8 @@ export interface SerialAutomationHandle {
   isConnected: (channel?: SerialChannelId) => boolean;
   connectedChannels: () => SerialChannelId[];
   clear: (channel?: SerialChannelId) => void;
+  write: (data: string, channel?: SerialChannelId) => Promise<void>;
+  setAutomationActive: (active: boolean, channel?: SerialChannelId) => void;
   subscribe: (
     listener: (text: string, receivedAtMs: number) => void,
     channel?: SerialChannelId
@@ -159,6 +162,13 @@ export const SerialCard = forwardRef<
       connectedChannels: () =>
         CHANNELS.filter((channel) => channelHandle(channel)?.isConnected()),
       clear: (channel = activeChannelRef.current) => channelHandle(channel)?.clear(),
+      write: (data, channel = activeChannelRef.current) => {
+        const handle = channelHandle(channel);
+        if (!handle) return Promise.reject(new Error(`${channel.toUpperCase()} is unavailable`));
+        return handle.write(data);
+      },
+      setAutomationActive: (active, channel = activeChannelRef.current) =>
+        channelHandle(channel)?.setAutomationActive(active),
       subscribe: (listener, channel = activeChannelRef.current) =>
         channelHandle(channel)?.subscribe(listener) ?? (() => {}),
     }),

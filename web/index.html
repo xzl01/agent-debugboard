@@ -17,6 +17,15 @@
         document.documentElement.classList.toggle("dark", theme === "dark");
         document.documentElement.dataset.theme = theme;
         document.documentElement.style.colorScheme = theme;
+
+        const savedLang = localStorage.getItem("lang");
+        const lang =
+          savedLang === "en" || savedLang === "zh"
+            ? savedLang
+            : navigator.language.startsWith("zh")
+              ? "zh"
+              : "en";
+        document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
       })();
     </script>
   </head>
