@@ -168,7 +168,7 @@ CLI/TUI 同时显示 `GPxx` 和板级 `note`。
 radxa-linkr-debuggerctl watchdog status
 ```
 
-watchdog 由固件自身管理，不由主机喂狗。固件自动 arm MCU 硬件 watchdog，仅在核心固件循环、HTTP/API 服务和 CDC ACM cmdline fallback 都持续上报健康存活时才继续喂狗。如果任何一项停止响应，固件停止喂狗，MCU 复位，下次启动通过 retained recovery marker 进入 ROM BOOTSEL。
+watchdog 由固件自身管理，不由主机喂狗。固件自动 arm MCU 硬件 watchdog，仅在核心固件循环、HTTP/API 服务和 CDC ACM cmdline fallback 都持续上报健康存活时才继续喂狗。WebSocket 会话静默、订阅超时和会话过期**不**算作 watchdog 失败。如果核心固件卡死、API 服务停止响应、或 CDC ACM cmdline fallback 不再上报存活，固件停止喂狗，MCU 复位，下次启动通过 retained recovery marker 进入 ROM BOOTSEL。
 
 ## OTA 固件更新
 
@@ -185,6 +185,15 @@ radxa-linkr-debuggerctl ota confirm
 - `ota confirm` 立即手动确认当前运行镜像
 
 OTA 接收 MCUboot 格式应用二进制文件。不要上传 `.uf2` 或 `.elf` 文件。使用 release 产物 `radxa-linkr-debugger-rp2350-ota.bin`。
+
+### JSON OTA 输出
+
+```sh
+radxa-linkr-debuggerctl --json ota status
+radxa-linkr-debuggerctl --json ota upload /path/to/firmware.bin
+radxa-linkr-debuggerctl --json ota test
+radxa-linkr-debuggerctl --json ota confirm
+```
 
 ## 板级自监控
 
@@ -213,6 +222,15 @@ OTA 接收 MCUboot 格式应用二进制文件。不要上传 `.uf2` 或 `.elf` 
 - `limiting_component` — 驱动最大值的组件
 - `limiting_name` — 实例名称
 - `tie_count` — 多个组件共享最大值时的数量
+
+根 `memory.coverage` 保留遗留 heap/stack 语义；`current_pressure.coverage` 和 `peak_pressure.coverage` 描述各自对象覆盖的 Phase 2 来源。
+
+### 物理内存和线程栈
+
+- `physical` 报告 linker/Kconfig 保留的占用（`total_bytes`、`image_reserved_bytes`、`reserved_pct_x100`），不是实时占用或空闲 RAM。
+- `stacks` 报告聚合高水位值：`thread_count`、`measured_count`、`error_count`、`total_bytes`、`used_high_water_bytes`、`max_pressure_pct_x100`、`max_pressure_thread`。
+
+Rust 和 Web 客户端优先使用 `current_pressure`，不可用时回退到遗留根 `pressure_pct_x100`（Phase 1 兼容），再回退到仅 heap 显示。
 
 ## 状态 LED
 

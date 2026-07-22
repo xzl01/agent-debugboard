@@ -168,7 +168,7 @@ CLI/TUI display both `GPxx` and the board `note`.
 radxa-linkr-debuggerctl watchdog status
 ```
 
-The watchdog is owned by firmware, not the host. Firmware automatically arms the MCU hardware watchdog and only keeps feeding it while core firmware, the HTTP/API service, and the CDC ACM cmdline fallback are reporting healthy local liveness. If any of these stop responding, firmware stops feeding, the MCU resets, and the next boot enters ROM BOOTSEL via the retained recovery marker.
+The watchdog is owned by firmware, not the host. Firmware automatically arms the MCU hardware watchdog and only keeps feeding it while core firmware, the HTTP/API service, and the CDC ACM cmdline fallback are reporting healthy local liveness. WebSocket session silence, subscription timeout, and session expiration do **not** count as watchdog failures. If core firmware wedges, the API service stops responding, or the CDC ACM cmdline fallback stops reporting liveness, firmware stops feeding, the MCU resets, and the next boot enters ROM BOOTSEL via the retained recovery marker.
 
 ## OTA Firmware Update
 
@@ -185,6 +185,15 @@ radxa-linkr-debuggerctl ota confirm
 - `ota confirm` manually confirms the running image immediately
 
 OTA expects a MCUboot-format application binary. Do not upload `.uf2` or `.elf` files. Use the release asset `radxa-linkr-debugger-rp2350-ota.bin`.
+
+### JSON OTA output
+
+```sh
+radxa-linkr-debuggerctl --json ota status
+radxa-linkr-debuggerctl --json ota upload /path/to/firmware.bin
+radxa-linkr-debuggerctl --json ota test
+radxa-linkr-debuggerctl --json ota confirm
+```
 
 ## Board Monitoring
 
@@ -213,6 +222,15 @@ Both `current_pressure` and `peak_pressure` include:
 - `limiting_component` — the component driving the maximum
 - `limiting_name` — the instance name
 - `tie_count` when multiple components share the maximum
+
+The root `memory.coverage` keeps the legacy heap/stack meaning; `current_pressure.coverage` and `peak_pressure.coverage` describe the Phase 2 sources instrumented by their respective objects.
+
+### Physical memory and stacks
+
+- `physical` reports linker/Kconfig-reserved footprint (`total_bytes`, `image_reserved_bytes`, `reserved_pct_x100`). It is not live occupancy or free RAM.
+- `stacks` reports aggregate high-water values: `thread_count`, `measured_count`, `error_count`, `total_bytes`, `used_high_water_bytes`, `max_pressure_pct_x100`, and `max_pressure_thread`.
+
+Rust and Web clients prefer `current_pressure` when available, fall back to the legacy root `pressure_pct_x100` for Phase 1 compatibility, and fall back again to heap-only when `memory` is absent from the status response entirely.
 
 ## Status LED
 

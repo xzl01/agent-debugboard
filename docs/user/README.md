@@ -8,6 +8,7 @@ Welcome to the Radxa Linkr Debugger user guide.
 
 - [Install CLI](install.md) — Download and install the host CLI
 - [CLI Reference](cli.md) — All CLI subcommands and usage
+- [HTTP API Reference](api.md) — REST and WebSocket API endpoints
 - [TUI Guide](tui.md) — Interactive terminal UI
 - [Web UI Guide](webui.md) — Browser-based dashboard
 - [OTA Firmware Update](ota.md) — MCUboot over-the-air updates

@@ -8,6 +8,7 @@
 
 - [安装 CLI](install.md) — 下载并安装主机侧 CLI
 - [CLI 参考](cli.md) — 所有 CLI 子命令和用法
+- [HTTP API 参考](api.md) — REST 和 WebSocket API 端点
 - [TUI 指南](tui.md) — 交互式终端界面
 - [Web UI 指南](webui.md) — 浏览器端控制面板
 - [OTA 固件更新](ota.md) — MCUboot 空中更新
