@@ -6,6 +6,7 @@
 
 ## 目录
 
+- [调试板概览](board-overview.zh-CN.md) — 接口、端口和物理连接
 - [安装 CLI](install.md) — 下载并安装主机侧 CLI
 - [CLI 参考](cli.md) — 所有 CLI 子命令和用法
 - [HTTP API 参考](api.md) — REST 和 WebSocket API 端点

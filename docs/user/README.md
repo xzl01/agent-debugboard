@@ -6,6 +6,7 @@ Welcome to the Radxa Linkr Debugger user guide.
 
 ## Contents
 
+- [Board Overview](board-overview.md) — Connectors, ports, and physical interfaces
 - [Install CLI](install.md) — Download and install the host CLI
 - [CLI Reference](cli.md) — All CLI subcommands and usage
 - [HTTP API Reference](api.md) — REST and WebSocket API endpoints
