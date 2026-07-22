@@ -8,6 +8,7 @@ import {
   Terminal,
 } from "lucide-react";
 import { useBoard } from "@/hooks/useBoard";
+import { useOtaBadge } from "@/hooks/useOtaBadge";
 import { StatusBar } from "./components/StatusBar";
 import { PowerCard } from "./components/PowerCard";
 import { SwitchCard } from "./components/SwitchCard";
@@ -36,6 +37,7 @@ const RP2350_CAPTURE_CAPACITY = 2048;
 
 export default function App() {
   const board = useBoard();
+  const ota = useOtaBadge();
   const { t } = useI18n();
   const serialAutomationRef = useRef<SerialAutomationHandle>(null);
   const automationTaskLockRef = useRef(createAutomationTaskLock());
@@ -97,6 +99,7 @@ export default function App() {
         live={board.live}
         setLive={board.setLive}
         onRefresh={board.refresh}
+        ota={ota}
       />
 
       {!board.connected && (

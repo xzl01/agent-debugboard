@@ -88,9 +88,13 @@ export function OtaCard() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const [rebootCountdown, setRebootCountdown] = useState<number | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
   const setLocalRebooting = useCallback(() => {
     rebootGraceUntilRef.current = Date.now() + REBOOT_GRACE_MS;
+    setRebootCountdown(Math.round(REBOOT_GRACE_MS / 1000));
     setStatus((current) =>
       current ? { ...current, state: "rebooting" } : {
         state: "rebooting",
@@ -102,6 +106,21 @@ export function OtaCard() {
       }
     );
   }, []);
+
+  // Countdown timer for reboot
+  useEffect(() => {
+    if (rebootCountdown === null || rebootCountdown <= 0) return;
+    const timer = window.setInterval(() => {
+      setRebootCountdown((prev) => {
+        if (prev === null || prev <= 1) {
+          window.clearInterval(timer);
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [rebootCountdown]);
 
   const busy = busyAction !== null;
   const pollActive = inViewport && pageVisible;
@@ -162,6 +181,7 @@ export function OtaCard() {
           (nextStatus.state === "idle" && nextStatus.currentImageConfirmed === true)
         )) {
           rebootGraceUntilRef.current = 0;
+          setRebootCountdown(null);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -332,6 +352,8 @@ export function OtaCard() {
       return;
     }
 
+    const controller = new AbortController();
+    abortRef.current = controller;
     setActionError(null);
     setNote(null);
     setBusyAction("uploading");
@@ -340,6 +362,7 @@ export function OtaCard() {
     try {
       const nextStatus = await uploadOtaImage(selectedFile, selectedSha, {
         onProgress: setUploadProgress,
+        signal: controller.signal,
       });
       setStatus(nextStatus);
       setUploadProgress({
@@ -349,11 +372,20 @@ export function OtaCard() {
       });
       setNote(t("ota.upload.done"));
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
+      if (controller.signal.aborted) {
+        setNote(t("ota.cancelUpload"));
+      } else {
+        setActionError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
+      abortRef.current = null;
       setBusyAction(null);
     }
   };
+
+  const handleCancelUpload = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
 
   const handleTestBoot = async () => {
     if (!window.confirm(t("ota.test.confirm"))) {
@@ -398,8 +430,77 @@ export function OtaCard() {
         ? t("ota.currentImage.confirmed")
         : t("ota.currentImage.unconfirmed");
 
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    setActionError(null);
+    setNote(null);
+    setUploadProgress(null);
+
+    if (!file || !file.name.toLowerCase().endsWith(".bin")) {
+      setSelectedFile(null);
+      setSelectedSha("");
+      setActionError(t("ota.file.invalidType"));
+      return;
+    }
+
+    // Trigger the same file processing as handleFileChange.
+    void (async () => {
+      if (file.size === 0) {
+        setSelectedFile(null);
+        setSelectedSha("");
+        setActionError(t("ota.file.empty"));
+        return;
+      }
+
+      if (status?.maxSize != null && file.size > status.maxSize) {
+        setSelectedFile(null);
+        setSelectedSha("");
+        setActionError(replaceTokens(t("ota.file.tooLarge"), { maxSize: formatBytes(status.maxSize) }));
+        return;
+      }
+
+      const job = selectedJobRef.current + 1;
+      selectedJobRef.current = job;
+      setSelectedFile(file);
+      setSelectedSha("");
+      setBusyAction("hashing");
+
+      try {
+        const sha = await computeOtaSha256Hex(file);
+        if (selectedJobRef.current !== job) return;
+        setSelectedSha(sha);
+        setNote(t("ota.file.ready"));
+      } catch (error) {
+        if (selectedJobRef.current !== job) return;
+        setSelectedFile(null);
+        setSelectedSha("");
+        setActionError(`${t("ota.file.hashFailed")}${error instanceof Error ? ` ${error.message}` : ` ${String(error)}`}`);
+      } finally {
+        if (selectedJobRef.current === job) setBusyAction(null);
+      }
+    })();
+  }, [status?.maxSize, t]);
+
   return (
-    <div ref={rootRef} className="min-w-0" aria-busy={loading || busy}>
+    <div
+      ref={rootRef}
+      className={`min-w-0 ${isDragging ? "ring-2 ring-brand/50 rounded-2xl" : ""}`}
+      aria-busy={loading || busy}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <Card title={t("ota.title")} subtitle={t("ota.subtitle")} icon={ShieldCheck}>
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone={statusTone(status)}>
@@ -502,6 +603,13 @@ export function OtaCard() {
                     style={{ width: `${uploadProgress.percent}%` }}
                   />
                 </div>
+                {busyAction === "uploading" && (
+                  <div className="mt-2">
+                    <Button variant="ghost" onClick={handleCancelUpload} className="text-xs">
+                      {t("ota.cancelUpload")}
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -571,6 +679,23 @@ export function OtaCard() {
           <div className="rounded-lg border border-line/60 bg-panel2/25 px-3 py-2 text-xs text-ink-dim">
             {helperMessage}
           </div>
+          {rebootCountdown !== null && rebootCountdown > 0 && (
+            <div className="mt-2 flex items-center gap-2 text-xs text-ink-dim">
+              <Loader2 size={14} className="animate-spin text-brand" />
+              <span>{t("ota.rebootCountdown", { seconds: rebootCountdown })}</span>
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-panel">
+                <div
+                  className="h-full bg-brand transition-all duration-1000"
+                  style={{ width: `${(rebootCountdown / Math.round(REBOOT_GRACE_MS / 1000)) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
+          {isDragging && (
+            <div className="mt-2 rounded-lg border-2 border-dashed border-brand/50 bg-brand/5 px-3 py-4 text-center text-xs text-brand">
+              {t("ota.dropActive")}
+            </div>
+          )}
         </div>
       </Card>
     </div>

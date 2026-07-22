@@ -388,6 +388,10 @@ const en: Dict = {
   "ota.state.rebooting": "rebooting",
   "ota.state.failed": "failed",
   "ota.state.unknown": "unknown",
+  "ota.cancelUpload": "Cancel upload",
+  "ota.rebootCountdown": "Rebooting… {seconds}s",
+  "ota.dropHint": "Drop .bin file here",
+  "ota.dropActive": "Release to upload",
 
   "serial.title": "Target Serial Console",
   "serial.subtitle": "Two independent CH347F UART sessions",
@@ -933,6 +937,10 @@ const zh: Dict = {
   "ota.state.rebooting": "重启中",
   "ota.state.failed": "失败",
   "ota.state.unknown": "未知",
+  "ota.cancelUpload": "取消上传",
+  "ota.rebootCountdown": "重启中… {seconds}秒",
+  "ota.dropHint": "拖放 .bin 文件到此处",
+  "ota.dropActive": "松开即可上传",
 
   "serial.title": "目标串口控制台",
   "serial.subtitle": "板载 CH347F 双 UART 独立会话",

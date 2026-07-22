@@ -10,9 +10,13 @@ import {
   Sun,
   Moon,
   Languages,
+  ShieldCheck,
+  Upload,
+  TriangleAlert,
 } from "lucide-react";
 import { Badge, Button, Toggle } from "./ui";
 import type { BoardSnapshot, MemoryPressureSnapshot } from "@/lib/types";
+import type { OtaStatus } from "@/lib/ota";
 import { cn, formatBytes, formatUptime } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
@@ -43,6 +47,7 @@ export function StatusBar({
   live,
   setLive,
   onRefresh,
+  ota,
 }: {
   snapshot: BoardSnapshot;
   connected: boolean;
@@ -52,6 +57,7 @@ export function StatusBar({
   live: boolean;
   setLive: (v: boolean) => void;
   onRefresh: () => void;
+  ota?: OtaStatus | null;
 }) {
   const { t, lang, setLang } = useI18n();
   const { theme, toggle: toggleTheme } = useTheme();
@@ -218,6 +224,12 @@ export function StatusBar({
           {snapshot.usb && (
             <Badge tone="brand">
               <Radio size={12} /> {snapshot.usb}
+            </Badge>
+          )}
+          {connected && ota && ota.state !== "idle" && (
+            <Badge tone={ota.state === "failed" ? "danger" : ota.state === "verified" ? "ok" : "warn"}>
+              {ota.state === "uploading" ? <Upload size={12} /> : ota.state === "failed" ? <TriangleAlert size={12} /> : <ShieldCheck size={12} />}
+              {" "}{t(`ota.state.${ota.state}`)}
             </Badge>
           )}
           <span className="inline-flex items-center gap-1.5 text-xs text-ink-dim">
