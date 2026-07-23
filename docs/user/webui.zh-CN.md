@@ -43,8 +43,8 @@ http://172.29.203.1/
 
 - **电源控制** — 开关 `12v_out`、`5v_out`、`20v_out`。
 - **ADC 监测** — 各电源轨的实时电流读数。
-- **Switch 路由** — TF/SD 在 `target` 和 `usb-reader` 之间切换；
-  USB hub mux 在 `pc` 和 `target` 之间切换。
+- **Switch 路由** — TF/SD 在 `target` 和 `usb-reader` 之间切换；J12 下层插入的
+  USB 设备可在主机（`pc`）和 J12 上层所接目标板（`target`）之间切换。
 - **GPIO** — 读写安全 GPIO（`GP7`-`GP20`、`GP29`）。
 
 电源与电流卡片包含触发式功率分析仪。支持手动、电流阈值、GPIO 边沿和
@@ -69,7 +69,7 @@ Terminal 工作区与主仪表盘并列，包含：
 ## 高级与恢复
 
 - **OTA 卡片** — 通过同一 USB NCM HTTP API 交付 RP2350 固件更新。
-  完整 OTA 工作流参见 [ota.md](ota.md)。
+  完整 OTA 工作流参见 [OTA 固件更新](ota.zh-CN.md)。
 - **启动功率分析** — 见下方专节。
 
 ## 串口控制台
@@ -143,9 +143,13 @@ npm ci
 npm run device-bridge
 ```
 
-Pages 构建连接到 `http://127.0.0.1:8787/api/v1`。网关将 HTTP 和
-WebSocket 流量转发到 `http://172.29.203.1`，并提供浏览器所需的 CORS
-和 Private Network Access 头。
+Pages 构建连接到 `http://127.0.0.1:8787/api/v1`。网关默认将 HTTP 和
+WebSocket 流量直接转发到固件服务 `http://172.29.203.1:8080`，并提供
+浏览器所需的 CORS 和 Private Network Access 头。需要时可覆盖上游地址：
+
+```sh
+LINKR_BOARD_URL=http://172.29.203.1:8080 npm run device-bridge
+```
 
 ## 相关文档
 

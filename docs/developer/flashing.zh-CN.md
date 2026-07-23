@@ -56,8 +56,9 @@ radxa-linkr-debuggerctl ota test
 radxa-linkr-debuggerctl ota confirm
 ```
 
-测试启动成功后，也可以等待 16 秒 watchdog 健康门槛自动确认镜像。若测试镜像未确认
-时发生 watchdog 复位，retained marker 会驱动 MCUboot 回滚，而不会进入 ROM BOOTSEL。
+测试启动成功后，也可以等待 16 秒 watchdog 健康门槛自动确认镜像。固件设计为在
+未确认测试镜像发生 watchdog 复位后，通过 retained marker 请求 MCUboot 回滚。
+该恢复路径的故障注入 HIL 尚未完成，因此必须保留物理 ROM BOOTSEL 恢复路径。
 
 不要通过 OTA 上传 `.uf2` 或 `.elf` 文件。OTA 接收的是 MCUboot 格式的应用二进制文件；
 release 产物名为 `radxa-linkr-debugger-rp2350-ota.bin`，它来自 sysbuild 应用输出

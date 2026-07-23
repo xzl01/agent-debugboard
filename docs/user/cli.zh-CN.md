@@ -10,14 +10,22 @@ radxa-linkr-debuggerctl doctor
 radxa-linkr-debuggerctl status
 ```
 
-不带子命令运行会启动[交互式 TUI](tui.md)。以下所有子命令都在 CLI 模式下使用。
+不带子命令运行会启动[交互式 TUI](tui.zh-CN.md)。以下所有子命令都在 CLI 模式下使用。
 
 ## JSON 输出
 
 脚本和自动化场景加 `--json` 获取结构化输出。所有响应格式统一：
 
+成功响应：
+
 ```json
-{"schema": "radxa-linkr-debugger.v1", "ok": true, "command": "...", "error": {"code": "...", "message": "..."}}
+{"schema": "radxa-linkr-debugger.v1", "ok": true, "command": "status"}
+```
+
+失败响应（仅当 `ok` 为 `false` 时才包含 `error`）：
+
+```json
+{"schema": "radxa-linkr-debugger.v1", "ok": false, "command": "status", "error": {"code": "request_failed", "message": "..."}}
 ```
 
 ```sh
@@ -84,7 +92,7 @@ radxa-linkr-debuggerctl adc record /tmp/adc.csv 1000 --rate-hz 250
 | Switch | 切换内容 | 可选值 |
 |--------|---------|--------|
 | `sd` | TF/SD 卡路径 | `target`、`usb-reader` |
-| `usb` | USB hub 上行 | `pc`、`target` |
+| `usb` | J12 下层 USB 设备在主机与目标板之间切换 | `pc`、`target` |
 | `vin` | CH347 VIO 电压 | `3.3v`、`1.8v` |
 
 ```sh
@@ -92,13 +100,17 @@ radxa-linkr-debuggerctl switch list
 radxa-linkr-debuggerctl switch get sd
 radxa-linkr-debuggerctl switch route sd usb-reader
 radxa-linkr-debuggerctl switch route usb target --confirm
+radxa-linkr-debuggerctl switch route usb pc --confirm
 ```
 
 USB 和 VIN 路由需要 `--confirm`，因为它们有可见的硬件副作用。VIN 启动默认 3.3V。切换到 1.8V 属于专家操作——先确认目标板支持 1.8V 信号电平，并连接 VIO 物理测量设备。
 
+对于 `switch usb`，J12 上层连接目标板，下层插入待切换 USB 设备。`pc` 路由把
+该设备连接到 J15 所接主机；`target` 路由把该设备连接到 J12 上层所接目标板。
+
 ## GPIO
 
-安全 GPIO 支持三种命名：`GP13`（标准）、`4`（原始引脚号）、`CON_MAS`（板级 note）。CLI 同时显示 `GPxx` 和 note。
+安全 GPIO 支持三种命名：`GP13`（标准）、`13`（原始引脚号）、`CON_MAS`（板级 note）。CLI 同时显示 `GPxx` 和 note。
 
 ```sh
 radxa-linkr-debuggerctl gpio list

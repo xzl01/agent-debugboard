@@ -4,7 +4,8 @@
 
 ## Download from GitHub Releases
 
-Download the matching archive for your platform from GitHub Releases:
+Download the matching archive for your platform from the
+[project's GitHub Releases](https://github.com/xzl01/agent-debugboard/releases):
 
 | OS / CPU | Artifact |
 | --- | --- |
@@ -12,13 +13,24 @@ Download the matching archive for your platform from GitHub Releases:
 | Linux x64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
 | macOS Apple Silicon | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` |
 
-## Install script
+## Skill-local install script
 
-From a repository checkout, install a specific release version:
+From a repository checkout, download a specific release version into the
+repository skill directory:
 
 ```sh
 ./skills/radxa-linkr-debugger/scripts/install.sh --version <tag>
 ```
+
+The script intentionally does not modify `PATH`. Run the downloaded CLI with
+its full path:
+
+```sh
+./skills/radxa-linkr-debugger/scripts/bin/radxa-linkr-debuggerctl --help
+```
+
+The installer downloads from `xzl01/agent-debugboard` by default. Use
+`--repo OWNER/REPO` only when installing from a fork or release mirror.
 
 ### Private repository
 
@@ -37,6 +49,12 @@ export GH_TOKEN="$(gh auth token)"
 powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\skills\radxa-linkr-debugger\scripts\install.ps1
 ```
 
+The PowerShell script is also skill-local. Run the downloaded executable with:
+
+```powershell
+.\skills\radxa-linkr-debugger\scripts\bin\radxa-linkr-debuggerctl.exe --help
+```
+
 Private repository PowerShell release download:
 
 ```powershell
@@ -52,6 +70,19 @@ On macOS, unsigned release binaries may trigger a Gatekeeper warning. The instal
 xattr -dr com.apple.quarantine ./radxa-linkr-debuggerctl
 ```
 
+## Install on `PATH`
+
+To use `radxa-linkr-debuggerctl` without a path prefix, extract the release
+archive, verify it against `SHA256SUMS.txt`, and place the executable in a
+directory already on your `PATH`. For example, on Linux or macOS:
+
+```sh
+sudo install -m 0755 ./radxa-linkr-debuggerctl /usr/local/bin/radxa-linkr-debuggerctl
+```
+
+On Windows, copy `radxa-linkr-debuggerctl.exe` into a directory listed in
+`$env:PATH`, or add its containing directory to the user `PATH`.
+
 ## Building from source
 
 If you are developing `cmd-ng` itself from source:
@@ -63,7 +94,7 @@ cargo build --manifest-path cmd-ng/Cargo.toml
 
 ## First commands
 
-After installation, verify the CLI is working:
+After placing the executable on `PATH`, verify the CLI is working:
 
 ```sh
 radxa-linkr-debuggerctl --help

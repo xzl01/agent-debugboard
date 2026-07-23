@@ -7,7 +7,7 @@
 
 set -eu
 
-REPO="${REPO:-xzl01/radxa-linkr-debugger}"
+REPO="${REPO:-xzl01/agent-debugboard}"
 VERSION="latest"
 DRY_RUN=0
 VERSION_EXPLICIT=0
@@ -25,7 +25,7 @@ Behavior:
   - Otherwise download the release asset, verify SHA256SUMS.txt, and copy it here.
 
 Environment:
-  REPO         GitHub repository. Default: xzl01/radxa-linkr-debugger.
+  REPO         GitHub repository. Default: xzl01/agent-debugboard.
   GH_TOKEN     Token for private repository release downloads.
 
 This script never modifies PATH, shell profiles, or global install locations.

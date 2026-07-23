@@ -8,16 +8,26 @@ All JSON responses include `"schema": "radxa-linkr-debugger.v1"` and `Cache-Cont
 
 ## Response Envelope
 
+Success:
+
 ```json
 {
   "schema": "radxa-linkr-debugger.v1",
   "ok": true,
+  "command": "<command>"
+}
+```
+
+Failure (`error` is present only when `ok` is `false`):
+
+```json
+{
+  "schema": "radxa-linkr-debugger.v1",
+  "ok": false,
   "command": "<command>",
   "error": { "code": "<code>", "message": "<message>" }
 }
 ```
-
-`error` is present only when `ok` is `false`.
 
 ## Status
 
@@ -56,6 +66,10 @@ curl -X PUT http://172.29.203.1/api/v1/switch/vin -d '{"route":"1.8v"}'
 ```
 
 `{name}` is `sd`, `usb`, or `vin`. Valid routes: `sd` → `target`/`usb-reader`; `usb` → `pc`/`target`; `vin` → `1.8v`/`3.3v`.
+
+For the `usb` switch, J12's upper port connects to the target and its lower
+port holds the USB device. The `pc`/`target` route selects which host controls
+that device.
 
 ## GPIO
 

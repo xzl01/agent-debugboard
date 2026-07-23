@@ -1,8 +1,10 @@
 # radxa-linkr-debugger Zephyr App
 
-This directory contains the Zephyr application for `radxa-linkr-debugger`. The root
-[README.md](../../README.md) contains workspace setup, flashing, and usage
-instructions.
+This directory contains the Zephyr application for `radxa-linkr-debugger`.
+Workspace setup is documented in the
+[developer getting-started guide](../../docs/developer/getting-started.md),
+flashing in the [flashing guide](../../docs/developer/flashing.md), and normal
+operation in the [user guide](../../docs/user/README.md).
 
 Unless noted otherwise, run the commands below from the repository root.
 
@@ -52,8 +54,8 @@ BOOTSEL fallback.
 
 The same HTTP service exposes the embedded production Web UI at
 `http://172.29.203.1/`. A clean firmware build requires Node.js 22, npm,
-the Rust toolchain, the `wasm32-unknown-unknown` target, and `wasm-bindgen-cli
-0.2.121`; CMake builds the Vite application, verifies its fixed asset set, and
+the Rust toolchain, the `wasm32-unknown-unknown` target, and
+`wasm-bindgen-cli 0.2.121`; CMake builds the Vite application, verifies its fixed asset set, and
 stores the gzip-compressed resources in flash. The embedded logic decoder is served at the
 stable browser URLs `/assets/decoder/logic-decoder.js` and
 `/assets/decoder/logic-decoder_bg.wasm`, with `application/wasm` MIME for the
@@ -90,9 +92,10 @@ linkr-debugger:~$ bootloader
 Normal host operations should use the released `radxa-linkr-debuggerctl` CLI.
 If you are developing `cmd-ng` itself, use `cargo run --manifest-path
 cmd-ng/Cargo.toml -- ...`. Raw HTTP examples below are only for firmware/API
-debugging. Full CLI examples are in the root [README.md](../../README.md), and
-the [skill](../../skills/radxa-linkr-debugger/SKILL.md) remains the curl-first
-Agent workflow.
+debugging. Full CLI examples are in the
+[CLI reference](../../docs/user/cli.md), and the
+[skill](../../skills/radxa-linkr-debugger/SKILL.md) remains the curl-first Agent
+workflow.
 
 Raw HTTP checks for firmware/API debugging:
 
@@ -135,9 +138,10 @@ curl -fsS -X POST http://172.29.203.1/api/v1/ota/confirm
 `GET /api/v1/ota` returns the OTA state machine state, expected/written/max byte
 sizes, the MCUboot upload area ID, swap type, and whether the current image is
 confirmed. OTA upload requires `X-Linkr-Ota-Size` and `X-Linkr-Ota-Sha256` headers.
-The test image auto-confirms after a 16-second watchdog health gate; if unconfirmed
-and a watchdog reset occurs, the retained marker allows MCUboot rollback instead
-of forcing ROM BOOTSEL. Do not use OTA to upload `.uf2` or `.elf` files; use a
+The test image auto-confirms after a 16-second watchdog health gate. Firmware is
+designed to use the retained marker to request MCUboot rollback after an
+unconfirmed-image watchdog reset, but fault-injection HIL for this recovery path
+is still blocked. Do not use OTA to upload `.uf2` or `.elf` files; use a
 MCUboot-format application binary such as the release asset
 `radxa-linkr-debugger-rp2350-ota.bin`.
 
@@ -282,7 +286,6 @@ G3 GPIO25 operates as a watchdog heartbeat LED, active-low, blinking at roughly
 or failed feeds reset it to the inactive state while firmware owns the GPIO. This
 behavior is driven through Device Tree chosen properties and the existing watchdog
 supervisor, not through a Zephyr `CONFIG_LED` or built-in heartbeat driver.
-no firmware heartbeat LED.
 
 - GPIO aliases: `CON_MAS` (GP7), `CON_REST` (GP8), `CON_USER` (GP9)
 - J16 GPIO: `GP10`-`GP20`
@@ -296,8 +299,8 @@ firmware selects it through the Zephyr regulator API.
 
 The raw firmware API retains `5v_ws` as a compatibility name for GPIO1 VDD_5V.
 The host CLI and TUI intentionally filter this board-internal rail from status,
-power lists, and controls. On RP2350 it remains always on;
-original raw API behavior.
+power lists, and controls. On RP2350 it remains always on; the raw API entry is
+retained for compatibility only.
 
 G3 ADC current monitor inputs use an INA139 with a 10 mOhm shunt and a
 50 kOhm output load. The Rust CLI and `curl` both report the
@@ -307,8 +310,8 @@ tables or zero-point correction are applied.
 ## Expert: G3 VIN 1.8V Switching
 
 VIN 1.8V switching applies only to G3 (RP2350A) boards and is not available on
-This operation is side-effectful and requires confirmed target
-voltage compatibility and physical measurement setup before use.
+G2 (RP2040) boards. This operation is side-effectful and requires confirmed
+target voltage compatibility and physical measurement setup before use.
 
 Prerequisites before any 1.8V switch:
 

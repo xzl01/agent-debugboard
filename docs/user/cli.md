@@ -16,8 +16,16 @@ Running without a subcommand starts the [interactive TUI](tui.md). All subcomman
 
 For scripts and automation, add `--json` to get structured output. Every response follows the same envelope:
 
+Success response:
+
 ```json
-{"schema": "radxa-linkr-debugger.v1", "ok": true, "command": "...", "error": {"code": "...", "message": "..."}}
+{"schema": "radxa-linkr-debugger.v1", "ok": true, "command": "status"}
+```
+
+Failure response (`error` is present only when `ok` is `false`):
+
+```json
+{"schema": "radxa-linkr-debugger.v1", "ok": false, "command": "status", "error": {"code": "request_failed", "message": "..."}}
 ```
 
 ```sh
@@ -75,7 +83,7 @@ Three mux switches control physical signal routing:
 | Switch | Routes between | Values |
 |--------|---------------|--------|
 | `sd` | TF/SD card path | `target`, `usb-reader` |
-| `usb` | USB hub upstream | `pc`, `target` |
+| `usb` | J12 lower-port USB device routed to PC or target | `pc`, `target` |
 | `vin` | CH347 VIO voltage | `3.3v`, `1.8v` |
 
 ```sh
@@ -83,13 +91,18 @@ radxa-linkr-debuggerctl switch list
 radxa-linkr-debuggerctl switch get sd
 radxa-linkr-debuggerctl switch route sd usb-reader
 radxa-linkr-debuggerctl switch route usb target --confirm
+radxa-linkr-debuggerctl switch route usb pc --confirm
 ```
 
 USB and VIN routes require `--confirm` because they have visible side effects. VIN defaults to 3.3V at boot. Switching to 1.8V is an expert operation — confirm the target supports 1.8V signaling first and connect physical VIO measurement equipment.
 
+For `switch usb`, J12's upper port connects to the target and the lower port
+holds the USB device being switched. Route `pc` connects that device to the PC
+at J15; route `target` connects it to the target through J12's upper port.
+
 ## GPIO
 
-Safe GPIOs accept three name formats: `GP13` (canonical), `4` (raw pin), or `CON_MAS` (board note). The CLI shows both `GPxx` and the note.
+Safe GPIOs accept three name formats: `GP13` (canonical), `13` (raw pin), or `CON_MAS` (board note). The CLI shows both `GPxx` and the note.
 
 ```sh
 radxa-linkr-debuggerctl gpio list

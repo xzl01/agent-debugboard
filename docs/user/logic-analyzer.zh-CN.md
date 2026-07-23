@@ -148,7 +148,7 @@ DELETE /api/v1/logic-analyzer
 | 错误码 | HTTP 状态码 | 原因 |
 | --- | --- | --- |
 | `already_armed` | 409 | 分析仪处于 `armed` 或 `capturing` 状态时发送 POST |
-| `invalid_config` | 400 | 无效 JSON、参数越界、pre_samples 配合无边沿触发、或速率 >25 MHz |
+| `invalid_config` | 400 | 无效 JSON、参数越界、pre_samples 配合无边沿触发、或预触发捕获速率 >25 MHz |
 | `arm_failed` | 500 | 固件内部故障 |
 
 ## Web UI

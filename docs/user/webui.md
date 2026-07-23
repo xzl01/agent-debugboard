@@ -43,8 +43,9 @@ The main dashboard provides cards for:
 
 - **Power controls** — turn `12v_out`, `5v_out`, `20v_out` on/off.
 - **ADC monitoring** — live current readings for each power rail.
-- **Switch routes** — TF/SD routing between `target` and `usb-reader`; USB hub
-  mux between `pc` and `target`.
+- **Switch routes** — TF/SD routing between `target` and `usb-reader`; the J12
+  lower-port USB device can be switched between the PC (`pc`) and the target
+  connected to J12's upper port (`target`).
 - **GPIO** — read/write safe GPIOs (`GP7`-`GP20`, `GP29`).
 
 The Power & current card includes a triggered power analyzer. It supports
@@ -152,9 +153,14 @@ npm ci
 npm run device-bridge
 ```
 
-The Pages build connects to `http://127.0.0.1:8787/api/v1`. The gateway
-forwards HTTP and WebSocket traffic to `http://172.29.203.1` and supplies the
-CORS and Private Network Access headers needed by the browser.
+The Pages build connects to `http://127.0.0.1:8787/api/v1`. By default, the
+gateway forwards HTTP and WebSocket traffic directly to the firmware service
+at `http://172.29.203.1:8080` and supplies the CORS and Private Network Access
+headers needed by the browser. Override the upstream address when necessary:
+
+```sh
+LINKR_BOARD_URL=http://172.29.203.1:8080 npm run device-bridge
+```
 
 ## Related
 

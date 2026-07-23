@@ -65,12 +65,14 @@ npm ci
 npm run device-bridge
 ```
 
-The Pages build connects to `http://127.0.0.1:8787/api/v1`. The gateway forwards
-HTTP and WebSocket traffic to `http://172.29.203.1` and supplies the CORS
-and Private Network Access headers needed by the browser. It listens on loopback
-only and does not expose board controls to the LAN. Browser requests are limited
-to the official Pages origin and local development origins. Additional trusted
-origins can be supplied as a comma-separated `LINKR_TRUSTED_ORIGINS` value.
+The Pages build connects to `http://127.0.0.1:8787/api/v1`. By default, the
+gateway forwards HTTP and WebSocket traffic directly to the firmware service at
+`http://172.29.203.1:8080` and supplies the CORS and Private Network Access
+headers needed by the browser. Override the upstream with `LINKR_BOARD_URL`.
+The gateway listens on loopback only and does not expose board controls to the
+LAN. Browser requests are limited to the official Pages origin and local
+development origins. Additional trusted origins can be supplied as a
+comma-separated `LINKR_TRUSTED_ORIGINS` value.
 
 The power analyzer arms firmware-side manual, current-threshold, power-on, or
 GPIO-edge captures. It overlays the latest four runs and exports CSV/NDJSON with
@@ -83,8 +85,9 @@ capture. It is not sustained streaming; 50MHz and 125MHz are very short
 bursts. The Web UI supports 1-16 channels from the safe pin allowlist (GP7-GP9,
 GP10-GP20, GP29), trigger modes `none`, `rising`, `falling`, and `either`,
 requested sample rates from 1,000,000 through 125,000,000 Hz (1-125MHz), and
-up to 512 exported samples total. Edge-triggered captures do not support
-pre-trigger samples, so the UI keeps `pre_samples=0` for those modes.
+up to 512 exported samples total. Edge-triggered captures support hardware
+pre-trigger samples at rates up to 25 MHz; higher rates require
+`pre_samples=0`.
 Completed captures can be previewed in the waveform view and exported as CSV or
 PulseView `.sr` files. For live monitoring there is also a continuous streaming
 mode (**Stream** button, 1-25 MHz): the card speaks the same Rigol-style
@@ -92,8 +95,9 @@ SCPI scope protocol used by PulseView over a binary WebSocket
 (`ws://<board>/api/v1/scpi`), pulls 600-sample live frames in a loop, and
 shows a streaming status line plus a rolling live waveform of the buffered
 sample history per pin. Frames are gap-free 600-sample islands delivered at
-tens of milliseconds cadence, not a contiguous multi-MHz record. The decoder
-still operates on single-shot captures only, not on stream data.
+tens of milliseconds cadence, not a contiguous multi-MHz record. During live
+monitoring, the decoder annotates the currently visible buffered window;
+completed single-shot captures remain available for full post-capture decode.
 
 The logic analyzer lives in the **Terminal workspace** alongside the serial
 terminal, not under Advanced & recovery. The browser-based Rust/WASM decoder
@@ -224,9 +228,9 @@ firmware to auto-confirm.
 **Auto-confirm gate**: the browser never calls confirm automatically. Firmware
 owns the ~16-second watchdog health-gated auto-confirm. If the test image runs
 healthily for ~16 seconds without a watchdog reset, firmware marks the image as
-confirmed. A watchdog reset during the unconfirmed window drives MCUboot
-rollback instead of ROM BOOTSEL, so a bad image does not leave the board
-unrecoverable.
+confirmed. Firmware is designed to request MCUboot rollback after a watchdog
+reset during the unconfirmed window, but fault-injection HIL for that recovery
+path is still blocked; keep ROM BOOTSEL recovery available.
 
 **Same-origin vs GitHub Pages**: when the UI is served from the board at
 `http://172.29.203.1/` it talks to the OTA endpoints directly (same-origin).

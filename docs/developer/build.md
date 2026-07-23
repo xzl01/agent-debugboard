@@ -7,13 +7,16 @@ reference for the Radxa Linkr Debugger firmware.
 
 ## Nix Workflow
 
-The repo provides a `shell.nix` that bundles all dependencies (cmake, ninja,
-dtc, gperf, Python with Zephyr packages, Node.js 22, Rust toolchain via
-rustup, wasm-bindgen-cli, picotool).
+The repo provides a `shell.nix` with cmake, ninja, dtc, gperf, Python with
+Zephyr packages, Node.js 22, wasm-bindgen-cli, and picotool. The Zephyr SDK and
+a rustup-managed stable Rust toolchain remain external prerequisites; install
+the `wasm32-unknown-unknown` target before building.
 
-1. Set the Zephyr SDK path and enter the shell:
+1. Prepare Rust, set the Zephyr SDK path, and enter the shell:
 
    ```sh
+   rustup toolchain install stable
+   rustup target add wasm32-unknown-unknown
    export ZEPHYR_SDK_INSTALL_DIR=/path/to/zephyr-sdk-1.0.1
    nix-shell
    ```

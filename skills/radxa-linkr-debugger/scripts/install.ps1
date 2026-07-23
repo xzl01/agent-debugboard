@@ -16,7 +16,7 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = "latest"
 }
 if ([string]::IsNullOrWhiteSpace($Repo)) {
-    $Repo = "xzl01/radxa-linkr-debugger"
+    $Repo = "xzl01/agent-debugboard"
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path

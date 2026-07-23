@@ -151,7 +151,7 @@ DELETE /api/v1/logic-analyzer
 | Code | HTTP Status | Cause |
 | --- | --- | --- |
 | `already_armed` | 409 | POST while analyzer is `armed` or `capturing` |
-| `invalid_config` | 400 | Invalid JSON, out-of-range params, pre_samples with no edge trigger, or rate >25 MHz |
+| `invalid_config` | 400 | Invalid JSON, out-of-range params, pre_samples with no edge trigger, or pre-trigger capture above 25 MHz |
 | `arm_failed` | 500 | Internal firmware failure |
 
 ## Web UI

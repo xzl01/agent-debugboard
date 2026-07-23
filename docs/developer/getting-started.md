@@ -23,10 +23,13 @@ output automatically.
 
 ## Nix Setup (Recommended)
 
-The repo provides a `shell.nix` that bundles all dependencies. Set
-`ZEPHYR_SDK_INSTALL_DIR` to your local Zephyr SDK path before entering:
+The repo provides a `shell.nix` with the common build packages. The Zephyr SDK
+and a rustup-managed stable Rust toolchain are external prerequisites. Prepare
+Rust, then set `ZEPHYR_SDK_INSTALL_DIR` before entering:
 
 ```sh
+rustup toolchain install stable
+rustup target add wasm32-unknown-unknown
 export ZEPHYR_SDK_INSTALL_DIR=/path/to/zephyr-sdk-1.0.1
 nix-shell
 ```
@@ -86,4 +89,4 @@ OTA, not a cryptographically signed image.
 
 - [Build Guide](build.md) — detailed build workflows, artifact descriptions,
   and GitHub Actions release assets
-- [Flashing](../../README.md#flashing) — ROM BOOTSEL and OTA update procedures
+- [Flashing](flashing.md) — ROM BOOTSEL and OTA update procedures

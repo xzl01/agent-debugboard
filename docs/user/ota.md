@@ -44,11 +44,11 @@ The workflow has three steps: **upload** → **test** → **confirm**.
    image. Alternatively, wait for the ~16-second watchdog health gate to
    auto-confirm.
 
-If the test image is not confirmed and a watchdog reset occurs during the
-unconfirmed window, the dedicated retained marker allows MCUboot to perform a
-rollback to the previous confirmed image instead of forcing entry into ROM
-BOOTSEL. Explicit `bootloader` commands and ordinary non-OTA watchdog resets
-still enter ROM BOOTSEL normally.
+The firmware is designed to use a retained marker so that an unconfirmed test
+image reset can request MCUboot rollback rather than ROM BOOTSEL. This failure
+path has not yet completed watchdog fault-injection HIL validation, so do not
+treat automatic rollback as a recovery guarantee. Explicit `bootloader`
+commands and ordinary non-OTA watchdog resets still enter ROM BOOTSEL normally.
 
 ## CLI Commands
 
@@ -100,12 +100,13 @@ tooling required. When the UI is served from GitHub Pages over HTTPS, the
 device-bridge gateway (`npm run device-bridge`) is required. See
 [webui.md](webui.md) for details.
 
-## MCUboot Rollback
+## MCUboot Rollback and Recovery
 
-If the test image is not confirmed and the watchdog resets, the retained marker
-drives MCUboot rollback instead of ROM BOOTSEL. This means a bad image does not
-leave the board unrecoverable — the previous confirmed image is restored
-automatically.
+The intended unconfirmed-image failure path uses the retained marker to request
+MCUboot rollback after a watchdog reset. Watchdog fault-injection HIL for this
+path is still pending; verify the running image before confirmation and keep the
+physical ROM BOOTSEL recovery path available. Initial install and recovery use
+the combined `radxa-linkr-debugger-rp2350.uf2` artifact described above.
 
 ## Related
 

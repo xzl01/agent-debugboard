@@ -29,7 +29,7 @@ RP2350 固件，用于 **Radxa Linkr Debugger** —— 一块 USB 控制的硬�
 
 ## 快速开始
 
-1. [安装 CLI](docs/user/install.md)
+1. [安装 CLI](docs/user/install.zh-CN.md)
 2. 通过 USB 连接调试板
 3. 运行 `radxa-linkr-debuggerctl doctor`
 4. 打开 http://172.29.203.1/ 访问 Web UI
@@ -42,8 +42,8 @@ radxa-linkr-debuggerctl status
 
 ## 文档
 
-- **[用户指南](docs/user/)** — CLI、TUI、WebUI、OTA、OpenOCD、逻辑分析仪、功率分析仪
-- **[开发者指南](docs/developer/)** — 构建、刷写、贡献、硬件映射
+- **[用户指南](docs/user/README.zh-CN.md)** — CLI、TUI、WebUI、OTA、OpenOCD、逻辑分析仪、功率分析仪
+- **[开发者指南](docs/developer/README.zh-CN.md)** — 构建、刷写、贡献、硬件映射
 
 ## 给 AI Agent 的使用入口
 

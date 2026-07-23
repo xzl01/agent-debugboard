@@ -21,10 +21,13 @@
 
 ## Nix 配置（推荐）
 
-仓库提供 `shell.nix`，打包了所有依赖。进入前先设置
-`ZEPHYR_SDK_INSTALL_DIR` 指向本地 Zephyr SDK 路径：
+仓库提供的 `shell.nix` 包含常用构建包。Zephyr SDK 和由 rustup 管理的
+stable Rust toolchain 是外部前置条件。先准备 Rust，再设置
+`ZEPHYR_SDK_INSTALL_DIR` 后进入：
 
 ```sh
+rustup toolchain install stable
+rustup target add wasm32-unknown-unknown
 export ZEPHYR_SDK_INSTALL_DIR=/path/to/zephyr-sdk-1.0.1
 nix-shell
 ```
@@ -81,5 +84,5 @@ build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.hex
 
 ## 下一步
 
-- [构建指南](build.md) — 详细构建流程、产物说明和 GitHub Actions release assets
-- [刷写](../../README.zh-CN.md#刷写) — ROM BOOTSEL 和 OTA 更新流程
+- [构建指南](build.zh-CN.md) — 详细构建流程、产物说明和 GitHub Actions release assets
+- [刷写](flashing.zh-CN.md) — ROM BOOTSEL 和 OTA 更新流程

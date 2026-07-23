@@ -850,7 +850,7 @@ WS 桥功能回归：用 WebSocket 客户端连接 `/api/v1/scpi`，发送 `*IDN
 不应复位；UI 在 >25 MHz 时禁用流式按钮（帧循环在上位机侧节流，固件不再
 有独立的流式速率上限）。
 
-#### 8b.8 HTTP/watchdog responsiveness during capture
+#### 8b.9 HTTP/watchdog responsiveness during capture
 
  在 capture 期间（armed 或 capturing 状态）轮询 HTTP 和 watchdog：
 
@@ -864,7 +864,7 @@ WS 桥功能回归：用 WebSocket 客户端连接 `/api/v1/scpi`，发送 `*IDN
  # 验证返回正常 JSON（不是超时或错误）
  ```
 
- #### 8b.9 HTTP fragment POST for logic analyzer (TCP fragmentation regression)
+#### 8b.10 HTTP fragment POST for logic analyzer (TCP fragmentation regression)
 
  验证逻辑分析仪 POST 正确处理 TCP 分片请求体，使用 Python `http.client` 强制将
  Content-Length 请求体分成多个 sendall 调用发送（模拟浏览器行为）：
@@ -929,7 +929,7 @@ WS 桥功能回归：用 WebSocket 客户端连接 `/api/v1/scpi`，发送 `*IDN
  响应。
  清理步骤释放 capture 状态，使重复运行安全。
 
- #### 8b.10 Browser WASM decoder network and annotation checks
+#### 8b.11 Browser WASM decoder network and annotation checks
 
  验证浏览器可以加载 WASM decoder 资源。使用 GET（不用 HEAD）直接请求，
  捕获响应头并验证 Content-Type 和 Content-Encoding：
@@ -961,68 +961,6 @@ WS 桥功能回归：用 WebSocket 客户端连接 `/api/v1/scpi`，发送 `*IDN
 
  验证浏览器控制台没有 WASM 加载错误，且 annotation 可以正确渲染在 waveform view 中。
  此测试需要在板载页面的 Terminal workspace 中完成实际的 capture 和 decode 流程。
-
- ### 9. BOOTSEL 进入
-
-```sh
-timeout 5s curl -fsS -X POST http://172.29.203.1/api/v1/bootloader || true
-```
-
-MCU 重启时 USB 连接可能先断开，因此以 BOOTSEL 枚举结果作为成功判据。使用有界重试循环
-（最多 10 次，每次间隔 1 秒）通过 `timeout 5s lsblk` 轮询 VENDOR 列严格等于 `RPI` 的磁盘：
-
-```sh
-RPI_DISK=
-attempts=10
-while [ "$attempts" -gt 0 ]; do
-  RPI_DISK=$(timeout 5s lsblk -dpno NAME,VENDOR | awk '$2 == "RPI" { print $1; exit }')
-  [ -n "$RPI_DISK" ] && break
-  attempts=$((attempts - 1))
-  sleep 1
-done
-[ -n "$RPI_DISK" ] || { echo "BOOTSEL device not found after 10s"; exit 1; }
-```
-
-不得假设设备字母（如 `/dev/sdb`）。设备名称取决于当前连接的 USB 存储设备数量，`lsblk`
-加严格的 `RPI` vendor 匹配是可靠的发现方式。
-
-挂载发现的分区，复制 canonical UF2：
-
-```sh
-RPI_PART=$(timeout 5s lsblk -lnpo NAME,TYPE "$RPI_DISK" | awk '$2 == "part" { print $1; exit }')
-[ -n "$RPI_PART" ] || { echo "BOOTSEL partition not found"; exit 1; }
-RPI_MOUNT=$(timeout 5s udisksctl mount -b "$RPI_PART" | awk -F" at " '{print $2}' | tr -d '[:space:]')
-FLASH_UF2=radxa-linkr-debugger-rp2350.uf2
-cp "$FLASH_UF2" "$RPI_MOUNT/"
-```
-
-烧录完成后，使用有界重试（最多 15 次，每次间隔 2 秒）轮询 HTTP 端点，确认板子已重新枚举并恢复响应：
-
-```sh
-BOARD_READY=
-attempts=15
-while [ "$attempts" -gt 0 ]; do
-  if timeout 5s curl -fsS http://172.29.203.1/api/v1/status >/dev/null; then
-    BOARD_READY=1
-    break
-  fi
-  attempts=$((attempts - 1))
-  sleep 2
-done
-[ "$BOARD_READY" = 1 ] || { echo "board HTTP did not recover"; exit 1; }
-```
-
-若 HTTP 不可用，使用串口 fallback：
-
-```text
-linkr-debugger:~$ bootloader
-```
-
-随后重新烧录（使用当前 MCU 对应的 canonical/combined UF2）：
-
-```sh
-picotool load -v -x "$FLASH_UF2"
-```
 
 ### 8c. PulseView 原生接入（rigol-ds 仿真）
 
@@ -1168,6 +1106,68 @@ sigrok-cli -i /tmp/bl.sr -O csv
 一路流式会话存活期间第二连接应被拒绝/不可用；首连接关闭后（即使客户端
 异常断开无 `close`），新连接应在秒级内可用，且不得遗留 LA 占用
 （GET /api/v1/logic-analyzer 显示 idle）。
+
+### 9. BOOTSEL 进入
+
+```sh
+timeout 5s curl -fsS -X POST http://172.29.203.1/api/v1/bootloader || true
+```
+
+MCU 重启时 USB 连接可能先断开，因此以 BOOTSEL 枚举结果作为成功判据。使用有界重试循环
+（最多 10 次，每次间隔 1 秒）通过 `timeout 5s lsblk` 轮询 VENDOR 列严格等于 `RPI` 的磁盘：
+
+```sh
+RPI_DISK=
+attempts=10
+while [ "$attempts" -gt 0 ]; do
+  RPI_DISK=$(timeout 5s lsblk -dpno NAME,VENDOR | awk '$2 == "RPI" { print $1; exit }')
+  [ -n "$RPI_DISK" ] && break
+  attempts=$((attempts - 1))
+  sleep 1
+done
+[ -n "$RPI_DISK" ] || { echo "BOOTSEL device not found after 10s"; exit 1; }
+```
+
+不得假设设备字母（如 `/dev/sdb`）。设备名称取决于当前连接的 USB 存储设备数量，`lsblk`
+加严格的 `RPI` vendor 匹配是可靠的发现方式。
+
+挂载发现的分区，复制 canonical UF2：
+
+```sh
+RPI_PART=$(timeout 5s lsblk -lnpo NAME,TYPE "$RPI_DISK" | awk '$2 == "part" { print $1; exit }')
+[ -n "$RPI_PART" ] || { echo "BOOTSEL partition not found"; exit 1; }
+RPI_MOUNT=$(timeout 5s udisksctl mount -b "$RPI_PART" | awk -F" at " '{print $2}' | tr -d '[:space:]')
+FLASH_UF2=radxa-linkr-debugger-rp2350.uf2
+cp "$FLASH_UF2" "$RPI_MOUNT/"
+```
+
+烧录完成后，使用有界重试（最多 15 次，每次间隔 2 秒）轮询 HTTP 端点，确认板子已重新枚举并恢复响应：
+
+```sh
+BOARD_READY=
+attempts=15
+while [ "$attempts" -gt 0 ]; do
+  if timeout 5s curl -fsS http://172.29.203.1/api/v1/status >/dev/null; then
+    BOARD_READY=1
+    break
+  fi
+  attempts=$((attempts - 1))
+  sleep 2
+done
+[ "$BOARD_READY" = 1 ] || { echo "board HTTP did not recover"; exit 1; }
+```
+
+若 HTTP 不可用，使用串口 fallback：
+
+```text
+linkr-debugger:~$ bootloader
+```
+
+随后重新烧录（使用当前 MCU 对应的 canonical/combined UF2）：
+
+```sh
+picotool load -v -x "$FLASH_UF2"
+```
 
 ### 10. USB CDC ACM fallback
 

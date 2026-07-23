@@ -8,8 +8,9 @@
 ./apps/radxa_linkr_debugger/tests/run_unit_tests.sh
 ```
 
-测试脚本覆盖共享板级模型的 host C 单元测试。Rust 主机侧 CLI 检查位于
-`cmd-ng/` 目录下，使用 Cargo 运行。
+测试脚本覆盖共享板级模型、OTA 解析器、强制门户与 DNS 行为、HTTP 请求体处理
+和逻辑分析仪验证的 host C 单元测试。Rust 主机侧 CLI 检查位于 `cmd-ng/`
+目录下，使用 Cargo 运行。
 
 ## Rust 主机侧 CLI 检查
 

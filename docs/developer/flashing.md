@@ -62,8 +62,10 @@ radxa-linkr-debuggerctl ota confirm
 ```
 
 Or, after a successful test boot, wait for the 16-second watchdog health gate
-to auto-confirm the image. If the test image is not confirmed and the watchdog
-resets, the retained marker drives MCUboot rollback rather than ROM BOOTSEL.
+to auto-confirm the image. Firmware is designed to use the retained marker to
+request MCUboot rollback if an unconfirmed test image hits a watchdog reset.
+Fault-injection HIL for that recovery path is still pending, so keep the
+physical ROM BOOTSEL recovery path available.
 
 Do not upload a `.uf2` or `.elf` file via OTA. OTA expects a MCUboot-format
 application binary. Use the release asset `radxa-linkr-debugger-rp2350-ota.bin`,

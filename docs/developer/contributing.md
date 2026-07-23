@@ -8,8 +8,9 @@
 ./apps/radxa_linkr_debugger/tests/run_unit_tests.sh
 ```
 
-The test runner covers host C tests for the shared board model. Rust host CLI
-checks live under `cmd-ng/` and are run with Cargo.
+The test runner covers host C tests for the shared board model, OTA parser,
+captive portal and DNS behavior, HTTP request-body handling, and logic analyzer
+validation. Rust host CLI checks live under `cmd-ng/` and are run with Cargo.
 
 ## Rust host CLI checks
 

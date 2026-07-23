@@ -6,11 +6,11 @@
 
 ## 目录
 
-- [快速入门](getting-started.md) — 环境搭建和首次构建
-- [构建固件](build.md) — 详细构建说明（Nix 和手动方式）
-- [烧录](flashing.md) — BOOTSEL 和 OTA 烧录流程
-- [参与贡献](contributing.md) — 测试、HIL、CI 和编码规范
-- [硬件映射](hardware-mapping.md) — RP2350A 引脚分配和原理图参考
+- [快速入门](getting-started.zh-CN.md) — 环境搭建和首次构建
+- [构建固件](build.zh-CN.md) — 详细构建说明（Nix 和手动方式）
+- [烧录](flashing.zh-CN.md) — BOOTSEL 和 OTA 烧录流程
+- [参与贡献](contributing.zh-CN.md) — 测试、HIL、CI 和编码规范
+- [硬件映射](hardware-mapping.zh-CN.md) — RP2350A 引脚分配和原理图参考
 
 ## 仓库结构
 

@@ -37,10 +37,10 @@ OTA 使用 MCUboot 格式的应用二进制文件交付。
 3. **确认** — 验证测试启动成功后，手动确认镜像。或者等待约 16 秒
    watchdog 健康门槛自动确认。
 
-如果测试镜像未经确认且在未确认窗口期间发生 watchdog 复位，专用 retained
-marker 会让 MCUboot 执行回滚到上一个已确认镜像，而不会强制进入 ROM
-BOOTSEL。显式 `bootloader` 命令和普通非 OTA watchdog 复位仍正常进入
-ROM BOOTSEL。
+固件设计为通过 retained marker，让未确认测试镜像发生复位后请求 MCUboot
+回滚，而不是进入 ROM BOOTSEL。该故障路径尚未完成 watchdog 故障注入 HIL
+验证，因此不能把自动回滚当作恢复保证。显式 `bootloader` 命令和普通非 OTA
+watchdog 复位仍正常进入 ROM BOOTSEL。
 
 ## CLI 命令
 
@@ -87,13 +87,14 @@ radxa-linkr-debuggerctl --json ota confirm
 Web UI 在 **高级与恢复** 下也提供 OTA 卡片。它通过同一 USB NCM HTTP API
 交付 RP2350 固件更新，不需要额外的主机工具。当 UI 通过 HTTPS 从 GitHub
 Pages 提供服务时，需要设备桥接网关（`npm run device-bridge`）。详见
-[webui.md](webui.md)。
+[Web UI 指南](webui.zh-CN.md)。
 
-## MCUboot 回滚
+## MCUboot 回滚与恢复
 
-如果测试镜像未经确认且 watchdog 复位，retained marker 会驱动 MCUboot
-回滚而非 ROM BOOTSEL。这意味着有问题的镜像不会导致板子无法恢复 —
-上一个已确认镜像会自动恢复。
+未确认镜像的预期故障路径会通过 retained marker，在 watchdog 复位后请求
+MCUboot 回滚。该路径的 watchdog 故障注入 HIL 仍待完成；确认镜像前应验证
+实际运行状态，并始终保留物理 ROM BOOTSEL 恢复路径。初次安装和恢复请使用
+上文所述的合并产物 `radxa-linkr-debugger-rp2350.uf2`。
 
 ## 相关文档
 

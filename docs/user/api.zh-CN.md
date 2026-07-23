@@ -8,16 +8,26 @@
 
 ## 响应信封
 
+成功响应：
+
 ```json
 {
   "schema": "radxa-linkr-debugger.v1",
   "ok": true,
+  "command": "<command>"
+}
+```
+
+失败响应（仅当 `ok` 为 `false` 时才包含 `error`）：
+
+```json
+{
+  "schema": "radxa-linkr-debugger.v1",
+  "ok": false,
   "command": "<command>",
   "error": { "code": "<code>", "message": "<message>" }
 }
 ```
-
-仅当 `ok` 为 `false` 时才包含 `error`。
 
 ## 状态
 
@@ -91,6 +101,9 @@ curl -X PUT http://172.29.203.1/api/v1/switch/vin -d '{"route":"1.8v"}'
 - `sd`：`target`、`usb-reader`
 - `usb`：`pc`、`target`
 - `vin`：`1.8v`、`3.3v`
+
+`usb` switch 对应 J12：上层连接目标板，下层插入 USB 设备；`pc` / `target`
+用于选择由主机还是目标板控制该设备。
 
 ## GPIO
 

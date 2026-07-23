@@ -6,13 +6,16 @@ Radxa Linkr Debugger 固件的详细构建流程、产物说明和 CI/release as
 
 ## Nix 工作流
 
-仓库提供 `shell.nix`，打包了所有依赖（cmake、ninja、dtc、gperf、含 Zephyr
-包的 Python、Node.js 22、通过 rustup 的 Rust toolchain、wasm-bindgen-cli、
-picotool）。
+仓库提供的 `shell.nix` 包含 cmake、ninja、dtc、gperf、含 Zephyr 包的
+Python、Node.js 22、wasm-bindgen-cli 和 picotool。Zephyr SDK 以及由
+rustup 管理的 stable Rust toolchain 仍是外部前置条件；构建前需安装
+`wasm32-unknown-unknown` target。
 
-1. 设置 Zephyr SDK 路径并进入 nix-shell：
+1. 准备 Rust、设置 Zephyr SDK 路径并进入 nix-shell：
 
    ```sh
+   rustup toolchain install stable
+   rustup target add wasm32-unknown-unknown
    export ZEPHYR_SDK_INSTALL_DIR=/path/to/zephyr-sdk-1.0.1
    nix-shell
    ```
