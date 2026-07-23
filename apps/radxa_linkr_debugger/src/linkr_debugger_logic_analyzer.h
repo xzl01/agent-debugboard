@@ -18,7 +18,6 @@
 #define LINKR_DEBUGGER_LA_STREAM_HALF_SAMPLES 1024
 #define LINKR_DEBUGGER_LA_MIN_SAMPLE_RATE_HZ 100000U
 #define LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ 125000000U
-#define LINKR_DEBUGGER_LA_MAX_STREAM_RATE_HZ 25000000U
 
 enum linkr_debugger_la_trigger_type {
 	LINKR_DEBUGGER_LA_TRIGGER_NONE = 0,
@@ -105,6 +104,7 @@ int linkr_debugger_logic_analyzer_start_stream(
 	void *user_data);
 int linkr_debugger_logic_analyzer_stop_stream(void);
 bool linkr_debugger_logic_analyzer_is_streaming(void);
+bool linkr_debugger_logic_analyzer_is_stream_triggered(void);
 
 struct linkr_debugger_la_debug {
 	uint32_t stream_irqs;
@@ -119,6 +119,31 @@ struct linkr_debugger_la_debug {
 };
 
 void linkr_debugger_logic_analyzer_get_debug(struct linkr_debugger_la_debug *out);
+
+bool linkr_debugger_logic_analyzer_is_stream_triggered(void);
+
+#define LINKR_DEBUGGER_LA_RING_BUFFER_BYTES (16384U)
+#define LINKR_DEBUGGER_LA_RING_HALF_SAMPLES (2048U)
+#define LINKR_DEBUGGER_LA_PRE_TRIGGER_MAX 4096U
+
+struct linkr_debugger_la_ring_state {
+	volatile uint32_t trigger_pos;
+	volatile bool triggered;
+	volatile bool overrun;
+	uint16_t pre_trigger_buf[LINKR_DEBUGGER_LA_PRE_TRIGGER_MAX];
+	uint32_t pre_trigger_write;
+	uint32_t pre_trigger_count;
+	bool pre_trigger_active;
+};
+
+int linkr_debugger_logic_analyzer_start_ring(
+	const struct linkr_debugger_la_config *config,
+	linkr_debugger_la_stream_callback_t callback,
+	void *user_data);
+int linkr_debugger_logic_analyzer_stop_ring(void);
+bool linkr_debugger_logic_analyzer_is_ring_active(void);
+bool linkr_debugger_logic_analyzer_is_ring_triggered(void);
+uint32_t linkr_debugger_logic_analyzer_ring_trigger_pos(void);
 
 #if defined(LINKR_DEBUGGER_LA_HOST_TEST)
 int linkr_debugger_logic_analyzer_host_set_capture(

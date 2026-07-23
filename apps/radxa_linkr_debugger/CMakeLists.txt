@@ -84,6 +84,7 @@ generate_inc_file_for_target(app
 target_sources(app PRIVATE
   src/main.c
   src/linkr_debugger_captive_portal.c
+  src/linkr_debugger_capture_arbiter.c
   src/linkr_debugger_control.c
   src/linkr_debugger_http_body.c
   src/linkr_debugger_http.c
@@ -92,7 +93,7 @@ target_sources(app PRIVATE
   src/linkr_debugger_model.c
   src/linkr_debugger_network.c
   src/linkr_debugger_shell.c
-  src/linkr_debugger_rigol.c
+  src/linkr_debugger_sigrok_linkr.c
   src/linkr_debugger_ws.c
   src/linkr_debugger_usb_net.c
 )

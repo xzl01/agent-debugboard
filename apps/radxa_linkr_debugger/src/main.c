@@ -12,7 +12,7 @@
 #include "linkr_debugger_network.h"
 #include "linkr_debugger_ota.h"
 #include "linkr_debugger_shell.h"
-#include "linkr_debugger_rigol.h"
+#include "linkr_debugger_sigrok_linkr.h"
 #include "linkr_debugger_ws.h"
 #include "linkr_debugger_usb_net.h"
 
@@ -98,13 +98,16 @@ int main(void)
 		LOG_WRN("Logic analyzer init failed: %d (non-fatal)", ret);
 	}
 
+	ret = linkr_debugger_sigrok_linkr_init();
+	if (ret < 0) {
+		LOG_WRN("Sigrok Linkr init failed: %d (non-fatal)", ret);
+	}
+
 	ret = http_server_start();
 	if (ret < 0) {
 		LOG_ERR("HTTP server start failed: %d", ret);
 		return 0;
 	}
-
-	linkr_debugger_rigol_server_init();
 
 	linkr_debugger_shell_watchdog_start();
 

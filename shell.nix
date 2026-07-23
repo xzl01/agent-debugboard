@@ -22,10 +22,13 @@ let
     pyserial
   ]);
 
-  zephyrSdkDir = builtins.getEnv "ZEPHYR_SDK_INSTALL_DIR";
+  zephyrSdk = pkgs.callPackage ./nix/zephyr-sdk.nix {
+    targets = [ "arm-zephyr-eabi" ];
+  };
 in
 pkgs.mkShell {
   packages = [
+    zephyrSdk
     pkgs.cmake
     pkgs.ninja
     pkgs.dtc
@@ -41,11 +44,11 @@ pkgs.mkShell {
     pkgs.picotool
     pkgs.udisks2
     pkgs.wget
+    pkgs.chromium
   ];
 
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "clang";
-
-  ZEPHYR_SDK_INSTALL_DIR = zephyrSdkDir;
+  PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH = "${pkgs.chromium}/bin/chromium";
 
   shellHook = ''
     export PATH="$ZEPHYR_SDK_INSTALL_DIR/gnu/arm-zephyr-eabi/bin:$PATH"

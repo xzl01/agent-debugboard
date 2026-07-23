@@ -39,6 +39,7 @@ static const struct device *const la_dma_dev = DEVICE_DT_GET(DT_NODELABEL(dma));
 #include <hardware/gpio.h>
 #include <hardware/pio.h>
 #include <hardware/pio_instructions.h>
+#include <hardware/dma.h>
 #endif
 
 #define LINKR_DEBUGGER_LA_RAW_SAMPLE_BYTES sizeof(uint32_t)
@@ -135,7 +136,7 @@ uint16_t linkr_debugger_logic_analyzer_compress_raw_sample(
 
 	active_pin_count = la_active_pin_count(config);
 	for (uint8_t i = 0U; i < active_pin_count && i < LINKR_DEBUGGER_LA_MAX_CHANNELS; i++) {
-		uint8_t pin = la_pin_at(config, i);
+		uint8_t pin = la_pin_at(config, i) - config->pin_base;
 
 		if ((raw & BIT(pin)) != 0U) {
 			values |= (uint16_t)BIT(i);
@@ -173,7 +174,7 @@ int linkr_debugger_logic_analyzer_validate_config(
 		return -EINVAL;
 	}
 	if (config->pre_samples > 0U &&
-	    config->sample_rate_hz > LINKR_DEBUGGER_LA_MAX_STREAM_RATE_HZ) {
+	    config->sample_rate_hz > LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ) {
 		return -EINVAL;
 	}
 	if (linkr_debugger_logic_analyzer_actual_rate(config->sample_rate_hz) == 0U) {
@@ -253,6 +254,16 @@ static struct pio_program la_program = {
 	.origin = -1,
 };
 
+static size_t la_trigger_sm;
+static uint16_t la_trigger_instructions[3];
+static struct pio_program la_trigger_program = {
+	.instructions = la_trigger_instructions,
+	.origin = -1,
+};
+static bool la_trigger_sm_claimed;
+static bool la_trigger_program_loaded;
+static int la_trigger_offset = -1;
+
 static uint16_t la_stream_buf_a[LINKR_DEBUGGER_LA_STREAM_HALF_SAMPLES] __aligned(4);
 static uint16_t la_stream_buf_b[LINKR_DEBUGGER_LA_STREAM_HALF_SAMPLES] __aligned(4);
 static uint32_t la_stream_raw_a[LINKR_DEBUGGER_LA_STREAM_HALF_SAMPLES] __aligned(4);
@@ -284,6 +295,7 @@ static struct linkr_debugger_la_config la_pre_trigger_config;
 static struct k_work la_pre_trigger_finalize_work;
 static volatile uint32_t la_stream_irq_count;
 static volatile uint32_t la_stream_chunk_count;
+static volatile bool la_stream_triggered;
 static volatile uint16_t la_stream_values_or;
 static volatile uint16_t la_stream_values_and;
 
@@ -344,6 +356,19 @@ static void la_cleanup_locked(void)
 	if (la_sm_claimed) {
 		pio_sm_unclaim(pio, (uint)la_pio_sm);
 		la_sm_claimed = false;
+	}
+	if (la_trigger_sm_claimed) {
+		pio_sm_set_enabled(pio, (uint)la_trigger_sm, false);
+		pio_interrupt_clear(pio, 0U);
+	}
+	if (la_trigger_program_loaded) {
+		pio_remove_program(pio, &la_trigger_program, (uint)la_trigger_offset);
+		la_trigger_program_loaded = false;
+		la_trigger_offset = -1;
+	}
+	if (la_trigger_sm_claimed) {
+		pio_sm_unclaim(pio, (uint)la_trigger_sm);
+		la_trigger_sm_claimed = false;
 	}
 	la_restore_configured_pins();
 	la_capture_active = false;
@@ -420,36 +445,10 @@ static int la_find_program_offset(PIO pio, uint8_t length)
 
 static void la_build_program(const struct linkr_debugger_la_config *config, uint8_t offset)
 {
-	uint8_t trigger_pin = la_pin_at(config, config->trigger_pin);
-
-	if (config->trigger == LINKR_DEBUGGER_LA_TRIGGER_NONE) {
-		la_program_instructions[0] = (uint16_t)pio_encode_in(pio_pins, 32U);
-		la_program.length = 1U;
-		return;
-	}
-
-	if (config->trigger == LINKR_DEBUGGER_LA_TRIGGER_RISING) {
-		la_program_instructions[0] = (uint16_t)pio_encode_wait_pin(false, trigger_pin);
-		la_program_instructions[1] = (uint16_t)pio_encode_wait_pin(true, trigger_pin);
-		la_program_instructions[2] = (uint16_t)pio_encode_in(pio_pins, 32U);
-		la_program.length = 3U;
-		return;
-	}
-
-	if (config->trigger == LINKR_DEBUGGER_LA_TRIGGER_FALLING) {
-		la_program_instructions[0] = (uint16_t)pio_encode_wait_pin(true, trigger_pin);
-		la_program_instructions[1] = (uint16_t)pio_encode_wait_pin(false, trigger_pin);
-		la_program_instructions[2] = (uint16_t)pio_encode_in(pio_pins, 32U);
-		la_program.length = 3U;
-		return;
-	}
-
-	(void)linkr_debugger_logic_analyzer_build_either_trigger_program(
-		offset, la_program_instructions, ARRAY_SIZE(la_program_instructions));
-	la_program_instructions[1] = (uint16_t)pio_encode_wait_pin(true, trigger_pin);
-	la_program_instructions[3] = (uint16_t)pio_encode_wait_pin(false, trigger_pin);
-	la_program_instructions[4] = (uint16_t)pio_encode_in(pio_pins, 32U);
-	la_program.length = 5U;
+	ARG_UNUSED(config);
+	ARG_UNUSED(offset);
+	la_program_instructions[0] = (uint16_t)pio_encode_in(pio_pins, 32U);
+	la_program.length = 1U;
 }
 
 static int la_configure_pio_locked(const struct linkr_debugger_la_config *config)
@@ -506,10 +505,7 @@ static int la_configure_pio_locked(const struct linkr_debugger_la_config *config
 	sm_config = pio_get_default_sm_config();
 	sm_config_set_clkdiv_int_frac8(&sm_config, (uint32_t)(div256 / 256ULL),
 		(uint8_t)(div256 % 256ULL));
-	/* in_base=0 makes WAIT PIN and IN PINS use raw GPIO numbers; a 32-bit IN preserves
-	 * GPIO N at raw sample bit N with right-shift autopush.
-	 */
-	sm_config_set_in_pins(&sm_config, 0U);
+	sm_config_set_in_pins(&sm_config, config->pin_base);
 	sm_config_set_in_pin_count(&sm_config, 32U);
 	sm_config_set_jmp_pin(&sm_config, la_pin_at(config, config->trigger_pin));
 	sm_config_set_in_shift(&sm_config, true, true, 32U);
@@ -526,6 +522,59 @@ static int la_configure_pio_locked(const struct linkr_debugger_la_config *config
 	pio_sm_clkdiv_restart(pio, (uint)la_pio_sm);
 	la_capture.actual_sample_rate_hz = actual_rate;
 	la_capture.sample_period_ps = linkr_debugger_logic_analyzer_sample_period_ps(actual_rate);
+
+	if (config->trigger != LINKR_DEBUGGER_LA_TRIGGER_NONE) {
+		uint8_t trig_pin = la_pin_at(config, config->trigger_pin);
+
+		if (config->trigger == LINKR_DEBUGGER_LA_TRIGGER_RISING) {
+			la_trigger_instructions[0] = (uint16_t)pio_encode_wait_gpio(false, trig_pin);
+			la_trigger_instructions[1] = (uint16_t)pio_encode_wait_gpio(true, trig_pin);
+		} else if (config->trigger == LINKR_DEBUGGER_LA_TRIGGER_FALLING) {
+			la_trigger_instructions[0] = (uint16_t)pio_encode_wait_gpio(true, trig_pin);
+			la_trigger_instructions[1] = (uint16_t)pio_encode_wait_gpio(false, trig_pin);
+		} else {
+			la_trigger_instructions[0] = (uint16_t)pio_encode_wait_gpio(false, trig_pin);
+			la_trigger_instructions[1] = (uint16_t)pio_encode_wait_gpio(true, trig_pin);
+		}
+		la_trigger_instructions[2] = (uint16_t)pio_encode_irq_set(false, 0U);
+
+		ret = pio_rpi_pico_allocate_sm(la_pio_dev, &la_trigger_sm);
+		if (ret < 0) {
+			return ret;
+		}
+		la_trigger_sm_claimed = true;
+
+		pio_sm_config sm2_cfg = pio_get_default_sm_config();
+		sm_config_set_clkdiv_int_frac8(&sm2_cfg, (uint32_t)(div256 / 256ULL),
+			(uint8_t)(div256 % 256ULL));
+
+		la_trigger_program.length = 3U;
+		la_trigger_offset = -1;
+		for (uint8_t o = (uint8_t)(la_pio_offset + la_program.length); o <= 30U; o++) {
+			if (pio_can_add_program_at_offset(pio, &la_trigger_program, o)) {
+				la_trigger_offset = (int)o;
+				break;
+			}
+		}
+		if (la_trigger_offset < 0) {
+			return -EBUSY;
+		}
+		ret = pio_add_program_at_offset(pio, &la_trigger_program, (uint)la_trigger_offset);
+		if (ret < 0) {
+			return ret;
+		}
+		la_trigger_offset = ret;
+		la_trigger_program_loaded = true;
+		sm_config_set_wrap(&sm2_cfg, (uint)la_trigger_offset + la_trigger_program.length - 1U,
+			(uint)la_trigger_offset + la_trigger_program.length - 1U);
+
+		ret = pio_sm_init(pio, (uint)la_trigger_sm, (uint)la_trigger_offset, &sm2_cfg);
+		if (ret < 0) {
+			return ret;
+		}
+		pio_sm_clear_fifos(pio, (uint)la_trigger_sm);
+		pio_sm_restart(pio, (uint)la_trigger_sm);
+	}
 
 	return 0;
 }
@@ -1007,10 +1056,6 @@ static void la_stream_process_block(uint32_t *raw_buf, uint16_t *out_buf)
 {
 	uint32_t block_index = la_stream_block_index++;
 
-	/* The WS delivery budget is fixed; at multi-MHz rates formatting and
-	 * compressing every block would saturate the system workqueue, so most
-	 * blocks are dropped here before doing any expensive work.
-	 */
 	if (la_stream_emit_div > 1U && (block_index % la_stream_emit_div) != 0U) {
 		return;
 	}
@@ -1026,6 +1071,14 @@ static void la_stream_work_handler(struct k_work *work)
 
 	if (!la_stream_active) {
 		return;
+	}
+
+	if (!la_stream_triggered) {
+		PIO pio = pio_rpi_pico_get_pio(la_pio_dev);
+		if (pio_interrupt_get(pio, 0U)) {
+			la_stream_triggered = true;
+			pio_interrupt_clear(pio, 0U);
+		}
 	}
 
 	if (la_stream_buf_a_ready) {
@@ -1137,14 +1190,6 @@ int linkr_debugger_logic_analyzer_start_stream(
 		return -EINVAL;
 	}
 
-	if (config->trigger != LINKR_DEBUGGER_LA_TRIGGER_NONE) {
-		return -EINVAL;
-	}
-
-	if (config->sample_rate_hz > LINKR_DEBUGGER_LA_MAX_STREAM_RATE_HZ) {
-		return -EINVAL;
-	}
-
 	ret = linkr_debugger_logic_analyzer_validate_config(config,
 		LINKR_DEBUGGER_LA_MAX_EXPORTED_SAMPLES);
 	if (ret < 0) {
@@ -1180,14 +1225,7 @@ int linkr_debugger_logic_analyzer_start_stream(
 	la_stream_sequence = 0U;
 	la_stream_block_index = 0U;
 	la_stream_emit_div = 1U;
-	{
-		uint32_t block_rate = config->sample_rate_hz / LINKR_DEBUGGER_LA_STREAM_HALF_SAMPLES;
-
-		if (block_rate > LINKR_DEBUGGER_LA_STREAM_EMIT_TARGET_HZ) {
-			la_stream_emit_div = DIV_ROUND_UP(block_rate,
-				LINKR_DEBUGGER_LA_STREAM_EMIT_TARGET_HZ);
-		}
-	}
+	la_stream_triggered = (config->trigger == LINKR_DEBUGGER_LA_TRIGGER_NONE);
 	la_stream_use_buf_a = true;
 	la_stream_buf_a_ready = false;
 	la_stream_buf_b_ready = false;
@@ -1220,6 +1258,9 @@ int linkr_debugger_logic_analyzer_start_stream(
 	la_capture.backend = linkr_debugger_logic_analyzer_backend();
 
 	pio_sm_set_enabled(pio_rpi_pico_get_pio(la_pio_dev), (uint)la_pio_sm, true);
+	if (la_trigger_sm_claimed) {
+		pio_sm_set_enabled(pio_rpi_pico_get_pio(la_pio_dev), (uint)la_trigger_sm, true);
+	}
 	k_mutex_unlock(&la_mutex);
 	return 0;
 }
@@ -1257,6 +1298,274 @@ void linkr_debugger_logic_analyzer_get_debug(struct linkr_debugger_la_debug *out
 	out->pre_triggered = la_pre_trigger_triggered;
 	out->stream_active = la_stream_active;
 	k_mutex_unlock(&la_mutex);
+}
+
+bool linkr_debugger_logic_analyzer_is_stream_triggered(void)
+{
+	return la_stream_triggered;
+}
+
+#if 0 /* Ring buffer mode disabled - DMA hardware ring wrap conflicts with Zephyr DMA driver.
+       * See doc/ring-buffer-gap-analysis.md for details.
+       * TODO: Re-enable when DMA ring wrap issue is resolved.
+       */
+
+static struct linkr_debugger_la_ring_state la_ring;
+static volatile bool la_ring_active;
+static linkr_debugger_la_stream_callback_t la_ring_cb;
+static void *la_ring_user;
+static struct linkr_debugger_la_config la_ring_cfg;
+static uint32_t la_ring_seq;
+static struct k_work la_ring_work;
+static struct dma_config la_ring_dma_config;
+static struct dma_block_config la_ring_dma_block;
+static uint32_t la_ring_raw_a[LINKR_DEBUGGER_LA_RING_HALF_SAMPLES] __aligned(4);
+static uint32_t la_ring_raw_b[LINKR_DEBUGGER_LA_RING_HALF_SAMPLES] __aligned(4);
+static uint16_t la_ring_buf_a[LINKR_DEBUGGER_LA_RING_HALF_SAMPLES] __aligned(4);
+static uint16_t la_ring_buf_b[LINKR_DEBUGGER_LA_RING_HALF_SAMPLES] __aligned(4);
+static volatile bool la_ring_use_buf_a;
+static volatile bool la_ring_buf_a_ready;
+static volatile bool la_ring_buf_b_ready;
+
+static void la_ring_dma_callback(const struct device *dev, void *user_data,
+				  uint32_t channel, int status)
+
+static void la_ring_dma_callback(const struct device *dev, void *user_data,
+				  uint32_t channel, int status)
+{
+	uint32_t *next_dest;
+
+	ARG_UNUSED(user_data);
+
+	if (!la_ring_active || status < 0) {
+		return;
+	}
+
+	if (la_ring_use_buf_a) {
+		la_ring_buf_a_ready = true;
+	} else {
+		la_ring_buf_b_ready = true;
+	}
+	la_ring_use_buf_a = !la_ring_use_buf_a;
+
+	next_dest = la_ring_use_buf_a ? la_ring_raw_a : la_ring_raw_b;
+	la_ring_dma_block.dest_address = (uint32_t)next_dest;
+	if (dma_config(dev, channel, &la_ring_dma_config) < 0 ||
+	    dma_start(dev, channel) < 0) {
+		la_ring_active = false;
+		return;
+	}
+
+	(void)k_work_submit(&la_ring_work);
+}
+
+static void la_ring_process_block(uint32_t *raw_buf, uint16_t *out_buf)
+{
+	struct linkr_debugger_la_stream_chunk chunk;
+
+	for (uint32_t i = 0U; i < LINKR_DEBUGGER_LA_RING_HALF_SAMPLES; i++) {
+		out_buf[i] = linkr_debugger_logic_analyzer_compress_raw_sample(
+			raw_buf[i], &la_ring_cfg);
+	}
+
+	if (la_ring.pre_trigger_active && !la_ring.triggered) {
+		for (uint32_t i = 0U; i < LINKR_DEBUGGER_LA_RING_HALF_SAMPLES; i++) {
+			la_ring.pre_trigger_buf[la_ring.pre_trigger_write] = out_buf[i];
+			la_ring.pre_trigger_write = (la_ring.pre_trigger_write + 1U) %
+				LINKR_DEBUGGER_LA_PRE_TRIGGER_MAX;
+			if (la_ring.pre_trigger_count < LINKR_DEBUGGER_LA_PRE_TRIGGER_MAX) {
+				la_ring.pre_trigger_count++;
+			}
+		}
+	}
+
+	chunk.sequence = la_ring_seq++;
+	chunk.sample_count = LINKR_DEBUGGER_LA_RING_HALF_SAMPLES;
+	chunk.timestamp_us = 0U;
+	chunk.values = out_buf;
+
+	la_ring_cb(&chunk, la_ring_user);
+}
+
+static void la_ring_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	if (!la_ring_active || la_ring_cb == NULL) {
+		return;
+	}
+
+	if (!la_stream_triggered) {
+		PIO pio = pio_rpi_pico_get_pio(la_pio_dev);
+		if (pio_interrupt_get(pio, 0U)) {
+			la_stream_triggered = true;
+			pio_interrupt_clear(pio, 0U);
+			la_ring.triggered = true;
+			la_ring.trigger_pos = la_ring_seq * LINKR_DEBUGGER_LA_RING_HALF_SAMPLES;
+		}
+	}
+
+	if (la_ring_buf_a_ready) {
+		la_ring_buf_a_ready = false;
+		la_ring_process_block(la_ring_raw_a, la_ring_buf_a);
+	}
+
+	if (la_ring_buf_b_ready) {
+		la_ring_buf_b_ready = false;
+		la_ring_process_block(la_ring_raw_b, la_ring_buf_b);
+	}
+}
+
+int linkr_debugger_logic_analyzer_start_ring(
+	const struct linkr_debugger_la_config *config,
+	linkr_debugger_la_stream_callback_t callback,
+	void *user_data)
+{
+	if (config == NULL || callback == NULL) {
+		return -EINVAL;
+	}
+
+	int ret = linkr_debugger_logic_analyzer_validate_config(config,
+		LINKR_DEBUGGER_LA_MAX_EXPORTED_SAMPLES);
+	if (ret < 0) {
+		return ret;
+	}
+
+	k_mutex_lock(&la_mutex, K_FOREVER);
+	if (la_ring_active) {
+		k_mutex_unlock(&la_mutex);
+		return -EBUSY;
+	}
+	if (la_capture.state != LINKR_DEBUGGER_LA_STATE_IDLE &&
+	    la_capture.state != LINKR_DEBUGGER_LA_STATE_DONE &&
+	    la_capture.state != LINKR_DEBUGGER_LA_STATE_ERROR) {
+		k_mutex_unlock(&la_mutex);
+		return -EBUSY;
+	}
+
+	la_stream_teardown_locked();
+	la_cleanup_locked();
+	la_generation++;
+
+	la_ring_cfg = *config;
+	la_ring_cfg.pin_count = la_active_pin_count(config);
+	if (la_ring_cfg.selected_pin_count == 0U) {
+		for (uint8_t i = 0U; i < la_ring_cfg.pin_count; i++) {
+			la_ring_cfg.selected_pins[i] = (uint8_t)(config->pin_base + i);
+		}
+		la_ring_cfg.selected_pin_count = la_ring_cfg.pin_count;
+	}
+
+	la_ring_cb = callback;
+	la_ring_user = user_data;
+	la_ring_seq = 0U;
+	la_ring.trigger_pos = 0U;
+	la_ring.triggered = false;
+	la_ring.overrun = false;
+	la_stream_triggered = (config->trigger == LINKR_DEBUGGER_LA_TRIGGER_NONE);
+	la_ring_use_buf_a = true;
+	la_ring_buf_a_ready = false;
+	la_ring_buf_b_ready = false;
+	la_ring.pre_trigger_write = 0U;
+	la_ring.pre_trigger_count = 0U;
+	la_ring.pre_trigger_active = (config->pre_samples > 0U);
+	memset(la_ring_raw_a, 0, sizeof(la_ring_raw_a));
+	memset(la_ring_raw_b, 0, sizeof(la_ring_raw_b));
+
+	k_work_init(&la_ring_work, la_ring_handler);
+
+	ret = la_configure_pio_locked(&la_ring_cfg);
+	if (ret < 0) {
+		k_mutex_unlock(&la_mutex);
+		return ret;
+	}
+
+	PIO pio = pio_rpi_pico_get_pio(la_pio_dev);
+	uint32_t block_size = LINKR_DEBUGGER_LA_RING_HALF_SAMPLES * sizeof(uint32_t);
+
+	la_dma_channel = dma_request_channel(la_dma_dev, NULL);
+	if (la_dma_channel < 0) {
+		la_cleanup_locked();
+		k_mutex_unlock(&la_mutex);
+		return -EBUSY;
+	}
+
+	memset(&la_ring_dma_config, 0, sizeof(la_ring_dma_config));
+	memset(&la_ring_dma_block, 0, sizeof(la_ring_dma_block));
+
+	la_ring_dma_block.source_address = (uint32_t)&pio->rxf[la_pio_sm];
+	la_ring_dma_block.dest_address = (uint32_t)la_ring_raw_a;
+	la_ring_dma_block.block_size = block_size;
+	la_ring_dma_block.source_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
+	la_ring_dma_block.dest_addr_adj = DMA_ADDR_ADJ_INCREMENT;
+
+	la_ring_dma_config.dma_slot = RPI_PICO_DMA_DREQ_TO_SLOT(
+		pio_get_dreq(pio, (uint)la_pio_sm, false));
+	la_ring_dma_config.channel_direction = PERIPHERAL_TO_MEMORY;
+	la_ring_dma_config.source_data_size = LINKR_DEBUGGER_LA_RAW_SAMPLE_BYTES;
+	la_ring_dma_config.dest_data_size = LINKR_DEBUGGER_LA_RAW_SAMPLE_BYTES;
+	la_ring_dma_config.source_burst_length = 1U;
+	la_ring_dma_config.dest_burst_length = 1U;
+	la_ring_dma_config.block_count = 1U;
+	la_ring_dma_config.head_block = &la_ring_dma_block;
+	la_ring_dma_config.user_data = NULL;
+	la_ring_dma_config.dma_callback = la_ring_dma_callback;
+	la_ring_dma_config.complete_callback_en = 1U;
+
+	ret = dma_config(la_dma_dev, (uint32_t)la_dma_channel, &la_ring_dma_config);
+	if (ret < 0) {
+		dma_release_channel(la_dma_dev, (uint32_t)la_dma_channel);
+		la_dma_channel = -1;
+		la_cleanup_locked();
+		k_mutex_unlock(&la_mutex);
+		return ret;
+	}
+
+	la_ring_active = true;
+	la_capture.state = LINKR_DEBUGGER_LA_STATE_STREAMING;
+	la_capture.requested_sample_rate_hz = config->sample_rate_hz;
+	la_capture.actual_sample_rate_hz = la_actual_rate_from_hw(config->sample_rate_hz);
+	la_capture.sample_period_ps = linkr_debugger_logic_analyzer_sample_period_ps(
+		la_capture.actual_sample_rate_hz);
+	la_capture.backend = linkr_debugger_logic_analyzer_backend();
+
+	ret = dma_start(la_dma_dev, (uint32_t)la_dma_channel);
+	if (ret < 0) {
+		la_ring_active = false;
+		dma_release_channel(la_dma_dev, (uint32_t)la_dma_channel);
+		la_dma_channel = -1;
+		la_cleanup_locked();
+		k_mutex_unlock(&la_mutex);
+		return ret;
+	}
+
+	pio_sm_set_enabled(pio, (uint)la_pio_sm, true);
+	if (la_trigger_sm_claimed) {
+		pio_sm_set_enabled(pio, (uint)la_trigger_sm, true);
+	}
+	k_mutex_unlock(&la_mutex);
+	return 0;
+}
+
+#endif /* Ring buffer mode disabled */
+
+int linkr_debugger_logic_analyzer_stop_ring(void)
+{
+	return 0;
+}
+
+bool linkr_debugger_logic_analyzer_is_ring_active(void)
+{
+	return false;
+}
+
+bool linkr_debugger_logic_analyzer_is_ring_triggered(void)
+{
+	return false;
+}
+
+uint32_t linkr_debugger_logic_analyzer_ring_trigger_pos(void)
+{
+	return 0U;
 }
 
 #endif

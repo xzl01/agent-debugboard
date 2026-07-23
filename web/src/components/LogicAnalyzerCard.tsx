@@ -20,6 +20,11 @@ import {
 } from "lucide-react";
 import { Badge, Button, Card, Toggle } from "./ui";
 import { GpioPinoutSvg } from "./GpioPinoutSvg";
+import { useSigrokScope } from "@/hooks/useSigrokScope";
+import {
+  SigrokModeId,
+  SigrokTriggerType,
+} from "@/lib/sigrokClient";
 import { useScpiScope } from "@/hooks/useScpiScope";
 import {
   RIGOL_LIVE_SAMPLES,
@@ -114,6 +119,23 @@ const PROTOCOL_OPTIONS: Array<{ id: LogicDecoderProtocolName; label: string }> =
   { id: "i2c", label: "I2C" },
   { id: "spi", label: "SPI" },
 ];
+
+function countChannels(m: number): number { let c = 0; for (let i = 0; i < 16; i++) if ((m >> i) & 1) c++; return c; }
+
+function triggerSigrok(t: LogicAnalyzerTriggerType): number {
+  return t === "rising" ? SigrokTriggerType.RISING : t === "falling" ? SigrokTriggerType.FALLING : t === "either" ? SigrokTriggerType.EITHER : SigrokTriggerType.NONE;
+}
+
+function unpackBits(packed: Uint8Array, mask: number): number[] {
+  const bp = Math.max(1, Math.ceil(countChannels(mask) / 8));
+  const out: number[] = [];
+  for (let i = 0; i + bp <= packed.length; i += bp) {
+    let val = packed[i];
+    if (bp > 1) val |= (packed[i + 1] ?? 0) << 8;
+    out.push(val);
+  }
+  return out;
+}
 
 interface WaveformPoint {
   x: number;
@@ -267,6 +289,15 @@ export function LogicAnalyzerCard({
     readDigitalFrame: scpiReadDigitalFrame,
     readDeepData: scpiReadDeepData,
   } = useScpiScope();
+  const {
+    close: sigrokClose,
+    configure: sigrokConfigure,
+    start: sigrokStart,
+    stop: sigrokStop,
+    ensureConnected: sigrokEnsureConnected,
+    readData: sigrokReadData,
+    waitForTriggered: sigrokWaitForTriggered,
+  } = useSigrokScope();
   const [streaming, setStreaming] = useState(false);
   const streamingRef = useRef(false);
   const [deepView, setDeepView] = useState<{
@@ -335,234 +366,101 @@ export function LogicAnalyzerCard({
     [capturePins, capturePinsKey]
   );
 
-  const configureScope = useCallback(
-    async (cfg: LogicAnalyzerConfig) => {
-      await scpiCommand(`:TIM:SCAL ${formatScpiNumber(timebaseForRate(cfg.sampleRateHz))}`);
-      await scpiCommand(":ACQ:MEMD LONG");
-      if (cfg.triggerType !== "none") {
-        const sourcePin = cfg.selectedPins[cfg.triggerPin] ?? cfg.selectedPins[0];
-        await scpiCommand(`:TRIG:EDGE:SOUR D${rigolSourceIndexForPin(sourcePin)}`);
-        await scpiCommand(`:TRIG:EDGE:SLOP ${rigolSlopeForTrigger(cfg.triggerType)}`);
-      }
-    },
-    [scpiCommand]
-  );
-
   const handleArm = useCallback(async () => {
     if (armInFlightRef.current) return;
-
     setError(null);
-
     const nextConfig = normalizeLogicAnalyzerConfig(config);
     setConfig(nextConfig);
-
-    if (nextConfig.selectedPins.length === 0) {
-      setError("Select at least one pin");
-      return;
-    }
-
+    if (nextConfig.selectedPins.length === 0) { setError("Select at least one pin"); return; }
     armInFlightRef.current = true;
     setIsArming(true);
-
+    let channelMask = 0;
+    for (const pin of nextConfig.selectedPins) channelMask |= 1 << (pin - 10);
+    const hasTrigger = nextConfig.triggerType !== "none";
     try {
-      await scpiEnsureConnected();
-      await configureScope(nextConfig);
-      const triggered = nextConfig.triggerType !== "none";
-      await scpiCommand(triggered ? ":RUN" : ":STOP");
-      setState("capturing");
-      const frame = await scpiReadDigitalFrame();
-      const rate = calculateActualSampleRate(nextConfig.sampleRateHz);
-      const values = repackFrameBits(frame, nextConfig.selectedPins);
-      const data = normalizeLogicAnalyzerCapture({
-        state: "done",
-        config: {
-          pinCount: nextConfig.selectedPins.length,
-          pinBase: nextConfig.selectedPins[0] ?? 0,
-          selectedPins: [...nextConfig.selectedPins],
-          requestedSampleRateHz: nextConfig.sampleRateHz,
-          actualSampleRateHz: rate,
-          triggerType: nextConfig.triggerType,
-          triggerPin: nextConfig.triggerPin,
-        },
-        sampleCount: values.length,
-        triggerIndex: triggered ? RIGOL_TRIGGER_SAMPLE : 0,
-        samples: values.map((value, index) => ({
-          timestampUs: (index * 1_000_000) / rate,
-          values: value,
-        })),
+      await sigrokEnsureConnected();
+      const ack = await sigrokConfigure({
+        modeId: SigrokModeId.FAST8, triggerType: triggerSigrok(nextConfig.triggerType),
+        triggerChannel: nextConfig.triggerPin, channelMask,
+        samplerateKhz: Math.round(nextConfig.sampleRateHz / 1000), preSamples: 0, postSamples: 0,
       });
-      setCapture(data);
+      const actualRate = ack.actualRateKhz * 1000;
+      await sigrokStart();
+      if (hasTrigger) {
+        if (!await sigrokWaitForTriggered(10000)) {
+          setError("Trigger timeout"); setState("idle");
+          try { await sigrokStop(); } catch { /* ignore */ }
+          sigrokClose(); armInFlightRef.current = false; setIsArming(false); return;
+        }
+      }
+      const data = await sigrokReadData(5000);
+      await sigrokStop(); sigrokClose();
+      if (!data) { setError("No data received"); setState("idle"); armInFlightRef.current = false; setIsArming(false); return; }
+      const values = unpackBits(data.samples, channelMask);
+      setCapture(normalizeLogicAnalyzerCapture({
+        state: "done",
+        config: { pinCount: nextConfig.selectedPins.length, pinBase: nextConfig.selectedPins[0] ?? 10, selectedPins: [...nextConfig.selectedPins], requestedSampleRateHz: nextConfig.sampleRateHz, actualSampleRateHz: actualRate, triggerType: nextConfig.triggerType, triggerPin: nextConfig.triggerPin },
+        sampleCount: values.length, triggerIndex: 0,
+        samples: values.map((v, i) => ({ timestampUs: (i * 1_000_000) / actualRate, values: v })),
+      }));
       setState("done");
-      scpiClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
-      setState("idle");
-      scpiClose();
-    } finally {
-      armInFlightRef.current = false;
-      setIsArming(false);
-    }
-  }, [config, configureScope, scpiClose, scpiEnsureConnected, scpiReadDigitalFrame]);
+      setError(err instanceof Error ? err.message : "Network error"); setState("idle");
+      try { sigrokClose(); } catch { /* ignore */ }
+    } finally { armInFlightRef.current = false; setIsArming(false); }
+  }, [config, sigrokClose, sigrokConfigure, sigrokEnsureConnected, sigrokReadData, sigrokStart, sigrokStop, sigrokWaitForTriggered]);
 
   const handleCancel = useCallback(async () => {
     setError(null);
-    try {
-      await scpiCommand(":STOP");
-    } catch {
-      /* best-effort stop while closing */
-    }
-    scpiClose();
+    try { await sigrokStop(); } catch { /* ignore */ }
+    sigrokClose();
     setState("idle");
-  }, [scpiClose, scpiCommand]);
+  }, [sigrokClose, sigrokStop]);
 
   const stopStream = useCallback(async () => {
     streamingRef.current = false;
     setStreaming(false);
-    scpiClose();
-  }, [scpiClose]);
+    try { await sigrokStop(); } catch { /* ignore */ }
+    sigrokClose();
+  }, [sigrokClose, sigrokStop]);
 
   const startStream = useCallback(async () => {
     if (streamingRef.current) return;
     setError(null);
-
     const cfg = normalizeLogicAnalyzerConfig(config);
-    if (cfg.selectedPins.length === 0) {
-      setError("Select at least one pin");
-      return;
-    }
-
+    if (cfg.selectedPins.length === 0) { setError("Select at least one pin"); return; }
+    let channelMask = 0;
+    for (const pin of cfg.selectedPins) channelMask |= 1 << (pin - 10);
     try {
-      await scpiEnsureConnected();
-      await configureScope(cfg);
-      await scpiCommand(cfg.triggerType !== "none" ? ":RUN" : ":STOP");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
-      scpiClose();
-      return;
-    }
-
+      await sigrokEnsureConnected();
+      await sigrokConfigure({
+        modeId: SigrokModeId.FAST8, triggerType: triggerSigrok(cfg.triggerType),
+        triggerChannel: cfg.triggerPin, channelMask,
+        samplerateKhz: Math.round(cfg.sampleRateHz / 1000), preSamples: 0, postSamples: 0,
+      });
+      await sigrokStart();
+    } catch (err) { setError(err instanceof Error ? err.message : "Network error"); sigrokClose(); return; }
     streamingRef.current = true;
     setStreaming(true);
     void (async () => {
       try {
         while (streamingRef.current) {
-          const frame = await scpiReadDigitalFrame(8000);
-          const values = repackFrameBits(frame, cfg.selectedPins);
+          const data = await sigrokReadData(8000);
+          if (!data) break;
+          const values = unpackBits(data.samples, channelMask);
           const arr = streamSamplesRef.current;
-          for (let i = 0; i < values.length; i++) {
-            arr.push(values[i]);
-          }
-          if (arr.length > STREAM_BUFFER_CAP) {
-            arr.splice(0, arr.length - STREAM_BUFFER_CAP);
-          }
-          streamSequenceRef.current += 1;
-          streamTotalRef.current += values.length;
-          streamDirtyRef.current = true;
+          for (const v of values) arr.push(v);
+          if (arr.length > STREAM_BUFFER_CAP) arr.splice(0, arr.length - STREAM_BUFFER_CAP);
+          streamSequenceRef.current += 1; streamTotalRef.current += values.length; streamDirtyRef.current = true;
         }
-      } catch (err) {
-        if (streamingRef.current) {
-          setError(err instanceof Error ? err.message : "stream failed");
-        }
-      } finally {
-        streamingRef.current = false;
-        setStreaming(false);
-        scpiClose();
-      }
+      } catch (err) { if (streamingRef.current) setError(err instanceof Error ? err.message : "stream failed"); }
+      finally { streamingRef.current = false; setStreaming(false); try { await sigrokStop(); } catch { /* ignore */ } sigrokClose(); }
     })();
-  }, [config, configureScope, scpiClose, scpiCommand, scpiEnsureConnected, scpiReadDigitalFrame]);
+  }, [config, sigrokClose, sigrokConfigure, sigrokEnsureConnected, sigrokReadData, sigrokStart, sigrokStop]);
 
-  const runDeep = useCallback(async () => {
-    if (deepBusy) return;
-    setError(null);
 
-    const cfg = normalizeLogicAnalyzerConfig(config);
-    if (cfg.selectedPins.length === 0) {
-      setError("Select at least one pin");
-      return;
-    }
 
-    setDeepView(null);
-    streamSamplesRef.current = [];
-    streamSequenceRef.current = 0;
-    streamTotalRef.current = 0;
-    setStreamSampleCount(0);
-    setDeepBusy("start");
-    try {
-      await scpiEnsureConnected();
-      await configureScope(cfg);
-      const startResp = await scpiQuery(`:LINKR:DEEP:START ${DEEP_RATE_HZ} ${DEEP_DURATION_S}`);
-      if (!startResp.startsWith("OK")) {
-        throw new Error(`deep start: ${startResp.trim()}`);
-      }
-      let doneLine: string | null = null;
-      for (let i = 0; i < 200 && !doneLine; i++) {
-        const status = await scpiQuery(":LINKR:DEEP:STATUS?");
-        if (status.startsWith("DONE ")) {
-          doneLine = status;
-        } else {
-          setDeepBusy(status.trim());
-          await new Promise((resolve) => window.setTimeout(resolve, 300));
-        }
-      }
-      if (!doneLine) {
-        throw new Error("deep capture timeout");
-      }
-      const parts = doneLine.trim().split(/\s+/);
-      const written = Number(parts[1]);
-      const triggerIndex = Number(parts[2]);
-      const rate = Number(parts[3]);
-      const dropped = Number(parts[4]);
-      const arr = streamSamplesRef.current;
-      for (let off = 0; off < written; off += DEEP_CHUNK_SAMPLES) {
-        const count = Math.min(DEEP_CHUNK_SAMPLES, written - off);
-        const frame = await scpiReadDeepData(off, count);
-        const values = repackFrameBits(frame, cfg.selectedPins);
-        for (const value of values) {
-          arr.push(value);
-        }
-        if (arr.length > STREAM_BUFFER_CAP) {
-          arr.splice(0, arr.length - STREAM_BUFFER_CAP);
-        }
-        streamTotalRef.current = arr.length;
-        setDeepBusy(`download ${arr.length}/${written}`);
-        setStreamSampleCount(arr.length);
-      }
-      setDeepView({ rate, count: arr.length, triggerIndex, dropped });
-      streamDirtyRef.current = true;
-      setStreamWaveformVersion((version) => version + 1);
-      scpiClose();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "deep capture failed");
-      scpiClose();
-    } finally {
-      setDeepBusy(null);
-    }
-  }, [config, configureScope, deepBusy, scpiClose, scpiEnsureConnected, scpiQuery, scpiReadDeepData]);
 
-  const exportDeep = useCallback((kind: "csv" | "sr") => {
-    if (!deepView) return;
-    const arr = streamSamplesRef.current;
-    const capture = normalizeLogicAnalyzerCapture({
-      state: "done",
-      config: {
-        pinCount: config.selectedPins.length,
-        pinBase: config.selectedPins[0] ?? 0,
-        selectedPins: [...config.selectedPins],
-        actualSampleRateHz: deepView.rate,
-      },
-      sampleCount: arr.length,
-      triggerIndex: deepView.triggerIndex >= 0 ? deepView.triggerIndex : 0,
-      samples: arr.map((value, index) => ({
-        timestampUs: (index * 1_000_000) / deepView.rate,
-        values: value,
-      })),
-    });
-    if (kind === "csv") {
-      exportToCsv(capture);
-    } else {
-      exportToSr(capture);
-    }
-  }, [config.selectedPins, deepView]);
 
   useEffect(() => {
     return () => {
@@ -1109,15 +1007,6 @@ export function LogicAnalyzerCard({
                   <Zap size={15} />
                   {t("logicAnalyzer.startStream")}
                 </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => { void runDeep(); }}
-                  disabled={config.selectedPins.length === 0 || deepBusy !== null}
-                >
-                  <Binary size={15} />
-                  {t("logicAnalyzer.deep")}
-                </Button>
                 {streamRateExceeded && (
                   <span className="text-[10px] text-ink-dim">
                     {t("logicAnalyzer.streamRateLimit")}
@@ -1477,16 +1366,7 @@ export function LogicAnalyzerCard({
             <span className="text-danger">dropped {deepView.dropped}</span>
           )}
           {deepView && !streaming && (
-            <>
-              <Button type="button" variant="ghost" onClick={() => exportDeep("csv")}>
-                <Download size={13} />
-                CSV
-              </Button>
-              <Button type="button" variant="ghost" onClick={() => exportDeep("sr")}>
-                <Download size={13} />
-                .sr
-              </Button>
-            </>
+            <>{/* deep export removed - sigrok protocol */}</>
           )}
           {error && (
             <span className="text-danger">{error}</span>
