@@ -382,7 +382,8 @@ export function LogicAnalyzerCard({
       const ack = await sigrokConfigure({
         modeId: SigrokModeId.FAST8, triggerType: triggerSigrok(nextConfig.triggerType),
         triggerChannel: nextConfig.triggerPin, channelMask,
-        samplerateKhz: Math.round(nextConfig.sampleRateHz / 1000), preSamples: 0, postSamples: 0,
+        samplerateKhz: Math.round(nextConfig.sampleRateHz / 1000),
+        preSamples: nextConfig.preSamples, postSamples: nextConfig.postSamples,
       });
       const actualRate = ack.actualRateKhz * 1000;
       await sigrokStart();
@@ -436,7 +437,8 @@ export function LogicAnalyzerCard({
       await sigrokConfigure({
         modeId: SigrokModeId.FAST8, triggerType: triggerSigrok(cfg.triggerType),
         triggerChannel: cfg.triggerPin, channelMask,
-        samplerateKhz: Math.round(cfg.sampleRateHz / 1000), preSamples: 0, postSamples: 0,
+        samplerateKhz: Math.round(cfg.sampleRateHz / 1000),
+        preSamples: cfg.preSamples, postSamples: cfg.postSamples,
       });
       await sigrokStart();
     } catch (err) { setError(err instanceof Error ? err.message : "Network error"); sigrokClose(); return; }
@@ -930,12 +932,14 @@ export function LogicAnalyzerCard({
             <label className="text-[11px] text-ink-dim">
               {t("logicAnalyzer.preSamples")}
               <input
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                value="300"
-                disabled
-                className="mt-1 w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-xs text-ink opacity-60"
+                type="number"
+                min="0"
+                max="512"
+                step="1"
+                value={config.preSamples}
+                disabled={config.triggerType === "none"}
+                onChange={(e) => updateConfig((c) => ({ ...c, preSamples: Number(e.target.value) }))}
+                className="mt-1 w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-xs text-ink"
               />
             </label>
 
@@ -943,9 +947,12 @@ export function LogicAnalyzerCard({
               {t("logicAnalyzer.postSamples")}
               <input
                 type="number"
-                value="300"
-                disabled
-                className="mt-1 w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-xs text-ink opacity-60"
+                min="1"
+                max="512"
+                step="1"
+                value={config.postSamples}
+                onChange={(e) => updateConfig((c) => ({ ...c, postSamples: Number(e.target.value) }))}
+                className="mt-1 w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-xs text-ink"
               />
             </label>
             <span className="col-span-2 -mt-1 block text-[9px] text-ink-dim/60">
