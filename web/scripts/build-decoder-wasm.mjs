@@ -1,4 +1,6 @@
+import { existsSync } from "node:fs";
 import { access, mkdir, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -15,8 +17,14 @@ const outName = "logic-decoder";
 const publicJsPath = "/assets/decoder/logic-decoder.js";
 const publicWasmPath = "/assets/decoder/logic-decoder_bg.wasm";
 
+function resolveRustCommand(command) {
+  const executable = process.platform === "win32" ? `${command}.exe` : command;
+  const rustupCommand = path.join(os.homedir(), ".cargo", "bin", executable);
+  return existsSync(rustupCommand) ? rustupCommand : command;
+}
+
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const result = spawnSync(resolveRustCommand(command), args, {
     cwd: options.cwd ?? webRoot,
     env: process.env,
     stdio: "inherit",
@@ -34,7 +42,7 @@ function run(command, args, options = {}) {
 }
 
 function capture(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const result = spawnSync(resolveRustCommand(command), args, {
     cwd: options.cwd ?? webRoot,
     env: process.env,
     encoding: "utf8",
@@ -53,7 +61,7 @@ function capture(command, args, options = {}) {
 }
 
 function tryCapture(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const result = spawnSync(resolveRustCommand(command), args, {
     cwd: options.cwd ?? webRoot,
     env: process.env,
     encoding: "utf8",
@@ -118,7 +126,7 @@ export async function buildDecoderWasm() {
   await ensureFile(path.join(decoderOutDir, `${outName}_bg.wasm`), `wasm-bindgen did not produce ${publicWasmPath}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   try {
     ensureWasmTargetInstalled();
     await buildDecoderWasm();

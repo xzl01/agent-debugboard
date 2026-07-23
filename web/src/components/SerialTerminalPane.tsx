@@ -12,6 +12,7 @@ import type {
 } from "react";
 import {
   Copy,
+  Download,
   Maximize2,
   Minus,
   Plug,
@@ -24,11 +25,23 @@ import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "./ui";
 import { useI18n } from "@/lib/i18n";
+import {
+  appendSerialLogChunk,
+  clearSerialLog,
+  readSerialLog,
+  SERIAL_LOG_RESTORE_BYTES,
+  serialLogFilename,
+} from "@/lib/serialLogCache";
+import { downloadBlob, formatBytes } from "@/lib/utils";
 
 const BAUD_RATES = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1500000];
 const BRIDGE_PORT = 8787;
 const MIN_FONT_SIZE = 10;
 const MAX_FONT_SIZE = 20;
+const LOG_FLUSH_INTERVAL_MS = 100;
+const LOG_FLUSH_CHARS = 64 * 1024;
+const LOG_CACHE_RETRY_BASE_MS = 1000;
+const LOG_CACHE_RETRY_MAX_MS = 60_000;
 
 export type SerialChannelId = "uart0" | "uart1";
 type Source = "webserial" | "bridge" | null;
@@ -145,6 +158,8 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   const [rxBytes, setRxBytes] = useState(0);
   const [txBytes, setTxBytes] = useState(0);
   const [automationActive, setAutomationActive] = useState(false);
+  const [cachedLogBytes, setCachedLogBytes] = useState(0);
+  const [logCacheError, setLogCacheError] = useState<string | null>(null);
 
   const sourceRef = useRef<Source>(null);
   const portRef = useRef<SerialPort | null>(null);
@@ -160,6 +175,74 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const writeGenerationRef = useRef(0);
   const automationActiveRef = useRef(false);
+  const pendingLogRef = useRef("");
+  const logFlushTimerRef = useRef<number | null>(null);
+  const logWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const logCacheGenerationRef = useRef(0);
+  const logCacheFailureCountRef = useRef(0);
+  const logCacheRetryAfterRef = useRef(0);
+
+  function reportLogCacheError(reason: unknown) {
+    setLogCacheError(reason instanceof Error ? reason.message : String(reason));
+  }
+
+  function recordLogCacheFailure(reason: unknown, updateState: boolean) {
+    const failureCount = Math.min(logCacheFailureCountRef.current + 1, 16);
+    logCacheFailureCountRef.current = failureCount;
+    logCacheRetryAfterRef.current = Date.now() + Math.min(
+      LOG_CACHE_RETRY_BASE_MS * (2 ** (failureCount - 1)),
+      LOG_CACHE_RETRY_MAX_MS
+    );
+    pendingLogRef.current = "";
+    if (updateState) reportLogCacheError(reason);
+  }
+
+  function resetLogCacheFailure(updateState: boolean) {
+    logCacheFailureCountRef.current = 0;
+    logCacheRetryAfterRef.current = 0;
+    if (updateState) setLogCacheError(null);
+  }
+
+  function flushLogCache(updateState = true): Promise<void> {
+    if (logFlushTimerRef.current != null) {
+      window.clearTimeout(logFlushTimerRef.current);
+      logFlushTimerRef.current = null;
+    }
+    const text = pendingLogRef.current;
+    pendingLogRef.current = "";
+    if (!text) return logWriteQueueRef.current;
+
+    const generation = logCacheGenerationRef.current;
+    const operation = logWriteQueueRef.current
+      .then(() => {
+        if (Date.now() < logCacheRetryAfterRef.current) return undefined;
+        return appendSerialLogChunk(channel, text);
+      })
+      .then((totalBytes) => {
+        if (totalBytes == null) return;
+        resetLogCacheFailure(updateState && generation === logCacheGenerationRef.current);
+        if (updateState && generation === logCacheGenerationRef.current) {
+          setCachedLogBytes(totalBytes);
+        }
+      });
+    logWriteQueueRef.current = operation.catch(() => {});
+    operation.catch((reason) => recordLogCacheFailure(reason, updateState));
+    return operation;
+  }
+
+  function scheduleLogCache(text: string) {
+    if (!text || Date.now() < logCacheRetryAfterRef.current) return;
+    pendingLogRef.current += text;
+    if (pendingLogRef.current.length >= LOG_FLUSH_CHARS) {
+      void flushLogCache();
+      return;
+    }
+    if (logFlushTimerRef.current == null) {
+      logFlushTimerRef.current = window.setTimeout(() => {
+        void flushLogCache();
+      }, LOG_FLUSH_INTERVAL_MS);
+    }
+  }
 
   const append = (text: string) => {
     if (termRef.current) termRef.current.write(text);
@@ -168,12 +251,29 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
 
   const appendReceived = (text: string) => {
     append(text);
+    scheduleLogCache(text);
     const receivedAtMs = performance.now();
     receiveListenersRef.current.forEach((listener) => listener(text, receivedAtMs));
   };
 
   const clear = () => {
+    const generation = logCacheGenerationRef.current + 1;
+    logCacheGenerationRef.current = generation;
     setRxBytes(0);
+    setCachedLogBytes(0);
+    pendingLogRef.current = "";
+    if (logFlushTimerRef.current != null) {
+      window.clearTimeout(logFlushTimerRef.current);
+      logFlushTimerRef.current = null;
+    }
+    const operation = logWriteQueueRef.current
+      .then(() => clearSerialLog(channel))
+      .then(() => {
+        resetLogCacheFailure(generation === logCacheGenerationRef.current);
+        if (generation === logCacheGenerationRef.current) setCachedLogBytes(0);
+      });
+    logWriteQueueRef.current = operation.catch(() => {});
+    operation.catch((reason) => recordLogCacheFailure(reason, true));
     termRef.current?.clear();
     termRef.current?.write("\u001b[2J\u001b[H");
   };
@@ -244,11 +344,20 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     document.addEventListener("fullscreenchange", fit);
 
     void (async () => {
-      const [{ Terminal }, { FitAddon }] = await Promise.all([
+      const [{ Terminal }, { FitAddon }, cachedLog] = await Promise.all([
         import("@xterm/xterm"),
         import("@xterm/addon-fit"),
+        readSerialLog(channel, SERIAL_LOG_RESTORE_BYTES).then(
+          (snapshot) => ({ snapshot, error: null as unknown }),
+          (error: unknown) => ({
+            snapshot: { text: "", totalBytes: 0 },
+            error,
+          })
+        ),
       ]);
       if (disposed) return;
+      if (cachedLog.error) reportLogCacheError(cachedLog.error);
+      else setCachedLogBytes(cachedLog.snapshot.totalBytes);
       term = new Terminal({
         cursorBlink: !!sourceRef.current,
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
@@ -262,6 +371,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       term.open(host);
       termRef.current = term;
       fitAddonRef.current = fitAddon;
+      if (cachedLog.snapshot.text) term.write(cachedLog.snapshot.text);
       if (pendingOutputRef.current) {
         term.write(pendingOutputRef.current);
         pendingOutputRef.current = "";
@@ -280,6 +390,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
 
     return () => {
       disposed = true;
+      void flushLogCache(false);
       void disconnect();
       resizeObserver?.disconnect();
       themeObserver?.disconnect();
@@ -287,6 +398,19 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       term?.dispose();
       termRef.current = null;
       fitAddonRef.current = null;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const flushBeforeBackground = () => {
+      if (document.visibilityState === "hidden") void flushLogCache();
+    };
+    const flushBeforeUnload = () => void flushLogCache(false);
+    document.addEventListener("visibilitychange", flushBeforeBackground);
+    window.addEventListener("pagehide", flushBeforeUnload);
+    return () => {
+      document.removeEventListener("visibilitychange", flushBeforeBackground);
+      window.removeEventListener("pagehide", flushBeforeUnload);
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -452,6 +576,23 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     try { await navigator.clipboard.writeText(selection); } catch { /* Clipboard permission may be denied. */ }
   }
 
+  async function downloadCachedLog() {
+    try {
+      await flushLogCache();
+      const snapshot = await readSerialLog(channel);
+      setCachedLogBytes(snapshot.totalBytes);
+      setLogCacheError(null);
+      if (!snapshot.text) return;
+      downloadBlob(
+        serialLogFilename(channel),
+        snapshot.text,
+        "text/plain;charset=utf-8"
+      );
+    } catch (reason) {
+      reportLogCacheError(reason);
+    }
+  }
+
   async function toggleFullscreen() {
     const panel = terminalPanelRef.current;
     if (!panel) return;
@@ -552,6 +693,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
           <button type="button" onClick={() => setFontSize((size) => Math.max(MIN_FONT_SIZE, size - 1))} className="grid h-7 w-7 place-items-center rounded-md text-ink-dim transition-colors hover:bg-panel2 hover:text-ink" aria-label={`${channelLabel} ${t("serial.fontDown")}`}><Minus size={13} /></button>
           <button type="button" onClick={() => setFontSize((size) => Math.min(MAX_FONT_SIZE, size + 1))} className="grid h-7 w-7 place-items-center rounded-md text-ink-dim transition-colors hover:bg-panel2 hover:text-ink" aria-label={`${channelLabel} ${t("serial.fontUp")}`}><Plus size={13} /></button>
           <button type="button" onClick={() => void copySelection()} className="grid h-7 w-7 place-items-center rounded-md text-ink-dim transition-colors hover:bg-panel2 hover:text-ink" aria-label={`${channelLabel} ${t("serial.copy")}`}><Copy size={13} /></button>
+          <button type="button" disabled={cachedLogBytes === 0 && !pendingLogRef.current} onClick={() => void downloadCachedLog()} className="grid h-7 w-7 place-items-center rounded-md text-ink-dim transition-colors hover:bg-panel2 hover:text-ink disabled:opacity-30" aria-label={`${channelLabel} ${t("serial.downloadLog")}`}><Download size={13} /></button>
           <button type="button" onClick={clear} className="grid h-7 w-7 place-items-center rounded-md text-ink-dim transition-colors hover:bg-panel2 hover:text-ink" aria-label={`${channelLabel} ${t("serial.clear")}`}><Trash2 size={13} /></button>
           <button type="button" onClick={() => void toggleFullscreen()} className="grid h-7 w-7 place-items-center rounded-md text-ink-dim transition-colors hover:bg-panel2 hover:text-ink" aria-label={`${channelLabel} ${t("serial.fullscreen")}`}><Maximize2 size={13} /></button>
         </div>
@@ -560,6 +702,11 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       {error && (
         <div className="border-b border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
           {error}
+        </div>
+      )}
+      {logCacheError && (
+        <div className="border-b border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
+          {t("serial.logCacheUnavailable").replaceAll("{error}", logCacheError)}
         </div>
       )}
 
@@ -580,6 +727,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
 
         <div className="flex min-h-9 flex-wrap items-center gap-x-4 gap-y-1 border-t border-line/70 bg-terminal px-3 py-1.5 text-[10px] text-ink-dim transition-colors">
           <span>{automationActive ? t("serial.automationInputLocked") : source ? t("serial.directInput") : t("serial.connectToInput")}</span>
+          <span className="font-mono" title={t("serial.logCacheHint")}>{t("serial.logCached")} {formatBytes(cachedLogBytes)}</span>
           <span className="ml-auto font-mono">RX {rxBytes.toLocaleString()}</span>
           <span className="font-mono">TX {txBytes.toLocaleString()}</span>
           <button type="button" disabled={!source || automationActive} onClick={() => void enqueueSerial("\u0003")} className="rounded border border-line/80 px-1.5 py-0.5 font-mono text-ink-dim transition-colors hover:bg-panel2 hover:text-ink disabled:opacity-30">Ctrl-C</button>

@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import {
   CheckCircle2,
   Clock3,
@@ -64,9 +73,14 @@ function statusTone(status: OtaStatus | null): "neutral" | "warn" | "brand" | "d
   }
 }
 
-export function OtaCard() {
+export function OtaCard({
+  status,
+  setStatus,
+}: {
+  status: OtaStatus | null;
+  setStatus: Dispatch<SetStateAction<OtaStatus | null>>;
+}) {
   const { t } = useI18n();
-  const rootRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const selectButtonRef = useRef<HTMLButtonElement | null>(null);
   const pollTimerRef = useRef<number | null>(null);
@@ -74,10 +88,8 @@ export function OtaCard() {
   const rebootGraceUntilRef = useRef(0);
   const selectedJobRef = useRef(0);
   const previousConfirmedRef = useRef<boolean | null>(null);
-  const [status, setStatus] = useState<OtaStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [inViewport, setInViewport] = useState(true);
   const [pageVisible, setPageVisible] = useState(
     typeof document === "undefined" ? true : !document.hidden
   );
@@ -123,27 +135,7 @@ export function OtaCard() {
   }, [rebootCountdown]);
 
   const busy = busyAction !== null;
-  const pollActive = inViewport && pageVisible;
   const waitingForReboot = rebootGraceUntilRef.current > Date.now();
-
-  useEffect(() => {
-    const node = rootRef.current;
-    if (!node || typeof IntersectionObserver === "undefined") {
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        setInViewport(entries.some((entry) => entry.isIntersecting));
-      },
-      { threshold: 0.1 }
-    );
-    observer.observe(node);
-
-    return () => {
-      observer.disconnect();
-    };
-  }, []);
 
   useEffect(() => {
     const handleVisibility = () => {
@@ -213,7 +205,7 @@ export function OtaCard() {
   }, [refreshStatus]);
 
   useEffect(() => {
-    if (!pollActive) {
+    if (!pageVisible) {
       if (pollTimerRef.current != null) {
         window.clearTimeout(pollTimerRef.current);
         pollTimerRef.current = null;
@@ -239,7 +231,7 @@ export function OtaCard() {
         pollTimerRef.current = null;
       }
     };
-  }, [pollActive, refreshStatus]);
+  }, [pageVisible, refreshStatus]);
 
   useEffect(() => {
     return () => {
@@ -373,12 +365,14 @@ export function OtaCard() {
       setNote(t("ota.upload.done"));
     } catch (error) {
       if (controller.signal.aborted) {
-        setNote(t("ota.cancelUpload"));
+        setNote(t("ota.upload.cancelled"));
       } else {
         setActionError(error instanceof Error ? error.message : String(error));
       }
     } finally {
-      abortRef.current = null;
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+      }
       setBusyAction(null);
     }
   };
@@ -432,8 +426,10 @@ export function OtaCard() {
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    setIsDragging(true);
-  }, []);
+    if (!busy) {
+      setIsDragging(true);
+    }
+  }, [busy]);
 
   const handleDragLeave = useCallback(() => {
     setIsDragging(false);
@@ -442,6 +438,11 @@ export function OtaCard() {
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
+
+    if (busy) {
+      return;
+    }
+
     const file = e.dataTransfer.files[0];
     setActionError(null);
     setNote(null);
@@ -490,11 +491,10 @@ export function OtaCard() {
         if (selectedJobRef.current === job) setBusyAction(null);
       }
     })();
-  }, [status?.maxSize, t]);
+  }, [busy, status?.maxSize, t]);
 
   return (
     <div
-      ref={rootRef}
       className={`min-w-0 ${isDragging ? "ring-2 ring-brand/50 rounded-2xl" : ""}`}
       aria-busy={loading || busy}
       onDragOver={handleDragOver}
@@ -543,7 +543,7 @@ export function OtaCard() {
                 variant="default"
                 className="min-w-[9rem]"
                 onClick={handleSelectClick}
-                disabled={busyAction === "uploading"}
+                disabled={busy}
               >
                 <FileArchive size={15} />
                 {selectedFile ? t("ota.file.replace") : t("ota.file.select")}

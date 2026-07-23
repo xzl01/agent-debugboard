@@ -8,7 +8,6 @@ import {
   Terminal,
 } from "lucide-react";
 import { useBoard } from "@/hooks/useBoard";
-import { useOtaBadge } from "@/hooks/useOtaBadge";
 import { StatusBar } from "./components/StatusBar";
 import { PowerCard } from "./components/PowerCard";
 import { SwitchCard } from "./components/SwitchCard";
@@ -21,6 +20,7 @@ import { OtaCard } from "./components/OtaCard";
 import { Badge, Button } from "./components/ui";
 import { useI18n } from "@/lib/i18n";
 import { apiEndpoint } from "@/lib/api";
+import type { OtaStatus } from "@/lib/ota";
 import {
   createAutomationTaskLock,
   type AutomationTaskControl,
@@ -37,7 +37,7 @@ const RP2350_CAPTURE_CAPACITY = 2048;
 
 export default function App() {
   const board = useBoard();
-  const ota = useOtaBadge();
+  const [ota, setOta] = useState<OtaStatus | null>(null);
   const { t } = useI18n();
   const serialAutomationRef = useRef<SerialAutomationHandle>(null);
   const automationTaskLockRef = useRef(createAutomationTaskLock());
@@ -185,7 +185,7 @@ export default function App() {
                       taskControl={automationTaskControl}
                     />
                   </div>
-                  <OtaCard />
+                  <OtaCard status={ota} setStatus={setOta} />
                   <BootCard onBoot={board.enterBootloader} />
                 </div>
               </details>
