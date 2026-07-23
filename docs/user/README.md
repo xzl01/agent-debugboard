@@ -6,6 +6,7 @@ Welcome to the Radxa Linkr Debugger user guide.
 
 ## Contents
 
+- [Quick Start](quickstart.md) — Get running in 5 minutes
 - [Board Overview](board-overview.md) — Connectors, ports, and physical interfaces
 - [Install CLI](install.md) — Download and install the host CLI
 - [CLI Reference](cli.md) — All CLI subcommands and usage
@@ -16,10 +17,3 @@ Welcome to the Radxa Linkr Debugger user guide.
 - [OpenOCD / JTAG](openocd.md) — Using with OpenOCD
 - [Logic Analyzer](logic-analyzer.md) — High-speed GPIO capture
 - [Power Analyzer](power-analyzer.md) — Triggered current capture
-
-## Quick Start
-
-1. Install the CLI: see [Install CLI](install.md)
-2. Connect the board via USB
-3. Run `radxa-linkr-debuggerctl doctor` to verify connection
-4. Open http://172.29.203.1/ for the Web UI

@@ -6,6 +6,7 @@
 
 ## 目录
 
+- [快速入门](quickstart.zh-CN.md) — 5 分钟跑起来
 - [调试板概览](board-overview.zh-CN.md) — 接口、端口和物理连接
 - [安装 CLI](install.zh-CN.md) — 下载并安装主机侧 CLI
 - [CLI 参考](cli.zh-CN.md) — 所有 CLI 子命令和用法
@@ -16,10 +17,3 @@
 - [OpenOCD / JTAG](openocd.zh-CN.md) — 配合 OpenOCD 使用
 - [逻辑分析仪](logic-analyzer.zh-CN.md) — 高速 GPIO 捕获
 - [功耗分析仪](power-analyzer.zh-CN.md) — 触发式电流捕获
-
-## 快速开始
-
-1. 安装 CLI：参见 [安装 CLI](install.zh-CN.md)
-2. 通过 USB 连接调试板
-3. 运行 `radxa-linkr-debuggerctl doctor` 验证连接
-4. 打开 http://172.29.203.1/ 访问 Web UI
