@@ -9,7 +9,7 @@ import {
   formatPowerMetric,
   powerRailLabel,
   readingMetric,
-  USER_POWER_RAILS,
+  POWER_SWITCH_RAILS,
   type PowerMetric,
 } from "@/lib/power";
 import { PowerSparkline } from "./PowerSparkline";
@@ -36,7 +36,7 @@ export function PowerCard({
   const [clockMs, setClockMs] = useState(() => Date.now());
   const railTimersRef = useRef(new Map<string, { startedAtMs: number; approximate: boolean }>());
   const observedRailsRef = useRef(new Set<string>());
-  const rows = USER_POWER_RAILS.map((name) => ({
+  const rows = POWER_SWITCH_RAILS.map((name) => ({
     name,
     output: outputs.find((output) => output.name === name),
     reading: readings.find((reading) => reading.name === name),
@@ -44,7 +44,7 @@ export function PowerCard({
 
   useEffect(() => {
     const now = Date.now();
-    for (const name of USER_POWER_RAILS) {
+    for (const name of POWER_SWITCH_RAILS) {
       const output = outputs.find((item) => item.name === name);
       if (!output) continue;
       const firstObservation = !observedRailsRef.current.has(name);

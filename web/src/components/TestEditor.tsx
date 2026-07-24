@@ -50,7 +50,7 @@ import {
   parseTestScript,
   serializeTestScript,
 } from "@/lib/testScript";
-import { USER_POWER_RAILS } from "@/lib/power";
+import { POWER_SWITCH_RAILS, USER_POWER_RAILS } from "@/lib/power";
 import { downloadBlob } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 
@@ -78,7 +78,7 @@ export function StepParams({
       return (
         <ParamRow label={t("test.param.rail")}>
           <select className={inputCls} value={p.rail} onChange={(e) => onParamChange("rail", e.target.value)}>
-            {USER_POWER_RAILS.map((r) => <option key={r} value={r}>{r}</option>)}
+            {POWER_SWITCH_RAILS.map((r) => <option key={r} value={r}>{r}</option>)}
           </select>
         </ParamRow>
       );
