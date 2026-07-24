@@ -21,7 +21,7 @@ RP2354 硬件需要完成专用 board 定义和 HIL 验证后才能声明支持�
 | Web UI | 仪表盘 http://172.29.203.1/ |
 | 逻辑分析仪 | PIO2+DMA，100 kHz–125 MHz，PulseView 兼容 |
 | 功率分析仪 | 触发式采集，环形缓冲，CSV/NDJSON 导出 |
-| 电源输出 | 12v_out、5v_out、20v_out |
+| 电源输出 | 12v_out、5v_out、20v_out、vdd_5v |
 | ADC 监测 | 所有电源输出的电流读数 |
 | 路由切换 | TF/SD、USB hub mux、VIN（1.8V/3.3V） |
 | GPIO | GP7–GP20、GP29 |

@@ -565,14 +565,23 @@ timeout 5s radxa-linkr-debuggerctl --json power set 12v_out off
 timeout 5s radxa-linkr-debuggerctl --json power set 5v_out on
 timeout 5s radxa-linkr-debuggerctl --json power set 5v_out off
 
-# 5v_ws is board-internal: list/status must omit it and direct CLI access must fail locally.
+# vdd_5v 是普通可控电源轨：出现在列表中，可 get/set；默认路由 target 下开机为 off。
 timeout 5s radxa-linkr-debuggerctl --json power list > /tmp/linkr-power-list.json
-! grep -q '"name":"5v_ws"' /tmp/linkr-power-list.json
-! timeout 5s radxa-linkr-debuggerctl --json power get 5v_ws
-! timeout 5s radxa-linkr-debuggerctl --json power set 5v_ws off
+grep -q '"name":"vdd_5v"' /tmp/linkr-power-list.json
+timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v
+timeout 5s radxa-linkr-debuggerctl --json power set vdd_5v on
+timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v
+timeout 5s radxa-linkr-debuggerctl --json power set vdd_5v off
 
-# The raw API compatibility entry remains available for low-level diagnostics.
-timeout 5s curl -fsS http://172.29.203.1/api/v1/power/5v_ws
+# vdd_5v 随 switch usb 路由联动：切 pc 强制开，切 target 强制关（覆盖手动状态）。
+timeout 5s radxa-linkr-debuggerctl --json switch route usb pc --confirm
+timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v   # 期望 on
+timeout 5s radxa-linkr-debuggerctl --json power set vdd_5v off   # 路由不变时允许手动
+timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v   # 期望 off
+timeout 5s radxa-linkr-debuggerctl --json switch route usb target --confirm
+timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v   # 期望 off（联动强制）
+
+# 注意：vdd_5v 关闭期间 CH347 1.8V VIN（VDD_1V8 子电源轨）会断电。
 
 timeout 5s radxa-linkr-debuggerctl --json power set 20v_out on
 timeout 5s radxa-linkr-debuggerctl --json power set 20v_out off

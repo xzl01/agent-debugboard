@@ -22,7 +22,7 @@ definition and HIL validation before it can be declared supported.
 | Web UI | Dashboard at http://172.29.203.1/ |
 | Logic analyzer | PIO2+DMA, 100 kHz–125 MHz, PulseView compatible |
 | Power analyzer | Triggered capture with ring buffer, CSV/NDJSON export |
-| Power outputs | 12v_out, 5v_out, 20v_out |
+| Power outputs | 12v_out, 5v_out, 20v_out, vdd_5v |
 | ADC monitor | Current readings for all power outputs |
 | Switch routes | TF/SD, USB hub mux, VIN (1.8V/3.3V) |
 | GPIO | GP7–GP20, GP29 |

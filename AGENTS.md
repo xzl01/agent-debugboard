@@ -15,7 +15,7 @@ belongs to the firmware side — either in Device Tree (`regulator-boot-off`,
 `gpio` initial states) or in firmware init code. The host CLI/TUI must read and
 reflect the actual hardware state via status polling instead of imposing its own
 defaults. When defaults are coordinated across multiple outputs (e.g. USB mux
-route must match `5v_ws` regulator state at boot), make them consistent in the
+route must match `vdd_5v` regulator state at boot), make them consistent in the
 firmware boot path, not in the client.
 
 ## Upstream/public repository boundaries

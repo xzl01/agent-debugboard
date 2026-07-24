@@ -250,9 +250,13 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 
 The Rust tool keeps the same default URL (`http://172.29.203.1`) and still expects the `radxa-linkr-debugger.v1` JSON envelope. Running it without a subcommand starts the primary TUI, which polls HTTP status/ADC endpoints and keeps power, SD route, and GPIO controls in one adaptive grid.
 
-The board-internal `5v_ws` rail is intentionally omitted from CLI/TUI status,
-power lists, and controls. The raw HTTP API retains that compatibility entry for
-low-level firmware diagnostics only.
+The board-internal VDD_5V rail is exposed as the `vdd_5v` power output in
+CLI/TUI status, power lists, controls, and the Web UI. It powers the USB hub
+domain and follows `switch usb`: routing to `pc` turns it on, routing to
+`target` turns it off. Manual `power set vdd_5v` is allowed between route
+changes and is re-imposed on the next route change. At boot the mux defaults to
+`target` and `vdd_5v` is off. Turning it off also cuts the VDD_1V8 child rail
+used for CH347 1.8 V VIN.
 
 ## JSON Contract
 
