@@ -11,7 +11,8 @@
 | 系统 | 归档 |
 |------|------|
 | Windows x64 | `radxa-linkr-debuggerctl-rust_windows_amd64.zip` |
-| Linux x64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
+| Linux x64 / AMD64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
+| Linux ARM64 / AArch64 | `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` |
 | macOS Apple Silicon | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` |
 
 解压后放到 PATH 下：
@@ -52,7 +53,7 @@ radxa-linkr-debuggerctl doctor
 radxa-linkr-debuggerctl
 ```
 
-交互式终端界面会显示电源输出、switch 路由和 GPIO 状态。方向键导航，Space/Enter 切换。
+交互式终端界面会显示电源输出、switch 路由和 GPIO 状态。试试看：用方向键选到 `5v_out`，按 Space 切换电源，观察状态从 `off` 变成 `on`。
 
 更多：[TUI 指南](tui.zh-CN.md)
 
@@ -66,7 +67,10 @@ http://172.29.203.1/
 
 大多数系统会自动弹出板子的 captive portal 提示。如果没有，手动导航即可。
 
-仪表盘有电源控制、ADC 读数、switch 路由和 GPIO。Terminal 工作区里有逻辑分析仪和串口控制台。
+仪表盘有电源控制、ADC 读数、switch 路由和 GPIO。试试看：在 Power Controls 卡片点 `5v_out` 的开关，然后看 ADC 卡片的电流读数变化。切到 **Terminal** 工作区可以找到逻辑分析仪和串口控制台。
+
+Linux 上如果 Web Serial 或 Bridge 无法打开 `/dev/ttyUSB*` 或
+`/dev/ttyACM*`，请参阅 [Linux 串口设备权限](webui.zh-CN.md#linux-串口设备权限)。
 
 更多：[Web UI 指南](webui.zh-CN.md)
 
@@ -75,18 +79,23 @@ http://172.29.203.1/
 ```sh
 # 查看板子状态
 radxa-linkr-debuggerctl status
+# → 显示电源状态、switch 路由、GPIO 值、uptime
 
 # 给目标板上电
 radxa-linkr-debuggerctl power set 5v_out on
+# → "5v_out: on"
 
 # 读电流
 radxa-linkr-debuggerctl adc read
+# → "5v_out=0.123000A  12v_out=0.000000A  20v_out=0.000000A"
 
 # SD 卡路由到主机读取
 radxa-linkr-debuggerctl switch route sd usb-reader
+# → SD 卡现在作为 USB 存储出现在 PC 上
 
 # 驱动 GPIO 高电平
 radxa-linkr-debuggerctl gpio set GP13 1
+# → "GP13: 1 (output)"
 ```
 
 ## 接下来

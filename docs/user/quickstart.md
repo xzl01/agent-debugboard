@@ -12,7 +12,8 @@ Download the archive for your OS from
 | OS | Archive |
 |----|---------|
 | Windows x64 | `radxa-linkr-debuggerctl-rust_windows_amd64.zip` |
-| Linux x64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
+| Linux x64 / AMD64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
+| Linux ARM64 / AArch64 | `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` |
 | macOS Apple Silicon | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` |
 
 Extract and put the binary somewhere on your PATH:
@@ -56,7 +57,8 @@ radxa-linkr-debuggerctl
 ```
 
 The interactive terminal UI shows power outputs, switch routes, and GPIO
-status. Arrow keys to navigate, Space/Enter to toggle.
+status. Try it: use arrow keys to select `5v_out`, press Space to toggle it
+on, and watch the state change from `off` to `on`.
 
 More: [TUI Guide](tui.md)
 
@@ -72,7 +74,12 @@ On most systems the board's captive portal detection will prompt the browser
 to open automatically. If not, navigate manually.
 
 The dashboard shows power controls, ADC readings, switch routes, and GPIO.
-The Terminal workspace has the logic analyzer and serial console.
+Try it: click the `5v_out` toggle in the Power Controls card, then watch the
+ADC card update with the current reading. Switch to the **Terminal** workspace
+to find the logic analyzer and serial console.
+
+On Linux, if Web Serial or Bridge cannot open `/dev/ttyUSB*` or `/dev/ttyACM*`,
+follow [Linux serial device permissions](webui.md#linux-serial-device-permissions).
 
 More: [Web UI Guide](webui.md)
 
@@ -81,18 +88,23 @@ More: [Web UI Guide](webui.md)
 ```sh
 # Board status
 radxa-linkr-debuggerctl status
+# → shows power states, switch routes, GPIO values, uptime
 
 # Power on the target
 radxa-linkr-debuggerctl power set 5v_out on
+# → "5v_out: on"
 
 # Read current draw
 radxa-linkr-debuggerctl adc read
+# → "5v_out=0.123000A  12v_out=0.000000A  20v_out=0.000000A"
 
 # Route SD card to host for reading
 radxa-linkr-debuggerctl switch route sd usb-reader
+# → SD card now appears as USB storage on your PC
 
 # Drive a GPIO high
 radxa-linkr-debuggerctl gpio set GP13 1
+# → "GP13: 1 (output)"
 ```
 
 ## What's next
