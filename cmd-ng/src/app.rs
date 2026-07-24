@@ -22,8 +22,6 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
 
-const INTERNAL_POWER_OUTPUT: &str = "5v_ws";
-
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -289,8 +287,7 @@ where
     if json_output || looks_like_json(&output) {
         match parse_envelope(&output, true) {
             Ok(envelope) => {
-                let filtered = filter_internal_power_output(&output)?;
-                writeln!(stdout, "{}", filtered.as_deref().unwrap_or(output.trim()))?;
+                writeln!(stdout, "{}", output.trim())?;
                 return Ok(if envelope.ok == Some(false) { 1 } else { 0 });
             }
             Err(err) => {
@@ -400,12 +397,7 @@ where
     }) {
         Ok(output) => match parse_envelope(&output, true) {
             Ok(envelope) => {
-                result.status = serde_json::from_str::<Value>(&output)
-                    .ok()
-                    .map(|mut status| {
-                        remove_internal_power_output(&mut status);
-                        status
-                    });
+                result.status = serde_json::from_str::<Value>(&output).ok();
                 if envelope.ok == Some(false) {
                     result.error = envelope.error;
                 } else {
@@ -803,68 +795,18 @@ fn power_request(args: &[String]) -> Result<BoardRequest, String> {
             if args.len() != 3 {
                 return Err("usage: radxa-linkr-debuggerctl power get NAME".to_string());
             }
-            reject_internal_power_output(&args[2])?;
             Ok(get_request(format!("/api/v1/power/{}", args[2])))
         }
         "set" => {
             if args.len() != 4 {
                 return Err("usage: radxa-linkr-debuggerctl power set NAME on|off".to_string());
             }
-            reject_internal_power_output(&args[2])?;
             Ok(put_request(
                 format!("/api/v1/power/{}", args[2]),
                 json!({ "state": args[3] }),
             ))
         }
         other => Err(format!("unsupported power action {:?}", other)),
-    }
-}
-
-fn reject_internal_power_output(name: &str) -> Result<(), String> {
-    if name == INTERNAL_POWER_OUTPUT {
-        return Err(format!(
-            "power output {INTERNAL_POWER_OUTPUT:?} is internal and unavailable through the CLI"
-        ));
-    }
-    Ok(())
-}
-
-fn filter_internal_power_output(output: &str) -> Result<Option<String>> {
-    if !output.contains(INTERNAL_POWER_OUTPUT) {
-        return Ok(None);
-    }
-
-    let mut value: Value = serde_json::from_str(output)?;
-    if remove_internal_power_output(&mut value) {
-        return Ok(Some(serde_json::to_string(&value)?));
-    }
-    Ok(None)
-}
-
-fn remove_internal_power_output(value: &mut Value) -> bool {
-    match value {
-        Value::Object(object) => {
-            let mut changed = false;
-            if let Some(Value::Array(outputs)) = object.get_mut("power_outputs") {
-                let original_len = outputs.len();
-                outputs.retain(|output| {
-                    output.get("name").and_then(Value::as_str) != Some(INTERNAL_POWER_OUTPUT)
-                });
-                changed |= outputs.len() != original_len;
-            }
-            for child in object.values_mut() {
-                changed |= remove_internal_power_output(child);
-            }
-            changed
-        }
-        Value::Array(values) => {
-            let mut changed = false;
-            for child in values {
-                changed |= remove_internal_power_output(child);
-            }
-            changed
-        }
-        _ => false,
     }
 }
 
@@ -1620,66 +1562,20 @@ mod tests {
     }
 
     #[test]
-    fn internal_power_output_is_rejected_without_board_access() {
-        for args in [
-            ["cmd", "power", "get", INTERNAL_POWER_OUTPUT, ""],
-            ["cmd", "power", "set", INTERNAL_POWER_OUTPUT, "off"],
-        ] {
-            let args: Vec<&str> = args.into_iter().filter(|arg| !arg.is_empty()).collect();
-            let cli = Cli::parse_from(args);
-            let client = FakeClient::default();
-            let tui = FakeTuiRunner::new(0);
-            let mut stdout = Vec::new();
-            let mut stderr = Vec::new();
-
-            let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
-            assert_eq!(code, 2);
-            assert!(client.requests.borrow().is_empty());
-            assert!(String::from_utf8(stderr)
-                .unwrap()
-                .contains("is internal and unavailable through the CLI"));
-        }
-    }
-
-    #[test]
-    fn status_output_hides_internal_power_output() {
-        let cli = Cli::parse_from(["cmd", "--json", "status"]);
-        let client = FakeClient {
-            response: format!(
-                r#"{{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","power_outputs":[{{"name":"12v_out","state":"off"}},{{"name":"{}","state":"on"}}]}}"#,
-                INTERNAL_POWER_OUTPUT
-            ),
-            ..Default::default()
-        };
+    fn power_vdd_5v_is_exposed_like_other_outputs() {
+        let cli = Cli::parse_from(["cmd", "power", "set", "vdd_5v", "off"]);
+        let client = FakeClient::default();
         let tui = FakeTuiRunner::new(0);
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
 
         let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
         assert_eq!(code, 0);
-        let output: Value = serde_json::from_slice(&stdout).unwrap();
-        let outputs = output["power_outputs"].as_array().unwrap();
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0]["name"], "12v_out");
-    }
-
-    #[test]
-    fn nested_doctor_status_hides_internal_power_output() {
-        let mut output = serde_json::json!({
-            "status": {
-                "power_outputs": [
-                    {"name": INTERNAL_POWER_OUTPUT},
-                    {"name": "5v_out"}
-                ]
-            }
-        });
-
-        assert!(remove_internal_power_output(&mut output));
-        assert_eq!(
-            output["status"]["power_outputs"].as_array().unwrap().len(),
-            1
-        );
-        assert_eq!(output["status"]["power_outputs"][0]["name"], "5v_out");
+        let requests = client.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, Method::PUT);
+        assert_eq!(requests[0].path, "/api/v1/power/vdd_5v");
+        assert_eq!(requests[0].body.as_ref().unwrap()["state"], "off");
     }
 
     #[test]

@@ -138,9 +138,6 @@ impl TuiModel {
 
     fn apply_status_snapshot(&mut self, snapshot: WsStatusSnapshot) {
         for output in snapshot.power_outputs {
-            if output.name == "5v_ws" {
-                continue;
-            }
             self.power_states.insert(
                 output.name.clone(),
                 output.value != 0 || output.state == "on",
@@ -776,7 +773,7 @@ fn current_milliamp_estimate(reading: &AdcReading) -> i32 {
 }
 
 fn control_targets() -> &'static [&'static str] {
-    &["12v_out", "5v_out", "20v_out"]
+    &["12v_out", "5v_out", "20v_out", "vdd_5v"]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1270,7 +1267,7 @@ mod tests {
                     value: 1,
                 },
                 crate::ws_client::TuiStatusPowerOutput {
-                    name: "5v_ws".to_string(),
+                    name: "vdd_5v".to_string(),
                     state: "on".to_string(),
                     value: 1,
                 },
@@ -1297,7 +1294,7 @@ mod tests {
 
         // Snapshot becomes authoritative under REST polling.
         assert_eq!(model.power_states.get("5v_out"), Some(&true));
-        assert_eq!(model.power_states.get("5v_ws"), None);
+        assert_eq!(model.power_states.get("vdd_5v"), Some(&true));
         assert_eq!(model.gpio_levels.get("GP11"), Some(&false));
         assert_eq!(model.gpio_is_input.get("GP11"), Some(&false));
         assert_eq!(model.gpio_notes.get("GP11"), Some(&"J16_PIN2".to_string()));
