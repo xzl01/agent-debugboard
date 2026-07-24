@@ -220,6 +220,18 @@ where
         return run_ota_upload(client, &cli.command_args, cli.json, stdout, stderr);
     }
 
+    if is_test_command(&cli.command_args) {
+        return crate::test::run_test(
+            &cli.command_args,
+            client.base_url(),
+            cli.timeout,
+            cli.json,
+            cli.verbose,
+            stdout,
+            stderr,
+        );
+    }
+
     let request = match request_from_args(&wire_args) {
         Ok(request) => request,
         Err(err) => {
@@ -483,6 +495,11 @@ fn is_ota_upload_command(args: &[String]) -> bool {
     let cleaned = strip_passthrough_flags(args);
     cleaned.first().map(String::as_str) == Some("ota")
         && cleaned.get(1).map(String::as_str) == Some("upload")
+}
+
+fn is_test_command(args: &[String]) -> bool {
+    let cleaned = strip_passthrough_flags(args);
+    cleaned.first().map(String::as_str) == Some("test")
 }
 
 fn strip_passthrough_flags(args: &[String]) -> Vec<String> {
@@ -1185,7 +1202,7 @@ fn error_from_envelope(err: EnvelopeError) -> JsonError {
     }
 }
 
-fn write_json_error(
+pub fn write_json_error(
     writer: &mut dyn Write,
     command: &str,
     code: &str,
@@ -1216,10 +1233,8 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
         "  radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 1000 --rate-hz 250"
     )?;
     writeln!(writer, "  radxa-linkr-debuggerctl ota status")?;
-    writeln!(
-        writer,
-        "  radxa-linkr-debuggerctl ota upload /tmp/firmware.bin"
-    )?;
+    writeln!(writer, "  radxa-linkr-debuggerctl ota upload /tmp/firmware.bin")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl test run script.ndjson")?;
     writeln!(writer, "  radxa-linkr-debuggerctl watchdog status\n")?;
     writeln!(writer, "      --url <URL>")?;
     writeln!(writer, "      --addr <ADDR>")?;

@@ -10,6 +10,12 @@ mod client;
 mod json_contract;
 mod monitoring;
 mod recorder;
+mod test;
+mod test_assertions;
+mod test_report;
+mod test_runner;
+mod test_script;
+mod test_serial;
 mod tui;
 mod ws_client;
 
