@@ -17,3 +17,5 @@
 - [OpenOCD / JTAG](openocd.zh-CN.md) — 配合 OpenOCD 使用
 - [逻辑分析仪](logic-analyzer.zh-CN.md) — 高速 GPIO 捕获
 - [功耗分析仪](power-analyzer.zh-CN.md) — 触发式电流捕获
+- [常见工作流](workflows.zh-CN.md) — 断电重启、SD 卡、OTA、自动化
+- [故障排查](troubleshooting.zh-CN.md) — FAQ 和常见问题解决

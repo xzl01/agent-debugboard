@@ -17,3 +17,5 @@ Welcome to the Radxa Linkr Debugger user guide.
 - [OpenOCD / JTAG](openocd.md) — Using with OpenOCD
 - [Logic Analyzer](logic-analyzer.md) — High-speed GPIO capture
 - [Power Analyzer](power-analyzer.md) — Triggered current capture
+- [Common Workflows](workflows.md) — Power cycle, SD card, OTA, automation
+- [Troubleshooting](troubleshooting.md) — FAQ and common fixes
