@@ -31,10 +31,9 @@ const struct linkr_debugger_rail_desc linkr_debugger_rails[] = {
 		.controllable = true,
 	},
 	{
-		.name = "5v_ws",
+		.name = "vdd_5v",
 		.signal = "GP09_5V_WS_EN",
 		.pin = 1,
-		.always_on = true,
 		.controllable = true,
 	},
 	{

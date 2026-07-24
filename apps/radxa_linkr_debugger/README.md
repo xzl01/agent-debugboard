@@ -273,7 +273,7 @@ Current schematic mapping (G3 / RP2350A):
 
 - `12v_out`: `GP02_12V_EN` (GPIO 2)
 - `5v_out`: `GP05_5V_EN` (GPIO 0)
-- `5v_ws`: `GP09_5V_WS_EN` (GPIO 1)
+- `vdd_5v`: `GP09_5V_WS_EN` (GPIO 1, follows USB mux route)
 - `20v_out`: `GP10_20V_EN` (GPIO 3)
 - TF/SD route switch: `GP06_TF_SW` (GPIO 4)
 - USB hub mux switch: `GP03_USB3_HUB` (GPIO 5)
@@ -294,15 +294,18 @@ supervisor, not through a Zephyr `CONFIG_LED` or built-in heartbeat driver.
 - J16 ADC3/GPIO: `GP29` (ADC3)
 - ADC current monitor inputs: `S_C_5V` (ADC0), `S_C_12V` (ADC1), `S_C_20V` (ADC2)
 
-VIN defaults to 3.3V at boot. GPIO1 VDD_5V and its GPIO6 VDD_1V8 child rail are
-always on in the G3 Device Tree model. The selectable CH347 VIO level is modeled
-as a standard `regulator-gpio` regulator with exact 1.8V and 3.3V states, and
-firmware selects it through the Zephyr regulator API.
+VIN defaults to 3.3V at boot. GPIO1 VDD_5V is coupled to the USB mux route
+(`pc` on, `target` off) and boots off under the default `target` route, while
+its GPIO6 VDD_1V8 child rail stays always on in the G3 Device Tree model. The
+selectable CH347 VIO level is modeled as a standard `regulator-gpio` regulator
+with exact 1.8V and 3.3V states, and firmware selects it through the Zephyr
+regulator API.
 
-The raw firmware API retains `5v_ws` as a compatibility name for GPIO1 VDD_5V.
-The host CLI and TUI intentionally filter this board-internal rail from status,
-power lists, and controls. On RP2350 it remains always on; the raw API entry is
-retained for compatibility only.
+GPIO1 VDD_5V is exposed as the `vdd_5v` power output across the raw API, host
+CLI/TUI, and Web UI. It powers the USB hub domain and follows the `switch usb`
+route (`pc` on, `target` off); manual `power set` is honored between route
+changes and re-imposed on the next route change. Turning it off also cuts the
+GPIO6 VDD_1V8 child rail used for CH347 1.8 V VIN.
 
 G3 ADC current monitor inputs use an INA139 with a 10 mOhm shunt and a
 50 kOhm output load. The Rust CLI and `curl` both report the

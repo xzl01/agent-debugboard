@@ -41,14 +41,12 @@
 		regulator-boot-off;
 	};
 
-	reg_5v_ws: regulator-5v-ws {
+	reg_vdd_5v: regulator-vdd-5v {
 		compatible = "regulator-fixed";
-		regulator-name = "5v_ws";
+		regulator-name = "vdd_5v";
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
 		enable-gpios = <&gpio0 1 GPIO_ACTIVE_HIGH>;
-		regulator-always-on;
-		regulator-boot-on;
 	};
 
 	reg_20v_out: regulator-20v-out {

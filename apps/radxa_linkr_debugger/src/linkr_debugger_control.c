@@ -39,7 +39,7 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #define ADC_INPUTS_NODE ZEPHYR_USER_NODE
 #define REGULATOR_12V_OUT_NODE DT_NODELABEL(reg_12v_out)
 #define REGULATOR_5V_OUT_NODE DT_NODELABEL(reg_5v_out)
-#define REGULATOR_5V_WS_NODE DT_NODELABEL(reg_5v_ws)
+#define REGULATOR_VDD_5V_NODE DT_NODELABEL(reg_vdd_5v)
 #define REGULATOR_20V_OUT_NODE DT_NODELABEL(reg_20v_out)
 #define REGULATOR_VIO_NODE DT_NODELABEL(reg_vio)
 #define CURRENT_5V_OUT_NODE DT_NODELABEL(sense_5v_out)
@@ -81,12 +81,12 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 
 #if DT_NODE_HAS_STATUS(REGULATOR_12V_OUT_NODE, okay) && \
     DT_NODE_HAS_STATUS(REGULATOR_5V_OUT_NODE, okay) && \
-    DT_NODE_HAS_STATUS(REGULATOR_5V_WS_NODE, okay) && \
+    DT_NODE_HAS_STATUS(REGULATOR_VDD_5V_NODE, okay) && \
     DT_NODE_HAS_STATUS(REGULATOR_20V_OUT_NODE, okay)
 #define HAS_REGULATORS 1
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_12V_OUT_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_5V_OUT_NODE, okay));
-BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_5V_WS_NODE, okay));
+BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_VDD_5V_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_20V_OUT_NODE, okay));
 #else
 #define HAS_REGULATORS 0
@@ -148,7 +148,7 @@ static struct k_thread linkr_debugger_watchdog_supervisor_thread;
 static const struct device *const regulators[] = {
 	DEVICE_DT_GET(REGULATOR_12V_OUT_NODE),
 	DEVICE_DT_GET(REGULATOR_5V_OUT_NODE),
-	DEVICE_DT_GET(REGULATOR_5V_WS_NODE),
+	DEVICE_DT_GET(REGULATOR_VDD_5V_NODE),
 	DEVICE_DT_GET(REGULATOR_20V_OUT_NODE),
 };
 #else
@@ -316,7 +316,7 @@ static int configure_regulator_defaults(void)
 		}
 
 		set_regulator_state(&linkr_debugger_rails[i],
-				    linkr_debugger_rail_initial_enabled(&linkr_debugger_rails[i]));
+				    regulator_is_enabled(regulator));
 	}
 
 	return 0;
@@ -1094,10 +1094,20 @@ int linkr_debugger_sd_route_set(enum linkr_debugger_sd_route route)
 
 int linkr_debugger_usb_route_set(enum linkr_debugger_usb_route route)
 {
+	const struct linkr_debugger_rail_desc *vdd_rail = linkr_debugger_find_rail("vdd_5v");
+	bool vdd_enable = route == LINKR_DEBUGGER_USB_ROUTE_PC;
 	int ret;
 
 	if (!device_is_ready(gpio0)) {
 		return -ENODEV;
+	}
+
+	/* The VDD_5V hub domain must be live before the mux attaches it. */
+	if (vdd_enable) {
+		ret = linkr_debugger_power_output_set(vdd_rail, true);
+		if (ret < 0) {
+			return ret;
+		}
 	}
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
@@ -1111,6 +1121,15 @@ int linkr_debugger_usb_route_set(enum linkr_debugger_usb_route route)
 
 	k_msleep(10);
 	k_mutex_unlock(&linkr_debugger_control_lock);
+
+	/* Detach the mux first, then cut the VDD_5V hub domain. */
+	if (!vdd_enable) {
+		ret = linkr_debugger_power_output_set(vdd_rail, false);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
 	return 0;
 }
 

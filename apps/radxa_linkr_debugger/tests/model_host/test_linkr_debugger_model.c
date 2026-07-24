@@ -21,7 +21,7 @@ static void assert_str_eq(const char *actual, const char *expected)
 static void test_rail_table_matches_schematic(void)
 {
 	const struct linkr_debugger_rail_desc *rail;
-	const struct linkr_debugger_rail_desc *ws_rail;
+	const struct linkr_debugger_rail_desc *vdd_rail;
 
 	assert(linkr_debugger_rail_count == 4);
 
@@ -32,12 +32,12 @@ static void test_rail_table_matches_schematic(void)
 	assert(!rail->always_on);
 	assert_str_eq(rail->signal, "GP02_12V_EN");
 
-	ws_rail = linkr_debugger_find_rail("GP09_5V_WS_EN");
-	assert(ws_rail != NULL);
-	assert_str_eq(ws_rail->name, "5v_ws");
-	assert(ws_rail->pin == 1);
-	assert(ws_rail->always_on);
-	assert(ws_rail->controllable);
+	vdd_rail = linkr_debugger_find_rail("GP09_5V_WS_EN");
+	assert(vdd_rail != NULL);
+	assert_str_eq(vdd_rail->name, "vdd_5v");
+	assert(vdd_rail->pin == 1);
+	assert(!vdd_rail->always_on);
+	assert(vdd_rail->controllable);
 
 	rail = linkr_debugger_find_rail("20v_out");
 	assert(rail != NULL);
@@ -48,14 +48,14 @@ static void test_rail_table_matches_schematic(void)
 	assert(linkr_debugger_find_rail("5V_FIN") == NULL);
 }
 
-static void test_5v_ws_state_contract_matches_board_revision(void)
+static void test_vdd_5v_state_contract_matches_board_revision(void)
 {
-	const struct linkr_debugger_rail_desc *rail = linkr_debugger_find_rail("5v_ws");
+	const struct linkr_debugger_rail_desc *rail = linkr_debugger_find_rail("vdd_5v");
 
 	assert(rail != NULL);
 	assert(linkr_debugger_rail_state_allowed(rail, true));
-	assert(linkr_debugger_rail_initial_enabled(rail));
-	assert(!linkr_debugger_rail_state_allowed(rail, false));
+	assert(linkr_debugger_rail_state_allowed(rail, false));
+	assert(!linkr_debugger_rail_initial_enabled(rail));
 }
 
 static void test_current_table(void)
@@ -326,7 +326,7 @@ static void test_heartbeat_state(void)
 int main(void)
 {
 	test_rail_table_matches_schematic();
-	test_5v_ws_state_contract_matches_board_revision();
+	test_vdd_5v_state_contract_matches_board_revision();
 	test_current_table();
 	test_safe_gpio_allowlist();
 	test_gpio_name_formatter();
