@@ -21,6 +21,7 @@ __pycache__/
 /dist/
 /out/
 **/target/
+**/__pycache__/
 
 # Skill-local generated host CLI binary
 /skills/radxa-linkr-debugger/scripts/bin/
@@ -32,7 +33,7 @@ __pycache__/
 *.lst
 
 # Web frontend dependencies and generated output
-/web/node_modules/
+**/node_modules/
 /web/dist/
 /web/*.tsbuildinfo
 /web/vite.config.js
