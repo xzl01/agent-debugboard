@@ -1,51 +1,53 @@
-# Ring Buffer 实现差距分析
+# Ring Buffer Implementation Analysis
 
-## 摘要
+## Summary
 
-**目标**：实现文档描述的 DMA 硬件 ring buffer 架构（单通道 + ring wrap + write_addr 轮询）
+**Goal**: Implement a DMA hardware ring buffer architecture (single channel + ring wrap + write_addr polling) for continuous logic analyzer capture.
 
-**现状**：使用 ping-pong 双缓冲 + DMA 回调重载（~6% CPU，125 MHz 受限）
+**Current State**: RP2350 continuous path uses a 32 KiB direct DMA hardware write ring; ping-pong dual buffer remains as fallback if ring setup fails.
 
-**根本原因**：Zephyr DMA 驱动与 Pico SDK 的 `channel_config_set_ring` 冲突
+**Root Cause of Historical Issues**: Zephyr DMA driver conflicts with Pico SDK's `channel_config_set_ring`. The final repo-local implementation allocates DMA channel through Zephyr, configures the RP2350 ring using Pico SDK, and uses the official `dma_encode_endless_transfer_count()` encoding for `TRANS_COUNT` ENDLESS.
 
-**已验证**：100 kHz - 100 MHz 全速率工作，触发功能正确
+**Historical Baseline** (pre-ring): SINGLE 300 kHz / FAST8 235 kHz / WIDE12 135 kHz 5-second no-gap; adjacent failures at 400 kHz, 236 kHz, 136 kHz.
 
-**待解决**：125 MHz 持续流式、硬件 ring wrap、0% CPU 开销
+**Post-ring HIL Verified**: On the representative HIL setup with the final architecture and official RP2350 ENDLESS, the 32 KiB hardware ring achieved bounded 100 kHz / post=65535 for SINGLE, FAST8, and WIDE12 (each exactly 65535 samples, 0 gaps, restart true, HTTP health true). Continuous 5-second no-gap results: WebSocket SINGLE 1MHz verified (10 consecutive runs, ~4.991M-4.997M samples each, 998.16-998.70 ksps effective, zero sample-index gaps, zero disconnects, STOP response, immediate restart and HTTP health; 1MHz is a verified operating point, not a claimed absolute ceiling; adjacent WS failure not measured under the final architecture), FAST8 240 kHz, WIDE12 149 kHz; historical/reference raw-TCP SINGLE 443 kHz, FAST8 241 kHz, WIDE12 147 kHz. Adjacent or upper requests not measured under the final architecture; bounded captures at 100 kHz with post=65535 delivered exactly 65535 samples with zero gaps for all modes and transports.
+
+**Not Claimed**: 125 MHz continuous streaming, watchdog fault-injection or automatic recovery validation. 125 MHz remains a finite hardware samplerate/burst capability, not a sustained network transport promise.
 
 ---
 
-## 理想实现（文档描述）
+## Original Target Implementation
 
-### DMA Ring Buffer 架构
+### DMA Ring Buffer Architecture
 
 ```
 PIO SM1 (in pins, 32)
     │
     ▼
-DMA Channel ──▶ Ring Buffer (64KB, hardware wrap)
+DMA Channel ──▶ Ring Buffer (32768 bytes, hardware wrap)
     │              │
     │              ▼
-    │         write_addr 轮询 (100µs)
+    │         write_addr polling (100µs)
     │              │
     │              ▼
-    │         软件读取 + 压缩 + 发送
+    │         Software read + compress + send
     │
-    └── UINT32_MAX 连续传输，永不停止
+    └── Named long-period transfer count with polling and necessary renewal
 ```
 
-**关键特性：**
-- 单 DMA 通道 + `channel_config_set_ring(true, 16)` 硬件环绕
-- `UINT32_MAX` 传输计数，DMA 永不停止
-- `dma_hw->ch[n].write_addr` 轮询读取写位置
-- 0% CPU 开销（纯硬件）
-- 自然支持 pre-trigger（ring buffer 天然存储历史数据）
-- 125 MHz 全速持续采集
+**Key Features**:
+- Single DMA channel + `channel_config_set_ring(true, 15)` hardware wrap
+- Uses Pico SDK official `dma_encode_endless_transfer_count()` for ENDLESS encoding
+- `dma_hw->ch[n].write_addr` polling for write position
+- 0% CPU for DMA writes; consumer still needs work/timer polling, compression, and transport
+- Natural support for pre-trigger (ring buffer stores history inherently)
+- 125 MHz is a finite hardware samplerate, not a sustained network transport promise
 
 ---
 
-## 当前实现（ping-pong 模式）
+## Legacy Implementation (Ping-Pong Fallback)
 
-### 实际架构
+### Actual Architecture
 
 ```
 PIO SM1 (in pins, 32)
@@ -54,137 +56,125 @@ PIO SM1 (in pins, 32)
 DMA Channel ──▶ Buffer A (8KB) / Buffer B (8KB)
     │              │
     │              ▼
-    │         DMA 完成中断
+    │         DMA completion interrupt
     │              │
     │              ▼
-    │         回调重载 DMA + 提交 work
+    │         Callback reload DMA + submit work
     │              │
     │              ▼
-    │         work handler 压缩 + 发送
+    │         Work handler compress + send
     │
-    └── 每 1024 样本重新触发，~75µs 开销
+    └── Per 1024 samples interrupt, ~75µs overhead
 ```
 
-**实际特性：**
-- ping-pong 双缓冲 + DMA 回调重载
-- 每 1024 样本触发一次中断
-- 回调中重新配置和启动 DMA
-- ~6% CPU 开销
-- 独立的 pre-trigger 缓冲区（4096 样本）
-- 100 MHz 持续，125 MHz 只能突发
+**Fallback Features**:
+- Ping-pong dual buffer + DMA callback reload
+- Interrupt per 1024 samples
+- ~6% CPU overhead
+- Separate pre-trigger buffer (512 samples internally)
+- Historical implementation does not represent final post-ring continuous ceiling
 
 ---
 
-## 差距对比表
+## Gap Analysis Table (Pre-Ring Baseline)
 
-| 维度 | 理想实现 | 当前实现 | 差距 |
-|------|---------|---------|------|
-| **缓冲区大小** | 64KB (65536B) | 16KB (2×8KB ping-pong) | 4× |
-| **DMA 模式** | 单通道 + 硬件 ring wrap | 双通道 ping-pong + 回调重载 | 完全不同 |
-| **传输计数** | `UINT32_MAX`（连续） | 1024（每次重载） | 不连续 |
-| **ring wrap** | `channel_config_set_ring(true, 16)` | 无 | 缺失 |
-| **CPU 开销** | 0% | ~6% | 高 6% |
-| **125 MHz** | 持续流式 | 突发 512 样本 | 受限 |
-| **Pre-trigger** | ring buffer 天然支持 | 独立缓冲区 4096 样本 | 受限 |
-| **overrun 检测** | 硬件支持 | 软件检测 | 受限 |
-
----
-
-## 根本原因
-
-### Zephyr DMA 驱动与 Pico SDK 冲突
-
-1. **`dma_start()` 覆盖配置**
-   - Zephyr 的 `dma_start()` 调用 `dma_channel_configure()` 写入所有寄存器
-   - 无法在 `dma_start()` 后添加 ring wrap
-
-2. **ISR 冲突**
-   - Zephyr DMA 驱动用 `IRQ_CONNECT` 注册 `dma_rpi_pico_isr`
-   - `irq_connect_dynamic` 需要 `CONFIG_DYNAMIC_INTERRUPTS`
-   - `irq_set_exclusive_handler` 会 panic（已有 handler）
-
-3. **通道分配冲突**
-   - Zephyr 用 `dma_context.atomic` 位图
-   - Pico SDK 用 `_claimed` 位图
-   - 两个系统可能分配同一通道
-
-4. **Zephyr DMA ISR 禁用中断**
-   - `dma_rpi_pico_isr` 在每个 block 完成后禁用通道中断
-   - 破坏连续 DMA
+| Dimension | Target | Current | Gap |
+|-----------|--------|---------|-----|
+| Buffer size | 32768B (RP2350 max) | 16KB (2×8KB ping-pong) | 2× |
+| DMA mode | Single channel + hardware ring wrap | Dual channel ping-pong + callback reload | Completely different |
+| Transfer count | Named long-period or explicit endless encoding | 1024 (per reload) | Discontinuous |
+| Ring wrap | `channel_config_set_ring(true, 15)` | None | Missing |
+| CPU overhead | DMA writes 0%, consumer polling | ~6% | Higher |
+| 125 MHz | Finite samplerate, continuous should stop on possible overrun | Burst 512 samples | Limited |
+| Pre-trigger | Ring buffer natural support | Separate buffer 512 samples | Limited |
+| Overrun detection | Hardware support | Software detection | Limited |
 
 ---
 
-## 尝试过的方案
+## Root Cause and Final Implementation
 
-| 方案 | 结果 | 原因 |
-|------|------|------|
-| Pico SDK `dma_channel_configure` + ring wrap | ❌ 崩溃 | 与 Zephyr DMA 驱动冲突 |
-| Zephyr DMA API + `source_burst_length` hack | ❌ 无数据 | `dma_start()` 覆盖配置 |
-| `dma_start()` 后修改 `ctrl_trig` | ❌ 无效 | DMA 已启动，修改不生效 |
-| `dma_claim_unused_channel` + Pico SDK | ❌ 崩溃 | 与 Zephyr 通道分配冲突 |
-| 修改 Zephyr DMA 驱动加 ring wrap | ❌ CPU 3230% | DMA 配置异常 |
-| Zephyr `ring_buf` API | ❌ 崩溃 | `ring_buf_get_finish` 参数错误 |
-| `CONFIG_DYNAMIC_INTERRUPTS` + `irq_connect_dynamic` | ❌ 未测试 | 需要进一步验证 |
+### Zephyr DMA Driver vs Pico SDK Conflict
 
----
+1. **`dma_start()` overwrites configuration**
+   - Zephyr's `dma_start()` calls `dma_channel_configure()` writing all registers
+   - Cannot add ring wrap after `dma_start()`
 
-## 可行方案
+2. **ISR conflict**
+   - Zephyr DMA driver registers `dma_rpi_pico_isr` via `IRQ_CONNECT`
+   - `irq_connect_dynamic` requires `CONFIG_DYNAMIC_INTERRUPTS`
+   - `irq_set_exclusive_handler` panics (handler already exists)
 
-### 方案 A：修改 Zephyr DMA 驱动（推荐）
+3. **Channel allocation conflict**
+   - Zephyr uses `dma_context.atomic` bitmap
+   - Pico SDK uses `_claimed` bitmap
+   - Both systems may allocate the same channel
 
-在 `dma_rpi_pico_config()` 中添加 ring wrap 支持：
+4. **Zephyr DMA ISR disables interrupt**
+   - `dma_rpi_pico_isr` disables channel interrupt after each block
+   - Breaks continuous DMA
 
-```c
-// 通过 source_burst_length 传递 ring wrap 大小
-if (dma_cfg->source_burst_length > 32U) {
-    uint32_t ring_bits = dma_cfg->source_burst_length - 32U;
-    channel_config_set_ring(&data->channels[channel].config, true, ring_bits);
-}
-```
-
-在 `dma_rpi_pico_start()` 中使用最大传输计数：
-
-```c
-if (ring_size > 0U) {
-    transfer_count = 0x0FFFFFFFU;  // 最大 28 位
-}
-```
-
-**问题**：之前尝试导致 CPU 3230%，需要进一步调试。
-
-### 方案 B：禁用 Zephyr DMA 驱动
-
-完全使用 Pico SDK DMA API：
-
-```c
-dma_claim_unused_channel(true);
-dma_channel_get_default_config(chan);
-channel_config_set_ring(&cfg, true, 16);
-dma_channel_configure(chan, &cfg, ...);
-dma_channel_start(chan);
-```
-
-**问题**：与其他 DMA 用户冲突，`dma_claim_unused_channel` 可能 panic。
-
-### 方案 C：使用 `CONFIG_DYNAMIC_INTERRUPTS`
-
-启用 `CONFIG_DYNAMIC_INTERRUPTS=y`，用 `irq_connect_dynamic` 注册 DMA IRQ handler。
-
-**问题**：未充分测试，可能与其他中断冲突。
-
-### 方案 D：接受当前方案
-
-继续使用 ping-pong 模式：
-- 100 kHz - 100 MHz 持续流式
-- 125 MHz 突发 512 样本
-- 独立 pre-trigger 缓冲区
-
-**问题**：不满足文档要求的 ring buffer 架构。
+5. **Final repo-local solution**
+   - Still allocates DMA channel through Zephyr to avoid dual allocation with Zephyr/Pico SDK bitmaps
+   - Configures the allocated channel using Pico SDK `dma_channel_configure()`,
+     `channel_config_set_ring(true, 15)`, and `dma_encode_endless_transfer_count()`
+     for the 32768-byte RP2350 write ring
+   - Does not rely on Zephyr block-complete IRQ reload; consumer work polls `write_addr`,
+     uses elapsed-time/sequence guards to判断 continuity, and explicit terminal stop on
+     definite/possible overrun
 
 ---
 
-## 下一步建议
+## Attempted Solutions
 
-1. **调试方案 A**：修改 Zephyr DMA 驱动，找出 CPU 3230% 的原因
-2. **测试方案 C**：启用 `CONFIG_DYNAMIC_INTERRUPTS`，验证 `irq_connect_dynamic` 是否可行
-3. **如果都不行**：接受方案 D，更新文档反映实际限制
+| Solution | Result | Reason |
+|----------|--------|--------|
+| Pico SDK `dma_channel_configure` + ring wrap | Crash | Conflicts with Zephyr DMA driver |
+| Zephyr DMA API + `source_burst_length` hack | No data | `dma_start()` overwrites configuration |
+| Modify `ctrl_trig` after `dma_start()` | Invalid | DMA already started, modification has no effect |
+| `dma_claim_unused_channel` + Pico SDK | Crash | Conflicts with Zephyr channel allocation |
+| Modify Zephyr DMA driver for ring wrap | CPU 3230% | DMA configuration abnormal |
+| Zephyr `ring_buf` API | Crash | `ring_buf_get_finish` parameter error |
+| `CONFIG_DYNAMIC_INTERRUPTS` + `irq_connect_dynamic` | Not tested | Requires further verification |
+
+---
+
+## Recommended Approach
+
+### Maintain repo-local ring backend
+
+Do not modify sibling Zephyr DMA driver to solve this repository's problem.
+
+### Preserve explicit failure semantics
+
+Requests exceeding the measured continuous envelope must explicitly terminate with
+OVERRUN/ERROR terminal event while preserving HTTP health and immediate restart.
+
+### Continue distinguishing capability types
+
+Finite 125 MHz samplerate/HTTP burst capability is not the same as sustained
+Sigrok/WebSocket continuous transport.
+
+### If adjusting qdepth/rate cap/consumer cadence
+
+Re-run the post-ring HIL envelope including bounded 65535, 5-second no-gap ceiling,
+adjacent failures, HTTP BOOTSEL, and CDC ACM BOOTSEL.
+
+---
+
+## Final Post-Ring HIL Results (Final Architecture)
+
+On the measured representative HIL setup, canonical sysbuild passed with FLASH
+`655472/847832` (`77.31%`), RAM `511768/532480` (`96.11%`), and combined UF2
+generated at `build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2`.
+
+| Area | Verified Result |
+|------|----------------|
+| Combined UF2 / HTTP BOOTSEL | HTTP BOOTSEL flashing with combined UF2 and normal startup passed; HTTP BOOTSEL path repeatedly verified |
+| WS bounded 100 kHz, post=65535 | SINGLE, FAST8, WIDE12 each received exactly 65535 samples, 0 gaps, restart true, HTTP health true, current CONFIG/START actual-rate ACKs correct |
+| TCP bounded 100 kHz, post=65535 | SINGLE, FAST8, WIDE12 each received exactly 65535 samples, 0 gaps, restart true, HTTP health true |
+| WS continuous 5 s no-gap operating points | WebSocket SINGLE 1MHz verified (10 consecutive 5-second runs, ~4.991M-4.997M samples each, 998.16-998.70 ksps effective, zero sample-index gaps, zero disconnects, STOP response, immediate restart and HTTP health; adjacent failure not measured under the final architecture); FAST8 240 kHz, WIDE12 149 kHz |
+| Historical/reference TCP continuous 5 s no-gap ceilings | TCP SINGLE 443 kHz, FAST8 241 kHz, WIDE12 147 kHz |
+| CDC ACM BOOTSEL fallback | `/dev/ttyACM2` `bootloader` entered ROM BOOTSEL as `/dev/sdc1` RP2350; reflashing combined UF2 recovered HTTP in 2 seconds |
+
+These results are post-ring HIL facts for the final measured build. They do
+not constitute watchdog fault-injection or automatic recovery verification.
