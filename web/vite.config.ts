@@ -18,6 +18,16 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: process.env.VITE_OUT_DIR || "dist",
       emptyOutDir: true,
+      cssCodeSplit: !isFirmwareBuild,
+      modulePreload: isFirmwareBuild ? false : undefined,
+      rollupOptions: {
+        output: {
+          inlineDynamicImports: isFirmwareBuild ? true : undefined,
+          entryFileNames: "assets/app.js",
+          chunkFileNames: "assets/[name].js",
+          assetFileNames: "assets/app[extname]",
+        },
+      },
       rolldownOptions: {
         output: {
           codeSplitting: isFirmwareBuild ? false : undefined,
