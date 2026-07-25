@@ -35,28 +35,28 @@
 ### 构建
 
 ```sh
-scripts/build-firmware.sh
+west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
 ```
 
 ### 烧录
 
 RP2350 初次安装或恢复必须使用由 MCUboot 和应用 `zephyr.signed.hex` 合并得到的
 `radxa-linkr-debugger-rp2350.uf2`。构建系统自动生成此文件到
-`build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2`（同时也会把
-`zephyr.uf2` 替换为 signed hex 版本，使其可被 MCUboot 启动）。
+`build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2`。
 
-**警告**：直接使用未签名的 `zephyr.hex` 生成的 UF2（无 MCUboot 头）会导致 MCUboot
-拒绝启动，板子陷入无法响应 USB 的状态，需要物理 BOOTSEL 恢复。构建系统已自动将
-`zephyr.uf2` 替换为 signed hex 版本以防止此问题。
+**警告**：应用产物
+`build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.uf2`
+不包含完整 MCUboot 安装，绝不能用于 ROM BOOTSEL 线刷；误刷会导致板子无法正常启动，
+必须使用上述合成完整 UF2 恢复。
 
 ```sh
-picotool load -v -x radxa-linkr-debugger-rp2350.uf2
+picotool load -v -x build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2
 ```
 
 或使用 RPI-RP2 拖拽方式：
 
 ```text
-radxa-linkr-debugger-rp2350.uf2
+build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2
 ```
 
 Linux 下免 root 烧录必须按本规范第 9 节通过 VENDOR 为 `RPI` 发现实际磁盘和分区，
@@ -397,9 +397,10 @@ PY
 
 ### 2c. 强制门户发现
 
-验证 DHCP option 114（Captive Portal URI）已正确通告，且 option 3（router）和
-option 6（DNS）没有被下发。利用 tcpdump 在 NCM 接口捕获 DHCP DORA 过程。
-以下为 Linux 示例；macOS/Windows 使用对应平台 tcpdump 或 DHCP 工具：
+验证 DHCP option 114（Captive Portal URI）已正确通告。利用 tcpdump 在 NCM 接口
+捕获 DHCP DORA 过程，解析 option 3（router）、option 6（DNS）和 option 114
+（Captive Portal URI）。以下为 Linux 示例；macOS/Windows 使用对应平台 tcpdump
+或 DHCP 工具：
 
 ```sh
 # 先用 ip link 确认 NCM 接口名，再显式填写；不要自动选择第一块网卡。
@@ -434,20 +435,16 @@ sudo timeout 5s dhclient -cf "$DHCLIENT_CONF" "$NCM_IFACE"
 wait "$TCPDUMP_PID" || [ "$?" -eq 124 ]
 
 # 展开客户端请求和 ACK 的 DHCP options。不同 Wireshark 版本的字段名不同，
-# 因此保留 verbose 文本作为 HIL 记录，并确认请求 PRL 包含 114；ACK 必须
-# 包含 option 114，但不得包含 option 3 或 option 6。
+# 因此保留 verbose 文本作为 HIL 记录，并人工确认请求 PRL 包含 114，且 ACK
+# 包含 option 3、6、114 的精确值。
 timeout 5s tshark -r "$DHCP_CAPTURE" -Y 'dhcp.option.dhcp == 3' -V \
   > /tmp/linkr-dhcp-request.txt
 timeout 5s tshark -r "$DHCP_CAPTURE" -Y 'dhcp.option.dhcp == 5' -V \
   > /tmp/linkr-dhcp-ack.txt
 grep -E 'Parameter Request List|Captive-Portal|Option.*114' \
   /tmp/linkr-dhcp-request.txt
-grep -E 'Captive-Portal|Option.*114' /tmp/linkr-dhcp-ack.txt
-if grep -E 'Router|Domain Name Server|Option: \((3|6)\)' \
-  /tmp/linkr-dhcp-ack.txt; then
-  echo 'DHCP ACK unexpectedly advertises a router or DNS server' >&2
-  exit 1
-fi
+grep -E 'Router|Domain Name Server|Captive-Portal|Option.*(3|6|114)' \
+  /tmp/linkr-dhcp-ack.txt
 
 if [ "$NCM_WAS_MANAGED" = yes ]; then
   sudo timeout 5s dhclient -r "$NCM_IFACE" || true
@@ -456,12 +453,41 @@ if [ "$NCM_WAS_MANAGED" = yes ]; then
 fi
 ```
 
-客户端请求的 Parameter Request List 必须包含 option 114。ACK 必须包含 URI
-`http://172.29.203.1/captive-portal/api`，不得包含 router 或 DNS option；把
-`/tmp/linkr-dhcp-ack.txt` 留作 HIL 记录。续租后还必须确认主机仅新增
-`172.29.203.0/24` 的直连路由，没有新增经由 `172.29.203.1` 的默认路由，系统
-DNS 列表也不包含 `172.29.203.1`。上述命令会恢复原 NetworkManager 所有权；
-不要同时运行两个 DHCP client。
+客户端请求的 Parameter Request List 必须包含 option 114。ACK 必须包含 router
+`172.29.203.1`、DNS `172.29.203.1` 和 option 114 URI
+`http://172.29.203.1/captive-portal/api`；把 `/tmp/linkr-dhcp-ack.txt` 留作
+HIL 记录。上述命令会恢复原 NetworkManager 所有权；不要同时运行两个 DHCP
+client。
+
+验证 DNS 泛解析 A 记录（对任意查询名返回 `172.29.203.1`）：
+
+```sh
+timeout 5s dig +short @172.29.203.1 anything.example A
+```
+
+期望 `172.29.203.1`；若输出为空或包含非 IP 字符串则失败。
+
+验证 DNS AAAA 查询返回 NOERROR 且 answers 为空（NODATA）：
+
+```sh
+timeout 5s dig @172.29.203.1 anything.example AAAA +notcp +tries=1 +time=2 +noedns
+```
+
+通过检查输出中是否存在 `NOERROR` 且 `ANSWER: 0` 来区分 NODATA 与
+timeout/NXDOMAIN：
+
+```sh
+timeout 5s dig @172.29.203.1 anything.example AAAA +notcp +tries=1 +time=2 +noedns | python3 -c "
+import sys
+import re
+text = sys.stdin.read()
+m = re.search(r'status:\s*([A-Z]+).*?ANSWER:\s*(\d+)', text, re.S)
+assert m is not None, f'Cannot parse dig header: {text[:300]}'
+status, answers = m.group(1), int(m.group(2))
+assert status == 'NOERROR' and answers == 0, f'Expected NOERROR + 0 answers, got {status} + {answers}'
+print('AAAA NOERROR/NODATA OK')
+"
+```
 
 验证 HTTP port 80 `/captive-portal/api` 返回 `Content-Type: application/captive+json` 和 HTTP 200：
 
@@ -671,426 +697,315 @@ timeout 5s radxa-linkr-debuggerctl --json watchdog status
 目视检查蓝色状态 LED 应在大约 1 秒周期内亮灭交替。视觉观察时间窗口
 bound 到 5 秒以内（足够看到 2-3 次完整周期）。
 
-### 8b. Logic Analyzer (PIO2+DMA)
+### 8b. Logic Analyzer (Sigrok over WebSocket / TCP)
 
-Logic analyzer uses RP2350 PIO2+DMA for high-speed single-shot capture.
-50MHz and 125MHz are very short single-shot bursts; the firmware does not
-claim sustained streaming at those rates. Safe pins: GP7, GP8, GP9,
-GP10-GP20, GP29. Sample rate range: 1,000,000 - 125,000,000 Hz.
+The logic analyzer uses RP2350 PIO2+DMA for high-speed GPIO capture. The sigrok
+binary protocol runs over two transports: Web UI uses `/api/v1/live-sessions` then
+`/api/v1/ws/<slot>` binary Sigrok; native sigrok/PulseView uses raw-TCP port 5556.
 
-#### 8b.1 Free-run at 1MHz
+CONFIG pre/post are uint16, bounded 1..65535. Pre-trigger is intentionally not
+exposed in the Web UI; requests always send `pre_samples=0`. Stream mode sends
+`post_samples=0`. GP7-GP9 are not available in Sigrok modes.
 
-```sh
-timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-  --data '{"selected_pins":[13,15],"sample_rate_hz":1000000,"pre_samples":0,"post_samples":512,"trigger":"none"}' \
-  http://172.29.203.1/api/v1/logic-analyzer
-sleep 1
-timeout 5s curl -fsS http://172.29.203.1/api/v1/logic-analyzer
-```
+Bounded captures with pre=0 and post=1..512 use an exact finite PIO+DMA engine:
+trigger NONE starts immediately ungated, rising and falling edges use hardware
+IRQ-gated detection, and EITHER first snapshots the current pin level in firmware
+then waits for the opposite edge using the same 3-instruction trigger path. Because
+EITHER samples the pin level in firmware before arming the hardware trigger, there
+is an arm-time race window. Larger bounded requests (post>512) and continuous
+post=0 use ring streaming.
 
-验证 state 转换：`idle` -> `armed` -> `capturing` -> `done`，且 arm response 包含
-`requestedSampleRateHz`、`actualSampleRateHz`、`samplePeriodPs`、`backend`。
+State progression after START_RESP: START_RESP with state 2 (ARMED) or state 3
+(RUNNING for NONE), then EVENT armed (rising/falling/either only), then EVENT
+triggered, then DATA frames, then EVENT stopped. NONE trigger emits no ARMED EVENT
+and starts directly in RUNNING state.
 
-#### 8b.2 Free-run at 25MHz
+#### 8b.1 Web UI Sigrok Session Lifecycle
 
-```sh
-timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-  --data '{"selected_pins":[13,15],"sample_rate_hz":25000000,"pre_samples":0,"post_samples":512,"trigger":"none"}' \
-  http://172.29.203.1/api/v1/logic-analyzer
-sleep 1
-timeout 5s curl -fsS http://172.29.203.1/api/v1/logic-analyzer/capture
-```
-
-验证 `actualSampleRateHz` 接近 25MHz（25000000），`samplePeriodPs` 约为 40000ps / 40ns，
-实际值因 PIO clock divider 量化可能有小幅偏差。
-
-#### 8b.3 Free-run at 50MHz
+Create live session and verify sigrok binary protocol over WebSocket:
 
 ```sh
-timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-  --data '{"selected_pins":[13,15],"sample_rate_hz":50000000,"pre_samples":0,"post_samples":512,"trigger":"none"}' \
-  http://172.29.203.1/api/v1/logic-analyzer
-sleep 1
-timeout 5s curl -fsS http://172.29.203.1/api/v1/logic-analyzer/capture
+# Create live session
+timeout 5s curl -fsS -X POST http://172.29.203.1/api/v1/live-sessions
+# Response: { "ws_url": "/api/v1/ws/0", ... }
 ```
 
-50MHz 是短时单次 burst；确认 capture 完成且 `actualSampleRateHz` 接近 50MHz。
+Verify WebSocket binary frame exchange with sigrok protocol (HELLO/CAPS/CONFIG/START/STOP).
+WS sigrok and raw-TCP 5556 are mutually exclusive; one session at a time across both.
 
-#### 8b.4 Free-run at 125MHz
+#### 8b.2 Bounded Capture (post_samples=65535)
+
+Verify bounded captures with exactly 65535 samples at 100 kHz for SINGLE, FAST8,
+WIDE12 modes. Each should receive exactly 65535 samples with 0 gaps, restart true,
+HTTP health true.
+
+#### 8b.3 Stream Mode (post_samples=0)
+
+Verify stream mode runs until stopped. Stream at 1 MHz for 5 seconds, verify
+continuous sample delivery without gaps, then stop cleanly.
+
+#### 8b.4 Continuous Ceilings and 1MHz Stability
+
+Canonical 1MHz validation: stream WS SINGLE at 1MHz for 5 seconds, repeated for
+10 consecutive runs. Each run must satisfy:
+
+- JSON `overall_pass: true`
+- Effective rate >= 950 ksps
+- Zero sample-index gaps
+- Zero disconnects
+- Zero protocol-level decode errors
+- `stop_response.received: true`
+- Immediate restart capability confirmed
+- HTTP health after stop
+
+| Transport | Mode | Rate | Expected |
+|-----------|------|------|----------|
+| WebSocket | SINGLE continuous | 1 MHz | 10 consecutive 5-second runs, zero gaps/disconnects, >= 950 ksps |
+| WebSocket | FAST8 continuous | 240 kHz | 5-second no-gap |
+| WebSocket | FAST8 continuous | 241 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
+| WebSocket | WIDE12 continuous | 149 kHz | 5-second no-gap |
+| WebSocket | WIDE12 continuous | 150 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
+| TCP | SINGLE continuous | 443 kHz | 5-second no-gap (historical/representative) |
+| TCP | SINGLE continuous | 444 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
+| TCP | FAST8 continuous | 241 kHz | 5-second no-gap |
+| TCP | FAST8 continuous | 242 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
+| TCP | WIDE12 continuous | 147 kHz | 5-second no-gap |
+| TCP | WIDE12 continuous | 148 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
+
+Bounded post=512 and post=1 HIL results (exact finite engine):
+
+| Transport | Mode | Rate | Result |
+|-----------|------|------|--------|
+| WS | SINGLE NONE post=1 | actual 125.081 MHz | Exactly 1 sample, 0 gaps, restart true, HTTP health true |
+| TCP | SINGLE NONE post=1 | actual 125.081 MHz | Exactly 1 sample, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE rising post=512 | 5 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE falling post=512 | 5 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE either post=512 | 5 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE rising post=512 | 25 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE falling post=512 | 25 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE rising post=512 | 50 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE falling post=512 | 50 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE rising post=512 | 100 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE falling post=512 | 100 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE either post=512 | 100 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| TCP | SINGLE rising post=512 | 100 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE continuous | 1 MHz | 4,997,120 samples, 999,340.8 samples/s, zero sample-index gaps, zero disconnects |
+
+Adjacent WS SINGLE failure was not measured under the final architecture. Use an
+isolated runner invocation per trigger type and rate because a terminal program
+holding `/dev/ttyACM1` or case reuse can invalidate the stimulus. Verify
+`/dev/ttyACM1` is the WCH serial device and is not held by any terminal program
+before starting logic analyzer validation (use `fuser` or similar to confirm).
+
+Verify HTTP and watchdog remain responsive during capture.
+
+#### 8b.5 GP10 UART Trigger Validation
+
+GP10 trigger validation requires an isolated runner invocation per trigger type
+and rate. A terminal program holding `/dev/ttyACM1` or case reuse can invalidate
+the stimulus. Confirm `/dev/ttyACM1` is the WCH serial device and is not held
+by any terminal program before starting.
+
+Prerequisites:
+- `/dev/ttyACM1` is the WCH CH347 serial port; verify with `fuser` or `ls -la /dev/ttyACM*`
+- `/dev/ttyACM2` is the firmware CDC ACM port
+- No terminal program is attached to `/dev/ttyACM1`
+
+UART stimulus may be sent immediately after START_RESP is received and must trigger:
+because START_RESP is the trigger-safe barrier — it is emitted only after the firmware has
+acquired capture ownership and the PIO/DMA backend is successfully armed and running.
+A host that receives START_RESP may immediately transmit trigger stimulus on the UART;
+no false ARMED or RUNNING EVENT precedes this acknowledgment. A failed start returns
+FRAME_ERROR synchronously and emits no ARMED or RUNNING EVENT.
+
+Use the isolated WS HIL runner with UART stimulus injection. Repeat once per rate
+and per trigger type; do not combine multiple rates or trigger types in one run.
+
+1 MHz rising edge — isolated invocation:
 
 ```sh
-timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-  --data '{"selected_pins":[13,15],"sample_rate_hz":125000000,"pre_samples":0,"post_samples":512,"trigger":"none"}' \
-  http://172.29.203.1/api/v1/logic-analyzer
-sleep 1
-timeout 5s curl -fsS http://172.29.203.1/api/v1/logic-analyzer/capture
+timeout 5s nix-shell --run \
+  'python3 apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py \
+    --matrix ws-bounded \
+    --modes SINGLE \
+    --tcp-rates-khz 1000 \
+    --tcp-pre-samples 0 \
+    --tcp-post-samples 512 \
+    --trigger-types rising \
+    --trigger-channel 0 \
+    --uart-stimulus UUUUUUUU \
+    --uart-device /dev/ttyACM1 \
+    --uart-baud 115200 \
+    --timeout 5'
 ```
 
-125MHz 是短时单次 burst；确认 capture 完成且 `actualSampleRateHz` 接近 125MHz。
-
-#### 8b.5 Edge trigger (rising)
-
-连接信号源到引脚后执行：
+1 MHz falling edge — isolated invocation:
 
 ```sh
-timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-  --data '{"selected_pins":[13],"sample_rate_hz":1000000,"pre_samples":0,"post_samples":256,"trigger":"rising"}' \
-  http://172.29.203.1/api/v1/logic-analyzer
+timeout 5s nix-shell --run \
+  'python3 apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py \
+    --matrix ws-bounded \
+    --modes SINGLE \
+    --tcp-rates-khz 1000 \
+    --tcp-pre-samples 0 \
+    --tcp-post-samples 512 \
+    --trigger-types falling \
+    --trigger-channel 0 \
+    --uart-stimulus UUUUUUUU \
+    --uart-device /dev/ttyACM1 \
+    --uart-baud 115200 \
+    --timeout 5'
 ```
 
-验证 capture response 的 `config.triggerType` 为 `rising`。
-
-#### 8b.5a Either trigger relocation regression
-
-使用 `either` 触发模式时，PIO 程序可能被装载到非零 offset。HIL 中至少执行一次
-`trigger:"either"` arm/capture 流程，确认信号源任一边沿可触发并返回完整 capture；host
-unit test 同时覆盖非零 offset 下的 absolute jump target 编码。
-
-#### 8b.5b Capture snapshot consistency regression
-
-读取 `/api/v1/logic-analyzer/capture` 时，固件必须返回同一代 capture 的 metadata 和
-样本数据。HIL 中对同一 completed capture 连续 GET 两次，确认 `sampleCount`、
-`triggerIndex`、rate metadata 和样本数组长度一致，且没有 500 `capture_too_large` 或截断 JSON。
-
-#### 8b.6 Cancel/arm-busy
+1 MHz either edge — isolated invocation:
 
 ```sh
-# 先 arm
-timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-  --data '{"selected_pins":[13],"sample_rate_hz":1000000,"pre_samples":0,"post_samples":512,"trigger":"none"}' \
-  http://172.29.203.1/api/v1/logic-analyzer
-# 重复 arm 应返回 409 already_armed
-timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-  --data '{"selected_pins":[13],"sample_rate_hz":1000000,"pre_samples":0,"post_samples":512,"trigger":"none"}' \
-  http://172.29.203.1/api/v1/logic-analyzer
-# 验证返回 HTTP 409 和 error.code: "already_armed"
-# 取消 capture
-timeout 5s curl -fsS -X DELETE http://172.29.203.1/api/v1/logic-analyzer
-# 再次 arm 应成功
-timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-  --data '{"selected_pins":[13],"sample_rate_hz":1000000,"pre_samples":0,"post_samples":512,"trigger":"none"}' \
-  http://172.29.203.1/api/v1/logic-analyzer
+timeout 5s nix-shell --run \
+  'python3 apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py \
+    --matrix ws-bounded \
+    --modes SINGLE \
+    --tcp-rates-khz 1000 \
+    --tcp-pre-samples 0 \
+    --tcp-post-samples 512 \
+    --trigger-types either \
+    --trigger-channel 0 \
+    --uart-stimulus UUUUUUUU \
+    --uart-device /dev/ttyACM1 \
+    --uart-baud 115200 \
+    --timeout 5'
 ```
 
-#### 8b.7 Pre-trigger arm/release cycle
-
-pre_samples > 0 且 edge trigger（≤25 MHz）应成功 arm。由于 PIO `in pins`
-指令需要 pad function 为 PIO peripheral（GPIO API PUT 切换到 SIO 会断开
-PIO 输入），HIL 中无法通过 GPIO 环回验证真实触发；只验证 arm/release 状态转换。
+2 MHz rising edge — isolated invocation:
 
 ```sh
-# pre_samples > 0 + rising trigger 应 arm 成功
-timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-  --data '{"selected_pins":[13],"sample_rate_hz":1000000,"pre_samples":32,"post_samples":32,"trigger":"rising"}' \
-  http://172.29.203.1/api/v1/logic-analyzer
-# 验证返回 ok:true, action:armed
-# release
-timeout 5s curl -fsS -X DELETE http://172.29.203.1/api/v1/logic-analyzer
-# 再次 arm 应成功（无 EBUSY 卡死）
-timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-  --data '{"selected_pins":[13],"sample_rate_hz":1000000,"pre_samples":32,"post_samples":32,"trigger":"rising"}' \
-  http://172.29.203.1/api/v1/logic-analyzer
-timeout 5s curl -fsS -X DELETE http://172.29.203.1/api/v1/logic-analyzer
+timeout 5s nix-shell --run \
+  'python3 apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py \
+    --matrix ws-bounded \
+    --modes SINGLE \
+    --tcp-rates-khz 2000 \
+    --tcp-pre-samples 0 \
+    --tcp-post-samples 512 \
+    --trigger-types rising \
+    --trigger-channel 0 \
+    --uart-stimulus UUUUUUUU \
+    --uart-device /dev/ttyACM1 \
+    --uart-baud 115200 \
+    --timeout 5'
 ```
 
-#### 8b.7a Pre-trigger rate cap
-
-pre_samples > 0 且 rate > 25 MHz 应返回 HTTP 400 invalid_config。
+2 MHz falling edge — isolated invocation:
 
 ```sh
-timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-  --data '{"selected_pins":[13],"sample_rate_hz":25000001,"pre_samples":10,"post_samples":512,"trigger":"rising"}' \
-  http://172.29.203.1/api/v1/logic-analyzer
-# 验证返回 HTTP 400 和 error.code: "invalid_config"
+timeout 5s nix-shell --run \
+  'python3 apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py \
+    --matrix ws-bounded \
+    --modes SINGLE \
+    --tcp-rates-khz 2000 \
+    --tcp-pre-samples 0 \
+    --tcp-post-samples 512 \
+    --trigger-types falling \
+    --trigger-channel 0 \
+    --uart-stimulus UUUUUUUU \
+    --uart-device /dev/ttyACM1 \
+    --uart-baud 115200 \
+    --timeout 5'
 ```
 
-#### 8b.8 SCPI-over-WebSocket 桥
-
-`/api/v1/logic-analyzer/stream` REST 端点与 `logic-chunk` WebSocket 消息已
-移除，浏览器统一走与 PulseView 相同的示波器协议：`ws://<board>/api/v1/scpi`
-（文本或二进制帧发命令，二进制帧收响应，流式语义拼接后按行与 IEEE488 块
-解析）。TCP（tcp-raw 端口 80）与 WebSocket 两种传输互斥，同一时间只允许
-一个 SCPI 会话。
-
-WS 桥功能回归：用 WebSocket 客户端连接 `/api/v1/scpi`，发送 `*IDN?` 应收
-到 DS1102D 身份串；依次发送 `:TIM:SCAL 0.00002`、`:TRIG:EDGE:SOUR D0`、
-`:TRIG:EDGE:SLOP NEG`、`:RUN` 后 `:WAV:DATA? DIG`，应收到 `#41200` 头加
-1200 字节帧，D0 下降沿位于样本 300（GP10 注入 115200 'U'）；连续请求 6
-帧全部成功，关闭后 GET /api/v1/logic-analyzer 显示 `state: "idle"`（会话
-收尾不得泄漏 LA 所有权）。
-
-单会话互斥回归：一个 SCPI-over-WS 会话存活期间，第二个 WS 或 TCP SCPI 连
-接应被拒绝/关闭，首个会话结束后新连接应立即可用。
-
-浏览器端到端回归（Playwright 或手动）：右侧工作区 **Logic Analyzer** 页
-签选择引脚后点 **Arm capture**，应显示 "Captured 600 samples"（scope 帧
-固定 600 样本，触发时 300 前 + 300 后）与波形；点 **Stream** 应出现
-"streaming"徽章、持续增长的样本计数与实时波形（svg path）；点
-**Stop stream** 徽章消失，控制台不应出现 `Close received after close`。
-连续 3 次启停循环均应正常。
-
-速率边界回归：流式帧循环（trigger none）在 1 MHz 下连续运行 30 秒板子
-不应复位；UI 在 >25 MHz 时禁用流式按钮（帧循环在上位机侧节流，固件不再
-有独立的流式速率上限）。
-
-#### 8b.9 HTTP/watchdog responsiveness during capture
-
- 在 capture 期间（armed 或 capturing 状态）轮询 HTTP 和 watchdog：
-
- ```sh
- timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-   --data '{"selected_pins":[13],"sample_rate_hz":1000000,"pre_samples":0,"post_samples":512,"trigger":"none"}' \
-   http://172.29.203.1/api/v1/logic-analyzer
- # capture 期间验证 HTTP API 仍响应
- timeout 5s curl -fsS http://172.29.203.1/api/v1/status
- timeout 5s curl -fsS http://172.29.203.1/api/v1/watchdog
- # 验证返回正常 JSON（不是超时或错误）
- ```
-
-#### 8b.10 HTTP fragment POST for logic analyzer (TCP fragmentation regression)
-
- 验证逻辑分析仪 POST 正确处理 TCP 分片请求体，使用 Python `http.client` 强制将
- Content-Length 请求体分成多个 sendall 调用发送（模拟浏览器行为）：
-
- ```python
- import http.client
- import json
- import time
-
- BOARD = "172.29.203.1"
- PORT = 80
- PATH = "/api/v1/logic-analyzer"
-
- BODY = (
-     '{"selected_pins":[13,15],'
-     '"sample_rate_hz":1000000,'
-     '"pre_samples":0,'
-     '"post_samples":512,'
-     '"trigger":"none"}'
- )
- CL = len(BODY)
- def release():
-     conn = http.client.HTTPConnection(BOARD, PORT, timeout=5)
-     try:
-         conn.request("DELETE", PATH)
-         response = conn.getresponse()
-         response.read()
-         assert response.status == 200, f"DELETE cleanup returned {response.status}"
-     finally:
-         conn.close()
-
- # Clear stale state first so repeated runs cannot fail with already_armed.
- release()
-
- conn = http.client.HTTPConnection(BOARD, PORT, timeout=5)
- try:
-     conn.putrequest("POST", PATH)
-     conn.putheader("Host", BOARD)
-     conn.putheader("Content-Type", "application/json")
-     conn.putheader("Content-Length", str(CL))
-     conn.putheader("Connection", "close")
-     conn.endheaders()
-
-     # Force the request body through three separate TCP writes.
-     chunk_size = (CL + 2) // 3
-     for i in range(3):
-         chunk = BODY[i * chunk_size : (i + 1) * chunk_size]
-         if chunk:
-             conn.sock.sendall(chunk.encode())
-         time.sleep(0.05)
-     response = conn.getresponse()
-     payload = json.loads(response.read())
-     assert response.status == 200, f"Expected HTTP 200, got {response.status}: {payload}"
-     assert payload.get("ok") is True, f"Expected ok:true, got: {payload}"
-     print(f"Fragmented POST succeeded: {payload}")
- finally:
-     conn.close()
-     release()
- ```
-
- 所有网络操作设置 5 秒超时，`http.client` 会正确处理 Content-Length 和 chunked
- 响应。
- 清理步骤释放 capture 状态，使重复运行安全。
-
-#### 8b.11 Browser WASM decoder network and annotation checks
-
- 验证浏览器可以加载 WASM decoder 资源。使用 GET（不用 HEAD）直接请求，
- 捕获响应头并验证 Content-Type 和 Content-Encoding：
-
- ```sh
- timeout 5s curl -fsS --compressed -D /tmp/decoder-js.headers \
-   -o /tmp/logic-decoder.js \
-   http://172.29.203.1/assets/decoder/logic-decoder.js
- timeout 5s curl -fsS --compressed -D /tmp/decoder-wasm.headers \
-   -o /tmp/logic-decoder.wasm \
-   http://172.29.203.1/assets/decoder/logic-decoder_bg.wasm
-
- python3 - <<'PY'
- from pathlib import Path
-
- js_headers = Path("/tmp/decoder-js.headers").read_text().lower()
- wasm_headers = Path("/tmp/decoder-wasm.headers").read_text().lower()
- assert " 200 " in js_headers.splitlines()[0]
- assert "content-type: text/javascript" in js_headers
- assert "content-encoding: gzip" in js_headers
- assert " 200 " in wasm_headers.splitlines()[0]
- assert "content-type: application/wasm" in wasm_headers
- assert "content-encoding: gzip" in wasm_headers
- assert Path("/tmp/logic-decoder.wasm").read_bytes()[:4] == b"\x00asm"
- assert b"logic-decoder_bg.wasm" in Path("/tmp/logic-decoder.js").read_bytes()
- print("Decoder JS/WASM headers, gzip decoding, glue reference, and WASM magic are valid")
- PY
- ```
-
- 验证浏览器控制台没有 WASM 加载错误，且 annotation 可以正确渲染在 waveform view 中。
- 此测试需要在板载页面的 Terminal workspace 中完成实际的 capture 和 decode 流程。
-
-### 8c. PulseView 原生接入（rigol-ds 仿真）
-
-固件在端口 80 上以首字节分流复用 HTTP 与 Rigol DS1102D SCPI 仿真
-（rigol-ds 驱动，`tcp-raw`）。验证使用 sigrok-cli，配合 GP10（D0，J16_PIN1）上的
-115200 波特 'U' 连续注入（start bit 提供周期性下降沿）。
-
-前提：`nix-shell -p sigrok-cli`，注入脚本写 `/dev/ttyACM1`（115200 连续
-'U'）。下述命令中 `$SIG` 为 sigrok-cli 路径。
-
-#### 8c.1 扫描识别
+2 MHz either edge — isolated invocation:
 
 ```sh
-$SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 --scan
-# 应识别出 "Rigol Technologies DS1102D"，18 通道（CH1/CH2 + D0-D15）
+timeout 5s nix-shell --run \
+  'python3 apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py \
+    --matrix ws-bounded \
+    --modes SINGLE \
+    --tcp-rates-khz 2000 \
+    --tcp-pre-samples 0 \
+    --tcp-post-samples 512 \
+    --trigger-types either \
+    --trigger-channel 0 \
+    --uart-stimulus UUUUUUUU \
+    --uart-device /dev/ttyACM1 \
+    --uart-baud 115200 \
+    --timeout 5'
 ```
 
-#### 8c.2 快时基硬件预触发（≤25 MHz）
+For each rate and trigger-type combination:
+1. Verify JSON `overall_pass: true`
+2. Verify exactly 512 samples captured
+3. Verify zero sample-index gaps
+4. Verify zero disconnects
+5. Verify `stop_response.received: true`
+6. Verify trigger offset is valid (trigger index present and reasonable, offset 0 for idle-biased stimulus)
+7. Verify immediate restart capability with no artificial delay: after a 100 MHz
+   bounded `post=513` capture and STOP/close, a fresh-session `post=1` START must
+   succeed without Sigrok ERROR code 5/detail 116
+8. Verify HTTP health after stop
+
+Verify trigger offset validation: with the UART idle-biased stimulus at the
+trigger channel, the reported `triggerIndex` must be within the expected range and
+`triggerOffset` must be 0. Re-arm and re-trigger to confirm offset remains
+consistent.
+
+CDC `/dev/ttyACM2` BOOTSEL and combined-UF2 restore: the final HIL confirmed
+that issuing `bootloader` from the CDC ACM shell on `/dev/ttyACM2` entered ROM
+BOOTSEL as the RPI vendor disk, and copying the combined UF2 restored HTTP
+after the board re-enumerated and the flash health check passed.
+
+#### 8b.6 Owner/Mutual-Exclusion
+
+Verify only one sigrok session at a time across WebSocket and raw-TCP 5556.
+When one transport holds the session, the other should return BUSY error.
+After session closes, new connections should be immediately available.
+
+#### 8b.7 HTTP/WS Health During Capture
+
+During active capture, verify HTTP API endpoints remain responsive:
+- `GET /api/v1/status`
+- `GET /api/v1/watchdog`
+
+Both should return normal JSON, not timeouts or errors.
+
+#### 8b.8 Native Sigrok (TCP 5556)
+
+Verify sigrok-cli connects via raw-TCP port 5556:
 
 ```sh
-$SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
-  --config timebase='20 us' --config triggersource=D0 --config triggerslope=f \
-  --frames 1 --channels D0 -o /tmp/cap.sr
-$SIG -i /tmp/cap.sr -O csv
-# 验证：600 样本，D0 下降沿精确位于样本 300（pre=300/post=212），
-# 波形呈现 115200 'U' 的周期位型（约 43 样本一对同向边沿）
+timeout 5s sigrok-cli -d linkr-debugger:conn=tcp-raw/172.29.203.1/5556 --scan
 ```
 
-#### 8c.3 慢时基 :TRIG:STAT? 轮询路径（≥50 ms/div）
+Verify bounded capture with exactly 65535 samples at 100 kHz, 0 gaps, restart
+healthy, HTTP healthy.
+
+#### 8b.9 Browser WASM Decoder
+
+Verify WASM decoder resources load correctly:
 
 ```sh
-$SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
-  --config timebase='50 ms' --config triggersource=D0 --config triggerslope=f \
-  --frames 3 --channels D0 -o /tmp/cap.sr
-# 验证：3 帧均返回（驱动两阶段等待 RUN->TD 不超时），每帧边沿位于样本 300
+timeout 5s curl -fsS --compressed -D /tmp/decoder-js.headers \
+  -o /tmp/logic-decoder.js \
+  http://172.29.203.1/assets/decoder/logic-decoder.js
+timeout 5s curl -fsS --compressed -D /tmp/decoder-wasm.headers \
+  -o /tmp/logic-decoder.wasm \
+  http://172.29.203.1/assets/decoder/logic-decoder_bg.wasm
+
+python3 - <<'PY'
+from pathlib import Path
+
+js_headers = Path("/tmp/decoder-js.headers").read_text().lower()
+wasm_headers = Path("/tmp/decoder-wasm.headers").read_text().lower()
+assert " 200 " in js_headers.splitlines()[0]
+assert "content-type: text/javascript" in js_headers
+assert "content-encoding: gzip" in js_headers
+assert " 200 " in wasm_headers.splitlines()[0]
+assert "content-type: application/wasm" in wasm_headers
+assert "content-encoding: gzip" in wasm_headers
+assert Path("/tmp/logic-decoder.wasm").read_bytes()[:4] == b"\x00asm"
+assert b"logic-decoder_bg.wasm" in Path("/tmp/logic-decoder.js").read_bytes()
+print("Decoder JS/WASM headers, gzip decoding, glue reference, and WASM magic are valid")
+PY
 ```
 
-#### 8c.4 AUTO 回退（无有效触发源）
-
-```sh
-$SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
-  --config timebase='20 us' --frames 1 --channels D0 -o /tmp/cap.sr
-# 验证：默认触发源 D0 无边沿时约 100ms 后仍返回一帧非触发数据，
-# 不应出现采集超时或连接断开
-```
-
-#### 8c.5 >25 MHz 突发触发
-
-```sh
-$SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
-  --config timebase='1 us' --config triggersource=D0 --config triggerslope=f \
-  --frames 1 --channels D0 -o /tmp/cap.sr
-# 验证：返回 600 样本（单次 burst 512 + 软件边沿对齐到 300 并填充）；
-# 无边沿窗口时同样返回数据（AUTO），不得报错断开
-```
-
-#### 8c.6 GP29 模拟通道（CH1）
-
-```sh
-$SIG -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
-  --config timebase='1 ms' --frames 1 --channels CH1 -o /tmp/cap.sr
-$SIG -i /tmp/cap.sr -O csv
-# 验证：600 个模拟电压样本（浮空引脚应为缓变中电平），
-# 板端日志不得出现 "GP29 ADC setup failed"
-```
-
-#### 8c.7 端口 80 复用回归
-
-SCPI 会话期间与之后，浏览器/CLI 路径（HTTP 经泵转发到 8080）必须正常：
-`curl http://172.29.203.1/api/v1/status` 返回 200；SCPI-over-WebSocket
-（`/api/v1/scpi`）与 TCP SCPI 会话在各自关闭后均照常工作；全部 sigrok
-测试结束后 GET /api/v1/logic-analyzer 应显示 `state: "idle"`（rigol 会话
-不得泄漏 LA 所有权）。
-
-### 8d. 深采集（SPI flash，厂商 SCPI）
-
-深采集把采样写入 2 MB storage flash 分区（数字 ≤25 kHz、模拟 ≤10 kHz，
-GP10 注入 115200 'U' 用于触发验证）。
-
-#### 8d.1 触发深采集全流程
-
-用 WS 或 TCP SCPI 客户端执行：
-
-```text
-:TRIG:EDGE:SOUR D0
-:TRIG:EDGE:SLOP NEG
-:LINKR:DEEP:START 25000 2
-# 轮询 :LINKR:DEEP:STATUS? 直到 DONE（PREPARING 阶段约 1-10 秒）
-:LINKR:DEEP:STATUS?
-# 期望：DONE <written> <trig_idx> 25000 0，触发时 written ≈ trig_idx + 25000
-:LINKR:DEEP:DATA? 0 8192
-# 期望：8192×2 字节块，D0 位呈现 115200 'U' 周期边沿
-```
-
-验证：同一窗口重复 DATA? 返回完全相同（flash 持久化）；`written` 之后的
-区域返回统一的末样本填充；STATUS 中 `dropped` 为 0；LA 状态保持 idle
-（深采集不占用 LA）。
-
-#### 8d.2 无信号满窗口
-
-不给触发源信号时 START 应在 `rate × duration` 满窗口后 DONE
-（如 25000 Hz × 2 s = 50000 样本）。
-
-#### 8d.3 浏览器 Deep 按钮 E2E
-
-Logic Analyzer 页签选择 GP10 并设 falling 触发后点 **Deep**：应依次显示
-PREPARING/CAPTURING/download 进度，完成后徽标显示 "deep <rate> <count>
-samples" 与 trigger@ 位置，实时波形出现且可窗口解码，CSV/.sr 导出可用
-（导出文件应包含与徽标一致的样本数）。
-
-### 8e. BeagleLogic 仿真（TCP 5555，无限连续视图）
-
-固件在 TCP 5555 端口仿真 BeagleLogic TCP 协议（文本命令 + 裸样本流，
-`-d beaglelogic:conn=tcp-raw/172.29.203.1/5555`）。GP10（P8_45，通道 0）
-注入 115200 'U'。
-
-#### 8e.1 扫描与协商
-
-```sh
-sigrok-cli -d beaglelogic:conn=tcp-raw/172.29.203.1/5555 --scan
-# 期望：beaglelogic - BeagleLogic 1.0 with 14 channels
-```
-
-#### 8e.2 ONE_SHOT 采集
-
-```sh
-sigrok-cli -d beaglelogic:conn=tcp-raw/172.29.203.1/5555 \
-  --config samplerate=100000 --samples 200000 --channels P8_45 -o /tmp/bl.sr
-sigrok-cli -i /tmp/bl.sr -O csv
-# 期望：200000 样本，P8_45 呈现 115200 'U' 的 2-3 样本交替边沿模式
-```
-
-#### 8e.3 连续流式持续速率（原始 socket）
-
-手工连接 5555：`version`→`samplerate <N>`→`get`，计 5 秒接收字节数：
-- 8-bit @100kHz：应 ≥95 kHz
-- 16-bit @100kHz：应 ≥95 kHz；@150kHz：应 ≥140 kHz
-- @204800：best-effort（≥100 kHz，允许 dropped）
-关闭应干净（`close` 后 LA 状态 idle，下一次连接立即可用）。
-
-#### 8e.4 单会话互斥与清理
-
-一路流式会话存活期间第二连接应被拒绝/不可用；首连接关闭后（即使客户端
-异常断开无 `close`），新连接应在秒级内可用，且不得遗留 LA 占用
-（GET /api/v1/logic-analyzer 显示 idle）。
-
-### 9. BOOTSEL 进入
+### 9. BOOTSEL Entry
 
 ```sh
 timeout 5s curl -fsS -X POST http://172.29.203.1/api/v1/bootloader || true
@@ -1120,7 +1035,7 @@ done
 RPI_PART=$(timeout 5s lsblk -lnpo NAME,TYPE "$RPI_DISK" | awk '$2 == "part" { print $1; exit }')
 [ -n "$RPI_PART" ] || { echo "BOOTSEL partition not found"; exit 1; }
 RPI_MOUNT=$(timeout 5s udisksctl mount -b "$RPI_PART" | awk -F" at " '{print $2}' | tr -d '[:space:]')
-FLASH_UF2=radxa-linkr-debugger-rp2350.uf2
+FLASH_UF2=build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2
 cp "$FLASH_UF2" "$RPI_MOUNT/"
 ```
 
@@ -1446,7 +1361,7 @@ UF2 copy to RPI-RP2 mount (requires gate):
 ```sh
 ./skills/radxa-linkr-debugger/scripts/web-ota-hil.sh \
   --flow flash-uf2 \
-  --uf2 radxa-linkr-debugger-rp2350.uf2 \
+  --uf2 build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 \
   --execute --allow-flash
 ```
 
@@ -1515,6 +1430,35 @@ VIN 1.8V 切换不属于默认 smoke test 范围；它需要目标板电压兼�
 - 实测命令与返回值摘要
 - 是否通过 BOOTSEL 与 CDC ACM fallback
 - 失败项与风险说明
+
+## Final Post-Fix HIL Evidence
+
+The following results were obtained from actual post-fix HIL runs against the final
+firmware build. The dated repository report at `doc/testing/results/2026-07-25-logic-analyzer-finite-hil.md`
+preserves pass summaries, SHA-256 identities, and the post-patch transport-cleanup regression
+results; the original JSON outputs named under `/tmp` are not checked in.
+
+Full logic analyzer finite HIL evidence report (2026-07-25):
+`doc/testing/results/2026-07-25-logic-analyzer-finite-hil.md`
+
+### WS SINGLE 1MHz Continuous (`/tmp/linkr-final-ws-1mhz.json`)
+Overall pass, 4,995,072 samples, 998,963.5 samples/s effective rate,
+zero sample-index gaps, zero disconnects, STOP response received, immediate restart
+and HTTP health confirmed.
+
+### GP10 UART Trigger Validation (`/tmp/linkr-final-gp10-*.json`)
+Six isolated bounded captures at 1 MHz and 2 MHz, rising/falling/either trigger types,
+each with 4096 samples and trigger offset 0. All six passes:
+`/tmp/linkr-final-gp10-1mhz-rising.json`, `/tmp/linkr-final-gp10-1mhz-falling.json`,
+`/tmp/linkr-final-gp10-1mhz-either.json`, `/tmp/linkr-final-gp10-2mhz-rising.json`,
+`/tmp/linkr-final-gp10-2mhz-falling.json`, `/tmp/linkr-final-gp10-2mhz-either.json`.
+
+### TCP Bounded 100kHz (`/tmp/linkr-final-tcp-bounded.json`)
+All three modes (SINGLE, FAST8, WIDE12) received exactly 65535 samples with zero
+sample-index gaps, stop response received, immediate restart and HTTP health confirmed.
+
+These results demonstrate the final implementation against the reference smoke test
+criteria. They are not projections or estimates.
 
 ## 参考来源
 
