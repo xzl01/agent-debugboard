@@ -77,17 +77,13 @@ For this repository, the firmware build and flash locations are fixed:
 
 - Canonical build directory: `./build/radxa_linkr_debugger/`
 - Combined MCUboot+app UF2 (safe for BOOTSEL): `./build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2`
-- App-only UF2 (auto-regenerated from signed hex): `./build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.uf2`
+- App-only UF2 (not for BOOTSEL flashing): `./build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.uf2`
 - RP2350 OTA release asset: `radxa-linkr-debugger-rp2350-ota.bin`
 
-The build system auto-generates both UF2 artifacts via a post-build step.
-The app-only UF2 is regenerated from `zephyr.signed.hex` (not the raw
-`zephyr.hex`), so it is MCUboot-bootable and safe for BOOTSEL flashing.
-The combined UF2 includes MCUboot and the signed application.
-
-**Never BOOTSEL-flash a UF2 built from the raw unsigned `zephyr.hex`** —
-MCUboot rejects it (no header magic) and the board enters an unrecoverable
-state requiring physical BOOTSEL recovery.
+The build system auto-generates both UF2 artifacts via a post-build step. For
+ROM BOOTSEL flashing, always use the combined UF2 because it includes MCUboot
+and the application. Do not flash the app-only `zephyr.uf2` through ROM BOOTSEL;
+it does not install the bootloader and can brick the board.
 
 When an agent builds firmware, always use that exact build directory. For RP2350
 sysbuild, the MCUboot hex is under
@@ -411,72 +407,109 @@ curl -fsS "$BOARD_URL/api/v1/adc/read?channel=12v_out"
 curl -fsS "$BOARD_URL/api/v1/adc/read?channel=20v_out"
 ```
 
-Use the firmware logic analyzer for RP2350 PIO2+DMA high-speed single-shot
-capture. It is not sustained streaming; 50MHz and 125MHz are very short bursts.
-HTTP capture is capped at 512 samples, supports up to 16 GPIO channels from the
-safe allowlist (GP7-GP9, GP10-GP20, GP29), sample rates from 100,000 through
-125,000,000 Hz (100 kHz-125 MHz), and accepts edge trigger names `none`, `rising`,
-`falling`, and `either`. Pre-trigger sampling is supported for edge triggers at
-≤25 MHz: set `pre_samples > 0` with `rising`, `falling`, or `either` to capture
-samples before and after the trigger edge (capped at 512 total). The arm
-response includes `requestedSampleRateHz`, `actualSampleRateHz`, `samplePeriodPs`,
-and `backend`. The capture response additionally includes `sampleCount`,
-`triggerIndex`, and a `config` object.
+Use the firmware logic analyzer for RP2350 PIO2+DMA high-speed GPIO capture.
+The sigrok binary protocol runs over two transports: Web UI uses WebSocket
+(`/api/v1/live-sessions` → `/api/v1/ws/<slot>`); native sigrok/PulseView uses
+raw-TCP port 5556. These transports are mutually exclusive; only one sigrok
+session is allowed at a time across both paths.
 
-The logic analyzer lives in the Terminal workspace in the Web UI, not under
-Advanced & recovery. Captured samples can be decoded in-browser using the
-project-owned Rust/WASM decoder served at stable URLs:
+On the WebSocket path, one binary WebSocket message may carry multiple complete
+inner Sigrok request or response frames concatenated in FIFO order. Host response
+parsers treat the payload as a byte stream, emit every complete inner Sigrok frame
+in order, and may preserve an incomplete trailing inner response frame across receive
+calls. Firmware request handling, however, rejects fragmented WebSocket messages and
+truncated, oversized, or malformed inner request frames rather than preserving
+them; it does not concatenate partial inner frames.
+
+CONFIG pre/post are uint16. Pre-trigger is intentionally not exposed in the Web
+UI; requests always send `pre_samples=0`. Bounded captures use
+`post_samples=1..65535`. Stream mode sends `post_samples=0` as the unlimited
+sentinel and runs until stopped. Bounded pre=0 and post=1..512 use an exact finite
+PIO+DMA engine: trigger NONE starts immediately ungated, rising and falling edges
+use hardware IRQ-gated detection, and EITHER first snapshots the current pin level
+in firmware then waits for the opposite edge using the same 3-instruction trigger
+path. Because EITHER samples the pin level in firmware before arming the hardware
+trigger, there is an arm-time race window. Larger bounded requests (post>512) and
+continuous post=0 use ring streaming.
+
+GP7-GP9 are not available in Sigrok modes. Web UI sigrok is limited to
+GP10-GP20 plus GP29. FAST8 mode captures on GP10-GP17; WIDE12 mode adds
+GP18-GP20 plus GP29 as bit 11.
+
+On RP2350 the capture backend uses a 32768-byte aligned hardware DMA write ring
+(`uint32_t[8192]`, ring `size_bits=15`) with the official RP2350 DMA
+`TRANS_COUNT` ENDLESS mode. If firmware sees definite overrun, possible overrun,
+transport backpressure, explicit queue overrun, or bounded-capture completion,
+it emits a terminal OVERRUN/ERROR/STOPPED event and stops. DATA and EVENT
+sample indices wrap modulo 24 bits; wrap is not an error.
+
+START_RESP is the trigger-safe barrier. It is emitted only after the firmware has
+acquired capture ownership and the PIO/DMA backend is successfully armed and
+running. A host that receives START_RESP may immediately send UART trigger stimulus
+or any other action that requires the capture engine to be ready; no false ARMED
+or RUNNING EVENT will precede it. A failed start returns a synchronous FRAME_ERROR
+and no ARMED or RUNNING EVENT. After START_RESP, the ordered state progression is:
+START_RESP with state 2 (ARMED) or state 3 (RUNNING for NONE), then EVENT armed
+(rising/falling/either only), then EVENT triggered, then DATA, then EVENT stopped.
+NONE is ungated immediate and starts directly in RUNNING state without emitting
+an ARMED EVENT; EITHER follows the normal ARMED→TRIGGERED path after first
+snapshotting the level.
+
+Measured continuous results on representative HIL setup: WebSocket
+SINGLE 1MHz (10 consecutive 5-second runs, ~4.991M-4.997M samples each,
+998.16-998.70 ksps effective, zero sample-index gaps, zero disconnects,
+STOP response, immediate restart and HTTP health), FAST8 240 kHz,
+WIDE12 149 kHz no-gap continuous ceilings; historical/representative raw-TCP
+SINGLE 443 kHz, FAST8 241 kHz, WIDE12 147 kHz no-gap continuous ceilings.
+Bounded captures at 100 kHz with post=65535 delivered exactly 65535 samples with
+zero gaps for all modes and transports. Bounded pre=0 and post=1..512 HIL results:
+WS SINGLE rising/falling post=512 at 5, 25, 50, 100 MHz all passed; WS SINGLE
+EITHER post=512 at 5 and 100 MHz passed; TCP SINGLE rising post=512 at 100 MHz
+passed; WS and TCP NONE post=1 at actual 125.081 MHz passed; WS continuous 1 MHz
+5-second run produced 4,997,120 samples at 999,340.8 samples/s with zero gaps
+or disconnects.
+
+**Transport failure handling**: on the WebSocket transport, all Sigrok control,
+response, and event sends use a 1000ms timeout. A send failure disconnects the
+client, releases capture ownership, and resets its stream queue. This bounded-send
+cleanup is state-independent and does not alter protocol request/response ordering.
+Do not hide capture lifecycle failures by sleeping before a restart probe. A fresh
+session must be able to START immediately after the prior STOP/close boundary;
+Sigrok ERROR code 5 with detail 116 is an ADC sampler pause-ack timeout and fails
+the restart check.
+Post-patch regression confirmed: canonical sysbuild passed; final app flash 657020 B,
+RAM 511856 B; only the combined UF2 (`build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2`)
+was flashed. Forced WS RST immediately after a 125MHz NONE/post=1 START: a fresh session 2s
+later acquired ownership, received one sample at actual 125.081 MHz with 0 gaps, received
+STOP_RESP, and reported HTTP health. Normal WS SINGLE rising pre=0/post=512 at requested
+100 MHz passed with exactly 512 samples, trigger index 0, 0 gaps, no DATA/EVENT before
+START_RESP, immediate restart, and HTTP health. HTTP BOOTSEL entry succeeded (picotool
+lacked permissions; combined UF2 copied through udisksctl); CDC `/dev/ttyACM2` `bootloader`
+command entered ROM BOOTSEL (serial read ended with expected EIO on USB disconnect);
+same combined UF2 restored normal HTTP startup.
+
+**Architecture**: the LA sink uses 8 DATA plus 1 terminal fixed slots; WS SINGLE
+each DATA slot carries up to 2048 packed samples; qdepth=2 urgent wake; sink
+consumer priority 7 and blocks naturally on full chunks; legacy callback, TCP, and
+non-SINGLE paths use 1024-sample chunks at priority 8 with yield; sender applies
+one-byte RLE with BIT_PACK fallback; 6144-byte coalescing buffer; explicit
+terminal on buffer pressure; no silent drops.
+
+The logic analyzer lives in the Terminal workspace in the Web UI. Captured
+samples can be decoded in-browser using the project-owned Rust/WASM decoder
+served at stable URLs:
 - `/assets/decoder/logic-decoder.js` (served with JS MIME)
 - `/assets/decoder/logic-decoder_bg.wasm` (served with `application/wasm` MIME, gzip-compressed)
 
 The decoder supports UART, I2C, and SPI protocols only; it is not a
 libsigrokdecode Python plugin compatibility layer.
 
-PulseView / sigrok-cli can also connect directly with no client-side changes:
-the firmware emulates a Rigol DS1102D (rigol-ds driver) over raw TCP on port 80
-(shared with the web server via first-byte multiplexing). Use
-`sigrok-cli -d rigol-ds:conn=tcp-raw/<board-ip>/80 ...`; digital channels
-channels follow physical J16 connector order: D0-D11 = J16_PIN1-PIN12 (GP10..GP15 pattern ending with GP29), D12-D14 = J13 CON pins (GP7/GP8/GP9), and CH1 is the GP29 analog input. GP10 (J16_PIN1) is channel D0. Edge
-triggers use scope-style config keys (`--config triggersource=D0
---config triggerslope=f`) with real hardware pre-trigger at ≤25 MHz, burst
-trigger at >25 MHz, and AUTO fallback when no edge arrives. Use `--frames`,
-not `--samples`. Deep captures (up to one million samples into the 2 MB
-SPI-flash storage partition, ≤25 kHz digital / ≤10 kHz analog with edge or
-level trigger) use vendor SCPI commands `:LINKR:DEEP:START <rate> [seconds]`,
-`:LINKR:DEEP:STATUS?`, `:LINKR:DEEP:DATA? <off> <count>`, `:LINKR:DEEP:STOP`
-on the same channel; stock sigrok memory mode is not usable with the DS1102D
-identity (driver V2 samplerate limitation). For the unlimited continuous
-view in PulseView use the BeagleLogic emulation on TCP port 5555
-(`-d beaglelogic:conn=tcp-raw/<board-ip>/5555`, 14 digital channels GP7-GP20,
-8/16-bit samples, full rate to ~150 kHz 16-bit). Full semantics and limits:
-`doc/logic-analyzer.md`.
+For native sigrok/PulseView, connect via raw-TCP port 5556:
+```sh
+sigrok-cli -d linkr-debugger:conn=tcp-raw/<board-ip>/5556 --scan
+```
 
- ```sh
- timeout 5s curl -fsS -X DELETE "$BOARD_URL/api/v1/logic-analyzer"
- timeout 5s curl -fsS -X POST -H 'Content-Type: application/json' \
-   --data '{"selected_pins":[13,15],"sample_rate_hz":1000000,"pre_samples":0,"post_samples":512,"trigger":"either"}' \
-   "$BOARD_URL/api/v1/logic-analyzer"
- timeout 5s curl -fsS "$BOARD_URL/api/v1/logic-analyzer"
- timeout 5s curl -fsS "$BOARD_URL/api/v1/logic-analyzer/capture"
- ```
-
- For recovery or diagnostics, do not POST again to release an active capture.
- Poll status first, then explicitly release with DELETE when you want to discard
- the armed/capturing state:
-
- ```sh
- timeout 5s curl -fsS "$BOARD_URL/api/v1/logic-analyzer"
- timeout 5s curl -fsS -X DELETE "$BOARD_URL/api/v1/logic-analyzer"
- timeout 5s curl -fsS "$BOARD_URL/api/v1/logic-analyzer"
- ```
-
- Repeated `POST /api/v1/logic-analyzer` while the analyzer is `armed` or
- `capturing` returns HTTP 409 with `error.code` set to `already_armed`. Invalid
- JSON, invalid values, and unsupported combinations such as edge trigger plus
-  `pre_samples > 0` with `trigger: "none"` or `pre_samples > 0` with rate >25 MHz
-  return HTTP 400 with `error.code`
- set to `invalid_config`. Unexpected internal arm failures remain HTTP 500 with
- `error.code` set to `arm_failed`.
+Full semantics and limits: `doc/logic-analyzer.md`.
 
 High-rate recording is a separate websocket workflow. Use the Rust CLI when you
 need to write NDJSON telemetry records to a file. It defaults to 1000Hz and
@@ -638,6 +671,8 @@ board-specific exact notes such as `CON_MAS` or `J16_PIN1`.
 
 Enter BOOTSEL mode for flashing.
 
+**⚠️ 重要：线刷必须使用合成完整 UF2 文件 `radxa-linkr-debugger-rp2350.uf2`，不能使用应用 UF2 文件 `zephyr.uf2`。使用应用 UF2 会导致板子变砖。**
+
 ```sh
 timeout 5s curl -fsS -X POST "$BOARD_URL/api/v1/bootloader" || true
 ```
@@ -668,7 +703,7 @@ Mount the discovered partition and copy the correct UF2:
 RPI_PART=$(timeout 5s lsblk -lnpo NAME,TYPE "$RPI_DISK" | awk '$2 == "part" { print $1; exit }')
 [ -n "$RPI_PART" ] || { echo "BOOTSEL partition not found"; exit 1; }
 RPI_MOUNT=$(timeout 5s udisksctl mount -b "$RPI_PART" | awk -F" at " '{print $2}' | tr -d '[:space:]')
-FLASH_UF2=radxa-linkr-debugger-rp2350.uf2
+FLASH_UF2=build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2
 cp "$FLASH_UF2" "$RPI_MOUNT/"
 ```
 
@@ -693,6 +728,13 @@ done
 After firmware changes, treat this HTTP BOOTSEL flow and the CDC ACM shell
 fallback below as required validation paths before you finish; verify that the
 serial fallback path still reaches the standard ROM BOOTSEL workflow.
+
+Final post-ring HIL confirmed HTTP BOOTSEL via `POST /api/v1/bootloader` entered
+ROM BOOTSEL and combined-UF2 recovery restored HTTP after flash health check.
+CDC `/dev/ttyACM2` BOOTSEL confirmed: issuing `bootloader` from the CDC ACM shell
+entered ROM BOOTSEL, and copying the combined UF2 restored HTTP in 2 seconds.
+Canonical firmware footprint: RAM 511856/532480 bytes (96.13%), flash
+656972/847832 bytes (77.49%).
 
 If the HTTP control plane is unavailable but the CDC ACM shell is still
 reachable, use the local Zephyr shell command instead:
@@ -875,13 +917,17 @@ unverified package attribute.
 
 ./skills/radxa-linkr-debugger/scripts/web-ota-hil.sh \
   --flow flash-uf2 \
-  --uf2 radxa-linkr-debugger-rp2350.uf2 \
+  --uf2 build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 \
   --execute --allow-flash
 ```
 
 Watchdog rollback is BLOCKED in both runners because no safe fault-injection
 path exists. The API runner reports this explicitly when `--flow watchdog-rollback`
 is selected.
+
+The post-ring HIL above does not validate watchdog fault-injection or automatic
+watchdog recovery. It only confirms that the measured Sigrok failure cases did
+not wedge NCM/watchdog and that explicit HTTP/CDC ACM BOOTSEL entry paths worked.
 
 **Browser runner examples (dry-run)**:
 
