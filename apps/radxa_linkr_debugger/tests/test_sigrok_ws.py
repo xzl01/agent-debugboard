@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
+# pyright: reportMissingImports=false, reportMissingTypeArgument=false, reportReturnType=false
 """Sigrok WebSocket protocol test script."""
 
 import argparse
 import struct
 import sys
 import time
-import threading
 import socket
 import json
 import urllib.request
@@ -19,6 +19,7 @@ except ImportError:
 SIGROK_MAGIC = 0x72
 SIGROK_PROTOCOL_VERSION = 1
 SIGROK_HEADER_SIZE = 9
+SIGROK_DATA_META_SIZE = 8
 
 FRAME_HELLO_REQ = 0x01
 FRAME_HELLO_RESP = 0x02
@@ -35,6 +36,11 @@ FRAME_DATA = 0x11
 FRAME_ERROR = 0x7f
 
 ERROR_BUSY = 8
+
+COMPRESSION_NONE = 0
+COMPRESSION_BIT_PACK = 1
+COMPRESSION_RLE = 2
+COMPRESSION_BIT_PACK_RLE = 3
 
 TRIGGER_NONE = 0
 TRIGGER_RISING = 1
@@ -123,6 +129,61 @@ def parse_error(payload: bytes) -> dict:
     return {"error_code": error_code, "detail": detail}
 
 
+def parse_data_meta(payload: bytes) -> dict:
+    if len(payload) < SIGROK_DATA_META_SIZE:
+        raise ValueError("DATA payload shorter than metadata")
+    return {
+        "sample_index": struct.unpack("<I", payload[0:3] + b'\x00')[0],
+        "sample_count": struct.unpack("<H", payload[3:5])[0],
+        "compression": payload[5],
+        "channel_mask": struct.unpack("<H", payload[6:8])[0],
+    }
+
+
+def sigrok_bytes_per_sample(channel_mask: int) -> int:
+    channel_count = (channel_mask & 0xFFFF).bit_count()
+    if channel_count == 0:
+        return 0
+    return (channel_count + 7) // 8
+
+
+def decode_data_payload(meta: dict, sample_payload: bytes) -> bytes:
+    sample_count = int(meta["sample_count"])
+    if sample_count <= 0:
+        raise ValueError("DATA sample_count must be non-zero")
+    bytes_per_sample = sigrok_bytes_per_sample(int(meta["channel_mask"]))
+    if bytes_per_sample <= 0:
+        raise ValueError("DATA channel_mask selects no channels")
+    expected_len = sample_count * bytes_per_sample
+    compression = int(meta["compression"])
+    if compression in (COMPRESSION_NONE, COMPRESSION_BIT_PACK):
+        if len(sample_payload) != expected_len:
+            raise ValueError(f"BIT_PACK payload length {len(sample_payload)} != expected {expected_len}")
+        return sample_payload
+    if compression == COMPRESSION_BIT_PACK_RLE:
+        tuple_len = bytes_per_sample + 2
+        if len(sample_payload) == 0 or len(sample_payload) % tuple_len != 0:
+            raise ValueError("BIT_PACK_RLE payload has truncated tuple")
+        out = bytearray()
+        expanded_count = 0
+        for pos in range(0, len(sample_payload), tuple_len):
+            value = sample_payload[pos:pos + bytes_per_sample]
+            run_pos = pos + bytes_per_sample
+            run_count = sample_payload[run_pos] | (sample_payload[run_pos + 1] << 8)
+            if run_count == 0:
+                raise ValueError("BIT_PACK_RLE run_count must be non-zero")
+            if expanded_count + run_count > sample_count:
+                raise ValueError("BIT_PACK_RLE expanded sample count overflows metadata")
+            out.extend(value * run_count)
+            expanded_count += run_count
+        if expanded_count != sample_count or len(out) != expected_len:
+            raise ValueError("BIT_PACK_RLE expanded output does not match metadata")
+        return bytes(out)
+    if compression == COMPRESSION_RLE:
+        raise ValueError("standalone RLE is not valid for current DATA samples")
+    raise ValueError(f"unsupported DATA compression {compression}")
+
+
 def recv_frame(ws, timeout: float = 5.0) -> tuple:
     ws.settimeout(timeout)
     try:
@@ -166,8 +227,9 @@ def send_caps(ws) -> bool:
 
 
 def send_config(ws, mode_id: int, trigger_type: int, channel_mask: int,
-                samplerate_khz: int, pre_samples: int = 0, post_samples: int = 0) -> dict:
-    payload = struct.pack("<BBBH", mode_id, trigger_type, 0, channel_mask)
+                 samplerate_khz: int, pre_samples: int = 0, post_samples: int = 0,
+                 trigger_channel: int = 0) -> dict:
+    payload = struct.pack("<BBBH", mode_id, trigger_type, trigger_channel, channel_mask)
     payload += struct.pack("<I", samplerate_khz)[:3]
     payload += struct.pack("<HH", pre_samples, post_samples)
     ws.send(build_frame(FRAME_CONFIG_REQ, payload), opcode=websocket.ABNF.OPCODE_BINARY)
@@ -216,6 +278,80 @@ def wait_for_event(ws, expected_type: int, timeout: float = 5.0) -> dict:
                 continue
     except websocket.WebSocketTimeoutException:
         return None
+
+
+def wait_for_triggered_capture(ws, requested_samples: int, timeout: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    trigger_event = None
+    first_sample_index = None
+    received_samples = 0
+    data_frames = 0
+    while time.monotonic() < deadline and (trigger_event is None or received_samples < requested_samples):
+        ws.settimeout(max(0.05, deadline - time.monotonic()))
+        try:
+            data = ws.recv()
+        except websocket.WebSocketTimeoutException:
+            break
+        if isinstance(data, str):
+            continue
+        header = parse_header(data)
+        if header is None:
+            continue
+        _, _, frame_type, _, payload_len = header
+        payload = data[SIGROK_HEADER_SIZE:SIGROK_HEADER_SIZE + payload_len]
+        if frame_type == FRAME_EVENT:
+            event = parse_event(payload)
+            if event["type_detail"] == 2:
+                trigger_event = event
+        elif frame_type == FRAME_DATA:
+            meta = parse_data_meta(payload)
+            _ = decode_data_payload(meta, payload[SIGROK_DATA_META_SIZE:])
+            if first_sample_index is None:
+                first_sample_index = meta["sample_index"]
+            received_samples += meta["sample_count"]
+            data_frames += 1
+    offset = None
+    offset_valid = False
+    if trigger_event is not None and first_sample_index is not None:
+        offset = (trigger_event["sample_index"] - first_sample_index) & 0xFFFFFF
+        offset_valid = offset < received_samples
+    return {
+        "trigger_event": trigger_event,
+        "data_frames": data_frames,
+        "received_samples": received_samples,
+        "first_sample_index": first_sample_index,
+        "trigger_sample_offset": offset,
+        "trigger_sample_offset_valid": offset_valid,
+    }
+
+
+def perform_uart_stimulus(args) -> bool:
+    if args.uart_device != "/dev/ttyACM1":
+        print("    FAIL: trigger UART stimulus requires --uart-device /dev/ttyACM1")
+        return False
+    if args.uart_baud is None:
+        print("    FAIL: trigger UART stimulus requires --uart-baud")
+        return False
+    if args.uart_stimulus is None:
+        print("    FAIL: trigger test requires --uart-stimulus")
+        return False
+    try:
+        import serial
+    except ImportError:
+        print("    FAIL: trigger UART stimulus requires pyserial")
+        return False
+    with serial.Serial(
+        port=args.uart_device,
+        baudrate=args.uart_baud,
+        bytesize=serial.EIGHTBITS,
+        parity=serial.PARITY_NONE,
+        stopbits=serial.STOPBITS_ONE,
+        timeout=args.timeout,
+        write_timeout=args.timeout,
+    ) as ser:
+        ser.write(args.uart_stimulus.encode("utf-8"))
+        ser.flush()
+    return True
 
 
 def test_hello() -> bool:
@@ -366,7 +502,7 @@ def test_rates() -> bool:
     return all_pass
 
 
-def test_trigger() -> bool:
+def test_trigger(args) -> bool:
     print("Testing trigger modes...")
     triggers = [
         (TRIGGER_RISING, "rising"),
@@ -383,7 +519,9 @@ def test_trigger() -> bool:
             send_caps(ws)
 
             ack = send_config(ws, mode_id=1, trigger_type=trigger_type,
-                              channel_mask=0x01, samplerate_khz=1000)
+                              channel_mask=0x01, samplerate_khz=1000,
+                              pre_samples=0, post_samples=args.trigger_post_samples,
+                              trigger_channel=args.trigger_channel)
             if ack is None:
                 print(f"    FAIL: CONFIG failed")
                 all_pass = False
@@ -395,11 +533,23 @@ def test_trigger() -> bool:
                 all_pass = False
                 continue
 
-            event = wait_for_event(ws, expected_type=2, timeout=2.0)
-            if event is None:
-                print(f"    PASS: {trigger_name} trigger (no trigger event within timeout - expected)")
+            if not perform_uart_stimulus(args):
+                all_pass = False
+                send_stop(ws)
+                continue
+
+            capture = wait_for_triggered_capture(ws, args.trigger_post_samples, timeout=args.timeout)
+            if capture["trigger_event"] is None:
+                print(f"    FAIL: {trigger_name} trigger did not fire")
+                all_pass = False
+            elif not capture["trigger_sample_offset_valid"]:
+                print(f"    FAIL: {trigger_name} trigger sample offset invalid: {capture}")
+                all_pass = False
+            elif capture["received_samples"] < args.trigger_post_samples:
+                print(f"    FAIL: {trigger_name} bounded capture incomplete: {capture}")
+                all_pass = False
             else:
-                print(f"    PASS: {trigger_name} trigger fired")
+                print(f"    PASS: {trigger_name} trigger fired: {capture}")
 
             send_stop(ws)
         finally:
@@ -465,12 +615,20 @@ def main():
     parser = argparse.ArgumentParser(description="Sigrok WebSocket protocol test")
     parser.add_argument("--test", choices=["hello", "rates", "trigger", "concurrent", "all"],
                         default="all", help="Test to run")
+    parser.add_argument("--timeout", type=float, default=5.0, help="per-operation timeout in seconds")
+    parser.add_argument("--trigger-post-samples", type=int, default=1024, help="bounded post-trigger samples for trigger tests")
+    parser.add_argument("--trigger-channel", type=int, default=0, help="sigrok trigger channel index byte; GP10 is channel 0")
+    parser.add_argument("--uart-stimulus", help="text stimulus written after START for trigger tests")
+    parser.add_argument("--uart-device", help="must be explicitly /dev/ttyACM1 for trigger UART stimulus")
+    parser.add_argument("--uart-baud", type=int, help="explicit UART baud for 8N1 trigger stimulus")
     args = parser.parse_args()
+    if not 0 <= args.trigger_channel <= 0xFF:
+        parser.error("--trigger-channel must fit uint8")
 
     tests = {
         "hello": test_hello,
         "rates": test_rates,
-        "trigger": test_trigger,
+        "trigger": lambda: test_trigger(args),
         "concurrent": test_concurrent,
     }
 

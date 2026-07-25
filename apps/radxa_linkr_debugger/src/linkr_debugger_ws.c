@@ -24,6 +24,7 @@
 #include <zephyr/net/websocket.h>
 #include <zephyr/posix/poll.h>
 #include <zephyr/posix/sys/socket.h>
+#include <zephyr/sys/atomic.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(linkr_debugger_ws, LOG_LEVEL_INF);
@@ -33,10 +34,50 @@ LOG_MODULE_REGISTER(linkr_debugger_ws, LOG_LEVEL_INF);
 #define LINKR_DEBUGGER_ADC_SAMPLER_PRIORITY K_PRIO_PREEMPT(9)
 #define LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE 6144
 #define LINKR_DEBUGGER_WS_IDLE_WAIT_MS 100
+#define LINKR_DEBUGGER_WS_SIGROK_QDEPTH_LIMIT LINKR_DEBUGGER_SIGROK_LINKR_STREAM_QDEPTH_LIMIT
+#define LINKR_DEBUGGER_WS_SIGROK_DRAIN_BATCH 16
+#define LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_FRAMES 16U
+#define LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_BYTES LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE
+#define LINKR_DEBUGGER_WS_SIGROK_QBYTES_LIMIT (36U * 1024U)
+#define LINKR_DEBUGGER_WS_SIGROK_SEND_TIMEOUT_MS 1000
+#define LINKR_DEBUGGER_WS_SIGROK_SEND_RATE_CAP 600
+#define LINKR_DEBUGGER_WS_SIGROK_SEND_SLOW_US 5000U
 #define LINKR_DEBUGGER_WS_SESSION_IDLE_TIMEOUT_MS 30000U
+#define LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_COUNT \
+	LINKR_DEBUGGER_SIGROK_LINKR_WS_DATA_SLOT_COUNT
+#define LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_BYTES \
+	LINKR_DEBUGGER_SIGROK_LINKR_WS_MAX_FRAME_BYTES
+#define LINKR_DEBUGGER_WS_SIGROK_TERMINAL_SLOT_BYTES \
+	(LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + LINKR_DEBUGGER_SIGROK_LINKR_EVENT_BYTES)
 #define LINKR_DEBUGGER_WS_ADC_CHANNELS 3U
 #define LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE 256U
 #define LINKR_DEBUGGER_WS_MAX_BATCH_SIZE 20U
+#define LINKR_DEBUGGER_WS_SIGROK_SLOW_SEND_LOG_LIMIT 4U
+
+BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_QDEPTH_LIMIT == 32,
+	"Sigrok WS jitter buffer depth must match the measured HIL value");
+BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_FRAMES == 16U,
+	"Sigrok WS coalesce frame cap must remain at the measured HIL value");
+BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_BYTES == LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+	"Sigrok WS coalesce byte cap must use the already allocated client tx buffer");
+BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_QBYTES_LIMIT == (36U * 1024U),
+	"Sigrok WS allocated queue byte cap must stay bounded for the 65 KiB heap");
+BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_BYTES <= LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+	"Sigrok WS coalesce cap must fit in the client tx buffer");
+BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_COUNT == 8U,
+	"Stage A WS Sigrok pool must have exactly eight DATA slots");
+BUILD_ASSERT(LINKR_DEBUGGER_SIGROK_LINKR_WS_TERMINAL_SLOT_COUNT == 1U,
+	"Stage A WS Sigrok pool must have exactly one terminal slot");
+BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_BYTES ==
+	(LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+	 LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + 2048U),
+	"Sigrok WS DATA slot must fit 9-byte header, 8-byte metadata, and WIDE12 payload");
+BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_BYTES <=
+	LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_BYTES,
+	"A maximum Sigrok WS DATA slot must be independently sendable by the coalescer");
+BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_TERMINAL_SLOT_BYTES <=
+	LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_BYTES,
+	"Sigrok WS terminal slot must be independently sendable by the coalescer");
 
 BUILD_ASSERT(LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE > LINKR_DEBUGGER_WS_MAX_BATCH_SIZE);
 
@@ -130,6 +171,19 @@ struct linkr_debugger_ws_client {
 	struct k_thread thread_data;
 	struct linkr_debugger_sigrok_linkr_session sigrok_session;
 	bool sigrok_active;
+	struct k_fifo sigrok_stream_fifo;
+	atomic_t sigrok_stream_qdepth;
+	atomic_t sigrok_stream_qbytes;
+	atomic_t sigrok_stream_dropped;
+	atomic_t sigrok_stream_stop_pending;
+	atomic_t sigrok_stream_deferred_wake_pending;
+	struct k_work_delayable sigrok_stream_wake_work;
+	struct k_spinlock sigrok_stream_metrics_lock;
+	struct linkr_debugger_sigrok_linkr_ws_transport_metrics sigrok_stream_metrics;
+	int64_t sigrok_rate_window_ms;
+	int sigrok_rate_used;
+	uint32_t sigrok_stream_slow_send_logs;
+	uint32_t sigrok_stream_generation;
 };
 
 struct linkr_debugger_ws_adc_sample {
@@ -175,11 +229,17 @@ static struct k_thread linkr_debugger_adc_sampler_thread_data;
 enum {
 	LINKR_DEBUGGER_WS_EVENT_STATE = BIT(0),
 	LINKR_DEBUGGER_WS_EVENT_SAMPLE = BIT(1),
+	LINKR_DEBUGGER_WS_EVENT_STREAM_DATA = BIT(2),
 };
 
 enum {
 	LINKR_DEBUGGER_WS_SAMPLER_EVENT_CONFIG = BIT(0),
 };
+
+static void sigrok_ws_release_capture_if_held(struct linkr_debugger_ws_client *client);
+static void sigrok_ws_stream_cancel_deferred_wake(struct linkr_debugger_ws_client *client);
+static void sigrok_ws_stream_cancel_deferred_wake_sync(struct linkr_debugger_ws_client *client);
+static void sigrok_ws_stream_reset_queue(struct linkr_debugger_ws_client *client);
 
 static int linkr_debugger_ws_send_json_timeout(struct linkr_debugger_ws_client *client,
 					       const char *payload, int32_t timeout_ms)
@@ -249,13 +309,17 @@ static void linkr_debugger_ws_client_release(struct linkr_debugger_ws_client *cl
 		return;
 	}
 	client->active = false;
-	linkr_debugger_ws_client_reset(client);
 	k_event_clear(&client->events, UINT32_MAX);
 	k_mutex_unlock(&linkr_debugger_ws_clients_lock);
 
-	(void)linkr_debugger_logic_analyzer_stop_stream();
-	(void)linkr_debugger_capture_arbiter_release(
-		LINKR_DEBUGGER_CAPTURE_OWNER_SIGROK_LINKR);
+	sigrok_ws_release_capture_if_held(client);
+	sigrok_ws_stream_reset_queue(client);
+
+	k_mutex_lock(&linkr_debugger_ws_clients_lock, K_FOREVER);
+	if (client->session_id == session_id) {
+		linkr_debugger_ws_client_reset(client);
+	}
+	k_mutex_unlock(&linkr_debugger_ws_clients_lock);
 
 	k_mutex_lock(&linkr_debugger_capture_lock, K_FOREVER);
 	if (linkr_debugger_capture_owner_session_id == session_id) {
@@ -305,6 +369,7 @@ static void linkr_debugger_ws_session_reap_expired(void)
 
 		if (client->thread == NULL &&
 		    (now - client->session_created_ms) >= LINKR_DEBUGGER_WS_SESSION_IDLE_TIMEOUT_MS) {
+			sigrok_ws_stream_reset_queue(client);
 			client->active = false;
 			linkr_debugger_ws_client_reset(client);
 			k_event_clear(&client->events, UINT32_MAX);
@@ -1682,151 +1747,1157 @@ static int linkr_debugger_ws_handle_message(struct linkr_debugger_ws_client *cli
 
 static void sigrok_ws_stream_callback(
 	const struct linkr_debugger_la_stream_chunk *chunk, void *user_data);
+static int sigrok_ws_stream_sink_lease(uint32_t sample_count,
+	uint8_t bytes_per_sample, void *user_data,
+	struct linkr_debugger_la_stream_sink_lease *lease);
+static int sigrok_ws_stream_sink_commit(
+	const struct linkr_debugger_la_stream_sink_commit *commit, void *user_data);
+static void sigrok_ws_stream_sink_abort(void *token, void *user_data);
+static void sigrok_ws_stream_sink_terminal(
+	enum linkr_debugger_la_ring_poll_result status, uint32_t sequence,
+	void *user_data);
+static bool sigrok_ws_queue_event(struct linkr_debugger_ws_client *client,
+	enum linkr_debugger_sigrok_linkr_event_type event_type);
+
+enum sigrok_ws_stream_item_kind {
+	SIGROK_WS_STREAM_ITEM_FREE = 0,
+	SIGROK_WS_STREAM_ITEM_PREFRAMED,
+	SIGROK_WS_STREAM_ITEM_PACKED_DATA,
+};
+
+#define SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES 12U
+#define SIGROK_WS_STREAM_PACKED_SLOT_SAMPLE_INDEX_OFFSET 0U
+#define SIGROK_WS_STREAM_PACKED_SLOT_SAMPLE_COUNT_OFFSET 4U
+#define SIGROK_WS_STREAM_PACKED_SLOT_CHANNEL_MASK_OFFSET 6U
+#define SIGROK_WS_STREAM_PACKED_SLOT_BYTES_PER_SAMPLE_OFFSET 8U
+
+BUILD_ASSERT(SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES +
+	LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES <=
+	LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_BYTES,
+	"Sigrok WS packed SINGLE payload must fit in an existing DATA slot");
+
+static void sigrok_ws_release_capture_if_held(struct linkr_debugger_ws_client *client)
+{
+	if (client == NULL || !client->sigrok_session.capture_owner_held) {
+		return;
+	}
+
+	(void)linkr_debugger_logic_analyzer_stop_stream();
+	(void)linkr_debugger_capture_arbiter_release(
+		LINKR_DEBUGGER_CAPTURE_OWNER_SIGROK_LINKR);
+	client->sigrok_session.capture_owner_held = false;
+}
+
+struct sigrok_ws_stream_queue_item {
+	void *fifo_reserved;
+	enum linkr_debugger_sigrok_linkr_ws_slot_state state;
+	uint8_t kind;
+	uint32_t owner_session_id;
+	uint32_t owner_generation;
+	uint8_t *data;
+	size_t capacity;
+	size_t len;
+};
+
+struct sigrok_ws_stream_data_slot {
+	struct sigrok_ws_stream_queue_item item;
+	uint8_t storage[LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_BYTES] __aligned(4);
+};
+
+struct sigrok_ws_stream_terminal_slot {
+	struct sigrok_ws_stream_queue_item item;
+	uint8_t storage[LINKR_DEBUGGER_WS_SIGROK_TERMINAL_SLOT_BYTES] __aligned(4);
+};
+
+struct sigrok_ws_stream_slot_pool {
+	struct k_spinlock lock;
+	struct sigrok_ws_stream_data_slot data[LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_COUNT];
+	struct sigrok_ws_stream_terminal_slot terminal;
+	bool initialized;
+};
+
+static struct sigrok_ws_stream_slot_pool sigrok_ws_stream_pool;
+
+BUILD_ASSERT((sizeof(struct sigrok_ws_stream_queue_item) +
+	LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+	LINKR_DEBUGGER_SIGROK_LINKR_EVENT_BYTES) < LINKR_DEBUGGER_WS_SIGROK_QBYTES_LIMIT,
+	"Sigrok WS terminal events must always be small enough for the byte cap");
+
+static size_t sigrok_ws_stream_item_alloc_bytes(
+	const struct sigrok_ws_stream_queue_item *item)
+{
+	return item == NULL ? 0U : item->len;
+}
+
+static size_t sigrok_ws_stream_event_item_bytes(void)
+{
+	return LINKR_DEBUGGER_WS_SIGROK_TERMINAL_SLOT_BYTES;
+}
+
+static void sigrok_ws_stream_store_le16(uint8_t *dst, uint16_t value)
+{
+	dst[0] = (uint8_t)(value & 0xffU);
+	dst[1] = (uint8_t)((value >> 8) & 0xffU);
+}
+
+static void sigrok_ws_stream_store_le32(uint8_t *dst, uint32_t value)
+{
+	dst[0] = (uint8_t)(value & 0xffU);
+	dst[1] = (uint8_t)((value >> 8) & 0xffU);
+	dst[2] = (uint8_t)((value >> 16) & 0xffU);
+	dst[3] = (uint8_t)((value >> 24) & 0xffU);
+}
+
+static uint16_t sigrok_ws_stream_load_le16(const uint8_t *src)
+{
+	return (uint16_t)src[0] | ((uint16_t)src[1] << 8);
+}
+
+static uint32_t sigrok_ws_stream_load_le32(const uint8_t *src)
+{
+	return (uint32_t)src[0] |
+		((uint32_t)src[1] << 8) |
+		((uint32_t)src[2] << 16) |
+		((uint32_t)src[3] << 24);
+}
+
+static uint8_t *sigrok_ws_stream_packed_payload(struct sigrok_ws_stream_queue_item *item)
+{
+	if (item == NULL || item->capacity <= SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES) {
+		return NULL;
+	}
+
+	return item->data + SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES;
+}
+
+static size_t sigrok_ws_stream_packed_payload_capacity(
+	const struct sigrok_ws_stream_queue_item *item)
+{
+	return item == NULL || item->capacity <= SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES ?
+		0U : item->capacity - SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES;
+}
+
+static void sigrok_ws_stream_store_packed_meta(struct sigrok_ws_stream_queue_item *item,
+	uint32_t sample_index, uint16_t sample_count, uint16_t channel_mask,
+	uint8_t bytes_per_sample)
+{
+	uint8_t *meta = item->data;
+
+	sigrok_ws_stream_store_le32(meta + SIGROK_WS_STREAM_PACKED_SLOT_SAMPLE_INDEX_OFFSET,
+		sample_index);
+	sigrok_ws_stream_store_le16(meta + SIGROK_WS_STREAM_PACKED_SLOT_SAMPLE_COUNT_OFFSET,
+		sample_count);
+	sigrok_ws_stream_store_le16(meta + SIGROK_WS_STREAM_PACKED_SLOT_CHANNEL_MASK_OFFSET,
+		channel_mask);
+	meta[SIGROK_WS_STREAM_PACKED_SLOT_BYTES_PER_SAMPLE_OFFSET] = bytes_per_sample;
+	memset(meta + SIGROK_WS_STREAM_PACKED_SLOT_BYTES_PER_SAMPLE_OFFSET + 1U, 0,
+		SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES -
+		SIGROK_WS_STREAM_PACKED_SLOT_BYTES_PER_SAMPLE_OFFSET - 1U);
+}
+
+static bool sigrok_ws_stream_load_packed_meta(
+	const struct sigrok_ws_stream_queue_item *item,
+	uint32_t *sample_index,
+	uint16_t *sample_count,
+	uint16_t *channel_mask,
+	uint8_t *bytes_per_sample)
+{
+	const uint8_t *meta;
+
+	if (item == NULL || item->kind != SIGROK_WS_STREAM_ITEM_PACKED_DATA ||
+	    item->capacity < SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES) {
+		return false;
+	}
+
+	meta = item->data;
+	*sample_index = sigrok_ws_stream_load_le32(
+		meta + SIGROK_WS_STREAM_PACKED_SLOT_SAMPLE_INDEX_OFFSET);
+	*sample_count = sigrok_ws_stream_load_le16(
+		meta + SIGROK_WS_STREAM_PACKED_SLOT_SAMPLE_COUNT_OFFSET);
+	*channel_mask = sigrok_ws_stream_load_le16(
+		meta + SIGROK_WS_STREAM_PACKED_SLOT_CHANNEL_MASK_OFFSET);
+	*bytes_per_sample = meta[SIGROK_WS_STREAM_PACKED_SLOT_BYTES_PER_SAMPLE_OFFSET];
+	return true;
+}
+
+static size_t sigrok_ws_stream_encode_item(
+	const struct sigrok_ws_stream_queue_item *item,
+	uint8_t *out,
+	size_t out_len)
+{
+	uint32_t sample_index;
+	uint16_t sample_count;
+	uint16_t channel_mask;
+	uint8_t bytes_per_sample;
+	size_t payload_len;
+
+	if (item == NULL || out == NULL) {
+		return 0U;
+	}
+
+	if (item->kind == SIGROK_WS_STREAM_ITEM_PREFRAMED) {
+		if (item->len == 0U || item->len > out_len) {
+			return 0U;
+		}
+		memcpy(out, item->data, item->len);
+		return item->len;
+	}
+
+	if (!sigrok_ws_stream_load_packed_meta(item, &sample_index, &sample_count,
+	    &channel_mask, &bytes_per_sample)) {
+		return 0U;
+	}
+	payload_len = (size_t)sample_count * bytes_per_sample;
+	if (payload_len == 0U || payload_len > sigrok_ws_stream_packed_payload_capacity(item)) {
+		return 0U;
+	}
+
+	return linkr_debugger_sigrok_linkr_encode_packed_data_frame(sample_index,
+		sample_count, channel_mask,
+		item->data + SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES, payload_len, true,
+		out, out_len);
+}
+
+static void sigrok_ws_stream_pool_init_locked(void)
+{
+	if (sigrok_ws_stream_pool.initialized) {
+		return;
+	}
+
+	for (size_t i = 0U; i < ARRAY_SIZE(sigrok_ws_stream_pool.data); i++) {
+		struct sigrok_ws_stream_queue_item *item = &sigrok_ws_stream_pool.data[i].item;
+
+		memset(item, 0, sizeof(*item));
+		item->state = LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_FREE;
+		item->kind = SIGROK_WS_STREAM_ITEM_FREE;
+		item->data = sigrok_ws_stream_pool.data[i].storage;
+		item->capacity = sizeof(sigrok_ws_stream_pool.data[i].storage);
+	}
+
+	memset(&sigrok_ws_stream_pool.terminal.item, 0,
+		sizeof(sigrok_ws_stream_pool.terminal.item));
+	sigrok_ws_stream_pool.terminal.item.state = LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_FREE;
+	sigrok_ws_stream_pool.terminal.item.kind = SIGROK_WS_STREAM_ITEM_FREE;
+	sigrok_ws_stream_pool.terminal.item.data = sigrok_ws_stream_pool.terminal.storage;
+	sigrok_ws_stream_pool.terminal.item.capacity = sizeof(sigrok_ws_stream_pool.terminal.storage);
+	sigrok_ws_stream_pool.initialized = true;
+}
+
+static uint32_t sigrok_ws_stream_pool_data_slots_used_locked(uint32_t session_id,
+	uint32_t generation)
+{
+	uint32_t used = 0U;
+
+	for (size_t i = 0U; i < ARRAY_SIZE(sigrok_ws_stream_pool.data); i++) {
+		const struct sigrok_ws_stream_queue_item *item = &sigrok_ws_stream_pool.data[i].item;
+
+		if (item->state != LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_FREE &&
+		    item->owner_session_id == session_id && item->owner_generation == generation) {
+			used++;
+		}
+	}
+
+	return used;
+}
+
+static void sigrok_ws_stream_slot_release_locked(struct sigrok_ws_stream_queue_item *item)
+{
+	if (item == NULL || item->state == LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_FREE) {
+		return;
+	}
+
+	item->fifo_reserved = NULL;
+	item->state = LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_FREE;
+	item->kind = SIGROK_WS_STREAM_ITEM_FREE;
+	item->owner_session_id = 0U;
+	item->owner_generation = 0U;
+	item->len = 0U;
+}
+
+static void sigrok_ws_stream_pool_release_client_slots(struct linkr_debugger_ws_client *client)
+{
+	k_spinlock_key_t key;
+
+	if (client == NULL) {
+		return;
+	}
+
+	key = k_spin_lock(&sigrok_ws_stream_pool.lock);
+	sigrok_ws_stream_pool_init_locked();
+	for (size_t i = 0U; i < ARRAY_SIZE(sigrok_ws_stream_pool.data); i++) {
+		struct sigrok_ws_stream_queue_item *item = &sigrok_ws_stream_pool.data[i].item;
+
+		if (item->owner_session_id == client->session_id &&
+		    item->state != LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_POPPED) {
+			sigrok_ws_stream_slot_release_locked(item);
+		}
+	}
+	if (sigrok_ws_stream_pool.terminal.item.owner_session_id == client->session_id &&
+	    sigrok_ws_stream_pool.terminal.item.state != LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_POPPED) {
+		sigrok_ws_stream_slot_release_locked(&sigrok_ws_stream_pool.terminal.item);
+	}
+	k_spin_unlock(&sigrok_ws_stream_pool.lock, key);
+}
+
+static struct sigrok_ws_stream_queue_item *sigrok_ws_stream_slot_acquire(
+	struct linkr_debugger_ws_client *client, bool terminal)
+{
+	struct sigrok_ws_stream_queue_item *acquired = NULL;
+	k_spinlock_key_t key;
+
+	if (client == NULL || client->session_id == 0U) {
+		return NULL;
+	}
+
+	key = k_spin_lock(&sigrok_ws_stream_pool.lock);
+	sigrok_ws_stream_pool_init_locked();
+	if (terminal) {
+		struct sigrok_ws_stream_queue_item *item = &sigrok_ws_stream_pool.terminal.item;
+
+		if (linkr_debugger_sigrok_linkr_ws_pool_terminal_has_capacity(
+		    item->state != LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_FREE)) {
+			acquired = item;
+		}
+	} else if (linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(
+	    sigrok_ws_stream_pool_data_slots_used_locked(client->session_id,
+		client->sigrok_stream_generation), false)) {
+		for (size_t i = 0U; i < ARRAY_SIZE(sigrok_ws_stream_pool.data); i++) {
+			struct sigrok_ws_stream_queue_item *item = &sigrok_ws_stream_pool.data[i].item;
+
+			if (item->state == LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_FREE) {
+				acquired = item;
+				break;
+			}
+		}
+	}
+
+	if (acquired != NULL) {
+		acquired->fifo_reserved = NULL;
+		acquired->state = LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_POPPED;
+		acquired->owner_session_id = client->session_id;
+		acquired->owner_generation = client->sigrok_stream_generation;
+		acquired->kind = SIGROK_WS_STREAM_ITEM_FREE;
+		acquired->len = 0U;
+	}
+	k_spin_unlock(&sigrok_ws_stream_pool.lock, key);
+	return acquired;
+}
+
+static void sigrok_ws_stream_slot_release(struct sigrok_ws_stream_queue_item *item)
+{
+	k_spinlock_key_t key;
+
+	if (item == NULL) {
+		return;
+	}
+
+	key = k_spin_lock(&sigrok_ws_stream_pool.lock);
+	sigrok_ws_stream_slot_release_locked(item);
+	k_spin_unlock(&sigrok_ws_stream_pool.lock, key);
+}
+
+static void sigrok_ws_stream_wake_work_handler(struct k_work *work)
+{
+	struct k_work_delayable *delayable = k_work_delayable_from_work(work);
+	struct linkr_debugger_ws_client *client = CONTAINER_OF(delayable,
+		struct linkr_debugger_ws_client, sigrok_stream_wake_work);
+
+	atomic_set(&client->sigrok_stream_deferred_wake_pending, 0);
+	if (client->active && client->connected &&
+	    atomic_get(&client->sigrok_stream_qdepth) > 0) {
+		k_event_post(&client->events, LINKR_DEBUGGER_WS_EVENT_STREAM_DATA);
+	}
+}
+
+static void sigrok_ws_stream_cancel_deferred_wake(struct linkr_debugger_ws_client *client)
+{
+	if (client == NULL) {
+		return;
+	}
+	atomic_set(&client->sigrok_stream_deferred_wake_pending, 0);
+	(void)k_work_cancel_delayable(&client->sigrok_stream_wake_work);
+}
+
+static void sigrok_ws_stream_cancel_deferred_wake_sync(struct linkr_debugger_ws_client *client)
+{
+	struct k_work_sync sync;
+
+	if (client == NULL) {
+		return;
+	}
+	atomic_set(&client->sigrok_stream_deferred_wake_pending, 0);
+	(void)k_work_cancel_delayable_sync(&client->sigrok_stream_wake_work, &sync);
+}
+
+static void sigrok_ws_stream_apply_wake_policy(struct linkr_debugger_ws_client *client,
+	bool urgent)
+{
+	uint32_t qdepth;
+	enum linkr_debugger_sigrok_linkr_stream_wake_action action;
+
+	if (client == NULL) {
+		return;
+	}
+	qdepth = (uint32_t)atomic_get(&client->sigrok_stream_qdepth);
+	action = linkr_debugger_sigrok_linkr_stream_wake_policy(qdepth, urgent,
+		atomic_get(&client->sigrok_stream_deferred_wake_pending) != 0,
+		LINKR_DEBUGGER_SIGROK_LINKR_STREAM_WAKE_QDEPTH);
+	switch (action) {
+	case LINKR_DEBUGGER_SIGROK_LINKR_STREAM_WAKE_NOW:
+		sigrok_ws_stream_cancel_deferred_wake(client);
+		k_event_post(&client->events, LINKR_DEBUGGER_WS_EVENT_STREAM_DATA);
+		break;
+	case LINKR_DEBUGGER_SIGROK_LINKR_STREAM_WAKE_DELAY:
+		if (atomic_cas(&client->sigrok_stream_deferred_wake_pending, 0, 1)) {
+			(void)k_work_reschedule(&client->sigrok_stream_wake_work,
+				K_MSEC(LINKR_DEBUGGER_SIGROK_LINKR_STREAM_WAKE_TIMEOUT_MS));
+		}
+		break;
+	case LINKR_DEBUGGER_SIGROK_LINKR_STREAM_WAKE_DEFER:
+	default:
+		break;
+	}
+}
+
+static size_t sigrok_ws_stream_qbytes(const struct linkr_debugger_ws_client *client)
+{
+	atomic_val_t value = atomic_get(&client->sigrok_stream_qbytes);
+
+	return value < 0 ? 0U : (size_t)value;
+}
+
+static void sigrok_ws_stream_metrics_reset(struct linkr_debugger_ws_client *client)
+{
+	k_spinlock_key_t key;
+
+	if (client == NULL) {
+		return;
+	}
+	key = k_spin_lock(&client->sigrok_stream_metrics_lock);
+	linkr_debugger_sigrok_linkr_ws_transport_metrics_reset(&client->sigrok_stream_metrics);
+	k_spin_unlock(&client->sigrok_stream_metrics_lock, key);
+}
+
+static void sigrok_ws_stream_metrics_snapshot(struct linkr_debugger_ws_client *client,
+	struct linkr_debugger_sigrok_linkr_ws_transport_metrics *out)
+{
+	k_spinlock_key_t key;
+
+	if (client == NULL || out == NULL) {
+		return;
+	}
+	key = k_spin_lock(&client->sigrok_stream_metrics_lock);
+	*out = client->sigrok_stream_metrics;
+	k_spin_unlock(&client->sigrok_stream_metrics_lock, key);
+}
+
+static void sigrok_ws_stream_metrics_update_enqueue(struct linkr_debugger_ws_client *client,
+	uint32_t qdepth, size_t qbytes)
+{
+	k_spinlock_key_t key;
+
+	if (client == NULL) {
+		return;
+	}
+	key = k_spin_lock(&client->sigrok_stream_metrics_lock);
+	linkr_debugger_sigrok_linkr_ws_transport_metrics_update_enqueue(
+		&client->sigrok_stream_metrics, qdepth, qbytes);
+	k_spin_unlock(&client->sigrok_stream_metrics_lock, key);
+}
+
+static void sigrok_ws_stream_metrics_update_drain(struct linkr_debugger_ws_client *client,
+	uint64_t duration_us, uint32_t items, size_t bytes)
+{
+	k_spinlock_key_t key;
+
+	if (client == NULL) {
+		return;
+	}
+	key = k_spin_lock(&client->sigrok_stream_metrics_lock);
+	linkr_debugger_sigrok_linkr_ws_transport_metrics_update_drain(
+		&client->sigrok_stream_metrics, duration_us, items, bytes);
+	k_spin_unlock(&client->sigrok_stream_metrics_lock, key);
+}
+
+static void sigrok_ws_stream_metrics_update_send(struct linkr_debugger_ws_client *client,
+	uint64_t duration_us, uint8_t frames, size_t bytes)
+{
+	k_spinlock_key_t key;
+
+	if (client == NULL) {
+		return;
+	}
+	key = k_spin_lock(&client->sigrok_stream_metrics_lock);
+	linkr_debugger_sigrok_linkr_ws_transport_metrics_update_send(
+		&client->sigrok_stream_metrics, duration_us, frames, bytes);
+	k_spin_unlock(&client->sigrok_stream_metrics_lock, key);
+}
+
+static void sigrok_ws_stream_log_transport_metrics(struct linkr_debugger_ws_client *client,
+	const char *reason, int status, uint32_t sequence)
+{
+	struct linkr_debugger_sigrok_linkr_ws_transport_metrics metrics;
+
+	if (client == NULL) {
+		return;
+	}
+	memset(&metrics, 0, sizeof(metrics));
+	sigrok_ws_stream_metrics_snapshot(client, &metrics);
+	LOG_WRN("sigrok ws transport metrics: reason=%s status=%d seq=%u qdepth=%ld "
+		"qbytes=%u max_qdepth=%u max_qbytes=%u max_drain_us=%llu "
+		"max_drain_items=%u max_drain_bytes=%u max_send_us=%llu "
+		"max_send_frames=%u max_send_bytes=%u state=%d sample_index=%u emitted=%u",
+		reason == NULL ? "unknown" : reason, status, sequence,
+		(long)atomic_get(&client->sigrok_stream_qdepth),
+		(unsigned int)sigrok_ws_stream_qbytes(client), metrics.max_qdepth,
+		(unsigned int)metrics.max_qbytes,
+		(unsigned long long)metrics.max_drain_us, metrics.max_drain_items,
+		(unsigned int)metrics.max_drain_bytes,
+		(unsigned long long)metrics.max_send_us, metrics.max_send_frames,
+		(unsigned int)metrics.max_send_bytes, client->sigrok_session.state,
+		client->sigrok_session.sample_index, client->sigrok_session.emitted_samples);
+}
+
+static void sigrok_ws_stream_qbytes_add(struct linkr_debugger_ws_client *client,
+	size_t bytes)
+{
+	if (bytes > 0U) {
+		(void)atomic_add(&client->sigrok_stream_qbytes, (atomic_val_t)bytes);
+	}
+}
+
+static void sigrok_ws_stream_qbytes_sub(struct linkr_debugger_ws_client *client,
+	size_t bytes)
+{
+	if (bytes == 0U) {
+		return;
+	}
+
+	while (true) {
+		atomic_val_t current = atomic_get(&client->sigrok_stream_qbytes);
+		atomic_val_t next = current > (atomic_val_t)bytes ?
+			current - (atomic_val_t)bytes : 0;
+
+		if (atomic_cas(&client->sigrok_stream_qbytes, current, next)) {
+			return;
+		}
+	}
+}
+
+static void sigrok_ws_stream_free_accounted_item(struct linkr_debugger_ws_client *client,
+	struct sigrok_ws_stream_queue_item *item)
+{
+	ARG_UNUSED(client);
+
+	if (item == NULL) {
+		return;
+	}
+	sigrok_ws_stream_slot_release(item);
+}
+
+static bool sigrok_ws_stream_put_accounted_item(struct linkr_debugger_ws_client *client,
+	struct sigrok_ws_stream_queue_item *item)
+{
+	k_spinlock_key_t key;
+	bool allowed;
+
+	if (client == NULL || item == NULL) {
+		return false;
+	}
+
+	key = k_spin_lock(&sigrok_ws_stream_pool.lock);
+	allowed = linkr_debugger_sigrok_linkr_ws_slot_commit_allowed(item->state,
+		item->owner_session_id, item->owner_generation, client->session_id,
+		client->sigrok_stream_generation);
+	if (!allowed) {
+		if (item->state == LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_POPPED) {
+			sigrok_ws_stream_slot_release_locked(item);
+		}
+		k_spin_unlock(&sigrok_ws_stream_pool.lock, key);
+		return false;
+	}
+	item->state = LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_QUEUED;
+	sigrok_ws_stream_qbytes_add(client, sigrok_ws_stream_item_alloc_bytes(item));
+	atomic_inc(&client->sigrok_stream_qdepth);
+	k_fifo_put(&client->sigrok_stream_fifo, item);
+	sigrok_ws_stream_metrics_update_enqueue(client,
+		(uint32_t)atomic_get(&client->sigrok_stream_qdepth),
+		sigrok_ws_stream_qbytes(client));
+	k_spin_unlock(&sigrok_ws_stream_pool.lock, key);
+	return true;
+}
+
+static struct sigrok_ws_stream_queue_item *sigrok_ws_stream_pop_accounted_item(
+	struct linkr_debugger_ws_client *client)
+{
+	struct sigrok_ws_stream_queue_item *item;
+	k_spinlock_key_t key;
+
+	key = k_spin_lock(&sigrok_ws_stream_pool.lock);
+	item = k_fifo_get(&client->sigrok_stream_fifo, K_NO_WAIT);
+	if (item != NULL) {
+		atomic_val_t qdepth = atomic_get(&client->sigrok_stream_qdepth);
+
+		if (item->state == LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_QUEUED) {
+			item->state = LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_POPPED;
+		}
+		sigrok_ws_stream_qbytes_sub(client, sigrok_ws_stream_item_alloc_bytes(item));
+		if (qdepth > 0) {
+			atomic_dec(&client->sigrok_stream_qdepth);
+		} else {
+			atomic_set(&client->sigrok_stream_qdepth, 0);
+		}
+	}
+	k_spin_unlock(&sigrok_ws_stream_pool.lock, key);
+	return item;
+}
+
+static void sigrok_ws_stream_reset_queue(struct linkr_debugger_ws_client *client)
+{
+	struct sigrok_ws_stream_queue_item *item;
+
+	if (client == NULL) {
+		return;
+	}
+	sigrok_ws_stream_cancel_deferred_wake_sync(client);
+	while ((item = sigrok_ws_stream_pop_accounted_item(client)) != NULL) {
+		sigrok_ws_stream_free_accounted_item(client, item);
+	}
+	atomic_set(&client->sigrok_stream_qdepth, 0);
+	atomic_set(&client->sigrok_stream_qbytes, 0);
+	atomic_set(&client->sigrok_stream_dropped, 0);
+	atomic_set(&client->sigrok_stream_stop_pending, 0);
+	atomic_set(&client->sigrok_stream_deferred_wake_pending, 0);
+	client->sigrok_stream_generation++;
+	if (client->sigrok_stream_generation == 0U) {
+		client->sigrok_stream_generation++;
+	}
+	sigrok_ws_stream_pool_release_client_slots(client);
+	client->sigrok_rate_window_ms = k_uptime_get();
+	client->sigrok_rate_used = 0;
+	client->sigrok_stream_slow_send_logs = 0U;
+	sigrok_ws_stream_metrics_reset(client);
+}
+
+static int sigrok_ws_disconnect_after_send_failure(struct linkr_debugger_ws_client *client,
+	int send_error)
+{
+	if (client != NULL) {
+		client->connected = false;
+		sigrok_ws_release_capture_if_held(client);
+		sigrok_ws_stream_reset_queue(client);
+	}
+
+	return send_error;
+}
+
+static void sigrok_ws_stream_clear_stale_queue(struct linkr_debugger_ws_client *client)
+{
+	struct sigrok_ws_stream_queue_item *item;
+
+	sigrok_ws_stream_cancel_deferred_wake_sync(client);
+	while ((item = sigrok_ws_stream_pop_accounted_item(client)) != NULL) {
+		sigrok_ws_stream_free_accounted_item(client, item);
+	}
+	atomic_set(&client->sigrok_stream_qdepth, 0);
+	atomic_set(&client->sigrok_stream_qbytes, 0);
+	atomic_set(&client->sigrok_stream_deferred_wake_pending, 0);
+	client->sigrok_stream_generation++;
+	if (client->sigrok_stream_generation == 0U) {
+		client->sigrok_stream_generation++;
+	}
+	sigrok_ws_stream_pool_release_client_slots(client);
+}
+
+static void sigrok_ws_mark_stop_pending(struct linkr_debugger_ws_client *client)
+{
+	atomic_set(&client->sigrok_stream_stop_pending, 1);
+}
+
+static void sigrok_ws_stop_capture_if_pending(struct linkr_debugger_ws_client *client)
+{
+	if (!atomic_cas(&client->sigrok_stream_stop_pending, 1, 0)) {
+		return;
+	}
+	sigrok_ws_release_capture_if_held(client);
+}
+
+static int sigrok_ws_send_terminal_overrun_event(struct linkr_debugger_ws_client *client)
+{
+	uint8_t ev_buf[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_EVENT_BYTES];
+	struct linkr_debugger_sigrok_linkr_header ev_hdr;
+	struct linkr_debugger_sigrok_linkr_event ev = {
+		.session_id = client->sigrok_session.active_session_id,
+		.type_detail = (uint8_t)LINKR_DEBUGGER_SIGROK_LINKR_EVENT_OVERRUN,
+		.sample_index = client->sigrok_session.sample_index,
+	};
+	size_t ev_len;
+
+	ev_len = linkr_debugger_sigrok_linkr_encode_event(&ev,
+		ev_buf + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES,
+		sizeof(ev_buf) - LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES);
+	linkr_debugger_sigrok_linkr_init_response_header(&ev_hdr,
+		LINKR_DEBUGGER_SIGROK_LINKR_FRAME_EVENT, 0U, (uint16_t)ev_len);
+	(void)linkr_debugger_sigrok_linkr_encode_header(&ev_hdr, ev_buf, sizeof(ev_buf));
+	ev_len += LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
+
+	return websocket_send_msg(client->ws_sock, ev_buf, ev_len,
+		WEBSOCKET_OPCODE_DATA_BINARY, false, true,
+		LINKR_DEBUGGER_WS_SIGROK_SEND_TIMEOUT_MS);
+}
+
+static void sigrok_ws_terminalize_failed_stream(struct linkr_debugger_ws_client *client,
+	int send_error)
+{
+	sigrok_ws_stream_log_transport_metrics(client, "failed_stream", send_error, 0U);
+	if (linkr_debugger_sigrok_linkr_should_emit_local_terminal_event(
+	    client->connected, send_error)) {
+		int64_t started_ticks = k_uptime_ticks();
+		int ret = sigrok_ws_send_terminal_overrun_event(client);
+		uint64_t duration_us = k_ticks_to_us_floor64(k_uptime_ticks() - started_ticks);
+		sigrok_ws_stream_metrics_update_send(client, duration_us, 1U,
+			LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+			LINKR_DEBUGGER_SIGROK_LINKR_EVENT_BYTES);
+
+		if (ret < 0) {
+			client->connected = false;
+		}
+		LOG_WRN("sigrok ws terminal overrun send: batch_frames=1 len=%u qdepth=%ld "
+			"qbytes=%u "
+			"duration_us=%llu ret=%d rate_used=%d",
+			(unsigned int)(LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+				LINKR_DEBUGGER_SIGROK_LINKR_EVENT_BYTES),
+			(long)atomic_get(&client->sigrok_stream_qdepth),
+			(unsigned int)sigrok_ws_stream_qbytes(client),
+			(unsigned long long)duration_us, ret,
+			client->sigrok_rate_used);
+	}
+	if (client->sigrok_session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING ||
+	    client->sigrok_session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_ARMED) {
+		client->sigrok_session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
+		sigrok_ws_mark_stop_pending(client);
+	}
+	sigrok_ws_stream_clear_stale_queue(client);
+	sigrok_ws_stop_capture_if_pending(client);
+}
 
 static int linkr_debugger_ws_handle_sigrok_binary(struct linkr_debugger_ws_client *client,
 						  const uint8_t *data, size_t len)
 {
-	static uint8_t sigrok_resp_buf[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + LINKR_DEBUGGER_SIGROK_LINKR_MAX_PAYLOAD_BYTES];
-	struct linkr_debugger_sigrok_linkr_request request;
-	struct linkr_debugger_sigrok_linkr_header response_header;
-	struct linkr_debugger_sigrok_linkr_action_result action;
-	bool disconnect_required = false;
-	uint8_t tx_payload[LINKR_DEBUGGER_SIGROK_LINKR_MAX_PAYLOAD_BYTES];
-	size_t tx_payload_len = 0;
-	int ret;
+	uint8_t *sigrok_resp_buf = client->tx_buffer;
+	uint8_t *tx_payload = sigrok_resp_buf + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
+	size_t tx_payload_capacity = sizeof(client->tx_buffer) -
+		LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
+	size_t offset = 0U;
 
 	if (len < LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES) {
 		return -EINVAL;
 	}
 
-	if (linkr_debugger_sigrok_linkr_tcp_active()) {
-		struct linkr_debugger_sigrok_linkr_error error_resp;
-		uint8_t error_buf[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + LINKR_DEBUGGER_SIGROK_LINKR_ERROR_BYTES];
-		size_t error_len;
-		struct linkr_debugger_sigrok_linkr_header error_header;
-		struct linkr_debugger_sigrok_linkr_header req_hdr;
+	while (offset < len) {
+		struct linkr_debugger_sigrok_linkr_request request;
+		struct linkr_debugger_sigrok_linkr_header response_header;
+		struct linkr_debugger_sigrok_linkr_action_result action;
+		bool disconnect_required = false;
+		size_t tx_payload_len = 0U;
+		size_t next_offset = offset;
+		int ret;
 
-		memset(&req_hdr, 0, sizeof(req_hdr));
-		(void)linkr_debugger_sigrok_linkr_decode_header(data, len, &req_hdr);
-
-		error_resp.error_code = LINKR_DEBUGGER_SIGROK_LINKR_ERROR_BUSY;
-		error_resp.detail = 0;
-		error_len = linkr_debugger_sigrok_linkr_encode_error(&error_resp,
-			error_buf + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES,
-			sizeof(error_buf) - LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES);
-
-		linkr_debugger_sigrok_linkr_init_response_header(&error_header,
-			LINKR_DEBUGGER_SIGROK_LINKR_FRAME_ERROR, req_hdr.id, (uint16_t)error_len);
-		(void)linkr_debugger_sigrok_linkr_encode_header(&error_header,
-			error_buf, sizeof(error_buf));
-		error_len += LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
-
-		(void)websocket_send_msg(client->ws_sock, error_buf, error_len,
-					 WEBSOCKET_OPCODE_DATA_BINARY, false, true, SYS_FOREVER_MS);
-		return 0;
-	}
-
-	ret = linkr_debugger_sigrok_linkr_decode_header(data, len, &request.header);
-	if (ret < 0) {
-		return ret;
-	}
-
-	request.payload = data + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
-
-	ret = linkr_debugger_sigrok_linkr_handle_request(
-		&client->sigrok_session,
-		linkr_debugger_capture_arbiter_owner(),
-		&request,
-		&response_header,
-		tx_payload, sizeof(tx_payload),
-		&tx_payload_len,
-		&action,
-		&disconnect_required);
-	if (ret < 0) {
-		return ret;
-	}
-
-	if (action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_STOP) {
-		client->connected = false;
-		(void)linkr_debugger_logic_analyzer_stop_stream();
-		(void)linkr_debugger_capture_arbiter_release(
-			LINKR_DEBUGGER_CAPTURE_OWNER_SIGROK_LINKR);
-	}
-
-	size_t resp_len;
-
-	resp_len = linkr_debugger_sigrok_linkr_encode_header(&response_header,
-		sigrok_resp_buf, sizeof(sigrok_resp_buf));
-	if (tx_payload_len > 0) {
-		memcpy(sigrok_resp_buf + resp_len, tx_payload, tx_payload_len);
-		resp_len += tx_payload_len;
-	}
-
-	ret = websocket_send_msg(client->ws_sock, sigrok_resp_buf, resp_len,
-				 WEBSOCKET_OPCODE_DATA_BINARY, false, true, SYS_FOREVER_MS);
-	if (ret < 0) {
-		return ret;
-	}
-
-	if (action.has_event) {
-		uint8_t event_buf[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + LINKR_DEBUGGER_SIGROK_LINKR_EVENT_BYTES];
-		size_t event_len;
-		struct linkr_debugger_sigrok_linkr_header event_header;
-
-		event_len = linkr_debugger_sigrok_linkr_encode_event(&action.event,
-			event_buf + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES,
-			sizeof(event_buf) - LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES);
-		linkr_debugger_sigrok_linkr_init_response_header(&event_header,
-			LINKR_DEBUGGER_SIGROK_LINKR_FRAME_EVENT, 0U, (uint16_t)event_len);
-		(void)linkr_debugger_sigrok_linkr_encode_header(&event_header,
-			event_buf, sizeof(event_buf));
-		event_len += LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
-
-		ret = websocket_send_msg(client->ws_sock, event_buf, event_len,
-					 WEBSOCKET_OPCODE_DATA_BINARY, false, true, SYS_FOREVER_MS);
+		ret = linkr_debugger_sigrok_linkr_decode_next_request_frame(data, len,
+			offset, &request, &next_offset, &disconnect_required, NULL);
 		if (ret < 0) {
 			return ret;
 		}
-	}
 
-	if (disconnect_required) {
-		return -ECONNRESET;
-	}
+		if (linkr_debugger_sigrok_linkr_tcp_active()) {
+			struct linkr_debugger_sigrok_linkr_error error_resp;
+			uint8_t error_buf[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+				LINKR_DEBUGGER_SIGROK_LINKR_ERROR_BYTES];
+			size_t error_len;
+			struct linkr_debugger_sigrok_linkr_header error_header;
 
-	if (action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_START_IMMEDIATE ||
-	    action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_START_ARMED) {
-		struct linkr_debugger_la_config la_config;
+			error_resp.error_code = LINKR_DEBUGGER_SIGROK_LINKR_ERROR_BUSY;
+			error_resp.detail = 0;
+			error_len = linkr_debugger_sigrok_linkr_encode_error(&error_resp,
+				error_buf + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES,
+				sizeof(error_buf) - LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES);
 
-		memset(&la_config, 0, sizeof(la_config));
-		la_config.sample_rate_hz = client->sigrok_session.config.samplerate_khz * 1000U;
+			linkr_debugger_sigrok_linkr_init_response_header(&error_header,
+				LINKR_DEBUGGER_SIGROK_LINKR_FRAME_ERROR, request.header.id,
+				(uint16_t)error_len);
+			(void)linkr_debugger_sigrok_linkr_encode_header(&error_header,
+				error_buf, sizeof(error_buf));
+			error_len += LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
 
-		if (action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_START_ARMED) {
-			la_config.trigger = (enum linkr_debugger_la_trigger_type)client->sigrok_session.config.trigger_type;
-			la_config.trigger_pin = client->sigrok_session.config.trigger_channel;
-		} else {
-			la_config.trigger = LINKR_DEBUGGER_LA_TRIGGER_NONE;
-			la_config.trigger_pin = 0U;
+			ret = websocket_send_msg(client->ws_sock, error_buf, error_len,
+				WEBSOCKET_OPCODE_DATA_BINARY, false, true,
+				LINKR_DEBUGGER_WS_SIGROK_SEND_TIMEOUT_MS);
+			if (ret < 0) {
+				return sigrok_ws_disconnect_after_send_failure(client, ret);
+			}
+			offset = next_offset;
+			continue;
 		}
-		la_config.pre_samples = 0U;
-		la_config.post_samples = 1U;
-		if (client->sigrok_session.config.mode_id == LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8) {
-			la_config.pin_base = 10U;
-			la_config.pin_count = 8U;
-		} else {
-			la_config.pin_base = 10U;
-			la_config.pin_count = 12U;
+
+		if (request.header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_HELLO_REQ) {
+			sigrok_ws_release_capture_if_held(client);
+			sigrok_ws_stream_reset_queue(client);
 		}
-		la_config.selected_pin_count = (uint8_t)__builtin_popcount(client->sigrok_session.config.channel_mask);
-		for (uint8_t i = 0U, j = 0U; i < 16U && j < la_config.selected_pin_count; i++) {
-			if ((client->sigrok_session.config.channel_mask & (1U << i)) != 0U) {
-				la_config.selected_pins[j++] = (uint8_t)(10U + i);
+
+		ret = linkr_debugger_sigrok_linkr_handle_request(
+			&client->sigrok_session,
+			linkr_debugger_capture_arbiter_owner(),
+			&request,
+			&response_header,
+			tx_payload, tx_payload_capacity,
+			&tx_payload_len,
+			&action,
+			&disconnect_required);
+		if (ret < 0) {
+			return ret;
+		}
+
+		if (action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_STOP) {
+			sigrok_ws_release_capture_if_held(client);
+			sigrok_ws_stream_reset_queue(client);
+		}
+		if (action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_START_IMMEDIATE ||
+		    action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_START_ARMED) {
+			struct linkr_debugger_la_config la_config;
+			bool armed = action.capture_action ==
+				LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_START_ARMED;
+			enum linkr_debugger_sigrok_linkr_error_code error_code;
+			int sret;
+
+			sret = linkr_debugger_sigrok_linkr_to_la_config(
+				&client->sigrok_session.config, armed, &la_config);
+			if (sret < 0) {
+				error_code = linkr_debugger_sigrok_linkr_start_error_code(sret, true);
+				linkr_debugger_sigrok_linkr_rollback_start_failure(
+					&client->sigrok_session, &action);
+				linkr_debugger_sigrok_linkr_build_error_response(&request,
+					&response_header, tx_payload, tx_payload_capacity,
+					error_code, (uint16_t)(-sret), &tx_payload_len);
+			} else {
+				sigrok_ws_stream_reset_queue(client);
+				if (!linkr_debugger_capture_arbiter_try_acquire(
+				    LINKR_DEBUGGER_CAPTURE_OWNER_SIGROK_LINKR)) {
+					sret = -EBUSY;
+				} else {
+					client->sigrok_session.capture_owner_held = true;
+					client->sigrok_session.sample_index = 0U;
+					client->sigrok_session.emitted_samples = 0U;
+					if (client->sigrok_session.config.channel_mask == 0x0001U &&
+					    la_config.selected_pin_count == 1U) {
+						struct linkr_debugger_la_stream_sink sink = {
+							.format = LINKR_DEBUGGER_LA_STREAM_PAYLOAD_PACKED_LE_BYTES,
+							.bytes_per_sample = 1U,
+							.max_chunk_samples =
+								LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES,
+							.lease = sigrok_ws_stream_sink_lease,
+							.commit = sigrok_ws_stream_sink_commit,
+							.abort = sigrok_ws_stream_sink_abort,
+							.terminal = sigrok_ws_stream_sink_terminal,
+							.user_data = client,
+						};
+
+						sret = linkr_debugger_logic_analyzer_start_stream_sink(
+							&la_config, &sink);
+					} else {
+						sret = linkr_debugger_logic_analyzer_start_stream(&la_config,
+							sigrok_ws_stream_callback, client);
+					}
+				}
+				if (sret < 0) {
+					error_code = linkr_debugger_sigrok_linkr_start_error_code(sret, false);
+					if (client->sigrok_session.capture_owner_held) {
+						sigrok_ws_release_capture_if_held(client);
+					}
+					linkr_debugger_sigrok_linkr_rollback_start_failure(
+						&client->sigrok_session, &action);
+					linkr_debugger_sigrok_linkr_build_error_response(&request,
+						&response_header, tx_payload, tx_payload_capacity,
+						error_code, (uint16_t)(-sret), &tx_payload_len);
+				}
 			}
 		}
-		(void)linkr_debugger_logic_analyzer_start_stream(&la_config,
-			sigrok_ws_stream_callback, client);
+
+		size_t resp_len;
+
+		resp_len = linkr_debugger_sigrok_linkr_encode_header(&response_header,
+			sigrok_resp_buf, sizeof(client->tx_buffer));
+		if (tx_payload_len > 0) {
+			resp_len += tx_payload_len;
+		}
+
+		ret = websocket_send_msg(client->ws_sock, sigrok_resp_buf, resp_len,
+				 WEBSOCKET_OPCODE_DATA_BINARY, false, true,
+				 LINKR_DEBUGGER_WS_SIGROK_SEND_TIMEOUT_MS);
+		if (ret < 0) {
+			return sigrok_ws_disconnect_after_send_failure(client, ret);
+		}
+
+		if (action.has_event) {
+			uint8_t event_buf[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+				LINKR_DEBUGGER_SIGROK_LINKR_EVENT_BYTES];
+			size_t event_len;
+			struct linkr_debugger_sigrok_linkr_header event_header;
+
+			event_len = linkr_debugger_sigrok_linkr_encode_event(&action.event,
+				event_buf + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES,
+				sizeof(event_buf) - LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES);
+			linkr_debugger_sigrok_linkr_init_response_header(&event_header,
+				LINKR_DEBUGGER_SIGROK_LINKR_FRAME_EVENT, 0U, (uint16_t)event_len);
+			(void)linkr_debugger_sigrok_linkr_encode_header(&event_header,
+				event_buf, sizeof(event_buf));
+			event_len += LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
+
+			ret = websocket_send_msg(client->ws_sock, event_buf, event_len,
+					 WEBSOCKET_OPCODE_DATA_BINARY, false, true,
+					 LINKR_DEBUGGER_WS_SIGROK_SEND_TIMEOUT_MS);
+			if (ret < 0) {
+				return sigrok_ws_disconnect_after_send_failure(client, ret);
+			}
+		}
+
+		if (disconnect_required) {
+			return -ECONNRESET;
+		}
+
+		offset = next_offset;
 	}
 
 	return 0;
+}
+
+static bool sigrok_ws_queue_event(struct linkr_debugger_ws_client *client,
+					 enum linkr_debugger_sigrok_linkr_event_type event_type)
+{
+	uint8_t ev_buf[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + LINKR_DEBUGGER_SIGROK_LINKR_EVENT_BYTES];
+	size_t ev_len;
+	struct linkr_debugger_sigrok_linkr_header ev_hdr;
+	struct linkr_debugger_sigrok_linkr_event ev = {
+		.session_id = client->sigrok_session.active_session_id,
+		.type_detail = (uint8_t)event_type,
+		.sample_index = client->sigrok_session.sample_index,
+	};
+	struct sigrok_ws_stream_queue_item *ev_item;
+	bool terminal = event_type == LINKR_DEBUGGER_SIGROK_LINKR_EVENT_STOPPED ||
+		event_type == LINKR_DEBUGGER_SIGROK_LINKR_EVENT_OVERRUN ||
+		event_type == LINKR_DEBUGGER_SIGROK_LINKR_EVENT_ERROR;
+
+	ev_len = linkr_debugger_sigrok_linkr_encode_event(&ev,
+		ev_buf + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES,
+		sizeof(ev_buf) - LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES);
+	linkr_debugger_sigrok_linkr_init_response_header(&ev_hdr,
+		LINKR_DEBUGGER_SIGROK_LINKR_FRAME_EVENT, 0U, (uint16_t)ev_len);
+	(void)linkr_debugger_sigrok_linkr_encode_header(&ev_hdr, ev_buf, sizeof(ev_buf));
+	ev_len += LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
+
+	ev_item = sigrok_ws_stream_slot_acquire(client, terminal);
+	if (ev_item == NULL) {
+		atomic_inc(&client->sigrok_stream_dropped);
+		return false;
+	}
+	if (ev_len > ev_item->capacity ||
+	    !linkr_debugger_sigrok_linkr_stream_queue_bytes_has_capacity(
+	    sigrok_ws_stream_qbytes(client), ev_len, LINKR_DEBUGGER_WS_SIGROK_QBYTES_LIMIT,
+	    false, 0U)) {
+		atomic_inc(&client->sigrok_stream_dropped);
+		sigrok_ws_stream_slot_release(ev_item);
+		return false;
+	}
+	ev_item->len = ev_len;
+	ev_item->kind = SIGROK_WS_STREAM_ITEM_PREFRAMED;
+	memcpy(ev_item->data, ev_buf, ev_len);
+	return sigrok_ws_stream_put_accounted_item(client, ev_item);
+}
+
+static void sigrok_ws_terminalize_event_commit_failure(struct linkr_debugger_ws_client *client,
+	const char *reason, const struct linkr_debugger_la_stream_chunk *chunk)
+{
+	if (client == NULL) {
+		return;
+	}
+
+	atomic_inc(&client->sigrok_stream_dropped);
+	sigrok_ws_stream_log_transport_metrics(client, reason,
+		chunk == NULL ? 0 : chunk->status, chunk == NULL ? 0U : chunk->sequence);
+	LOG_WRN("sigrok ws terminalize: reason=%s status=%d seq=%u qdepth=%ld "
+		"qbytes=%u state=%d sample_index=%u emitted=%u",
+		reason, chunk == NULL ? 0 : chunk->status,
+		chunk == NULL ? 0U : chunk->sequence,
+		(long)atomic_get(&client->sigrok_stream_qdepth),
+		(unsigned int)sigrok_ws_stream_qbytes(client), client->sigrok_session.state,
+		client->sigrok_session.sample_index, client->sigrok_session.emitted_samples);
+	(void)sigrok_ws_queue_event(client, LINKR_DEBUGGER_SIGROK_LINKR_EVENT_OVERRUN);
+	client->sigrok_session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
+	sigrok_ws_mark_stop_pending(client);
+	sigrok_ws_stream_apply_wake_policy(client, true);
+}
+
+static bool sigrok_ws_stream_sink_final_chunk(
+	const struct linkr_debugger_sigrok_linkr_session *session,
+	uint32_t sample_count)
+{
+	return session != NULL && session->config.post_samples > 0U &&
+		session->emitted_samples + sample_count >= session->config.post_samples;
+}
+
+static int sigrok_ws_stream_sink_lease(uint32_t sample_count,
+	uint8_t bytes_per_sample, void *user_data,
+	struct linkr_debugger_la_stream_sink_lease *lease)
+{
+	struct linkr_debugger_ws_client *client = (struct linkr_debugger_ws_client *)user_data;
+	struct linkr_debugger_sigrok_linkr_session *session;
+	struct sigrok_ws_stream_queue_item *item;
+	uint8_t *payload;
+	uint16_t send_count;
+
+	if (client == NULL || lease == NULL || sample_count == 0U || bytes_per_sample == 0U) {
+		return -EINVAL;
+	}
+	memset(lease, 0, sizeof(*lease));
+	if (!client->connected) {
+		return -ENOTCONN;
+	}
+
+	session = &client->sigrok_session;
+	if (session->config.channel_mask != 0x0001U || bytes_per_sample != 1U) {
+		return -EINVAL;
+	}
+	if (session->state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_ARMED) {
+		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING;
+		if (!sigrok_ws_queue_event(client, LINKR_DEBUGGER_SIGROK_LINKR_EVENT_TRIGGERED)) {
+			return -ENOSPC;
+		}
+		sigrok_ws_stream_apply_wake_policy(client, true);
+	}
+	if (session->state != LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING) {
+		return -ECANCELED;
+	}
+
+	send_count = linkr_debugger_sigrok_linkr_bounded_chunk_count(session, sample_count);
+	if (send_count == 0U || send_count != sample_count) {
+		return -EINVAL;
+	}
+
+	item = sigrok_ws_stream_slot_acquire(client, false);
+	if (item == NULL) {
+		atomic_inc(&client->sigrok_stream_dropped);
+		return -ENOSPC;
+	}
+	payload = sigrok_ws_stream_packed_payload(item);
+	if (payload == NULL || sigrok_ws_stream_packed_payload_capacity(item) == 0U) {
+		sigrok_ws_stream_slot_release(item);
+		return -ENOSPC;
+	}
+
+	lease->payload = payload;
+	lease->capacity = sigrok_ws_stream_packed_payload_capacity(item);
+	lease->token = item;
+	return 0;
+}
+
+static int sigrok_ws_stream_sink_commit(
+	const struct linkr_debugger_la_stream_sink_commit *commit, void *user_data)
+{
+	struct linkr_debugger_ws_client *client = (struct linkr_debugger_ws_client *)user_data;
+	struct linkr_debugger_sigrok_linkr_session *session;
+	struct sigrok_ws_stream_queue_item *item;
+	uint16_t channel_mask;
+	bool final_chunk;
+	uint32_t qdepth;
+	size_t total_len;
+
+	if (client == NULL || commit == NULL || commit->token == NULL ||
+	    commit->sample_count == 0U || commit->sample_count > UINT16_MAX ||
+	    commit->bytes_per_sample == 0U || commit->payload_len == 0U) {
+		return -EINVAL;
+	}
+	if (!client->connected) {
+		return -ENOTCONN;
+	}
+
+	session = &client->sigrok_session;
+	channel_mask = session->config.channel_mask;
+	item = (struct sigrok_ws_stream_queue_item *)commit->token;
+	if (session->state != LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING ||
+	    channel_mask != 0x0001U || commit->bytes_per_sample != 1U ||
+	    commit->payload_len != commit->sample_count ||
+	    commit->payload_len > sigrok_ws_stream_packed_payload_capacity(item)) {
+		return -EINVAL;
+	}
+
+	total_len = LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + commit->payload_len;
+	if (total_len > item->capacity) {
+		return -EMSGSIZE;
+	}
+
+	final_chunk = sigrok_ws_stream_sink_final_chunk(session, commit->sample_count);
+	item->kind = SIGROK_WS_STREAM_ITEM_PACKED_DATA;
+	item->len = total_len;
+	sigrok_ws_stream_store_packed_meta(item, session->sample_index,
+		(uint16_t)commit->sample_count, channel_mask, commit->bytes_per_sample);
+	if (!linkr_debugger_sigrok_linkr_stream_queue_bytes_has_capacity(
+	    sigrok_ws_stream_qbytes(client), item->len,
+	    LINKR_DEBUGGER_WS_SIGROK_QBYTES_LIMIT, final_chunk,
+	    sigrok_ws_stream_event_item_bytes())) {
+		atomic_inc(&client->sigrok_stream_dropped);
+		return -ENOSPC;
+	}
+	if (!sigrok_ws_stream_put_accounted_item(client, item)) {
+		atomic_inc(&client->sigrok_stream_dropped);
+		return -ESTALE;
+	}
+
+	session->emitted_samples += commit->sample_count;
+	session->sample_index = linkr_debugger_sigrok_linkr_advance_sample_index(
+		session->sample_index, commit->sample_count);
+	qdepth = (uint32_t)atomic_get(&client->sigrok_stream_qdepth);
+	if (linkr_debugger_sigrok_linkr_stream_sink_handoff_requested(qdepth)) {
+		sigrok_ws_stream_apply_wake_policy(client, true);
+		return 1;
+	}
+	sigrok_ws_stream_apply_wake_policy(client, false);
+	return 0;
+}
+
+static void sigrok_ws_stream_sink_abort(void *token, void *user_data)
+{
+	ARG_UNUSED(user_data);
+
+	sigrok_ws_stream_slot_release((struct sigrok_ws_stream_queue_item *)token);
+}
+
+static void sigrok_ws_stream_sink_terminal(
+	enum linkr_debugger_la_ring_poll_result status, uint32_t sequence,
+	void *user_data)
+{
+	struct linkr_debugger_ws_client *client = (struct linkr_debugger_ws_client *)user_data;
+	enum linkr_debugger_sigrok_linkr_event_type event_type;
+
+	if (client == NULL) {
+		return;
+	}
+
+	event_type = status == LINKR_DEBUGGER_LA_RING_POLL_OK ?
+		LINKR_DEBUGGER_SIGROK_LINKR_EVENT_STOPPED :
+		LINKR_DEBUGGER_SIGROK_LINKR_EVENT_OVERRUN;
+	if (!sigrok_ws_queue_event(client, event_type)) {
+		LOG_WRN("sigrok ws sink terminal event dropped: status=%d seq=%u qdepth=%ld "
+			"qbytes=%u state=%d sample_index=%u emitted=%u",
+			status, sequence, (long)atomic_get(&client->sigrok_stream_qdepth),
+			(unsigned int)sigrok_ws_stream_qbytes(client),
+			client->sigrok_session.state, client->sigrok_session.sample_index,
+			client->sigrok_session.emitted_samples);
+	}
+	sigrok_ws_stream_log_transport_metrics(client, "sink_terminal", status, sequence);
+	client->sigrok_session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
+	sigrok_ws_mark_stop_pending(client);
+	sigrok_ws_stream_apply_wake_policy(client, true);
 }
 
 static void sigrok_ws_stream_callback(
@@ -1840,32 +2911,35 @@ static void sigrok_ws_stream_callback(
 	}
 
 	session = &client->sigrok_session;
+	if (chunk->status != LINKR_DEBUGGER_LA_RING_POLL_OK) {
+		LOG_WRN("sigrok ws terminalize: reason=la_status status=%d seq=%u "
+			"count=%u qdepth=%ld state=%d sample_index=%u emitted=%u",
+			chunk->status, chunk->sequence, chunk->sample_count,
+			(long)atomic_get(&client->sigrok_stream_qdepth), session->state,
+			session->sample_index, session->emitted_samples);
+		(void)sigrok_ws_queue_event(client, LINKR_DEBUGGER_SIGROK_LINKR_EVENT_OVERRUN);
+		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
+		sigrok_ws_mark_stop_pending(client);
+		sigrok_ws_stream_apply_wake_policy(client, true);
+		return;
+	}
 	if (session->state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_ARMED) {
 		if (linkr_debugger_logic_analyzer_is_stream_triggered()) {
+			bool triggered_queued;
+
 			session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING;
-
-			uint8_t ev_buf[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + LINKR_DEBUGGER_SIGROK_LINKR_EVENT_BYTES];
-			size_t ev_len;
-			struct linkr_debugger_sigrok_linkr_header ev_hdr;
-			struct linkr_debugger_sigrok_linkr_event ev = {
-				.session_id = session->active_session_id,
-				.type_detail = (uint8_t)LINKR_DEBUGGER_SIGROK_LINKR_EVENT_TRIGGERED,
-				.sample_index = 0U,
-			};
-
-			ev_len = linkr_debugger_sigrok_linkr_encode_event(&ev,
-				ev_buf + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES,
-				sizeof(ev_buf) - LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES);
-			linkr_debugger_sigrok_linkr_init_response_header(&ev_hdr,
-				LINKR_DEBUGGER_SIGROK_LINKR_FRAME_EVENT, 0U, (uint16_t)ev_len);
-			(void)linkr_debugger_sigrok_linkr_encode_header(&ev_hdr,
-				ev_buf, sizeof(ev_buf));
-			ev_len += LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
-
-			(void)websocket_send_msg(client->ws_sock, ev_buf, ev_len,
-						 WEBSOCKET_OPCODE_DATA_BINARY, false, true, SYS_FOREVER_MS);
+			triggered_queued = sigrok_ws_queue_event(client,
+				LINKR_DEBUGGER_SIGROK_LINKR_EVENT_TRIGGERED);
+			if (triggered_queued) {
+				sigrok_ws_stream_apply_wake_policy(client, true);
+			} else {
+				sigrok_ws_terminalize_event_commit_failure(client,
+					"triggered_event_commit", chunk);
+				return;
+			}
 		} else {
-			session->sample_index += chunk->sample_count;
+			session->sample_index = linkr_debugger_sigrok_linkr_advance_sample_index(
+				session->sample_index, chunk->sample_count);
 			return;
 		}
 	}
@@ -1876,52 +2950,372 @@ static void sigrok_ws_stream_callback(
 	uint16_t channel_mask = session->config.channel_mask;
 	uint8_t compression = LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_BIT_PACK;
 	uint32_t sample_index = session->sample_index;
-	uint16_t session_id = session->active_session_id;
+	uint16_t send_count = linkr_debugger_sigrok_linkr_bounded_chunk_count(session,
+		chunk->sample_count);
+	bool final_chunk;
 
-	static uint8_t final_buf[LINKR_DEBUGGER_SIGROK_LINKR_MAX_DATA_BYTES];
-	size_t final_len = linkr_debugger_sigrok_linkr_compress_bit_pack(
-		chunk->values, chunk->sample_count, channel_mask,
-		final_buf, sizeof(final_buf));
+	if (send_count == 0U) {
+		LOG_WRN("sigrok ws terminalize: reason=send_count_zero status=%d seq=%u "
+			"count=%u qdepth=%ld state=%d sample_index=%u emitted=%u",
+			chunk->status, chunk->sequence, chunk->sample_count,
+			(long)atomic_get(&client->sigrok_stream_qdepth), session->state,
+			session->sample_index, session->emitted_samples);
+		if (!sigrok_ws_queue_event(client, LINKR_DEBUGGER_SIGROK_LINKR_EVENT_STOPPED)) {
+			sigrok_ws_terminalize_event_commit_failure(client,
+				"stopped_event_commit", chunk);
+			return;
+		}
+		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
+		sigrok_ws_mark_stop_pending(client);
+		sigrok_ws_stream_apply_wake_policy(client, true);
+		return;
+	}
+	session->emitted_samples += send_count;
+	final_chunk = linkr_debugger_sigrok_linkr_bounded_capture_done(session);
+	session->emitted_samples -= send_count;
 
-	if (final_len == 0U) {
+	size_t data_len = linkr_debugger_sigrok_linkr_packed_data_len(channel_mask, send_count);
+	size_t total_len = LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + data_len;
+	struct sigrok_ws_stream_queue_item *item;
+
+	if (data_len == 0U || data_len > LINKR_DEBUGGER_SIGROK_LINKR_MAX_DATA_BYTES) {
+		LOG_WRN("sigrok ws terminalize: reason=data_len status=%d seq=%u "
+			"send_count=%u data_len=%u qdepth=%ld state=%d sample_index=%u emitted=%u",
+			chunk->status, chunk->sequence, send_count,
+			(unsigned int)data_len,
+			(long)atomic_get(&client->sigrok_stream_qdepth), session->state,
+			session->sample_index, session->emitted_samples);
+		(void)sigrok_ws_queue_event(client, LINKR_DEBUGGER_SIGROK_LINKR_EVENT_OVERRUN);
+		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
+		sigrok_ws_mark_stop_pending(client);
+		sigrok_ws_stream_apply_wake_policy(client, true);
 		return;
 	}
 
-	static uint8_t data_buf[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + LINKR_DEBUGGER_SIGROK_LINKR_MAX_PAYLOAD_BYTES];
+	item = sigrok_ws_stream_slot_acquire(client, false);
+	if (item == NULL) {
+		atomic_inc(&client->sigrok_stream_dropped);
+		LOG_WRN("sigrok ws terminalize: reason=slot status=%d seq=%u "
+			"send_count=%u len=%u qdepth=%ld state=%d sample_index=%u emitted=%u",
+			chunk->status, chunk->sequence, send_count,
+			(unsigned int)total_len,
+			(long)atomic_get(&client->sigrok_stream_qdepth), session->state,
+			session->sample_index, session->emitted_samples);
+		(void)sigrok_ws_queue_event(client, LINKR_DEBUGGER_SIGROK_LINKR_EVENT_OVERRUN);
+		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
+		sigrok_ws_mark_stop_pending(client);
+		sigrok_ws_stream_apply_wake_policy(client, true);
+		return;
+	}
 	struct linkr_debugger_sigrok_linkr_data_meta meta;
-
-	meta.sample_index = sample_index;
-	meta.sample_count = (uint16_t)chunk->sample_count;
-	meta.compression = compression;
-	meta.channel_mask = channel_mask;
-
-	size_t meta_len = linkr_debugger_sigrok_linkr_encode_data_meta(&meta,
-		data_buf + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES,
-		sizeof(data_buf) - LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES);
-
-	memcpy(data_buf + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + meta_len,
-	       final_buf, final_len);
-
+	size_t meta_len;
+	size_t final_len;
 	struct linkr_debugger_sigrok_linkr_header data_header;
 
+	if (total_len > item->capacity) {
+		sigrok_ws_stream_slot_release(item);
+		LOG_WRN("sigrok ws terminalize: reason=slot_len status=%d seq=%u "
+			"send_count=%u len=%u cap=%u qdepth=%ld state=%d sample_index=%u emitted=%u",
+			chunk->status, chunk->sequence, send_count,
+			(unsigned int)total_len, (unsigned int)item->capacity,
+			(long)atomic_get(&client->sigrok_stream_qdepth), session->state,
+			session->sample_index, session->emitted_samples);
+		(void)sigrok_ws_queue_event(client, LINKR_DEBUGGER_SIGROK_LINKR_EVENT_OVERRUN);
+		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
+		sigrok_ws_mark_stop_pending(client);
+		sigrok_ws_stream_apply_wake_policy(client, true);
+		return;
+	}
+	meta.sample_index = sample_index;
+	meta.sample_count = send_count;
+	meta.compression = compression;
+	meta.channel_mask = channel_mask;
+	meta_len = linkr_debugger_sigrok_linkr_encode_data_meta(&meta,
+		item->data + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES,
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES);
+	if (channel_mask == 0x0001U) {
+		uint8_t *payload = item->data + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + meta_len;
+
+		final_len = linkr_debugger_sigrok_linkr_compress_bit_pack_rle_single(
+			chunk->values, send_count, payload, data_len);
+		if (final_len > 0U && final_len < data_len) {
+			compression = LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_BIT_PACK_RLE;
+			meta.compression = compression;
+			meta_len = linkr_debugger_sigrok_linkr_encode_data_meta(&meta,
+				item->data + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES,
+				LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES);
+		} else {
+			final_len = linkr_debugger_sigrok_linkr_compress_bit_pack_single(
+				chunk->values, send_count, payload, data_len);
+		}
+	} else {
+		final_len = linkr_debugger_sigrok_linkr_compress_bit_pack(
+			chunk->values, send_count, channel_mask,
+			item->data + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + meta_len,
+			data_len);
+	}
+	if (final_len == 0U ||
+	    (compression == LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_BIT_PACK &&
+	     final_len != data_len)) {
+		sigrok_ws_stream_slot_release(item);
+		LOG_WRN("sigrok ws terminalize: reason=pack_len status=%d seq=%u "
+			"send_count=%u final_len=%u data_len=%u qdepth=%ld state=%d "
+			"sample_index=%u emitted=%u",
+			chunk->status, chunk->sequence, send_count,
+			(unsigned int)final_len, (unsigned int)data_len,
+			(long)atomic_get(&client->sigrok_stream_qdepth), session->state,
+			session->sample_index, session->emitted_samples);
+		(void)sigrok_ws_queue_event(client, LINKR_DEBUGGER_SIGROK_LINKR_EVENT_OVERRUN);
+		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
+		sigrok_ws_mark_stop_pending(client);
+		sigrok_ws_stream_apply_wake_policy(client, true);
+		return;
+	}
 	linkr_debugger_sigrok_linkr_init_response_header(&data_header,
 		LINKR_DEBUGGER_SIGROK_LINKR_FRAME_DATA, 0U,
 		(uint16_t)(meta_len + final_len));
 	(void)linkr_debugger_sigrok_linkr_encode_header(&data_header,
-		data_buf, sizeof(data_buf));
-
-	int ret = websocket_send_msg(client->ws_sock, data_buf,
-		(size_t)(LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + meta_len + final_len),
-		WEBSOCKET_OPCODE_DATA_BINARY, false, true, SYS_FOREVER_MS);
-
-	if (ret < 0) {
-		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_READY;
-		(void)linkr_debugger_logic_analyzer_stop_stream();
-		(void)linkr_debugger_capture_arbiter_release(
-			LINKR_DEBUGGER_CAPTURE_OWNER_SIGROK_LINKR);
+		item->data, LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES);
+	item->len = LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + meta_len + final_len;
+	item->kind = SIGROK_WS_STREAM_ITEM_PREFRAMED;
+	if (!linkr_debugger_sigrok_linkr_stream_queue_bytes_has_capacity(
+	    sigrok_ws_stream_qbytes(client), item->len,
+	    LINKR_DEBUGGER_WS_SIGROK_QBYTES_LIMIT, final_chunk,
+	    sigrok_ws_stream_event_item_bytes())) {
+		atomic_inc(&client->sigrok_stream_dropped);
+		sigrok_ws_stream_slot_release(item);
+		LOG_WRN("sigrok ws terminalize: reason=qbytes status=%d seq=%u "
+			"send_count=%u item_bytes=%u qdepth=%ld qbytes=%u cap=%u "
+			"final=%d state=%d sample_index=%u emitted=%u",
+			chunk->status, chunk->sequence, send_count,
+			(unsigned int)(LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + meta_len + final_len),
+			(long)atomic_get(&client->sigrok_stream_qdepth),
+			(unsigned int)sigrok_ws_stream_qbytes(client),
+			(unsigned int)LINKR_DEBUGGER_WS_SIGROK_QBYTES_LIMIT, final_chunk,
+			session->state, session->sample_index, session->emitted_samples);
+		(void)sigrok_ws_queue_event(client, LINKR_DEBUGGER_SIGROK_LINKR_EVENT_OVERRUN);
+		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
+		sigrok_ws_mark_stop_pending(client);
+		sigrok_ws_stream_apply_wake_policy(client, true);
+		return;
 	}
+	if (!sigrok_ws_stream_put_accounted_item(client, item)) {
+		atomic_inc(&client->sigrok_stream_dropped);
+		LOG_WRN("sigrok ws terminalize: reason=commit status=%d seq=%u "
+			"send_count=%u qdepth=%ld qbytes=%u state=%d sample_index=%u emitted=%u",
+			chunk->status, chunk->sequence, send_count,
+			(long)atomic_get(&client->sigrok_stream_qdepth),
+			(unsigned int)sigrok_ws_stream_qbytes(client), session->state,
+			session->sample_index, session->emitted_samples);
+		(void)sigrok_ws_queue_event(client, LINKR_DEBUGGER_SIGROK_LINKR_EVENT_OVERRUN);
+		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
+		sigrok_ws_mark_stop_pending(client);
+		sigrok_ws_stream_apply_wake_policy(client, true);
+		return;
+	}
+	session->emitted_samples += send_count;
+	session->sample_index = linkr_debugger_sigrok_linkr_advance_sample_index(
+		session->sample_index, send_count);
+	if (final_chunk) {
+		LOG_WRN("sigrok ws terminalize: reason=final_chunk status=%d seq=%u "
+			"send_count=%u qdepth=%ld state=%d sample_index=%u emitted=%u",
+			chunk->status, chunk->sequence, send_count,
+			(long)atomic_get(&client->sigrok_stream_qdepth), session->state,
+			session->sample_index, session->emitted_samples);
+		if (!sigrok_ws_queue_event(client, LINKR_DEBUGGER_SIGROK_LINKR_EVENT_STOPPED)) {
+			sigrok_ws_terminalize_event_commit_failure(client,
+				"final_stopped_event_commit", chunk);
+			return;
+		}
+		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
+		sigrok_ws_mark_stop_pending(client);
+		sigrok_ws_stream_apply_wake_policy(client, true);
+	} else {
+		sigrok_ws_stream_apply_wake_policy(client, false);
+	}
+	return;
 }
 
+static void sigrok_ws_stream_drain(struct linkr_debugger_ws_client *client)
+{
+	struct sigrok_ws_stream_queue_item *pending_item = NULL;
+	struct sigrok_ws_stream_queue_item *sent_items[LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_FRAMES];
+	bool terminal_error = false;
+	int64_t drain_started_ticks = k_uptime_ticks();
+	uint32_t drain_items = 0U;
+	size_t drain_bytes = 0U;
+
+	int drained = 0;
+	while (drained < LINKR_DEBUGGER_WS_SIGROK_DRAIN_BATCH) {
+		uint8_t coalesced_count = 0U;
+		size_t coalesced_len = 0U;
+
+		while (drained < LINKR_DEBUGGER_WS_SIGROK_DRAIN_BATCH &&
+		       coalesced_count < LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_FRAMES) {
+			struct sigrok_ws_stream_queue_item *item = pending_item;
+
+			if (item == NULL) {
+				item = sigrok_ws_stream_pop_accounted_item(client);
+				if (item == NULL) {
+					break;
+				}
+			} else {
+				pending_item = NULL;
+			}
+
+			if (!linkr_debugger_sigrok_linkr_coalesce_can_append(coalesced_len,
+			    item->len, LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_BYTES, coalesced_count,
+			    LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_FRAMES)) {
+				if (coalesced_count == 0U) {
+					size_t failed_len = item->len;
+
+					atomic_inc(&client->sigrok_stream_dropped);
+					sigrok_ws_stream_free_accounted_item(client, item);
+					terminal_error = true;
+					LOG_WRN("sigrok ws drain terminal failure: batch_frames=0 len=%u "
+						"qdepth=%ld qbytes=%u duration_us=0 ret=0 rate_used=%d",
+						(unsigned int)failed_len,
+						(long)atomic_get(&client->sigrok_stream_qdepth),
+						(unsigned int)sigrok_ws_stream_qbytes(client),
+						client->sigrok_rate_used);
+				}
+				pending_item = coalesced_count == 0U ? NULL : item;
+				break;
+			}
+
+			size_t encoded_len = sigrok_ws_stream_encode_item(item,
+				client->tx_buffer + coalesced_len,
+				LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_BYTES - coalesced_len);
+			if (encoded_len == 0U || encoded_len > item->len ||
+			    encoded_len > LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_BYTES - coalesced_len) {
+				size_t max_len = item->len;
+				uint8_t kind = item->kind;
+
+				atomic_inc(&client->sigrok_stream_dropped);
+				sigrok_ws_stream_free_accounted_item(client, item);
+				terminal_error = true;
+				LOG_WRN("sigrok ws drain terminal failure: encode len=%u max_len=%u "
+					"kind=%u batch_frames=%u qdepth=%ld qbytes=%u rate_used=%d",
+					(unsigned int)encoded_len, (unsigned int)max_len,
+					kind, coalesced_count,
+					(long)atomic_get(&client->sigrok_stream_qdepth),
+					(unsigned int)sigrok_ws_stream_qbytes(client),
+					client->sigrok_rate_used);
+				break;
+			}
+			coalesced_len += encoded_len;
+			sent_items[coalesced_count] = item;
+			coalesced_count++;
+			drained++;
+		}
+
+		if (terminal_error) {
+			for (uint8_t i = 0U; i < coalesced_count; i++) {
+				sigrok_ws_stream_free_accounted_item(client, sent_items[i]);
+			}
+			break;
+		}
+
+		if (coalesced_count == 0U) {
+			break;
+		}
+		drain_items += coalesced_count;
+		drain_bytes += coalesced_len;
+
+		if (client->connected) {
+			/* Cap the sustained WS send rate to avoid the repository-local
+			 * CDC-NCM backpressure wedge observed under sustained ~1k frames/sec.
+			 * Short bursts stay under the cap; long streams stop with OVERRUN.
+			 */
+			int64_t now = k_uptime_get();
+			if (now - client->sigrok_rate_window_ms >= 1000) {
+				client->sigrok_rate_window_ms = now;
+				client->sigrok_rate_used = 0;
+			}
+			if (client->sigrok_rate_used >= LINKR_DEBUGGER_WS_SIGROK_SEND_RATE_CAP) {
+				atomic_inc(&client->sigrok_stream_dropped);
+				for (uint8_t i = 0U; i < coalesced_count; i++) {
+					sigrok_ws_stream_free_accounted_item(client, sent_items[i]);
+				}
+				terminal_error = true;
+				LOG_WRN("sigrok ws drain terminal failure: batch_frames=%u len=%u "
+					"qdepth=%ld qbytes=%u duration_us=0 ret=0 rate_used=%d",
+					coalesced_count, (unsigned int)coalesced_len,
+					(long)atomic_get(&client->sigrok_stream_qdepth),
+					(unsigned int)sigrok_ws_stream_qbytes(client),
+					client->sigrok_rate_used);
+				break;
+			}
+			int64_t started_ticks = k_uptime_ticks();
+			int sret = websocket_send_msg(client->ws_sock, client->tx_buffer, coalesced_len,
+						 WEBSOCKET_OPCODE_DATA_BINARY, false, true,
+						 LINKR_DEBUGGER_WS_SIGROK_SEND_TIMEOUT_MS);
+			uint64_t duration_us = k_ticks_to_us_floor64(k_uptime_ticks() - started_ticks);
+			sigrok_ws_stream_metrics_update_send(client, duration_us, coalesced_count,
+				coalesced_len);
+
+			if (sret < 0) {
+				LOG_WRN("sigrok ws send failed: batch_frames=%u len=%u qdepth=%ld "
+					"qbytes=%u duration_us=%llu ret=%d rate_used=%d",
+					coalesced_count, (unsigned int)coalesced_len,
+					(long)atomic_get(&client->sigrok_stream_qdepth),
+					(unsigned int)sigrok_ws_stream_qbytes(client),
+					(unsigned long long)duration_us, sret,
+					client->sigrok_rate_used);
+			} else if (duration_us > LINKR_DEBUGGER_WS_SIGROK_SEND_SLOW_US &&
+			    client->sigrok_stream_slow_send_logs <
+			    LINKR_DEBUGGER_WS_SIGROK_SLOW_SEND_LOG_LIMIT) {
+				client->sigrok_stream_slow_send_logs++;
+				LOG_WRN("sigrok ws send: batch_frames=%u len=%u qdepth=%ld "
+					"qbytes=%u duration_us=%llu ret=%d rate_used=%d slow_log=%u",
+					coalesced_count, (unsigned int)coalesced_len,
+					(long)atomic_get(&client->sigrok_stream_qdepth),
+					(unsigned int)sigrok_ws_stream_qbytes(client),
+					(unsigned long long)duration_us, sret,
+					client->sigrok_rate_used,
+					client->sigrok_stream_slow_send_logs);
+			}
+			if (sret < 0) {
+				client->connected = false;
+				for (uint8_t i = 0U; i < coalesced_count; i++) {
+					sigrok_ws_stream_free_accounted_item(client, sent_items[i]);
+				}
+				terminal_error = true;
+				break;
+			}
+			client->sigrok_rate_used++;
+		}
+		for (uint8_t i = 0U; i < coalesced_count; i++) {
+			sigrok_ws_stream_free_accounted_item(client, sent_items[i]);
+		}
+		if (pending_item != NULL) {
+			continue;
+		}
+		if (k_fifo_is_empty(&client->sigrok_stream_fifo)) {
+			break;
+		}
+	}
+	sigrok_ws_stream_metrics_update_drain(client,
+		k_ticks_to_us_floor64(k_uptime_ticks() - drain_started_ticks),
+		drain_items, drain_bytes);
+	if (terminal_error) {
+		if (pending_item != NULL) {
+			sigrok_ws_stream_free_accounted_item(client, pending_item);
+		}
+		sigrok_ws_terminalize_failed_stream(client, client->connected ? 0 : -EIO);
+	}
+	/* If backlog remains after this batch, re-arm the event so the loop
+	 * drains again immediately instead of waiting for the next chunk post.
+	 */
+	if (!terminal_error && client->connected && !k_fifo_is_empty(&client->sigrok_stream_fifo)) {
+		k_event_post(&client->events, LINKR_DEBUGGER_WS_EVENT_STREAM_DATA);
+	}
+	if (!terminal_error && k_fifo_is_empty(&client->sigrok_stream_fifo)) {
+		sigrok_ws_stream_cancel_deferred_wake_sync(client);
+		sigrok_ws_stop_capture_if_pending(client);
+	}
+}
 
 static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 {
@@ -1949,6 +3343,13 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 		k_mutex_unlock(&linkr_debugger_ws_clients_lock);
 
 		capture_pending = linkr_debugger_ws_client_has_capture_pending(client);
+		bool sigrok_busy = !k_fifo_is_empty(&client->sigrok_stream_fifo) ||
+			client->sigrok_session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING ||
+			client->sigrok_session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_ARMED;
+		/* When sigrok is streaming, recv must not block (that stalls the
+		 * drain); the k_event wait above provides the blocking so the thread
+		 * sleeps instead of spinning.
+		 */
 		wait_ms = capture_pending ? 1U : client->telemetry_enabled ?
 			MAX(1U, DIV_ROUND_UP(1000U * client->telemetry_batch_size,
 					       (uint32_t)client->telemetry_rate_hz)) :
@@ -1959,7 +3360,7 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 		 * timeout, which could permanently lose one-shot event posts.
 		 */
 		events = k_event_wait_safe(&client->events,
-			LINKR_DEBUGGER_WS_EVENT_STATE | LINKR_DEBUGGER_WS_EVENT_SAMPLE,
+			LINKR_DEBUGGER_WS_EVENT_STATE | LINKR_DEBUGGER_WS_EVENT_SAMPLE | LINKR_DEBUGGER_WS_EVENT_STREAM_DATA,
 			false, K_MSEC(wait_ms));
 
 		if (events & LINKR_DEBUGGER_WS_EVENT_STATE) {
@@ -1988,13 +3389,15 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 			break;
 		}
 
+		sigrok_ws_stream_drain(client);
+
 		ret = websocket_recv_msg(ws_sock,
 				 client->recv_buffer,
 				 sizeof(client->recv_buffer) - 1U,
 				 &message_type,
 				 &remaining,
-				 (client->telemetry_enabled || capture_pending) ?
-				 0 : LINKR_DEBUGGER_WS_IDLE_WAIT_MS);
+			 (client->telemetry_enabled || capture_pending || sigrok_busy) ?
+			 0 : LINKR_DEBUGGER_WS_IDLE_WAIT_MS);
 		if (ret == -EAGAIN) {
 			continue;
 		}
@@ -2005,6 +3408,11 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 			break;
 		}
 		if ((message_type & WEBSOCKET_FLAG_BINARY) != 0U) {
+			if (remaining != 0U) {
+				(void)linkr_debugger_ws_emit_error(client, "ws", "message_too_large",
+					"fragmented or oversized websocket frames are not supported");
+				break;
+			}
 			ret = linkr_debugger_ws_handle_sigrok_binary(client,
 				client->recv_buffer, (size_t)ret);
 			if (ret < 0) {
@@ -2037,6 +3445,21 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 	 * trip Chromium's "Close received after close" warning.
 	 */
 	(void)websocket_unregister(ws_sock);
+
+	/* If this client had an armed/running sigrok stream, tear it down so a
+	 * disconnect without STOP cannot leak the capture and wedge the arbiter
+	 * for subsequent sessions.
+	 */
+	if (client->sigrok_session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_ARMED ||
+	    client->sigrok_session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING) {
+		LOG_WRN("stopping leaked sigrok stream on disconnect (state=%d)",
+			(int)client->sigrok_session.state);
+		sigrok_ws_release_capture_if_held(client);
+		client->sigrok_session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
+	}
+
+	sigrok_ws_stream_reset_queue(client);
+
 	linkr_debugger_ws_client_release(client, session_id);
 }
 
@@ -2081,6 +3504,14 @@ int linkr_debugger_ws_setup(int ws_socket, struct http_request_ctx *request_ctx,
 	client->telemetry_enabled = false;
 	client->sigrok_active = false;
 	linkr_debugger_sigrok_linkr_session_reset(&client->sigrok_session);
+	k_fifo_init(&client->sigrok_stream_fifo);
+	atomic_set(&client->sigrok_stream_qdepth, 0);
+	atomic_set(&client->sigrok_stream_qbytes, 0);
+	atomic_set(&client->sigrok_stream_dropped, 0);
+	atomic_set(&client->sigrok_stream_stop_pending, 0);
+	atomic_set(&client->sigrok_stream_deferred_wake_pending, 0);
+	client->sigrok_rate_window_ms = k_uptime_get();
+	client->sigrok_rate_used = 0;
 	client->telemetry_rate_hz = 10;
 	client->telemetry_batch_size = 1U;
 	client->next_sample_sequence = 0U;
@@ -2114,6 +3545,8 @@ int linkr_debugger_ws_init(void)
 		linkr_debugger_ws_clients[i].slot = (uint8_t)i;
 		k_mutex_init(&linkr_debugger_ws_clients[i].lock);
 		k_event_init(&linkr_debugger_ws_clients[i].events);
+		k_work_init_delayable(&linkr_debugger_ws_clients[i].sigrok_stream_wake_work,
+			sigrok_ws_stream_wake_work_handler);
 		linkr_debugger_ws_clients[i].active = false;
 		linkr_debugger_ws_client_reset(&linkr_debugger_ws_clients[i]);
 	}
@@ -2169,6 +3602,7 @@ int linkr_debugger_ws_session_delete(uint32_t session_id)
 		client->active = false;
 		client->connected = false;
 		client->telemetry_enabled = false;
+		sigrok_ws_stream_cancel_deferred_wake_sync(client);
 		k_event_post(&client->events,
 			     LINKR_DEBUGGER_WS_EVENT_STATE | LINKR_DEBUGGER_WS_EVENT_SAMPLE);
 		(void)zsock_shutdown(client->ws_sock, ZSOCK_SHUT_RDWR);
@@ -2178,6 +3612,7 @@ int linkr_debugger_ws_session_delete(uint32_t session_id)
 		return 0;
 	}
 	client->active = false;
+	sigrok_ws_stream_cancel_deferred_wake_sync(client);
 	linkr_debugger_ws_client_reset(client);
 	k_event_clear(&client->events, UINT32_MAX);
 	k_mutex_unlock(&linkr_debugger_ws_clients_lock);
