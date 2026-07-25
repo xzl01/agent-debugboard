@@ -12,10 +12,24 @@ import type {
   LogicAnalyzerSample,
   LogicAnalyzerTriggerType,
 } from "./types";
+import {
+  SIGROK_SAMPLE_INDEX_MODULO,
+  SigrokModeId,
+  SigrokTriggerType,
+  type SigrokDataMeta,
+  type SigrokConfigReq,
+} from "./sigrokClient.ts";
 
-export const LOGIC_ANALYZER_MAX_SAMPLES = 512;
+export const LOGIC_ANALYZER_MAX_SAMPLES = 0xffff;
+export const LOGIC_ANALYZER_MIN_SAMPLE_RATE_HZ = 100000;
+export const LOGIC_ANALYZER_WEB_STREAM_MAX_SAMPLE_RATE_HZ = 25000000;
+export const LOGIC_ANALYZER_MAX_PRE_TRIGGER_SAMPLE_RATE_HZ =
+  LOGIC_ANALYZER_WEB_STREAM_MAX_SAMPLE_RATE_HZ;
 export const LOGIC_ANALYZER_SAMPLE_RATES_HZ = [
+  100000,
+  500000,
   1000000,
+  2000000,
   5000000,
   10000000,
   25000000,
@@ -23,14 +37,36 @@ export const LOGIC_ANALYZER_SAMPLE_RATES_HZ = [
   100000000,
   125000000,
 ] as const;
-export const LOGIC_ANALYZER_MIN_SAMPLE_RATE_HZ = LOGIC_ANALYZER_SAMPLE_RATES_HZ[0];
 export const LOGIC_ANALYZER_MAX_SAMPLE_RATE_HZ =
   LOGIC_ANALYZER_SAMPLE_RATES_HZ[LOGIC_ANALYZER_SAMPLE_RATES_HZ.length - 1];
+
+const LOGIC_ANALYZER_NORMALIZED_SAMPLE_RATES_HZ = LOGIC_ANALYZER_SAMPLE_RATES_HZ;
+
+export interface SigrokBoundedCaptureFrame {
+  meta: Pick<SigrokDataMeta, "sampleIndex" | "sampleCount" | "channelMask">;
+  samples: Uint8Array;
+}
+
+export interface SigrokBoundedCaptureAssembly {
+  firstSampleIndex: number;
+  sampleCount: number;
+  triggerIndex: number;
+  values: number[];
+}
 
 function clampInteger(value: number, minimum: number, maximum: number): number {
   if (!Number.isFinite(value)) return minimum;
   return Math.min(maximum, Math.max(minimum, Math.trunc(value)));
 }
+
+export const LOGIC_ANALYZER_SIGROK_DISABLED_PINS = [7, 8, 9] as const;
+
+const WEB_SIGROK_SUPPORTED_PINS = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 29] as const;
+const WEB_SIGROK_SUPPORTED_PIN_SET = new Set<number>(WEB_SIGROK_SUPPORTED_PINS);
+const CAPTURE_AVAILABLE_PIN_SET = new Set<number>([
+  ...LOGIC_ANALYZER_SIGROK_DISABLED_PINS,
+  ...WEB_SIGROK_SUPPORTED_PINS,
+]);
 
 function dedupeAndSortPins(pins: number[]): number[] {
   return [...new Set(pins)].sort((left, right) => left - right);
@@ -44,6 +80,120 @@ function normalizeSampleRateFromPeriod(samplePeriodPs: number | undefined): numb
   const normalizedPeriodPs = normalizePositiveNumber(samplePeriodPs);
   if (normalizedPeriodPs == null) return null;
   return 1000000000000 / normalizedPeriodPs;
+}
+
+function countChannelBits(channelMask: number): number {
+  let count = 0;
+  let remaining = channelMask >>> 0;
+  while (remaining > 0) {
+    count += remaining & 1;
+    remaining >>>= 1;
+  }
+  return count;
+}
+
+function normalizeSigrokSampleIndex(sampleIndex: number): number {
+  if (!Number.isFinite(sampleIndex)) {
+    return 0;
+  }
+  const truncated = Math.trunc(sampleIndex);
+  const modulo = truncated % SIGROK_SAMPLE_INDEX_MODULO;
+  return modulo < 0 ? modulo + SIGROK_SAMPLE_INDEX_MODULO : modulo;
+}
+
+function unwrapSigrokSampleIndex(sampleIndex: number, referenceAbsoluteIndex: number): number {
+  const normalizedIndex = normalizeSigrokSampleIndex(sampleIndex);
+  const baseCycle = Math.floor(referenceAbsoluteIndex / SIGROK_SAMPLE_INDEX_MODULO);
+  const candidateCycles = [baseCycle - 1, baseCycle, baseCycle + 1];
+  let bestCandidate = normalizedIndex + candidateCycles[0] * SIGROK_SAMPLE_INDEX_MODULO;
+  let bestDistance = Math.abs(bestCandidate - referenceAbsoluteIndex);
+
+  for (const cycle of candidateCycles.slice(1)) {
+    const candidate = normalizedIndex + cycle * SIGROK_SAMPLE_INDEX_MODULO;
+    const distance = Math.abs(candidate - referenceAbsoluteIndex);
+    if (distance < bestDistance) {
+      bestCandidate = candidate;
+      bestDistance = distance;
+    }
+  }
+
+  return bestCandidate;
+}
+
+export function unpackSigrokSamples(packed: Uint8Array, channelMask: number): number[] {
+  const bytesPerSample = Math.max(1, Math.ceil(countChannelBits(channelMask) / 8));
+  const values: number[] = [];
+  for (let offset = 0; offset + bytesPerSample <= packed.length; offset += bytesPerSample) {
+    let sampleValue = packed[offset] ?? 0;
+    for (let byteIndex = 1; byteIndex < bytesPerSample; byteIndex += 1) {
+      sampleValue |= (packed[offset + byteIndex] ?? 0) << (byteIndex * 8);
+    }
+    values.push(sampleValue);
+  }
+  return values;
+}
+
+export function assembleBoundedSigrokCapture({
+  frames,
+  channelMask,
+  triggerSampleIndex,
+}: {
+  frames: readonly SigrokBoundedCaptureFrame[];
+  channelMask: number;
+  triggerSampleIndex: number | null;
+}): SigrokBoundedCaptureAssembly {
+  if (frames.length === 0) {
+    throw new Error("No DATA frames received before STOPPED");
+  }
+
+  let firstSampleIndex = 0;
+  let expectedNextIndex = 0;
+  const values: number[] = [];
+
+  frames.forEach((frame, frameIndex) => {
+    if (frame.meta.channelMask !== channelMask) {
+      throw new Error("DATA frame channel mask changed mid-capture");
+    }
+
+    const frameValues = unpackSigrokSamples(frame.samples, channelMask);
+    if (frameValues.length !== frame.meta.sampleCount) {
+      throw new Error("DATA frame sample count does not match payload length");
+    }
+
+    const frameStartIndex =
+      frameIndex === 0
+        ? normalizeSigrokSampleIndex(frame.meta.sampleIndex)
+        : unwrapSigrokSampleIndex(frame.meta.sampleIndex, expectedNextIndex);
+
+    if (frameIndex === 0) {
+      firstSampleIndex = frameStartIndex;
+    } else if (frameStartIndex !== expectedNextIndex) {
+      throw new Error(
+        frameStartIndex < expectedNextIndex
+          ? "Out-of-order DATA frame detected"
+          : "Gap detected between DATA frames"
+      );
+    }
+
+    values.push(...frameValues);
+    expectedNextIndex = frameStartIndex + frame.meta.sampleCount;
+  });
+
+  let triggerIndex = 0;
+  if (triggerSampleIndex != null) {
+    const triggerAbsoluteIndex = unwrapSigrokSampleIndex(triggerSampleIndex, firstSampleIndex);
+    triggerIndex = triggerAbsoluteIndex - firstSampleIndex;
+    if (triggerIndex < 0 || triggerIndex >= values.length) {
+      throw new Error("Trigger sample index lies outside captured data window");
+    }
+  }
+
+  return {
+    firstSampleIndex,
+    sampleCount: values.length,
+    triggerIndex,
+    values,
+  };
 }
 
 export function usesTrigger(triggerType: LogicAnalyzerTriggerType): boolean {
@@ -176,10 +326,10 @@ export function normalizeLogicAnalyzerSampleRate(requestedRate: number): number 
     return LOGIC_ANALYZER_MAX_SAMPLE_RATE_HZ;
   }
 
-  let nearestRate: number = LOGIC_ANALYZER_SAMPLE_RATES_HZ[0];
+  let nearestRate: number = LOGIC_ANALYZER_NORMALIZED_SAMPLE_RATES_HZ[0];
   let nearestDistance = Math.abs(truncatedRate - nearestRate);
 
-  for (const candidateRate of LOGIC_ANALYZER_SAMPLE_RATES_HZ.slice(1)) {
+  for (const candidateRate of LOGIC_ANALYZER_NORMALIZED_SAMPLE_RATES_HZ.slice(1)) {
     const candidateDistance = Math.abs(truncatedRate - candidateRate);
     if (
       candidateDistance < nearestDistance ||
@@ -198,16 +348,106 @@ function normalizeLogicAnalyzerSelectedPins(pins: number[]): number[] {
     pins.flatMap((pin) => {
       if (!Number.isFinite(pin)) return [];
       const normalizedPin = Math.trunc(pin);
-      return AVAILABLE_PIN_SET.has(normalizedPin) ? [normalizedPin] : [];
+      return WEB_SIGROK_SUPPORTED_PIN_SET.has(normalizedPin) ? [normalizedPin] : [];
     })
   );
+}
+
+function normalizeCaptureSelectedPins(pins: number[]): number[] {
+  return dedupeAndSortPins(
+    pins.flatMap((pin) => {
+      if (!Number.isFinite(pin)) return [];
+      const normalizedPin = Math.trunc(pin);
+      return CAPTURE_AVAILABLE_PIN_SET.has(normalizedPin) ? [normalizedPin] : [];
+    })
+  );
+}
+
+export function isWebSigrokPinSupported(pin: number): boolean {
+  return WEB_SIGROK_SUPPORTED_PIN_SET.has(pin);
+}
+
+export function getSigrokModeForPins(selectedPins: readonly number[]): SigrokModeId {
+  return selectedPins.some((pin) => pin >= 18 || pin === 29)
+    ? SigrokModeId.WIDE12
+    : SigrokModeId.FAST8;
+}
+
+export function mapSigrokLogicalChannel(pin: number, modeId: SigrokModeId): number | null {
+  if (modeId === SigrokModeId.FAST8) {
+    return pin >= 10 && pin <= 17 ? pin - 10 : null;
+  }
+  if (pin >= 10 && pin <= 20) {
+    return pin - 10;
+  }
+  return pin === 29 ? 11 : null;
+}
+
+function buildSigrokChannelMask(selectedPins: readonly number[], modeId: SigrokModeId): number {
+  let mask = 0;
+  for (const pin of selectedPins) {
+    const logicalChannel = mapSigrokLogicalChannel(pin, modeId);
+    if (logicalChannel == null) {
+      throw new Error(`Pin GP${pin} is not available in sigrok mode ${modeId}`);
+    }
+    mask |= 1 << logicalChannel;
+  }
+  return mask;
+}
+
+function mapTriggerType(triggerType: LogicAnalyzerTriggerType): SigrokTriggerType {
+  switch (triggerType) {
+    case "rising":
+      return SigrokTriggerType.RISING;
+    case "falling":
+      return SigrokTriggerType.FALLING;
+    case "either":
+      return SigrokTriggerType.EITHER;
+    default:
+      return SigrokTriggerType.NONE;
+  }
+}
+
+export function buildSigrokCaptureRequest(
+  config: LogicAnalyzerConfig,
+  options: { stream?: boolean } = {}
+): SigrokConfigReq {
+  const normalizedConfig = normalizeLogicAnalyzerConfig(config);
+  if (normalizedConfig.selectedPins.length === 0) {
+    throw new Error("Select at least one supported pin");
+  }
+
+  const modeId = getSigrokModeForPins(normalizedConfig.selectedPins);
+  const triggerPinNumber =
+    normalizedConfig.triggerType === "none"
+      ? null
+      : normalizedConfig.selectedPins[normalizedConfig.triggerPin] ?? null;
+  const triggerChannel =
+    triggerPinNumber == null ? 0 : mapSigrokLogicalChannel(triggerPinNumber, modeId);
+  if (triggerPinNumber != null && triggerChannel == null) {
+    throw new Error(`Trigger pin GP${triggerPinNumber} is not available in sigrok mode ${modeId}`);
+  }
+
+  return {
+    modeId,
+    triggerType: mapTriggerType(normalizedConfig.triggerType),
+    triggerChannel: triggerChannel ?? 0,
+    channelMask: buildSigrokChannelMask(normalizedConfig.selectedPins, modeId),
+    samplerateKhz: Math.max(1, Math.round(normalizedConfig.sampleRateHz / 1000)),
+    preSamples: 0,
+    postSamples: options.stream ? 0 : normalizedConfig.postSamples,
+  };
 }
 
 export function normalizeLogicAnalyzerConfig(config: LogicAnalyzerConfig): LogicAnalyzerConfig {
   const selectedPins = normalizeLogicAnalyzerSelectedPins(config.selectedPins);
   const sampleRateHz = normalizeLogicAnalyzerSampleRate(config.sampleRateHz);
-  const preSamples = config.triggerType === "none" ? 0 : clampInteger(config.preSamples, 0, LOGIC_ANALYZER_MAX_SAMPLES);
-  const postSamples = clampInteger(config.postSamples, 1, LOGIC_ANALYZER_MAX_SAMPLES);
+  const preSamples = 0;
+  const postSamples = clampInteger(
+    config.postSamples,
+    1,
+    LOGIC_ANALYZER_MAX_SAMPLES
+  );
   const triggerPin = clampInteger(config.triggerPin, 0, Math.max(0, selectedPins.length - 1));
 
   return {
@@ -217,31 +457,6 @@ export function normalizeLogicAnalyzerConfig(config: LogicAnalyzerConfig): Logic
     preSamples,
     postSamples,
     triggerPin,
-  };
-}
-
-export function buildLogicAnalyzerArmRequest(config: LogicAnalyzerConfig): {
-  selected_pins: number[];
-  pin_base: number;
-  pin_count: number;
-  sample_rate_hz: number;
-  pre_samples: number;
-  post_samples: number;
-  trigger: LogicAnalyzerTriggerType;
-  trigger_pin: number;
-} {
-  const normalizedConfig = normalizeLogicAnalyzerConfig(config);
-  const selectedPins = normalizedConfig.selectedPins;
-
-  return {
-    selected_pins: selectedPins,
-    pin_base: selectedPins[0] ?? 0,
-    pin_count: selectedPins.length,
-    sample_rate_hz: normalizedConfig.sampleRateHz,
-    pre_samples: normalizedConfig.preSamples,
-    post_samples: normalizedConfig.postSamples,
-    trigger: normalizedConfig.triggerType,
-    trigger_pin: normalizedConfig.triggerPin,
   };
 }
 
@@ -300,7 +515,7 @@ function normalizeLogicAnalyzerCaptureConfig(
   config: LogicAnalyzerCaptureConfig
 ): LogicAnalyzerCaptureConfig {
   const selectedPins = config.selectedPins
-    ? normalizeLogicAnalyzerSelectedPins(config.selectedPins)
+    ? normalizeCaptureSelectedPins(config.selectedPins)
     : undefined;
   const pinCountLimit = selectedPins?.length ?? AVAILABLE_PINS.length;
   const pinCount = clampInteger(config.pinCount, 1, Math.max(1, pinCountLimit));
@@ -410,9 +625,6 @@ export const DEFAULT_CONFIG: LogicAnalyzerConfig = {
 };
 
 export const AVAILABLE_PINS = [
-  { pin: 7, name: "GP7/CON_MAS" },
-  { pin: 8, name: "GP8/CON_REST" },
-  { pin: 9, name: "GP9/CON_USER" },
   { pin: 10, name: "GP10" },
   { pin: 11, name: "GP11" },
   { pin: 12, name: "GP12" },
@@ -427,10 +639,11 @@ export const AVAILABLE_PINS = [
   { pin: 29, name: "GP29/ADC3" },
 ];
 
-const AVAILABLE_PIN_SET = new Set<number>(AVAILABLE_PINS.map(({ pin }) => pin));
-
 export const SAMPLE_RATES = [
+  { value: 100000, label: "100 kHz" },
+  { value: 500000, label: "500 kHz" },
   { value: 1000000, label: "1 MHz" },
+  { value: 2000000, label: "2 MHz" },
   { value: 5000000, label: "5 MHz" },
   { value: 10000000, label: "10 MHz" },
   { value: 25000000, label: "25 MHz" },
