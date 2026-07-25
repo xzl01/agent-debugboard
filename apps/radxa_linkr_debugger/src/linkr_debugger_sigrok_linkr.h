@@ -26,10 +26,28 @@
 #define LINKR_DEBUGGER_SIGROK_LINKR_ERROR_BYTES 3U
 #define LINKR_DEBUGGER_SIGROK_LINKR_MODE_CAPS_BYTES 8U
 
-#define LINKR_DEBUGGER_SIGROK_LINKR_MAX_PAYLOAD_BYTES 16400U
-#define LINKR_DEBUGGER_SIGROK_LINKR_MAX_DATA_BYTES 16384U
+#define LINKR_DEBUGGER_SIGROK_LINKR_MAX_DATA_BYTES 4096U
+#define LINKR_DEBUGGER_SIGROK_LINKR_MAX_PAYLOAD_BYTES \
+	(LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + LINKR_DEBUGGER_SIGROK_LINKR_MAX_DATA_BYTES)
 #define LINKR_DEBUGGER_SIGROK_LINKR_CAPS_MODE_COUNT 2U
-#define LINKR_DEBUGGER_SIGROK_LINKR_RING_BUFFER_BYTES 98304U
+#define LINKR_DEBUGGER_SIGROK_LINKR_CONTROL_MAX_REQUEST_BYTES \
+	LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_BYTES
+#define LINKR_DEBUGGER_SIGROK_LINKR_CONTROL_MAX_RESPONSE_BYTES \
+	(1U + ((size_t)LINKR_DEBUGGER_SIGROK_LINKR_CAPS_MODE_COUNT * \
+	LINKR_DEBUGGER_SIGROK_LINKR_MODE_CAPS_BYTES))
+#define LINKR_DEBUGGER_SIGROK_LINKR_RING_BUFFER_BYTES 32768U
+#define LINKR_DEBUGGER_SIGROK_LINKR_MAX_SAMPLE_INDEX 0xffffffU
+#define LINKR_DEBUGGER_SIGROK_LINKR_STREAM_QDEPTH_LIMIT 32U
+#define LINKR_DEBUGGER_SIGROK_LINKR_STREAM_WAKE_QDEPTH 8U
+#define LINKR_DEBUGGER_SIGROK_LINKR_STREAM_HANDOFF_QDEPTH 2U
+#define LINKR_DEBUGGER_SIGROK_LINKR_STREAM_WAKE_TIMEOUT_MS 8U
+#define LINKR_DEBUGGER_SIGROK_LINKR_WS_DATA_SLOT_COUNT 8U
+#define LINKR_DEBUGGER_SIGROK_LINKR_WS_TERMINAL_SLOT_COUNT 1U
+#define LINKR_DEBUGGER_SIGROK_LINKR_WS_WIDE12_PAYLOAD_BYTES 2048U
+#define LINKR_DEBUGGER_SIGROK_LINKR_WS_MAX_FRAME_BYTES \
+	(LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + \
+	 LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + \
+	 LINKR_DEBUGGER_SIGROK_LINKR_WS_WIDE12_PAYLOAD_BYTES)
 
 enum linkr_debugger_sigrok_linkr_frame_type {
 	LINKR_DEBUGGER_SIGROK_LINKR_FRAME_HELLO_REQ = 0x01,
@@ -110,6 +128,29 @@ enum linkr_debugger_sigrok_linkr_capture_action {
 	LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_STOP,
 };
 
+enum linkr_debugger_sigrok_linkr_stream_wake_action {
+	LINKR_DEBUGGER_SIGROK_LINKR_STREAM_WAKE_DEFER = 0,
+	LINKR_DEBUGGER_SIGROK_LINKR_STREAM_WAKE_DELAY,
+	LINKR_DEBUGGER_SIGROK_LINKR_STREAM_WAKE_NOW,
+};
+
+struct linkr_debugger_sigrok_linkr_ws_transport_metrics {
+	uint32_t max_qdepth;
+	size_t max_qbytes;
+	uint64_t max_drain_us;
+	uint32_t max_drain_items;
+	size_t max_drain_bytes;
+	uint64_t max_send_us;
+	uint8_t max_send_frames;
+	size_t max_send_bytes;
+};
+
+enum linkr_debugger_sigrok_linkr_ws_slot_state {
+	LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_FREE = 0,
+	LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_QUEUED,
+	LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_POPPED,
+};
+
 struct linkr_debugger_sigrok_linkr_header {
 	uint8_t magic;
 	uint8_t version;
@@ -154,6 +195,8 @@ struct linkr_debugger_sigrok_linkr_config {
 	uint16_t post_samples;
 };
 
+struct linkr_debugger_la_config;
+
 struct linkr_debugger_sigrok_linkr_ack {
 	uint16_t session_id;
 	uint8_t state;
@@ -185,6 +228,7 @@ struct linkr_debugger_sigrok_linkr_session {
 	uint16_t active_session_id;
 	bool capture_owner_held;
 	uint32_t sample_index;
+	uint32_t emitted_samples;
 	int client_fd;
 };
 
@@ -213,6 +257,10 @@ int linkr_debugger_sigrok_linkr_validate_config(
 	const struct linkr_debugger_sigrok_linkr_config *config,
 	enum linkr_debugger_sigrok_linkr_error_code *error_code,
 	uint16_t *detail);
+int linkr_debugger_sigrok_linkr_to_la_config(
+	const struct linkr_debugger_sigrok_linkr_config *config,
+	bool armed,
+	struct linkr_debugger_la_config *la_config);
 
 void linkr_debugger_sigrok_linkr_init_response_header(
 	struct linkr_debugger_sigrok_linkr_header *header,
@@ -228,6 +276,14 @@ int linkr_debugger_sigrok_linkr_decode_header(
 	const uint8_t *data,
 	size_t data_len,
 	struct linkr_debugger_sigrok_linkr_header *header);
+int linkr_debugger_sigrok_linkr_decode_next_request_frame(
+	const uint8_t *data,
+	size_t data_len,
+	size_t offset,
+	struct linkr_debugger_sigrok_linkr_request *request,
+	size_t *next_offset,
+	bool *disconnect_required,
+	enum linkr_debugger_sigrok_linkr_error_code *error_code);
 size_t linkr_debugger_sigrok_linkr_encode_hello(
 	const struct linkr_debugger_sigrok_linkr_hello *hello,
 	uint8_t *out,
@@ -263,6 +319,19 @@ int linkr_debugger_sigrok_linkr_handle_request(
 	size_t *payload_len_out,
 	struct linkr_debugger_sigrok_linkr_action_result *action,
 	bool *disconnect_required);
+enum linkr_debugger_sigrok_linkr_error_code
+linkr_debugger_sigrok_linkr_start_error_code(int ret, bool invalid_config);
+void linkr_debugger_sigrok_linkr_build_error_response(
+	const struct linkr_debugger_sigrok_linkr_request *request,
+	struct linkr_debugger_sigrok_linkr_header *response_header,
+	uint8_t *payload_out,
+	size_t payload_out_len,
+	enum linkr_debugger_sigrok_linkr_error_code error_code,
+	uint16_t detail,
+	size_t *payload_len_out);
+void linkr_debugger_sigrok_linkr_rollback_start_failure(
+	struct linkr_debugger_sigrok_linkr_session *session,
+	struct linkr_debugger_sigrok_linkr_action_result *action);
 
 int linkr_debugger_sigrok_linkr_init(void);
 
@@ -284,7 +353,71 @@ int linkr_debugger_sigrok_linkr_send_event_frame(
 	const struct linkr_debugger_sigrok_linkr_event *event);
 
 uint8_t linkr_debugger_sigrok_linkr_bytes_per_sample(uint16_t channel_mask);
+size_t linkr_debugger_sigrok_linkr_packed_data_len(uint16_t channel_mask,
+	uint16_t sample_count);
+bool linkr_debugger_sigrok_linkr_stream_queue_has_capacity(uint32_t qdepth,
+	bool needs_terminal_event);
+bool linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(uint32_t data_slots_used,
+	bool needs_terminal_event);
+bool linkr_debugger_sigrok_linkr_ws_pool_terminal_has_capacity(bool terminal_slot_used);
+bool linkr_debugger_sigrok_linkr_ws_slot_transition_valid(
+	enum linkr_debugger_sigrok_linkr_ws_slot_state from,
+	enum linkr_debugger_sigrok_linkr_ws_slot_state to);
+bool linkr_debugger_sigrok_linkr_ws_slot_commit_allowed(
+	enum linkr_debugger_sigrok_linkr_ws_slot_state state,
+	uint32_t slot_owner_session_id,
+	uint32_t slot_owner_generation,
+	uint32_t active_session_id,
+	uint32_t active_generation);
+bool linkr_debugger_sigrok_linkr_stream_queue_bytes_has_capacity(size_t qbytes,
+	size_t next_item_bytes, size_t byte_limit, bool needs_terminal_event,
+	size_t terminal_item_bytes);
+bool linkr_debugger_sigrok_linkr_coalesce_can_append(size_t current_len,
+	size_t next_frame_len, size_t buffer_capacity, uint8_t current_count,
+	uint8_t max_count);
+bool linkr_debugger_sigrok_linkr_should_emit_local_terminal_event(bool connected,
+	int send_error);
+enum linkr_debugger_sigrok_linkr_stream_wake_action
+linkr_debugger_sigrok_linkr_stream_wake_policy(uint32_t qdepth,
+	bool urgent, bool delayed_wake_pending, uint32_t wake_qdepth);
+bool linkr_debugger_sigrok_linkr_stream_sink_handoff_requested(uint32_t qdepth);
+void linkr_debugger_sigrok_linkr_ws_transport_metrics_reset(
+	struct linkr_debugger_sigrok_linkr_ws_transport_metrics *metrics);
+void linkr_debugger_sigrok_linkr_ws_transport_metrics_update_enqueue(
+	struct linkr_debugger_sigrok_linkr_ws_transport_metrics *metrics,
+	uint32_t qdepth, size_t qbytes);
+void linkr_debugger_sigrok_linkr_ws_transport_metrics_update_drain(
+	struct linkr_debugger_sigrok_linkr_ws_transport_metrics *metrics,
+	uint64_t duration_us, uint32_t items, size_t bytes);
+void linkr_debugger_sigrok_linkr_ws_transport_metrics_update_send(
+	struct linkr_debugger_sigrok_linkr_ws_transport_metrics *metrics,
+	uint64_t duration_us, uint8_t frames, size_t bytes);
+bool linkr_debugger_sigrok_linkr_sample_range_fits(uint32_t sample_index,
+	uint32_t sample_count);
+uint32_t linkr_debugger_sigrok_linkr_advance_sample_index(uint32_t sample_index,
+	uint32_t sample_count);
+uint16_t linkr_debugger_sigrok_linkr_bounded_chunk_count(
+	const struct linkr_debugger_sigrok_linkr_session *session,
+	uint32_t offered_count);
+bool linkr_debugger_sigrok_linkr_bounded_capture_done(
+	const struct linkr_debugger_sigrok_linkr_session *session);
 size_t linkr_debugger_sigrok_linkr_compress_bit_pack(
+	const uint16_t *samples,
+	uint32_t count,
+	uint16_t channel_mask,
+	uint8_t *out,
+	size_t out_len);
+size_t linkr_debugger_sigrok_linkr_compress_bit_pack_single(
+	const uint16_t *samples,
+	uint32_t count,
+	uint8_t *out,
+	size_t out_len);
+size_t linkr_debugger_sigrok_linkr_compress_bit_pack_rle_single(
+	const uint16_t *samples,
+	uint32_t count,
+	uint8_t *out,
+	size_t out_len);
+size_t linkr_debugger_sigrok_linkr_compress_bit_pack_rle(
 	const uint16_t *samples,
 	uint32_t count,
 	uint16_t channel_mask,
@@ -294,6 +427,21 @@ size_t linkr_debugger_sigrok_linkr_compress_rle(
 	const uint8_t *samples,
 	uint32_t count,
 	uint8_t bytes_per_sample,
+	uint8_t *out,
+	size_t out_len);
+size_t linkr_debugger_sigrok_linkr_compress_rle_if_smaller(
+	const uint8_t *samples,
+	uint32_t count,
+	uint8_t bytes_per_sample,
+	uint8_t *out,
+	size_t out_len);
+size_t linkr_debugger_sigrok_linkr_encode_packed_data_frame(
+	uint32_t sample_index,
+	uint16_t sample_count,
+	uint16_t channel_mask,
+	const uint8_t *packed,
+	size_t packed_len,
+	bool try_single_rle,
 	uint8_t *out,
 	size_t out_len);
 
