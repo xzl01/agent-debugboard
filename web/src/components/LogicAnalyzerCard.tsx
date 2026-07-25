@@ -21,20 +21,6 @@ import {
 import { Badge, Button, Card, Toggle } from "./ui";
 import { GpioPinoutSvg } from "./GpioPinoutSvg";
 import { useSigrokScope } from "@/hooks/useSigrokScope";
-import {
-  SigrokModeId,
-  SigrokTriggerType,
-} from "@/lib/sigrokClient";
-import { useScpiScope } from "@/hooks/useScpiScope";
-import {
-  RIGOL_LIVE_SAMPLES,
-  RIGOL_TRIGGER_SAMPLE,
-  formatScpiNumber,
-  repackFrameBits,
-  rigolSlopeForTrigger,
-  rigolSourceIndexForPin,
-  timebaseForRate,
-} from "@/lib/scpiScope";
 import type {
   LogicAnalyzerCapture,
   LogicAnalyzerConfig,
@@ -45,8 +31,13 @@ import type {
 import {
   AVAILABLE_PINS,
   DEFAULT_CONFIG,
+  LOGIC_ANALYZER_SIGROK_DISABLED_PINS,
+  LOGIC_ANALYZER_WEB_STREAM_MAX_SAMPLE_RATE_HZ,
   SAMPLE_RATES,
+  assembleBoundedSigrokCapture,
+  buildSigrokCaptureRequest,
   calculateActualSampleRate,
+  calculateMaxSamples,
   exportToCsv,
   exportToSr,
   formatDuration,
@@ -59,7 +50,17 @@ import {
   getLogicAnalyzerSamplePeriodPs,
   normalizeLogicAnalyzerCapture,
   normalizeLogicAnalyzerConfig,
+  unpackSigrokSamples,
 } from "@/lib/logicAnalyzer";
+import {
+  SigrokEventCode,
+  formatSigrokErrorMessage,
+  isSigrokDataFrame,
+  isSigrokErrorFrame,
+  isSigrokEventFrame,
+  sigrokEventCodeName,
+  type SigrokEventFrame,
+} from "@/lib/sigrokClient";
 import {
   buildLogicDecoderRequest,
   createDefaultLogicDecoderConfigs,
@@ -110,9 +111,6 @@ const STREAM_BUFFER_CAP = 1000000;
 const STREAM_FLUSH_MS = 150;
 const STREAM_DECODE_MS = 600;
 const STREAM_DECODE_MAX_SAMPLES = 8192;
-const DEEP_RATE_HZ = 25000;
-const DEEP_DURATION_S = 2;
-const DEEP_CHUNK_SAMPLES = 16384;
 const STREAM_SPAN_OPTIONS = [1024, 4096, 16384, 65536, 262144] as const;
 const PROTOCOL_OPTIONS: Array<{ id: LogicDecoderProtocolName; label: string }> = [
   { id: "uart", label: "UART" },
@@ -120,22 +118,11 @@ const PROTOCOL_OPTIONS: Array<{ id: LogicDecoderProtocolName; label: string }> =
   { id: "spi", label: "SPI" },
 ];
 
-function countChannels(m: number): number { let c = 0; for (let i = 0; i < 16; i++) if ((m >> i) & 1) c++; return c; }
-
-function triggerSigrok(t: LogicAnalyzerTriggerType): number {
-  return t === "rising" ? SigrokTriggerType.RISING : t === "falling" ? SigrokTriggerType.FALLING : t === "either" ? SigrokTriggerType.EITHER : SigrokTriggerType.NONE;
+function warnSigrokCleanup(action: string, cleanupError: unknown) {
+  const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+  console.warn(`[LogicAnalyzerCard] ${action} failed: ${message}`);
 }
 
-function unpackBits(packed: Uint8Array, mask: number): number[] {
-  const bp = Math.max(1, Math.ceil(countChannels(mask) / 8));
-  const out: number[] = [];
-  for (let i = 0; i + bp <= packed.length; i += bp) {
-    let val = packed[i];
-    if (bp > 1) val |= (packed[i + 1] ?? 0) << 8;
-    out.push(val);
-  }
-  return out;
-}
 
 interface WaveformPoint {
   x: number;
@@ -282,31 +269,16 @@ export function LogicAnalyzerCard({
   const [liveAnnotations, setLiveAnnotations] = useState<LogicDecoderAnnotation[]>([]);
 
   const {
-    close: scpiClose,
-    command: scpiCommand,
-    query: scpiQuery,
-    ensureConnected: scpiEnsureConnected,
-    readDigitalFrame: scpiReadDigitalFrame,
-    readDeepData: scpiReadDeepData,
-  } = useScpiScope();
-  const {
     close: sigrokClose,
     configure: sigrokConfigure,
     start: sigrokStart,
     stop: sigrokStop,
     ensureConnected: sigrokEnsureConnected,
+    readCaptureFrame: sigrokReadCaptureFrame,
     readData: sigrokReadData,
-    waitForTriggered: sigrokWaitForTriggered,
   } = useSigrokScope();
   const [streaming, setStreaming] = useState(false);
   const streamingRef = useRef(false);
-  const [deepView, setDeepView] = useState<{
-    rate: number;
-    count: number;
-    triggerIndex: number;
-    dropped: number;
-  } | null>(null);
-  const [deepBusy, setDeepBusy] = useState<string | null>(null);
 
   useEffect(() => {
     const flush = () => {
@@ -327,16 +299,19 @@ export function LogicAnalyzerCard({
     setConfig((current) => normalizeLogicAnalyzerConfig(updater(current)));
   }, []);
 
+  const normalizedConfig = useMemo(() => normalizeLogicAnalyzerConfig(config), [config]);
+
   const actualRate = useMemo(
-    () => calculateActualSampleRate(config.sampleRateHz),
-    [config.sampleRateHz]
+    () => calculateActualSampleRate(normalizedConfig.sampleRateHz),
+    [normalizedConfig.sampleRateHz]
   );
 
-  const streamRateExceeded = config.sampleRateHz > 25000000;
+  const streamRateExceeded =
+    normalizedConfig.sampleRateHz > LOGIC_ANALYZER_WEB_STREAM_MAX_SAMPLE_RATE_HZ;
 
-  const maxSamples = RIGOL_LIVE_SAMPLES;
-  const totalSamples = RIGOL_LIVE_SAMPLES;
-  const controlsDisabled = state !== "idle" || isArming;
+  const maxSamples = calculateMaxSamples();
+  const totalSamples = normalizedConfig.preSamples + normalizedConfig.postSamples;
+  const controlsDisabled = state === "armed" || state === "capturing" || isArming;
   const captureRequestedRate = capture ? getLogicAnalyzerRequestedSampleRate(capture.config) : null;
   const captureActualRate = capture ? getLogicAnalyzerActualSampleRate(capture.config) : null;
   const captureSamplePeriod = capture
@@ -366,99 +341,203 @@ export function LogicAnalyzerCard({
     [capturePins, capturePinsKey]
   );
 
+  const stopAndCloseSigrok = useCallback(
+    async (action: string) => {
+      try {
+        await sigrokStop();
+      } catch (cleanupError) {
+        warnSigrokCleanup(`${action} stop`, cleanupError);
+      }
+      try {
+        sigrokClose();
+      } catch (cleanupError) {
+        warnSigrokCleanup(`${action} close`, cleanupError);
+      }
+    },
+    [sigrokClose, sigrokStop]
+  );
+
   const handleArm = useCallback(async () => {
     if (armInFlightRef.current) return;
     setError(null);
-    const nextConfig = normalizeLogicAnalyzerConfig(config);
+    const nextConfig = normalizedConfig;
     setConfig(nextConfig);
     if (nextConfig.selectedPins.length === 0) { setError("Select at least one pin"); return; }
     armInFlightRef.current = true;
     setIsArming(true);
-    let channelMask = 0;
-    for (const pin of nextConfig.selectedPins) channelMask |= 1 << (pin - 10);
     const hasTrigger = nextConfig.triggerType !== "none";
     try {
+      const sigrokRequest = buildSigrokCaptureRequest(nextConfig);
       await sigrokEnsureConnected();
-      const ack = await sigrokConfigure({
-        modeId: SigrokModeId.FAST8, triggerType: triggerSigrok(nextConfig.triggerType),
-        triggerChannel: nextConfig.triggerPin, channelMask,
-        samplerateKhz: Math.round(nextConfig.sampleRateHz / 1000),
-        preSamples: nextConfig.preSamples, postSamples: nextConfig.postSamples,
-      });
+      const ack = await sigrokConfigure(sigrokRequest);
       const actualRate = ack.actualRateKhz * 1000;
       await sigrokStart();
-      if (hasTrigger) {
-        if (!await sigrokWaitForTriggered(10000)) {
-          setError("Trigger timeout"); setState("idle");
-          try { await sigrokStop(); } catch { /* ignore */ }
-          sigrokClose(); armInFlightRef.current = false; setIsArming(false); return;
+      setState(hasTrigger ? "armed" : "capturing");
+
+      const dataFrames: Array<{ meta: { sampleIndex: number; sampleCount: number; channelMask: number }; samples: Uint8Array }> = [];
+      let receivedSampleCount = 0;
+      let triggerSampleIndex: number | null = null;
+      let triggerObserved = !hasTrigger;
+      let clientStopIssued = false;
+      let stopped = false;
+
+      while (!stopped) {
+        const frame = await sigrokReadCaptureFrame(triggerObserved ? 5000 : 15000);
+        if (!frame) {
+          throw new Error(triggerObserved ? "Timed out waiting for capture completion" : "Trigger timeout");
+        }
+
+        if (isSigrokDataFrame(frame)) {
+          dataFrames.push({
+            meta: {
+              sampleIndex: frame.meta.sampleIndex,
+              sampleCount: frame.meta.sampleCount,
+              channelMask: frame.meta.channelMask,
+            },
+            samples: frame.samples,
+          });
+          receivedSampleCount += frame.meta.sampleCount;
+          setState("capturing");
+          if (triggerObserved && receivedSampleCount >= sigrokRequest.postSamples) {
+            clientStopIssued = true;
+            await stopAndCloseSigrok("bounded capture sample completion cleanup");
+            stopped = true;
+          }
+          continue;
+        }
+
+        if (isSigrokErrorFrame(frame)) {
+          throw new Error(formatSigrokErrorMessage(frame.payload));
+        }
+
+        if (!isSigrokEventFrame(frame)) {
+          throw new Error("Unexpected capture frame");
+        }
+
+        const eventFrame: SigrokEventFrame = frame;
+
+        switch (eventFrame.payload.typeDetail) {
+          case SigrokEventCode.ARMED:
+            setState("armed");
+            break;
+          case SigrokEventCode.TRIGGERED:
+            triggerSampleIndex = eventFrame.payload.sampleIndex;
+            triggerObserved = true;
+            setState("capturing");
+            if (receivedSampleCount >= sigrokRequest.postSamples) {
+              clientStopIssued = true;
+              await stopAndCloseSigrok("bounded capture trigger completion cleanup");
+              stopped = true;
+            }
+            break;
+          case SigrokEventCode.RUNNING:
+            setState("capturing");
+            break;
+          case SigrokEventCode.STOPPED:
+            stopped = true;
+            break;
+          case SigrokEventCode.OVERRUN:
+            throw new Error("Capture overrun");
+          case SigrokEventCode.ERROR:
+            throw new Error("Capture failed");
+          default:
+            throw new Error(
+              `Unexpected capture event ${sigrokEventCodeName(eventFrame.payload.typeDetail)}`
+            );
         }
       }
-      const data = await sigrokReadData(5000);
-      await sigrokStop(); sigrokClose();
-      if (!data) { setError("No data received"); setState("idle"); armInFlightRef.current = false; setIsArming(false); return; }
-      const values = unpackBits(data.samples, channelMask);
+
+      if (!clientStopIssued) {
+        await stopAndCloseSigrok("capture completion cleanup");
+      }
+
+      if (hasTrigger && triggerSampleIndex == null) {
+        throw new Error("Capture completed without TRIGGERED event");
+      }
+      if (receivedSampleCount < sigrokRequest.postSamples) {
+        throw new Error("Capture stopped before requested sample count was received");
+      }
+
+      const assembledCapture = assembleBoundedSigrokCapture({
+        frames: dataFrames,
+        channelMask: sigrokRequest.channelMask,
+        triggerSampleIndex,
+      });
+
       setCapture(normalizeLogicAnalyzerCapture({
         state: "done",
-        config: { pinCount: nextConfig.selectedPins.length, pinBase: nextConfig.selectedPins[0] ?? 10, selectedPins: [...nextConfig.selectedPins], requestedSampleRateHz: nextConfig.sampleRateHz, actualSampleRateHz: actualRate, triggerType: nextConfig.triggerType, triggerPin: nextConfig.triggerPin },
-        sampleCount: values.length, triggerIndex: 0,
-        samples: values.map((v, i) => ({ timestampUs: (i * 1_000_000) / actualRate, values: v })),
+        config: {
+          pinCount: nextConfig.selectedPins.length,
+          pinBase: nextConfig.selectedPins[0] ?? 10,
+          selectedPins: [...nextConfig.selectedPins],
+          requestedSampleRateHz: nextConfig.sampleRateHz,
+          actualSampleRateHz: actualRate,
+          backend: "sigrok-live-ws",
+          triggerType: nextConfig.triggerType,
+          triggerPin: nextConfig.triggerType === "none" ? undefined : nextConfig.triggerPin,
+        },
+        sampleCount: assembledCapture.sampleCount,
+        triggerIndex: assembledCapture.triggerIndex,
+        samples: assembledCapture.values.map((value, index) => ({
+          timestampUs: (index * 1_000_000) / actualRate,
+          values: value,
+        })),
       }));
       setState("done");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error"); setState("idle");
-      try { sigrokClose(); } catch { /* ignore */ }
+      await stopAndCloseSigrok("capture error cleanup");
     } finally { armInFlightRef.current = false; setIsArming(false); }
-  }, [config, sigrokClose, sigrokConfigure, sigrokEnsureConnected, sigrokReadData, sigrokStart, sigrokStop, sigrokWaitForTriggered]);
+  }, [assembleBoundedSigrokCapture, normalizedConfig, sigrokConfigure, sigrokEnsureConnected, sigrokReadCaptureFrame, sigrokStart, stopAndCloseSigrok]);
 
   const handleCancel = useCallback(async () => {
     setError(null);
-    try { await sigrokStop(); } catch { /* ignore */ }
-    sigrokClose();
+    await stopAndCloseSigrok("manual cancel");
     setState("idle");
-  }, [sigrokClose, sigrokStop]);
+  }, [stopAndCloseSigrok]);
 
   const stopStream = useCallback(async () => {
     streamingRef.current = false;
     setStreaming(false);
-    try { await sigrokStop(); } catch { /* ignore */ }
-    sigrokClose();
-  }, [sigrokClose, sigrokStop]);
+    await stopAndCloseSigrok("stream stop");
+  }, [stopAndCloseSigrok]);
 
   const startStream = useCallback(async () => {
     if (streamingRef.current) return;
     setError(null);
-    const cfg = normalizeLogicAnalyzerConfig(config);
+    const cfg = normalizedConfig;
     if (cfg.selectedPins.length === 0) { setError("Select at least one pin"); return; }
-    let channelMask = 0;
-    for (const pin of cfg.selectedPins) channelMask |= 1 << (pin - 10);
     try {
+      const sigrokRequest = buildSigrokCaptureRequest(cfg, { stream: true });
       await sigrokEnsureConnected();
-      await sigrokConfigure({
-        modeId: SigrokModeId.FAST8, triggerType: triggerSigrok(cfg.triggerType),
-        triggerChannel: cfg.triggerPin, channelMask,
-        samplerateKhz: Math.round(cfg.sampleRateHz / 1000),
-        preSamples: cfg.preSamples, postSamples: cfg.postSamples,
-      });
+      await sigrokConfigure(sigrokRequest);
       await sigrokStart();
-    } catch (err) { setError(err instanceof Error ? err.message : "Network error"); sigrokClose(); return; }
-    streamingRef.current = true;
-    setStreaming(true);
-    void (async () => {
-      try {
-        while (streamingRef.current) {
-          const data = await sigrokReadData(8000);
-          if (!data) break;
-          const values = unpackBits(data.samples, channelMask);
-          const arr = streamSamplesRef.current;
-          for (const v of values) arr.push(v);
-          if (arr.length > STREAM_BUFFER_CAP) arr.splice(0, arr.length - STREAM_BUFFER_CAP);
-          streamSequenceRef.current += 1; streamTotalRef.current += values.length; streamDirtyRef.current = true;
+      streamingRef.current = true;
+      setStreaming(true);
+      void (async () => {
+        try {
+          while (streamingRef.current) {
+            const data = await sigrokReadData(8000);
+            if (!data) break;
+            const values = unpackSigrokSamples(data.samples, sigrokRequest.channelMask);
+            const arr = streamSamplesRef.current;
+            for (const v of values) arr.push(v);
+            if (arr.length > STREAM_BUFFER_CAP) arr.splice(0, arr.length - STREAM_BUFFER_CAP);
+            streamSequenceRef.current += 1; streamTotalRef.current += values.length; streamDirtyRef.current = true;
+          }
+        } catch (err) { if (streamingRef.current) setError(err instanceof Error ? err.message : "stream failed"); }
+        finally {
+          streamingRef.current = false;
+          setStreaming(false);
+          await stopAndCloseSigrok("stream completion cleanup");
         }
-      } catch (err) { if (streamingRef.current) setError(err instanceof Error ? err.message : "stream failed"); }
-      finally { streamingRef.current = false; setStreaming(false); try { await sigrokStop(); } catch { /* ignore */ } sigrokClose(); }
-    })();
-  }, [config, sigrokClose, sigrokConfigure, sigrokEnsureConnected, sigrokReadData, sigrokStart, sigrokStop]);
+      })();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+      await stopAndCloseSigrok("stream setup cleanup");
+      return;
+    }
+  }, [normalizedConfig, sigrokConfigure, sigrokEnsureConnected, sigrokReadData, sigrokStart, stopAndCloseSigrok]);
 
 
 
@@ -467,9 +546,9 @@ export function LogicAnalyzerCard({
   useEffect(() => {
     return () => {
       streamingRef.current = false;
-      scpiClose();
+      void stopAndCloseSigrok("component cleanup");
     };
-  }, [scpiClose]);
+  }, [stopAndCloseSigrok]);
 
   const handleClear = useCallback(() => {
     setCapture(null);
@@ -515,7 +594,7 @@ export function LogicAnalyzerCard({
   }, [streamWaveformVersion, streamFollow, streamSpan, streamAnchor]);
 
   const streamWaveformData = useMemo(() => {
-    if (!streaming && !deepView) return [];
+    if (!streaming) return [];
     const pins = config.selectedPins;
     if (pins.length === 0 || streamWindow.len === 0) return [];
     const { samples, start, span, stride, pointCount, plotWidth } = streamWindow;
@@ -533,7 +612,7 @@ export function LogicAnalyzerCard({
       }
       return channelPoints;
     });
-  }, [streaming, deepView, config.selectedPins, streamWindow]);
+  }, [streaming, config.selectedPins, streamWindow]);
 
   const liveAnnotationLayout = useMemo(
     () => layoutLogicDecoderAnnotations(liveAnnotations),
@@ -553,13 +632,11 @@ export function LogicAnalyzerCard({
   // FIXME: render-time ref assignment works for the latest-window pattern but
   // is impure; move into useEffect when refactoring the decode scheduler.
   streamWindowRef.current = streamWindow;
-  // FIXME: streamRateExceeded below hardcodes 25 MHz; share the limit with the
-  // firmware stream cap (see doc/logic-analyzer.md).
   const streamMaxAnchor = Math.max(0, streamWindow.len - streamWindow.span);
   const streamDecodeBase = streamWindow.end - Math.min(streamWindow.span, STREAM_DECODE_MAX_SAMPLES);
 
   useEffect(() => {
-    if (!streaming && !deepView) {
+    if (!streaming) {
       setLiveAnnotations([]);
       return;
     }
@@ -577,7 +654,7 @@ export function LogicAnalyzerCard({
             pinCount: config.selectedPins.length,
             pinBase: config.selectedPins[0] ?? 0,
             selectedPins: [...config.selectedPins],
-            actualSampleRateHz: deepView && !streaming ? deepView.rate : actualRate,
+            actualSampleRateHz: actualRate,
           },
           sampleCount: decodeLen,
           triggerIndex: 0,
@@ -586,7 +663,8 @@ export function LogicAnalyzerCard({
         const request = buildLogicDecoderRequest(pseudoCapture, decoderProtocol, decoderConfigs);
         const result = await decodeLogicCapture(request);
         if (!cancelled) setLiveAnnotations(result.annotations);
-      } catch {
+      } catch (decodeError) {
+        warnSigrokCleanup("live decode", decodeError);
         if (!cancelled) setLiveAnnotations([]);
       } finally {
         streamDecodeBusyRef.current = false;
@@ -598,7 +676,7 @@ export function LogicAnalyzerCard({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [streaming, deepView, decoderProtocol, decoderConfigs, config.selectedPins, actualRate]);
+  }, [streaming, decoderProtocol, decoderConfigs, config.selectedPins, actualRate]);
 
   const uartConfig: LogicDecoderProtocolConfigs["uart"] = decoderConfigs.uart;
   const i2cConfig: LogicDecoderProtocolConfigs["i2c"] = decoderConfigs.i2c;
@@ -823,6 +901,7 @@ export function LogicAnalyzerCard({
               <GpioPinoutSvg
                 gpios={boardGpios}
                 selectedPins={config.selectedPins}
+                disabledPins={LOGIC_ANALYZER_SIGROK_DISABLED_PINS}
                 triggerPin={
                   config.triggerType !== "none" && config.selectedPins.length > 0
                     ? config.selectedPins[config.triggerPin] ?? null
@@ -862,6 +941,9 @@ export function LogicAnalyzerCard({
                   });
                 }}
               />
+              <div className="mt-2 text-[10px] text-ink-dim">
+                {t("logicAnalyzer.sigrokPinsHint")}
+              </div>
             </div>
           ) : (
             <div className="mt-3 flex flex-wrap gap-1.5">
@@ -934,11 +1016,10 @@ export function LogicAnalyzerCard({
               <input
                 type="number"
                 min="0"
-                max="512"
                 step="1"
-                value={config.preSamples}
-                disabled={config.triggerType === "none"}
-                onChange={(e) => updateConfig((c) => ({ ...c, preSamples: Number(e.target.value) }))}
+                value={0}
+                disabled
+                readOnly
                 className="mt-1 w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-xs text-ink"
               />
             </label>
@@ -948,7 +1029,6 @@ export function LogicAnalyzerCard({
               <input
                 type="number"
                 min="1"
-                max="512"
                 step="1"
                 value={config.postSamples}
                 onChange={(e) => updateConfig((c) => ({ ...c, postSamples: Number(e.target.value) }))}
@@ -956,7 +1036,7 @@ export function LogicAnalyzerCard({
               />
             </label>
             <span className="col-span-2 -mt-1 block text-[9px] text-ink-dim/60">
-              {t("logicAnalyzer.scopeFrameFixed")}
+              {t("logicAnalyzer.captureSemantics")}
             </span>
 
             {config.triggerType !== "none" && (
@@ -1044,7 +1124,7 @@ export function LogicAnalyzerCard({
             )}
           </div>
 
-          {(streaming || deepView) && streamWaveformData.length > 0 && (
+          {streaming && streamWaveformData.length > 0 && (
             // FIXME: the step-path lane rendering below duplicates the capture
             // waveform svg almost verbatim; extract a shared StepWaveform
             // component when the live view gains more features.
@@ -1354,27 +1434,11 @@ export function LogicAnalyzerCard({
         ))}
       </div>
 
-      {deepBusy && (
-        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line/60 bg-panel2/60 px-3 py-2 text-xs text-ink-dim">
-          <Loader2 size={13} className="animate-spin" />
-          <span>{deepBusy}</span>
-        </div>
-      )}
-
-      {(streaming || deepView) && (
+      {streaming && (
         <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-brand/30 bg-brand/5 px-3 py-2 text-xs text-ink">
-          <Badge tone="brand">{streaming ? t("logicAnalyzer.streaming") : t("logicAnalyzer.deepResult")}</Badge>
-          <span>{formatSampleRate(deepView && !streaming ? deepView.rate : actualRate)}</span>
+          <Badge tone="brand">{t("logicAnalyzer.streaming")}</Badge>
+          <span>{formatSampleRate(actualRate)}</span>
           <span>{formatSampleCount(streamSampleCount)} {t("logicAnalyzer.samples")}</span>
-          {deepView && !streaming && deepView.triggerIndex >= 0 && (
-            <span>trigger@{formatSampleCount(deepView.triggerIndex)}</span>
-          )}
-          {deepView && !streaming && deepView.dropped > 0 && (
-            <span className="text-danger">dropped {deepView.dropped}</span>
-          )}
-          {deepView && !streaming && (
-            <>{/* deep export removed - sigrok protocol */}</>
-          )}
           {error && (
             <span className="text-danger">{error}</span>
           )}

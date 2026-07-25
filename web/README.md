@@ -91,24 +91,33 @@ device timestamps and the complete trigger configuration. The latest capture
 also reports duration, mAh, and Wh for the selected rail using trapezoidal
 integration over the device monotonic timestamps.
 
-The logic analyzer uses RP2350 PIO2+DMA for high-speed single-shot
-capture. It is not sustained streaming; 50MHz and 125MHz are very short
-bursts. The Web UI supports 1-16 channels from the safe pin allowlist (GP7-GP9,
-GP10-GP20, GP29), trigger modes `none`, `rising`, `falling`, and `either`,
-requested sample rates from 1,000,000 through 125,000,000 Hz (1-125MHz), and
-up to 512 exported samples total. Edge-triggered captures support hardware
-pre-trigger samples at rates up to 25 MHz; higher rates require
-`pre_samples=0`.
+The Web logic analyzer is **Sigrok-over-WebSocket only**. The browser creates a
+live session through the same-origin `/api/v1/live-sessions` helper (or the
+GitHub Pages loopback gateway) and then speaks the sigrok binary protocol on
+the returned session WebSocket URL. Logic-analyzer sample data and control
+frames remain on this binary WebSocket session.
+
+Bounded **Arm** captures use the firmware sigrok session with requested sample
+rates from 100,000 through 125,000,000 Hz (100kHz-125MHz) and a post-trigger
+sample count from `1` through `65535` (`uint16`). Pre-trigger capture is
+intentionally not exposed in the Web UI; Web requests always send `pre_samples=0`
+explicitly. Bounded pre=0 and post=1..512 use exact finite PIO+DMA: trigger NONE
+is ungated immediate, rising/falling are hardware IRQ-gated, EITHER snapshots the
+current pin level in firmware then waits for the opposite edge (arm-time race
+exists). Post>512 bounded and continuous Stream (post=0) use ring streaming.
+Validated Web results: WS SINGLE rising/falling post=512 at 5, 25, 50, 100 MHz;
+WS SINGLE EITHER post=512 at 5 and 100 MHz.
+
+Continuous **Stream** mode also uses the sigrok live session and currently
+supports 1-25 MHz in the browser. Stream requests send `post_samples=0` and run
+until stopped by the user. Web Sigrok pin selection is limited to `GP10-GP20`
+plus `GP29`; `GP7-GP9` are shown but disabled on this browser path.
+
 Completed captures can be previewed in the waveform view and exported as CSV or
-PulseView `.sr` files. For live monitoring there is also a continuous streaming
-mode (**Stream** button, 1-25 MHz): the card speaks the same Rigol-style
-SCPI scope protocol used by PulseView over a binary WebSocket
-(`ws://<board>/api/v1/scpi`), pulls 600-sample live frames in a loop, and
-shows a streaming status line plus a rolling live waveform of the buffered
-sample history per pin. Frames are gap-free 600-sample islands delivered at
-tens of milliseconds cadence, not a contiguous multi-MHz record. During live
-monitoring, the decoder annotates the currently visible buffered window;
-completed single-shot captures remain available for full post-capture decode.
+PulseView `.sr` files. The browser decoder still operates on completed bounded
+captures only, not on stream data. Native raw-TCP integrations for PulseView /
+sigrok-cli are documented elsewhere in the repository and are separate from the
+browser WebSocket path.
 
 The logic analyzer lives in the **Terminal workspace** alongside the serial
 terminal, not under Advanced & recovery. The browser-based Rust/WASM decoder

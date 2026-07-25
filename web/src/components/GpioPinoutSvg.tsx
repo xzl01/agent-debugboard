@@ -12,6 +12,7 @@ export interface GpioPinoutSvgProps {
   selectedPins?: readonly number[];
   triggerPin?: number | null;
   triggerActive?: boolean;
+  disabledPins?: readonly number[];
   onTogglePin?: (pin: number) => void;
   onSetTriggerPin?: (pin: number | null) => void;
 }
@@ -35,6 +36,8 @@ const LABEL_TRIGGER = "rgb(var(--c-warn))";
 const LABEL_DIM = "rgb(var(--c-ink-dim))";
 const HEADER_TEXT = "rgb(var(--c-ink))";
 const CONNECTOR_OUTLINE = "rgb(var(--c-line))";
+const FILL_DISABLED = "rgb(var(--c-panel2))";
+const STROKE_DISABLED = "rgb(var(--c-ink-dim) / 0.45)";
 
 interface PlacedCell {
   cell: GpioLayoutCell;
@@ -81,6 +84,7 @@ function placeGroup(group: GpioLayoutGroup): {
 function renderGroup(
   group: GpioLayoutGroup,
   selectedSet: ReadonlySet<number>,
+  disabledSet: ReadonlySet<number>,
   triggerPin: number | null,
   triggerActive: boolean,
   onTogglePin: ((pin: number) => void) | undefined,
@@ -123,32 +127,40 @@ function renderGroup(
         {labelForGroup}
       </text>
       {cells.map(({ cell, cx, cy }) => {
+        const isDisabled = disabledSet.has(cell.pin);
         const isTrigger = triggerPin === cell.pin && triggerActive;
         const isSelected = selectedSet.has(cell.pin);
-        const fill = isTrigger
+        const fill = isDisabled
+          ? FILL_DISABLED
+          : isTrigger
           ? FILL_TRIGGER
           : isSelected
             ? FILL_SELECTED
             : FILL_UNSELECTED;
-        const stroke = isTrigger
-          ? STROKE_TRIGGER
-          : isSelected
-            ? STROKE_SELECTED
-            : STROKE_DEFAULT;
-        const strokeWidth = isTrigger || isSelected ? 1.5 : 1;
-        const labelFill = isTrigger
-          ? LABEL_TRIGGER
-          : isSelected
-            ? LABEL_SELECTED
-            : LABEL_DEFAULT;
+        const stroke = isDisabled
+          ? STROKE_DISABLED
+          : isTrigger
+            ? STROKE_TRIGGER
+            : isSelected
+              ? STROKE_SELECTED
+              : STROKE_DEFAULT;
+        const strokeWidth = isDisabled ? 1 : isTrigger || isSelected ? 1.5 : 1;
+        const labelFill = isDisabled
+          ? LABEL_DIM
+          : isTrigger
+            ? LABEL_TRIGGER
+            : isSelected
+              ? LABEL_SELECTED
+              : LABEL_DEFAULT;
         const labelFontSize = pinLabelFontSize(cell.layoutLabel);
         const labelLines = pinLabelLines(cell.layoutLabel);
         return (
           <g
             key={`pin-${cell.pin}`}
-            className="transition-opacity duration-150 hover:opacity-80"
-            style={{ cursor: "pointer" }}
+            className={isDisabled ? "transition-opacity duration-150" : "transition-opacity duration-150 hover:opacity-80"}
+            style={{ cursor: isDisabled ? "not-allowed" : "pointer", opacity: isDisabled ? 0.65 : 1 }}
             onClick={() => {
+              if (isDisabled) return;
               if (isTrigger) {
                 onSetTriggerPin?.(null);
               } else {
@@ -157,6 +169,7 @@ function renderGroup(
             }}
             onContextMenu={(event) => {
               event.preventDefault();
+              if (isDisabled) return;
               onTogglePin?.(cell.pin);
             }}
           >
@@ -202,13 +215,15 @@ export function GpioPinoutSvg({
   selectedPins,
   triggerPin,
   triggerActive = false,
+  disabledPins,
   onTogglePin,
   onSetTriggerPin,
 }: GpioPinoutSvgProps) {
   const { t } = useI18n();
   const titleId = useId();
-  const { j13, j16, fallback } = groupGpioLayout(gpios);
+  const { j13, j16 } = groupGpioLayout(gpios);
   const selectedSet = new Set(selectedPins ?? []);
+  const disabledSet = new Set(disabledPins ?? []);
   const trigger = triggerPin ?? null;
 
   if (!j13 && !j16) {
@@ -238,6 +253,7 @@ export function GpioPinoutSvg({
         {renderGroup(
           g.group,
           selectedSet,
+          disabledSet,
           trigger,
           triggerActive,
           onTogglePin,
