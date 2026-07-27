@@ -75,6 +75,9 @@ The Terminal workspace lives alongside the primary dashboard and contains:
 - **OTA card** — delivers RP2350 firmware updates over the same USB NCM HTTP
   API. See [ota.md](ota.md) for the full OTA workflow.
 - **Startup power analysis** — see the dedicated section below.
+- **Automated testing** — build command sequences, select consecutive commands
+  into a visible loop frame, set 1-1000 rounds, and follow each loop iteration
+  independently in the run view and exported report.
 
 ## Connecting Target Serial
 

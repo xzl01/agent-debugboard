@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 const BUFFER_CAPACITY: usize = 64 * 1024;
 const MARKER_PREFIX: &str = "__LINKR_TASK_";
+const WCH_USB_VID: u16 = 0x1a86;
+const CH347_USB_PID: u16 = 0x55de;
 
 pub struct SerialPort {
     port: Box<dyn serialport::SerialPort>,
@@ -32,14 +34,21 @@ impl SerialPort {
 
     /// Try to auto-detect a CH347F serial port.
     pub fn auto_detect() -> Result<Self> {
+        Self::auto_detect_excluding(&[])
+    }
+
+    /// Try to auto-detect a CH347F serial port while excluding paths already assigned
+    /// to another UART channel.
+    pub fn auto_detect_excluding(excluded_paths: &[&str]) -> Result<Self> {
         let ports = serialport::available_ports().context("failed to list serial ports")?;
-        for port_info in &ports {
-            let name = &port_info.port_name;
-            // CH347F typically appears as /dev/ttyUSB* on Linux,
-            // /dev/tty.usbserial-* on macOS, or COM* on Windows
-            if name.contains("ttyUSB") || name.contains("usbserial") {
-                return Self::open(name, 115200);
-            }
+        let mut candidates = ports
+            .iter()
+            .filter(|port| is_ch347_serial_port(port))
+            .filter(|port| !excluded_paths.contains(&port.port_name.as_str()))
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| left.port_name.cmp(&right.port_name));
+        if let Some(port) = candidates.first() {
+            return Self::open(&port.port_name, 115200);
         }
         bail!(
             "no CH347F serial port found. Available ports: {}",
@@ -85,12 +94,12 @@ impl SerialPort {
         Ok(())
     }
 
-    /// Get unread text from cursor position.
-    fn unread_text(&self) -> String {
+    /// Get unread bytes from cursor position.
+    fn unread_bytes(&self) -> &[u8] {
         if self.cursor >= self.buffer.len() {
-            return String::new();
+            return &[];
         }
-        String::from_utf8_lossy(&self.buffer[self.cursor..]).to_string()
+        &self.buffer[self.cursor..]
     }
 
     /// Advance cursor by consumed bytes.
@@ -105,21 +114,19 @@ impl SerialPort {
 
         loop {
             self.fill_buffer()?;
-            let text = self.unread_text();
-            let stripped = strip_ansi(&text);
+            let stripped = strip_ansi_with_offsets(self.unread_bytes());
 
-            if let Some(m) = re.find(&stripped) {
-                let end = m.end();
-                self.consume(end);
+            if let Some(m) = re.find(&stripped.text) {
+                self.consume(stripped.raw_offset(m.end()));
                 return Ok(PatternMatch {
-                    output: stripped,
+                    output: stripped.text,
                     timed_out: false,
                 });
             }
 
             if Instant::now() >= deadline {
                 return Ok(PatternMatch {
-                    output: strip_ansi(&self.unread_text()),
+                    output: strip_ansi_with_offsets(self.unread_bytes()).text,
                     timed_out: true,
                 });
             }
@@ -151,10 +158,9 @@ impl SerialPort {
 
         loop {
             self.fill_buffer()?;
-            let text = self.unread_text();
-            let stripped = strip_ansi(&text);
+            let stripped = strip_ansi_with_offsets(self.unread_bytes());
 
-            if let Some(m) = re.find(&stripped) {
+            if let Some(m) = re.find(&stripped.text) {
                 // Extract exit code from marker
                 let marker_match = m.as_str();
                 let exit_code: i32 = marker_match
@@ -165,8 +171,8 @@ impl SerialPort {
 
                 // Output is everything before the marker
                 let output_end = m.start();
-                let output = stripped[..output_end].to_string();
-                self.consume(m.end());
+                let output = stripped.text[..output_end].to_string();
+                self.consume(stripped.raw_offset(m.end()));
 
                 // Check pattern
                 let pattern_re =
@@ -185,13 +191,22 @@ impl SerialPort {
                 return Ok(ExpectResult {
                     completed: false,
                     exit_code: -1,
-                    output: strip_ansi(&self.unread_text()),
+                    output: strip_ansi_with_offsets(self.unread_bytes()).text,
                     pattern_matched: false,
                 });
             }
 
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+}
+
+fn is_ch347_serial_port(port: &serialport::SerialPortInfo) -> bool {
+    match &port.port_type {
+        serialport::SerialPortType::UsbPort(usb) => {
+            usb.vid == WCH_USB_VID && usb.pid == CH347_USB_PID
+        }
+        _ => port.port_name.contains("ttyUSB") || port.port_name.contains("usbserial"),
     }
 }
 
@@ -207,25 +222,113 @@ pub struct ExpectResult {
     pub pattern_matched: bool,
 }
 
-fn strip_ansi(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(&next) = chars.peek() {
-                    if next.is_ascii_alphabetic() || next == 'm' {
-                        chars.next();
+struct StrippedText {
+    text: String,
+    /// Clean UTF-8 byte boundary to source byte boundary.
+    boundaries: Vec<(usize, usize)>,
+}
+
+impl StrippedText {
+    fn raw_offset(&self, clean_offset: usize) -> usize {
+        if clean_offset == 0 {
+            return 0;
+        }
+        self.boundaries
+            .iter()
+            .find_map(|(clean, raw)| (*clean == clean_offset).then_some(*raw))
+            .unwrap_or_else(|| self.boundaries.last().map(|(_, raw)| *raw).unwrap_or(0))
+    }
+}
+
+fn strip_ansi_with_offsets(raw: &[u8]) -> StrippedText {
+    let mut text = String::with_capacity(raw.len());
+    let mut boundaries = Vec::with_capacity(raw.len());
+    let mut index = 0;
+
+    while index < raw.len() {
+        if raw[index] == 0x1b {
+            index += 1;
+            if raw.get(index) == Some(&b'[') {
+                index += 1;
+                while index < raw.len() {
+                    let byte = raw[index];
+                    index += 1;
+                    if (0x40..=0x7e).contains(&byte) {
                         break;
                     }
-                    chars.next();
                 }
             }
-        } else if c != '\r' {
-            // Also strip carriage returns
-            result.push(c);
+            continue;
         }
+        if raw[index] == b'\r' {
+            index += 1;
+            continue;
+        }
+
+        let (character, byte_count) = match std::str::from_utf8(&raw[index..]) {
+            Ok(valid) => {
+                let character = valid.chars().next().expect("non-empty UTF-8 slice");
+                (character, character.len_utf8())
+            }
+            Err(error) if error.valid_up_to() > 0 => {
+                let valid = std::str::from_utf8(&raw[index..index + error.valid_up_to()])
+                    .expect("validated UTF-8 prefix");
+                let character = valid.chars().next().expect("non-empty UTF-8 prefix");
+                (character, character.len_utf8())
+            }
+            Err(error) => ('\u{fffd}', error.error_len().unwrap_or(1)),
+        };
+        index += byte_count;
+        text.push(character);
+        boundaries.push((text.len(), index));
     }
-    result
+
+    StrippedText { text, boundaries }
+}
+
+#[cfg(test)]
+fn strip_ansi(s: &str) -> String {
+    strip_ansi_with_offsets(s.as_bytes()).text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_ansi_and_maps_match_end_to_raw_bytes() {
+        let raw = b"\x1b[31mlogin:\x1b[0mnext";
+        let stripped = strip_ansi_with_offsets(raw);
+        assert_eq!(stripped.text, "login:next");
+        assert_eq!(stripped.raw_offset("login:".len()), b"\x1b[31mlogin:".len());
+    }
+
+    #[test]
+    fn maps_utf8_boundaries_without_using_character_counts() {
+        let raw = "\x1b[32m中文 login:\r\n".as_bytes();
+        let stripped = strip_ansi_with_offsets(raw);
+        assert_eq!(stripped.text, "中文 login:\n");
+        let match_end = stripped.text.find("login:").unwrap() + "login:".len();
+        assert_eq!(stripped.raw_offset(match_end), "\x1b[32m中文 login:".len());
+    }
+
+    #[test]
+    fn compatibility_strip_ansi_removes_carriage_returns() {
+        assert_eq!(strip_ansi("\x1b[31mhello\x1b[0m\r\n"), "hello\n");
+    }
+
+    #[test]
+    fn detects_ch347_usbmodem_ports_by_vid_and_pid() {
+        let port = serialport::SerialPortInfo {
+            port_name: "/dev/cu.usbmodemBD5ACDABCD1".to_string(),
+            port_type: serialport::SerialPortType::UsbPort(serialport::UsbPortInfo {
+                vid: WCH_USB_VID,
+                pid: CH347_USB_PID,
+                serial_number: Some("BD5ACDABCD".to_string()),
+                manufacturer: Some("wch.cn".to_string()),
+                product: Some("UART_SPI_I2C_JTAG".to_string()),
+            }),
+        };
+        assert!(is_ch347_serial_port(&port));
+    }
 }

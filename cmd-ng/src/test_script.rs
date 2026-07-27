@@ -3,12 +3,16 @@
 // NDJSON test script parser for linkr-test.v1 schema.
 // Compatible with the WebUI test automation framework.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read};
 
 pub const SCHEMA: &str = "linkr-test.v1";
+pub const MIN_LOOP_COUNT: u64 = 1;
+pub const MAX_LOOP_COUNT: u64 = 1000;
+pub const MAX_EXECUTION_STEPS: usize = 10_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestHeader {
@@ -58,6 +62,7 @@ pub enum StepType {
     GpioAssert,
     SwitchRoute,
     Capture,
+    Loop,
 }
 
 #[derive(Debug, Clone)]
@@ -102,11 +107,133 @@ pub fn parse_script(reader: impl Read) -> Result<TestScript> {
         steps.push(step);
     }
 
+    // Validate loop blocks before any board or serial side effects are possible.
+    let _ = expand_steps(&steps)?;
+
     Ok(TestScript { header, steps })
+}
+
+/// Expand top-level loop blocks into executable steps.
+///
+/// Loop steps are assigned stable per-iteration IDs compatible with the WebUI:
+/// `<child-id>@<loop-id>:<one-based-iteration>`.
+pub fn expand_steps(steps: &[TestStep]) -> Result<Vec<TestStep>> {
+    let mut expanded = Vec::new();
+    let mut item_ids = HashSet::new();
+    let mut execution_ids = HashSet::new();
+
+    for step in steps {
+        ensure!(!step.id.is_empty(), "test step has an empty id");
+        ensure!(
+            item_ids.insert(step.id.clone()),
+            "duplicate script item id: {}",
+            step.id
+        );
+
+        if step.step_type != StepType::Loop {
+            let mut executable = step.clone();
+            apply_defaults(&mut executable);
+            ensure!(
+                execution_ids.insert(executable.id.clone()),
+                "duplicate execution step id: {}",
+                executable.id
+            );
+            expanded.push(executable);
+            ensure!(
+                expanded.len() <= MAX_EXECUTION_STEPS,
+                "expanded test exceeds {MAX_EXECUTION_STEPS} executable steps"
+            );
+            continue;
+        }
+
+        let count = step.params["count"].as_u64().with_context(|| {
+            format!(
+                "loop {} count must be an integer between {MIN_LOOP_COUNT} and {MAX_LOOP_COUNT}",
+                step.id
+            )
+        })?;
+        ensure!(
+            (MIN_LOOP_COUNT..=MAX_LOOP_COUNT).contains(&count),
+            "loop {} count must be an integer between {MIN_LOOP_COUNT} and {MAX_LOOP_COUNT}",
+            step.id
+        );
+        let children = step.params["steps"]
+            .as_array()
+            .with_context(|| format!("loop {} steps must be a non-empty array", step.id))?;
+        ensure!(
+            !children.is_empty(),
+            "loop {} steps must be a non-empty array",
+            step.id
+        );
+        let loop_step_count = children
+            .len()
+            .checked_mul(count as usize)
+            .context("expanded test size overflow")?;
+        ensure!(
+            loop_step_count <= MAX_EXECUTION_STEPS.saturating_sub(expanded.len()),
+            "expanded test exceeds {MAX_EXECUTION_STEPS} executable steps"
+        );
+
+        let mut child_ids = HashSet::new();
+        let mut child_templates = Vec::with_capacity(children.len());
+        for (child_index, child) in children.iter().enumerate() {
+            let mut executable: TestStep =
+                serde_json::from_value(child.clone()).with_context(|| {
+                    format!(
+                        "loop {} step {} is not a valid test step",
+                        step.id,
+                        child_index + 1
+                    )
+                })?;
+            ensure!(
+                !executable.id.is_empty(),
+                "loop {} step {} has an empty id",
+                step.id,
+                child_index + 1
+            );
+            ensure!(
+                child_ids.insert(executable.id.clone()),
+                "loop {} has duplicate child step id: {}",
+                step.id,
+                executable.id
+            );
+            ensure!(
+                executable.step_type != StepType::Loop,
+                "nested loops are not supported (loop {})",
+                step.id
+            );
+            ensure!(
+                executable.params == Value::Null || executable.params.is_object(),
+                "loop {} step {} params must be an object",
+                step.id,
+                executable.id
+            );
+            apply_defaults(&mut executable);
+            child_templates.push(executable);
+        }
+
+        for iteration in 1..=count {
+            for child in &child_templates {
+                let mut executable = child.clone();
+                executable.id = format!("{}@{}:{iteration}", executable.id, step.id);
+                ensure!(
+                    execution_ids.insert(executable.id.clone()),
+                    "duplicate execution step id: {}",
+                    executable.id
+                );
+                expanded.push(executable);
+            }
+        }
+    }
+
+    Ok(expanded)
 }
 
 /// Apply default params for a step type (matches WebUI defaultStepParams).
 pub fn apply_defaults(step: &mut TestStep) {
+    if step.params == Value::Null {
+        step.params = serde_json::json!({});
+    }
     let defaults = match step.step_type {
         StepType::PowerOn => serde_json::json!({"rail": "5v_out"}),
         StepType::PowerOff => serde_json::json!({"rail": "5v_out"}),
@@ -127,6 +254,7 @@ pub fn apply_defaults(step: &mut TestStep) {
         StepType::Capture => {
             serde_json::json!({"rail": "5v_out", "trigger": "manual", "duration_ms": 5000, "threshold_a": 0.1})
         }
+        StepType::Loop => serde_json::json!({"count": 2, "steps": []}),
     };
 
     if let (Some(defaults_obj), Some(params_obj)) =
@@ -191,5 +319,83 @@ mod tests {
         };
         apply_defaults(&mut step);
         assert_eq!(step.params["rail"], "12v_out");
+    }
+
+    #[test]
+    fn loop_blocks_expand_with_unique_iteration_ids() {
+        let input = r#"{"schema":"linkr-test.v1","name":"loop","version":"1.0"}
+{"id":"loop1","type":"loop","params":{"count":3,"steps":[{"id":"send","type":"serial_send","params":{"channel":"uart1","text":"go\\n"}},{"id":"wait","type":"delay","params":{"ms":10}}]}}"#;
+        let script = parse_script(input.as_bytes()).unwrap();
+        let expanded = expand_steps(&script.steps).unwrap();
+        assert_eq!(expanded.len(), 6);
+        assert_eq!(expanded[0].id, "send@loop1:1");
+        assert_eq!(expanded[1].id, "wait@loop1:1");
+        assert_eq!(expanded[4].id, "send@loop1:3");
+        assert_eq!(expanded[0].params["channel"], "uart1");
+    }
+
+    #[test]
+    fn invalid_and_nested_loops_are_rejected() {
+        let empty = r#"{"schema":"linkr-test.v1","name":"empty"}
+{"id":"loop1","type":"loop","params":{"count":2,"steps":[]}}"#;
+        assert!(parse_script(empty.as_bytes()).is_err());
+
+        let nested = r#"{"schema":"linkr-test.v1","name":"nested"}
+{"id":"loop1","type":"loop","params":{"count":2,"steps":[{"id":"loop2","type":"loop","params":{"count":2,"steps":[]}}]}}"#;
+        assert!(parse_script(nested.as_bytes())
+            .unwrap_err()
+            .to_string()
+            .contains("nested loops"));
+    }
+
+    #[test]
+    fn duplicate_script_child_and_execution_ids_are_rejected() {
+        let duplicate_items = r#"{"schema":"linkr-test.v1","name":"duplicates"}
+{"id":"same","type":"delay","params":{"ms":1}}
+{"id":"same","type":"delay","params":{"ms":1}}"#;
+        assert!(parse_script(duplicate_items.as_bytes())
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate script item id"));
+
+        let duplicate_children = r#"{"schema":"linkr-test.v1","name":"duplicates"}
+{"id":"loop1","type":"loop","params":{"count":2,"steps":[{"id":"same","type":"delay","params":{"ms":1}},{"id":"same","type":"delay","params":{"ms":1}}]}}"#;
+        assert!(parse_script(duplicate_children.as_bytes())
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate child step id"));
+
+        let duplicate_execution = r#"{"schema":"linkr-test.v1","name":"duplicates"}
+{"id":"child@loop1:1","type":"delay","params":{"ms":1}}
+{"id":"loop1","type":"loop","params":{"count":1,"steps":[{"id":"child","type":"delay","params":{"ms":1}}]}}"#;
+        assert!(parse_script(duplicate_execution.as_bytes())
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate execution step id"));
+    }
+
+    #[test]
+    fn loop_expansion_limit_is_enforced() {
+        let children = (0..11)
+            .map(|index| {
+                serde_json::json!({
+                    "id": format!("s{index}"),
+                    "type": "delay",
+                    "params": {"ms": 1}
+                })
+            })
+            .collect::<Vec<_>>();
+        let steps = vec![TestStep {
+            id: "loop1".to_string(),
+            step_type: StepType::Loop,
+            params: serde_json::json!({"count": 1000, "steps": children}),
+            assert: None,
+            continue_on_error: None,
+        }];
+
+        assert!(expand_steps(&steps)
+            .unwrap_err()
+            .to_string()
+            .contains("10000 executable steps"));
     }
 }

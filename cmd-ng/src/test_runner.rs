@@ -11,13 +11,89 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::client::{BoardClient, BoardRequest, BoardTransport};
 use crate::test_assertions::{self, AssertionContext, StepAssertion};
 use crate::test_report::{self, ReportBuilder, StepResult, StepStatus};
-use crate::test_script::{apply_defaults, StepType, TestScript};
+use crate::test_script::{expand_steps, StepType, TestScript, TestStep};
 
 pub struct RunOptions {
     pub output_path: Option<String>,
-    pub serial_path: Option<String>,
+    pub serial_uart0_path: Option<String>,
+    pub serial_uart1_path: Option<String>,
     pub json_output: bool,
     pub verbose: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestSerialChannel {
+    Uart0,
+    Uart1,
+}
+
+impl TestSerialChannel {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Uart0 => "uart0",
+            Self::Uart1 => "uart1",
+        }
+    }
+}
+
+#[derive(Default)]
+struct TestSerialPorts {
+    uart0: Option<crate::test_serial::SerialPort>,
+    uart1: Option<crate::test_serial::SerialPort>,
+}
+
+impl TestSerialPorts {
+    #[cfg(test)]
+    fn open(script: &TestScript, opts: &RunOptions) -> Result<Self> {
+        let steps = expand_steps(&script.steps)?;
+        Self::open_steps(&steps, opts)
+    }
+
+    fn open_steps(steps: &[TestStep], opts: &RunOptions) -> Result<Self> {
+        let (needs_uart0, needs_uart1) = required_serial_channels_for_steps(steps)?;
+        let uart1_path = if needs_uart1 {
+            Some(
+                opts.serial_uart1_path
+                    .as_deref()
+                    .context("uart1 steps require --serial-uart1 PATH")?,
+            )
+        } else {
+            None
+        };
+        ensure!(
+            opts.serial_uart0_path.as_deref().is_none()
+                || opts.serial_uart0_path.as_deref() != uart1_path,
+            "uart0 and uart1 must use different serial device paths"
+        );
+
+        let uart0 = if needs_uart0 {
+            Some(match opts.serial_uart0_path.as_deref() {
+                Some(path) => crate::test_serial::SerialPort::open(path, 115200)?,
+                None => match uart1_path {
+                    Some(path) => crate::test_serial::SerialPort::auto_detect_excluding(&[path])?,
+                    None => crate::test_serial::SerialPort::auto_detect()?,
+                },
+            })
+        } else {
+            None
+        };
+        let uart1 = uart1_path
+            .map(|path| crate::test_serial::SerialPort::open(path, 115200))
+            .transpose()?;
+
+        Ok(Self { uart0, uart1 })
+    }
+
+    fn get_mut(
+        &mut self,
+        channel: TestSerialChannel,
+    ) -> Result<&mut crate::test_serial::SerialPort> {
+        match channel {
+            TestSerialChannel::Uart0 => self.uart0.as_mut(),
+            TestSerialChannel::Uart1 => self.uart1.as_mut(),
+        }
+        .with_context(|| format!("{} serial port is not available", channel.name()))
+    }
 }
 
 pub fn run_script(
@@ -27,7 +103,8 @@ pub fn run_script(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<u8> {
-    let total_steps = script.steps.len();
+    let mut execution_steps = expand_steps(&script.steps)?;
+    let total_steps = execution_steps.len();
     let mut report = ReportBuilder::new();
     let abort = Arc::new(AtomicBool::new(false));
 
@@ -37,37 +114,14 @@ pub fn run_script(
         abort_clone.store(true, Ordering::SeqCst);
     });
 
-    // Open serial port if needed
-    let needs_serial = script.steps.iter().any(|s| {
-        matches!(
-            s.step_type,
-            StepType::SerialWait | StepType::SerialSend | StepType::SerialExpect
-        )
-    });
-    let mut serial: Option<crate::test_serial::SerialPort> = if needs_serial {
-        match &opts.serial_path {
-            Some(path) => Some(crate::test_serial::SerialPort::open(path, 115200)?),
-            None => match crate::test_serial::SerialPort::auto_detect() {
-                Ok(port) => Some(port),
-                Err(e) => {
-                    if opts.verbose {
-                        writeln!(stderr, "warning: no serial port: {e}")?;
-                    }
-                    None
-                }
-            },
-        }
-    } else {
-        None
-    };
+    // Validate every serial channel before performing any board-side action.
+    let mut serial = TestSerialPorts::open_steps(&execution_steps, opts)?;
 
-    for step in &mut script.steps {
+    for step in &mut execution_steps {
         if abort.load(Ordering::SeqCst) {
             report.set_aborted();
             break;
         }
-
-        apply_defaults(step);
 
         let start = Instant::now();
         let started_at_ms = now_ms();
@@ -76,7 +130,7 @@ pub fn run_script(
             writeln!(stderr, "  [{}] {} ...", step.id, step.step_type_name())?;
         }
 
-        let result = execute_step(step, client, serial.as_mut(), &abort, opts, stderr);
+        let result = execute_step(step, client, &mut serial, &abort, opts, stderr);
 
         let finished_at_ms = now_ms();
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -230,8 +284,7 @@ pub fn run_script(
 
     // Print summary
     if opts.json_output {
-        let report_json = serde_json::to_string(&summary)?;
-        writeln!(stdout, "{report_json}")?;
+        test_report::write_json_summary(stdout, &summary, success)?;
     } else {
         test_report::print_summary(stderr, &summary)?;
     }
@@ -242,7 +295,7 @@ pub fn run_script(
 fn execute_step(
     step: &crate::test_script::TestStep,
     client: &dyn BoardTransport,
-    serial: Option<&mut crate::test_serial::SerialPort>,
+    serial: &mut TestSerialPorts,
     abort: &Arc<AtomicBool>,
     _opts: &RunOptions,
     _stderr: &mut dyn Write,
@@ -277,7 +330,7 @@ fn execute_step(
         }
 
         StepType::SerialWait => {
-            let serial = serial.context("serial port not available")?;
+            let serial = serial.get_mut(serial_channel_for_step(step)?)?;
             let pattern = step.params["pattern"].as_str().unwrap_or("login:");
             let timeout_ms = step.params["timeout_ms"].as_u64().unwrap_or(60000);
 
@@ -290,13 +343,13 @@ fn execute_step(
         }
 
         StepType::SerialSend => {
-            let serial = serial.context("serial port not available")?;
+            let serial = serial.get_mut(serial_channel_for_step(step)?)?;
             let text = step.params["text"].as_str().unwrap_or("root\n");
             serial.write(text)?;
         }
 
         StepType::SerialExpect => {
-            let serial = serial.context("serial port not available")?;
+            let serial = serial.get_mut(serial_channel_for_step(step)?)?;
             let command = step.params["command"].as_str().unwrap_or("uname -a");
             let pattern = step.params["pattern"].as_str().unwrap_or("Linux");
             let timeout_ms = step.params["timeout_ms"].as_u64().unwrap_or(10000);
@@ -392,6 +445,8 @@ fn execute_step(
             // For now, use a simplified HTTP-based approach
             bail!("capture step not yet implemented in CLI; use WebUI for power capture");
         }
+
+        StepType::Loop => bail!("loop step was not expanded before execution"),
     }
 
     Ok(ctx)
@@ -406,6 +461,42 @@ fn sleep_interruptible(duration: Duration, abort: &Arc<AtomicBool>) -> Result<()
         std::thread::sleep(Duration::from_millis(50));
     }
     Ok(())
+}
+
+fn is_serial_step(step_type: StepType) -> bool {
+    matches!(
+        step_type,
+        StepType::SerialWait | StepType::SerialSend | StepType::SerialExpect
+    )
+}
+
+fn serial_channel_for_step(step: &crate::test_script::TestStep) -> Result<TestSerialChannel> {
+    match step.params["channel"].as_str().unwrap_or("uart0") {
+        "uart0" => Ok(TestSerialChannel::Uart0),
+        "uart1" => Ok(TestSerialChannel::Uart1),
+        channel => bail!(
+            "invalid serial channel for step {}: {channel}; expected uart0 or uart1",
+            step.id
+        ),
+    }
+}
+
+#[cfg(test)]
+fn required_serial_channels(script: &TestScript) -> Result<(bool, bool)> {
+    let steps = expand_steps(&script.steps)?;
+    required_serial_channels_for_steps(&steps)
+}
+
+fn required_serial_channels_for_steps(steps: &[TestStep]) -> Result<(bool, bool)> {
+    let mut uart0 = false;
+    let mut uart1 = false;
+    for step in steps.iter().filter(|step| is_serial_step(step.step_type)) {
+        match serial_channel_for_step(step)? {
+            TestSerialChannel::Uart0 => uart0 = true,
+            TestSerialChannel::Uart1 => uart1 = true,
+        }
+    }
+    Ok((uart0, uart1))
 }
 
 fn assertion_for_step(step: &crate::test_script::TestStep) -> Result<Option<StepAssertion>> {
@@ -461,6 +552,7 @@ impl StepTypeName for crate::test_script::TestStep {
             StepType::GpioAssert => "gpio_assert",
             StepType::SwitchRoute => "switch_route",
             StepType::Capture => "capture",
+            StepType::Loop => "loop",
         }
     }
 }
@@ -468,7 +560,7 @@ impl StepTypeName for crate::test_script::TestStep {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_script::TestStep;
+    use crate::test_script::{TestHeader, TestStep};
 
     fn gpio_assert_step(
         params: serde_json::Value,
@@ -501,5 +593,77 @@ mod tests {
             None,
         );
         assert!(assertion_for_step(&step).is_err());
+    }
+
+    fn serial_step(channel: &str) -> TestStep {
+        TestStep {
+            id: format!("wait-{channel}"),
+            step_type: StepType::SerialWait,
+            params: serde_json::json!({"channel": channel, "pattern": "login:"}),
+            assert: None,
+            continue_on_error: None,
+        }
+    }
+
+    fn script_with_steps(steps: Vec<TestStep>) -> TestScript {
+        TestScript {
+            header: TestHeader {
+                schema: "linkr-test.v1".to_string(),
+                name: "serial-routing".to_string(),
+                version: "1.0".to_string(),
+                board: None,
+                created: None,
+            },
+            steps,
+        }
+    }
+
+    #[test]
+    fn serial_channel_preflight_tracks_both_uarts() {
+        let script = script_with_steps(vec![serial_step("uart0"), serial_step("uart1")]);
+        assert_eq!(required_serial_channels(&script).unwrap(), (true, true));
+    }
+
+    #[test]
+    fn serial_channel_preflight_rejects_unknown_channel() {
+        let script = script_with_steps(vec![serial_step("uart2")]);
+        assert!(required_serial_channels(&script)
+            .unwrap_err()
+            .to_string()
+            .contains("expected uart0 or uart1"));
+    }
+
+    #[test]
+    fn uart1_requires_an_explicit_device_path() {
+        let script = script_with_steps(vec![serial_step("uart1")]);
+        let options = RunOptions {
+            output_path: None,
+            serial_uart0_path: None,
+            serial_uart1_path: None,
+            json_output: false,
+            verbose: false,
+        };
+        assert!(TestSerialPorts::open(&script, &options)
+            .err()
+            .expect("uart1 without a path must fail")
+            .to_string()
+            .contains("--serial-uart1"));
+    }
+
+    #[test]
+    fn dual_uart_rejects_the_same_device_path() {
+        let script = script_with_steps(vec![serial_step("uart0"), serial_step("uart1")]);
+        let options = RunOptions {
+            output_path: None,
+            serial_uart0_path: Some("/dev/serial-a".to_string()),
+            serial_uart1_path: Some("/dev/serial-a".to_string()),
+            json_output: false,
+            verbose: false,
+        };
+        assert!(TestSerialPorts::open(&script, &options)
+            .err()
+            .expect("duplicate paths must fail before opening the device")
+            .to_string()
+            .contains("different serial device paths"));
     }
 }

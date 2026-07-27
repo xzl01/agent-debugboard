@@ -11,13 +11,14 @@ import {
 import { evaluateAssertion, type AssertionContext } from "./testAssertions.ts";
 import type {
   TestScript,
-  TestStep,
   StepAssertion,
   StepResult,
   RunSummary,
   AdcSampleEntry,
   SerialLogEntry,
+  ExecutionStep,
 } from "./testScript";
+import { buildExecutionPlan } from "./testScript.ts";
 
 export interface RunnerCallbacks {
   onStepStart(stepId: string): void;
@@ -273,6 +274,7 @@ export function createTestRunner(
   const abortController = new AbortController();
   const { signal } = abortController;
   const results: StepResult[] = [];
+  const executionPlan = buildExecutionPlan(script);
   const startedAtMs = Date.now();
   const serialBuffers = new Map<SerialChannelId, { text: string; cursor: number }>();
   let activeStepId = "run";
@@ -306,8 +308,15 @@ export function createTestRunner(
       : Math.min(state.text.length, state.cursor + consumedLength);
   };
 
-  async function executeStep(step: TestStep): Promise<StepResult> {
+  async function executeStep(step: ExecutionStep): Promise<StepResult> {
     const stepStartedAt = Date.now();
+    const resultIdentity = {
+      stepId: step.executionId,
+      sourceStepId: step.sourceStepId,
+      loopId: step.loopId,
+      loopIteration: step.loopIteration,
+      loopCount: step.loopCount,
+    };
     let ctx: AssertionContext = {};
     let error: string | undefined;
     let serialOutput: string | undefined;
@@ -365,7 +374,7 @@ export function createTestRunner(
           if (!serialRef.current?.isConnected(channel)) {
             return makeSkip(step, stepStartedAt, "no serial connection");
           }
-          callbacks.onSerialLog(step.id, p.text, "tx");
+          callbacks.onSerialLog(step.executionId, p.text, "tx");
           await serialRef.current.write(p.text, channel);
           break;
         }
@@ -383,7 +392,7 @@ export function createTestRunner(
               p.command,
               p.pattern,
               p.timeout_ms,
-              (text) => callbacks.onSerialLog(step.id, text, "tx"),
+              (text) => callbacks.onSerialLog(step.executionId, text, "tx"),
               signal,
             );
             serialOutput = result.output;
@@ -405,7 +414,7 @@ export function createTestRunner(
           const reading = await getBoard().readPower(p.channel);
           adcValueUa = reading.currentUa;
           ctx.adcValueUa = reading.currentUa;
-          callbacks.onAdcSample(step.id, p.channel, reading.currentUa, Date.now());
+          callbacks.onAdcSample(step.executionId, p.channel, reading.currentUa, Date.now());
           break;
         }
         case "gpio_set": {
@@ -494,7 +503,7 @@ export function createTestRunner(
             const reading = sample.readings.find((item) => item.name === rail);
             if (!reading) continue;
             const timestampMs = capture.capturedAt - (lastDeviceTimeUs - sample.deviceTimeUs) / 1000;
-            callbacks.onAdcSample(step.id, rail, reading.current_ua, timestampMs);
+            callbacks.onAdcSample(step.executionId, rail, reading.current_ua, timestampMs);
           }
           break;
         }
@@ -503,7 +512,7 @@ export function createTestRunner(
       if (e instanceof Error && e.name === "AbortError") {
         const finishedAtMs = Date.now();
         return {
-          stepId: step.id,
+          ...resultIdentity,
           stepType: step.type,
           status: "aborted",
           startedAtMs: stepStartedAt,
@@ -534,7 +543,7 @@ export function createTestRunner(
 
     const finishedAtMs = Date.now();
     return {
-      stepId: step.id,
+      ...resultIdentity,
       stepType: step.type,
       status,
       startedAtMs: stepStartedAt,
@@ -547,9 +556,13 @@ export function createTestRunner(
     };
   }
 
-  function makeSkip(step: TestStep, startMs: number, reason: string): StepResult {
+  function makeSkip(step: ExecutionStep, startMs: number, reason: string): StepResult {
     return {
-      stepId: step.id,
+      stepId: step.executionId,
+      sourceStepId: step.sourceStepId,
+      loopId: step.loopId,
+      loopIteration: step.loopIteration,
+      loopCount: step.loopCount,
       stepType: step.type,
       status: "skip",
       startedAtMs: startMs,
@@ -572,10 +585,10 @@ export function createTestRunner(
         }
       }
       try {
-        for (const step of script.steps) {
+        for (const step of executionPlan) {
           if (aborted) break;
-          activeStepId = step.id;
-          callbacks.onStepStart(step.id);
+          activeStepId = step.executionId;
+          callbacks.onStepStart(step.executionId);
           const result = await executeStep(step);
           results.push(result);
           callbacks.onStepResult(result);
@@ -596,13 +609,13 @@ export function createTestRunner(
 
       const finishedAtMs = Date.now();
       const summary: RunSummary = {
-        totalSteps: script.steps.length,
+        totalSteps: executionPlan.length,
         passed: results.filter((r) => r.status === "pass").length,
         failed: results.filter((r) => r.status === "fail").length,
         skipped: results.filter((r) => r.status === "skip").length,
         errored: results.filter((r) => r.status === "error").length,
         aborted,
-        completed: !aborted && results.length === script.steps.length,
+        completed: !aborted && results.length === executionPlan.length,
         durationMs: finishedAtMs - startedAtMs,
         startedAtMs,
         finishedAtMs,

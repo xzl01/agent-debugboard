@@ -10,6 +10,8 @@ import {
   parseTestScript,
   serializeTestScript,
   isRunSuccessful,
+  isTestLoop,
+  buildExecutionPlan,
 } from "./testScript.ts";
 
 describe("stepTypeLabel", () => {
@@ -129,8 +131,12 @@ describe("serializeTestScript / parseTestScript", () => {
     assert.equal(parsed.name, "Test Round Trip");
     assert.equal(parsed.steps.length, 3);
     assert.equal(parsed.steps[0].type, "power_on");
-    assert.equal(parsed.steps[1].params.ms, 2000);
-    assert.deepEqual(parsed.steps[2].assert?.current_range, { min_a: 0, max_a: 3 });
+    assert.equal(isTestLoop(parsed.steps[1]), false);
+    assert.equal((parsed.steps[1] as import("./testScript.ts").TestStep<"delay">).params.ms, 2000);
+    assert.deepEqual(
+      (parsed.steps[2] as import("./testScript.ts").TestStep).assert?.current_range,
+      { min_a: 0, max_a: 3 },
+    );
   });
 
   it("rejects empty input", () => {
@@ -149,8 +155,8 @@ describe("serializeTestScript / parseTestScript", () => {
     ].join("\n") + "\n";
 
     const parsed = parseTestScript(ndjson);
-    assert.equal(parsed.steps[0].assert, undefined);
-    assert.equal(parsed.steps[0].continue_on_error, undefined);
+    assert.equal((parsed.steps[0] as import("./testScript.ts").TestStep).assert, undefined);
+    assert.equal((parsed.steps[0] as import("./testScript.ts").TestStep).continue_on_error, undefined);
   });
 
   it("rejects step with invalid type", () => {
@@ -183,7 +189,109 @@ describe("serializeTestScript / parseTestScript", () => {
       JSON.stringify({ id: "s1", type: "delay", params: { ms: 100 }, continue_on_error: true }),
     ].join("\n") + "\n";
     const parsed = parseTestScript(ndjson);
-    assert.equal(parsed.steps[0].continue_on_error, true);
+    assert.equal((parsed.steps[0] as import("./testScript.ts").TestStep).continue_on_error, true);
+  });
+
+  it("round-trips loop blocks and expands each iteration with unique execution IDs", () => {
+    const original = defaultScript();
+    original.steps = [
+      {
+        id: "loop1",
+        type: "loop",
+        params: {
+          count: 3,
+          steps: [
+            { id: "send", type: "serial_send", params: { channel: "uart0", text: "ping\n" } },
+            { id: "delay", type: "delay", params: { ms: 10 } },
+          ],
+        },
+      },
+    ];
+
+    const parsed = parseTestScript(serializeTestScript(original));
+    assert.equal(isTestLoop(parsed.steps[0]), true);
+    if (!isTestLoop(parsed.steps[0])) throw new Error("expected loop");
+    assert.equal(parsed.steps[0].params.count, 3);
+    assert.equal(parsed.steps[0].params.steps.length, 2);
+
+    const plan = buildExecutionPlan(parsed);
+    assert.equal(plan.length, 6);
+    assert.deepEqual(plan.map((step) => step.executionId), [
+      "send@loop1:1",
+      "delay@loop1:1",
+      "send@loop1:2",
+      "delay@loop1:2",
+      "send@loop1:3",
+      "delay@loop1:3",
+    ]);
+    assert.deepEqual(plan.map((step) => step.loopIteration), [1, 1, 2, 2, 3, 3]);
+  });
+
+  it("rejects invalid, empty, and nested loop blocks", () => {
+    const header = JSON.stringify({ schema: "linkr-test.v1", name: "Bad loop" });
+    assert.throws(() => parseTestScript([
+      header,
+      JSON.stringify({ id: "loop1", type: "loop", params: { count: 0, steps: [{}] } }),
+    ].join("\n")), /loop "count"/);
+    assert.throws(() => parseTestScript([
+      header,
+      JSON.stringify({ id: "loop1", type: "loop", params: { count: 2, steps: [] } }),
+    ].join("\n")), /non-empty array/);
+    assert.throws(() => parseTestScript([
+      header,
+      JSON.stringify({
+        id: "loop1",
+        type: "loop",
+        params: { count: 2, steps: [{ id: "loop2", type: "loop", params: { count: 2, steps: [] } }] },
+      }),
+    ].join("\n")), /nested loops/);
+    assert.throws(() => parseTestScript([
+      header,
+      JSON.stringify({
+        id: "loop1",
+        type: "loop",
+        params: {
+          count: 1000,
+          steps: Array.from({ length: 11 }, (_, index) => ({
+            id: `s${index}`,
+            type: "delay",
+            params: { ms: 1 },
+          })),
+        },
+      }),
+    ].join("\n")), /10000 executable steps/);
+  });
+
+  it("rejects duplicate script, loop child, and execution IDs", () => {
+    const header = JSON.stringify({ schema: "linkr-test.v1", name: "Duplicate IDs" });
+    assert.throws(() => parseTestScript([
+      header,
+      JSON.stringify({ id: "same", type: "delay", params: { ms: 1 } }),
+      JSON.stringify({ id: "same", type: "delay", params: { ms: 1 } }),
+    ].join("\n")), /Duplicate script item ID: same/);
+    assert.throws(() => parseTestScript([
+      header,
+      JSON.stringify({
+        id: "loop1",
+        type: "loop",
+        params: {
+          count: 2,
+          steps: [
+            { id: "same", type: "delay", params: { ms: 1 } },
+            { id: "same", type: "delay", params: { ms: 1 } },
+          ],
+        },
+      }),
+    ].join("\n")), /duplicate child step ID: same/);
+    assert.throws(() => parseTestScript([
+      header,
+      JSON.stringify({ id: "child@loop1:1", type: "delay", params: { ms: 1 } }),
+      JSON.stringify({
+        id: "loop1",
+        type: "loop",
+        params: { count: 1, steps: [{ id: "child", type: "delay", params: { ms: 1 } }] },
+      }),
+    ].join("\n")), /Duplicate execution step ID: child@loop1:1/);
   });
 
   it("auto-generates created field on serialize", () => {

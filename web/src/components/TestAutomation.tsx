@@ -7,7 +7,7 @@ import { TestReport } from "./TestReport";
 import type { UseBoard } from "@/hooks/useBoard";
 import type { SerialAutomationHandle } from "./SerialCard";
 import type { TestScript, StepResult, StepStatus, RunSummary, AdcSampleEntry, SerialLogEntry } from "@/lib/testScript";
-import { defaultScript, parseTestScript, serializeTestScript } from "@/lib/testScript";
+import { buildExecutionPlan, defaultScript, parseTestScript, serializeTestScript } from "@/lib/testScript";
 import { createTestRunner, type RunnerCallbacks, type RunnerHandle } from "@/lib/testRunner";
 import { useI18n } from "@/lib/i18n";
 import type { AutomationTaskControl } from "@/lib/automationTask";
@@ -54,6 +54,7 @@ export function TestAutomation({
   const runningRef = useRef(false);
   const boardRef = useRef(board);
   boardRef.current = board;
+  const executionPlan = useMemo(() => buildExecutionPlan(script), [script]);
 
   useEffect(() => () => {
     runnerRef.current?.abort();
@@ -178,7 +179,7 @@ export function TestAutomation({
       )}
       {tab === "running" && (
         <TestRunnerView
-          steps={script.steps}
+          steps={executionPlan}
           stepStates={stepStates}
           stepResults={stepResults}
           serialLogs={serialLogs}

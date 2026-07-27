@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { Activity, Loader2, Square, Terminal as TerminalIcon } from "lucide-react";
 import { Badge, Button } from "./ui";
-import type { TestStep, StepStatus, StepResult, SerialLogEntry, AdcSampleEntry } from "@/lib/testScript";
+import type { ExecutionStep, StepStatus, StepResult, SerialLogEntry, AdcSampleEntry } from "@/lib/testScript";
 import { formatMs } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 
@@ -32,7 +32,7 @@ function elapsedStr(startMs: number): string {
 }
 
 export interface TestRunnerViewProps {
-  steps: TestStep[];
+  steps: ExecutionStep[];
   stepStates: Map<string, StepStatus>;
   stepResults: StepResult[];
   serialLogs: SerialLogEntry[];
@@ -69,7 +69,7 @@ export function TestRunnerView({
     }
   }, [serialLogs.length]);
 
-  const runningIndex = steps.findIndex((s) => stepStates.get(s.id) === "running");
+  const runningIndex = steps.findIndex((s) => stepStates.get(s.executionId) === "running");
   const doneCount = stepResults.length;
   const currentA = adcSamples.length > 0 ? (adcSamples[adcSamples.length - 1].currentUa / 1_000_000).toFixed(3) : "—";
   const resultMap = useMemo(() => new Map(stepResults.map((r) => [r.stepId, r])), [stepResults]);
@@ -99,11 +99,11 @@ export function TestRunnerView({
 
       <div className="space-y-1">
         {steps.map((step, i) => {
-          const status = stepStates.get(step.id) ?? "pending";
-          const result = resultMap.get(step.id);
+          const status = stepStates.get(step.executionId) ?? "pending";
+          const result = resultMap.get(step.executionId);
           return (
             <div
-              key={step.id}
+              key={step.executionId}
               className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs ${
                 status === "running" ? "bg-brand/5" : ""
               }`}
@@ -115,6 +115,11 @@ export function TestRunnerView({
               <span className="min-w-0 flex-1 truncate font-medium text-ink">
                 {t(`test.step.${step.type}`)}
               </span>
+              {step.loopIteration != null && step.loopCount != null && (
+                <Badge tone="brand">
+                  {t("test.loop.iteration", { current: step.loopIteration, total: step.loopCount })}
+                </Badge>
+              )}
               {result && (
                 <span className="font-mono text-[10px] text-ink-dim">{formatMs(result.durationMs)}</span>
               )}

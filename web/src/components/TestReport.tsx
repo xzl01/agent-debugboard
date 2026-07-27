@@ -176,6 +176,11 @@ function ResultsTable({ results, startedAtMs }: { results: StepResult[]; started
               <td className="px-3 py-1.5 text-ink-dim">{i + 1}</td>
               <td className="px-3 py-1.5 font-medium text-ink">
                 {t(`test.step.${r.stepType}`)}
+                {r.loopIteration != null && r.loopCount != null && (
+                  <div className="mt-0.5 text-[9px] font-normal text-brand">
+                    {t("test.loop.iteration", { current: r.loopIteration, total: r.loopCount })}
+                  </div>
+                )}
               </td>
               <td className="px-3 py-1.5">{statusBadge(r.status)}</td>
               <td className="px-3 py-1.5 text-right font-mono text-ink-dim">{formatMs(r.durationMs)}</td>

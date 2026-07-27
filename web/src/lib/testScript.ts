@@ -61,13 +61,36 @@ export interface TestStep<T extends StepType = StepType> {
   continue_on_error?: boolean;
 }
 
+export const MIN_LOOP_COUNT = 1;
+export const MAX_LOOP_COUNT = 1000;
+export const MAX_EXECUTION_STEPS = 10_000;
+
+export interface TestLoop {
+  id: string;
+  type: "loop";
+  params: {
+    count: number;
+    steps: TestStep[];
+  };
+}
+
+export type TestScriptItem = TestStep | TestLoop;
+
+export interface ExecutionStep extends TestStep {
+  executionId: string;
+  sourceStepId: string;
+  loopId?: string;
+  loopIteration?: number;
+  loopCount?: number;
+}
+
 export interface TestScript {
   schema: "linkr-test.v1";
   name: string;
   version: string;
   board?: string;
   created?: string;
-  steps: TestStep[];
+  steps: TestScriptItem[];
 }
 
 export interface StepAssertion {
@@ -84,6 +107,10 @@ export interface StepAssertion {
 
 export interface StepResult {
   stepId: string;
+  sourceStepId?: string;
+  loopId?: string;
+  loopIteration?: number;
+  loopCount?: number;
   stepType: StepType;
   status: StepStatus;
   startedAtMs: number;
@@ -183,6 +210,86 @@ export function generateStepId(): string {
   return `s${crypto.randomUUID().slice(0, 8)}`;
 }
 
+export function generateLoopId(): string {
+  return `l${crypto.randomUUID().slice(0, 8)}`;
+}
+
+export function isTestLoop(item: TestScriptItem): item is TestLoop {
+  return item.type === "loop";
+}
+
+export function countScriptCommands(script: TestScript): number {
+  return script.steps.reduce(
+    (total, item) => total + (isTestLoop(item) ? item.params.steps.length : 1),
+    0,
+  );
+}
+
+export function buildExecutionPlan(script: TestScript): ExecutionStep[] {
+  const plan: ExecutionStep[] = [];
+  const itemIds = new Set<string>();
+  const executionIds = new Set<string>();
+
+  const appendStep = (step: ExecutionStep) => {
+    if (executionIds.has(step.executionId)) {
+      throw new Error(`Duplicate execution step ID: ${step.executionId}`);
+    }
+    executionIds.add(step.executionId);
+    plan.push(step);
+  };
+
+  for (const item of script.steps) {
+    if (itemIds.has(item.id)) {
+      throw new Error(`Duplicate script item ID: ${item.id}`);
+    }
+    itemIds.add(item.id);
+
+    if (!isTestLoop(item)) {
+      appendStep({ ...item, executionId: item.id, sourceStepId: item.id });
+      continue;
+    }
+
+    const count = item.params.count;
+    if (!Number.isInteger(count) || count < MIN_LOOP_COUNT || count > MAX_LOOP_COUNT) {
+      throw new Error(
+        `Loop ${item.id}: count must be an integer between ${MIN_LOOP_COUNT} and ${MAX_LOOP_COUNT}`,
+      );
+    }
+    if (item.params.steps.length === 0) {
+      throw new Error(`Loop ${item.id}: at least one step is required`);
+    }
+    if (plan.length + item.params.steps.length * count > MAX_EXECUTION_STEPS) {
+      throw new Error(`Expanded test exceeds ${MAX_EXECUTION_STEPS} executable steps`);
+    }
+
+    const childIds = new Set<string>();
+    for (const step of item.params.steps) {
+      if (childIds.has(step.id)) {
+        throw new Error(`Loop ${item.id}: duplicate child step ID: ${step.id}`);
+      }
+      childIds.add(step.id);
+    }
+
+    for (let iteration = 1; iteration <= count; iteration += 1) {
+      for (const step of item.params.steps) {
+        appendStep({
+          ...step,
+          executionId: `${step.id}@${item.id}:${iteration}`,
+          sourceStepId: step.id,
+          loopId: item.id,
+          loopIteration: iteration,
+          loopCount: count,
+        });
+      }
+    }
+  }
+
+  if (plan.length > MAX_EXECUTION_STEPS) {
+    throw new Error(`Expanded test exceeds ${MAX_EXECUTION_STEPS} executable steps`);
+  }
+  return plan;
+}
+
 export function defaultStepParams<T extends StepType>(type: T): StepParamsFor<T> {
   const params: Record<StepType, Record<string, unknown>> = {
     power_on: { rail: "5v_out" },
@@ -205,12 +312,53 @@ export function parseTestScript(ndjson: string): TestScript {
   if (lines.length === 0) throw new Error("Empty script");
   const header = JSON.parse(lines[0]);
   if (header.schema !== "linkr-test.v1") throw new Error(`Unknown schema: ${header.schema}`);
-  const steps: TestStep[] = [];
+  const steps: TestScriptItem[] = [];
   for (let i = 1; i < lines.length; i++) {
     const obj = JSON.parse(lines[i]);
     if (!obj.id || typeof obj.id !== "string") throw new Error(`Line ${i + 1}: missing or invalid "id"`);
+    if (obj.params != null && (typeof obj.params !== "object" || Array.isArray(obj.params))) {
+      throw new Error(`Line ${i + 1}: "params" must be an object`);
+    }
+    if (obj.type === "loop") {
+      const count = obj.params?.count;
+      const childSteps = obj.params?.steps;
+      if (!Number.isInteger(count) || count < MIN_LOOP_COUNT || count > MAX_LOOP_COUNT) {
+        throw new Error(
+          `Line ${i + 1}: loop "count" must be an integer between ${MIN_LOOP_COUNT} and ${MAX_LOOP_COUNT}`,
+        );
+      }
+      if (!Array.isArray(childSteps) || childSteps.length === 0) {
+        throw new Error(`Line ${i + 1}: loop "steps" must be a non-empty array`);
+      }
+      const parsedChildren = childSteps.map((child, childIndex) => {
+        if (!child || typeof child !== "object") {
+          throw new Error(`Line ${i + 1}: loop step ${childIndex + 1} must be an object`);
+        }
+        if (child.type === "loop") {
+          throw new Error(`Line ${i + 1}: nested loops are not supported`);
+        }
+        if (!child.id || typeof child.id !== "string") {
+          throw new Error(`Line ${i + 1}: loop step ${childIndex + 1} has an invalid "id"`);
+        }
+        if (!STEP_TYPES.includes(child.type)) {
+          throw new Error(`Line ${i + 1}: unknown loop step type "${child.type}"`);
+        }
+        if (child.params != null && (typeof child.params !== "object" || Array.isArray(child.params))) {
+          throw new Error(`Line ${i + 1}: loop step ${childIndex + 1} "params" must be an object`);
+        }
+        const type = child.type as StepType;
+        return {
+          id: child.id,
+          type,
+          params: { ...defaultStepParams(type), ...(child.params ?? {}) } as StepParamsFor<StepType>,
+          assert: child.assert,
+          continue_on_error: child.continue_on_error,
+        } satisfies TestStep;
+      });
+      steps.push({ id: obj.id, type: "loop", params: { count, steps: parsedChildren } });
+      continue;
+    }
     if (!STEP_TYPES.includes(obj.type)) throw new Error(`Line ${i + 1}: unknown step type "${obj.type}"`);
-    if (obj.params != null && typeof obj.params !== "object") throw new Error(`Line ${i + 1}: "params" must be an object`);
     const type = obj.type as StepType;
     steps.push({
       id: obj.id,
@@ -220,7 +368,7 @@ export function parseTestScript(ndjson: string): TestScript {
       continue_on_error: obj.continue_on_error,
     });
   }
-  return {
+  const script: TestScript = {
     schema: "linkr-test.v1",
     name: header.name ?? "Untitled",
     version: header.version ?? "1.0",
@@ -228,6 +376,8 @@ export function parseTestScript(ndjson: string): TestScript {
     created: header.created,
     steps,
   };
+  buildExecutionPlan(script);
+  return script;
 }
 
 export function serializeTestScript(script: TestScript): string {
@@ -241,8 +391,8 @@ export function serializeTestScript(script: TestScript): string {
   const lines = [JSON.stringify(header)];
   for (const step of script.steps) {
     const obj: Record<string, unknown> = { id: step.id, type: step.type, params: step.params };
-    if (step.assert) obj.assert = step.assert;
-    if (step.continue_on_error) obj.continue_on_error = step.continue_on_error;
+    if (!isTestLoop(step) && step.assert) obj.assert = step.assert;
+    if (!isTestLoop(step) && step.continue_on_error) obj.continue_on_error = step.continue_on_error;
     lines.push(JSON.stringify(obj));
   }
   return lines.join("\n") + "\n";

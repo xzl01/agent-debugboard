@@ -121,14 +121,25 @@ radxa-linkr-debuggerctl gpio input GP13
 
 ## 自动化测试脚本
 
-`test run` 执行 `linkr-test.v1` NDJSON 脚本。`--serial` 可指定目标设备串口；`--output` 会将完整结果写入文件，扩展名决定格式：`.json`、`.csv` 或 `.ndjson`，其他扩展名默认使用 JSON。
+`test run` 执行 `linkr-test.v1` NDJSON 脚本。`--serial` 保留为 `--serial-uart0` 的兼容别名；脚本包含 UART1 步骤时必须用 `--serial-uart1` 明确指定设备路径，UART1 不会被静默路由到 UART0。`--output` 会将结果写入文件，扩展名决定格式：`.json`、`.csv` 或 `.ndjson`，其他扩展名默认使用 JSON。
 
 ```sh
 radxa-linkr-debuggerctl test run startup.ndjson --serial /dev/tty.usbserial-1234
+radxa-linkr-debuggerctl test run dual-uart.ndjson \
+  --serial-uart0 /dev/tty.usbserial-A \
+  --serial-uart1 /dev/tty.usbserial-B
 radxa-linkr-debuggerctl test run startup.ndjson --output startup-report.json
 ```
 
-`gpio_assert` 会直接使用步骤 `params` 中的 `direction` 和 `value` 进行判定；方向只接受 `input`/`output`，值只接受 `0`/`1`。执行被 Ctrl+C 中止时，报告会标记为 `aborted`。
+`gpio_assert` 会直接使用步骤 `params` 中的 `direction` 和 `value` 进行判定；方向只接受 `input`/`output`，值只接受 `0`/`1`。执行被 Ctrl+C 中止时，报告会标记为 `aborted`。使用全局 `--json` 时，stdout 遵循统一的 `radxa-linkr-debugger.v1` envelope，计数信息位于 `summary`。
+
+如需重复执行一组连续命令，可以添加顶层 `loop` 项。`count` 支持
+1-1000 轮，`steps` 至少包含一条普通命令。当前不支持嵌套循环，脚本展开后最多
+执行 10,000 条命令。Web UI 中可以勾选连续命令，直接将它们放入循环框。
+
+```json
+{"id":"boot-loop","type":"loop","params":{"count":3,"steps":[{"id":"cycle-off","type":"power_off","params":{"rail":"5v_out"}},{"id":"settle","type":"delay","params":{"ms":1000}},{"id":"cycle-on","type":"power_on","params":{"rail":"5v_out"}}]}}
+```
 
 ## 目标设备恢复模式
 

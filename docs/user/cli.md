@@ -113,14 +113,27 @@ radxa-linkr-debuggerctl gpio input GP13
 
 ## Automated Test Scripts
 
-`test run` executes a `linkr-test.v1` NDJSON script. Use `--serial` to select the target serial port. `--output` writes the full result to disk; `.json`, `.csv`, and `.ndjson` extensions select the report format, while other extensions default to JSON.
+`test run` executes a `linkr-test.v1` NDJSON script. `--serial` remains an alias for `--serial-uart0`; use `--serial-uart1` when a script contains UART1 steps. UART1 is never silently routed to UART0: its device path must be explicit. `--output` writes the result to disk; `.json`, `.csv`, and `.ndjson` extensions select the report format, while other extensions default to JSON.
 
 ```sh
 radxa-linkr-debuggerctl test run startup.ndjson --serial /dev/tty.usbserial-1234
+radxa-linkr-debuggerctl test run dual-uart.ndjson \
+  --serial-uart0 /dev/tty.usbserial-A \
+  --serial-uart1 /dev/tty.usbserial-B
 radxa-linkr-debuggerctl test run startup.ndjson --output startup-report.json
 ```
 
-A `gpio_assert` step evaluates the `direction` and `value` in its `params` directly. Direction accepts only `input`/`output`, and value accepts only `0`/`1`. A Ctrl+C interruption marks the report as `aborted`.
+A `gpio_assert` step evaluates the `direction` and `value` in its `params` directly. Direction accepts only `input`/`output`, and value accepts only `0`/`1`. A Ctrl+C interruption marks the report as `aborted`. With global `--json`, stdout uses the standard `radxa-linkr-debugger.v1` envelope and places counters under `summary`.
+
+To repeat a consecutive group of commands, add a top-level `loop` item. `count`
+accepts 1-1000 rounds; `steps` must contain at least one normal command. Nested
+loops are not supported, and a script may expand to at most 10,000 executable
+commands. The Web UI can create the same structure by selecting consecutive
+commands and placing them in a loop frame.
+
+```json
+{"id":"boot-loop","type":"loop","params":{"count":3,"steps":[{"id":"cycle-off","type":"power_off","params":{"rail":"5v_out"}},{"id":"settle","type":"delay","params":{"ms":1000}},{"id":"cycle-on","type":"power_on","params":{"rail":"5v_out"}}]}}
+```
 
 ## Target Recovery Modes
 

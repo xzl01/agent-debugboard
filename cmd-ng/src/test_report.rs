@@ -9,6 +9,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
+use crate::json_contract::JSON_SCHEMA;
 use crate::test_assertions::AssertionResult;
 use crate::test_script::{StepType, TestStep};
 
@@ -237,6 +238,40 @@ pub fn print_summary(writer: &mut dyn Write, summary: &RunSummary) -> anyhow::Re
     Ok(())
 }
 
+pub fn write_json_summary(
+    writer: &mut dyn Write,
+    summary: &RunSummary,
+    success: bool,
+) -> anyhow::Result<()> {
+    let value = if success {
+        json!({
+            "schema": JSON_SCHEMA,
+            "ok": true,
+            "command": "test",
+            "summary": summary,
+        })
+    } else {
+        let (code, message) = if summary.aborted {
+            ("test_aborted", "test run was aborted")
+        } else {
+            ("test_failed", "one or more test steps failed")
+        };
+        json!({
+            "schema": JSON_SCHEMA,
+            "ok": false,
+            "command": "test",
+            "summary": summary,
+            "error": {
+                "code": code,
+                "message": message,
+            },
+        })
+    };
+    serde_json::to_writer(&mut *writer, &value)?;
+    writeln!(writer)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,5 +354,42 @@ mod tests {
             fs::remove_file(path).unwrap();
             assert!(contents.contains(expected), "unexpected {extension} report");
         }
+    }
+
+    #[test]
+    fn json_summary_uses_cli_envelope_for_pass_and_fail() {
+        let passed = RunSummary {
+            total: 1,
+            passed: 1,
+            failed: 0,
+            skipped: 0,
+            errored: 0,
+            aborted: false,
+            completed: true,
+            duration_ms: 1,
+        };
+        let mut output = Vec::new();
+        write_json_summary(&mut output, &passed, true).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value["schema"], JSON_SCHEMA);
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["command"], "test");
+        assert_eq!(value["summary"]["passed"], 1);
+
+        output.clear();
+        let failed = RunSummary {
+            total: 1,
+            passed: 0,
+            failed: 1,
+            skipped: 0,
+            errored: 0,
+            aborted: false,
+            completed: false,
+            duration_ms: 1,
+        };
+        write_json_summary(&mut output, &failed, false).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "test_failed");
     }
 }

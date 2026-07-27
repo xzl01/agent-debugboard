@@ -404,6 +404,37 @@ describe("createTestRunner", () => {
     assert.equal(summary.results[0].status, "pass");
   });
 
+  it("executes loop steps for every round with unique result identities", async () => {
+    const calls: number[] = [];
+    const board = baseBoard() as any;
+    board.setGpio = async (_pin: string, _direction: string, value: number) => {
+      calls.push(value);
+    };
+    const script: TestScript = {
+      schema: "linkr-test.v1",
+      version: "1.0",
+      name: "loop",
+      steps: [{
+        id: "loop1",
+        type: "loop",
+        params: {
+          count: 3,
+          steps: [{ id: "gpio", type: "gpio_set", params: { pin: "GP13", value: 1 } }],
+        },
+      }],
+    };
+
+    const summary = await run(script, board, serialWithCommandOutput(""));
+    assert.deepEqual(calls, [1, 1, 1]);
+    assert.equal(summary.totalSteps, 3);
+    assert.deepEqual(
+      summary.results.map((result) => result.stepId),
+      ["gpio@loop1:1", "gpio@loop1:2", "gpio@loop1:3"],
+    );
+    assert.deepEqual(summary.results.map((result) => result.loopIteration), [1, 2, 3]);
+    assert.deepEqual(summary.results.map((result) => result.loopCount), [3, 3, 3]);
+  });
+
   it("executes switch_route step", async () => {
     const calls: Array<{ name: string; route: string }> = [];
     const board = baseBoard() as any;
