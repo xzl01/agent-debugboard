@@ -122,6 +122,44 @@ Then use the **Bridge** button in either serial terminal. The bridge prefers the
 CH347F `D1` device for UART0 and `D3` for UART1, with sorted device order as
 the fallback when those suffixes are unavailable.
 
+### Linux serial device permissions
+
+Direct Web Serial and the device bridge both open serial devices as the current
+desktop user. On Linux, CH347 ports normally appear as `/dev/ttyUSB0` and
+`/dev/ttyUSB1`; the board CDC ACM fallback may appear as `/dev/ttyACM0`.
+
+If the browser reports that it failed to open the serial port, or the bridge
+reports `EACCES`, `EPERM`, `Permission denied`, or `Access denied`, inspect the
+device ownership:
+
+```sh
+ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
+id -nG
+```
+
+On Debian and Ubuntu, serial devices are normally assigned to the `dialout`
+group. Add the current account to that group:
+
+```sh
+sudo usermod -aG dialout "$(id -un)"
+```
+
+Then sign out and back in, or reboot. Reconnect the board, restart the browser
+or `npm run device-bridge`, and try again. The new group membership does not
+apply to browser or terminal processes that were already running.
+
+If the device is owned by a different serial-access group, use the group shown
+by `ls -l` and follow that distribution's device-access policy. If access is
+already correct, check whether another serial monitor or service owns the port:
+
+```sh
+fuser /dev/ttyACM0
+```
+
+Replace the path with the device that failed to open. Avoid running the browser
+or bridge as root, and do not rely on `chmod` as a permanent fix: device
+permissions are recreated when USB reconnects.
+
 ## Startup Power Analysis
 
 The startup workflow lives under **Advanced & recovery**. It requires the

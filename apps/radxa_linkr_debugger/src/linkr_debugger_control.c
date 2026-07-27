@@ -948,6 +948,94 @@ int linkr_debugger_power_output_set(const struct linkr_debugger_rail_desc *rail,
 	return 0;
 }
 
+int linkr_debugger_target_recovery_enter(
+	enum linkr_debugger_target_recovery_mode mode,
+	const struct linkr_debugger_rail_desc *rail)
+{
+	const struct linkr_debugger_safe_gpio_desc *recovery_gpio;
+	const struct device *regulator;
+	size_t gpio_index;
+	bool active_level;
+	bool was_enabled;
+	int release_ret;
+	int ret;
+
+	if (mode != LINKR_DEBUGGER_TARGET_RECOVERY_QUALCOMM_EDL &&
+	    mode != LINKR_DEBUGGER_TARGET_RECOVERY_ROCKCHIP_MASKROM) {
+		return -EINVAL;
+	}
+	if (!linkr_debugger_target_recovery_rail_allowed(rail)) {
+		return -EPERM;
+	}
+
+	recovery_gpio = linkr_debugger_find_safe_gpio_by_identifier("CON_MAS");
+	if (!safe_gpio_index_valid(recovery_gpio, &gpio_index)) {
+		return -ENODEV;
+	}
+	regulator = linkr_debugger_regulator_device(rail);
+	if (regulator == NULL || !device_is_ready(regulator) || !device_is_ready(gpio0)) {
+		return -ENODEV;
+	}
+
+	active_level = linkr_debugger_target_recovery_active_level(mode);
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	ret = gpio_pin_configure(gpio0, recovery_gpio->pin, GPIO_INPUT);
+	if (ret < 0) {
+		goto out_unlock;
+	}
+	linkr_debugger_gpio_apply_safe_drive_strength(recovery_gpio);
+	linkr_debugger_gpio_directions[gpio_index] = LINKR_DEBUGGER_GPIO_DIR_INPUT;
+	was_enabled = linkr_debugger_power_output_enabled(rail);
+
+	if (was_enabled) {
+		ret = regulator_disable(regulator);
+		if (ret < 0) {
+			goto out_unlock;
+		}
+		set_regulator_state(rail, false);
+	}
+
+	k_sleep(K_MSEC(LINKR_DEBUGGER_TARGET_RECOVERY_OFF_MS));
+	ret = gpio_pin_configure(gpio0, recovery_gpio->pin,
+				 active_level ? GPIO_OUTPUT_ACTIVE : GPIO_OUTPUT_INACTIVE);
+	if (ret < 0) {
+		if (was_enabled && regulator_enable(regulator) >= 0) {
+			set_regulator_state(rail, true);
+		}
+		goto out_release;
+	}
+	linkr_debugger_gpio_apply_safe_drive_strength(recovery_gpio);
+	linkr_debugger_gpio_directions[gpio_index] = LINKR_DEBUGGER_GPIO_DIR_OUTPUT;
+	linkr_debugger_gpio_output_levels[gpio_index] = active_level;
+
+	k_sleep(K_MSEC(LINKR_DEBUGGER_TARGET_RECOVERY_SETUP_MS));
+	ret = regulator_enable(regulator);
+	if (ret < 0) {
+		goto out_release;
+	}
+	set_regulator_state(rail, true);
+
+	k_sleep(K_MSEC(LINKR_DEBUGGER_TARGET_RECOVERY_HOLD_MS));
+
+out_release:
+	release_ret = gpio_pin_configure(gpio0, recovery_gpio->pin, GPIO_INPUT);
+	if (release_ret >= 0) {
+		linkr_debugger_gpio_apply_safe_drive_strength(recovery_gpio);
+		linkr_debugger_gpio_directions[gpio_index] = LINKR_DEBUGGER_GPIO_DIR_INPUT;
+	} else if (ret >= 0) {
+		ret = release_ret;
+	}
+
+out_unlock:
+	k_mutex_unlock(&linkr_debugger_control_lock);
+	if (ret >= 0) {
+		LOG_INF("target recovery complete: mode=%s rail=%s active=%u",
+			linkr_debugger_target_recovery_mode_to_string(mode), rail->name,
+			active_level ? 1U : 0U);
+	}
+	return ret;
+}
+
 enum linkr_debugger_sd_route linkr_debugger_sd_route_get(void)
 {
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);

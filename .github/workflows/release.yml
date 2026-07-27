@@ -23,11 +23,25 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact_id: Linux-amd64
             asset_name: radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz
+            binary_path: app/cmd-ng/target/x86_64-unknown-linux-musl/release/radxa-linkr-debuggerctl
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            artifact_id: Linux-arm64
+            asset_name: radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz
+            binary_path: app/cmd-ng/target/aarch64-unknown-linux-musl/release/radxa-linkr-debuggerctl
           - os: macos-latest
+            target: ""
+            artifact_id: macOS-arm64
             asset_name: radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz
+            binary_path: app/cmd-ng/target/release/radxa-linkr-debuggerctl
           - os: windows-latest
+            target: ""
+            artifact_id: Windows-amd64
             asset_name: radxa-linkr-debuggerctl-rust_windows_amd64.zip
+            binary_path: app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe
 
     steps:
       - name: Resolve release tag
@@ -49,23 +63,58 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Set up Python for Linux cross compilation
+        if: runner.os == 'Linux'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: app/cmd-ng
 
+      - name: Install Linux cross-compile tools
+        if: runner.os == 'Linux'
+        run: |
+          rustup target add "${{ matrix.target }}"
+          python3 -m pip install cargo-zigbuild==0.23.0 ziglang==0.16.0
+
+      - name: Install ARM64 emulator
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static
+
       - name: Build Rust release binary
         shell: bash
         run: |
-          cargo build --release --manifest-path app/cmd-ng/Cargo.toml
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cargo zigbuild --locked --release --manifest-path app/cmd-ng/Cargo.toml --target "${{ matrix.target }}"
+            file "${{ matrix.binary_path }}"
+            if readelf -l "${{ matrix.binary_path }}" | grep -q "Requesting program interpreter"; then
+              echo "Linux release binary must not use a dynamic interpreter" >&2
+              exit 1
+            fi
+            if readelf -d "${{ matrix.binary_path }}" | grep -q '(NEEDED)'; then
+              echo "Linux release binary must not have dynamic library dependencies" >&2
+              exit 1
+            fi
+            if strings "${{ matrix.binary_path }}" | grep -Eq 'GLIBC_[0-9]'; then
+              echo "Linux release binary must not require glibc symbols" >&2
+              exit 1
+            fi
+          else
+            cargo build --locked --release --manifest-path app/cmd-ng/Cargo.toml
+          fi
           expected_version="${{ steps.release.outputs.tag }}"
           expected_version="${expected_version#v}"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe --help
-            version_output="$(./app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe --version)"
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
+            qemu-aarch64-static "${{ matrix.binary_path }}" --help
+            version_output="$(qemu-aarch64-static "${{ matrix.binary_path }}" --version)"
           else
-            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl --help
-            version_output="$(./app/cmd-ng/target/release/radxa-linkr-debuggerctl --version)"
+            "${{ matrix.binary_path }}" --help
+            version_output="$("${{ matrix.binary_path }}" --version)"
           fi
           test "$version_output" = "radxa-linkr-debuggerctl $expected_version"
 
@@ -73,19 +122,21 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           mkdir -p rust-release
-          tar -C app/cmd-ng/target/release -czf rust-release/${{ matrix.asset_name }} radxa-linkr-debuggerctl
+          tar -C "$(dirname "${{ matrix.binary_path }}")" \
+            -czf rust-release/${{ matrix.asset_name }} \
+            "$(basename "${{ matrix.binary_path }}")"
 
       - name: Package Rust release archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path rust-release | Out-Null
-          Compress-Archive -Path app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe -DestinationPath rust-release/${{ matrix.asset_name }}
+          Compress-Archive -Path "${{ matrix.binary_path }}" -DestinationPath rust-release/${{ matrix.asset_name }}
 
       - name: Upload Rust release archive
         uses: actions/upload-artifact@v6
         with:
-          name: rust-release-${{ runner.os }}
+          name: rust-release-${{ matrix.artifact_id }}
           path: rust-release/${{ matrix.asset_name }}
           if-no-files-found: error
 
@@ -203,6 +254,7 @@ jobs:
           Included assets:
           - RP2350 firmware: combined initial/recovery UF2, OTA BIN, ELF, and MAP
           - Primary Rust host CLI/TUI archives: radxa-linkr-debuggerctl-rust_{os}_{arch}
+          - Linux amd64 and arm64 archives are statically linked with musl
           - Agent skill bundle: skills-radxa-linkr-debugger.tar.gz
           - SHA256SUMS.txt for release asset verification
           EOF

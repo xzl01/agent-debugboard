@@ -44,6 +44,7 @@ struct linkr_debugger_ws_request {
 	char command[16];
 	char topic[32];
 	char output[16];
+	char mode[24];
 	char state[8];
 	char route[16];
 	char gpio[64];
@@ -66,6 +67,7 @@ static const struct json_obj_descr linkr_debugger_ws_request_descr[] = {
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, command, JSON_TOK_STRING_BUF),
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, topic, JSON_TOK_STRING_BUF),
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, output, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, mode, JSON_TOK_STRING_BUF),
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, state, JSON_TOK_STRING_BUF),
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, route, JSON_TOK_STRING_BUF),
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_ws_request, gpio, JSON_TOK_STRING_BUF),
@@ -1687,6 +1689,31 @@ static int linkr_debugger_ws_handle_control_message(struct linkr_debugger_ws_cli
 		return linkr_debugger_ws_emit_result_and_snapshot(client, request->id, "gpio_set", "ok");
 	}
 
+	if (strcmp(request->command, "target_recovery") == 0) {
+		enum linkr_debugger_target_recovery_mode mode;
+		const struct linkr_debugger_rail_desc *rail;
+		int ret;
+
+		if (!linkr_debugger_parse_target_recovery_mode(request->mode, &mode)) {
+			return linkr_debugger_ws_emit_error(client, "target-recovery", "invalid_mode",
+						"mode must be qualcomm-edl or rockchip-maskrom");
+		}
+		rail = linkr_debugger_find_rail(request->output);
+		if (!linkr_debugger_target_recovery_rail_allowed(rail)) {
+			return linkr_debugger_ws_emit_error(client, "target-recovery", "invalid_rail",
+						"output must be 5v_out, 12v_out, or 20v_out");
+		}
+
+		ret = linkr_debugger_target_recovery_enter(mode, rail);
+		if (ret < 0) {
+			return linkr_debugger_ws_emit_error(client, "target-recovery", "sequence_failed",
+						"target recovery sequence failed; CON_MAS was released");
+		}
+		linkr_debugger_ws_publish_state_change();
+		return linkr_debugger_ws_emit_result_and_snapshot(
+			client, request->id, "target_recovery", "ok");
+	}
+
 	if (strcmp(request->command, "bootloader") == 0) {
 		(void)linkr_debugger_ws_emit_result(client, request->id, "bootloader", "ok");
 		linkr_debugger_ws_publish_state_change();
@@ -2069,4 +2096,3 @@ void linkr_debugger_ws_publish_sample(void)
 {
 	linkr_debugger_ws_publish(LINKR_DEBUGGER_WS_EVENT_SAMPLE);
 }
-

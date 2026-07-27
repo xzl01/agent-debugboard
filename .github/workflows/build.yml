@@ -203,11 +203,25 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact_id: Linux-amd64
             artifact_name: radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz
+            binary_path: cmd-ng/target/x86_64-unknown-linux-musl/release/radxa-linkr-debuggerctl
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            artifact_id: Linux-arm64
+            artifact_name: radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz
+            binary_path: cmd-ng/target/aarch64-unknown-linux-musl/release/radxa-linkr-debuggerctl
           - os: macos-latest
+            target: ""
+            artifact_id: macOS-arm64
             artifact_name: radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz
+            binary_path: cmd-ng/target/release/radxa-linkr-debuggerctl
           - os: windows-latest
+            target: ""
+            artifact_id: Windows-amd64
             artifact_name: radxa-linkr-debuggerctl-rust_windows_amd64.zip
+            binary_path: cmd-ng/target/release/radxa-linkr-debuggerctl.exe
 
     steps:
       - name: Checkout application
@@ -218,10 +232,28 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Set up Python for Linux cross compilation
+        if: runner.os == 'Linux'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: cmd-ng
+
+      - name: Install Linux cross-compile tools
+        if: runner.os == 'Linux'
+        run: |
+          rustup target add "${{ matrix.target }}"
+          python3 -m pip install cargo-zigbuild==0.23.0 ziglang==0.16.0
+
+      - name: Install ARM64 emulator
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static
 
       - name: Check formatting
         run: cargo fmt --manifest-path cmd-ng/Cargo.toml --all --check
@@ -235,32 +267,51 @@ jobs:
       - name: Smoke test Rust host CLI build
         shell: bash
         run: |
-          cargo build --release --manifest-path cmd-ng/Cargo.toml
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            ./cmd-ng/target/release/radxa-linkr-debuggerctl.exe --help
-            ./cmd-ng/target/release/radxa-linkr-debuggerctl.exe --version
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cargo zigbuild --locked --release --manifest-path cmd-ng/Cargo.toml --target "${{ matrix.target }}"
+            file "${{ matrix.binary_path }}"
+            if readelf -l "${{ matrix.binary_path }}" | grep -q "Requesting program interpreter"; then
+              echo "Linux release binary must not use a dynamic interpreter" >&2
+              exit 1
+            fi
+            if readelf -d "${{ matrix.binary_path }}" | grep -q '(NEEDED)'; then
+              echo "Linux release binary must not have dynamic library dependencies" >&2
+              exit 1
+            fi
+            if strings "${{ matrix.binary_path }}" | grep -Eq 'GLIBC_[0-9]'; then
+              echo "Linux release binary must not require glibc symbols" >&2
+              exit 1
+            fi
           else
-            ./cmd-ng/target/release/radxa-linkr-debuggerctl --help
-            ./cmd-ng/target/release/radxa-linkr-debuggerctl --version
+            cargo build --locked --release --manifest-path cmd-ng/Cargo.toml
+          fi
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
+            qemu-aarch64-static "${{ matrix.binary_path }}" --help
+            qemu-aarch64-static "${{ matrix.binary_path }}" --version
+          else
+            "${{ matrix.binary_path }}" --help
+            "${{ matrix.binary_path }}" --version
           fi
 
       - name: Package Rust host CLI artifact
         if: runner.os != 'Windows'
         run: |
           mkdir -p dist/rust-cli
-          tar -C cmd-ng/target/release -czf dist/rust-cli/${{ matrix.artifact_name }} radxa-linkr-debuggerctl
+          tar -C "$(dirname "${{ matrix.binary_path }}")" \
+            -czf dist/rust-cli/${{ matrix.artifact_name }} \
+            "$(basename "${{ matrix.binary_path }}")"
 
       - name: Package Rust host CLI artifact (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/rust-cli | Out-Null
-          Compress-Archive -Path cmd-ng/target/release/radxa-linkr-debuggerctl.exe -DestinationPath dist/rust-cli/${{ matrix.artifact_name }}
+          Compress-Archive -Path "${{ matrix.binary_path }}" -DestinationPath dist/rust-cli/${{ matrix.artifact_name }}
 
       - name: Upload Rust host CLI artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: rust-host-cli-${{ runner.os }}
+          name: rust-host-cli-${{ matrix.artifact_id }}
           path: dist/rust-cli/${{ matrix.artifact_name }}
           if-no-files-found: error
 

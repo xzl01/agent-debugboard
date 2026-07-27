@@ -36,6 +36,10 @@ pub struct TuiActionMsg {
 }
 
 const HTTP_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
+const TARGET_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+const RECOVERY_MODES: &[&str] = &["rockchip-maskrom", "qualcomm-edl"];
+const RECOVERY_RAILS: &[&str] = &["5v_out", "12v_out", "20v_out"];
 
 pub struct TuiModel {
     pub base_url: String,
@@ -68,6 +72,10 @@ pub struct TuiModel {
     pub switch_confirm_start: Option<Instant>,
     pub switch_confirm_kind: String,
     pub switch_confirm_target: String,
+    pub recovery_mode: String,
+    pub recovery_rail: String,
+    pub recovery_confirm_active: bool,
+    pub recovery_confirm_start: Option<Instant>,
     pub gpio_names: Vec<String>,
     pub gpio_notes: std::collections::HashMap<String, String>,
     pub gpio_levels: std::collections::HashMap<String, bool>,
@@ -110,6 +118,10 @@ impl TuiModel {
             switch_confirm_start: None,
             switch_confirm_kind: String::new(),
             switch_confirm_target: String::new(),
+            recovery_mode: RECOVERY_MODES[0].to_string(),
+            recovery_rail: RECOVERY_RAILS[0].to_string(),
+            recovery_confirm_active: false,
+            recovery_confirm_start: None,
             gpio_names: Vec::new(),
             gpio_notes: std::collections::HashMap::new(),
             gpio_levels: std::collections::HashMap::new(),
@@ -181,12 +193,16 @@ impl TuiModel {
         self.gpio_names = snapshot
             .gpios
             .iter()
+            .filter(|gpio| gpio.note != "CON_MAS")
             .map(|gpio| gpio.name.clone())
             .collect();
         self.gpio_notes.clear();
         self.gpio_levels.clear();
         self.gpio_is_input.clear();
         for gpio in &snapshot.gpios {
+            if gpio.note == "CON_MAS" {
+                continue;
+            }
             self.gpio_notes.insert(gpio.name.clone(), gpio.note.clone());
             self.gpio_levels
                 .insert(gpio.name.clone(), gpio.value.unwrap_or(0) != 0);
@@ -275,6 +291,18 @@ fn event_loop(
 fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
     if key.kind != KeyEventKind::Press {
         return Ok(false);
+    }
+
+    if model.recovery_confirm_active {
+        match key.code {
+            KeyCode::Enter | KeyCode::Char(' ') => {}
+            _ => {
+                model.recovery_confirm_active = false;
+                model.recovery_confirm_start = None;
+                model.status = "Target recovery cancelled".to_string();
+                return Ok(false);
+            }
+        }
     }
 
     if model.switch_confirm_active {
@@ -426,6 +454,38 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
                             model.switch_confirm_start = None;
                         }
                     }
+                    ControlItem::RecoveryMode => {
+                        model.recovery_mode = next_choice(&model.recovery_mode, RECOVERY_MODES);
+                        model.status = format!("recovery mode={}", model.recovery_mode);
+                    }
+                    ControlItem::RecoveryRail => {
+                        model.recovery_rail = next_choice(&model.recovery_rail, RECOVERY_RAILS);
+                        model.status = format!("recovery rail={}", model.recovery_rail);
+                    }
+                    ControlItem::RecoveryEnter => {
+                        if !model.recovery_confirm_active {
+                            model.recovery_confirm_active = true;
+                            model.recovery_confirm_start = Some(Instant::now());
+                            model.status = format!(
+                                "Press Enter again within 3s to confirm {} on {} (CON_MAS {}, target power cycle)",
+                                recovery_mode_label(&model.recovery_mode),
+                                model.recovery_rail,
+                                recovery_active_level_label(&model.recovery_mode)
+                            );
+                        } else {
+                            let action = enter_target_recovery(
+                                &model.base_url,
+                                model.timeout,
+                                &model.recovery_mode,
+                                &model.recovery_rail,
+                            )?;
+                            model.power_states.insert(model.recovery_rail.clone(), true);
+                            model.apply_action_msg(action);
+                            model.recovery_confirm_active = false;
+                            model.recovery_confirm_start = None;
+                            model.last_http_poll = Some(Instant::now());
+                        }
+                    }
                 }
             }
         }
@@ -479,10 +539,22 @@ fn on_time_tick(model: &mut TuiModel) -> Result<()> {
 
     if model.switch_confirm_active {
         if let Some(start) = model.switch_confirm_start {
-            if start.elapsed() >= Duration::from_secs(3) {
+            if start.elapsed() >= CONFIRM_TIMEOUT {
                 model.switch_confirm_active = false;
                 model.switch_confirm_start = None;
                 model.status = "Switch confirmation timed out".to_string();
+                model.last_http_poll = Some(Instant::now());
+            }
+        }
+    }
+
+    if model.recovery_confirm_active {
+        if let Some(start) = model.recovery_confirm_start {
+            if start.elapsed() >= CONFIRM_TIMEOUT {
+                model.recovery_confirm_active = false;
+                model.recovery_confirm_start = None;
+                model.status = "Target recovery confirmation timed out".to_string();
+                model.last_http_poll = Some(Instant::now());
             }
         }
     }
@@ -518,7 +590,9 @@ fn poll_http(model: &mut TuiModel) -> Result<()> {
     let adc_response = crate::adc::transform_response(&adc_data).map_err(|e| anyhow::anyhow!(e))?;
     model.apply_adc_response(adc_response.readings);
 
-    model.status = "HTTP mode".to_string();
+    if !model.switch_confirm_active && !model.recovery_confirm_active {
+        model.status = "HTTP mode".to_string();
+    }
     model.err = None;
     Ok(())
 }
@@ -613,6 +687,81 @@ fn set_gpio_input(base_url: &str, timeout: Duration, gpio: &str) -> Result<TuiAc
     })
 }
 
+fn enter_target_recovery(
+    base_url: &str,
+    timeout: Duration,
+    mode: &str,
+    rail: &str,
+) -> Result<TuiActionMsg> {
+    if !RECOVERY_MODES.contains(&mode) {
+        anyhow::bail!("unsupported target recovery mode {mode:?}");
+    }
+    if !RECOVERY_RAILS.contains(&rail) {
+        anyhow::bail!("unsupported target recovery rail {rail:?}");
+    }
+
+    let client = crate::client::BoardClient::new(base_url, timeout.max(TARGET_RECOVERY_TIMEOUT))?;
+    let response = client.send_text(BoardRequest {
+        method: Method::POST,
+        path: "/api/v1/target-recovery".to_string(),
+        query: vec![],
+        body: Some(serde_json::json!({ "mode": mode, "rail": rail })),
+    })?;
+    let response: serde_json::Value = serde_json::from_str(&response)?;
+    if response.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+        || response.get("mode").and_then(serde_json::Value::as_str) != Some(mode)
+        || response.get("rail").and_then(serde_json::Value::as_str) != Some(rail)
+        || response
+            .get("release_direction")
+            .and_then(serde_json::Value::as_str)
+            != Some("input")
+    {
+        anyhow::bail!("target recovery response did not confirm the requested safe sequence");
+    }
+
+    Ok(TuiActionMsg {
+        status: format!(
+            "recovery {} on {} complete; CON_MAS released to input",
+            recovery_mode_label(mode),
+            rail
+        ),
+        err: None,
+    })
+}
+
+fn next_choice(current: &str, choices: &[&str]) -> String {
+    let next = choices
+        .iter()
+        .position(|choice| *choice == current)
+        .map(|index| (index + 1) % choices.len())
+        .unwrap_or(0);
+    choices[next].to_string()
+}
+
+fn recovery_mode_label(mode: &str) -> &'static str {
+    if mode == "qualcomm-edl" {
+        "Qualcomm EDL"
+    } else {
+        "Rockchip MASKROM"
+    }
+}
+
+fn recovery_mode_short_label(mode: &str) -> &'static str {
+    if mode == "qualcomm-edl" {
+        "QCOM EDL"
+    } else {
+        "RK MASKROM"
+    }
+}
+
+fn recovery_active_level_label(mode: &str) -> &'static str {
+    if mode == "qualcomm-edl" {
+        "high"
+    } else {
+        "low"
+    }
+}
+
 fn current_milliamp_estimate(reading: &AdcReading) -> i32 {
     if let Some(ma_est) = reading.ma_est {
         return ma_est;
@@ -636,6 +785,9 @@ enum ControlItem {
     SdSwitch,
     UsbSwitch,
     VinSwitch,
+    RecoveryMode,
+    RecoveryRail,
+    RecoveryEnter,
     Gpio(String),
 }
 
@@ -649,6 +801,9 @@ fn control_items(model: &TuiModel) -> Vec<ControlItem> {
     if model.vin_available {
         items.push(ControlItem::VinSwitch);
     }
+    items.push(ControlItem::RecoveryMode);
+    items.push(ControlItem::RecoveryRail);
+    items.push(ControlItem::RecoveryEnter);
     for gpio in &model.gpio_names {
         items.push(ControlItem::Gpio(gpio.clone()));
     }
@@ -656,7 +811,7 @@ fn control_items(model: &TuiModel) -> Vec<ControlItem> {
 }
 
 fn first_gpio_index(model: &TuiModel) -> Option<usize> {
-    let count = control_targets().len() + 2 + usize::from(model.vin_available);
+    let count = control_targets().len() + 5 + usize::from(model.vin_available);
     if model.gpio_names.is_empty() {
         None
     } else {
@@ -708,10 +863,11 @@ fn move_control_selection(model: &TuiModel, row_delta: isize, col_delta: isize) 
 }
 
 fn build_control_rows(model: &TuiModel, content_width: usize) -> Vec<Vec<usize>> {
-    let (power, switches, gpio) = grouped_control_chips(model);
+    let (power, switches, recovery, gpio) = grouped_control_chips(model);
     let mut rows = Vec::new();
     rows.extend(build_section_navigation_rows(&power, content_width));
     rows.extend(build_section_navigation_rows(&switches, content_width));
+    rows.extend(build_section_navigation_rows(&recovery, content_width));
     rows.extend(build_section_navigation_rows(&gpio, content_width));
     rows
 }
@@ -731,6 +887,11 @@ fn build_control_chips(model: &TuiModel) -> Vec<String> {
             ControlItem::SdSwitch => format!("switch sd [{}]", model.sd_route),
             ControlItem::UsbSwitch => format!("switch usb [{}]", model.usb_route),
             ControlItem::VinSwitch => format!("switch vin [{}]", model.vin_route),
+            ControlItem::RecoveryMode => {
+                format!("mode [{}]", recovery_mode_short_label(&model.recovery_mode))
+            }
+            ControlItem::RecoveryRail => format!("rail [{}]", model.recovery_rail),
+            ControlItem::RecoveryEnter => "enter recovery".to_string(),
             ControlItem::Gpio(gpio) => {
                 let value = if *model.gpio_levels.get(&gpio).unwrap_or(&false) {
                     "1"
@@ -761,11 +922,13 @@ fn grouped_control_chips(
     Vec<RenderedControlChip>,
     Vec<RenderedControlChip>,
     Vec<RenderedControlChip>,
+    Vec<RenderedControlChip>,
 ) {
     let items = control_items(model);
     let labels = build_control_chips(model);
     let mut power = Vec::new();
     let mut sd = Vec::new();
+    let mut recovery = Vec::new();
     let mut gpio = Vec::new();
 
     for (idx, item) in items.into_iter().enumerate() {
@@ -778,11 +941,14 @@ fn grouped_control_chips(
             ControlItem::SdSwitch | ControlItem::UsbSwitch | ControlItem::VinSwitch => {
                 sd.push(chip)
             }
+            ControlItem::RecoveryMode | ControlItem::RecoveryRail | ControlItem::RecoveryEnter => {
+                recovery.push(chip)
+            }
             ControlItem::Gpio(_) => gpio.push(chip),
         }
     }
 
-    (power, sd, gpio)
+    (power, sd, recovery, gpio)
 }
 
 fn build_section_rows(chips: &[RenderedControlChip], content_width: usize) -> Vec<Vec<usize>> {
@@ -978,14 +1144,14 @@ fn render_sparklines(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
 
 fn render_body(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
     let section_width = area.width.saturating_sub(4) as usize;
-    let (power, sd, gpio) = grouped_control_chips(model);
+    let (power, sd, recovery, gpio) = grouped_control_chips(model);
     let mut lines = vec![
         Line::from(Span::styled(
             "Controls",
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(
-            "  ↑/↓/←/→ select item   Enter/Space toggle   i selected GPIO to input   g jump to first GPIO   t target route   u usb-reader route",
+            "  ↑/↓/←/→ select item   Enter/Space activate   i selected GPIO to input   g jump to first GPIO   t target route   u usb-reader route",
         ),
         Line::from(""),
     ];
@@ -998,6 +1164,13 @@ fn render_body(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
         model.control_idx,
     );
     append_section_lines(&mut lines, "Switch", &sd, section_width, model.control_idx);
+    append_section_lines(
+        &mut lines,
+        "Target recovery",
+        &recovery,
+        section_width,
+        model.control_idx,
+    );
     append_section_lines(&mut lines, "GPIO", &gpio, section_width, model.control_idx);
 
     lines.push(Line::from(Span::styled(
@@ -1102,13 +1275,22 @@ mod tests {
                     value: 1,
                 },
             ],
-            gpios: vec![TuiStatusGpio {
-                name: "GP11".to_string(),
-                pin: 11,
-                value: Some(0),
-                direction: "output".to_string(),
-                note: "J16_PIN2".to_string(),
-            }],
+            gpios: vec![
+                TuiStatusGpio {
+                    name: "GP11".to_string(),
+                    pin: 11,
+                    value: Some(0),
+                    direction: "output".to_string(),
+                    note: "J16_PIN2".to_string(),
+                },
+                TuiStatusGpio {
+                    name: "GP7".to_string(),
+                    pin: 7,
+                    value: Some(0),
+                    direction: "input".to_string(),
+                    note: "CON_MAS".to_string(),
+                },
+            ],
             board_monitoring: BoardMonitoring::default(),
             ..Default::default()
         });
@@ -1120,6 +1302,8 @@ mod tests {
         assert_eq!(model.gpio_is_input.get("GP11"), Some(&false));
         assert_eq!(model.gpio_notes.get("GP11"), Some(&"J16_PIN2".to_string()));
         assert_eq!(model.gpio_levels.get("GP10"), None);
+        assert!(!model.gpio_names.iter().any(|name| name == "GP7"));
+        assert_eq!(model.gpio_notes.get("GP7"), None);
     }
 
     #[test]
@@ -1227,7 +1411,7 @@ mod tests {
             KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
         )
         .unwrap();
-        assert_eq!(model.control_idx, control_targets().len() + 2);
+        assert_eq!(model.control_idx, control_targets().len() + 5);
     }
 
     #[test]
@@ -1240,6 +1424,18 @@ mod tests {
         assert_eq!(items[control_targets().len() + 1], ControlItem::UsbSwitch);
         assert_eq!(
             items[control_targets().len() + 2],
+            ControlItem::RecoveryMode
+        );
+        assert_eq!(
+            items[control_targets().len() + 3],
+            ControlItem::RecoveryRail
+        );
+        assert_eq!(
+            items[control_targets().len() + 4],
+            ControlItem::RecoveryEnter
+        );
+        assert_eq!(
+            items[control_targets().len() + 5],
             ControlItem::Gpio("GP13".to_string())
         );
     }
@@ -1263,7 +1459,7 @@ mod tests {
         assert!(model.vin_available);
         assert_eq!(model.vin_route, "3.3v");
         assert_eq!(items[control_targets().len() + 2], ControlItem::VinSwitch);
-        assert_eq!(first_gpio_index(&model), Some(control_targets().len() + 3));
+        assert_eq!(first_gpio_index(&model), Some(control_targets().len() + 6));
         assert!(build_control_chips(&model)
             .iter()
             .any(|chip| chip == "switch vin [3.3v]"));
@@ -1296,6 +1492,53 @@ mod tests {
         let chips = build_control_chips(&model);
         assert!(chips.iter().any(|chip| chip == "switch sd [usb-reader]"));
         assert!(chips.iter().any(|chip| chip == "switch usb [target]"));
+    }
+
+    #[test]
+    fn recovery_controls_cycle_mode_and_rail_then_require_confirmation() {
+        let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+
+        model.control_idx = control_targets().len() + 2;
+        handle_key(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .unwrap();
+        assert_eq!(model.recovery_mode, "qualcomm-edl");
+
+        model.control_idx = control_targets().len() + 3;
+        handle_key(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .unwrap();
+        assert_eq!(model.recovery_rail, "12v_out");
+
+        model.control_idx = control_targets().len() + 4;
+        handle_key(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        )
+        .unwrap();
+        assert!(model.recovery_confirm_active);
+        assert!(model.status.contains("Qualcomm EDL"));
+        assert!(model.status.contains("CON_MAS high"));
+
+        handle_key(&mut model, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
+        assert!(!model.recovery_confirm_active);
+        assert_eq!(model.status, "Target recovery cancelled");
+    }
+
+    #[test]
+    fn recovery_chip_labels_show_safe_sequence_choices() {
+        let model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+        let chips = build_control_chips(&model);
+        let (_, _, recovery, _) = grouped_control_chips(&model);
+
+        assert!(chips.iter().any(|chip| chip == "mode [RK MASKROM]"));
+        assert!(chips.iter().any(|chip| chip == "rail [5v_out]"));
+        assert!(chips.iter().any(|chip| chip == "enter recovery"));
+        assert_eq!(build_section_rows(&recovery, 76).len(), 1);
     }
 
     #[test]
@@ -1333,7 +1576,7 @@ mod tests {
         model.gpio_names = vec!["GP13".to_string()];
         model.gpio_levels.insert("GP13".to_string(), false);
         model.gpio_is_input.insert("GP13".to_string(), false);
-        model.control_idx = control_targets().len() + 2;
+        model.control_idx = control_targets().len() + 5;
 
         model.apply_action_msg(TuiActionMsg {
             status: "gpio GP13=1".to_string(),
@@ -1362,9 +1605,16 @@ mod tests {
             Line::from("  ↑/↓/←/→ select item   Enter/Space toggle   i selected GPIO to input   g jump to first GPIO   t target route   u usb-reader route"),
             Line::from(""),
         ];
-        let (power, sd, gpio) = grouped_control_chips(&model);
+        let (power, sd, recovery, gpio) = grouped_control_chips(&model);
         append_section_lines(&mut lines, "Power", &power, 80, model.control_idx);
         append_section_lines(&mut lines, "Switch", &sd, 80, model.control_idx);
+        append_section_lines(
+            &mut lines,
+            "Target recovery",
+            &recovery,
+            80,
+            model.control_idx,
+        );
         append_section_lines(&mut lines, "GPIO", &gpio, 80, model.control_idx);
         lines.push(Line::from(Span::styled(
             "Status",
@@ -1383,11 +1633,14 @@ mod tests {
         let rendered = Text::from(lines).to_string();
         assert!(rendered.contains("Power"));
         assert!(rendered.contains("Switch"));
+        assert!(rendered.contains("Target recovery"));
         assert!(rendered.contains("GPIO"));
         assert!(rendered.contains("gpio GP10 [J16_PIN1] out=1"));
         assert!(rendered.contains("power 12v_out [off]"));
         assert!(rendered.contains("switch sd [target]"));
         assert!(rendered.contains("switch usb [pc]"));
+        assert!(rendered.contains("mode [RK MASKROM]"));
+        assert!(rendered.contains("rail [5v_out]"));
         assert!(rendered.contains("sd desired = target"));
         assert!(rendered.contains("sd actual  = target"));
         assert!(rendered.contains("usb desired = pc"));

@@ -247,6 +247,7 @@ export interface UseBoard {
   setSwitch: (name: "sd" | "usb" | "vin", route: string) => Promise<void>;
   setGpio: (identifier: string, direction: "input" | "output", value?: number) => Promise<void>;
   enterBootloader: () => Promise<void>;
+  enterTargetRecovery: (mode: api.TargetRecoveryMode, rail: string) => Promise<void>;
   captureState: "idle" | "connecting" | "armed" | "receiving";
   captureProgress: { received: number; total: number } | null;
   captures: PowerCapture[];
@@ -549,6 +550,22 @@ export function useBoard(): UseBoard {
     await api.enterBootloader();
   }, []);
 
+  const enterTargetRecovery = useCallback(
+    async (mode: api.TargetRecoveryMode, rail: string) => {
+      const response = await api.enterTargetRecovery(mode, rail);
+      if (
+        response.action !== "enter" ||
+        response.mode !== mode ||
+        response.rail !== rail ||
+        response.release_direction !== "input"
+      ) {
+        throw new Error("Target recovery response did not confirm the requested safe sequence");
+      }
+      if (!live) await refresh();
+    },
+    [live, refresh]
+  );
+
   const armCapture = useCallback((config: CaptureConfig) => new Promise<void>((resolve, reject) => {
     captureArmPromiseRef.current?.reject(new Error("Power capture arming was superseded"));
     captureArmPromiseRef.current = { resolve, reject };
@@ -594,6 +611,7 @@ export function useBoard(): UseBoard {
     readPower,
     setSwitch,
     enterBootloader,
+    enterTargetRecovery,
     setGpio,
     captureState,
     captureProgress,

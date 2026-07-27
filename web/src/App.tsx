@@ -12,6 +12,7 @@ import { StatusBar } from "./components/StatusBar";
 import { PowerCard } from "./components/PowerCard";
 import { SwitchCard } from "./components/SwitchCard";
 import { BootCard } from "./components/BootCard";
+import { TargetRecoveryCard } from "./components/TargetRecoveryCard";
 import { SerialCard, type SerialAutomationHandle } from "./components/SerialCard";
 import { StartupPowerAnalysis } from "./components/StartupPowerAnalysis";
 import { TestAutomation } from "./components/TestAutomation";
@@ -186,6 +187,10 @@ export default function App() {
                     />
                   </div>
                   <OtaCard status={ota} setStatus={setOta} />
+                  <TargetRecoveryCard
+                    outputs={board.snapshot.powerOutputs}
+                    onEnter={board.enterTargetRecovery}
+                  />
                   <BootCard onBoot={board.enterBootloader} />
                 </div>
               </details>

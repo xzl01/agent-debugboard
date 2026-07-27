@@ -2,20 +2,19 @@
 //
 // Test runner: executes linkr-test.v1 scripts against the board.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::client::{BoardClient, BoardRequest, BoardTransport};
-use crate::test_assertions::{self, AssertionContext, AssertionResult, StepAssertion};
+use crate::test_assertions::{self, AssertionContext, StepAssertion};
 use crate::test_report::{self, ReportBuilder, StepResult, StepStatus};
 use crate::test_script::{apply_defaults, StepType, TestScript};
 
 pub struct RunOptions {
-    pub base_url: String,
-    pub timeout: Duration,
+    pub output_path: Option<String>,
     pub serial_path: Option<String>,
     pub json_output: bool,
     pub verbose: bool,
@@ -29,7 +28,7 @@ pub fn run_script(
     stderr: &mut dyn Write,
 ) -> Result<u8> {
     let total_steps = script.steps.len();
-    let mut report = ReportBuilder::new(script.header.name.clone());
+    let mut report = ReportBuilder::new();
     let abort = Arc::new(AtomicBool::new(false));
 
     // Set up Ctrl+C handler
@@ -77,14 +76,7 @@ pub fn run_script(
             writeln!(stderr, "  [{}] {} ...", step.id, step.step_type_name())?;
         }
 
-        let result = execute_step(
-            step,
-            client,
-            serial.as_mut(),
-            &abort,
-            opts,
-            stderr,
-        );
+        let result = execute_step(step, client, serial.as_mut(), &abort, opts, stderr);
 
         let finished_at_ms = now_ms();
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -92,38 +84,70 @@ pub fn run_script(
         let step_result = match result {
             Ok(mut ctx) => {
                 // Evaluate assertions
-                let assertion = step
-                    .assert
-                    .as_ref()
-                    .and_then(|v| serde_json::from_value::<StepAssertion>(v.clone()).ok());
-
-                let (status, assertion_result) = if let Some(ref assert) = assertion {
-                    let result = test_assertions::evaluate(assert, &ctx);
-                    if result.passed {
-                        (StepStatus::Pass, Some(result))
-                    } else {
-                        (StepStatus::Fail, Some(result))
+                match assertion_for_step(step) {
+                    Ok(Some(assertion)) => {
+                        let result = test_assertions::evaluate(&assertion, &ctx);
+                        let status = if result.passed {
+                            StepStatus::Pass
+                        } else {
+                            StepStatus::Fail
+                        };
+                        StepResult {
+                            step_id: step.id.clone(),
+                            step_type: step.step_type,
+                            status,
+                            started_at_ms,
+                            finished_at_ms,
+                            duration_ms,
+                            error: None,
+                            assertion_result: Some(result),
+                            adc_value_ua: ctx.adc_value_ua.take(),
+                            serial_output: ctx.serial_output.take(),
+                        }
                     }
-                } else {
-                    (StepStatus::Pass, None)
-                };
-
-                StepResult {
-                    step_id: step.id.clone(),
-                    step_type: step.step_type,
-                    status,
-                    started_at_ms,
-                    finished_at_ms,
-                    duration_ms,
-                    error: None,
-                    assertion_result,
-                    adc_value_ua: ctx.adc_value_ua.take(),
-                    serial_output: ctx.serial_output.take(),
+                    Ok(None) => StepResult {
+                        step_id: step.id.clone(),
+                        step_type: step.step_type,
+                        status: StepStatus::Pass,
+                        started_at_ms,
+                        finished_at_ms,
+                        duration_ms,
+                        error: None,
+                        assertion_result: None,
+                        adc_value_ua: ctx.adc_value_ua.take(),
+                        serial_output: ctx.serial_output.take(),
+                    },
+                    Err(error) => StepResult {
+                        step_id: step.id.clone(),
+                        step_type: step.step_type,
+                        status: StepStatus::Error,
+                        started_at_ms,
+                        finished_at_ms,
+                        duration_ms,
+                        error: Some(error.to_string()),
+                        assertion_result: None,
+                        adc_value_ua: ctx.adc_value_ua.take(),
+                        serial_output: ctx.serial_output.take(),
+                    },
                 }
             }
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("skip") {
+                if abort.load(Ordering::SeqCst) || msg == "aborted" {
+                    report.set_aborted();
+                    StepResult {
+                        step_id: step.id.clone(),
+                        step_type: step.step_type,
+                        status: StepStatus::Aborted,
+                        started_at_ms,
+                        finished_at_ms,
+                        duration_ms,
+                        error: Some(msg),
+                        assertion_result: None,
+                        adc_value_ua: None,
+                        serial_output: None,
+                    }
+                } else if msg.contains("skip") {
                     StepResult {
                         step_id: step.id.clone(),
                         step_type: step.step_type,
@@ -181,7 +205,7 @@ pub fn run_script(
 
         let should_stop = matches!(
             step_result.status,
-            StepStatus::Fail | StepStatus::Error
+            StepStatus::Fail | StepStatus::Error | StepStatus::Aborted
         ) && step.continue_on_error != Some(true);
 
         report.add_result(step_result);
@@ -193,6 +217,16 @@ pub fn run_script(
 
     let summary = report.summary(total_steps);
     let success = report.is_successful(total_steps);
+
+    if let Some(path) = opts.output_path.as_deref() {
+        test_report::write_report_file(
+            path,
+            &script.header.name,
+            &script.steps,
+            report.results(),
+            &summary,
+        )?;
+    }
 
     // Print summary
     if opts.json_output {
@@ -267,7 +301,8 @@ fn execute_step(
             let pattern = step.params["pattern"].as_str().unwrap_or("Linux");
             let timeout_ms = step.params["timeout_ms"].as_u64().unwrap_or(10000);
 
-            let result = serial.send_and_expect(command, pattern, Duration::from_millis(timeout_ms))?;
+            let result =
+                serial.send_and_expect(command, pattern, Duration::from_millis(timeout_ms))?;
             ctx.serial_output = Some(result.output.clone());
             ctx.exit_code = Some(result.exit_code);
 
@@ -311,9 +346,6 @@ fn execute_step(
 
         StepType::GpioAssert => {
             let pin = step.params["pin"].as_str().unwrap_or("GP13");
-            let _expected_dir = step.params["direction"].as_str().unwrap_or("output");
-            let _expected_val = step.params["value"].as_i64().unwrap_or(1);
-
             // Read GPIO state from snapshot
             let output = client.send_text(BoardRequest {
                 method: reqwest::Method::GET,
@@ -324,10 +356,14 @@ fn execute_step(
 
             let value: serde_json::Value = serde_json::from_str(&output)?;
             if let Some(gpios) = value["gpios"].as_array() {
+                let requested_pin_number =
+                    pin.strip_prefix("GP").unwrap_or(pin).parse::<u64>().ok();
                 let found = gpios.iter().find(|g| {
                     g["name"].as_str() == Some(pin)
                         || g["note"].as_str() == Some(pin)
-                        || g["pin"].to_string() == pin
+                        || g["pin"].as_str() == Some(pin)
+                        || requested_pin_number
+                            .is_some_and(|value| g["pin"].as_u64() == Some(value))
                 });
                 if let Some(gpio) = found {
                     ctx.pin_direction = gpio["direction"].as_str().map(String::from);
@@ -372,6 +408,34 @@ fn sleep_interruptible(duration: Duration, abort: &Arc<AtomicBool>) -> Result<()
     Ok(())
 }
 
+fn assertion_for_step(step: &crate::test_script::TestStep) -> Result<Option<StepAssertion>> {
+    let mut value = step.assert.clone().unwrap_or_else(|| serde_json::json!({}));
+
+    if step.step_type == StepType::GpioAssert {
+        let direction = step.params["direction"].as_str().unwrap_or("output");
+        ensure!(
+            matches!(direction, "input" | "output"),
+            "invalid GPIO direction for step {}: {direction}",
+            step.id
+        );
+        let pin_value = step.params["value"].as_i64().unwrap_or(1);
+        ensure!(
+            matches!(pin_value, 0 | 1),
+            "invalid GPIO value for step {}: {pin_value}",
+            step.id
+        );
+        test_assertions::merge_gpio_assertion(&mut value, direction, pin_value as i32);
+    }
+
+    if value.as_object().is_some_and(serde_json::Map::is_empty) {
+        return Ok(None);
+    }
+
+    serde_json::from_value(value)
+        .with_context(|| format!("invalid assertion for step {}", step.id))
+        .map(Some)
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -398,5 +462,44 @@ impl StepTypeName for crate::test_script::TestStep {
             StepType::SwitchRoute => "switch_route",
             StepType::Capture => "capture",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_script::TestStep;
+
+    fn gpio_assert_step(
+        params: serde_json::Value,
+        assertion: Option<serde_json::Value>,
+    ) -> TestStep {
+        TestStep {
+            id: "gpio-check".to_string(),
+            step_type: StepType::GpioAssert,
+            params,
+            assert: assertion,
+            continue_on_error: None,
+        }
+    }
+
+    #[test]
+    fn gpio_assert_uses_step_params_as_expectations() {
+        let step = gpio_assert_step(
+            serde_json::json!({"pin": "GP13", "direction": "input", "value": 0}),
+            None,
+        );
+        let assertion = assertion_for_step(&step).unwrap().unwrap();
+        assert_eq!(assertion.pin_direction.as_deref(), Some("input"));
+        assert_eq!(assertion.pin_value, Some(0));
+    }
+
+    #[test]
+    fn gpio_assert_rejects_invalid_values() {
+        let step = gpio_assert_step(
+            serde_json::json!({"pin": "GP13", "direction": "output", "value": 2}),
+            None,
+        );
+        assert!(assertion_for_step(&step).is_err());
     }
 }

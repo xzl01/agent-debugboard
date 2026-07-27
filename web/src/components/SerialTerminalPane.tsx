@@ -32,6 +32,11 @@ import {
   SERIAL_LOG_RESTORE_BYTES,
   serialLogFilename,
 } from "@/lib/serialLogCache";
+import {
+  isLinuxSerialHost,
+  LINUX_SERIAL_PERMISSION_COMMAND,
+  shouldShowLinuxSerialPermissionHelp,
+} from "@/lib/serialPermissions";
 import { downloadBlob, formatBytes } from "@/lib/utils";
 
 const BAUD_RATES = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1500000];
@@ -160,6 +165,8 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   const [automationActive, setAutomationActive] = useState(false);
   const [cachedLogBytes, setCachedLogBytes] = useState(0);
   const [logCacheError, setLogCacheError] = useState<string | null>(null);
+  const [showLinuxSerialHelp, setShowLinuxSerialHelp] = useState(false);
+  const [serialFixCopyState, setSerialFixCopyState] = useState<"idle" | "copied" | "failed">("idle");
 
   const sourceRef = useRef<Source>(null);
   const portRef = useRef<SerialPort | null>(null);
@@ -431,10 +438,14 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
 
   async function connectWebSerial() {
     setError(null);
+    setShowLinuxSerialHelp(false);
+    setSerialFixCopyState("idle");
     setConnecting(true);
+    let failureStage: "request" | "open" = "request";
     try {
       const port = await requestPort(channel);
       portRef.current = port;
+      failureStage = "open";
       await port.open({ baudRate: baud });
       const decoder = new TextDecoder();
       const reader = port.readable!.getReader();
@@ -463,6 +474,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       readTaskRef.current = readTask;
       sourceRef.current = "webserial";
       setSource("webserial");
+      setShowLinuxSerialHelp(false);
       setPortInfo(`CH347F · Web Serial`);
       setConnecting(false);
       port.addEventListener("disconnect", () => {
@@ -473,11 +485,18 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     } catch (reason) {
       await disconnect();
       setError(reason instanceof Error ? reason.message : String(reason));
+      setShowLinuxSerialHelp(shouldShowLinuxSerialPermissionHelp({
+        isLinux: isLinuxSerialHost(navigator),
+        stage: failureStage,
+        error: reason,
+      }));
     }
   }
 
   function connectBridge() {
     setError(null);
+    setShowLinuxSerialHelp(false);
+    setSerialFixCopyState("idle");
     if (wsRef.current) {
       try { wsRef.current.close(); } catch { /* Ignore a stale bridge socket. */ }
       wsRef.current = null;
@@ -498,10 +517,17 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
           sourceRef.current = "bridge";
           setConnecting(false);
           setSource("bridge");
+          setShowLinuxSerialHelp(false);
           setPortInfo(`${msg.path} · bridge`);
         } else if (msg.type === "error") {
           setConnecting(false);
-          setError(msg.message);
+          const message = String(msg.message ?? "");
+          setError(message);
+          setShowLinuxSerialHelp(shouldShowLinuxSerialPermissionHelp({
+            isLinux: isLinuxSerialHost(navigator),
+            stage: "bridge",
+            error: message,
+          }));
         } else if (msg.type === "closed") {
           append("\r\n[bridge closed]\r\n");
           void disconnect();
@@ -514,6 +540,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       if (wsRef.current !== ws) return;
       setConnecting(false);
       setError(t("serial.bridgeError"));
+      setShowLinuxSerialHelp(false);
     };
     ws.onclose = () => {
       if (wsRef.current !== ws) return;
@@ -590,6 +617,15 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       );
     } catch (reason) {
       reportLogCacheError(reason);
+    }
+  }
+
+  async function copyLinuxSerialFix() {
+    try {
+      await navigator.clipboard.writeText(LINUX_SERIAL_PERMISSION_COMMAND);
+      setSerialFixCopyState("copied");
+    } catch {
+      setSerialFixCopyState("failed");
     }
   }
 
@@ -700,8 +736,34 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       </div>
 
       {error && (
-        <div className="border-b border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
-          {error}
+        <div role="alert" className="border-b border-danger/30 bg-danger/10 px-3 py-2 text-xs">
+          <p className="break-words font-medium text-danger">{error}</p>
+          {showLinuxSerialHelp && (
+            <div className="mt-2 max-w-[72ch] text-ink">
+              <p className="font-semibold">{t("serial.linuxPermissionTitle")}</p>
+              <p className="mt-1 text-ink-dim">{t("serial.linuxPermissionBody")}</p>
+              <p className="mt-1 text-ink-dim">{t("serial.linuxPermissionDevices")}</p>
+              <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
+                <code className="min-w-0 flex-1 overflow-x-auto rounded-md border border-line/80 bg-panel px-2 py-1.5 text-[11px] text-ink">
+                  {LINUX_SERIAL_PERMISSION_COMMAND}
+                </code>
+                <Button
+                  variant="default"
+                  className="min-h-8 shrink-0 rounded-md px-2 py-1 text-[11px]"
+                  onClick={() => void copyLinuxSerialFix()}
+                >
+                  <Copy size={12} />
+                  {serialFixCopyState === "copied"
+                    ? t("serial.linuxPermissionCopied")
+                    : serialFixCopyState === "failed"
+                      ? t("serial.linuxPermissionCopyFailed")
+                      : t("serial.linuxPermissionCopy")}
+                </Button>
+              </div>
+              <p className="mt-2 text-ink-dim">{t("serial.linuxPermissionRestart")}</p>
+              <p className="mt-1 text-ink-dim">{t("serial.linuxPermissionBusy")}</p>
+            </div>
+          )}
         </div>
       )}
       {logCacheError && (

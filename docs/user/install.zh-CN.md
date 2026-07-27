@@ -10,8 +10,12 @@
 | 系统 / CPU | 产物 |
 | --- | --- |
 | Windows x64 | `radxa-linkr-debuggerctl-rust_windows_amd64.zip` |
-| Linux x64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
+| Linux x64 / AMD64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
+| Linux ARM64 / AArch64 | `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` |
 | macOS Apple Silicon | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` |
+
+Linux 归档使用 musl 静态链接，不依赖主机 glibc 版本；在 CPU 架构匹配时，
+可用于 Debian 11 及更新的发行版。
 
 ## Skill 本地安装脚本
 

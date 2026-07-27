@@ -65,7 +65,9 @@ pub fn evaluate(assert: &StepAssertion, ctx: &AssertionContext) -> AssertionResu
                 } else {
                     failures.push(format!(
                         "current {:.6}A outside range [{}, {}]A",
-                        ua / 1e6, range.min_a, range.max_a
+                        ua / 1e6,
+                        range.min_a,
+                        range.max_a
                     ));
                 }
             }
@@ -213,8 +215,8 @@ fn strip_ansi(s: &str) -> String {
     result
 }
 
-/// Merge implicit gpio_assert assertions with explicit ones.
-pub fn merge_gpio_assertion(assert: &mut Value, _pin: &str, direction: &str, value: i32) {
+/// Merge the expectations carried by a gpio_assert step into its assertion object.
+pub fn merge_gpio_assertion(assert: &mut Value, direction: &str, value: i32) {
     if let Some(obj) = assert.as_object_mut() {
         obj.entry("pin_direction")
             .or_insert_with(|| Value::String(direction.to_string()));
@@ -290,5 +292,13 @@ mod tests {
     #[test]
     fn strip_ansi_removes_escape_codes() {
         assert_eq!(strip_ansi("\x1b[31mHello\x1b[0m"), "Hello");
+    }
+
+    #[test]
+    fn gpio_step_expectations_fill_missing_assertions() {
+        let mut assertion = serde_json::json!({"pin_value": 0});
+        merge_gpio_assertion(&mut assertion, "output", 1);
+        assert_eq!(assertion["pin_direction"], "output");
+        assert_eq!(assertion["pin_value"], 0);
     }
 }

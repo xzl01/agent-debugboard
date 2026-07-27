@@ -213,6 +213,47 @@ bool linkr_debugger_vin_route_from_microvolt(int32_t microvolt,
 	return false;
 }
 
+bool linkr_debugger_parse_target_recovery_mode(
+	const char *arg, enum linkr_debugger_target_recovery_mode *mode)
+{
+	if (arg == NULL || mode == NULL) {
+		return false;
+	}
+
+	if (streq(arg, "qualcomm-edl")) {
+		*mode = LINKR_DEBUGGER_TARGET_RECOVERY_QUALCOMM_EDL;
+		return true;
+	}
+
+	if (streq(arg, "rockchip-maskrom")) {
+		*mode = LINKR_DEBUGGER_TARGET_RECOVERY_ROCKCHIP_MASKROM;
+		return true;
+	}
+
+	return false;
+}
+
+const char *linkr_debugger_target_recovery_mode_to_string(
+	enum linkr_debugger_target_recovery_mode mode)
+{
+	return mode == LINKR_DEBUGGER_TARGET_RECOVERY_QUALCOMM_EDL ?
+	       "qualcomm-edl" : "rockchip-maskrom";
+}
+
+bool linkr_debugger_target_recovery_active_level(
+	enum linkr_debugger_target_recovery_mode mode)
+{
+	return mode == LINKR_DEBUGGER_TARGET_RECOVERY_QUALCOMM_EDL;
+}
+
+bool linkr_debugger_target_recovery_rail_allowed(
+	const struct linkr_debugger_rail_desc *rail)
+{
+	return rail != NULL && rail->controllable && !rail->always_on &&
+	       (streq(rail->name, "5v_out") || streq(rail->name, "12v_out") ||
+		streq(rail->name, "20v_out"));
+}
+
 bool linkr_debugger_rail_initial_enabled(const struct linkr_debugger_rail_desc *rail)
 {
 	return rail != NULL && rail->controllable && rail->always_on;

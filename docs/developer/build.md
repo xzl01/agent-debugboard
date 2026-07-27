@@ -104,7 +104,8 @@ GitHub Release, and uploads the fixed release assets.
 | `radxa-linkr-debugger-rp2350.elf` | ELF for debugging |
 | `radxa-linkr-debugger-rp2350.map` | Linker map |
 | `radxa-linkr-debuggerctl-rust_windows_amd64.zip` | Rust CLI/TUI for Windows x64 |
-| `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` | Rust CLI/TUI for Linux x64 |
+| `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` | Statically linked Rust CLI/TUI for Linux x64 / AMD64 |
+| `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` | Statically linked Rust CLI/TUI for Linux ARM64 / AArch64 |
 | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` | Rust CLI/TUI for macOS Apple Silicon |
 | `skills-radxa-linkr-debugger.tar.gz` | Agent skill bundle |
 | `SHA256SUMS.txt` | SHA256 checksums for all release assets |

@@ -101,7 +101,8 @@ MCUboot 加应用 UF2：`radxa-linkr-debugger-rp2350.uf2`。
 | `radxa-linkr-debugger-rp2350.elf` | 用于调试的 ELF |
 | `radxa-linkr-debugger-rp2350.map` | 链接 map |
 | `radxa-linkr-debuggerctl-rust_windows_amd64.zip` | Windows x64 Rust CLI/TUI |
-| `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` | Linux x64 Rust CLI/TUI |
+| `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` | Linux x64 / AMD64 静态链接 Rust CLI/TUI |
+| `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` | Linux ARM64 / AArch64 静态链接 Rust CLI/TUI |
 | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` | macOS Apple Silicon Rust CLI/TUI |
 | `skills-radxa-linkr-debugger.tar.gz` | Agent skill 打包 |
 | `SHA256SUMS.txt` | 所有 release assets 的 SHA256 校验文件 |

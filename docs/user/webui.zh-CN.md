@@ -115,6 +115,40 @@ npm run device-bridge
 然后在任一串口终端中使用 **Bridge** 按钮。桥接优先使用 CH347F `D1`
 设备对应 UART0、`D3` 对应 UART1，当这些后缀不可用时回退到排序设备顺序。
 
+### Linux 串口设备权限
+
+直连 Web Serial 和设备桥接都会以当前桌面用户身份打开串口设备。在 Linux
+上，CH347 串口通常显示为 `/dev/ttyUSB0` 和 `/dev/ttyUSB1`；板载 CDC ACM
+fallback 可能显示为 `/dev/ttyACM0`。
+
+如果浏览器提示无法打开串口，或 Bridge 报告 `EACCES`、`EPERM`、
+`Permission denied`、`Access denied`，先检查设备所有者和当前用户组：
+
+```sh
+ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
+id -nG
+```
+
+Debian 和 Ubuntu 通常把串口设备分配给 `dialout` 组。执行：
+
+```sh
+sudo usermod -aG dialout "$(id -un)"
+```
+
+随后注销并重新登录，或直接重启系统；重新插拔调试板，重启浏览器或
+`npm run device-bridge`，再尝试连接。已经运行的浏览器和终端进程不会自动
+获得新增的用户组权限。
+
+如果设备属于其他串口访问组，请使用 `ls -l` 显示的组，并遵循当前发行版
+的设备权限规则。如果权限已经正确，再检查是否有串口监视器或系统服务占用：
+
+```sh
+fuser /dev/ttyACM0
+```
+
+请把路径替换成实际打开失败的设备。不要用 root 身份运行浏览器或 Bridge，
+也不要把 `chmod` 当作永久修复：USB 设备重新连接后会重新创建设备权限。
+
 ## 启动功率分析
 
 启动工作流位于 **高级与恢复** 下。需要已选择的 UART0 或 UART1 连接

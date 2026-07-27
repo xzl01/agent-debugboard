@@ -28,7 +28,8 @@ pub fn run_test(
     stderr: &mut dyn Write,
 ) -> Result<u8> {
     if args.len() < 3 || args[1] != "run" {
-        let usage = "usage: radxa-linkr-debuggerctl test run SCRIPT [--output PATH] [--serial PATH]";
+        let usage =
+            "usage: radxa-linkr-debuggerctl test run SCRIPT [--output PATH] [--serial PATH]";
         if json_output {
             write_error(stdout, "usage", usage)?;
         } else {
@@ -47,11 +48,19 @@ pub fn run_test(
         match args[i].as_str() {
             "--output" | "-o" => {
                 i += 1;
-                output_path = args.get(i).cloned();
+                let Some(path) = args.get(i) else {
+                    writeln!(stderr, "missing value for --output")?;
+                    return Ok(2);
+                };
+                output_path = Some(path.clone());
             }
             "--serial" | "-s" => {
                 i += 1;
-                serial_path = args.get(i).cloned();
+                let Some(path) = args.get(i) else {
+                    writeln!(stderr, "missing value for --serial")?;
+                    return Ok(2);
+                };
+                serial_path = Some(path.clone());
             }
             other => {
                 writeln!(stderr, "unknown test option: {other}")?;
@@ -89,8 +98,7 @@ pub fn run_test(
     let client = BoardClient::new(base_url, timeout)?;
 
     let opts = RunOptions {
-        base_url: base_url.to_string(),
-        timeout,
+        output_path,
         serial_path,
         json_output,
         verbose,

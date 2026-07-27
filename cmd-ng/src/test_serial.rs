@@ -32,8 +32,7 @@ impl SerialPort {
 
     /// Try to auto-detect a CH347F serial port.
     pub fn auto_detect() -> Result<Self> {
-        let ports = serialport::available_ports()
-            .context("failed to list serial ports")?;
+        let ports = serialport::available_ports().context("failed to list serial ports")?;
         for port_info in &ports {
             let name = &port_info.port_name;
             // CH347F typically appears as /dev/ttyUSB* on Linux,
@@ -44,7 +43,11 @@ impl SerialPort {
         }
         bail!(
             "no CH347F serial port found. Available ports: {}",
-            ports.iter().map(|p| p.port_name.as_str()).collect::<Vec<_>>().join(", ")
+            ports
+                .iter()
+                .map(|p| p.port_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
 
@@ -96,11 +99,7 @@ impl SerialPort {
     }
 
     /// Wait for a regex pattern in the serial output.
-    pub fn wait_for_pattern(
-        &mut self,
-        pattern: &str,
-        timeout: Duration,
-    ) -> Result<PatternMatch> {
+    pub fn wait_for_pattern(&mut self, pattern: &str, timeout: Duration) -> Result<PatternMatch> {
         let re = Regex::new(pattern).with_context(|| format!("invalid regex: {pattern}"))?;
         let deadline = Instant::now() + timeout;
 
@@ -113,7 +112,6 @@ impl SerialPort {
                 let end = m.end();
                 self.consume(end);
                 return Ok(PatternMatch {
-                    matched: true,
                     output: stripped,
                     timed_out: false,
                 });
@@ -121,7 +119,6 @@ impl SerialPort {
 
             if Instant::now() >= deadline {
                 return Ok(PatternMatch {
-                    matched: false,
                     output: strip_ansi(&self.unread_text()),
                     timed_out: true,
                 });
@@ -162,7 +159,7 @@ impl SerialPort {
                 let marker_match = m.as_str();
                 let exit_code: i32 = marker_match
                     .split(':')
-                    .last()
+                    .next_back()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(-1);
 
@@ -172,8 +169,8 @@ impl SerialPort {
                 self.consume(m.end());
 
                 // Check pattern
-                let pattern_re = Regex::new(pattern)
-                    .with_context(|| format!("invalid regex: {pattern}"))?;
+                let pattern_re =
+                    Regex::new(pattern).with_context(|| format!("invalid regex: {pattern}"))?;
                 let pattern_matched = pattern_re.is_match(&output);
 
                 return Ok(ExpectResult {
@@ -199,7 +196,6 @@ impl SerialPort {
 }
 
 pub struct PatternMatch {
-    pub matched: bool,
     pub output: String,
     pub timed_out: bool,
 }

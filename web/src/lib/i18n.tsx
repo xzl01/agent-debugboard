@@ -51,8 +51,8 @@ const en: Dict = {
   "loading": "Loading board state…",
 
   "advanced.title": "Advanced & recovery",
-  "advanced.subtitle": "Startup analysis, MCUboot OTA, and firmware recovery tools",
-  "advanced.count": "3 tools",
+  "advanced.subtitle": "Startup analysis, target recovery, MCUboot OTA, and firmware recovery",
+  "advanced.count": "5 tools",
 
   "workspace.tabs": "Right workspace",
   "workspace.terminalTab": "Web Terminal",
@@ -340,6 +340,21 @@ const en: Dict = {
   "boot.rebooting": "Rebooting…",
   "boot.done": "BOOTSEL requested — board should now enumerate as a mass-storage device.",
 
+  "targetRecovery.title": "Target recovery mode",
+  "targetRecovery.subtitle": "Qualcomm EDL / Rockchip MASKROM",
+  "targetRecovery.mode": "Target platform",
+  "targetRecovery.rail": "Target power rail",
+  "targetRecovery.high": "high",
+  "targetRecovery.low": "low",
+  "targetRecovery.sequence": "The firmware power-cycles the selected rail, drives CON_MAS {level} during startup, then releases it to high impedance.",
+  "targetRecovery.confirm": "Enter {mode} using {rail}? The target device will lose power and CON_MAS will be driven {level}. Unsaved state will be lost.",
+  "targetRecovery.enter": "Enter target recovery",
+  "targetRecovery.confirmAction": "Confirm and power cycle",
+  "targetRecovery.cancel": "Cancel",
+  "targetRecovery.running": "Running sequence…",
+  "targetRecovery.done": "Recovery sequence completed; CON_MAS has been released to input.",
+  "targetRecovery.failed": "Target recovery failed: ",
+
   "ota.title": "Firmware OTA",
   "ota.subtitle": "MCUboot .bin upload, test boot, and confirmation state",
   "ota.refresh": "Refresh OTA state",
@@ -452,6 +467,18 @@ const en: Dict = {
   "serial.disconnectedWrite": "Serial connection is no longer available",
   "serial.bridgeError":
     "Bridge WebSocket error — is `npm run device-bridge` running?",
+  "serial.linuxPermissionTitle": "Linux serial permission required",
+  "serial.linuxPermissionBody":
+    "The browser or device bridge could not open the serial device. On Debian/Ubuntu, your account normally needs membership in the dialout group.",
+  "serial.linuxPermissionDevices":
+    "CH347 ports usually appear as /dev/ttyUSB*, while the board CDC fallback may appear as /dev/ttyACM0.",
+  "serial.linuxPermissionCopy": "Copy fix",
+  "serial.linuxPermissionCopied": "Copied",
+  "serial.linuxPermissionCopyFailed": "Copy failed",
+  "serial.linuxPermissionRestart":
+    "Run the command in a terminal, then sign out and back in (or reboot), reconnect the board, restart the browser or Bridge, and try again.",
+  "serial.linuxPermissionBusy":
+    "Already in dialout? Close other serial monitors or services that may be using the same device before retrying.",
   "serial.portInUse": "This serial port is already assigned to {channel}.",
   "serial.layout": "Terminal layout",
   "serial.layout.tabs": "Tabbed terminals",
@@ -606,8 +633,8 @@ const zh: Dict = {
   "loading": "正在加载调试板状态…",
 
   "advanced.title": "高级与恢复",
-  "advanced.subtitle": "启动分析、MCUboot OTA 与固件恢复工具",
-  "advanced.count": "3 项工具",
+  "advanced.subtitle": "启动分析、目标设备恢复、MCUboot OTA 与固件恢复",
+  "advanced.count": "5 项工具",
 
   "workspace.tabs": "右侧工作区",
   "workspace.terminalTab": "Web 串口终端",
@@ -894,6 +921,21 @@ const zh: Dict = {
   "boot.rebooting": "重启中…",
   "boot.done": "已请求 BOOTSEL — 调试板现在应枚举为大容量存储设备。",
 
+  "targetRecovery.title": "目标设备恢复模式",
+  "targetRecovery.subtitle": "Qualcomm EDL / Rockchip MASKROM",
+  "targetRecovery.mode": "目标平台",
+  "targetRecovery.rail": "目标电源轨",
+  "targetRecovery.high": "高电平",
+  "targetRecovery.low": "低电平",
+  "targetRecovery.sequence": "固件会对所选电源轨断电重启，启动时将 CON_MAS 驱动为{level}，随后释放为高阻输入。",
+  "targetRecovery.confirm": "确认使用 {rail} 进入 {mode}？目标设备将断电，CON_MAS 会被驱动为{level}，未保存的状态会丢失。",
+  "targetRecovery.enter": "进入目标恢复模式",
+  "targetRecovery.confirmAction": "确认并执行电源循环",
+  "targetRecovery.cancel": "取消",
+  "targetRecovery.running": "正在执行时序…",
+  "targetRecovery.done": "恢复时序已完成，CON_MAS 已释放为输入。",
+  "targetRecovery.failed": "目标设备恢复失败：",
+
   "ota.title": "固件 OTA",
   "ota.subtitle": "MCUboot .bin 上传、测试启动与确认状态",
   "ota.refresh": "刷新 OTA 状态",
@@ -1003,6 +1045,18 @@ const zh: Dict = {
   "serial.connectToInput": "连接串口后可直接在终端内输入",
   "serial.disconnectedWrite": "串口连接已不可用",
   "serial.bridgeError": "桥接 WebSocket 错误 — 是否正在运行 `npm run device-bridge`？",
+  "serial.linuxPermissionTitle": "需要 Linux 串口访问权限",
+  "serial.linuxPermissionBody":
+    "浏览器或设备桥接无法打开串口设备。在 Debian/Ubuntu 上，当前账号通常需要加入 dialout 组。",
+  "serial.linuxPermissionDevices":
+    "CH347 串口通常显示为 /dev/ttyUSB*，板载 CDC fallback 可能显示为 /dev/ttyACM0。",
+  "serial.linuxPermissionCopy": "复制修复命令",
+  "serial.linuxPermissionCopied": "已复制",
+  "serial.linuxPermissionCopyFailed": "复制失败",
+  "serial.linuxPermissionRestart":
+    "在终端运行该命令，然后注销并重新登录（或重启），重新插拔调试板、重启浏览器或 Bridge，再尝试连接。",
+  "serial.linuxPermissionBusy":
+    "如果已经属于 dialout 组，请先关闭可能占用同一设备的串口监视器或系统服务。",
   "serial.portInUse": "该串口已经分配给 {channel}。",
   "serial.layout": "终端布局",
   "serial.layout.tabs": "标签切换",

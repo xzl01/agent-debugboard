@@ -12,10 +12,11 @@ radxa-linkr-debuggerctl
 
 ## 布局
 
-控制面分三个区域：
+控制面分四个区域：
 
 - **Power** — `12v_out`、`5v_out`、`20v_out` 开关
 - **Switch** — SD（`target` / `usb-reader`）、USB（`pc` / `target`）、VIN（`1.8v` / `3.3v`）
+- **Target recovery** — 选择 Qualcomm EDL 或 Rockchip MASKROM、目标电源轨，然后执行由固件控制的完整恢复时序
 - **GPIO** — 安全引脚，支持输出/输入模式
 
 状态区同时显示 switch 的 `desired`（本地目标）和 `actual`（后端回读），方便判断路由是否真正生效。
@@ -30,11 +31,11 @@ radxa-linkr-debuggerctl
 | `t` | SD switch → `target` |
 | `u` | SD switch → `usb-reader` |
 
-VIN 切换会弹确认提示——电压变更对硬件有副作用。
+VIN 切换会弹确认提示——电压变更对硬件有副作用。目标恢复同样要求在三秒内再次按 Enter/Space，因为它会对目标设备执行断电重启。Qualcomm EDL 在启动阶段将 `CON_MAS` 拉高，Rockchip MASKROM 将其拉低；时序结束后固件会把该信号释放为输入。`CON_MAS` 不再出现在通用 GPIO 控件中。
 
 ## 多实例
 
-TUI 通过 HTTP 轮询状态，刷新频率 60 Hz。可以同时开多个实例，互不干扰。
+TUI 界面会即时响应输入，并每两秒通过 HTTP 轮询一次调试板状态。可以同时开多个实例，互不干扰。
 
 ## 高频采集
 

@@ -5,11 +5,12 @@
 
 use serde::Serialize;
 use serde_json::json;
-use std::io::Write;
-use std::time::Duration;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::Path;
 
 use crate::test_assertions::AssertionResult;
-use crate::test_script::StepType;
+use crate::test_script::{StepType, TestStep};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunSummary {
@@ -52,16 +53,14 @@ pub enum StepStatus {
 }
 
 pub struct ReportBuilder {
-    script_name: String,
     steps: Vec<StepResult>,
     start_time: std::time::Instant,
     aborted: bool,
 }
 
 impl ReportBuilder {
-    pub fn new(script_name: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            script_name,
             steps: Vec::new(),
             start_time: std::time::Instant::now(),
             aborted: false,
@@ -76,11 +75,31 @@ impl ReportBuilder {
         self.aborted = true;
     }
 
+    pub fn results(&self) -> &[StepResult] {
+        &self.steps
+    }
+
     pub fn summary(&self, total_steps: usize) -> RunSummary {
-        let passed = self.steps.iter().filter(|r| r.status == StepStatus::Pass).count();
-        let failed = self.steps.iter().filter(|r| r.status == StepStatus::Fail).count();
-        let skipped = self.steps.iter().filter(|r| r.status == StepStatus::Skip).count();
-        let errored = self.steps.iter().filter(|r| r.status == StepStatus::Error).count();
+        let passed = self
+            .steps
+            .iter()
+            .filter(|r| r.status == StepStatus::Pass)
+            .count();
+        let failed = self
+            .steps
+            .iter()
+            .filter(|r| r.status == StepStatus::Fail)
+            .count();
+        let skipped = self
+            .steps
+            .iter()
+            .filter(|r| r.status == StepStatus::Skip)
+            .count();
+        let errored = self
+            .steps
+            .iter()
+            .filter(|r| r.status == StepStatus::Error)
+            .count();
         let duration = self.start_time.elapsed();
 
         RunSummary {
@@ -97,17 +116,14 @@ impl ReportBuilder {
 
     pub fn is_successful(&self, total_steps: usize) -> bool {
         let summary = self.summary(total_steps);
-        summary.completed
-            && !summary.aborted
-            && summary.failed == 0
-            && summary.errored == 0
+        summary.completed && !summary.aborted && summary.failed == 0 && summary.errored == 0
     }
 }
 
 pub fn write_json_report(
     writer: &mut dyn Write,
     script_name: &str,
-    script_steps: &[serde_json::Value],
+    script_steps: &[TestStep],
     results: &[StepResult],
     summary: &RunSummary,
 ) -> anyhow::Result<()> {
@@ -125,10 +141,7 @@ pub fn write_json_report(
     Ok(())
 }
 
-pub fn write_csv_report(
-    writer: &mut dyn Write,
-    results: &[StepResult],
-) -> anyhow::Result<()> {
+pub fn write_csv_report(writer: &mut dyn Write, results: &[StepResult]) -> anyhow::Result<()> {
     writeln!(writer, "step_id,status,duration_ms,error,detail,adc_ua")?;
     for r in results {
         let detail = r
@@ -137,25 +150,57 @@ pub fn write_csv_report(
             .map(|a| a.detail.as_str())
             .unwrap_or("");
         let error = r.error.as_deref().unwrap_or("");
-        let adc = r.adc_value_ua.map(|v| format!("{:.0}", v)).unwrap_or_default();
+        let adc = r
+            .adc_value_ua
+            .map(|v| format!("{:.0}", v))
+            .unwrap_or_default();
         writeln!(
             writer,
             "{},{},{},{},{},{}",
-            r.step_id,
-            serde_json::to_string(&r.status).unwrap_or_default().trim_matches('"'),
+            csv_escape(&r.step_id),
+            serde_json::to_string(&r.status)
+                .unwrap_or_default()
+                .trim_matches('"'),
             r.duration_ms,
-            error,
-            detail,
+            csv_escape(error),
+            csv_escape(detail),
             adc
         )?;
     }
     Ok(())
 }
 
-pub fn write_ndjson_report(
-    writer: &mut dyn Write,
+pub fn write_report_file(
+    output_path: &str,
+    script_name: &str,
+    script_steps: &[TestStep],
     results: &[StepResult],
+    summary: &RunSummary,
 ) -> anyhow::Result<()> {
+    let file = File::create(output_path)?;
+    let mut writer = BufWriter::new(file);
+    match Path::new(output_path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("json")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "csv" => write_csv_report(&mut writer, results),
+        "ndjson" => write_ndjson_report(&mut writer, results),
+        _ => write_json_report(&mut writer, script_name, script_steps, results, summary),
+    }
+}
+
+fn csv_escape(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+pub fn write_ndjson_report(writer: &mut dyn Write, results: &[StepResult]) -> anyhow::Result<()> {
     for r in results {
         let line = serde_json::to_string(&json!({
             "type": "step_result",
@@ -171,10 +216,7 @@ pub fn write_ndjson_report(
     Ok(())
 }
 
-pub fn print_summary(
-    writer: &mut dyn Write,
-    summary: &RunSummary,
-) -> anyhow::Result<()> {
+pub fn print_summary(writer: &mut dyn Write, summary: &RunSummary) -> anyhow::Result<()> {
     writeln!(writer)?;
     writeln!(
         writer,
@@ -195,25 +237,87 @@ pub fn print_summary(
     Ok(())
 }
 
-/// Compute nominal voltage from rail name prefix.
-pub fn nominal_voltage(rail: &str) -> f64 {
-    if rail.starts_with("20v_") {
-        20.0
-    } else if rail.starts_with("12v_") {
-        12.0
-    } else {
-        5.0
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn sample_step() -> TestStep {
+        TestStep {
+            id: "boot,check".to_string(),
+            step_type: StepType::Delay,
+            params: serde_json::json!({"ms": 1}),
+            assert: None,
+            continue_on_error: None,
+        }
+    }
+
+    fn sample_result() -> StepResult {
+        StepResult {
+            step_id: "boot,check".to_string(),
+            step_type: StepType::Delay,
+            status: StepStatus::Pass,
+            started_at_ms: 1,
+            finished_at_ms: 2,
+            duration_ms: 1,
+            error: None,
+            assertion_result: None,
+            adc_value_ua: None,
+            serial_output: None,
+        }
+    }
+
+    fn temp_report_path(extension: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "radxa-linkr-debugger-report-{}-{nonce}.{extension}",
+            std::process::id()
+        ))
+    }
 
     #[test]
-    fn nominal_voltage_from_rail() {
-        assert_eq!(nominal_voltage("5v_out"), 5.0);
-        assert_eq!(nominal_voltage("12v_out"), 12.0);
-        assert_eq!(nominal_voltage("20v_out"), 20.0);
+    fn csv_escape_quotes_special_fields() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+        assert_eq!(csv_escape("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn report_file_format_follows_extension() {
+        let step = sample_step();
+        let result = sample_result();
+        let summary = RunSummary {
+            total: 1,
+            passed: 1,
+            failed: 0,
+            skipped: 0,
+            errored: 0,
+            aborted: false,
+            completed: true,
+            duration_ms: 1,
+        };
+
+        for (extension, expected) in [
+            ("json", "\"schema\": \"linkr-test-report.v1\""),
+            ("csv", "\"boot,check\",pass,1"),
+            ("ndjson", "\"type\":\"step_result\""),
+        ] {
+            let path = temp_report_path(extension);
+            write_report_file(
+                path.to_str().unwrap(),
+                "smoke",
+                std::slice::from_ref(&step),
+                std::slice::from_ref(&result),
+                &summary,
+            )
+            .unwrap();
+            let contents = fs::read_to_string(&path).unwrap();
+            fs::remove_file(path).unwrap();
+            assert!(contents.contains(expected), "unexpected {extension} report");
+        }
     }
 }

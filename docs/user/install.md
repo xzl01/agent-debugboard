@@ -10,8 +10,13 @@ Download the matching archive for your platform from the
 | OS / CPU | Artifact |
 | --- | --- |
 | Windows x64 | `radxa-linkr-debuggerctl-rust_windows_amd64.zip` |
-| Linux x64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
+| Linux x64 / AMD64 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` |
+| Linux ARM64 / AArch64 | `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` |
 | macOS Apple Silicon | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` |
+
+The Linux archives are statically linked with musl and do not depend on the
+host glibc version. They are compatible with Debian 11 and newer distributions
+on the matching CPU architecture.
 
 ## Skill-local install script
 

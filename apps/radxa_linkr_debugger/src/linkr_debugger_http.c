@@ -69,6 +69,11 @@ struct linkr_debugger_http_gpio_write_request {
 	bool has_value;
 };
 
+struct linkr_debugger_http_target_recovery_request {
+	char mode[24];
+	char rail[16];
+};
+
 static uint16_t linkr_debugger_http_port = LINKR_DEBUGGER_HTTP_PORT;
 static struct k_mutex linkr_debugger_http_lock;
 static struct k_work_delayable linkr_debugger_bootloader_work;
@@ -154,6 +159,13 @@ static const struct json_obj_descr switch_route_request_descr[] = {
 static const struct json_obj_descr gpio_write_request_descr[] = {
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_http_gpio_write_request, direction, JSON_TOK_STRING_BUF),
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_http_gpio_write_request, value, JSON_TOK_NUMBER),
+};
+
+static const struct json_obj_descr target_recovery_request_descr[] = {
+	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_http_target_recovery_request, mode,
+			    JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_http_target_recovery_request, rail,
+			    JSON_TOK_STRING_BUF),
 };
 
 static int linkr_debugger_http_append(struct linkr_debugger_http_env *env, const char *fmt, ...)
@@ -1457,6 +1469,133 @@ static int linkr_debugger_http_handle_bootloader(struct http_client_ctx *client,
 	return 0;
 }
 
+static int linkr_debugger_http_handle_target_recovery(
+	struct http_client_ctx *client,
+	enum http_transaction_status status,
+	const struct http_request_ctx *request_ctx,
+	struct http_response_ctx *response_ctx,
+	void *user_data)
+{
+	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	struct linkr_debugger_http_env env = {
+		.buf = (char *)json_buf,
+		.cap = sizeof(json_buf),
+	};
+	struct linkr_debugger_http_target_recovery_request req = { 0 };
+	enum linkr_debugger_target_recovery_mode mode;
+	const struct linkr_debugger_rail_desc *rail;
+	int ret;
+
+	ARG_UNUSED(user_data);
+	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
+		return 0;
+	}
+
+	k_mutex_lock(&linkr_debugger_http_lock, K_FOREVER);
+	if (client->method == HTTP_GET) {
+		ret = linkr_debugger_http_json_begin(&env, "target-recovery", true);
+		if (ret >= 0) {
+			ret = linkr_debugger_http_append(
+				&env,
+				",\"modes\":[{\"name\":\"qualcomm-edl\",\"active_level\":1},"
+				"{\"name\":\"rockchip-maskrom\",\"active_level\":0}],"
+				"\"rails\":[\"5v_out\",\"12v_out\",\"20v_out\"],"
+				"\"off_ms\":%u,\"setup_ms\":%u,\"hold_ms\":%u,"
+				"\"release_direction\":\"input\"}\n",
+				LINKR_DEBUGGER_TARGET_RECOVERY_OFF_MS,
+				LINKR_DEBUGGER_TARGET_RECOVERY_SETUP_MS,
+				LINKR_DEBUGGER_TARGET_RECOVERY_HOLD_MS);
+		}
+		k_mutex_unlock(&linkr_debugger_http_lock);
+		if (ret < 0) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_500_INTERNAL_SERVER_ERROR,
+					     "target-recovery", "response_too_large",
+					     "failed to encode target recovery response");
+			return 0;
+		}
+		linkr_debugger_http_set_json_response(response_ctx, json_buf,
+						       sizeof(json_buf), HTTP_200_OK);
+		return 0;
+	}
+
+	if (client->method != HTTP_POST) {
+		k_mutex_unlock(&linkr_debugger_http_lock);
+		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+				     HTTP_405_METHOD_NOT_ALLOWED,
+				     "target-recovery", "method_not_allowed",
+				     "method not allowed");
+		return 0;
+	}
+	if (request_ctx->data == NULL || request_ctx->data_len == 0U) {
+		k_mutex_unlock(&linkr_debugger_http_lock);
+		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+				     HTTP_400_BAD_REQUEST,
+				     "target-recovery", "missing_body",
+				     "missing JSON request body");
+		return 0;
+	}
+
+	ret = json_obj_parse((char *)request_ctx->data, request_ctx->data_len,
+			     target_recovery_request_descr,
+			     ARRAY_SIZE(target_recovery_request_descr), &req);
+	if (ret < 0 || !linkr_debugger_parse_target_recovery_mode(req.mode, &mode)) {
+		k_mutex_unlock(&linkr_debugger_http_lock);
+		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+				     HTTP_400_BAD_REQUEST,
+				     "target-recovery", "invalid_mode",
+				     "mode must be qualcomm-edl or rockchip-maskrom");
+		return 0;
+	}
+
+	rail = linkr_debugger_find_rail(req.rail);
+	if (!linkr_debugger_target_recovery_rail_allowed(rail)) {
+		k_mutex_unlock(&linkr_debugger_http_lock);
+		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+				     HTTP_400_BAD_REQUEST,
+				     "target-recovery", "invalid_rail",
+				     "rail must be 5v_out, 12v_out, or 20v_out");
+		return 0;
+	}
+
+	ret = linkr_debugger_target_recovery_enter(mode, rail);
+	if (ret < 0) {
+		k_mutex_unlock(&linkr_debugger_http_lock);
+		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+				     HTTP_500_INTERNAL_SERVER_ERROR,
+				     "target-recovery", "sequence_failed",
+				     "target recovery sequence failed; CON_MAS was released");
+		return 0;
+	}
+
+	linkr_debugger_ws_publish_state_change();
+	ret = linkr_debugger_http_json_begin(&env, "target-recovery", true);
+	if (ret >= 0) {
+		ret = linkr_debugger_http_append(
+			&env,
+			",\"action\":\"enter\",\"mode\":\"%s\",\"rail\":\"%s\","
+			"\"active_level\":%u,\"off_ms\":%u,\"setup_ms\":%u,"
+			"\"hold_ms\":%u,\"release_direction\":\"input\"}\n",
+			linkr_debugger_target_recovery_mode_to_string(mode), rail->name,
+			linkr_debugger_target_recovery_active_level(mode) ? 1U : 0U,
+			LINKR_DEBUGGER_TARGET_RECOVERY_OFF_MS,
+			LINKR_DEBUGGER_TARGET_RECOVERY_SETUP_MS,
+			LINKR_DEBUGGER_TARGET_RECOVERY_HOLD_MS);
+	}
+	k_mutex_unlock(&linkr_debugger_http_lock);
+	if (ret < 0) {
+		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+				     HTTP_500_INTERNAL_SERVER_ERROR,
+				     "target-recovery", "response_too_large",
+				     "failed to encode target recovery response");
+		return 0;
+	}
+
+	linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf),
+					       HTTP_200_OK);
+	return 0;
+}
+
 static int linkr_debugger_http_handle_watchdog(struct http_client_ctx *client,
 				     enum http_transaction_status status,
 				     const struct http_request_ctx *request_ctx,
@@ -2390,6 +2529,11 @@ static int linkr_debugger_http_route_request(struct http_client_ctx *client,
 
 	if (linkr_debugger_http_path_matches(path, "/api/v1/bootloader", false)) {
 		return linkr_debugger_http_handle_bootloader(client, status, request_ctx, response_ctx, user_data);
+	}
+
+	if (linkr_debugger_http_path_matches(path, "/api/v1/target-recovery", false)) {
+		return linkr_debugger_http_handle_target_recovery(client, status, request_ctx,
+							 response_ctx, user_data);
 	}
 
 	if (linkr_debugger_http_path_matches(path, "/api/v1/watchdog", false)) {

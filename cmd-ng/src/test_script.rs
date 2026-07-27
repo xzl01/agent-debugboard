@@ -60,24 +60,6 @@ pub enum StepType {
     Capture,
 }
 
-impl StepType {
-    pub fn all() -> &'static [StepType] {
-        &[
-            StepType::PowerOn,
-            StepType::PowerOff,
-            StepType::Delay,
-            StepType::SerialWait,
-            StepType::SerialSend,
-            StepType::SerialExpect,
-            StepType::AdcRead,
-            StepType::GpioSet,
-            StepType::GpioAssert,
-            StepType::SwitchRoute,
-            StepType::Capture,
-        ]
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct TestScript {
     pub header: TestHeader,
@@ -93,8 +75,8 @@ pub fn parse_script(reader: impl Read) -> Result<TestScript> {
         None => bail!("empty script"),
     };
 
-    let header: TestHeader = serde_json::from_str(&header_line)
-        .context("failed to parse script header")?;
+    let header: TestHeader =
+        serde_json::from_str(&header_line).context("failed to parse script header")?;
     if header.schema != SCHEMA {
         bail!("unknown schema {:?}, expected {:?}", header.schema, SCHEMA);
     }
@@ -129,17 +111,27 @@ pub fn apply_defaults(step: &mut TestStep) {
         StepType::PowerOn => serde_json::json!({"rail": "5v_out"}),
         StepType::PowerOff => serde_json::json!({"rail": "5v_out"}),
         StepType::Delay => serde_json::json!({"ms": 1000}),
-        StepType::SerialWait => serde_json::json!({"channel": "uart0", "pattern": "login:", "timeout_ms": 60000}),
+        StepType::SerialWait => {
+            serde_json::json!({"channel": "uart0", "pattern": "login:", "timeout_ms": 60000})
+        }
         StepType::SerialSend => serde_json::json!({"channel": "uart0", "text": "root\n"}),
-        StepType::SerialExpect => serde_json::json!({"channel": "uart0", "command": "uname -a", "pattern": "Linux", "timeout_ms": 10000}),
+        StepType::SerialExpect => {
+            serde_json::json!({"channel": "uart0", "command": "uname -a", "pattern": "Linux", "timeout_ms": 10000})
+        }
         StepType::AdcRead => serde_json::json!({"channel": "5v_out"}),
         StepType::GpioSet => serde_json::json!({"pin": "GP13", "value": 1}),
-        StepType::GpioAssert => serde_json::json!({"pin": "GP13", "direction": "output", "value": 1}),
+        StepType::GpioAssert => {
+            serde_json::json!({"pin": "GP13", "direction": "output", "value": 1})
+        }
         StepType::SwitchRoute => serde_json::json!({"switch": "sd", "route": "target"}),
-        StepType::Capture => serde_json::json!({"rail": "5v_out", "trigger": "manual", "duration_ms": 5000, "threshold_a": 0.1}),
+        StepType::Capture => {
+            serde_json::json!({"rail": "5v_out", "trigger": "manual", "duration_ms": 5000, "threshold_a": 0.1})
+        }
     };
 
-    if let (Some(defaults_obj), Some(params_obj)) = (defaults.as_object(), step.params.as_object_mut()) {
+    if let (Some(defaults_obj), Some(params_obj)) =
+        (defaults.as_object(), step.params.as_object_mut())
+    {
         for (key, value) in defaults_obj {
             params_obj.entry(key).or_insert_with(|| value.clone());
         }

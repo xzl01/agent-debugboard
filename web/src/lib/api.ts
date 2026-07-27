@@ -10,6 +10,19 @@ export interface LiveSession {
   connected: boolean;
 }
 
+export type TargetRecoveryMode = "qualcomm-edl" | "rockchip-maskrom";
+
+export interface TargetRecoveryResult {
+  action: "enter";
+  mode: TargetRecoveryMode;
+  rail: string;
+  active_level: 0 | 1;
+  off_ms: number;
+  setup_ms: number;
+  hold_ms: number;
+  release_direction: "input";
+}
+
 export class BoardApiError extends Error {
   code?: string;
   constructor(message: string, code?: string) {
@@ -106,3 +119,9 @@ export const deleteLiveSession = (sessionId: number) =>
 
 export const enterBootloader = () =>
   request("/bootloader", { method: "POST" });
+
+export const enterTargetRecovery = (mode: TargetRecoveryMode, rail: string) =>
+  request<TargetRecoveryResult>("/target-recovery", {
+    method: "POST",
+    body: JSON.stringify({ mode, rail }),
+  });

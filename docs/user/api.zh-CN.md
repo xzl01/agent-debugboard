@@ -137,6 +137,23 @@ curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"input"}'
 curl -X POST http://172.29.203.1/api/v1/bootloader
 ```
 
+## 目标设备恢复模式
+
+### `GET /api/v1/target-recovery`
+
+返回支持的恢复模式、电源轨、固定时序以及安全释放方向。
+
+### `POST /api/v1/target-recovery`
+
+在断电重启目标电源轨时使 `CON_MAS` 保持有效，然后将引脚释放为输入。Qualcomm EDL 为高电平有效，Rockchip MASKROM 为低电平有效。
+
+```sh
+curl -X POST http://172.29.203.1/api/v1/target-recovery \
+  -d '{"mode":"rockchip-maskrom","rail":"5v_out"}'
+```
+
+有效模式：`qualcomm-edl`、`rockchip-maskrom`。有效电源轨：`5v_out`、`12v_out`、`20v_out`。固件会保持断电 1000 ms，上电前预置恢复信号 20 ms，上电后继续保持 500 ms，即使时序失败也会将 `CON_MAS` 释放为高阻输入。
+
 ## Watchdog
 
 ### `GET /api/v1/watchdog`
@@ -255,7 +272,13 @@ Arm 捕获。
 {"type": "command", "command": "power_set", "id": "1", "output": "12v_out", "state": "on"}
 ```
 
-可用命令：`power_set`、`switch_route`、`gpio_set`、`bootloader`、`capture_arm`、`capture_trigger`、`capture_cancel`。
+可用命令：`power_set`、`switch_route`、`gpio_set`、`target_recovery`、`bootloader`、`capture_arm`、`capture_trigger`、`capture_cancel`。
+
+目标设备恢复命令：
+
+```json
+{"type":"command","command":"target_recovery","id":"2","mode":"qualcomm-edl","output":"5v_out"}
+```
 
 ### 服务端 → 客户端消息
 

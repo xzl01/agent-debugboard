@@ -119,6 +119,31 @@ radxa-linkr-debuggerctl gpio set CON_MAS 1
 radxa-linkr-debuggerctl gpio input GP13
 ```
 
+## 自动化测试脚本
+
+`test run` 执行 `linkr-test.v1` NDJSON 脚本。`--serial` 可指定目标设备串口；`--output` 会将完整结果写入文件，扩展名决定格式：`.json`、`.csv` 或 `.ndjson`，其他扩展名默认使用 JSON。
+
+```sh
+radxa-linkr-debuggerctl test run startup.ndjson --serial /dev/tty.usbserial-1234
+radxa-linkr-debuggerctl test run startup.ndjson --output startup-report.json
+```
+
+`gpio_assert` 会直接使用步骤 `params` 中的 `direction` 和 `value` 进行判定；方向只接受 `input`/`output`，值只接受 `0`/`1`。执行被 Ctrl+C 中止时，报告会标记为 `aborted`。
+
+## 目标设备恢复模式
+
+请使用专用恢复命令，不要手动组合 `CON_MAS` GPIO 操作。固件会执行完整电源循环，时序完成或失败后都会将 `CON_MAS` 释放为输入。
+
+```sh
+# Qualcomm EDL 使用高电平有效的恢复信号
+radxa-linkr-debuggerctl recovery enter qualcomm-edl 5v_out --confirm
+
+# Rockchip MASKROM 使用低电平有效的恢复信号
+radxa-linkr-debuggerctl recovery enter rockchip-maskrom 5v_out --confirm
+```
+
+最后一个参数只能是用户可见的目标电源轨：`5v_out`、`12v_out` 或 `20v_out`。因为目标设备会断电且未保存的状态会丢失，必须显式传入 `--confirm`。该功能与 `bootloader` 不同，后者进入调试板 MCU 的 RP2350 BOOTSEL。
+
 ## Watchdog
 
 ```sh

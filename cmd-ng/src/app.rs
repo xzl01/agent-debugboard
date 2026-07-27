@@ -187,6 +187,10 @@ where
         return run_switch_vin(client, &cli.command_args, cli.json, stdout, stderr);
     }
 
+    if !cli.raw && is_target_recovery_command(&cli.command_args) {
+        return run_target_recovery(client, &cli.command_args, cli.json, stdout, stderr);
+    }
+
     let adc_read_command = is_adc_read_command(&cli.command_args);
     let adc_verbose = adc_read_command
         && (cli.verbose
@@ -772,6 +776,7 @@ fn request_from_args(args: &[String]) -> Result<BoardRequest, String> {
         "adc" => adc_request(&cleaned),
         "ota" => ota_request(&cleaned),
         "gpio" => gpio_request(&cleaned),
+        "recovery" => target_recovery_request(&cleaned),
         "watchdog" => watchdog_request(&cleaned),
         "bootloader" => {
             if cleaned.len() != 1 {
@@ -917,6 +922,70 @@ fn is_switch_usb_route_command(args: &[String]) -> bool {
 fn is_switch_vin_route_command(args: &[String]) -> bool {
     let cleaned = strip_passthrough_flags(args);
     cleaned.len() >= 4 && cleaned[0] == "switch" && cleaned[1] == "route" && cleaned[2] == "vin"
+}
+
+fn is_target_recovery_command(args: &[String]) -> bool {
+    let cleaned = strip_passthrough_flags(args);
+    cleaned.first().map(String::as_str) == Some("recovery")
+}
+
+fn target_recovery_request(args: &[String]) -> Result<BoardRequest, String> {
+    let usage = "usage: radxa-linkr-debuggerctl recovery enter qualcomm-edl|rockchip-maskrom 5v_out|12v_out|20v_out --confirm";
+    if args.len() != 4 || args[1] != "enter" {
+        return Err(usage.to_string());
+    }
+    if !matches!(args[2].as_str(), "qualcomm-edl" | "rockchip-maskrom") {
+        return Err(usage.to_string());
+    }
+    if !matches!(args[3].as_str(), "5v_out" | "12v_out" | "20v_out") {
+        return Err(usage.to_string());
+    }
+
+    Ok(BoardRequest {
+        method: Method::POST,
+        path: "/api/v1/target-recovery".to_string(),
+        query: Vec::new(),
+        body: Some(json!({ "mode": args[2], "rail": args[3] })),
+    })
+}
+
+fn run_target_recovery<TClient>(
+    client: &TClient,
+    args: &[String],
+    json_output: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8>
+where
+    TClient: BoardTransport,
+{
+    let has_confirm = args.iter().any(|arg| arg == "--confirm" || arg == "-y");
+    if !has_confirm {
+        let message = "target recovery requires --confirm because it power-cycles the selected rail and drives CON_MAS";
+        if json_output {
+            write_json_error(stdout, "recovery", "confirm_required", message)?;
+        } else {
+            writeln!(stderr, "{message}")?;
+        }
+        return Ok(2);
+    }
+
+    let recovery_args: Vec<String> = args
+        .iter()
+        .filter(|arg| *arg != "--confirm" && *arg != "-y")
+        .cloned()
+        .collect();
+    match target_recovery_request(&recovery_args) {
+        Ok(request) => run_standard(client, "recovery", request, json_output, stdout, stderr),
+        Err(err) => {
+            if json_output {
+                write_json_error(stdout, "recovery", "usage", &err)?;
+            } else {
+                writeln!(stderr, "{err}")?;
+            }
+            Ok(2)
+        }
+    }
 }
 
 fn run_switch_usb<TClient>(
@@ -1233,8 +1302,15 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
         "  radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 1000 --rate-hz 250"
     )?;
     writeln!(writer, "  radxa-linkr-debuggerctl ota status")?;
-    writeln!(writer, "  radxa-linkr-debuggerctl ota upload /tmp/firmware.bin")?;
+    writeln!(
+        writer,
+        "  radxa-linkr-debuggerctl ota upload /tmp/firmware.bin"
+    )?;
     writeln!(writer, "  radxa-linkr-debuggerctl test run script.ndjson")?;
+    writeln!(
+        writer,
+        "  radxa-linkr-debuggerctl recovery enter rockchip-maskrom 5v_out --confirm"
+    )?;
     writeln!(writer, "  radxa-linkr-debuggerctl watchdog status\n")?;
     writeln!(writer, "      --url <URL>")?;
     writeln!(writer, "      --addr <ADDR>")?;
@@ -1718,6 +1794,53 @@ mod tests {
         assert_eq!(requests[0].method, Method::PUT);
         assert_eq!(requests[0].path, "/api/v1/switch/usb");
         assert_eq!(requests[0].body.as_ref().unwrap()["route"], "pc");
+    }
+
+    #[test]
+    fn run_target_recovery_requires_confirmation() {
+        let cli = Cli::parse_from(["cmd", "recovery", "enter", "qualcomm-edl", "5v_out"]);
+        let client = FakeClient::default();
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 2);
+        assert!(client.requests.borrow().is_empty());
+        assert!(String::from_utf8(stderr)
+            .unwrap()
+            .contains("requires --confirm"));
+    }
+
+    #[test]
+    fn run_target_recovery_maps_mode_and_rail() {
+        let cli = Cli::parse_from([
+            "cmd",
+            "recovery",
+            "enter",
+            "rockchip-maskrom",
+            "12v_out",
+            "--confirm",
+        ]);
+        let client = FakeClient {
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"target-recovery","action":"enter","mode":"rockchip-maskrom","rail":"12v_out","active_level":0,"release_direction":"input"}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 0);
+        let requests = client.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, Method::POST);
+        assert_eq!(requests[0].path, "/api/v1/target-recovery");
+        assert_eq!(
+            requests[0].body.as_ref().unwrap()["mode"],
+            "rockchip-maskrom"
+        );
+        assert_eq!(requests[0].body.as_ref().unwrap()["rail"], "12v_out");
     }
 
     #[test]

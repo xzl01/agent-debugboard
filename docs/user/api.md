@@ -92,6 +92,28 @@ Enter ROM BOOTSEL mode. The MCU resets 250ms after the response.
 curl -X POST http://172.29.203.1/api/v1/bootloader
 ```
 
+## Target Recovery Modes
+
+### `GET /api/v1/target-recovery`
+
+Returns the supported recovery modes, rails, fixed timing, and safe release
+direction.
+
+### `POST /api/v1/target-recovery`
+
+Power-cycle a target rail while asserting `CON_MAS`, then release the pin to
+input. Qualcomm EDL is active high; Rockchip MASKROM is active low.
+
+```sh
+curl -X POST http://172.29.203.1/api/v1/target-recovery \
+  -d '{"mode":"rockchip-maskrom","rail":"5v_out"}'
+```
+
+Valid modes: `qualcomm-edl`, `rockchip-maskrom`. Valid rails: `5v_out`,
+`12v_out`, `20v_out`. The firmware waits 1000 ms with the rail off, establishes
+the recovery signal for 20 ms before power-on, holds it for 500 ms after
+power-on, and releases `CON_MAS` to high-impedance input even on failure.
+
 ## Watchdog
 
 ### `GET /api/v1/watchdog`
@@ -210,7 +232,13 @@ Up to 4 concurrent clients.
 {"type": "command", "command": "power_set", "id": "1", "output": "12v_out", "state": "on"}
 ```
 
-Available commands: `power_set`, `switch_route`, `gpio_set`, `bootloader`, `capture_arm`, `capture_trigger`, `capture_cancel`.
+Available commands: `power_set`, `switch_route`, `gpio_set`, `target_recovery`, `bootloader`, `capture_arm`, `capture_trigger`, `capture_cancel`.
+
+Target recovery command:
+
+```json
+{"type":"command","command":"target_recovery","id":"2","mode":"qualcomm-edl","output":"5v_out"}
+```
 
 ### Server → Client Messages
 

@@ -111,6 +111,36 @@ radxa-linkr-debuggerctl gpio set CON_MAS 1
 radxa-linkr-debuggerctl gpio input GP13
 ```
 
+## Automated Test Scripts
+
+`test run` executes a `linkr-test.v1` NDJSON script. Use `--serial` to select the target serial port. `--output` writes the full result to disk; `.json`, `.csv`, and `.ndjson` extensions select the report format, while other extensions default to JSON.
+
+```sh
+radxa-linkr-debuggerctl test run startup.ndjson --serial /dev/tty.usbserial-1234
+radxa-linkr-debuggerctl test run startup.ndjson --output startup-report.json
+```
+
+A `gpio_assert` step evaluates the `direction` and `value` in its `params` directly. Direction accepts only `input`/`output`, and value accepts only `0`/`1`. A Ctrl+C interruption marks the report as `aborted`.
+
+## Target Recovery Modes
+
+Use the dedicated recovery command instead of manually driving `CON_MAS`. The
+firmware performs a complete power cycle and always releases `CON_MAS` back to
+input when the sequence completes or fails.
+
+```sh
+# Qualcomm EDL samples an active-high recovery signal
+radxa-linkr-debuggerctl recovery enter qualcomm-edl 5v_out --confirm
+
+# Rockchip MASKROM samples an active-low recovery signal
+radxa-linkr-debuggerctl recovery enter rockchip-maskrom 5v_out --confirm
+```
+
+The final argument must be a user-facing target rail: `5v_out`, `12v_out`, or
+`20v_out`. `--confirm` is mandatory because the target device loses power and
+unsaved state. This is separate from `bootloader`, which enters the debugger
+MCU's RP2350 BOOTSEL mode.
+
 ## Watchdog
 
 ```sh
