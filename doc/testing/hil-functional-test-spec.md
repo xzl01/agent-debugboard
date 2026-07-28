@@ -703,22 +703,42 @@ The logic analyzer uses RP2350 PIO2+DMA for high-speed GPIO capture. The sigrok
 binary protocol runs over two transports: Web UI uses `/api/v1/live-sessions` then
 `/api/v1/ws/<slot>` binary Sigrok; native sigrok/PulseView uses raw-TCP port 5556.
 
-CONFIG pre/post are uint16, bounded 1..65535. Pre-trigger is intentionally not
-exposed in the Web UI; requests always send `pre_samples=0`. Stream mode sends
-`post_samples=0`. GP7-GP9 are not available in Sigrok modes.
+CONFIG v1 pre/post are uint16 for ordinary bounded and stream requests. Web
+bounded pre-trigger supports rising, falling, and either only: `pre_samples >= 1`,
+`post_samples >= 1`, and `pre_samples + post_samples <= 512`. Requested rates are
+1-25 MHz, and the selected physical plan must retain at least
+`2 * ceil(actual_rate / 1000)` samples. SINGLE supports through 25 MHz, FAST8
+through 10 MHz and rejects 25 MHz, and WIDE11 through 5 MHz and rejects 10 MHz
+and 25 MHz. Before first connection the Web UI permits local editing when generic
+constraints pass, then uses real per-mode CAPS and rejects or disables old firmware
+or a mode without CAPS mode flag bit 5 (`PRE_TRIGGER`, `1 << 5`). HELLO server
+flags bit 0 CONFIG_V2 and bit 1 GENERIC_PACKED_BURST are separate. Stream,
+trigger NONE, unsupported or high-rate generic packed burst, and ordinary deep
+capture remain pre=0. Completion is pre plus post, and `triggerIndex` equals pre.
 
-Bounded captures with pre=0 and post=1..512 use an exact finite PIO+DMA engine:
-trigger NONE starts immediately ungated, rising and falling edges use hardware
-IRQ-gated detection, and EITHER first snapshots the current pin level in firmware
-then waits for the opposite edge using the same 3-instruction trigger path. Because
-EITHER samples the pin level in firmware before arming the hardware trigger, there
-is an arm-time race window. Larger bounded requests (post>512) and continuous
-post=0 use ring streaming.
+Firmware reuses the prepared common packed ring/sink lifecycle, treats packed
+samples as the sole trigger authority after prefill, scans edges in software, and
+freezes and drains `[T-pre,T+post)` without a new IRQ pairing or buffer. The
+existing deep post behavior remains when pre=0. See the [2026-07-28 HIL report](results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md).
+
+Bounded pre=0 and post=1..512 remains the exact finite PIO+DMA path for trigger
+NONE and paths that cannot negotiate bounded pre-trigger. Web rising, falling,
+and either pre-trigger uses the prepared packed ring/sink lifecycle, software edge
+scan, and exact `[T-pre,T+post)` freeze and drain. Larger bounded requests
+(post>512) use packed ring streaming. At negotiated high rates with
+GENERIC_PACKED_BURST, post=0 uses packed burst, exactly 100000 samples followed
+by auto-STOP/drain. At lower non-packed rates post=0 runs until user stops.
 
 State progression after START_RESP: START_RESP with state 2 (ARMED) or state 3
 (RUNNING for NONE), then EVENT armed (rising/falling/either only), then EVENT
 triggered, then DATA frames, then EVENT stopped. NONE trigger emits no ARMED EVENT
 and starts directly in RUNNING state.
+
+Reproduce the current bounded pre-trigger and UART HIL with temporary Nix dependencies:
+
+```sh
+nix-shell -p python3Packages.websocket-client python3Packages.pyserial --run 'python3 apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py --matrix ws-bounded --modes SINGLE --tcp-rates-khz 1000 --tcp-pre-samples 64 --tcp-post-samples 448 --trigger-types rising --trigger-channel 0 --uart-stimulus Press --uart-device /dev/ttyACM1 --uart-baud 115200 --timeout 5'
+```
 
 #### 8b.1 Web UI Sigrok Session Lifecycle
 
@@ -736,7 +756,7 @@ WS sigrok and raw-TCP 5556 are mutually exclusive; one session at a time across 
 #### 8b.2 Bounded Capture (post_samples=65535)
 
 Verify bounded captures with exactly 65535 samples at 100 kHz for SINGLE, FAST8,
-WIDE12 modes. Each should receive exactly 65535 samples with 0 gaps, restart true,
+WIDE11 modes. Each should receive exactly 65535 samples with 0 gaps, restart true,
 HTTP health true.
 
 #### 8b.3 Stream Mode (post_samples=0)
@@ -763,33 +783,68 @@ Canonical 1MHz validation: stream WS SINGLE at 1MHz for 5 seconds, repeated for
 | WebSocket | SINGLE continuous | 1 MHz | 10 consecutive 5-second runs, zero gaps/disconnects, >= 950 ksps |
 | WebSocket | FAST8 continuous | 240 kHz | 5-second no-gap |
 | WebSocket | FAST8 continuous | 241 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
-| WebSocket | WIDE12 continuous | 149 kHz | 5-second no-gap |
-| WebSocket | WIDE12 continuous | 150 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
+| WebSocket | WIDE11 continuous | 149 kHz | 5-second no-gap |
+| WebSocket | WIDE11 continuous | 150 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
 | TCP | SINGLE continuous | 443 kHz | 5-second no-gap (historical/representative) |
 | TCP | SINGLE continuous | 444 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
 | TCP | FAST8 continuous | 241 kHz | 5-second no-gap |
 | TCP | FAST8 continuous | 242 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
-| TCP | WIDE12 continuous | 147 kHz | 5-second no-gap |
-| TCP | WIDE12 continuous | 148 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
+| TCP | WIDE11 continuous | 147 kHz | 5-second no-gap |
+| TCP | WIDE11 continuous | 148 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
 
-Bounded post=512 and post=1 HIL results (exact finite engine):
+Bounded pre=0 and post=1..512 HIL results (exact finite engine). post=513 to 65535 uses packed ring streaming.
+post=65536 is not a valid uint16; use CONFIG_V2 with u32LE pre/post for >65535 captures.
 
-| Transport | Mode | Rate | Result |
-|-----------|------|------|--------|
-| WS | SINGLE NONE post=1 | actual 125.081 MHz | Exactly 1 sample, 0 gaps, restart true, HTTP health true |
-| TCP | SINGLE NONE post=1 | actual 125.081 MHz | Exactly 1 sample, 0 gaps, restart true, HTTP health true |
-| WS | SINGLE rising post=512 | 5 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| WS | SINGLE falling post=512 | 5 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| WS | SINGLE either post=512 | 5 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| WS | SINGLE rising post=512 | 25 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| WS | SINGLE falling post=512 | 25 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| WS | SINGLE rising post=512 | 50 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| WS | SINGLE falling post=512 | 50 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| WS | SINGLE rising post=512 | 100 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| WS | SINGLE falling post=512 | 100 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| WS | SINGLE either post=512 | 100 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| TCP | SINGLE rising post=512 | 100 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| WS | SINGLE continuous | 1 MHz | 4,997,120 samples, 999,340.8 samples/s, zero sample-index gaps, zero disconnects |
+| Transport | Mode | Trigger | Rate | post | Result |
+|----------|------|---------|------|------|--------|
+| WS | SINGLE | NONE | actual 125.081 MHz | 1 | Exactly 1 sample, 0 gaps, restart true, HTTP health true |
+| TCP | SINGLE | NONE | actual 125.081 MHz | 1 | Exactly 1 sample, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE | rising | 5 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE | falling | 5 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE | either | 5 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE | rising | 25 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE | falling | 25 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE | rising | 50 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE | falling | 50 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE | rising | 100 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE | falling | 100 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE | either | 100 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| TCP | SINGLE | rising | 100 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
+| WS | SINGLE | continuous | 1 MHz | 0 | 4,997,120 samples, 999,340.8 samples/s, zero sample-index gaps, zero disconnects |
+
+Bounded post=65535 results (packed ring streaming, user-stop):
+
+| Transport | Mode | Trigger | Rate | post | Result |
+|----------|------|---------|------|------|--------|
+| WS | SINGLE | NONE | 100 kHz | 65535 | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
+| WS | FAST8 | NONE | 100 kHz | 65535 | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
+| WS | WIDE11 | NONE | 100 kHz | 65535 | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
+| TCP | SINGLE | NONE | 100 kHz | 65535 | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
+| TCP | FAST8 | NONE | 100 kHz | 65535 | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
+| TCP | WIDE11 | NONE | 100 kHz | 65535 | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
+
+Current WIDE11 bounded post=100000 results (CONFIG_V2, dual-SM packed arena,
+auto-STOP on completion):
+
+| Transport | Mode | Trigger | Rate | post | Result |
+|----------|------|---------|------|------|--------|
+| WS | WIDE11 | NONE | 100 MHz | 100000 | Exactly 100000 samples, 0 gaps, zero disconnects, fresh restart after every run |
+| WS | WIDE11 | rising | 100 MHz | 100000 | Exactly 100000 samples, trigger index 0 |
+| TCP | WIDE11 | rising | 100 MHz | 100000 | Exactly 100000 samples, trigger index 0 |
+| WS | WIDE11 | NONE | 100 MHz | 100000 | Exactly 100000 samples, 0 gaps |
+| TCP | WIDE11 | NONE | 100 MHz | 100000 | Exactly 100000 samples, 0 gaps |
+
+post=0 at high rate (GENERIC_PACKED_BURST, auto-STOP after exactly 100000 samples):
+
+| Transport | Mode | Trigger | Rate | post | Result |
+|----------|------|---------|------|------|--------|
+| WS | SINGLE | NONE | 100 MHz | 0 | Exactly 100000 samples, auto-STOP, 0 gaps |
+| WS | SINGLE | NONE | 125 MHz | 0 | Exactly 100000 samples, auto-STOP, 0 gaps |
+| WS | FAST8 | NONE | 100 MHz | 0 | Exactly 100000 samples, auto-STOP, 0 gaps |
+| WS | FAST8 | NONE | 125 MHz | 0 | Exactly 100000 samples, auto-STOP, 0 gaps |
+| WS | WIDE11 | NONE | 100 MHz | 0 | Exactly 100000 samples, auto-STOP, 0 gaps |
+
+WIDE11 post=0 at 125 MHz is rejected by START (INVALID_CONFIG); not a pending HIL case.
 
 Adjacent WS SINGLE failure was not measured under the final architecture. Use an
 isolated runner invocation per trigger type and rate because a terminal program
@@ -798,6 +853,186 @@ holding `/dev/ttyACM1` or case reuse can invalidate the stimulus. Verify
 before starting logic analyzer validation (use `fuser` or similar to confirm).
 
 Verify HTTP and watchdog remain responsive during capture.
+
+#### 8b.4.1 Generic Packed Burst (CONFIG_V2, post=100000 and post=0)
+
+HELLO server_flags bit 0 advertises CONFIG_V2 and bit 1 advertises GENERIC_PACKED_BURST.
+Use frame0x0b (CONFIG_V2_REQ, 16B) with u32LE pre/post fields for large-depth captures.
+The v1 frame0x05 (12B) remains for bounded captures with post <= 65535 and the post=0
+stream sentinel. With CONFIG_V2 and GENERIC_PACKED_BURST, bounded
+`post=65536..100000` is valid at every otherwise supported rate and pin plan.
+
+**High-rate `post=0` capacity-burst matrix**:
+
+| Mode | Rate | pre | post | Notes |
+|------|------|-----|------|-------|
+| SINGLE | 100 MHz or 125 MHz | 0 | 0 | Captures exactly 100000 samples losslessly then auto-STOP/drain |
+| FAST8 | 100 MHz or 125 MHz | 0 | 0 | Captures exactly 100000 samples losslessly then auto-STOP/drain |
+| WIDE11 | 100 MHz only | 0 | 0 | Captures exactly 100000 samples losslessly then auto-STOP/drain. 125 MHz rejected by START (INVALID_CONFIG) |
+
+The 2026-07-27 WIDE11 HIL verified the then-current target at 100 MHz with
+`pre=0` and both `post=100000` and high-rate `post=0`. Accepted deep bursts
+delivered exactly 100000 samples in 98 DATA frames with zero sample-index gaps.
+WIDE11 uses two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B
+(GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B shared arena.
+GP29 is excluded from WIDE11 LA (available as ordinary GPIO/ADC3). NONE deep burst uses
+two capture SMs; triggered deep burst adds a third SM running the 3-instruction trigger
+program. Two-phase START prepares ownership and quiesce before the response. NONE sends
+START_RESP in RUNNING state with no ARMED event; triggered captures send START_RESP in
+ARMED state followed by the ARMED event. GO then synchronously enables the sampler SM(s).
+
+| Transport | Mode | Trigger | Rate | Expected |
+|-----------|------|---------|------|----------|
+| WS | WIDE11 bounded deep burst | NONE | 100 MHz | PASS — exactly 100000 samples, 98 DATA frames, 0 gaps, restart and HTTP health true |
+| WS | WIDE11 bounded deep burst | rising | 100 MHz | PASS — exactly 100000 samples, trigger index 0, 0 gaps |
+| TCP | WIDE11 bounded deep burst | rising | 100 MHz | PASS — exactly 100000 samples, trigger index 0, 0 gaps |
+| WS | WIDE11 high-rate capacity burst | NONE | 100 MHz | PASS — post=0 produced exactly 100000 samples and auto-STOPPED |
+| TCP | WIDE11 high-rate capacity burst | NONE | 100 MHz | PASS — post=0 produced exactly 100000 samples and auto-STOPPED |
+
+After each deep burst run, verify HTTP health and restart capability. The 144184 B
+dual-SM packed arena restores ADC telemetry, power capture, and normal Sigrok pool after drain;
+confirm these services are functional after the capture completes.
+
+The final authoritative TCP/WS matrix passed 54/54 cases and the high-rate
+matrix passed 62/62. Eighteen continuous matrix rows ended with an explicit
+capacity OVERRUN; four had `capacity_stop_before_data=true`. Those rows prove
+lossless-or-stop terminal behavior, not sustained operation at the requested
+rate. Historical WIDE12 predecessor evidence remains at
+`doc/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md`.
+
+#### 8b.4.2 WIDE11 Deep-Burst Pin Mapping HIL
+
+The executable pin-mapping HIL is `--matrix wide11-mapping` in
+`apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py`. It must capture the
+exact WIDE11 deep-burst mode (`100 MHz`, `pre=0`, `post=100000`, CONFIG_V2), decode
+DATA payload as little-endian 11-bit samples (GP10=bit0 through GP20=bit10), and
+clearly identify which stimulus profile was used. The full external-generator profile
+verifies these independent bit mappings:
+
+| Physical pin | DATA bit |
+|--------------|----------|
+| GP10 | bit0 |
+| GP11 | bit1 |
+| ... | ... |
+| GP20 | bit10 |
+
+GP29 / ADC3 is excluded from WIDE11 LA (available as ordinary GPIO/ADC3).
+
+Do not use HTTP safe-GPIO outputs as the stimulus source for this case. WIDE11 PIO
+preparation configures GP10-GP20 as inputs (`gpio_pin_configure(...,
+GPIO_INPUT)`, `pio_gpio_init(...)`, and PIO input pindirs), so any same-pin HTTP
+safe-GPIO output would be overridden or conflict with the capture ownership model.
+
+Full external 4-bit prerequisite for a valid `external_4bit` pass:
+
+- External 3.3 V-compatible pattern generator D0 -> GP10 (DATA bit0 and trigger
+  channel 0)
+- External generator D1 -> GP11 (DATA bit1)
+- External generator D2 -> GP20 (DATA bit10)
+- External generator GND -> Linkr Debugger GND
+- Hold the idle state with GP10 low before arming; after START/armed state, emit the
+  declared repeating nibble pattern. Nibble bit0 drives GP10, bit1 drives GP11,
+  bit2 drives GP20. The default pattern holds each nibble for
+  64 samples at 100 MHz and is intentionally transition-rich enough to reject a
+  one-sample SM-A/SM-B skew.
+
+Run the full external-generator case with a 5-second operation bound only after wiring
+and generator setup are in place:
+
+```sh
+timeout 5s python3 apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py \
+  --matrix wide11-mapping \
+  --wide11-map-external-generator \
+  --timeout 5
+```
+
+The case is blocked, not passed, unless `--wide11-map-external-generator` is provided.
+Passing criteria include CONFIG_V2 use, exact mode/rate/pre/post, no DATA decode
+errors, no sample-index gaps, at least 100000 received samples, successful STOP_RESP
+cleanup, HTTP health after cleanup, and exact expected-pattern matching for bits
+0/1/10/11 across the configured check window.
+
+Reduced single-wire setup for remote validation is explicitly separate and must not be
+reported as the full external 4-bit mapping test. Use it only when `/dev/ttyACM1` TX is
+wired to GP10 and GP11, GP20, and GP29 remain externally low:
+
+```sh
+timeout 5s python3 apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py \
+  --matrix wide11-mapping \
+  --wide11-map-gp10-uart-low-others \
+  --timeout 5
+```
+
+The reduced case uses `stimulus_profile: "gp10_uart_low_others"` and sends the UART
+stimulus only after START_RESP, which is the trigger-safe barrier. It verifies GP10
+DATA bit0 sees both low and high runs, and that the zero mask `0x0c02` remains clear
+for every checked sample: GP11(bit1) and GP20(bit10) must stay low.
+Any high sample on bits1/10 is a failure and should be reported as unexpected
+high/crosstalk. This reduced case does **not** validate independent high-state mapping
+for GP11 or GP20. GP29 is excluded from WIDE11 LA (available as ordinary GPIO/ADC3).
+
+#### 8b.4.3 WIDE11 Shared-Arena Telemetry Isolation HIL
+
+The executable two-client regression is `--matrix wide11-telemetry-isolation` in
+`apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py`. It validates that a
+normal JSON WebSocket ADC telemetry client stays connected but pauses while a second
+client holds the WIDE11 shared-arena lease through raw-TCP sigrok deep burst.
+WIDE11 uses two packed capture SMs and two DMA channels in the 144184-byte
+shared arena; triggered capture adds a third trigger-only SM.
+
+Run with 5-second bounded operations:
+
+```sh
+timeout 5s python3 apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py \
+  --matrix wide11-telemetry-isolation \
+  --timeout 5
+```
+
+Required behavior:
+
+- Client A creates `/api/v1/live-sessions`, connects to the returned JSON WebSocket,
+  subscribes to ADC telemetry (`type=subscribe`, `topic=live`), and records baseline
+  telemetry sequence/timestamps before the capture starts.
+- Client B opens raw-TCP sigrok port 5556 and performs the exact WIDE11 deep burst:
+  WIDE11, 100 MHz, `pre=0`, `post=100000`, CONFIG_V2.
+- START_RESP from client B is the evidence that the capture backend has entered the
+  trigger-safe prepared/running path and the shared-arena pause/lease interval has
+  started. The runner records this monotonic timestamp.
+- During the overlap lease/pause interval, client A's WebSocket must remain connected
+  and must not receive malformed JSON or binary sigrok contamination. A receive
+  timeout in this expected pause is no-data while still connected, not a disconnect
+  or runner error. A short grace window may record telemetry already queued before
+  quiesce; it must be reported as `pre_pause_delivery_grace_records`, not hidden.
+  After that grace window, no baseline-epoch telemetry sample from the overlapped
+  ADC ring may be emitted before an observable sequence-epoch reset/resume. The
+  runner reports such contamination as `old_epoch_pause_records` /
+  `old_epoch_pause_record_count`.
+- A valid sequence regression/reset with advancing `device_t_mono_us` or `uptime_us`
+  marks observable firmware release/resume and begins the post-release epoch, even
+  when the raw-TCP helper has not yet returned its final STOP response. For example,
+  if baseline ended at sequence 12, grace drains sequence 13..25, and the client then
+  observes sequence 1..9 with device time greater than the baseline/old epoch, those
+  reset-epoch records are retained as post-release evidence. Do not classify arbitrary
+  sequence gaps as reset without device-time advance.
+- Client B must receive exactly the WIDE11 deep-burst contract: at least 100000 samples,
+  98 DATA frames, zero sample-index gaps, no DATA decode/mask/budget errors, and
+  STOP_RESP. The raw-TCP helper return timestamp is an upper bound on release, not the
+  lease boundary when telemetry already exposed a valid reset epoch earlier.
+- After drain/release, fresh ADC telemetry must continue on client A without reconnecting.
+  Resume may reconstruct the ADC ring and start a new telemetry sequence epoch, so the
+  runner must not require the post-release numeric sequence to exceed the baseline
+  sequence. It must require post-release records with a valid sequence and advancing
+  `device_t_mono_us` or `uptime_us`, and it must explicitly report the inferred
+  release/resume timestamp plus whether the post-release sequence continued or reset.
+- `GET /api/v1/adc/read` must pass after release.
+
+Use `pause`/`resume` terminology for this test. Do not describe the expected pause as
+a disconnect or reconnect, and do not treat `WebSocketTimeoutException` during the
+expected pause as a failure when the socket remains open. A same-epoch telemetry
+message emitted during the post-grace overlap window before reset/resume is a failure;
+a genuine WebSocket close/error, malformed JSON, binary contamination, raw TCP WIDE11
+short read, missing 98 DATA frames, invalid post-release epoch/timing, or failed ADC
+HTTP health is also a failure.
 
 #### 8b.5 GP10 UART Trigger Validation
 
@@ -1433,6 +1668,11 @@ VIN 1.8V 切换不属于默认 smoke test 范围；它需要目标板电压兼�
 
 ## Final Post-Fix HIL Evidence
 
+The current bounded pre-trigger and UART sample-0 decoder results are recorded in
+`doc/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md`, including
+canonical footprint, HTTP and CDC BOOTSEL recovery, WebSocket protocol evidence,
+browser decode evidence, and visual QA.
+
 The following results were obtained from actual post-fix HIL runs against the final
 firmware build. The dated repository report at `doc/testing/results/2026-07-25-logic-analyzer-finite-hil.md`
 preserves pass summaries, SHA-256 identities, and the post-patch transport-cleanup regression
@@ -1454,7 +1694,7 @@ each with 4096 samples and trigger offset 0. All six passes:
 `/tmp/linkr-final-gp10-2mhz-falling.json`, `/tmp/linkr-final-gp10-2mhz-either.json`.
 
 ### TCP Bounded 100kHz (`/tmp/linkr-final-tcp-bounded.json`)
-All three modes (SINGLE, FAST8, WIDE12) received exactly 65535 samples with zero
+All three modes (SINGLE, FAST8, WIDE11) received exactly 65535 samples with zero
 sample-index gaps, stop response received, immediate restart and HTTP health confirmed.
 
 These results demonstrate the final implementation against the reference smoke test
