@@ -36,6 +36,8 @@ FRAME_EVENT = 0x10
 FRAME_DATA = 0x11
 FRAME_ERROR = 0x7f
 SERVER_FLAG_CONFIG_V2 = 1 << 0
+SERVER_FLAG_GENERIC_PACKED_BURST = 1 << 1
+SERVER_EXPECTED_HIGH_RATE_FLAGS = SERVER_FLAG_CONFIG_V2 | SERVER_FLAG_GENERIC_PACKED_BURST
 
 ERROR_BUSY = 8
 
@@ -83,6 +85,9 @@ def parse_hello_resp(payload: bytes) -> dict:
         "protocol_version": protocol_version,
         "server_flags": server_flags,
         "supports_config_v2": (server_flags & SERVER_FLAG_CONFIG_V2) != 0,
+        "supports_generic_packed_burst": (server_flags & SERVER_FLAG_GENERIC_PACKED_BURST) != 0,
+        "expected_high_rate_flags_present":
+            (server_flags & SERVER_EXPECTED_HIGH_RATE_FLAGS) == SERVER_EXPECTED_HIGH_RATE_FLAGS,
         "mode_count": mode_count,
         "max_payload_len": max_payload_len,
     }
@@ -244,7 +249,7 @@ def send_hello(ws) -> dict | None:
         print(f"  FAIL: Expected HELLO_RESP (0x02), got {frame_type}")
         return None
     hello = parse_hello_resp(payload)
-    print(f"  HELLO: protocol_version={hello['protocol_version']}, server_flags=0x{hello['server_flags']:02x}, config_v2={hello['supports_config_v2']}, mode_count={hello['mode_count']}")
+    print(f"  HELLO: protocol_version={hello['protocol_version']}, server_flags=0x{hello['server_flags']:02x}, config_v2={hello['supports_config_v2']}, generic_packed_burst={hello['supports_generic_packed_burst']}, mode_count={hello['mode_count']}")
     return hello
 
 
@@ -392,7 +397,11 @@ def test_hello() -> bool:
     ws_url = create_session()
     ws = websocket.create_connection(ws_url, timeout=5)
     try:
-        if not send_hello(ws):
+        hello = send_hello(ws)
+        if not hello:
+            return False
+        if not hello["expected_high_rate_flags_present"]:
+            print("  FAIL: HELLO missing CONFIG_V2 or GENERIC_PACKED_BURST server_flags")
             return False
         if not send_caps(ws):
             return False

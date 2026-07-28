@@ -32,4 +32,12 @@ int linkr_debugger_ws_session_create(struct linkr_debugger_ws_session_info *info
 int linkr_debugger_ws_session_delete(uint32_t session_id);
 int linkr_debugger_ws_session_lookup(uint32_t session_id, struct linkr_debugger_ws_session_info *info);
 
+int linkr_debugger_ws_sigrok_burst_pool_begin(
+	uint32_t session_id, uint32_t stream_generation, uint32_t source_generation);
+void linkr_debugger_ws_sigrok_burst_pool_abort(
+	uint32_t session_id, uint32_t stream_generation);
+void linkr_debugger_ws_sigrok_burst_pool_mark_source_decode_complete(
+	uint32_t source_generation);
+bool linkr_debugger_ws_sigrok_burst_pool_source_done_and_drained(void);
+
 #endif /* RADXA_LINKR_DEBUGGER_WS_H_ */

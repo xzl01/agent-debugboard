@@ -7,6 +7,7 @@
  */
 
 #include "linkr_debugger_control.h"
+#include "linkr_debugger_capture_arena.h"
 #include "linkr_debugger_http.h"
 #include "linkr_debugger_logic_analyzer.h"
 #include "linkr_debugger_network.h"
@@ -67,6 +68,7 @@ int main(void)
 	int ret;
 
 	linkr_debugger_watchdog_boot_check();
+	linkr_debugger_capture_arena_init();
 
 	ret = linkr_debugger_control_init();
 	if (ret < 0) {
