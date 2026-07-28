@@ -979,9 +979,6 @@ static void la_stream_compress_and_emit(uint32_t *raw_buf, uint16_t *out_buf,
 					 uint32_t count, uint64_t base_timestamp)
 {
 	struct linkr_debugger_la_stream_chunk chunk;
-	uint64_t period_ps = la_stream_config.sample_rate_hz > 0U
-		? (1000000000000ULL / la_stream_config.sample_rate_hz)
-		: 1000000ULL;
 
 	uint16_t or_acc = 0U;
 	uint16_t and_acc = 0xffffU;

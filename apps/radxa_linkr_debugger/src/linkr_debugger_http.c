@@ -2008,6 +2008,9 @@ static int linkr_debugger_http_handle_logic_analyzer(struct http_client_ctx *cli
 		case LINKR_DEBUGGER_LA_STATE_ERROR:
 			linkr_debugger_http_append(&env, "error");
 			break;
+		case LINKR_DEBUGGER_LA_STATE_STREAMING:
+			linkr_debugger_http_append(&env, "streaming");
+			break;
 		}
 
 		if (linkr_debugger_http_append(&env, "\",\"backend\":") < 0 ||
