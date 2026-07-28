@@ -89,12 +89,47 @@ static int cmd_vin_set(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_tf_wp_get(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	shell_print(sh, "tf_wp=%s", linkr_debugger_tf_wp_route_name());
+	return 0;
+}
+
+static int cmd_tf_wp_set(const struct shell *sh, size_t argc, char **argv)
+{
+	enum linkr_debugger_tf_wp_route route;
+	int ret;
+
+	if (argc != 2 || !linkr_debugger_parse_tf_wp_route(argv[1], &route)) {
+		shell_error(sh, "usage: tf_wp set writable|protected");
+		return -EINVAL;
+	}
+
+	ret = linkr_debugger_tf_wp_route_set(route);
+	if (ret < 0) {
+		shell_error(sh, "failed to set TF_WP route: %d", ret);
+		return ret;
+	}
+
+	shell_print(sh, "tf_wp=%s", linkr_debugger_tf_wp_route_name());
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(vin_cmds,
 	SHELL_CMD(get, NULL, "Get VIN voltage route.", cmd_vin_get),
 	SHELL_CMD(set, NULL, "Set VIN voltage route: 1.8v or 3.3v.", cmd_vin_set),
+	SHELL_SUBCMD_SET_END);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(tf_wp_cmds,
+	SHELL_CMD(get, NULL, "Get TF card write-protect route.", cmd_tf_wp_get),
+	SHELL_CMD(set, NULL, "Set TF card write-protect route: writable or protected.", cmd_tf_wp_set),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(bootloader, NULL,
 			   "Enter MCU BOOTSEL for UF2/picotool flashing.",
 			   cmd_bootloader);
 SHELL_CMD_REGISTER(vin, &vin_cmds, "Control VIN voltage route.", NULL);
+SHELL_CMD_REGISTER(tf_wp, &tf_wp_cmds, "Control TF card write-protect route.", NULL);

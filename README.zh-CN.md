@@ -23,7 +23,7 @@ RP2354 硬件需要完成专用 board 定义和 HIL 验证后才能声明支持�
 | 功率分析仪 | 触发式采集，环形缓冲，CSV/NDJSON 导出 |
 | 电源输出 | 12v_out、5v_out、20v_out、vdd_5v |
 | ADC 监测 | 所有电源输出的电流读数 |
-| 路由切换 | TF/SD、USB hub mux、VIN（1.8V/3.3V） |
+| 路由切换 | 固件上报的 TF/SD、USB hub mux、TF 写保护（`writable`/`protected`）、VIN（1.8V/3.3V） |
 | GPIO | GP7–GP20、GP29 |
 | OTA 更新 | MCUboot 无签名 OTA |
 | 看门狗 | 自主恢复至 BOOTSEL |

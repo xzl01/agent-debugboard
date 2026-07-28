@@ -14,7 +14,8 @@ export type StepType =
 export type StepStatus = "pending" | "running" | "pass" | "fail" | "skip" | "error" | "aborted";
 
 export type SerialChannel = "uart0" | "uart1";
-export type SwitchName = "sd" | "usb" | "vin";
+// Switch names are firmware-enumerated and validated by the board at runtime.
+export type SwitchName = string;
 export type CaptureTrigger = "manual" | "current" | "gpio" | "power_on";
 
 export interface PowerOnParams { rail: string }

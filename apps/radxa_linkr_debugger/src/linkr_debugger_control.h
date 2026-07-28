@@ -71,6 +71,10 @@ enum linkr_debugger_usb_route linkr_debugger_usb_route_get(void);
 const char *linkr_debugger_usb_route_name(void);
 int linkr_debugger_usb_route_set(enum linkr_debugger_usb_route route);
 
+enum linkr_debugger_tf_wp_route linkr_debugger_tf_wp_route_get(void);
+const char *linkr_debugger_tf_wp_route_name(void);
+int linkr_debugger_tf_wp_route_set(enum linkr_debugger_tf_wp_route route);
+
 bool linkr_debugger_vin_switch_available(void);
 enum linkr_debugger_vin_route linkr_debugger_vin_route_get(void);
 const char *linkr_debugger_vin_route_name(void);

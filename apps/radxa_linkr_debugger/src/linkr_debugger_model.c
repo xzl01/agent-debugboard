@@ -186,6 +186,30 @@ const char *linkr_debugger_vin_route_to_string(enum linkr_debugger_vin_route rou
 	return route == LINKR_DEBUGGER_VIN_ROUTE_1V8 ? "1.8v" : "3.3v";
 }
 
+bool linkr_debugger_parse_tf_wp_route(const char *arg, enum linkr_debugger_tf_wp_route *route)
+{
+	if (arg == NULL || route == NULL) {
+		return false;
+	}
+
+	if (streq(arg, "writable")) {
+		*route = LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE;
+		return true;
+	}
+
+	if (streq(arg, "protected")) {
+		*route = LINKR_DEBUGGER_TF_WP_ROUTE_PROTECTED;
+		return true;
+	}
+
+	return false;
+}
+
+const char *linkr_debugger_tf_wp_route_to_string(enum linkr_debugger_tf_wp_route route)
+{
+	return route == LINKR_DEBUGGER_TF_WP_ROUTE_PROTECTED ? "protected" : "writable";
+}
+
 int linkr_debugger_vin_route_microvolt(enum linkr_debugger_vin_route route)
 {
 	return route == LINKR_DEBUGGER_VIN_ROUTE_1V8 ?

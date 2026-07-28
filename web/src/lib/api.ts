@@ -91,7 +91,7 @@ export const setPower = (name: string, on: boolean) =>
     body: JSON.stringify({ state: on ? "on" : "off" }),
   });
 
-export const setSwitch = (name: "sd" | "usb" | "vin", route: string) =>
+export const setSwitch = (name: string, route: string) =>
   request(`/switch/${name}`, {
     method: "PUT",
     body: JSON.stringify({ route }),

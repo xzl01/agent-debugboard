@@ -11,6 +11,7 @@ use crate::monitoring::BoardMonitoring;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -57,20 +58,16 @@ pub struct TuiStatusGpio {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TuiStatusSwitchRoute {
+pub struct TuiStatusSwitchInfo {
     #[serde(default)]
     pub route: String,
+    #[serde(default)]
+    pub routes: Vec<String>,
+    #[serde(default)]
+    pub requires_confirm: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TuiStatusSwitches {
-    #[serde(default)]
-    pub sd: TuiStatusSwitchRoute,
-    #[serde(default)]
-    pub usb: TuiStatusSwitchRoute,
-    #[serde(default)]
-    pub vin: TuiStatusSwitchRoute,
-}
+pub type TuiStatusSwitches = BTreeMap<String, TuiStatusSwitchInfo>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TuiStatusWatchdog {
@@ -409,17 +406,25 @@ mod tests {
     use tungstenite::{accept, Message};
 
     #[test]
-    fn status_switches_accept_optional_vin_route() {
+    fn status_switches_parse_legacy_and_dynamic_metadata() {
         let legacy: WsStatusSnapshot =
             serde_json::from_str(r#"{"switches":{"sd":{"route":"target"},"usb":{"route":"pc"}}}"#)
                 .unwrap();
-        assert!(legacy.switches.vin.route.is_empty());
+        assert_eq!(legacy.switches.len(), 2);
+        assert_eq!(legacy.switches["sd"].route, "target");
+        assert!(legacy.switches["sd"].routes.is_empty());
+        assert!(!legacy.switches["usb"].requires_confirm);
 
         let current: WsStatusSnapshot = serde_json::from_str(
-            r#"{"switches":{"sd":{"route":"target"},"usb":{"route":"pc"},"vin":{"route":"1.8v"}}}"#,
+            r#"{"switches":{"sd":{"route":"target","routes":["target","usb-reader"],"requires_confirm":false},"tf_wp":{"route":"writable","routes":["writable","protected"],"requires_confirm":false},"vin":{"route":"1.8v","routes":["1.8v","3.3v"],"requires_confirm":true}}}"#,
         )
         .unwrap();
-        assert_eq!(current.switches.vin.route, "1.8v");
+        assert_eq!(current.switches["tf_wp"].route, "writable");
+        assert_eq!(
+            current.switches["tf_wp"].routes,
+            vec!["writable".to_string(), "protected".to_string()]
+        );
+        assert!(current.switches["vin"].requires_confirm);
     }
 
     #[test]

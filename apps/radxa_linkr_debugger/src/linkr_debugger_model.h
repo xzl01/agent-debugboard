@@ -51,6 +51,11 @@ enum linkr_debugger_target_recovery_mode {
 	LINKR_DEBUGGER_TARGET_RECOVERY_ROCKCHIP_MASKROM = 1,
 };
 
+enum linkr_debugger_tf_wp_route {
+	LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE = 0,
+	LINKR_DEBUGGER_TF_WP_ROUTE_PROTECTED = 1,
+};
+
 #define LINKR_DEBUGGER_GPIO_NAME_BUFSZ 5
 #define LINKR_DEBUGGER_VIN_1V8_UV 1800000
 #define LINKR_DEBUGGER_VIN_3V3_UV 3300000
@@ -69,6 +74,8 @@ bool linkr_debugger_parse_gpio_pin(const char *arg, uint8_t *pin);
 bool linkr_debugger_format_gpio_name(uint8_t pin, char *buf, size_t len);
 bool linkr_debugger_parse_vin_route(const char *arg, enum linkr_debugger_vin_route *route);
 const char *linkr_debugger_vin_route_to_string(enum linkr_debugger_vin_route route);
+bool linkr_debugger_parse_tf_wp_route(const char *arg, enum linkr_debugger_tf_wp_route *route);
+const char *linkr_debugger_tf_wp_route_to_string(enum linkr_debugger_tf_wp_route route);
 int linkr_debugger_vin_route_microvolt(enum linkr_debugger_vin_route route);
 bool linkr_debugger_vin_route_from_microvolt(int32_t microvolt,
 					    enum linkr_debugger_vin_route *route);

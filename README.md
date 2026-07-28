@@ -24,7 +24,7 @@ definition and HIL validation before it can be declared supported.
 | Power analyzer | Triggered capture with ring buffer, CSV/NDJSON export |
 | Power outputs | 12v_out, 5v_out, 20v_out, vdd_5v |
 | ADC monitor | Current readings for all power outputs |
-| Switch routes | TF/SD, USB hub mux, VIN (1.8V/3.3V) |
+| Switch routes | Firmware-advertised TF/SD, USB hub mux, TF write-protect (`writable`/`protected`), VIN (1.8V/3.3V) |
 | GPIO | GP7–GP20, GP29 |
 | OTA update | MCUboot unsigned OTA |
 | Watchdog | Autonomous recovery to BOOTSEL |

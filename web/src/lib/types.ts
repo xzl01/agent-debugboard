@@ -27,11 +27,14 @@ export interface PowerOutput {
   value: number | null;
 }
 
-export interface SwitchState {
-  sd: string; // "target" | "usb-reader"
-  usb: string; // "pc" | "target"
-  vin?: string; // "1.8v" | "3.3v"
+// Firmware-enumerated switches; legacy firmware omits routes/requires_confirm.
+export interface SwitchInfo {
+  route: string;
+  routes?: string[];
+  requires_confirm?: boolean;
 }
+
+export type SwitchState = Record<string, SwitchInfo>;
 
 export interface AdcReading {
   name: string;

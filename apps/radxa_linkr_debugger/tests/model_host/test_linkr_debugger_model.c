@@ -284,6 +284,19 @@ static void test_target_recovery_contract(void)
 	assert(!linkr_debugger_target_recovery_rail_allowed(NULL));
 }
 
+static void test_tf_wp_route_parser(void)
+{
+	enum linkr_debugger_tf_wp_route route = LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE;
+
+	assert(linkr_debugger_parse_tf_wp_route("writable", &route));
+	assert(route == LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE);
+	assert_str_eq(linkr_debugger_tf_wp_route_to_string(route), "writable");
+	assert(linkr_debugger_parse_tf_wp_route("protected", &route));
+	assert(route == LINKR_DEBUGGER_TF_WP_ROUTE_PROTECTED);
+	assert_str_eq(linkr_debugger_tf_wp_route_to_string(route), "protected");
+	assert(!linkr_debugger_parse_tf_wp_route("garbage", &route));
+}
+
 static void test_heartbeat_state(void)
 {
 	struct linkr_debugger_heartbeat_state state = {0};
@@ -334,6 +347,7 @@ int main(void)
 	test_gpio_pin_parser();
 	test_vin_route_parser();
 	test_target_recovery_contract();
+	test_tf_wp_route_parser();
 	test_heartbeat_state();
 
 	puts("linkr_debugger_model: all tests passed");

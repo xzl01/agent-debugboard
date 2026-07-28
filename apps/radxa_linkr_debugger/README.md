@@ -110,6 +110,10 @@ curl -fsS -X PUT -H 'Content-Type: application/json' \
 curl -fsS http://172.29.203.1/api/v1/adc/read?channel=5v_out
 curl -fsS http://172.29.203.1/api/v1/watchdog
 curl -fsS http://172.29.203.1/api/v1/switch
+curl -fsS http://172.29.203.1/api/v1/switch/tf_wp   # returns writable or protected
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"route":"writable"}' \
+  http://172.29.203.1/api/v1/switch/tf_wp   # safe default (switch off)
 curl -fsS http://172.29.203.1/api/v1/switch/vin   # returns 1.8v or 3.3v
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"route":"3.3v"}' \
@@ -289,7 +293,7 @@ Current schematic mapping (G3 / RP2350A):
 - TF/SD route switch: `GP06_TF_SW` (GPIO 4)
 - USB hub mux switch: `GP03_USB3_HUB` (GPIO 5)
 - CH347 1.8 V VIN supply enable: `1V8_EN` (GPIO 6, internal to `switch vin`)
-- TF write-protect: `TF_WP` (GPIO 22)
+- TF write-protect: `TF_WP` (GPIO 22, `switch tf_wp`; defaults to `writable` at boot)
 - CH347 VIO voltage select: `VIO_SEL` (GPIO 23, `switch vin`)
 - Test point: `TP15` (GPIO 24)
 - Status LED: `LED_BLUE` (GPIO 25)

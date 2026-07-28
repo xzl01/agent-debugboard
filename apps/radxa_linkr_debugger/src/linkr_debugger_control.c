@@ -123,6 +123,7 @@ static const struct device *const watchdog_dev = DEVICE_DT_GET_OR_NULL(WATCHDOG_
 static bool regulator_states[REGULATOR_STATE_CAPACITY];
 static enum linkr_debugger_sd_route linkr_debugger_sd_route = LINKR_DEBUGGER_SD_ROUTE_TARGET;
 static enum linkr_debugger_usb_route linkr_debugger_usb_route = LINKR_DEBUGGER_USB_ROUTE_TARGET;
+static enum linkr_debugger_tf_wp_route linkr_debugger_tf_wp_route = LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE;
 static enum linkr_debugger_vin_route linkr_debugger_vin_route = LINKR_DEBUGGER_VIN_ROUTE_3V3;
 static uint8_t linkr_debugger_gpio_directions[SAFE_GPIO_STATE_CAPACITY];
 static bool linkr_debugger_gpio_output_levels[SAFE_GPIO_STATE_CAPACITY];
@@ -332,6 +333,14 @@ static int configure_usb_mux_default(void)
 {
 	linkr_debugger_usb_route = LINKR_DEBUGGER_USB_ROUTE_TARGET;
 	return gpio_pin_configure(gpio0, 5, GPIO_OUTPUT_ACTIVE);
+}
+
+static int configure_tf_wp_default(void)
+{
+	/* Writable = GPIO22 high: Q12 pulls GL3224 SD_WP low, which the reader
+	 * treats as writable. Released SD_WP is treated as read-only. */
+	linkr_debugger_tf_wp_route = LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE;
+	return gpio_pin_configure(gpio0, 22, GPIO_OUTPUT_ACTIVE);
 }
 
 static int configure_vin_default(void)
@@ -867,6 +876,11 @@ int linkr_debugger_control_init(void)
 		return ret;
 	}
 
+	ret = configure_tf_wp_default();
+	if (ret < 0) {
+		return ret;
+	}
+
 	ret = configure_vin_default();
 	if (ret < 0) {
 		return ret;
@@ -1070,6 +1084,19 @@ const char *linkr_debugger_usb_route_name(void)
 	       "target" : "pc";
 }
 
+enum linkr_debugger_tf_wp_route linkr_debugger_tf_wp_route_get(void)
+{
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	enum linkr_debugger_tf_wp_route route = linkr_debugger_tf_wp_route;
+	k_mutex_unlock(&linkr_debugger_control_lock);
+	return route;
+}
+
+const char *linkr_debugger_tf_wp_route_name(void)
+{
+	return linkr_debugger_tf_wp_route_to_string(linkr_debugger_tf_wp_route_get());
+}
+
 int linkr_debugger_sd_route_set(enum linkr_debugger_sd_route route)
 {
 	int ret;
@@ -1130,6 +1157,28 @@ int linkr_debugger_usb_route_set(enum linkr_debugger_usb_route route)
 		}
 	}
 
+	return 0;
+}
+
+int linkr_debugger_tf_wp_route_set(enum linkr_debugger_tf_wp_route route)
+{
+	int ret;
+
+	if (!device_is_ready(gpio0)) {
+		return -ENODEV;
+	}
+
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	ret = gpio_pin_set(gpio0, 22, route == LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE ? 1 : 0);
+	if (ret < 0) {
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		return ret;
+	}
+
+	linkr_debugger_tf_wp_route = route;
+
+	k_msleep(10);
+	k_mutex_unlock(&linkr_debugger_control_lock);
 	return 0;
 }
 

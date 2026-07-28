@@ -272,7 +272,7 @@ export default function App() {
                 >
                   <SerialCard
                     ref={serialAutomationRef}
-                    vinRoute={board.snapshot.switches.vin}
+                    vinRoute={board.snapshot.switches.vin?.route}
                     onSetVin={(route) => board.setSwitch("vin", route)}
                     workspaceTabs={selectedWorkspaceTab === "terminal" ? workspaceTabList : undefined}
                   />

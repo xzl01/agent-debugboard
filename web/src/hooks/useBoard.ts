@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "@/lib/api";
+import { parseSwitches } from "@/lib/switches";
 import type {
   AdcReading,
   Availability,
@@ -11,7 +12,6 @@ import type {
   MemoryPressureSnapshot,
   PowerOutput,
   SafeGpio,
-  SwitchState,
   WatchdogStatus,
 } from "@/lib/types";
 import {
@@ -43,7 +43,7 @@ import {
 
 const EMPTY: BoardSnapshot = {
   powerOutputs: [],
-  switches: { sd: "", usb: "", vin: "" },
+  switches: {},
   gpios: [],
   watchdog: {
     supported: false,
@@ -183,15 +183,7 @@ function mapStatus(status: unknown, adc: AdcReading[]): BoardSnapshot {
     layoutColumn: typeof g.layoutColumn === "number" ? g.layoutColumn : undefined,
   }));
 
-  const rawSwitches = isRecord(record.switches) ? record.switches : undefined;
-  const rawSd = rawSwitches && isRecord(rawSwitches.sd) ? rawSwitches.sd : undefined;
-  const rawUsb = rawSwitches && isRecord(rawSwitches.usb) ? rawSwitches.usb : undefined;
-  const rawVin = rawSwitches && isRecord(rawSwitches.vin) ? rawSwitches.vin : undefined;
-  const switches: SwitchState = {
-    sd: typeof rawSd?.route === "string" ? rawSd.route : "",
-    usb: typeof rawUsb?.route === "string" ? rawUsb.route : "",
-    vin: typeof rawVin?.route === "string" ? rawVin.route : "",
-  };
+  const switches = parseSwitches(record.switches);
 
   return {
     mcu: typeof record.mcu === "string" ? record.mcu : undefined,
@@ -240,11 +232,6 @@ function mergeWsSnapshot(prev: BoardSnapshot, msg: any): BoardSnapshot {
       }))
     : prev.gpios;
 
-  const rawSwitches = isRecord(record.switches) ? record.switches : undefined;
-  const rawSd = rawSwitches && isRecord(rawSwitches.sd) ? rawSwitches.sd : undefined;
-  const rawUsb = rawSwitches && isRecord(rawSwitches.usb) ? rawSwitches.usb : undefined;
-  const rawVin = rawSwitches && isRecord(rawSwitches.vin) ? rawSwitches.vin : undefined;
-
   return {
     ...prev,
     powerCaptureProtocol:
@@ -252,13 +239,7 @@ function mergeWsSnapshot(prev: BoardSnapshot, msg: any): BoardSnapshot {
         ? record.power_capture_protocol
         : prev.powerCaptureProtocol,
     powerOutputs,
-    switches: rawSwitches
-      ? {
-          sd: typeof rawSd?.route === "string" ? rawSd.route : prev.switches.sd,
-          usb: typeof rawUsb?.route === "string" ? rawUsb.route : prev.switches.usb,
-          vin: typeof rawVin?.route === "string" ? rawVin.route : prev.switches.vin,
-        }
-      : prev.switches,
+    switches: parseSwitches(record.switches, prev.switches),
     gpios,
     watchdog: parseWatchdog(record.watchdog, prev.watchdog),
     monitoring: parseMonitoring(record.board_monitoring, prev.monitoring),
@@ -278,7 +259,7 @@ export interface UseBoard {
   refresh: () => Promise<void>;
   setPower: (name: string, on: boolean) => Promise<void>;
   readPower: (name: string) => Promise<{ state: string; currentUa: number }>;
-  setSwitch: (name: "sd" | "usb" | "vin", route: string) => Promise<void>;
+  setSwitch: (name: string, route: string) => Promise<void>;
   setGpio: (identifier: string, direction: "input" | "output", value?: number) => Promise<void>;
   enterBootloader: () => Promise<void>;
   enterTargetRecovery: (mode: api.TargetRecoveryMode, rail: string) => Promise<void>;
@@ -1155,7 +1136,7 @@ export function useBoard(): UseBoard {
   }, []);
 
   const setSwitch = useCallback(
-    async (name: "sd" | "usb" | "vin", route: string) => {
+    async (name: string, route: string) => {
       await api.setSwitch(name, route);
       if (!live) await refresh();
     },

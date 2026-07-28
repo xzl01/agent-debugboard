@@ -592,19 +592,34 @@ static int linkr_debugger_http_json_switches(struct linkr_debugger_http_env *env
 {
 	if (linkr_debugger_http_append(env, "{\"sd\":{\"route\":") < 0 ||
 	    linkr_debugger_http_json_string(env, linkr_debugger_sd_route_name()) < 0 ||
-	    linkr_debugger_http_append(env, "},\"usb\":{\"route\":") < 0 ||
-	    linkr_debugger_http_json_string(env, linkr_debugger_usb_route_name()) < 0) {
+	    linkr_debugger_http_append(env,
+					",\"routes\":[\"target\",\"usb-reader\"],"
+					"\"requires_confirm\":false},\"usb\":{\"route\":") < 0 ||
+	    linkr_debugger_http_json_string(env, linkr_debugger_usb_route_name()) < 0 ||
+	    linkr_debugger_http_append(env,
+					",\"routes\":[\"pc\",\"target\"],"
+					"\"requires_confirm\":true},\"tf_wp\":{\"route\":") < 0 ||
+	    linkr_debugger_http_json_string(env, linkr_debugger_tf_wp_route_name()) < 0) {
+		return -ENOMEM;
+	}
+
+	if (linkr_debugger_http_append(env,
+				",\"routes\":[\"writable\",\"protected\"],"
+				"\"requires_confirm\":false}") < 0) {
 		return -ENOMEM;
 	}
 
 	if (linkr_debugger_vin_switch_available()) {
-		if (linkr_debugger_http_append(env, "},\"vin\":{\"route\":") < 0 ||
-		    linkr_debugger_http_json_string(env, linkr_debugger_vin_route_name()) < 0) {
+		if (linkr_debugger_http_append(env, ",\"vin\":{\"route\":") < 0 ||
+		    linkr_debugger_http_json_string(env, linkr_debugger_vin_route_name()) < 0 ||
+		    linkr_debugger_http_append(env,
+					    ",\"routes\":[\"1.8v\",\"3.3v\"],"
+					    "\"requires_confirm\":true}") < 0) {
 			return -ENOMEM;
 		}
 	}
 
-	return linkr_debugger_http_append(env, "}}") < 0 ? -ENOMEM : 0;
+	return linkr_debugger_http_append(env, "}") < 0 ? -ENOMEM : 0;
 }
 
 static int linkr_debugger_http_json_availability(struct linkr_debugger_http_env *env,
@@ -1099,21 +1114,36 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 			if (linkr_debugger_http_json_begin(&env, "switch", true) < 0 ||
 			    linkr_debugger_http_append(&env, ",\"action\":\"get\",\"name\":\"sd\",\"route\":") < 0 ||
 			    linkr_debugger_http_json_string(&env, linkr_debugger_sd_route_name()) < 0 ||
-			    linkr_debugger_http_append(&env, "}\n") < 0) {
+			    linkr_debugger_http_append(&env,
+					    ",\"routes\":[\"target\",\"usb-reader\"],"
+					    "\"requires_confirm\":false}\n") < 0) {
 				break;
 			}
 		} else if (strcmp(path + 1, "usb") == 0) {
 			if (linkr_debugger_http_json_begin(&env, "switch", true) < 0 ||
 			    linkr_debugger_http_append(&env, ",\"action\":\"get\",\"name\":\"usb\",\"route\":") < 0 ||
 			    linkr_debugger_http_json_string(&env, linkr_debugger_usb_route_name()) < 0 ||
-			    linkr_debugger_http_append(&env, "}\n") < 0) {
+			    linkr_debugger_http_append(&env,
+					    ",\"routes\":[\"pc\",\"target\"],"
+					    "\"requires_confirm\":true}\n") < 0) {
+				break;
+			}
+		} else if (strcmp(path + 1, "tf_wp") == 0) {
+			if (linkr_debugger_http_json_begin(&env, "switch", true) < 0 ||
+			    linkr_debugger_http_append(&env, ",\"action\":\"get\",\"name\":\"tf_wp\",\"route\":") < 0 ||
+			    linkr_debugger_http_json_string(&env, linkr_debugger_tf_wp_route_name()) < 0 ||
+			    linkr_debugger_http_append(&env,
+					    ",\"routes\":[\"writable\",\"protected\"],"
+					    "\"requires_confirm\":false}\n") < 0) {
 				break;
 			}
 		} else if (strcmp(path + 1, "vin") == 0 && linkr_debugger_vin_switch_available()) {
 			if (linkr_debugger_http_json_begin(&env, "switch", true) < 0 ||
 			    linkr_debugger_http_append(&env, ",\"action\":\"get\",\"name\":\"vin\",\"route\":") < 0 ||
 			    linkr_debugger_http_json_string(&env, linkr_debugger_vin_route_name()) < 0 ||
-			    linkr_debugger_http_append(&env, "}\n") < 0) {
+			    linkr_debugger_http_append(&env,
+					    ",\"routes\":[\"1.8v\",\"3.3v\"],"
+					    "\"requires_confirm\":true}\n") < 0) {
 				break;
 			}
 		} else {
@@ -1181,6 +1211,16 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 				return 0;
 			}
 			ret = linkr_debugger_usb_route_set(route);
+		} else if (strcmp(path + 1, "tf_wp") == 0) {
+			enum linkr_debugger_tf_wp_route route;
+
+			if (!linkr_debugger_parse_tf_wp_route(req.route, &route)) {
+				k_mutex_unlock(&linkr_debugger_http_lock);
+				linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+						     "switch", "invalid_route", "tf_wp route must be writable or protected");
+				return 0;
+			}
+			ret = linkr_debugger_tf_wp_route_set(route);
 		} else if (strcmp(path + 1, "vin") == 0 && linkr_debugger_vin_switch_available()) {
 			enum linkr_debugger_vin_route route;
 
@@ -1214,6 +1254,7 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 		    linkr_debugger_http_json_string(&env,
 			    strcmp(path + 1, "sd") == 0 ? linkr_debugger_sd_route_name() :
 			    strcmp(path + 1, "usb") == 0 ? linkr_debugger_usb_route_name() :
+			    strcmp(path + 1, "tf_wp") == 0 ? linkr_debugger_tf_wp_route_name() :
 			    linkr_debugger_vin_route_name()) < 0 ||
 		    linkr_debugger_http_append(&env, "}\n") < 0) {
 			break;

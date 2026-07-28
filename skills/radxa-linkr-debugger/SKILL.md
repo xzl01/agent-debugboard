@@ -681,12 +681,16 @@ Switch mux routes.
 curl -fsS "$BOARD_URL/api/v1/switch"
 curl -fsS "$BOARD_URL/api/v1/switch/sd"
 curl -fsS "$BOARD_URL/api/v1/switch/usb"
+curl -fsS "$BOARD_URL/api/v1/switch/tf_wp"
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"route":"usb-reader"}' \
   "$BOARD_URL/api/v1/switch/sd"
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"route":"target"}' \
   "$BOARD_URL/api/v1/switch/usb"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"route":"protected"}' \
+  "$BOARD_URL/api/v1/switch/tf_wp"
 ```
 
 VIN control:
@@ -711,7 +715,16 @@ is to verify stability on real hardware.
 The unified `/api/v1/switch/*` family is the interface for mux-style controls
 in this repository. `switch sd` controls the RS2099XTQC16 TF/SD route
 between `target` and `usb-reader`, while `switch usb` controls the GP03 USB mux
-between `pc` and `target`. On G3, GPIO1 VDD_5V and its GPIO6 VDD_1V8 child rail
+between `pc` and `target`. `switch tf_wp` controls TF card write-protect on the
+onboard GL3224 reader: `writable` (boot default, switch off, GPIO22 drives Q12
+to pull SD_WP low, which the reader treats as writable) or `protected` (SD_WP
+released, card read-only). GL3224 samples SD_WP at card insertion, so a WP
+route change applies on the next card attach; re-route `switch sd` away and
+back (or re-insert the card) to apply it immediately. The firmware is
+the authority on the switch catalog: `GET /api/v1/switch` (and the status/WS
+switches object) advertises each switch with its current `route`, the valid
+`routes`, and a `requires_confirm` flag, so host clients enumerate switches
+instead of hardcoding names or route vocabularies. On G3, GPIO1 VDD_5V and its GPIO6 VDD_1V8 child rail
 are always on in Device Tree. The selectable CH347 VIO level is modeled as a
 standard `regulator-gpio` regulator with exact 1.8V and 3.3V states; firmware
 uses the Zephyr regulator API for `switch vin`. VIN defaults to 3.3V at boot.

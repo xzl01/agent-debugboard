@@ -637,12 +637,19 @@ timeout 5s radxa-linkr-debuggerctl --json switch get sd
 timeout 5s radxa-linkr-debuggerctl --json switch get usb
 timeout 5s radxa-linkr-debuggerctl --json switch route usb target --confirm
 timeout 5s radxa-linkr-debuggerctl --json switch get usb
+
+timeout 5s radxa-linkr-debuggerctl --json switch get tf_wp
+timeout 5s radxa-linkr-debuggerctl --json switch route tf_wp protected
+timeout 5s radxa-linkr-debuggerctl --json switch get tf_wp
+timeout 5s radxa-linkr-debuggerctl --json switch route tf_wp writable
+timeout 5s radxa-linkr-debuggerctl --json switch get tf_wp
 ```
 
 注意：
 
 - `set` 后等待硬件稳定再 `get`
 - 优先顺序验证，避免并行反向测试干扰
+- `tf_wp` 启动默认必须是 `writable`（switch 关闭，GPIO22 驱动 Q12 将 GL3224 SD_WP 拉低）；`protected` 时 onboard USB 读卡器应表现为只读；GL3224 在插卡时采样 SD_WP，WP 变更需重新插卡或将 `switch sd` 切走再切回后生效
 
 ### 6. VIN 控制（G3 专用）
 
