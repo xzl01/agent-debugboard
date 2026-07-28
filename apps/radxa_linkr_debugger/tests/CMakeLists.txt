@@ -27,12 +27,10 @@ linkr_debugger_add_host_test(linkr_debugger_ota_parser_test
 target_compile_definitions(linkr_debugger_ota_parser_test PRIVATE LINKR_DEBUGGER_OTA_HOST_TEST)
 
 linkr_debugger_add_host_test(linkr_debugger_portal_test
-  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_dns.c
   ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_captive_portal.c
   model_host/test_linkr_debugger_portal.c
 )
 target_compile_definitions(linkr_debugger_portal_test PRIVATE
-  LINKR_DEBUGGER_DNS_HOST_TEST
   LINKR_DEBUGGER_CAPTIVE_PORTAL_HOST_TEST
 )
 

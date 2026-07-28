@@ -28,7 +28,7 @@ definition and HIL validation before it can be declared supported.
 | GPIO | GP7–GP20, GP29 |
 | OTA update | MCUboot unsigned OTA |
 | Watchdog | Autonomous recovery to BOOTSEL |
-| Captive portal | DHCP/DNS/HTTP auto-open for Web UI |
+| Captive portal | DHCP option 114/HTTP auto-open for Web UI |
 
 `5V_FIN` is intentionally treated as a separate input/source power input. It is
 not exposed as a controllable output.

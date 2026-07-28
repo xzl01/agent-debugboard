@@ -397,10 +397,9 @@ PY
 
 ### 2c. 强制门户发现
 
-验证 DHCP option 114（Captive Portal URI）已正确通告。利用 tcpdump 在 NCM 接口
-捕获 DHCP DORA 过程，解析 option 3（router）、option 6（DNS）和 option 114
-（Captive Portal URI）。以下为 Linux 示例；macOS/Windows 使用对应平台 tcpdump
-或 DHCP 工具：
+验证 DHCP option 114（Captive Portal URI）已正确通告，且 option 3（router）和
+option 6（DNS）没有被下发。利用 tcpdump 在 NCM 接口捕获 DHCP DORA 过程。
+以下为 Linux 示例；macOS/Windows 使用对应平台 tcpdump 或 DHCP 工具：
 
 ```sh
 # 先用 ip link 确认 NCM 接口名，再显式填写；不要自动选择第一块网卡。
@@ -435,16 +434,20 @@ sudo timeout 5s dhclient -cf "$DHCLIENT_CONF" "$NCM_IFACE"
 wait "$TCPDUMP_PID" || [ "$?" -eq 124 ]
 
 # 展开客户端请求和 ACK 的 DHCP options。不同 Wireshark 版本的字段名不同，
-# 因此保留 verbose 文本作为 HIL 记录，并人工确认请求 PRL 包含 114，且 ACK
-# 包含 option 3、6、114 的精确值。
+# 因此保留 verbose 文本作为 HIL 记录，并确认请求 PRL 包含 114；ACK 必须
+# 包含 option 114，但不得包含 option 3 或 option 6。
 timeout 5s tshark -r "$DHCP_CAPTURE" -Y 'dhcp.option.dhcp == 3' -V \
   > /tmp/linkr-dhcp-request.txt
 timeout 5s tshark -r "$DHCP_CAPTURE" -Y 'dhcp.option.dhcp == 5' -V \
   > /tmp/linkr-dhcp-ack.txt
 grep -E 'Parameter Request List|Captive-Portal|Option.*114' \
   /tmp/linkr-dhcp-request.txt
-grep -E 'Router|Domain Name Server|Captive-Portal|Option.*(3|6|114)' \
-  /tmp/linkr-dhcp-ack.txt
+grep -E 'Captive-Portal|Option.*114' /tmp/linkr-dhcp-ack.txt
+if grep -E 'Router|Domain Name Server|Option: \((3|6)\)' \
+  /tmp/linkr-dhcp-ack.txt; then
+  echo 'DHCP ACK unexpectedly advertises a router or DNS server' >&2
+  exit 1
+fi
 
 if [ "$NCM_WAS_MANAGED" = yes ]; then
   sudo timeout 5s dhclient -r "$NCM_IFACE" || true
@@ -453,41 +456,12 @@ if [ "$NCM_WAS_MANAGED" = yes ]; then
 fi
 ```
 
-客户端请求的 Parameter Request List 必须包含 option 114。ACK 必须包含 router
-`172.29.203.1`、DNS `172.29.203.1` 和 option 114 URI
-`http://172.29.203.1/captive-portal/api`；把 `/tmp/linkr-dhcp-ack.txt` 留作
-HIL 记录。上述命令会恢复原 NetworkManager 所有权；不要同时运行两个 DHCP
-client。
-
-验证 DNS 泛解析 A 记录（对任意查询名返回 `172.29.203.1`）：
-
-```sh
-timeout 5s dig +short @172.29.203.1 anything.example A
-```
-
-期望 `172.29.203.1`；若输出为空或包含非 IP 字符串则失败。
-
-验证 DNS AAAA 查询返回 NOERROR 且 answers 为空（NODATA）：
-
-```sh
-timeout 5s dig @172.29.203.1 anything.example AAAA +notcp +tries=1 +time=2 +noedns
-```
-
-通过检查输出中是否存在 `NOERROR` 且 `ANSWER: 0` 来区分 NODATA 与
-timeout/NXDOMAIN：
-
-```sh
-timeout 5s dig @172.29.203.1 anything.example AAAA +notcp +tries=1 +time=2 +noedns | python3 -c "
-import sys
-import re
-text = sys.stdin.read()
-m = re.search(r'status:\s*([A-Z]+).*?ANSWER:\s*(\d+)', text, re.S)
-assert m is not None, f'Cannot parse dig header: {text[:300]}'
-status, answers = m.group(1), int(m.group(2))
-assert status == 'NOERROR' and answers == 0, f'Expected NOERROR + 0 answers, got {status} + {answers}'
-print('AAAA NOERROR/NODATA OK')
-"
-```
+客户端请求的 Parameter Request List 必须包含 option 114。ACK 必须包含 URI
+`http://172.29.203.1/captive-portal/api`，不得包含 router 或 DNS option；把
+`/tmp/linkr-dhcp-ack.txt` 留作 HIL 记录。续租后还必须确认主机仅新增
+`172.29.203.0/24` 的直连路由，没有新增经由 `172.29.203.1` 的默认路由，系统
+DNS 列表也不包含 `172.29.203.1`。上述命令会恢复原 NetworkManager 所有权；
+不要同时运行两个 DHCP client。
 
 验证 HTTP port 80 `/captive-portal/api` 返回 `Content-Type: application/captive+json` 和 HTTP 200：
 

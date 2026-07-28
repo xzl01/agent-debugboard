@@ -32,10 +32,8 @@ cc -std=c11 -Wall -Wextra -Werror \
 "${OUT}/linkr_debugger_ota_parser_test"
 
 cc -std=c11 -Wall -Wextra -Werror \
-	-DLINKR_DEBUGGER_DNS_HOST_TEST \
 	-DLINKR_DEBUGGER_CAPTIVE_PORTAL_HOST_TEST \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
-	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_dns.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_captive_portal.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_portal.c" \
 	-o "${OUT}/linkr_debugger_portal_test"

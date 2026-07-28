@@ -16,16 +16,14 @@ On most operating systems, the board's captive portal detection will prompt the 
 
 ## How auto-open works
 
-The board uses three mechanisms to trigger the OS captive portal prompt:
+The board uses DHCP option 114 and HTTP detection endpoints to trigger the OS
+captive portal prompt without becoming the host's Internet gateway:
 
-- **DHCP**: the DHCPv4 server on the NCM interface advertises the router and
-  DNS address as `172.29.203.1` and sends DHCP option 114 (Captive Portal URI)
-  with the value `http://172.29.203.1/captive-portal/api`. This is a
-  compatibility-oriented HTTP endpoint, not a trusted HTTPS signal.
-- **DNS**: a lightweight DNS responder bound to the NCM interface on UDP port 53
-  returns a wildcard A record pointing to `172.29.203.1` for any incoming query.
-  AAAA queries return a NOERROR response with zero answers (NODATA). DNS TTL is
-  30 seconds.
+- **DHCP**: the DHCPv4 server assigns a local NCM address and subnet route, but
+  deliberately does not advertise a default router or DNS server. It sends
+  DHCP option 114 (Captive Portal URI) with the value
+  `http://172.29.203.1/captive-portal/api`. This prevents the debugger from
+  taking priority over Ethernet, Wi-Fi, or VPN Internet access.
 - **HTTP port 80**: a single Zephyr HTTP service on `172.29.203.1:80` routes by
   URL path. When a GET request arrives at `/captive-portal/api`, it responds
   with HTTP 200 and a JSON body:

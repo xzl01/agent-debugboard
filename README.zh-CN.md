@@ -27,7 +27,7 @@ RP2354 硬件需要完成专用 board 定义和 HIL 验证后才能声明支持�
 | GPIO | GP7–GP20、GP29 |
 | OTA 更新 | MCUboot 无签名 OTA |
 | 看门狗 | 自主恢复至 BOOTSEL |
-| 强制门户 | DHCP/DNS/HTTP 自动打开 Web UI |
+| 强制门户 | DHCP option 114/HTTP 自动打开 Web UI |
 
 `5V_FIN` 会被当作独立的输入/来源电源处理，不作为可控输出暴露给主机。
 

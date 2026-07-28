@@ -85,7 +85,6 @@ target_sources(app PRIVATE
   src/main.c
   src/linkr_debugger_captive_portal.c
   src/linkr_debugger_control.c
-  src/linkr_debugger_dns.c
   src/linkr_debugger_http_body.c
   src/linkr_debugger_http.c
   src/linkr_debugger_logic_analyzer.c

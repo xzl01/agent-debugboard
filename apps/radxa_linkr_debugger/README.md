@@ -146,12 +146,12 @@ is still blocked. Do not use OTA to upload `.uf2` or `.elf` files; use a
 MCUboot-format application binary such as the release asset
 `radxa-linkr-debugger-rp2350-ota.bin`.
 
-Captive portal discovery: the firmware runs a DHCPv4 server that advertises
-router and DNS as `172.29.203.1` and sends DHCP option 114 (Captive Portal URI)
-with value `http://172.29.203.1/captive-portal/api`. A DNS responder bound to the
-NCM interface on UDP 53 returns wildcard A records pointing to `172.29.203.1`
-and NOERROR/NODATA for AAAA queries, with no forwarding or caching. A single HTTP
-service bound to the NCM-local `172.29.203.1` address on port 80 routes by URL
+Captive portal discovery: the firmware runs a DHCPv4 server that assigns the
+host a local NCM address without advertising a default router or DNS server, so
+connecting the debugger cannot take over the host's Internet route. It sends
+DHCP option 114 (Captive Portal URI) with value
+`http://172.29.203.1/captive-portal/api`. A single HTTP service bound to the
+NCM-local `172.29.203.1` address on port 80 routes by URL
 path (`/`, `/assets/*`, `/api/v1/*`,
 `/api/v1/ws/*`, `/captive-portal/api`, and legacy detection probes). It answers
 GET `/captive-portal/api` with `application/captive+json` and a JSON body

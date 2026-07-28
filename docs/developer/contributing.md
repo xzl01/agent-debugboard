@@ -9,7 +9,7 @@
 ```
 
 The test runner covers host C tests for the shared board model, OTA parser,
-captive portal and DNS behavior, HTTP request-body handling, and logic analyzer
+captive portal behavior, HTTP request-body handling, and logic analyzer
 validation. Rust host CLI checks live under `cmd-ng/` and are run with Cargo.
 
 ## Rust host CLI checks

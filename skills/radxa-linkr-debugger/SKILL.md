@@ -950,10 +950,10 @@ routes by URL path: `/`,
 `/assets/*`, `/api/v1/*`, `/api/v1/ws/*`, `/captive-portal/api`, and legacy
 detection probes.
 
-DHCP advertises router and DNS as `172.29.203.1`, and sends DHCP option 114
-(Captive Portal URI) set to `http://172.29.203.1/captive-portal/api`. DNS on
-UDP 53 returns wildcard A records pointing to `172.29.203.1` and NOERROR/NODATA
-for AAAA, with no forwarding or caching. HTTP on port 80 answers
+DHCP assigns a local NCM address without advertising a default router or DNS
+server, so the debugger does not replace the host's Internet path. It sends
+DHCP option 114 (Captive Portal URI) set to
+`http://172.29.203.1/captive-portal/api`. HTTP on port 80 answers
 `/captive-portal/api` with `application/captive+json`; all other GET paths
 not matching the routed paths redirect (HTTP 302) to `http://172.29.203.1/`.
 OS auto-open is best-effort, not guaranteed; results vary by OS and multi-homed routing.

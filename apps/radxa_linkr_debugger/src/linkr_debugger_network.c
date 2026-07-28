@@ -7,8 +7,6 @@
 
 #include "linkr_debugger_network.h"
 
-#include "linkr_debugger_dns.h"
-
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -30,7 +28,6 @@ LOG_MODULE_REGISTER(linkr_debugger_network, LOG_LEVEL_INF);
 static void dhcp_start_work_handler(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(dhcp_start_work, dhcp_start_work_handler);
 static bool dhcp_started;
-static bool dns_started;
 static uint32_t network_retry_delay_ms = NETWORK_START_RETRY_INITIAL_MS;
 
 int linkr_debugger_network_get_ncm_iface(struct net_if **iface)
@@ -57,7 +54,6 @@ static int start_dhcp_server(void)
 	struct net_if *iface;
 	struct net_if *addr_iface = NULL;
 	struct net_in_addr base_addr;
-	struct net_in_addr gw;
 	struct net_in_addr addr;
 	int ret;
 
@@ -79,10 +75,6 @@ static int start_dhcp_server(void)
 		}
 	}
 
-	if (net_addr_pton(AF_INET, "172.29.203.1", &gw) == 0) {
-		net_if_ipv4_set_gw(iface, &gw);
-	}
-
 	ret = net_addr_pton(AF_INET, DHCP_SERVER_BASE_ADDR, &base_addr);
 	if (ret < 0) {
 		LOG_ERR("Invalid DHCP base address (%d)", ret);
@@ -101,15 +93,6 @@ static int start_dhcp_server(void)
 			dhcp_started = true;
 			LOG_INF("DHCPv4 server started from %s", DHCP_SERVER_BASE_ADDR);
 		}
-	}
-
-	if (!dns_started) {
-		ret = linkr_debugger_dns_start();
-		if (ret < 0) {
-			LOG_WRN("DNS captive responder start failed (%d), will retry", ret);
-			return ret;
-		}
-		dns_started = true;
 	}
 
 	return 0;

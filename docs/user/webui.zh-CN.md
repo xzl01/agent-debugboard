@@ -17,16 +17,13 @@ http://172.29.203.1/
 
 ## 强制门户发现
 
-固件实现了多路径强制门户检测辅助功能，在 host 接入 NCM 链路时最大化
-操作系统自动打开调试板 Web UI 的概率。
+固件通过 DHCP option 114 和 HTTP 检测端点辅助操作系统打开调试板 Web UI，
+同时避免把调试板配置成 host 的互联网网关。
 
-- **DHCP**：NCM 接口上的 DHCPv4 server 将路由器和 DNS 地址通告为
-  `172.29.203.1`，并发送 DHCP option 114（Captive Portal URI），值为
-  `http://172.29.203.1/captive-portal/api`。这是面向兼容性的 HTTP 端点，
-  不是可信的 HTTPS 信号。
-- **DNS**：NCM 接口上的轻量级 DNS 响应器绑定 UDP port 53，对任何传入查询
-  均返回指向 `172.29.203.1` 的泛解析 A 记录。AAAA 查询返回 NOERROR 但
-  answers 为零（NODATA）。DNS TTL 为 30 秒。
+- **DHCP**：NCM 接口上的 DHCPv4 server 只分配本地地址和子网路由，明确不
+  通告默认网关或 DNS server。它仍发送 DHCP option 114（Captive Portal URI），
+  值为 `http://172.29.203.1/captive-portal/api`，因此不会抢占以太网、Wi-Fi
+  或 VPN 的互联网访问路径。
 - **HTTP port 80**：绑定在 `172.29.203.1:80` 的单一 Zephyr HTTP 服务按
   URL 路径路由。GET 请求到达 `/captive-portal/api` 时返回 HTTP 200 和
   JSON 正文：
