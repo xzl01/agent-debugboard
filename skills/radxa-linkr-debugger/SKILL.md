@@ -421,20 +421,62 @@ calls. Firmware request handling, however, rejects fragmented WebSocket messages
 truncated, oversized, or malformed inner request frames rather than preserving
 them; it does not concatenate partial inner frames.
 
-CONFIG pre/post are uint16. Pre-trigger is intentionally not exposed in the Web
-UI; requests always send `pre_samples=0`. Bounded captures use
-`post_samples=1..65535`. Stream mode sends `post_samples=0` as the unlimited
-sentinel and runs until stopped. Bounded pre=0 and post=1..512 use an exact finite
-PIO+DMA engine: trigger NONE starts immediately ungated, rising and falling edges
-use hardware IRQ-gated detection, and EITHER first snapshots the current pin level
-in firmware then waits for the opposite edge using the same 3-instruction trigger
-path. Because EITHER samples the pin level in firmware before arming the hardware
-trigger, there is an arm-time race window. Larger bounded requests (post>512) and
-continuous post=0 use ring streaming.
+CONFIG v1 pre/post are uint16. Web bounded pre-trigger supports `rising`,
+`falling`, and `either` only with `pre_samples >= 1`, `post_samples >= 1`, and
+`pre_samples + post_samples <= 512`. Requested rates are 1-25 MHz, and the
+selected physical plan must retain at least `2 * ceil(actual_rate / 1000)` samples.
+SINGLE supports through 25 MHz, FAST8 through 10 MHz and rejects 25 MHz, and
+WIDE11 through 5 MHz and rejects 10 MHz and 25 MHz. Before first connection,
+the Web UI permits local editing when generic constraints pass; after connection
+it uses real per-mode CAPS and rejects or disables old firmware or a mode without
+CAPS mode flag bit 5 (`PRE_TRIGGER`, `1 << 5`). This is separate from HELLO
+server flags bit 0 (`CONFIG_V2`) and bit 1 (`GENERIC_PACKED_BURST`). Stream,
+trigger NONE, unsupported or high-rate generic packed burst, and ordinary deep
+capture remain pre=0. Stream sends both pre and post as zero. Completion is
+`pre_samples + post_samples`, and `triggerIndex` equals `pre_samples`.
+
+Firmware reuses the prepared common packed ring/sink lifecycle. Packed samples
+are the sole trigger authority after prefill, software scans the edge, and the
+firmware freezes and drains the exact `[T-pre,T+post)` window. No invented IRQ
+pairing or new buffer is used. Existing deep post behavior remains when pre=0.
+The dated evidence is [2026-07-28 pre-trigger and UART HIL](../../doc/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md).
 
 GP7-GP9 are not available in Sigrok modes. Web UI sigrok is limited to
-GP10-GP20 plus GP29. FAST8 mode captures on GP10-GP17; WIDE12 mode adds
-GP18-GP20 plus GP29 as bit 11.
+GP10-GP20 (GP29 excluded from LA, available as ordinary GPIO/ADC3). FAST8 mode
+captures on GP10-GP17; WIDE11 mode captures on GP10-GP20 (11 channels).
+
+**CONFIG_V2 deep burst**: HELLO server_flags bit 0 advertises CONFIG_V2 capability
+and bit 1 advertises GENERIC_PACKED_BURST. The client must use frame0x0b
+(CONFIG_V2_REQ, 16B) with u32LE pre/post fields only for bounded post > 65535.
+The v1 frame0x05 (12B) remains for bounded captures with post <= 65535 and for
+the post=0 stream sentinel; bit1 determines whether supported high-rate post=0
+captures exactly 100000 samples and then auto-STOP/drains. With both flags,
+bounded `pre=0`, `post=65536..100000` uses the common packed pipeline at every
+otherwise supported rate and pin plan. WIDE11 at requested 125 MHz remains invalid.
+
+**High-rate `post=0` capacity-burst matrix**:
+
+| Mode | Rate | pre | post | Notes |
+|------|------|-----|------|-------|
+| SINGLE | 100 MHz or 125 MHz | 0 | 0 | Captures exactly 100000 samples losslessly then auto-STOP/drain |
+| FAST8 | 100 MHz or 125 MHz | 0 | 0 | Captures exactly 100000 samples losslessly then auto-STOP/drain |
+| WIDE11 | 100 MHz only | 0 | 0 | Captures exactly 100000 samples losslessly then auto-STOP/drain. 125 MHz rejected by START (INVALID_CONFIG) |
+
+The 2026-07-27 WIDE11 HIL verified the then-current target at 100 MHz with
+`pre=0`, `post=100000`, and high-rate `post=0`: each accepted deep-burst case
+delivered exactly 100000 samples in 98 DATA frames with zero sample-index gaps.
+The common packed arena applies to all modes: SINGLE (one 1-bit lane on FAST8 SM, autopush32, 32 samples/word,
+12500 B at 100 MHz), FAST8 (one 8-bit lane, autopush32, 4 samples/word, 100000 B at 100 MHz),
+and WIDE11 (SM-A GP10-GP17 8-bit autopush32 100000 B + SM-B GP18-GP20 3-bit autopush30
+40000 B; two DMA channels; 144184 B shared arena). SINGLE and FAST8 use one capture SM;
+WIDE11 uses two. A triggered deep burst adds one trigger-only SM running the 3-instruction
+trigger program. GP29 is excluded from WIDE11 LA (available as ordinary GPIO/ADC3). Post-capture: up to 98 DATA
+frames, max 1024 samples per frame, 140000 B total payload. Two-phase START prepares
+ownership and quiesce before the response. NONE sends START_RESP in RUNNING state with no
+ARMED event; triggered captures send START_RESP in ARMED state followed by the ARMED event.
+GO then synchronously enables the sampler SM(s). The historical WIDE12 predecessor
+evidence remains at `doc/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md`;
+it is not current WIDE11 evidence.
 
 On RP2350 the capture backend uses a 32768-byte aligned hardware DMA write ring
 (`uint32_t[8192]`, ring `size_bits=15`) with the official RP2350 DMA
@@ -443,9 +485,18 @@ transport backpressure, explicit queue overrun, or bounded-capture completion,
 it emits a terminal OVERRUN/ERROR/STOPPED event and stops. DATA and EVENT
 sample indices wrap modulo 24 bits; wrap is not an error.
 
+Terminal selection freezes the trigger and active sampler SMs and aborts ring
+DMA A/B before any tail drain. DMA channel ownership is retained for the common
+cleanup path; only samples already committed to ring memory are drained. In HIL
+JSON, `capacity_stop_before_data=true` distinguishes a request that reached an
+explicit capacity OVERRUN before its first DATA frame. Such a row passes the
+lossless-or-stop contract, but is not evidence that the requested rate was
+sustained.
+
 START_RESP is the trigger-safe barrier. It is emitted only after the firmware has
-acquired capture ownership and the PIO/DMA backend is successfully armed and
-running. A host that receives START_RESP may immediately send UART trigger stimulus
+acquired capture ownership and successfully prepared the PIO/DMA backend. Ordinary
+finite/ring paths are already armed or running. For WIDE11 deep burst, GO enables
+the sampler SM(s) after the START_RESP semantics described above. A host that receives START_RESP may immediately send UART trigger stimulus
 or any other action that requires the capture engine to be ready; no false ARMED
 or RUNNING EVENT will precede it. A failed start returns a synchronous FRAME_ERROR
 and no ARMED or RUNNING EVENT. After START_RESP, the ordered state progression is:
@@ -459,8 +510,9 @@ Measured continuous results on representative HIL setup: WebSocket
 SINGLE 1MHz (10 consecutive 5-second runs, ~4.991M-4.997M samples each,
 998.16-998.70 ksps effective, zero sample-index gaps, zero disconnects,
 STOP response, immediate restart and HTTP health), FAST8 240 kHz,
-WIDE12 149 kHz no-gap continuous ceilings; historical/representative raw-TCP
-SINGLE 443 kHz, FAST8 241 kHz, WIDE12 147 kHz no-gap continuous ceilings.
+WIDE11 149 kHz no-gap continuous ceilings; historical/representative raw-TCP
+SINGLE 443 kHz, FAST8 241 kHz, WIDE11 147 kHz no-gap continuous ceilings (WIDE11
+149 kHz WS ceiling is current target; 147 kHz TCP ceiling is historical WIDE12 reference).
 Bounded captures at 100 kHz with post=65535 delivered exactly 65535 samples with
 zero gaps for all modes and transports. Bounded pre=0 and post=1..512 HIL results:
 WS SINGLE rising/falling post=512 at 5, 25, 50, 100 MHz all passed; WS SINGLE
@@ -477,16 +529,31 @@ Do not hide capture lifecycle failures by sleeping before a restart probe. A fre
 session must be able to START immediately after the prior STOP/close boundary;
 Sigrok ERROR code 5 with detail 116 is an ADC sampler pause-ack timeout and fails
 the restart check.
-Post-patch regression confirmed: canonical sysbuild passed; final app flash 657020 B,
-RAM 511856 B; only the combined UF2 (`build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2`)
-was flashed. Forced WS RST immediately after a 125MHz NONE/post=1 START: a fresh session 2s
+Final freeze-build regression confirmed: canonical sysbuild passed; app flash
+695868/847832 B (82.08%), RAM 475832/532480 B (89.36%), heap 49156 B, and
+combined UF2 1443840 B; only the combined UF2
+(`build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2`) was flashed.
+Forced WS RST immediately after a 125MHz NONE/post=1 START: a fresh session 2s
 later acquired ownership, received one sample at actual 125.081 MHz with 0 gaps, received
 STOP_RESP, and reported HTTP health. Normal WS SINGLE rising pre=0/post=512 at requested
 100 MHz passed with exactly 512 samples, trigger index 0, 0 gaps, no DATA/EVENT before
 START_RESP, immediate restart, and HTTP health. HTTP BOOTSEL entry succeeded (picotool
 lacked permissions; combined UF2 copied through udisksctl); CDC `/dev/ttyACM2` `bootloader`
 command entered ROM BOOTSEL (serial read ended with expected EIO on USB disconnect);
-same combined UF2 restored normal HTTP startup.
+same combined UF2 restored normal HTTP startup. Those 2026-07-27 freeze runs
+passed all 54 authoritative TCP/WS cases and all 62 high-rate cases. The
+authoritative matrix recorded 18 explicit capacity OVERRUN stops; four occurred
+before first DATA and are diagnostic contract passes, not sustained-rate claims.
+
+The reduced on-site WIDE11 mapping HIL used `/dev/ttyACM1` TX connected to GP10.
+At 100 MHz/post=100000 it received 98 DATA frames and exactly 100000 samples with
+zero gaps. GP10 bit 0 showed both levels and nine transitions in 8192 checked
+samples, while the GP11-GP20 zero mask had zero violations. This reduced setup
+does not verify independent high-state mapping for GP11-GP20 or lane-B alignment;
+that requires the documented external generator. GP29 is excluded from WIDE11 LA. A concurrent
+JSON WS telemetry client also remained connected during a raw-TCP deep burst: no old-epoch
+sample was emitted after the bounded grace period, and telemetry resumed in a fresh
+sequence epoch with advancing device time after arena release.
 
 **Architecture**: the LA sink uses 8 DATA plus 1 terminal fixed slots; WS SINGLE
 each DATA slot carries up to 2048 packed samples; qdepth=2 urgent wake; sink
@@ -502,7 +569,13 @@ served at stable URLs:
 - `/assets/decoder/logic-decoder_bg.wasm` (served with `application/wasm` MIME, gzip-compressed)
 
 The decoder supports UART, I2C, and SPI protocols only; it is not a
-libsigrokdecode Python plugin compatibility layer.
+libsigrokdecode Python plugin compatibility layer. The UART decoder fixes the
+sample-0 frame resume cursor: a frame accepted at sample 0 previously resumed
+scanning at sample 1 and treated internal transitions as false start bits. The
+cursor now mirrors ordinary-frame behavior at frame end minus one bit, retaining
+back-to-back frames. The known-good `Press` waveform previously produced
+`50 25 95 CD CD` and now produces exactly `50 72 65 73 73`; the full decoder
+suite is 21/21. This was not a baud, inversion, or firmware corruption issue.
 
 For native sigrok/PulseView, connect via raw-TCP port 5556:
 ```sh
@@ -729,12 +802,11 @@ After firmware changes, treat this HTTP BOOTSEL flow and the CDC ACM shell
 fallback below as required validation paths before you finish; verify that the
 serial fallback path still reaches the standard ROM BOOTSEL workflow.
 
-Final post-ring HIL confirmed HTTP BOOTSEL via `POST /api/v1/bootloader` entered
-ROM BOOTSEL and combined-UF2 recovery restored HTTP after flash health check.
-CDC `/dev/ttyACM2` BOOTSEL confirmed: issuing `bootloader` from the CDC ACM shell
-entered ROM BOOTSEL, and copying the combined UF2 restored HTTP in 2 seconds.
-Canonical firmware footprint: RAM 511856/532480 bytes (96.13%), flash
-656972/847832 bytes (77.49%).
+Final current-target HIL footprint: RAM 475896/532480 bytes (89.37%), flash
+701900/847832 bytes (82.79%), combined UF2 1455616 bytes. The dated
+[pre-trigger and UART HIL report](../../doc/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md)
+records the exact build and recovery evidence. Earlier freeze-build sizes are
+historical and remain unchanged in their dated reports.
 
 If the HTTP control plane is unavailable but the CDC ACM shell is still
 reachable, use the local Zephyr shell command instead:
