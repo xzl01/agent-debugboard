@@ -2,22 +2,50 @@
 set -eu
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$REPO_ROOT"
+WORKSPACE="${LINKR_ZEPHYR_WORKSPACE:-$REPO_ROOT/.zephyr-workspace}"
+MANIFEST_DIR="$WORKSPACE/manifest"
 
 info() { echo "[setup-zephyr] $*"; }
+fail() {
+  echo "[setup-zephyr] ERROR: $*" >&2
+  exit 1
+}
 
-if [ -d "$REPO_ROOT/.west" ]; then
-  info ".west/ already exists, skipping west init"
-else
-  info "Initializing west workspace ..."
-  west init -l "$REPO_ROOT"
+if [ -e "$WORKSPACE" ] && [ ! -d "$WORKSPACE" ]; then
+  fail "$WORKSPACE exists but is not a directory"
 fi
 
-info "west update ..."
-west update
+mkdir -p "$MANIFEST_DIR"
+cp "$REPO_ROOT/west.yml" "$MANIFEST_DIR/west.yml"
 
-info "west zephyr-export ..."
-west zephyr-export
+if [ ! -d "$MANIFEST_DIR/.git" ]; then
+  git -C "$MANIFEST_DIR" init --quiet
+fi
+
+git -C "$MANIFEST_DIR" add west.yml
+if ! git -C "$MANIFEST_DIR" diff --cached --quiet; then
+  git -C "$MANIFEST_DIR" \
+    -c user.name="Linkr Zephyr Workspace" \
+    -c user.email="noreply@localhost" \
+    commit --quiet -m "Update workspace manifest"
+fi
+
+if [ -d "$WORKSPACE/.west" ]; then
+  configured_manifest="$(cd "$WORKSPACE" && west config manifest.path 2>/dev/null || true)"
+  if [ "$configured_manifest" != "manifest" ]; then
+    fail "$WORKSPACE is managed by a different west manifest: $configured_manifest"
+  fi
+  info "Using existing workspace: $WORKSPACE"
+else
+  info "Initializing isolated workspace: $WORKSPACE"
+  (cd "$WORKSPACE" && west init -l manifest)
+fi
+
+info "Updating the minimal project set ..."
+(cd "$WORKSPACE" && west update --narrow -o=--depth=1)
+
+info "Exporting Zephyr CMake package ..."
+(cd "$WORKSPACE" && west zephyr-export)
 
 info "Done.  Build with:"
-info "  nix-shell --run 'west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger'"
+info "  scripts/build-firmware.sh"

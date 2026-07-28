@@ -297,9 +297,8 @@ describe("createTestRunner", () => {
     }
   });
 
-  it("rejects captures larger than the RP2040 sample capacity before arming", async () => {
+  it("rejects captures larger than the RP235x firmware capacity before arming", async () => {
     const board = baseBoard() as any;
-    board.snapshot.mcu = "RP2040";
     let armCalls = 0;
     board.armCapture = async () => { armCalls += 1; };
     const script: TestScript = {
@@ -309,13 +308,13 @@ describe("createTestRunner", () => {
       steps: [{
         id: "capture",
         type: "capture",
-        params: { rail: "5v_out", trigger: "manual", duration_ms: 10_000 },
+        params: { rail: "5v_out", trigger: "manual", duration_ms: 30_000 },
       }],
     };
 
     const summary = await run(script, board, serialWithCommandOutput(""));
     assert.equal(summary.results[0].status, "error");
-    assert.match(summary.results[0].error ?? "", /supports 512/);
+    assert.match(summary.results[0].error ?? "", /supports 2048/);
     assert.equal(armCalls, 0);
   });
 

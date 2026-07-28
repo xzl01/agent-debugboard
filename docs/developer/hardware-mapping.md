@@ -2,6 +2,13 @@
 
 [中文](hardware-mapping.zh-CN.md)
 
+## Hardware support policy
+
+The active and validated target is G3 with RP2350A. G2/RP2040 is retired and is
+not built, released, maintained, or included in HIL coverage. RP2354 remains a
+future board port and must not reuse the current 4 MB Pico 2 board definition
+without a dedicated flash layout and board-level validation.
+
 ## RP2350A Pin Table
 
 | Function | Firmware name | Schematic signal | GPIO |
@@ -57,6 +64,3 @@ transfer function.
 
 The current schematic copy is stored at:
 - [doc/radxa-linkr-debugger-schematic-x1.1.pdf](../../doc/radxa-linkr-debugger-schematic-x1.1.pdf)
-
-The older G2 (RP2040) schematic at `doc/radxa-linkr-debugger-schematic.pdf` is
-retained as archival reference only; G2 hardware is not supported by this firmware.

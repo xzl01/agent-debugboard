@@ -56,7 +56,7 @@ GitHub Actions lane：
 - Shell 安装/测试脚本：`sh -n ...` 和 `shellcheck ...`
 - 固件修改：仅使用完整的规范构建（一次一个，输出到共享的
   `build/radxa_linkr_debugger/` 目录）：
-  `west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger`
+  `scripts/build-firmware.sh`
 
 不要运行单目标或单驱动的固件编译检查；它们会干扰用户的构建/缓存流程。
 请使用完整的固件/包工作流。

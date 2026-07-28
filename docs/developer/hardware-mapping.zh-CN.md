@@ -2,6 +2,13 @@
 
 [English](hardware-mapping.md)
 
+## 硬件支持策略
+
+当前正式支持并完成验证的目标是 G3 / RP2350A。G2 / RP2040 已退役，
+不再参与构建、发布、维护和 HIL 覆盖。RP2354 仍属于后续 board 移植；
+在完成专用 Flash 布局和板级验证之前，不得直接复用当前 Pico 2 的
+4 MB board 定义。
+
 ## RP2350A 引脚表
 
 | 功能 | 固件名称 | 原理图信号 | GPIO |
@@ -53,6 +60,3 @@ MCU 同时上报原始 ADC 调试值，以及通过 Zephyr
 
 当前原理图副本放在：
 - [doc/radxa-linkr-debugger-schematic-x1.1.pdf](../../doc/radxa-linkr-debugger-schematic-x1.1.pdf)
-
-旧版 G2 (RP2040) 原理图 `doc/radxa-linkr-debugger-schematic.pdf` 仅作归档参考；
-G2 硬件不受本固件支持。

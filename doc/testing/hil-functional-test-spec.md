@@ -35,7 +35,7 @@
 ### 构建
 
 ```sh
-west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+scripts/build-firmware.sh
 ```
 
 ### 烧录

@@ -2,9 +2,14 @@
 
 [中文](README.zh-CN.md)
 
-RP2350 firmware for **Radxa Linkr Debugger**, a USB-controlled hardware
+RP2350-series firmware for **Radxa Linkr Debugger**, a USB-controlled hardware
 bridge that lets a PC-side Agent/AI operate target-board power, boot-mode,
 TF/SD routing, current-monitor ADC channels, and a small safe GPIO surface.
+
+The actively supported hardware is G3 with RP2350A. G2/RP2040 support is
+retired: it receives no firmware builds, release artifacts, compatibility
+fixes, or hardware validation. RP2354 hardware requires a dedicated board
+definition and HIL validation before it can be declared supported.
 
 ![Radxa Linkr Debugger promo](doc/marketing/radxa-linkr-debugger-promo.png)
 

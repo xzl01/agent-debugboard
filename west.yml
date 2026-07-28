@@ -12,7 +12,15 @@ manifest:
     - name: zephyr
       remote: zephyrproject-rtos
       revision: cde0a961d820b34c2141792e22971573b52de3aa
-      import: true
+      clone-depth: 1
+      import:
+        name-allowlist:
+          - cmsis
+          - cmsis_6
+          - hal_rpi_pico
+          - mbedtls
+          - mcuboot
+          - tf-psa-crypto
 
   self:
     path: .

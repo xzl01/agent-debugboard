@@ -14,8 +14,10 @@ Agent/AI operators should read the repository skill first:
 Build (RP2350):
 
 ```sh
-pip install -r bootloader/mcuboot/scripts/requirements.txt
-west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+scripts/setup-zephyr.sh
+pip install -r .zephyr-workspace/zephyr/scripts/requirements.txt
+pip install -r .zephyr-workspace/bootloader/mcuboot/scripts/requirements.txt
+scripts/build-firmware.sh
 ```
 
 Use `build/radxa_linkr_debugger/` as the only canonical build directory for this
@@ -42,7 +44,6 @@ Schematics:
 
 ```text
 doc/radxa-linkr-debugger-schematic-x1.1.pdf  (RP2350A)
-doc/radxa-linkr-debugger-schematic.pdf       (RP2040 - archival only)
 ```
 
 The USB interface enumerates as a composite USB device. The board exposes its
@@ -309,9 +310,9 @@ tables or zero-point correction are applied.
 
 ## Expert: G3 VIN 1.8V Switching
 
-VIN 1.8V switching applies only to G3 (RP2350A) boards and is not available on
-G2 (RP2040) boards. This operation is side-effectful and requires confirmed
-target voltage compatibility and physical measurement setup before use.
+VIN 1.8V switching applies to the supported G3 (RP2350A) hardware. This
+operation is side-effectful and requires confirmed target voltage compatibility
+and physical measurement setup before use.
 
 Prerequisites before any 1.8V switch:
 

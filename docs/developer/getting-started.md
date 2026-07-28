@@ -43,7 +43,7 @@ scripts/setup-zephyr.sh
 Then build:
 
 ```sh
-west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+scripts/build-firmware.sh
 ```
 
 ## Manual Setup (Without Nix)
@@ -55,11 +55,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip west
 
-west init -l .
-west update
-west zephyr-export
-pip install -r zephyr/scripts/requirements.txt
-pip install -r bootloader/mcuboot/scripts/requirements.txt
+scripts/setup-zephyr.sh
+pip install -r .zephyr-workspace/zephyr/scripts/requirements.txt
+pip install -r .zephyr-workspace/bootloader/mcuboot/scripts/requirements.txt
 ```
 
 Install the Zephyr SDK if it is not already installed. The current local build
@@ -69,7 +67,7 @@ Build:
 
 ```sh
 source .venv/bin/activate
-west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+scripts/build-firmware.sh
 ```
 
 ## Build Output

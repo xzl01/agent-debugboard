@@ -2,9 +2,13 @@
 
 [English](README.md)
 
-RP2350 固件，用于 **Radxa Linkr Debugger** —— 一块 USB 控制的硬件调试桥，
+RP2350 系列固件，用于 **Radxa Linkr Debugger** —— 一块 USB 控制的硬件调试桥，
 让 PC 侧 Agent/AI 可以直接操作目标板供电、刷机模式、TF/SD 路由、
 电流监测 ADC 和一组安全 GPIO。
+
+当前正式支持的硬件为 G3 / RP2350A。G2 / RP2040 已停止支持：
+不再为其构建固件、发布产物、修复兼容性问题或执行硬件验证。
+RP2354 硬件需要完成专用 board 定义和 HIL 验证后才能声明支持。
 
 ![Radxa Linkr Debugger 宣传图](doc/marketing/radxa-linkr-debugger-promo.png)
 

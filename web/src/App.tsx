@@ -22,6 +22,7 @@ import { Badge, Button } from "./components/ui";
 import { useI18n } from "@/lib/i18n";
 import { apiEndpoint } from "@/lib/api";
 import type { OtaStatus } from "@/lib/ota";
+import { POWER_CAPTURE_SAMPLE_CAPACITY } from "@/lib/power";
 import {
   createAutomationTaskLock,
   type AutomationTaskControl,
@@ -33,8 +34,6 @@ import {
   getWorkspaceTabId,
   type WorkspaceTabId,
 } from "@/lib/workspaceTabs";
-
-const RP2350_CAPTURE_CAPACITY = 2048;
 
 export default function App() {
   const board = useBoard();
@@ -142,7 +141,7 @@ export default function App() {
                   onTriggerCapture={board.triggerCapture}
                   onCancelCapture={board.cancelCapture}
                   onClearCaptures={board.clearCaptures}
-                  captureCapacity={RP2350_CAPTURE_CAPACITY}
+                  captureCapacity={POWER_CAPTURE_SAMPLE_CAPACITY}
                 />
               </div>
               <div className="min-w-0">
@@ -170,7 +169,7 @@ export default function App() {
                       outputs={board.snapshot.powerOutputs}
                       captureState={board.captureState}
                       captures={board.captures}
-                      captureCapacity={RP2350_CAPTURE_CAPACITY}
+                      captureCapacity={POWER_CAPTURE_SAMPLE_CAPACITY}
                       serialRef={serialAutomationRef}
                       onSetPower={board.setPower}
                       onReadPower={board.readPower}

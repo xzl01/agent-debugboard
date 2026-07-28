@@ -131,10 +131,12 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          shellcheck skills/radxa-linkr-debugger/scripts/install.sh apps/radxa_linkr_debugger/tests/run_unit_tests.sh skills/radxa-linkr-debugger/scripts/web-ota-hil.sh
+          shellcheck skills/radxa-linkr-debugger/scripts/install.sh apps/radxa_linkr_debugger/tests/run_unit_tests.sh skills/radxa-linkr-debugger/scripts/web-ota-hil.sh scripts/setup-zephyr.sh scripts/build-firmware.sh
           sh -n skills/radxa-linkr-debugger/scripts/install.sh
           sh -n apps/radxa_linkr_debugger/tests/run_unit_tests.sh
           sh -n skills/radxa-linkr-debugger/scripts/web-ota-hil.sh
+          sh -n scripts/setup-zephyr.sh
+          sh -n scripts/build-firmware.sh
 
       - name: Run firmware model unit tests
         run: ./apps/radxa_linkr_debugger/tests/run_unit_tests.sh

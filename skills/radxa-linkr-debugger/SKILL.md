@@ -5,6 +5,10 @@ description: Use curl or the optional Radxa Linkr Debugger CLI to diagnose and o
 
 # Radxa Linkr Debugger
 
+The active hardware target is G3 with RP2350A. G2/RP2040 is retired and must
+not be built, flashed, or treated as a supported fallback. RP2354 requires a
+dedicated board definition and HIL validation before use with this skill.
+
 Prefer direct HTTP requests with `curl` for Agent-side automation. The board
 enumerates as a USB NCM network interface and exposes its control API at the
 default device URL `http://172.29.203.1`.
@@ -98,8 +102,10 @@ The canonical firmware build includes the Web UI and requires Node.js 22 plus
 npm. CMake runs the locked frontend build and embeds gzip-compressed assets in
 flash; do not bypass that step with stale files from `web/dist`. Before an
 RP2350 sysbuild, install MCUboot's image-tool dependencies with
-`pip install -r bootloader/mcuboot/scripts/requirements.txt` in the active
-workspace Python environment.
+`scripts/setup-zephyr.sh`, then run
+`pip install -r .zephyr-workspace/bootloader/mcuboot/scripts/requirements.txt`
+in the active workspace Python environment. Use `scripts/build-firmware.sh` for
+the canonical full build.
 
 ## First Checks
 

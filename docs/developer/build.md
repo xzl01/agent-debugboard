@@ -27,13 +27,13 @@ the `wasm32-unknown-unknown` target before building.
    scripts/setup-zephyr.sh
    ```
 
-   This runs `west init -l .`, `west update`, and `west zephyr-export`
-   automatically. If `.west/` already exists, it skips `west init`.
+   This creates an isolated, repo-local `.zephyr-workspace/`, downloads only
+   the modules required by the RP2350 build, and runs `west zephyr-export`.
 
 3. Build:
 
    ```sh
-   west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+   scripts/build-firmware.sh
    ```
 
 ## Manual Workflow (Without Nix)
@@ -49,11 +49,9 @@ the `wasm32-unknown-unknown` target before building.
 2. Initialize the west workspace:
 
    ```sh
-   west init -l .
-   west update
-   west zephyr-export
-   pip install -r zephyr/scripts/requirements.txt
-   pip install -r bootloader/mcuboot/scripts/requirements.txt
+   scripts/setup-zephyr.sh
+   pip install -r .zephyr-workspace/zephyr/scripts/requirements.txt
+   pip install -r .zephyr-workspace/bootloader/mcuboot/scripts/requirements.txt
    ```
 
 3. Install the Zephyr SDK if not already present. The current local build has
@@ -67,7 +65,7 @@ the `wasm32-unknown-unknown` target before building.
 
    ```sh
    source .venv/bin/activate
-   west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+   scripts/build-firmware.sh
    ```
 
 ## Build Artifacts

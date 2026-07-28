@@ -19,6 +19,7 @@ import type {
   ExecutionStep,
 } from "./testScript";
 import { buildExecutionPlan } from "./testScript.ts";
+import { POWER_CAPTURE_SAMPLE_CAPACITY } from "./power.ts";
 
 export interface RunnerCallbacks {
   onStepStart(stepId: string): void;
@@ -454,10 +455,9 @@ export function createTestRunner(
             throw new Error("capture duration must be greater than zero");
           }
           const samples = Math.max(2, Math.ceil((durationMs / 1000) * rateHz));
-          const captureCapacity = getBoard().snapshot.mcu?.toLowerCase().startsWith("rp2350") ? 2048 : 512;
-          if (samples > captureCapacity) {
+          if (samples > POWER_CAPTURE_SAMPLE_CAPACITY) {
             throw new Error(
-              `capture requires ${samples} samples, but this device supports ${captureCapacity}`,
+              `capture requires ${samples} samples, but this firmware supports ${POWER_CAPTURE_SAMPLE_CAPACITY}`,
             );
           }
           const preSamples = Math.min(64, Math.floor(samples / 4));

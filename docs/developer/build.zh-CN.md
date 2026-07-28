@@ -26,13 +26,13 @@ rustup 管理的 stable Rust toolchain 仍是外部前置条件；构建前需�
    scripts/setup-zephyr.sh
    ```
 
-   脚本会自动执行 `west init -l .`、`west update` 和 `west zephyr-export`。
-   如果 `.west/` 已存在则跳过 `west init`。
+   脚本会创建仓库内隔离的 `.zephyr-workspace/`，只下载 RP2350 编译
+   所需模块，并执行 `west zephyr-export`。
 
 3. 构建：
 
    ```sh
-   west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+   scripts/build-firmware.sh
    ```
 
 ## 手动工作流（不使用 Nix）
@@ -48,11 +48,9 @@ rustup 管理的 stable Rust toolchain 仍是外部前置条件；构建前需�
 2. 初始化 west 工作区：
 
    ```sh
-   west init -l .
-   west update
-   west zephyr-export
-   pip install -r zephyr/scripts/requirements.txt
-   pip install -r bootloader/mcuboot/scripts/requirements.txt
+   scripts/setup-zephyr.sh
+   pip install -r .zephyr-workspace/zephyr/scripts/requirements.txt
+   pip install -r .zephyr-workspace/bootloader/mcuboot/scripts/requirements.txt
    ```
 
 3. 如果还没有安装 Zephyr SDK，需要先安装。当前本地构建已用 Zephyr SDK
@@ -66,7 +64,7 @@ rustup 管理的 stable Rust toolchain 仍是外部前置条件；构建前需�
 
    ```sh
    source .venv/bin/activate
-   west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+   scripts/build-firmware.sh
    ```
 
 ## 构建产物

@@ -3,6 +3,8 @@ import type { AdcReading } from "./types";
 export type PowerMetric = "current" | "power";
 
 export const USER_POWER_RAILS = ["5v_out", "12v_out", "20v_out"] as const;
+// Power-capture ring exported by every supported RP235x firmware target.
+export const POWER_CAPTURE_SAMPLE_CAPACITY = 2048;
 
 export function powerRailLabel(name: string): string {
   const voltage = nominalVoltage(name);
