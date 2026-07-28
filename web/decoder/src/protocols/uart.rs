@@ -114,15 +114,15 @@ pub fn decode(
     let frame_bits =
         1 + usize::from(options.data_bits) + parity_bits + usize::from(options.stop_bits);
     let frame_samples = (bit_samples * frame_bits as f64).ceil() as usize;
+    let mut i = 1usize;
 
     if samples.sample_count >= frame_samples && !level(samples, 0, rx, options.inverted) {
         let start_mid = (bit_samples * 0.5).round() as usize;
         if start_mid < samples.sample_count && !level(samples, start_mid, rx, options.inverted) {
             decode_frame(samples, options, result, rx, bit_samples, 0, frame_samples);
+            i = frame_samples.saturating_sub(bit_samples as usize).max(1);
         }
     }
-
-    let mut i = 1usize;
     while i < samples.sample_count {
         let prev = level(samples, i - 1, rx, options.inverted);
         let current = level(samples, i, rx, options.inverted);

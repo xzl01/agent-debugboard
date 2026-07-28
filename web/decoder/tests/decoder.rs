@@ -195,6 +195,71 @@ fn uart_decodes_frame_starting_at_start_bit() {
 }
 
 #[test]
+fn uart_decodes_press_waveform_from_sample_zero_without_rescanning_edges() {
+    let bit_samples = 10usize;
+    let mut words = Vec::new();
+    for &value in &[0x50u16, 0x72, 0x65, 0x73, 0x73] {
+        words.resize(words.len() + bit_samples, 0);
+        for bit in 0..8 {
+            words.resize(
+                words.len() + bit_samples,
+                u16::from(((value >> bit) & 1) != 0),
+            );
+        }
+        words.resize(words.len() + bit_samples, 1);
+    }
+
+    let request = DecodeRequest {
+        schema_version: SCHEMA_VERSION.to_string(),
+        samples: PackedSamples {
+            sample_rate_hz: 10_000,
+            sample_period_ps: 100_000_000,
+            sample_count: words.len(),
+            channels: vec![ChannelMapping {
+                name: "rx".to_string(),
+                bit: 0,
+            }],
+            words,
+        },
+        protocol: ProtocolRequest::Uart(UartOptions {
+            rx: "rx".to_string(),
+            baud: 1_000,
+            data_bits: 8,
+            parity: Parity::None,
+            stop_bits: 1,
+            inverted: false,
+        }),
+    };
+
+    let result = decode(&request).expect("Press waveform should decode");
+    let annotations: Vec<(usize, usize, u16)> = result
+        .annotations
+        .iter()
+        .map(|annotation| {
+            (
+                annotation.start_sample,
+                annotation.end_sample,
+                annotation.data["value"]
+                    .as_u64()
+                    .expect("UART value should be numeric") as u16,
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        annotations,
+        vec![
+            (0, 100, 0x50),
+            (100, 200, 0x72),
+            (200, 300, 0x65),
+            (300, 400, 0x73),
+            (400, 500, 0x73),
+        ]
+    );
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
 fn i2c_decodes_start_address_data_nack_stop() {
     let request = i2c_request(i2c_samples(&[(0x50 << 1, true), (0xA5, false)]));
 
