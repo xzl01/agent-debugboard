@@ -42,3 +42,7 @@ __pycache__/
 
 # Local schematic analysis scratch output
 .schematic-preview/
+
+# Local agent session state
+.omo/
+.playwright-mcp/
