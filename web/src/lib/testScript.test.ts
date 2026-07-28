@@ -5,6 +5,7 @@ import {
   stepTypeLabel,
   stepTypeIcon,
   generateStepId,
+  generateLoopId,
   defaultStepParams,
   defaultScript,
   parseTestScript,
@@ -83,6 +84,27 @@ describe("generateStepId", () => {
   it("starts with 's' prefix", () => {
     const id = generateStepId();
     assert.ok(id.startsWith("s"));
+  });
+
+  it("works on an HTTP origin where crypto.randomUUID is unavailable", () => {
+    const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: {
+        getRandomValues: (bytes: Uint8Array) => {
+          bytes.set([0x12, 0x34, 0x56, 0x78]);
+          return bytes;
+        },
+      },
+    });
+
+    try {
+      assert.equal(generateStepId(), "s12345678");
+      assert.equal(generateLoopId(), "l12345678");
+    } finally {
+      if (cryptoDescriptor) Object.defineProperty(globalThis, "crypto", cryptoDescriptor);
+      else Reflect.deleteProperty(globalThis, "crypto");
+    }
   });
 });
 

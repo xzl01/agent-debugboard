@@ -206,12 +206,28 @@ export function stepTypeIcon(type: StepType): string {
   return ICONS[type] ?? "Circle";
 }
 
+function generateItemId(prefix: "s" | "l"): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return `${prefix}${globalThis.crypto.randomUUID().slice(0, 8)}`;
+  }
+
+  const bytes = new Uint8Array(4);
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  return `${prefix}${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
 export function generateStepId(): string {
-  return `s${crypto.randomUUID().slice(0, 8)}`;
+  return generateItemId("s");
 }
 
 export function generateLoopId(): string {
-  return `l${crypto.randomUUID().slice(0, 8)}`;
+  return generateItemId("l");
 }
 
 export function isTestLoop(item: TestScriptItem): item is TestLoop {
