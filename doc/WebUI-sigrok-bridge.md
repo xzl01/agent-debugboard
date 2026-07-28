@@ -36,10 +36,22 @@ Binary frames are routed directly to the sigrok protocol handler without convers
 The Web UI uses the sigrok binary protocol as documented in `doc/sigrok-linkr-v1.md`.
 
 Key protocol parameters for Web UI:
-- **CONFIG pre/post**: uint16, bounded 1..65535
+- **CONFIG v1 pre/post**: uint16; bounded captures use 1..65535 and stream uses
+  post=0
+- **HELLO capability flags**: bit 0 (CONFIG_V2) advertises CONFIG_V2_REQ support;
+  bit 1 (GENERIC_PACKED_BURST) advertises the unified generic packed-burst
+  architecture with exact 100000-sample lossless capture at high rates
+- **CONFIG_V2**: after HELLO advertises server_flags bit 0, frame0x0b
+  carries u32LE pre/post and is required for bounded post > 65535. With bit 1,
+  bounded pre=0 and post=65536..100000 uses the common packed pipeline at every
+  otherwise supported rate and pin plan. WIDE11 at 125 MHz remains invalid.
 - **pre_samples**: Always 0 (pre-trigger not exposed in Web UI)
-- **post_samples**: 1..65535 for bounded captures, 0 for stream mode
-- **Supported modes**: FAST8 (GP10-17), WIDE12 (GP10-20+GP29)
+- **post_samples**: 1..65535 for ordinary bounded captures, 0 for stream mode
+  (at lower rates runs until user-stop; at supported high rates with GENERIC_PACKED_BURST
+  captures exactly 100000 samples losslessly then auto-STOP/drain)
+- **Other large configs**: configurations not in the supported matrix receive
+  CONFIG_RESP, then START returns INVALID_CONFIG
+- **Supported modes**: FAST8 (GP10-17), WIDE11 (GP10-GP20, 11 channels; GP29 excluded from LA)
 - **GP7-GP9**: Not available in Sigrok modes
 
 ## Key Implementation Notes
@@ -62,6 +74,9 @@ Key protocol parameters for Web UI:
 - Sample indices are modulo 24 bits
 - On overrun, possible overrun, or bounded-capture completion, firmware sends
   terminal EVENT and stops
+- Generic packed-burst acquisition is store-and-forward: with HELLO bit1,
+  supported high-rate post=0 captures exactly 100000 samples locally and sends
+  DATA frames after acquisition completes
 
 ## File Reference
 
