@@ -15,10 +15,24 @@ export const SigrokFrameType = {
   START_RESP: 0x08,
   STOP_REQ: 0x09,
   STOP_RESP: 0x0a,
+  CONFIG_V2_REQ: 0x0b,
   EVENT: 0x10,
   DATA: 0x11,
   ERROR: 0x7f,
 } as const;
+
+export const SigrokServerFlag = {
+  CONFIG_V2: 1 << 0,
+  GENERIC_PACKED_BURST: 1 << 1,
+} as const;
+
+export type SigrokServerFlag = typeof SigrokServerFlag[keyof typeof SigrokServerFlag];
+
+export type SigrokConfigEncoding = "auto" | "v1" | "v2";
+
+export interface SigrokConfigureOptions {
+  encoding?: SigrokConfigEncoding;
+}
 
 export type SigrokFrameType = typeof SigrokFrameType[keyof typeof SigrokFrameType];
 
@@ -58,10 +72,21 @@ export type SigrokErrorCode = typeof SigrokErrorCode[keyof typeof SigrokErrorCod
 
 export const SigrokModeId = {
   FAST8: 1,
-  WIDE12: 2,
+  WIDE11: 2,
 } as const;
 
 export type SigrokModeId = typeof SigrokModeId[keyof typeof SigrokModeId];
+
+export const SigrokModeFlag = {
+  CONTINUOUS: 1 << 0,
+  TRIGGER_NONE: 1 << 1,
+  TRIGGER_RISING: 1 << 2,
+  TRIGGER_FALLING: 1 << 3,
+  TRIGGER_EITHER: 1 << 4,
+  PRE_TRIGGER: 1 << 5,
+} as const;
+
+export type SigrokModeFlag = typeof SigrokModeFlag[keyof typeof SigrokModeFlag];
 
 export const SigrokTriggerType = {
   NONE: 0,
@@ -96,18 +121,26 @@ export interface SigrokHelloResp {
   maxPayloadLen: number;
 }
 
+export interface SigrokServerCapabilities {
+  readonly hello: SigrokHelloResp | null;
+  readonly caps: SigrokCapsResp | null;
+  readonly serverFlags: number;
+  readonly supportsConfigV2: boolean;
+  readonly supportsGenericPackedBurst: boolean;
+}
+
 export interface SigrokModeCaps {
-  modeId: number;
-  modeFlags: number;
-  channelCount: number;
-  sampleBytes: number;
-  maxSamplerateKhz: number;
-  compression: number;
+  readonly modeId: number;
+  readonly modeFlags: number;
+  readonly channelCount: number;
+  readonly sampleBytes: number;
+  readonly maxSamplerateKhz: number;
+  readonly compression: number;
 }
 
 export interface SigrokCapsResp {
-  modeCount: number;
-  modes: SigrokModeCaps[];
+  readonly modeCount: number;
+  readonly modes: readonly SigrokModeCaps[];
 }
 
 export interface SigrokConfigReq {
@@ -118,6 +151,105 @@ export interface SigrokConfigReq {
   samplerateKhz: number;
   preSamples: number;
   postSamples: number;
+}
+
+export interface SigrokConfigFrameRequest {
+  type: typeof SigrokFrameType.CONFIG_REQ | typeof SigrokFrameType.CONFIG_V2_REQ;
+  payload: Uint8Array;
+}
+
+function assertUintRange(value: number, bits: number, fieldName: string): void {
+  const max = bits === 32 ? 0xffffffff : (1 << bits) - 1;
+  if (!Number.isInteger(value) || value < 0 || value > max) {
+    throw new Error(`Sigrok ${fieldName} must fit uint${bits}`);
+  }
+}
+
+function configNeedsV2(config: SigrokConfigReq): boolean {
+  return config.preSamples > 0xffff || config.postSamples > 0xffff;
+}
+
+function buildSigrokConfigPayloadV1(config: SigrokConfigReq): Uint8Array {
+  assertUintRange(config.modeId, 8, "modeId");
+  assertUintRange(config.triggerType, 8, "triggerType");
+  assertUintRange(config.triggerChannel, 8, "triggerChannel");
+  assertUintRange(config.channelMask, 16, "channelMask");
+  assertUintRange(config.samplerateKhz, 24, "samplerateKhz");
+  assertUintRange(config.preSamples, 16, "preSamples");
+  assertUintRange(config.postSamples, 16, "postSamples");
+
+  const payload = new Uint8Array(12);
+  payload[0] = config.modeId;
+  payload[1] = config.triggerType;
+  payload[2] = config.triggerChannel;
+  payload[3] = config.channelMask & 0xff;
+  payload[4] = (config.channelMask >> 8) & 0xff;
+  payload[5] = config.samplerateKhz & 0xff;
+  payload[6] = (config.samplerateKhz >> 8) & 0xff;
+  payload[7] = (config.samplerateKhz >> 16) & 0xff;
+  payload[8] = config.preSamples & 0xff;
+  payload[9] = (config.preSamples >> 8) & 0xff;
+  payload[10] = config.postSamples & 0xff;
+  payload[11] = (config.postSamples >> 8) & 0xff;
+  return payload;
+}
+
+function buildSigrokConfigPayloadV2(config: SigrokConfigReq): Uint8Array {
+  assertUintRange(config.modeId, 8, "modeId");
+  assertUintRange(config.triggerType, 8, "triggerType");
+  assertUintRange(config.triggerChannel, 8, "triggerChannel");
+  assertUintRange(config.channelMask, 16, "channelMask");
+  assertUintRange(config.samplerateKhz, 24, "samplerateKhz");
+  assertUintRange(config.preSamples, 32, "preSamples");
+  assertUintRange(config.postSamples, 32, "postSamples");
+
+  const payload = new Uint8Array(16);
+  payload[0] = config.modeId;
+  payload[1] = config.triggerType;
+  payload[2] = config.triggerChannel;
+  payload[3] = config.channelMask & 0xff;
+  payload[4] = (config.channelMask >> 8) & 0xff;
+  payload[5] = config.samplerateKhz & 0xff;
+  payload[6] = (config.samplerateKhz >> 8) & 0xff;
+  payload[7] = (config.samplerateKhz >> 16) & 0xff;
+  payload[8] = config.preSamples & 0xff;
+  payload[9] = (config.preSamples >> 8) & 0xff;
+  payload[10] = (config.preSamples >> 16) & 0xff;
+  payload[11] = (config.preSamples >> 24) & 0xff;
+  payload[12] = config.postSamples & 0xff;
+  payload[13] = (config.postSamples >> 8) & 0xff;
+  payload[14] = (config.postSamples >> 16) & 0xff;
+  payload[15] = (config.postSamples >> 24) & 0xff;
+  return payload;
+}
+
+function freezeSigrokCaps(caps: SigrokCapsResp): SigrokCapsResp {
+  const modes = Object.freeze(caps.modes.map((mode) => Object.freeze({ ...mode })));
+  return Object.freeze({ modeCount: caps.modeCount, modes });
+}
+
+export function buildSigrokConfigFrameRequest(
+  config: SigrokConfigReq,
+  capabilities: Pick<SigrokServerCapabilities, "supportsConfigV2"> = { supportsConfigV2: false },
+  options: SigrokConfigureOptions = {}
+): SigrokConfigFrameRequest {
+  const encoding = options.encoding ?? "auto";
+  if (encoding === "v1") {
+    return { type: SigrokFrameType.CONFIG_REQ, payload: buildSigrokConfigPayloadV1(config) };
+  }
+  if (encoding === "v2") {
+    if (!capabilities.supportsConfigV2) {
+      throw new Error("CONFIG_V2 requested but server did not advertise support");
+    }
+    return { type: SigrokFrameType.CONFIG_V2_REQ, payload: buildSigrokConfigPayloadV2(config) };
+  }
+  if (!configNeedsV2(config)) {
+    return { type: SigrokFrameType.CONFIG_REQ, payload: buildSigrokConfigPayloadV1(config) };
+  }
+  if (!capabilities.supportsConfigV2) {
+    throw new Error("Requested sigrok pre/post samples require CONFIG_V2, but server did not advertise support");
+  }
+  return { type: SigrokFrameType.CONFIG_V2_REQ, payload: buildSigrokConfigPayloadV2(config) };
 }
 
 export interface SigrokAck {
@@ -444,6 +576,8 @@ export class SigrokClient {
   private pendingRequests = new Map<number, { resolve: (frame: SigrokFrame) => void; reject: (err: Error) => void }>();
   private buffer = new Uint8Array(0);
   private disconnecting = false;
+  private hello: SigrokHelloResp | null = null;
+  private caps: SigrokCapsResp | null = null;
 
   addEventListener(listener: SigrokClientEventListener): void {
     this.listeners.push(listener);
@@ -463,9 +597,26 @@ export class SigrokClient {
     return this.state;
   }
 
+  getServerCapabilities(): SigrokServerCapabilities {
+    const serverFlags = this.hello?.serverFlags ?? 0;
+    return {
+      hello: this.hello,
+      caps: this.caps,
+      serverFlags,
+      supportsConfigV2: (serverFlags & SigrokServerFlag.CONFIG_V2) !== 0,
+      supportsGenericPackedBurst:
+        (serverFlags & SigrokServerFlag.GENERIC_PACKED_BURST) !== 0,
+    };
+  }
+
   private setState(state: SigrokClientState): void {
     this.state = state;
     this.emit({ type: "state", state });
+  }
+
+  private clearCapabilities(): void {
+    this.hello = null;
+    this.caps = null;
   }
 
   async connect(url: string): Promise<void> {
@@ -474,6 +625,7 @@ export class SigrokClient {
     }
 
     this.disconnecting = false;
+    this.clearCapabilities();
     this.setState("connecting");
 
     return new Promise((resolve, reject) => {
@@ -483,9 +635,16 @@ export class SigrokClient {
       ws.onopen = () => {
         this.ws = ws;
         this.sendHello().then(() => {
+          return this.getCaps();
+        }).then(() => {
           this.setState("ready");
           resolve();
-        }).catch(reject);
+        }).catch((error) => {
+          this.ws = null;
+          this.clearCapabilities();
+          this.setState("disconnected");
+          reject(error);
+        });
       };
 
       ws.onmessage = (event) => {
@@ -496,12 +655,14 @@ export class SigrokClient {
 
       ws.onclose = () => {
         this.ws = null;
+        this.clearCapabilities();
         this.setState("disconnected");
         this.rejectAllPending(new Error("WebSocket closed"));
       };
 
       ws.onerror = () => {
         this.ws = null;
+        this.clearCapabilities();
         this.setState("disconnected");
         this.rejectAllPending(new Error("WebSocket connection failed"));
         reject(new Error("WebSocket connection failed"));
@@ -515,6 +676,7 @@ export class SigrokClient {
       this.ws.close();
       this.ws = null;
     }
+    this.clearCapabilities();
     this.setState("disconnected");
     this.rejectAllPending(new Error("Client disconnected"));
   }
@@ -526,6 +688,7 @@ export class SigrokClient {
       this.ws.close();
       this.ws = null;
     }
+    this.clearCapabilities();
     this.setState("disconnected");
     this.rejectAllPending(new Error("Client disconnected"));
   }
@@ -567,6 +730,13 @@ export class SigrokClient {
   }
 
   private handleFrame(frame: SigrokFrame): void {
+    if (frame.type === SigrokFrameType.HELLO_RESP) {
+      this.hello = frame.payload;
+    }
+    if (frame.type === SigrokFrameType.CAPS_RESP) {
+      this.caps = freezeSigrokCaps(frame.payload);
+    }
+
     this.emit({ type: "frame", frame });
 
     if (frame.type === SigrokFrameType.DATA) {
@@ -644,6 +814,7 @@ export class SigrokClient {
     if (resp.type !== SigrokFrameType.HELLO_RESP) {
       throw new Error("Unexpected response to HELLO");
     }
+    this.hello = resp.payload;
   }
 
   async getCaps(): Promise<SigrokCapsResp> {
@@ -651,25 +822,14 @@ export class SigrokClient {
     if (resp.type !== SigrokFrameType.CAPS_RESP) {
       throw new Error("Unexpected response to CAPS");
     }
-    return resp.payload;
+    const caps = freezeSigrokCaps(resp.payload);
+    this.caps = caps;
+    return caps;
   }
 
-  async configure(config: SigrokConfigReq): Promise<SigrokAck> {
-    const payload = new Uint8Array(12);
-    payload[0] = config.modeId;
-    payload[1] = config.triggerType;
-    payload[2] = config.triggerChannel;
-    payload[3] = config.channelMask & 0xff;
-    payload[4] = (config.channelMask >> 8) & 0xff;
-    payload[5] = config.samplerateKhz & 0xff;
-    payload[6] = (config.samplerateKhz >> 8) & 0xff;
-    payload[7] = (config.samplerateKhz >> 16) & 0xff;
-    payload[8] = config.preSamples & 0xff;
-    payload[9] = (config.preSamples >> 8) & 0xff;
-    payload[10] = config.postSamples & 0xff;
-    payload[11] = (config.postSamples >> 8) & 0xff;
-
-    const resp = await this.sendRequest(SigrokFrameType.CONFIG_REQ, payload);
+  async configure(config: SigrokConfigReq, options: SigrokConfigureOptions = {}): Promise<SigrokAck> {
+    const request = buildSigrokConfigFrameRequest(config, this.getServerCapabilities(), options);
+    const resp = await this.sendRequest(request.type, request.payload);
     if (resp.type !== SigrokFrameType.CONFIG_RESP) {
       throw new Error("Unexpected response to CONFIG");
     }

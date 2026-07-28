@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SigrokClient, type SigrokClientEvent, type SigrokClientState, type SigrokConfigReq, type SigrokAck, type SigrokCapsResp } from "@/lib/sigrokClient";
+import { SigrokClient, type SigrokClientEvent, type SigrokClientState, type SigrokConfigReq, type SigrokAck, type SigrokCapsResp, type SigrokServerCapabilities } from "@/lib/sigrokClient";
 import { liveWebSocketUrl } from "@/lib/api";
 
 export interface UseSigrokClientOptions {
@@ -15,6 +15,7 @@ export interface UseSigrokClientReturn {
   start: () => Promise<SigrokAck>;
   stop: () => Promise<SigrokAck>;
   getCaps: () => Promise<SigrokCapsResp>;
+  getServerCapabilities: () => SigrokServerCapabilities;
   error: string | null;
   clearError: () => void;
 }
@@ -94,6 +95,10 @@ export function useSigrokClient(options: UseSigrokClientOptions = {}): UseSigrok
     }
   }, [getClient]);
 
+  const getServerCapabilities = useCallback((): SigrokServerCapabilities => {
+    return getClient().getServerCapabilities();
+  }, [getClient]);
+
   useEffect(() => {
     const client = getClient();
 
@@ -128,6 +133,7 @@ export function useSigrokClient(options: UseSigrokClientOptions = {}): UseSigrok
     start,
     stop,
     getCaps,
+    getServerCapabilities,
     error,
     clearError,
   };

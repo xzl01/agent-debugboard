@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   buildSigrokFrame,
+  buildSigrokConfigFrameRequest,
   formatSigrokErrorMessage,
   parseSigrokFrame,
   parseSigrokHeader,
@@ -12,6 +13,10 @@ import {
   SigrokClient,
   SigrokEventCode,
   SigrokFrameType,
+  SigrokModeId,
+  SigrokModeFlag,
+  SigrokServerFlag,
+  SigrokTriggerType,
   sigrokEventCodeName,
 } from "./sigrokClient.ts";
 
@@ -48,6 +53,28 @@ function parseFrameData(data: Uint8Array) {
   return parseSigrokFrame(header, data);
 }
 
+function buildCapsPayload(fast8Flags: number, wide11Flags: number): Uint8Array {
+  return Uint8Array.from([
+    2,
+    SigrokModeId.FAST8,
+    fast8Flags,
+    8,
+    1,
+    0x48,
+    0xe8,
+    0x01,
+    3,
+    SigrokModeId.WIDE11,
+    wide11Flags,
+    11,
+    2,
+    0x48,
+    0xe8,
+    0x01,
+    3,
+  ]);
+}
+
 describe("sigrok frame helpers", () => {
   it("builds a HELLO_REQ frame", () => {
     const frame = buildSigrokFrame(1, SigrokFrameType.HELLO_REQ);
@@ -71,6 +98,99 @@ describe("sigrok frame helpers", () => {
     assert.equal(frame[7], 12);
     assert.equal(frame[8], 0);
     assert.deepEqual(frame.slice(9), payload);
+  });
+
+  it("keeps uint16 captures on exact 12-byte CONFIG v1 even when CONFIG_V2 is advertised", () => {
+    const request = buildSigrokConfigFrameRequest(
+      {
+        modeId: SigrokModeId.FAST8,
+        triggerType: SigrokTriggerType.RISING,
+        triggerChannel: 0,
+        channelMask: 0x0001,
+        samplerateKhz: 100000,
+         preSamples: 128,
+         postSamples: 65535,
+      },
+      { supportsConfigV2: true }
+    );
+
+    assert.equal(request.type, SigrokFrameType.CONFIG_REQ);
+    assert.deepEqual(
+      request.payload,
+      Uint8Array.from([0x01, 0x01, 0x00, 0x01, 0x00, 0xa0, 0x86, 0x01, 0x80, 0x00, 0xff, 0xff])
+    );
+  });
+
+  it("encodes post=0 sentinel as v1 CONFIG without requiring CONFIG_V2", () => {
+    const request = buildSigrokConfigFrameRequest({
+      modeId: SigrokModeId.WIDE11,
+      triggerType: SigrokTriggerType.NONE,
+      triggerChannel: 0,
+      channelMask: 0x07ff,
+      samplerateKhz: 25000,
+      preSamples: 0,
+      postSamples: 0,
+    });
+
+    assert.equal(request.type, SigrokFrameType.CONFIG_REQ);
+    assert.deepEqual(
+      request.payload,
+      Uint8Array.from([0x02, 0x00, 0x00, 0xff, 0x07, 0xa8, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00])
+    );
+  });
+
+  it("uses exact 16-byte CONFIG_V2 for u32 pre/post when advertised", () => {
+    const request = buildSigrokConfigFrameRequest(
+      {
+        modeId: SigrokModeId.FAST8,
+        triggerType: SigrokTriggerType.EITHER,
+        triggerChannel: 7,
+        channelMask: 0x0089,
+        samplerateKhz: 125000,
+         preSamples: 128,
+         postSamples: 100000,
+      },
+      { supportsConfigV2: true }
+    );
+
+    assert.equal(request.type, SigrokFrameType.CONFIG_V2_REQ);
+    assert.deepEqual(
+      request.payload,
+      Uint8Array.from([0x01, 0x03, 0x07, 0x89, 0x00, 0x48, 0xe8, 0x01, 0x80, 0x00, 0x00, 0x00, 0xa0, 0x86, 0x01, 0x00])
+    );
+  });
+
+  it("keeps high-rate post=0 sentinel on CONFIG v1 without requiring CONFIG_V2", () => {
+    const request = buildSigrokConfigFrameRequest({
+      modeId: SigrokModeId.FAST8,
+      triggerType: SigrokTriggerType.NONE,
+      triggerChannel: 0,
+      channelMask: 0x0001,
+      samplerateKhz: 125000,
+      preSamples: 0,
+      postSamples: 0,
+    });
+
+    assert.equal(request.type, SigrokFrameType.CONFIG_REQ);
+    assert.deepEqual(
+      request.payload,
+      Uint8Array.from([0x01, 0x00, 0x00, 0x01, 0x00, 0x48, 0xe8, 0x01, 0x00, 0x00, 0x00, 0x00])
+    );
+  });
+
+  it("rejects large CONFIG requests when old firmware does not advertise CONFIG_V2", () => {
+    assert.throws(
+      () => buildSigrokConfigFrameRequest({
+        modeId: SigrokModeId.WIDE11,
+        triggerType: SigrokTriggerType.NONE,
+        triggerChannel: 0,
+        channelMask: 0x07ff,
+        samplerateKhz: 100000,
+        preSamples: 0,
+        postSamples: 100000,
+      }),
+      /require CONFIG_V2/
+    );
   });
 
   it("parses a valid header", () => {
@@ -226,7 +346,7 @@ describe("sigrok frame helpers", () => {
         sampleIndex: 99,
         sampleCount: 3,
         compression: 3,
-        channelMask: 0x0fff,
+        channelMask: 0x07ff,
         samples: [0x23, 0x01, 0x02, 0x00, 0xbc, 0x0a, 0x01, 0x00],
       })
     );
@@ -236,7 +356,7 @@ describe("sigrok frame helpers", () => {
     assert.deepEqual(frame, {
       type: SigrokFrameType.DATA,
       id: 11,
-      meta: { sampleIndex: 99, sampleCount: 3, compression: 3, channelMask: 0x0fff },
+      meta: { sampleIndex: 99, sampleCount: 3, compression: 3, channelMask: 0x07ff },
       samples: Uint8Array.from([0x23, 0x01, 0x23, 0x01, 0xbc, 0x0a]),
     });
   });
@@ -380,6 +500,100 @@ describe("SigrokClient", () => {
     client.feedBinaryData(frame.slice(5));
 
     assert.deepEqual(frameTypes, [SigrokFrameType.HELLO_RESP]);
+  });
+
+  it("parses HELLO server_flags with no capability bits", () => {
+    const client = new SigrokClient();
+    client.feedBinaryData(
+      buildSigrokFrame(1, SigrokFrameType.HELLO_RESP, new Uint8Array([1, 0x00, 2, 0x00, 0x40]))
+    );
+
+    const capabilities = client.getServerCapabilities();
+    assert.equal(capabilities.serverFlags, 0);
+    assert.equal(capabilities.supportsConfigV2, false);
+    assert.equal(capabilities.supportsGenericPackedBurst, false);
+    assert.equal(capabilities.hello?.maxPayloadLen, 0x4000);
+  });
+
+  it("parses HELLO server_flags bit0-only as legacy CONFIG_V2 support", () => {
+    const client = new SigrokClient();
+    client.feedBinaryData(
+      buildSigrokFrame(
+        1,
+        SigrokFrameType.HELLO_RESP,
+        new Uint8Array([1, SigrokServerFlag.CONFIG_V2, 2, 0x00, 0x40])
+      )
+    );
+
+    const capabilities = client.getServerCapabilities();
+    assert.equal(capabilities.serverFlags, SigrokServerFlag.CONFIG_V2);
+    assert.equal(capabilities.supportsConfigV2, true);
+    assert.equal(capabilities.supportsGenericPackedBurst, false);
+    assert.equal(capabilities.hello?.maxPayloadLen, 0x4000);
+  });
+
+  it("parses HELLO server_flags bits0|1 as CONFIG_V2 plus GENERIC_PACKED_BURST", () => {
+    const client = new SigrokClient();
+    const bothFlags =
+      SigrokServerFlag.CONFIG_V2 | SigrokServerFlag.GENERIC_PACKED_BURST;
+    client.feedBinaryData(
+      buildSigrokFrame(
+        1,
+        SigrokFrameType.HELLO_RESP,
+        new Uint8Array([1, bothFlags, 2, 0x00, 0x40])
+      )
+    );
+
+    const capabilities = client.getServerCapabilities();
+    assert.equal(capabilities.serverFlags, bothFlags);
+    assert.equal(capabilities.supportsConfigV2, true);
+    assert.equal(capabilities.supportsGenericPackedBurst, true);
+    assert.equal(capabilities.hello?.maxPayloadLen, 0x4000);
+  });
+
+  it("caches CAPS mode flags and exposes PRE_TRIGGER per mode", () => {
+    const client = new SigrokClient();
+    const allModeFlags =
+      SigrokModeFlag.CONTINUOUS |
+      SigrokModeFlag.TRIGGER_NONE |
+      SigrokModeFlag.TRIGGER_RISING |
+      SigrokModeFlag.TRIGGER_FALLING |
+      SigrokModeFlag.TRIGGER_EITHER |
+      SigrokModeFlag.PRE_TRIGGER;
+
+    client.feedBinaryData(
+      buildSigrokFrame(2, SigrokFrameType.CAPS_RESP, buildCapsPayload(allModeFlags, allModeFlags))
+    );
+
+    const capabilities = client.getServerCapabilities();
+    assert.equal(capabilities.caps?.modeCount, 2);
+    assert.equal(capabilities.caps?.modes[0]?.modeId, SigrokModeId.FAST8);
+    assert.equal(
+      (capabilities.caps?.modes[0]?.modeFlags ?? 0) & SigrokModeFlag.PRE_TRIGGER,
+      SigrokModeFlag.PRE_TRIGGER
+    );
+    assert.equal(capabilities.caps?.modes[1]?.modeId, SigrokModeId.WIDE11);
+    assert.equal(Object.isFrozen(capabilities.caps), true);
+    assert.equal(Object.isFrozen(capabilities.caps?.modes), true);
+  });
+
+  it("keeps legacy CAPS without PRE_TRIGGER unsupported", () => {
+    const client = new SigrokClient();
+    const legacyModeFlags =
+      SigrokModeFlag.CONTINUOUS |
+      SigrokModeFlag.TRIGGER_NONE |
+      SigrokModeFlag.TRIGGER_RISING |
+      SigrokModeFlag.TRIGGER_FALLING |
+      SigrokModeFlag.TRIGGER_EITHER;
+
+    client.feedBinaryData(
+      buildSigrokFrame(3, SigrokFrameType.CAPS_RESP, buildCapsPayload(legacyModeFlags, legacyModeFlags))
+    );
+
+    const capabilities = client.getServerCapabilities();
+    const modes = capabilities.caps?.modes ?? [];
+    assert.equal((modes[0]?.modeFlags ?? 0) & SigrokModeFlag.PRE_TRIGGER, 0);
+    assert.equal((modes[1]?.modeFlags ?? 0) & SigrokModeFlag.PRE_TRIGGER, 0);
   });
 
   it("emits both inner frames from one coalesced binary feed", () => {

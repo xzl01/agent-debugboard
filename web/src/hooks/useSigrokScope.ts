@@ -14,6 +14,7 @@ import {
   type SigrokDataMeta,
   type SigrokEvent,
   type SigrokFrame,
+  type SigrokServerCapabilities,
 } from "@/lib/sigrokClient";
 import {
   createLiveSession,
@@ -34,6 +35,7 @@ export interface UseSigrokScopeReturn {
   start: () => Promise<SigrokAck>;
   stop: () => Promise<SigrokAck>;
   getCaps: () => Promise<SigrokCapsResp>;
+  getServerCapabilities: () => SigrokServerCapabilities;
   readData: (timeoutMs?: number) => Promise<{ meta: SigrokDataMeta; samples: Uint8Array } | null>;
   readCaptureFrame: (timeoutMs?: number) => Promise<SigrokCaptureFrame | null>;
   waitForTriggered: (timeoutMs?: number) => Promise<boolean>;
@@ -81,6 +83,10 @@ export function useSigrokScope(options: UseSigrokScopeOptions = {}): UseSigrokSc
     }
     return clientRef.current;
   }, []);
+
+  const getServerCapabilities = useCallback((): SigrokServerCapabilities => {
+    return getClient().getServerCapabilities();
+  }, [getClient]);
 
   const releaseSession = useCallback(async () => {
     const session = sessionRef.current;
@@ -314,6 +320,7 @@ export function useSigrokScope(options: UseSigrokScopeOptions = {}): UseSigrokSc
     start,
     stop,
     getCaps,
+    getServerCapabilities,
     readData,
     readCaptureFrame,
     waitForTriggered,
