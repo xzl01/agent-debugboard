@@ -30,4 +30,3 @@ add_custom_command(
 add_custom_target(linkr_debugger_combined_uf2 ALL
   DEPENDS ${combined_out}
 )
-

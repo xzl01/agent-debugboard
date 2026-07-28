@@ -8,7 +8,7 @@
 }:
 
 let
-  version = "0.1.0";
+  version = "0.2.0";
 in
 rustPlatform.buildRustPackage {
   pname = "radxa-linkr-debuggerctl";
@@ -54,7 +54,7 @@ rustPlatform.buildRustPackage {
 
   meta = {
     description = "Released Rust CLI/TUI for Radxa Linkr Debugger";
-    homepage = "https://github.com/chen/agent-debugboard";
+    homepage = "https://github.com/xzl01/agent-debugboard";
     license = lib.licenses.lgpl3Plus;
     mainProgram = "radxa-linkr-debuggerctl";
     platforms = lib.platforms.unix;
