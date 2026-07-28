@@ -15,16 +15,29 @@ import type {
 import {
   SIGROK_SAMPLE_INDEX_MODULO,
   SigrokModeId,
+  SigrokModeFlag,
   SigrokTriggerType,
+  type SigrokCapsResp,
   type SigrokDataMeta,
   type SigrokConfigReq,
 } from "./sigrokClient.ts";
 
 export const LOGIC_ANALYZER_MAX_SAMPLES = 0xffff;
+export const LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_100MHZ_SAMPLES = 100000;
+export const LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES =
+  LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_100MHZ_SAMPLES;
 export const LOGIC_ANALYZER_MIN_SAMPLE_RATE_HZ = 100000;
 export const LOGIC_ANALYZER_WEB_STREAM_MAX_SAMPLE_RATE_HZ = 25000000;
+export const LOGIC_ANALYZER_MIN_PRE_TRIGGER_SAMPLE_RATE_HZ = 1000000;
 export const LOGIC_ANALYZER_MAX_PRE_TRIGGER_SAMPLE_RATE_HZ =
   LOGIC_ANALYZER_WEB_STREAM_MAX_SAMPLE_RATE_HZ;
+export const LOGIC_ANALYZER_MAX_PRE_TRIGGER_TOTAL_SAMPLES = 512;
+export const LOGIC_ANALYZER_MAX_PRE_TRIGGER_SAMPLES =
+  LOGIC_ANALYZER_MAX_PRE_TRIGGER_TOTAL_SAMPLES - 1;
+export const LOGIC_ANALYZER_PRE_TRIGGER_SINGLE_USABLE_SAMPLES = 260096;
+export const LOGIC_ANALYZER_PRE_TRIGGER_FAST8_USABLE_SAMPLES = 30720;
+export const LOGIC_ANALYZER_PRE_TRIGGER_WIDE11_USABLE_SAMPLES = 14336;
+const LOGIC_ANALYZER_PRE_TRIGGER_MINIMUM_POLL_INTERVALS = 2;
 export const LOGIC_ANALYZER_SAMPLE_RATES_HZ = [
   100000,
   500000,
@@ -41,6 +54,18 @@ export const LOGIC_ANALYZER_MAX_SAMPLE_RATE_HZ =
   LOGIC_ANALYZER_SAMPLE_RATES_HZ[LOGIC_ANALYZER_SAMPLE_RATES_HZ.length - 1];
 
 const LOGIC_ANALYZER_NORMALIZED_SAMPLE_RATES_HZ = LOGIC_ANALYZER_SAMPLE_RATES_HZ;
+
+export interface LogicAnalyzerSigrokRequestOptions {
+  stream?: boolean;
+  supportsConfigV2?: boolean;
+  supportsGenericPackedBurst?: boolean;
+  caps?: SigrokCapsResp | null;
+}
+
+export type LogicAnalyzerStreamStopReason =
+  | "manual"
+  | "auto_buffer_full"
+  | "unexpected_stop";
 
 export interface SigrokBoundedCaptureFrame {
   meta: Pick<SigrokDataMeta, "sampleIndex" | "sampleCount" | "channelMask">;
@@ -61,7 +86,10 @@ function clampInteger(value: number, minimum: number, maximum: number): number {
 
 export const LOGIC_ANALYZER_SIGROK_DISABLED_PINS = [7, 8, 9] as const;
 
-const WEB_SIGROK_SUPPORTED_PINS = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 29] as const;
+export const LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS = [
+  10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+] as const;
+const WEB_SIGROK_SUPPORTED_PINS = LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS;
 const WEB_SIGROK_SUPPORTED_PIN_SET = new Set<number>(WEB_SIGROK_SUPPORTED_PINS);
 const CAPTURE_AVAILABLE_PIN_SET = new Set<number>([
   ...LOGIC_ANALYZER_SIGROK_DISABLED_PINS,
@@ -313,6 +341,12 @@ export function calculateMaxSamples(): number {
   return LOGIC_ANALYZER_MAX_SAMPLES;
 }
 
+export function calculateMaxSamplesForCapabilities(options: { supportsConfigV2?: boolean } = {}): number {
+  return options.supportsConfigV2
+    ? LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES
+    : LOGIC_ANALYZER_MAX_SAMPLES;
+}
+
 export function normalizeLogicAnalyzerSampleRate(requestedRate: number): number {
   if (!Number.isFinite(requestedRate)) {
     return LOGIC_ANALYZER_MIN_SAMPLE_RATE_HZ;
@@ -367,9 +401,335 @@ export function isWebSigrokPinSupported(pin: number): boolean {
   return WEB_SIGROK_SUPPORTED_PIN_SET.has(pin);
 }
 
+export function hasExactWide11PinSelection(pins: readonly number[]): boolean {
+  return (
+    pins.length === LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS.length &&
+    LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS.every((pin, index) => pins[index] === pin)
+  );
+}
+
+export function isFast8PhysicalSpanSelection(selectedPins: readonly number[]): boolean {
+  return selectedPins.length > 0 && selectedPins.every((pin) => pin >= 10 && pin <= 17);
+}
+
+function isWide11PhysicalSpanSelection(selectedPins: readonly number[]): boolean {
+  return (
+    selectedPins.length > 0 &&
+    selectedPins.every((pin) => pin >= 10 && pin <= 20) &&
+    !isFast8PhysicalSpanSelection(selectedPins)
+  );
+}
+
+export function getLogicAnalyzerPreTriggerUsableSampleCapacity(
+  selectedPins: readonly number[]
+): number | null {
+  if (selectedPins.length === 1) {
+    return LOGIC_ANALYZER_PRE_TRIGGER_SINGLE_USABLE_SAMPLES;
+  }
+  if (isFast8PhysicalSpanSelection(selectedPins)) {
+    return LOGIC_ANALYZER_PRE_TRIGGER_FAST8_USABLE_SAMPLES;
+  }
+  if (isWide11PhysicalSpanSelection(selectedPins)) {
+    return LOGIC_ANALYZER_PRE_TRIGGER_WIDE11_USABLE_SAMPLES;
+  }
+  return null;
+}
+
+export function supportsLegacyConfigV2ExactWide11PackedBurst(
+  config: Pick<LogicAnalyzerConfig, "selectedPins" | "sampleRateHz">
+): boolean {
+  return (
+    config.sampleRateHz === 100000000 &&
+    hasExactWide11PinSelection(config.selectedPins)
+  );
+}
+
+export function supportsHighRatePackedBurst(
+  config: Pick<LogicAnalyzerConfig, "selectedPins" | "sampleRateHz">
+): boolean {
+  if (config.selectedPins.length === 0) {
+    return false;
+  }
+
+  if (config.sampleRateHz === 100000000) {
+    return true;
+  }
+
+  if (config.sampleRateHz === 125000000) {
+    return isFast8PhysicalSpanSelection(config.selectedPins);
+  }
+
+  return false;
+}
+
+function supportsBoundedPackedBurst(
+  config: Pick<LogicAnalyzerConfig, "selectedPins" | "sampleRateHz">
+): boolean {
+  return (
+    config.selectedPins.length > 0 &&
+    getLogicAnalyzerUnsupportedRateReason(config) == null
+  );
+}
+
+export function getLogicAnalyzerUnsupportedRateReason(
+  config: Pick<LogicAnalyzerConfig, "selectedPins" | "sampleRateHz">
+): string | null {
+  if (config.selectedPins.length === 0) {
+    return null;
+  }
+
+  if (
+    config.sampleRateHz === 125000000 &&
+    !isFast8PhysicalSpanSelection(config.selectedPins)
+  ) {
+    return "WIDE11 at 125 MHz is not supported; use GP10-GP17 only or drop to 100 MHz";
+  }
+
+  return null;
+}
+
+export function getLogicAnalyzerSelectionMaxSamples(
+  config: Pick<LogicAnalyzerConfig, "selectedPins" | "sampleRateHz">
+): number {
+  return supportsBoundedPackedBurst(config)
+    ? LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES
+    : LOGIC_ANALYZER_MAX_SAMPLES;
+}
+
+export function getLogicAnalyzerMaxSamplesForConfig(
+  config: Pick<LogicAnalyzerConfig, "selectedPins" | "sampleRateHz">,
+  options: {
+    supportsConfigV2?: boolean;
+    supportsGenericPackedBurst?: boolean;
+  } = {}
+): number {
+  if (
+    options.supportsGenericPackedBurst &&
+    options.supportsConfigV2 &&
+    supportsBoundedPackedBurst(config)
+  ) {
+    return getLogicAnalyzerSelectionMaxSamples(config);
+  }
+
+  if (
+    options.supportsConfigV2 &&
+    supportsLegacyConfigV2ExactWide11PackedBurst(config)
+  ) {
+    return LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES;
+  }
+
+  return LOGIC_ANALYZER_MAX_SAMPLES;
+}
+
+export function getLogicAnalyzerStreamLimitReason(
+  config: Pick<LogicAnalyzerConfig, "selectedPins" | "sampleRateHz">
+): string | null {
+  const unsupportedRateReason = getLogicAnalyzerUnsupportedRateReason(config);
+  if (unsupportedRateReason != null) {
+    return unsupportedRateReason;
+  }
+
+  if (config.sampleRateHz <= LOGIC_ANALYZER_WEB_STREAM_MAX_SAMPLE_RATE_HZ) {
+    return null;
+  }
+
+  return supportsHighRatePackedBurst(config)
+    ? null
+    : "Streaming above 25 MHz is only available for 100/125 MHz FAST8 or 100 MHz WIDE11 packed burst";
+}
+
+export function getLogicAnalyzerNegotiatedCapabilityReason(
+  config: Pick<LogicAnalyzerConfig, "selectedPins" | "sampleRateHz" | "postSamples">,
+  options: LogicAnalyzerSigrokRequestOptions = {}
+): string | null {
+  const isPotentialHighRatePackedBurst = supportsHighRatePackedBurst(config);
+  const isPotentialBoundedPackedBurst = supportsBoundedPackedBurst(config);
+  const isLegacyExactWide11 = supportsLegacyConfigV2ExactWide11PackedBurst(config);
+
+  if (options.stream) {
+    if (config.sampleRateHz <= LOGIC_ANALYZER_WEB_STREAM_MAX_SAMPLE_RATE_HZ) {
+      return null;
+    }
+
+    if (!isPotentialHighRatePackedBurst) {
+      return null;
+    }
+
+    if (!options.supportsGenericPackedBurst) {
+      return "Connected firmware did not advertise GENERIC_PACKED_BURST; high-rate Stream requires HELLO server_flags bit1";
+    }
+
+    return null;
+  }
+
+  if (config.postSamples <= LOGIC_ANALYZER_MAX_SAMPLES) {
+    if (
+      isPotentialHighRatePackedBurst &&
+      isFast8PhysicalSpanSelection(config.selectedPins) &&
+      !options.supportsGenericPackedBurst
+    ) {
+      return "Connected firmware did not advertise GENERIC_PACKED_BURST; generic FAST8 high-rate capture requires HELLO server_flags bit1";
+    }
+
+    return null;
+  }
+
+  if (!options.supportsConfigV2) {
+    return "Requested post samples above 65535 require CONFIG_V2 support from firmware";
+  }
+
+  if (isLegacyExactWide11 && config.postSamples === LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES) {
+    return null;
+  }
+
+  if (!isPotentialBoundedPackedBurst) {
+    return "Post-trigger samples above 65535 are unsupported for the selected packed capture plan";
+  }
+
+  if (!options.supportsGenericPackedBurst) {
+    return "Connected firmware did not advertise GENERIC_PACKED_BURST; generic bounded post-trigger samples above 65535 require HELLO server_flags bit1";
+  }
+
+  if (config.postSamples > LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES) {
+    return `High-rate packed burst supports at most ${LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES} post-trigger samples`;
+  }
+
+  return null;
+}
+
+type LogicAnalyzerPreTriggerConfig = Pick<
+  LogicAnalyzerConfig,
+  "selectedPins" | "sampleRateHz" | "triggerType" | "preSamples" | "postSamples"
+>;
+
+function getLogicAnalyzerPreTriggerGenericReason(
+  config: LogicAnalyzerPreTriggerConfig,
+  enforceTotal: boolean
+): string | null {
+  if (config.preSamples === 0) {
+    return null;
+  }
+  if (!Number.isInteger(config.preSamples) || config.preSamples < 1) {
+    return "Pre-trigger samples must be at least 1";
+  }
+  if (config.preSamples > LOGIC_ANALYZER_MAX_PRE_TRIGGER_SAMPLES) {
+    return `Pre-trigger samples must be at most ${LOGIC_ANALYZER_MAX_PRE_TRIGGER_SAMPLES}`;
+  }
+  if (config.triggerType === "none") {
+    return "Pre-trigger capture requires a rising, falling, or either trigger";
+  }
+  if (
+    !Number.isFinite(config.sampleRateHz) ||
+    config.sampleRateHz < LOGIC_ANALYZER_MIN_PRE_TRIGGER_SAMPLE_RATE_HZ ||
+    config.sampleRateHz > LOGIC_ANALYZER_MAX_PRE_TRIGGER_SAMPLE_RATE_HZ
+  ) {
+    return "Pre-trigger capture requires a requested sample rate from 1 MHz through 25 MHz";
+  }
+  if (!Number.isInteger(config.postSamples) || config.postSamples < 1) {
+    return "Pre-trigger capture requires at least 1 post-trigger sample";
+  }
+  if (
+    enforceTotal &&
+    config.preSamples + config.postSamples > LOGIC_ANALYZER_MAX_PRE_TRIGGER_TOTAL_SAMPLES
+  ) {
+    return `Pre-trigger capture supports at most ${LOGIC_ANALYZER_MAX_PRE_TRIGGER_TOTAL_SAMPLES} total samples`;
+  }
+
+  const usableCapacity = getLogicAnalyzerPreTriggerUsableSampleCapacity(config.selectedPins);
+  if (usableCapacity == null) {
+    return "Pre-trigger capture is unsupported for the selected pin plan";
+  }
+
+  const minimumRetentionSamples =
+    LOGIC_ANALYZER_PRE_TRIGGER_MINIMUM_POLL_INTERVALS *
+    Math.ceil(config.sampleRateHz / 1000);
+  if (usableCapacity < minimumRetentionSamples) {
+    const modeName = isFast8PhysicalSpanSelection(config.selectedPins)
+      ? "FAST8"
+      : isWide11PhysicalSpanSelection(config.selectedPins)
+        ? "WIDE11"
+        : "the selected plan";
+    return `Pre-trigger capture is infeasible for ${modeName}: usable capacity ${usableCapacity} samples cannot retain two 1 ms poll intervals at ${config.sampleRateHz / 1000000} MHz (requires ${minimumRetentionSamples} samples)`;
+  }
+
+  return null;
+}
+
+function getSigrokModeName(modeId: SigrokModeId): string {
+  switch (modeId) {
+    case SigrokModeId.FAST8:
+      return "FAST8";
+    case SigrokModeId.WIDE11:
+      return "WIDE11";
+  }
+}
+
+export function getLogicAnalyzerPreTriggerReason(
+  config: LogicAnalyzerPreTriggerConfig,
+  options: LogicAnalyzerSigrokRequestOptions = {}
+): string | null {
+  const genericReason = getLogicAnalyzerPreTriggerGenericReason(config, true);
+  if (genericReason != null || config.preSamples === 0) {
+    return genericReason;
+  }
+
+  const modeId = getSigrokModeForPins(config.selectedPins);
+  const modeCaps = options.caps?.modes.find((mode) => mode.modeId === modeId);
+  if (modeCaps == null || (modeCaps.modeFlags & SigrokModeFlag.PRE_TRIGGER) === 0) {
+    return `Connected firmware CAPS did not advertise PRE_TRIGGER for Sigrok mode ${getSigrokModeName(modeId)}`;
+  }
+
+  return null;
+}
+
+export function classifyLogicAnalyzerStreamStop({
+  config,
+  sampleCount,
+  userInitiated,
+}: {
+  config: Pick<LogicAnalyzerConfig, "selectedPins" | "sampleRateHz">;
+  sampleCount: number;
+  userInitiated: boolean;
+}): LogicAnalyzerStreamStopReason {
+  if (userInitiated) {
+    return "manual";
+  }
+
+  if (
+    supportsHighRatePackedBurst(config) &&
+    sampleCount === LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES
+  ) {
+    return "auto_buffer_full";
+  }
+
+  return "unexpected_stop";
+}
+
+function getLogicAnalyzerConfigValidationError(
+  config: LogicAnalyzerPreTriggerConfig,
+  options: LogicAnalyzerSigrokRequestOptions = {}
+): string | null {
+  const unsupportedRateReason = getLogicAnalyzerUnsupportedRateReason(config);
+  if (unsupportedRateReason != null) {
+    return unsupportedRateReason;
+  }
+
+  const streamLimitReason = options.stream ? getLogicAnalyzerStreamLimitReason(config) : null;
+  if (streamLimitReason != null) {
+    return streamLimitReason;
+  }
+
+  const preTriggerReason = getLogicAnalyzerPreTriggerReason(config, options);
+  if (preTriggerReason != null) {
+    return preTriggerReason;
+  }
+
+  return getLogicAnalyzerNegotiatedCapabilityReason(config, options);
+}
+
 export function getSigrokModeForPins(selectedPins: readonly number[]): SigrokModeId {
-  return selectedPins.some((pin) => pin >= 18 || pin === 29)
-    ? SigrokModeId.WIDE12
+  return selectedPins.some((pin) => pin >= 18)
+    ? SigrokModeId.WIDE11
     : SigrokModeId.FAST8;
 }
 
@@ -380,7 +740,7 @@ export function mapSigrokLogicalChannel(pin: number, modeId: SigrokModeId): numb
   if (pin >= 10 && pin <= 20) {
     return pin - 10;
   }
-  return pin === 29 ? 11 : null;
+  return null;
 }
 
 function buildSigrokChannelMask(selectedPins: readonly number[], modeId: SigrokModeId): number {
@@ -410,11 +770,18 @@ function mapTriggerType(triggerType: LogicAnalyzerTriggerType): SigrokTriggerTyp
 
 export function buildSigrokCaptureRequest(
   config: LogicAnalyzerConfig,
-  options: { stream?: boolean } = {}
+  options: LogicAnalyzerSigrokRequestOptions = {}
 ): SigrokConfigReq {
-  const normalizedConfig = normalizeLogicAnalyzerConfig(config);
+  const normalizedConfig = normalizeLogicAnalyzerConfig(
+    options.stream ? { ...config, preSamples: 0, postSamples: 1 } : config,
+    options
+  );
   if (normalizedConfig.selectedPins.length === 0) {
     throw new Error("Select at least one supported pin");
+  }
+  const validationError = getLogicAnalyzerConfigValidationError(normalizedConfig, options);
+  if (validationError != null) {
+    throw new Error(validationError);
   }
 
   const modeId = getSigrokModeForPins(normalizedConfig.selectedPins);
@@ -434,20 +801,16 @@ export function buildSigrokCaptureRequest(
     triggerChannel: triggerChannel ?? 0,
     channelMask: buildSigrokChannelMask(normalizedConfig.selectedPins, modeId),
     samplerateKhz: Math.max(1, Math.round(normalizedConfig.sampleRateHz / 1000)),
-    preSamples: 0,
+    preSamples: options.stream ? 0 : normalizedConfig.preSamples,
     postSamples: options.stream ? 0 : normalizedConfig.postSamples,
   };
 }
 
-export function normalizeLogicAnalyzerConfig(config: LogicAnalyzerConfig): LogicAnalyzerConfig {
+function normalizeLogicAnalyzerConfigBase(config: LogicAnalyzerConfig): LogicAnalyzerConfig {
   const selectedPins = normalizeLogicAnalyzerSelectedPins(config.selectedPins);
   const sampleRateHz = normalizeLogicAnalyzerSampleRate(config.sampleRateHz);
-  const preSamples = 0;
-  const postSamples = clampInteger(
-    config.postSamples,
-    1,
-    LOGIC_ANALYZER_MAX_SAMPLES
-  );
+  const preSamples = Number.isFinite(config.preSamples) ? Math.trunc(config.preSamples) : 0;
+  const postSamples = clampInteger(config.postSamples, 1, Number.MAX_SAFE_INTEGER);
   const triggerPin = clampInteger(config.triggerPin, 0, Math.max(0, selectedPins.length - 1));
 
   return {
@@ -458,6 +821,50 @@ export function normalizeLogicAnalyzerConfig(config: LogicAnalyzerConfig): Logic
     postSamples,
     triggerPin,
   };
+}
+
+export function normalizeLogicAnalyzerLocalConfig(config: LogicAnalyzerConfig): LogicAnalyzerConfig {
+  const normalizedConfig = normalizeLogicAnalyzerConfigBase(config);
+  if (
+    normalizedConfig.preSamples <= 0 ||
+    getLogicAnalyzerPreTriggerGenericReason(normalizedConfig, false) != null
+  ) {
+    return { ...normalizedConfig, preSamples: 0 };
+  }
+
+  return {
+    ...normalizedConfig,
+    postSamples: Math.min(
+      normalizedConfig.postSamples,
+      LOGIC_ANALYZER_MAX_PRE_TRIGGER_TOTAL_SAMPLES - normalizedConfig.preSamples
+    ),
+  };
+}
+
+export function normalizeLogicAnalyzerConfig(config: LogicAnalyzerConfig): LogicAnalyzerConfig;
+export function normalizeLogicAnalyzerConfig(
+  config: LogicAnalyzerConfig,
+  options: LogicAnalyzerSigrokRequestOptions
+): LogicAnalyzerConfig;
+
+export function normalizeLogicAnalyzerConfig(
+  config: LogicAnalyzerConfig,
+  options: LogicAnalyzerSigrokRequestOptions = {}
+): LogicAnalyzerConfig {
+  const normalizedConfig = normalizeLogicAnalyzerConfigBase(config);
+  const validationConfig =
+    normalizedConfig.preSamples > 0
+      ? {
+          ...normalizedConfig,
+          postSamples: Number.isFinite(config.postSamples) ? Math.trunc(config.postSamples) : 0,
+        }
+      : normalizedConfig;
+  const validationError = getLogicAnalyzerConfigValidationError(validationConfig, options);
+  if (validationError != null) {
+    throw new Error(validationError);
+  }
+
+  return normalizedConfig;
 }
 
 export function calculateActualSampleRate(requestedRate: number): number {
@@ -636,7 +1043,6 @@ export const AVAILABLE_PINS = [
   { pin: 18, name: "GP18" },
   { pin: 19, name: "GP19" },
   { pin: 20, name: "GP20" },
-  { pin: 29, name: "GP29/ADC3" },
 ];
 
 export const SAMPLE_RATES = [

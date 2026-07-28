@@ -3,7 +3,10 @@ import test from "node:test";
 
 import {
   AVAILABLE_PINS,
+  classifyLogicAnalyzerStreamStop,
   DEFAULT_CONFIG,
+  LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS,
+  LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES,
   LOGIC_ANALYZER_MAX_SAMPLE_RATE_HZ,
   LOGIC_ANALYZER_MAX_SAMPLES,
   LOGIC_ANALYZER_MIN_SAMPLE_RATE_HZ,
@@ -14,17 +17,29 @@ import {
   assembleBoundedSigrokCapture,
   buildSigrokCaptureRequest,
   calculateMaxSamples,
+  calculateMaxSamplesForCapabilities,
   extractLogicAnalyzerErrorMessage,
   formatSamplePeriod,
   getLogicAnalyzerActualSampleRate,
   getLogicAnalyzerBackend,
+  getLogicAnalyzerMaxSamplesForConfig,
+  getLogicAnalyzerNegotiatedCapabilityReason,
   getLogicAnalyzerRequestedSampleRate,
   getLogicAnalyzerSamplePeriodPs,
+  getLogicAnalyzerPreTriggerReason,
+  getLogicAnalyzerSelectionMaxSamples,
+  getLogicAnalyzerStreamLimitReason,
+  getLogicAnalyzerUnsupportedRateReason,
+  hasExactWide11PinSelection,
+  isFast8PhysicalSpanSelection,
   isWebSigrokPinSupported,
   mapSigrokLogicalChannel,
   normalizeLogicAnalyzerCapture,
   normalizeLogicAnalyzerConfig,
+  normalizeLogicAnalyzerLocalConfig,
   normalizeLogicAnalyzerSampleRate,
+  supportsLegacyConfigV2ExactWide11PackedBurst,
+  supportsHighRatePackedBurst,
 } from "./logicAnalyzer.ts";
 import {
   buildSigrokFrame,
@@ -32,8 +47,40 @@ import {
   parseSigrokHeader,
   SigrokFrameType,
   SigrokModeId,
+  SigrokModeFlag,
   SigrokTriggerType,
+  type SigrokCapsResp,
 } from "./sigrokClient.ts";
+
+const PRE_TRIGGER_MODE_FLAGS =
+  SigrokModeFlag.CONTINUOUS |
+  SigrokModeFlag.TRIGGER_NONE |
+  SigrokModeFlag.TRIGGER_RISING |
+  SigrokModeFlag.TRIGGER_FALLING |
+  SigrokModeFlag.TRIGGER_EITHER |
+  SigrokModeFlag.PRE_TRIGGER;
+
+const PRE_TRIGGER_CAPS: SigrokCapsResp = {
+  modeCount: 2,
+  modes: [
+    {
+      modeId: SigrokModeId.FAST8,
+      modeFlags: PRE_TRIGGER_MODE_FLAGS,
+      channelCount: 8,
+      sampleBytes: 1,
+      maxSamplerateKhz: 125000,
+      compression: 3,
+    },
+    {
+      modeId: SigrokModeId.WIDE11,
+      modeFlags: PRE_TRIGGER_MODE_FLAGS,
+      channelCount: 11,
+      sampleBytes: 2,
+      maxSamplerateKhz: 125000,
+      compression: 3,
+    },
+  ],
+};
 
 function buildDataFramePayload({
   sampleIndex,
@@ -112,33 +159,216 @@ test("publishes bounded sample-rate options including sub-1MHz presets", () => {
   );
 });
 
-test("forces pre-trigger to zero and clamps post samples to uint16", () => {
-  const config = normalizeLogicAnalyzerConfig({
+test("local normalization disables pre-trigger for no trigger without limiting post depth", () => {
+  const config = normalizeLogicAnalyzerLocalConfig({
     ...DEFAULT_CONFIG,
-    sampleRateHz: 200000000,
+    sampleRateHz: 50000000,
     preSamples: 300,
-    postSamples: 70000,
+    postSamples: LOGIC_ANALYZER_MAX_SAMPLES,
   });
 
-  assert.equal(config.sampleRateHz, LOGIC_ANALYZER_MAX_SAMPLE_RATE_HZ);
+  assert.equal(config.sampleRateHz, 50000000);
   assert.equal(config.preSamples, 0);
   assert.equal(config.postSamples, LOGIC_ANALYZER_MAX_SAMPLES);
 });
 
-test("filters unsupported Web sigrok pins and disables pre-trigger even for edge triggers", () => {
-  const config = normalizeLogicAnalyzerConfig({
+test("preserves valid bounded pre-trigger locally and clamps the combined depth", () => {
+  const config = normalizeLogicAnalyzerLocalConfig({
     ...DEFAULT_CONFIG,
-    selectedPins: [29, 4, 18, 18, 7, 10, 100],
+    selectedPins: [10, 18],
+    sampleRateHz: 1000000,
     preSamples: 120,
-    postSamples: 70000,
+    postSamples: 393,
     triggerType: "rising",
-    triggerPin: 9,
+    triggerPin: 1,
   });
 
-  assert.deepEqual(config.selectedPins, [10, 18, 29]);
+  assert.deepEqual(config.selectedPins, [10, 18]);
+  assert.equal(config.preSamples, 120);
+  assert.equal(config.postSamples, 392);
+  assert.equal(config.triggerPin, 1);
+});
+
+test("local normalization resets infeasible pre-trigger without limiting ordinary post depth", () => {
+  const config = normalizeLogicAnalyzerLocalConfig({
+    ...DEFAULT_CONFIG,
+    selectedPins: [10, 11],
+    sampleRateHz: 25000000,
+    preSamples: 128,
+    postSamples: LOGIC_ANALYZER_MAX_SAMPLES,
+    triggerType: "rising",
+  });
+
   assert.equal(config.preSamples, 0);
   assert.equal(config.postSamples, LOGIC_ANALYZER_MAX_SAMPLES);
-  assert.equal(config.triggerPin, 2);
+});
+
+test("publishes generic high-rate max depth helpers", () => {
+  assert.equal(calculateMaxSamplesForCapabilities(), LOGIC_ANALYZER_MAX_SAMPLES);
+  assert.equal(
+    calculateMaxSamplesForCapabilities({ supportsConfigV2: true }),
+    LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES
+  );
+
+  assert.equal(
+    getLogicAnalyzerSelectionMaxSamples({ selectedPins: [10], sampleRateHz: 125000000 }),
+    LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES
+  );
+  assert.equal(
+    getLogicAnalyzerMaxSamplesForConfig(
+      { selectedPins: [10], sampleRateHz: 125000000 },
+      { supportsConfigV2: false }
+    ),
+    LOGIC_ANALYZER_MAX_SAMPLES
+  );
+  assert.equal(
+    getLogicAnalyzerMaxSamplesForConfig(
+      { selectedPins: [10], sampleRateHz: 125000000 },
+      { supportsConfigV2: true }
+    ),
+    LOGIC_ANALYZER_MAX_SAMPLES
+  );
+  assert.equal(
+    getLogicAnalyzerMaxSamplesForConfig(
+      { selectedPins: [10], sampleRateHz: 125000000 },
+      { supportsConfigV2: true, supportsGenericPackedBurst: true }
+    ),
+    LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES
+  );
+  assert.equal(
+    getLogicAnalyzerMaxSamplesForConfig(
+      {
+        selectedPins: [...LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS],
+        sampleRateHz: 100000000,
+      },
+      { supportsConfigV2: true }
+    ),
+    LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES
+  );
+});
+
+test("publishes CONFIG_V2 bounded depth at low sample rates", () => {
+  const maxSamples = getLogicAnalyzerMaxSamplesForConfig(
+    { selectedPins: [10], sampleRateHz: 1000000 },
+    { supportsConfigV2: true, supportsGenericPackedBurst: true }
+  );
+
+  assert.equal(maxSamples, LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES);
+});
+
+test("accepts low-rate CONFIG_V2 bounded captures on the common packed pipeline", () => {
+  const config = normalizeLogicAnalyzerConfig(
+    {
+      ...DEFAULT_CONFIG,
+      selectedPins: [10],
+      sampleRateHz: 1000000,
+      preSamples: 0,
+      postSamples: 100000,
+    },
+    { supportsConfigV2: true, supportsGenericPackedBurst: true }
+  );
+
+  assert.equal(config.postSamples, 100000);
+});
+
+test("permits generic high-rate CONFIG_V2 depth cases only when bit1 generic packed burst is negotiated", () => {
+  const fast8SinglePin = normalizeLogicAnalyzerConfig(
+    {
+      ...DEFAULT_CONFIG,
+      selectedPins: [10],
+      sampleRateHz: 125000000,
+      preSamples: 0,
+      postSamples: 100000,
+    },
+    { supportsConfigV2: true, supportsGenericPackedBurst: true }
+  );
+
+  assert.equal(fast8SinglePin.preSamples, 0);
+  assert.equal(fast8SinglePin.postSamples, 100000);
+  assert.deepEqual(fast8SinglePin.selectedPins, [10]);
+
+  const config = normalizeLogicAnalyzerConfig(
+    {
+      ...DEFAULT_CONFIG,
+      selectedPins: [...LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS],
+      sampleRateHz: 100000000,
+      preSamples: 0,
+      postSamples: 100000,
+    },
+    { supportsConfigV2: true }
+  );
+
+  assert.equal(config.preSamples, 0);
+  assert.equal(config.postSamples, 100000);
+  assert.deepEqual(config.selectedPins, [...LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS]);
+});
+
+test("allows local deep-burst normalization without live capability discovery", () => {
+  const config = normalizeLogicAnalyzerLocalConfig({
+    ...DEFAULT_CONFIG,
+    selectedPins: [13],
+    sampleRateHz: 100000000,
+    postSamples: 100000,
+  });
+
+  assert.equal(config.postSamples, 100000);
+  assert.equal(config.sampleRateHz, 100000000);
+  assert.deepEqual(config.selectedPins, [13]);
+});
+
+test("accepts FAST8 physical-span subsets for 100/125MHz packed burst", () => {
+  assert.equal(isFast8PhysicalSpanSelection([10]), true);
+  assert.equal(isFast8PhysicalSpanSelection([10, 13, 17]), true);
+  assert.equal(isFast8PhysicalSpanSelection([10, 18]), false);
+  assert.equal(
+    supportsHighRatePackedBurst({ selectedPins: [10], sampleRateHz: 100000000 }),
+    true
+  );
+  assert.equal(
+    supportsHighRatePackedBurst({ selectedPins: [10], sampleRateHz: 125000000 }),
+    true
+  );
+  assert.equal(
+    supportsHighRatePackedBurst({ selectedPins: [10, 13, 17], sampleRateHz: 125000000 }),
+    true
+  );
+  assert.equal(
+    supportsLegacyConfigV2ExactWide11PackedBurst({
+      selectedPins: [...LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS],
+      sampleRateHz: 100000000,
+    }),
+    true
+  );
+});
+
+test("rejects WIDE11 at 125MHz with a precise message", () => {
+  assert.equal(
+    getLogicAnalyzerUnsupportedRateReason({ selectedPins: [10, 18, 20], sampleRateHz: 125000000 }),
+    "WIDE11 at 125 MHz is not supported; use GP10-GP17 only or drop to 100 MHz"
+  );
+  assert.equal(
+    getLogicAnalyzerStreamLimitReason({ selectedPins: [10, 18, 20], sampleRateHz: 125000000 }),
+    "WIDE11 at 125 MHz is not supported; use GP10-GP17 only or drop to 100 MHz"
+  );
+
+  assert.throws(
+    () =>
+      normalizeLogicAnalyzerConfig(
+        {
+          ...DEFAULT_CONFIG,
+          selectedPins: [10, 18, 20],
+          sampleRateHz: 125000000,
+          postSamples: 65535,
+        },
+        { supportsConfigV2: true }
+      ),
+    /WIDE11 at 125 MHz is not supported/
+  );
+});
+
+test("publishes a named helper for the exact WIDE11 deep-burst pin contract", () => {
+  assert.equal(hasExactWide11PinSelection(LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS), true);
+  assert.equal(hasExactWide11PinSelection([10, 18, 20]), false);
 });
 
 test("builds a FAST8 bounded sigrok request with logical trigger-channel mapping", () => {
@@ -148,7 +378,7 @@ test("builds a FAST8 bounded sigrok request with logical trigger-channel mapping
     sampleRateHz: 50000000,
     triggerType: "falling",
     triggerPin: 2,
-    preSamples: 999,
+    preSamples: 0,
     postSamples: 65535,
   });
 
@@ -161,28 +391,381 @@ test("builds a FAST8 bounded sigrok request with logical trigger-channel mapping
   assert.equal(request.samplerateKhz, 50000);
 });
 
-test("builds a WIDE12 bounded sigrok request with GP29 on logical bit 11", () => {
+test("builds a supported 1MHz bounded pre-trigger request", () => {
+  const request = buildSigrokCaptureRequest(
+    {
+      ...DEFAULT_CONFIG,
+      selectedPins: [13],
+      sampleRateHz: 1000000,
+      triggerType: "rising",
+      triggerPin: 0,
+      preSamples: 128,
+      postSamples: 128,
+    },
+    { caps: PRE_TRIGGER_CAPS }
+  );
+
+  assert.equal(request.modeId, SigrokModeId.FAST8);
+  assert.equal(request.triggerType, SigrokTriggerType.RISING);
+  assert.equal(request.preSamples, 128);
+  assert.equal(request.postSamples, 128);
+});
+
+test("rejects supported local pre-trigger when connected CAPS lacks the mode flag", () => {
+  assert.throws(
+    () =>
+      normalizeLogicAnalyzerConfig(
+        {
+          ...DEFAULT_CONFIG,
+          selectedPins: [13],
+          sampleRateHz: 1000000,
+          triggerType: "rising",
+          preSamples: 128,
+          postSamples: 128,
+        },
+        { caps: null }
+      ),
+    /PRE_TRIGGER.*FAST8/
+  );
+});
+
+test("accepts the bounded pre-trigger total of 512 samples", () => {
+  const request = buildSigrokCaptureRequest(
+    {
+      ...DEFAULT_CONFIG,
+      selectedPins: [13],
+      sampleRateHz: 1000000,
+      triggerType: "either",
+      preSamples: 128,
+      postSamples: 384,
+    },
+    { caps: PRE_TRIGGER_CAPS }
+  );
+
+  assert.equal(request.preSamples + request.postSamples, 512);
+});
+
+test("rejects a bounded pre-trigger total above 512 samples", () => {
+  assert.throws(
+    () =>
+      buildSigrokCaptureRequest(
+        {
+          ...DEFAULT_CONFIG,
+          selectedPins: [13],
+          sampleRateHz: 1000000,
+          triggerType: "rising",
+          preSamples: 128,
+          postSamples: 385,
+        },
+        { caps: PRE_TRIGGER_CAPS }
+      ),
+    /512/
+  );
+});
+
+test("rejects pre-trigger for trigger none and rates below 1MHz", () => {
+  assert.throws(
+    () =>
+      buildSigrokCaptureRequest(
+        {
+          ...DEFAULT_CONFIG,
+          selectedPins: [13],
+          sampleRateHz: 1000000,
+          triggerType: "none",
+          preSamples: 1,
+          postSamples: 1,
+        },
+        { caps: PRE_TRIGGER_CAPS }
+      ),
+    /trigger/i
+  );
+  assert.throws(
+    () =>
+      buildSigrokCaptureRequest(
+        {
+          ...DEFAULT_CONFIG,
+          selectedPins: [13],
+          sampleRateHz: 500000,
+          triggerType: "rising",
+          preSamples: 1,
+          postSamples: 1,
+        },
+        { caps: PRE_TRIGGER_CAPS }
+      ),
+    /1 MHz/
+  );
+  assert.throws(
+    () =>
+      buildSigrokCaptureRequest(
+        {
+          ...DEFAULT_CONFIG,
+          selectedPins: [13],
+          sampleRateHz: 1000000,
+          triggerType: "rising",
+          preSamples: 1,
+          postSamples: 0,
+        },
+        { caps: PRE_TRIGGER_CAPS }
+      ),
+    /post-trigger sample/
+  );
+});
+
+test("reports physical plan limits for bounded pre-trigger", () => {
+  assert.equal(
+    getLogicAnalyzerPreTriggerReason(
+      { selectedPins: [13], sampleRateHz: 25000000, triggerType: "rising", preSamples: 1, postSamples: 1 },
+      { caps: PRE_TRIGGER_CAPS }
+    ),
+    null
+  );
+  assert.equal(
+    getLogicAnalyzerPreTriggerReason(
+      { selectedPins: [10, 11], sampleRateHz: 10000000, triggerType: "rising", preSamples: 1, postSamples: 1 },
+      { caps: PRE_TRIGGER_CAPS }
+    ),
+    null
+  );
+  assert.match(
+    getLogicAnalyzerPreTriggerReason(
+      { selectedPins: [10, 11], sampleRateHz: 25000000, triggerType: "rising", preSamples: 1, postSamples: 1 },
+      { caps: PRE_TRIGGER_CAPS }
+    ) ?? "",
+    /FAST8|15\.36|capacity/
+  );
+  assert.equal(
+    getLogicAnalyzerPreTriggerReason(
+      { selectedPins: [10, 18], sampleRateHz: 5000000, triggerType: "rising", preSamples: 1, postSamples: 1 },
+      { caps: PRE_TRIGGER_CAPS }
+    ),
+    null
+  );
+  assert.match(
+    getLogicAnalyzerPreTriggerReason(
+      { selectedPins: [10, 18], sampleRateHz: 10000000, triggerType: "rising", preSamples: 1, postSamples: 1 },
+      { caps: PRE_TRIGGER_CAPS }
+    ) ?? "",
+    /WIDE11|7\.168|capacity/
+  );
+});
+
+test("rejects missing or mismatched PRE_TRIGGER mode flags", () => {
+  const wide11MissingPreTrigger: SigrokCapsResp = {
+    ...PRE_TRIGGER_CAPS,
+    modes: PRE_TRIGGER_CAPS.modes.map((mode) =>
+      mode.modeId === SigrokModeId.WIDE11
+        ? { ...mode, modeFlags: mode.modeFlags & ~SigrokModeFlag.PRE_TRIGGER }
+        : mode
+    ),
+  };
+
+  assert.throws(
+    () =>
+      buildSigrokCaptureRequest(
+        {
+          ...DEFAULT_CONFIG,
+          selectedPins: [10, 18],
+          sampleRateHz: 5000000,
+          triggerType: "rising",
+          preSamples: 1,
+          postSamples: 1,
+        },
+        { caps: wide11MissingPreTrigger }
+      ),
+    /PRE_TRIGGER.*WIDE11/
+  );
+});
+
+test("preserves exact requested post samples including 513", () => {
   const request = buildSigrokCaptureRequest({
     ...DEFAULT_CONFIG,
-    selectedPins: [10, 18, 20, 29],
+    selectedPins: [13],
+    sampleRateHz: 5000000,
+    postSamples: 513,
+  });
+
+  assert.equal(request.postSamples, 513);
+});
+
+test("builds a WIDE11 bounded sigrok request with GP10-GP20 logical mapping", () => {
+  const request = buildSigrokCaptureRequest({
+    ...DEFAULT_CONFIG,
+    selectedPins: [10, 18, 20],
     triggerType: "either",
-    triggerPin: 3,
+    triggerPin: 2,
     postSamples: 4096,
   });
 
-  assert.equal(request.modeId, SigrokModeId.WIDE12);
+  assert.equal(request.modeId, SigrokModeId.WIDE11);
   assert.equal(request.triggerType, SigrokTriggerType.EITHER);
-  assert.equal(request.triggerChannel, 11);
-  assert.equal(request.channelMask, 0x0d01);
+  assert.equal(request.triggerChannel, 10);
+  assert.equal(request.channelMask, 0x0501);
   assert.equal(request.preSamples, 0);
   assert.equal(request.postSamples, 4096);
 });
 
-test("builds streaming requests with post=0 while keeping trigger mode", () => {
+test("builds exact WIDE11 100MHz post=100000 request when CONFIG_V2 is negotiated", () => {
   const request = buildSigrokCaptureRequest(
     {
       ...DEFAULT_CONFIG,
-      selectedPins: [10, 18, 29],
+      selectedPins: [...LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS],
+      sampleRateHz: 100000000,
+      triggerType: "either",
+      triggerPin: 10,
+      postSamples: 100000,
+    },
+    { supportsConfigV2: true }
+  );
+
+  assert.equal(request.modeId, SigrokModeId.WIDE11);
+  assert.equal(request.triggerType, SigrokTriggerType.EITHER);
+  assert.equal(request.triggerChannel, 10);
+  assert.equal(request.channelMask, 0x07ff);
+  assert.equal(request.preSamples, 0);
+  assert.equal(request.postSamples, 100000);
+  assert.equal(request.samplerateKhz, 100000);
+});
+
+test("builds generic FAST8 125MHz post=100000 requests only when bit1 generic packed burst is negotiated", () => {
+  const exact513 = buildSigrokCaptureRequest(
+    {
+      ...DEFAULT_CONFIG,
+      selectedPins: [10],
+      sampleRateHz: 125000000,
+      postSamples: 513,
+    },
+    { supportsConfigV2: true, supportsGenericPackedBurst: true }
+  );
+  assert.equal(exact513.modeId, SigrokModeId.FAST8);
+  assert.equal(exact513.postSamples, 513);
+  assert.equal(exact513.samplerateKhz, 125000);
+
+  const singlePin = buildSigrokCaptureRequest(
+    {
+      ...DEFAULT_CONFIG,
+      selectedPins: [10],
+      sampleRateHz: 125000000,
+      postSamples: 100000,
+    },
+    { supportsConfigV2: true, supportsGenericPackedBurst: true }
+  );
+  assert.equal(singlePin.modeId, SigrokModeId.FAST8);
+  assert.equal(singlePin.channelMask, 0x0001);
+  assert.equal(singlePin.postSamples, 100000);
+  assert.equal(singlePin.samplerateKhz, 125000);
+
+  const sparseFast8 = buildSigrokCaptureRequest(
+    {
+      ...DEFAULT_CONFIG,
+      selectedPins: [10, 13, 17],
+      sampleRateHz: 100000000,
+      postSamples: 100000,
+      triggerType: "either",
+      triggerPin: 2,
+    },
+    { supportsConfigV2: true, supportsGenericPackedBurst: true }
+  );
+  assert.equal(sparseFast8.modeId, SigrokModeId.FAST8);
+  assert.equal(sparseFast8.channelMask, 0x0089);
+  assert.equal(sparseFast8.triggerChannel, 7);
+  assert.equal(sparseFast8.postSamples, 100000);
+});
+
+test("rejects generic high-rate bounded requests when no capability flags are advertised", () => {
+  assert.throws(
+    () =>
+      buildSigrokCaptureRequest({
+        ...DEFAULT_CONFIG,
+        selectedPins: [10],
+        sampleRateHz: 125000000,
+        postSamples: 100000,
+      }),
+    /require CONFIG_V2/
+  );
+});
+
+test("rejects generic high-rate bounded requests on bit0-only legacy firmware", () => {
+  assert.equal(
+    getLogicAnalyzerNegotiatedCapabilityReason(
+      {
+        selectedPins: [10],
+        sampleRateHz: 125000000,
+        postSamples: 513,
+      },
+      { supportsConfigV2: true }
+    ),
+    "Connected firmware did not advertise GENERIC_PACKED_BURST; generic FAST8 high-rate capture requires HELLO server_flags bit1"
+  );
+  assert.throws(
+    () =>
+      buildSigrokCaptureRequest(
+        {
+          ...DEFAULT_CONFIG,
+          selectedPins: [10],
+          sampleRateHz: 125000000,
+          postSamples: 513,
+        },
+        { supportsConfigV2: true }
+      ),
+    /GENERIC_PACKED_BURST/
+  );
+
+  assert.equal(
+    getLogicAnalyzerNegotiatedCapabilityReason(
+      {
+        selectedPins: [10],
+        sampleRateHz: 125000000,
+        postSamples: 100000,
+      },
+      { supportsConfigV2: true }
+    ),
+    "Connected firmware did not advertise GENERIC_PACKED_BURST; generic bounded post-trigger samples above 65535 require HELLO server_flags bit1"
+  );
+  assert.throws(
+    () =>
+      buildSigrokCaptureRequest(
+        {
+          ...DEFAULT_CONFIG,
+          selectedPins: [10],
+          sampleRateHz: 125000000,
+          postSamples: 100000,
+        },
+        { supportsConfigV2: true }
+      ),
+    /GENERIC_PACKED_BURST/
+  );
+});
+
+test("keeps legacy exact WIDE11 100MHz post=100000 on bit0-only firmware", () => {
+  assert.equal(
+    getLogicAnalyzerNegotiatedCapabilityReason(
+      {
+        selectedPins: [...LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS],
+        sampleRateHz: 100000000,
+        postSamples: 100000,
+      },
+      { supportsConfigV2: true }
+    ),
+    null
+  );
+  const request = buildSigrokCaptureRequest(
+    {
+      ...DEFAULT_CONFIG,
+      selectedPins: [...LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS],
+      sampleRateHz: 100000000,
+      postSamples: 100000,
+    },
+    { supportsConfigV2: true }
+  );
+  assert.equal(request.modeId, SigrokModeId.WIDE11);
+  assert.equal(request.postSamples, 100000);
+});
+
+test("rejects high-rate stream on bit0-only legacy firmware and keeps lower-rate stream behavior", () => {
+  const request = buildSigrokCaptureRequest(
+    {
+      ...DEFAULT_CONFIG,
+        selectedPins: [10, 18, 20],
       triggerType: "rising",
       triggerPin: 1,
       postSamples: 2048,
@@ -190,10 +773,85 @@ test("builds streaming requests with post=0 while keeping trigger mode", () => {
     { stream: true }
   );
 
-  assert.equal(request.modeId, SigrokModeId.WIDE12);
+  assert.equal(request.modeId, SigrokModeId.WIDE11);
   assert.equal(request.triggerType, SigrokTriggerType.RISING);
   assert.equal(request.triggerChannel, 8);
   assert.equal(request.postSamples, 0);
+
+  assert.throws(
+    () =>
+      buildSigrokCaptureRequest(
+        {
+          ...DEFAULT_CONFIG,
+          selectedPins: [10],
+          sampleRateHz: 125000000,
+          postSamples: 2048,
+        },
+        { supportsConfigV2: true, stream: true }
+      ),
+    /GENERIC_PACKED_BURST/
+  );
+});
+
+test("builds generic high-rate stream requests with post=0 only when bit1 generic packed burst is negotiated", () => {
+  const request = buildSigrokCaptureRequest(
+    {
+      ...DEFAULT_CONFIG,
+      selectedPins: [10],
+      sampleRateHz: 125000000,
+      postSamples: 100000,
+    },
+    { supportsConfigV2: true, supportsGenericPackedBurst: true, stream: true }
+  );
+
+  assert.equal(request.modeId, SigrokModeId.FAST8);
+  assert.equal(request.preSamples, 0);
+  assert.equal(request.postSamples, 0);
+  assert.equal(request.samplerateKhz, 125000);
+});
+
+test("forces stream pre and post samples to zero", () => {
+  const request = buildSigrokCaptureRequest(
+    {
+      ...DEFAULT_CONFIG,
+      selectedPins: [13],
+      sampleRateHz: 1000000,
+      triggerType: "rising",
+      preSamples: 128,
+      postSamples: 128,
+    },
+    { ...PRE_TRIGGER_CAPS, stream: true }
+  );
+
+  assert.equal(request.preSamples, 0);
+  assert.equal(request.postSamples, 0);
+});
+
+test("classifies exact device-capacity stop, 99999 unexpected stop, and manual stop", () => {
+  assert.equal(
+    classifyLogicAnalyzerStreamStop({
+      config: { selectedPins: [10], sampleRateHz: 125000000 },
+      sampleCount: LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES,
+      userInitiated: false,
+    }),
+    "auto_buffer_full"
+  );
+  assert.equal(
+    classifyLogicAnalyzerStreamStop({
+      config: { selectedPins: [10], sampleRateHz: 125000000 },
+      sampleCount: LOGIC_ANALYZER_HIGH_RATE_MAX_SAMPLES,
+      userInitiated: true,
+    }),
+    "manual"
+  );
+  assert.equal(
+    classifyLogicAnalyzerStreamStop({
+      config: { selectedPins: [10], sampleRateHz: 125000000 },
+      sampleCount: 99999,
+      userInitiated: false,
+    }),
+    "unexpected_stop"
+  );
 });
 
 test("filters unsupported Web sigrok pins without reintroducing a default selection", () => {
@@ -218,24 +876,24 @@ test("normalizes stale configs with out-of-range sample rates before use", () =>
 test("publishes the Web sigrok pin allowlist and disabled pins", () => {
   assert.deepEqual(
     AVAILABLE_PINS.map((pin) => pin.pin),
-    [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 29]
+    [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
   );
   assert.deepEqual(LOGIC_ANALYZER_SIGROK_DISABLED_PINS, [7, 8, 9]);
   assert.equal(isWebSigrokPinSupported(10), true);
-  assert.equal(isWebSigrokPinSupported(29), true);
+  assert.equal(isWebSigrokPinSupported(29), false);
   assert.equal(isWebSigrokPinSupported(7), false);
   assert.equal(isWebSigrokPinSupported(9), false);
   assert.equal(LOGIC_ANALYZER_WEB_STREAM_MAX_SAMPLE_RATE_HZ, 25000000);
 });
 
-test("maps logical channels for FAST8 and WIDE12 safely", () => {
+test("maps logical channels for FAST8 and WIDE11 safely", () => {
   assert.equal(mapSigrokLogicalChannel(10, SigrokModeId.FAST8), 0);
   assert.equal(mapSigrokLogicalChannel(17, SigrokModeId.FAST8), 7);
   assert.equal(mapSigrokLogicalChannel(18, SigrokModeId.FAST8), null);
-  assert.equal(mapSigrokLogicalChannel(18, SigrokModeId.WIDE12), 8);
-  assert.equal(mapSigrokLogicalChannel(20, SigrokModeId.WIDE12), 10);
-  assert.equal(mapSigrokLogicalChannel(29, SigrokModeId.WIDE12), 11);
-  assert.equal(mapSigrokLogicalChannel(7, SigrokModeId.WIDE12), null);
+  assert.equal(mapSigrokLogicalChannel(18, SigrokModeId.WIDE11), 8);
+  assert.equal(mapSigrokLogicalChannel(20, SigrokModeId.WIDE11), 10);
+  assert.equal(mapSigrokLogicalChannel(29, SigrokModeId.WIDE11), null);
+  assert.equal(mapSigrokLogicalChannel(7, SigrokModeId.WIDE11), null);
 });
 
 test("prefers backend requested and actual sample-rate metadata when present", () => {
@@ -301,10 +959,10 @@ test("normalizes capture payload bounds and unsafe pin metadata", () => {
     })),
   });
 
-  assert.deepEqual(capture.config.selectedPins, [8, 18, 29]);
-  assert.equal(capture.config.pinCount, 3);
+  assert.deepEqual(capture.config.selectedPins, [8, 18]);
+  assert.equal(capture.config.pinCount, 2);
   assert.equal(capture.config.pinBase, 8);
-  assert.equal(capture.config.triggerPin, 2);
+  assert.equal(capture.config.triggerPin, 1);
   assert.equal(capture.sampleCount, 520);
   assert.equal(capture.triggerIndex, 519);
   assert.equal(capture.samples.length, 520);

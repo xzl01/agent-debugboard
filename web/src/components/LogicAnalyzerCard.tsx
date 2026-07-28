@@ -31,13 +31,21 @@ import type {
 import {
   AVAILABLE_PINS,
   DEFAULT_CONFIG,
+  LOGIC_ANALYZER_MAX_PRE_TRIGGER_SAMPLES,
+  LOGIC_ANALYZER_MAX_PRE_TRIGGER_SAMPLE_RATE_HZ,
+  LOGIC_ANALYZER_MAX_PRE_TRIGGER_TOTAL_SAMPLES,
+  LOGIC_ANALYZER_MIN_PRE_TRIGGER_SAMPLE_RATE_HZ,
   LOGIC_ANALYZER_SIGROK_DISABLED_PINS,
-  LOGIC_ANALYZER_WEB_STREAM_MAX_SAMPLE_RATE_HZ,
   SAMPLE_RATES,
   assembleBoundedSigrokCapture,
   buildSigrokCaptureRequest,
   calculateActualSampleRate,
-  calculateMaxSamples,
+  classifyLogicAnalyzerStreamStop,
+  getLogicAnalyzerMaxSamplesForConfig,
+  getLogicAnalyzerPreTriggerReason,
+  getLogicAnalyzerSelectionMaxSamples,
+  getLogicAnalyzerStreamLimitReason,
+  getLogicAnalyzerUnsupportedRateReason,
   exportToCsv,
   exportToSr,
   formatDuration,
@@ -46,19 +54,25 @@ import {
   formatSampleRate,
   getLogicAnalyzerActualSampleRate,
   getLogicAnalyzerBackend,
+  getLogicAnalyzerNegotiatedCapabilityReason,
   getLogicAnalyzerRequestedSampleRate,
   getLogicAnalyzerSamplePeriodPs,
+  getSigrokModeForPins,
   normalizeLogicAnalyzerCapture,
-  normalizeLogicAnalyzerConfig,
+  normalizeLogicAnalyzerLocalConfig,
+  supportsHighRatePackedBurst,
   unpackSigrokSamples,
 } from "@/lib/logicAnalyzer";
 import {
   SigrokEventCode,
+  SigrokModeFlag,
+  SigrokModeId,
   formatSigrokErrorMessage,
   isSigrokDataFrame,
   isSigrokErrorFrame,
   isSigrokEventFrame,
   sigrokEventCodeName,
+  type SigrokCapsResp,
   type SigrokEventFrame,
 } from "@/lib/sigrokClient";
 import {
@@ -118,6 +132,21 @@ const PROTOCOL_OPTIONS: Array<{ id: LogicDecoderProtocolName; label: string }> =
   { id: "spi", label: "SPI" },
 ];
 
+// CAPS only arrive after a device connection. Before that, local pre-trigger
+// editing must stay available when the generic policy passes, so the policy is
+// probed with a PRE_TRIGGER-optimistic capability view until real CAPS exist.
+const PRE_TRIGGER_ASSUMED_CAPS: SigrokCapsResp = {
+  modeCount: 2,
+  modes: [SigrokModeId.FAST8, SigrokModeId.WIDE11].map((modeId) => ({
+    modeId,
+    modeFlags: SigrokModeFlag.PRE_TRIGGER,
+    channelCount: 0,
+    sampleBytes: 0,
+    maxSamplerateKhz: 0,
+    compression: 0,
+  })),
+};
+
 function warnSigrokCleanup(action: string, cleanupError: unknown) {
   const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
   console.warn(`[LogicAnalyzerCard] ${action} failed: ${message}`);
@@ -134,6 +163,11 @@ interface DecoderRunState {
   result: LogicDecoderResult | null;
   error: string | null;
   lastRequestSignature: string | null;
+}
+
+interface InlineNotice {
+  tone: "brand" | "warn";
+  message: string;
 }
 
 const INITIAL_DECODER_STATE: DecoderRunState = {
@@ -267,6 +301,8 @@ export function LogicAnalyzerCard({
   const [streamSpan, setStreamSpan] = useState<number>(4096);
   const [streamAnchor, setStreamAnchor] = useState(0);
   const [liveAnnotations, setLiveAnnotations] = useState<LogicDecoderAnnotation[]>([]);
+  const [streamNotice, setStreamNotice] = useState<InlineNotice | null>(null);
+  const manualStreamStopRef = useRef(false);
 
   const {
     close: sigrokClose,
@@ -274,8 +310,8 @@ export function LogicAnalyzerCard({
     start: sigrokStart,
     stop: sigrokStop,
     ensureConnected: sigrokEnsureConnected,
+    getServerCapabilities: sigrokGetServerCapabilities,
     readCaptureFrame: sigrokReadCaptureFrame,
-    readData: sigrokReadData,
   } = useSigrokScope();
   const [streaming, setStreaming] = useState(false);
   const streamingRef = useRef(false);
@@ -296,21 +332,94 @@ export function LogicAnalyzerCard({
   }, [streaming]);
 
   const updateConfig = useCallback((updater: (current: LogicAnalyzerConfig) => LogicAnalyzerConfig) => {
-    setConfig((current) => normalizeLogicAnalyzerConfig(updater(current)));
+    setConfig((current) => normalizeLogicAnalyzerLocalConfig(updater(current)));
   }, []);
 
-  const normalizedConfig = useMemo(() => normalizeLogicAnalyzerConfig(config), [config]);
+  const normalizedConfig = useMemo(() => normalizeLogicAnalyzerLocalConfig(config), [config]);
 
   const actualRate = useMemo(
     () => calculateActualSampleRate(normalizedConfig.sampleRateHz),
     [normalizedConfig.sampleRateHz]
   );
-
-  const streamRateExceeded =
-    normalizedConfig.sampleRateHz > LOGIC_ANALYZER_WEB_STREAM_MAX_SAMPLE_RATE_HZ;
-
-  const maxSamples = calculateMaxSamples();
+  const sigrokCapabilities = sigrokGetServerCapabilities();
+  const highRatePackedBurst = supportsHighRatePackedBurst(normalizedConfig);
+  const selectionMaxSamples = getLogicAnalyzerSelectionMaxSamples(normalizedConfig);
+  const maxSamples =
+    sigrokCapabilities.hello == null
+      ? selectionMaxSamples
+      : getLogicAnalyzerMaxSamplesForConfig(normalizedConfig, sigrokCapabilities);
+  const unsupportedRateReason = getLogicAnalyzerUnsupportedRateReason(normalizedConfig);
+  const streamLimitReason = getLogicAnalyzerStreamLimitReason(normalizedConfig);
+  const streamRateExceeded = streamLimitReason != null;
+  const boundedCapabilityReason = getLogicAnalyzerNegotiatedCapabilityReason(
+    normalizedConfig,
+    sigrokCapabilities
+  );
+  const streamCapabilityReason = getLogicAnalyzerNegotiatedCapabilityReason(normalizedConfig, {
+    ...sigrokCapabilities,
+    stream: true,
+  });
   const totalSamples = normalizedConfig.preSamples + normalizedConfig.postSamples;
+  const preTriggerProbe = useMemo(
+    () =>
+      normalizedConfig.preSamples > 0
+        ? normalizedConfig
+        : { ...normalizedConfig, preSamples: 1, postSamples: 1 },
+    [normalizedConfig]
+  );
+  const sigrokCaps = sigrokCapabilities.caps;
+  const preTriggerGenericReason = useMemo(
+    () => getLogicAnalyzerPreTriggerReason(preTriggerProbe, { caps: PRE_TRIGGER_ASSUMED_CAPS }),
+    [preTriggerProbe]
+  );
+  const preTriggerReason = useMemo(
+    () =>
+      getLogicAnalyzerPreTriggerReason(preTriggerProbe, {
+        caps: sigrokCaps ?? PRE_TRIGGER_ASSUMED_CAPS,
+      }),
+    [preTriggerProbe, sigrokCaps]
+  );
+  const preTriggerHelperText = useMemo(() => {
+    if (preTriggerGenericReason != null) {
+      if (preTriggerProbe.triggerType === "none") {
+        return t("logicAnalyzer.preTriggerOnlyEdge");
+      }
+      if (
+        preTriggerProbe.sampleRateHz < LOGIC_ANALYZER_MIN_PRE_TRIGGER_SAMPLE_RATE_HZ ||
+        preTriggerProbe.sampleRateHz > LOGIC_ANALYZER_MAX_PRE_TRIGGER_SAMPLE_RATE_HZ
+      ) {
+        return t("logicAnalyzer.preTriggerRateRange");
+      }
+      if (
+        preTriggerProbe.preSamples + preTriggerProbe.postSamples >
+        LOGIC_ANALYZER_MAX_PRE_TRIGGER_TOTAL_SAMPLES
+      ) {
+        return replaceTokens(t("logicAnalyzer.preTriggerTotalMax"), {
+          max: LOGIC_ANALYZER_MAX_PRE_TRIGGER_TOTAL_SAMPLES,
+        });
+      }
+      return preTriggerGenericReason;
+    }
+    if (preTriggerReason != null) {
+      const modeId = getSigrokModeForPins(preTriggerProbe.selectedPins);
+      return replaceTokens(t("logicAnalyzer.preTriggerMissingCapability"), {
+        mode: modeId === SigrokModeId.WIDE11 ? "WIDE11" : "FAST8",
+      });
+    }
+    if (normalizedConfig.preSamples > 0) {
+      return replaceTokens(t("logicAnalyzer.preTriggerTotalMax"), {
+        max: LOGIC_ANALYZER_MAX_PRE_TRIGGER_TOTAL_SAMPLES,
+      });
+    }
+    return null;
+  }, [
+    normalizedConfig.preSamples,
+    preTriggerGenericReason,
+    preTriggerProbe,
+    preTriggerReason,
+    t,
+  ]);
+  const preTriggerAvailable = preTriggerReason == null;
   const controlsDisabled = state === "armed" || state === "capturing" || isArming;
   const captureRequestedRate = capture ? getLogicAnalyzerRequestedSampleRate(capture.config) : null;
   const captureActualRate = capture ? getLogicAnalyzerActualSampleRate(capture.config) : null;
@@ -323,6 +432,45 @@ export function LogicAnalyzerCard({
     [capture, config.selectedPins]
   );
   const capturePinsKey = capturePins.join(",");
+  const highRateInfoNotice = useMemo<InlineNotice | null>(() => {
+    if (!highRatePackedBurst || unsupportedRateReason != null) {
+      return null;
+    }
+
+    if (sigrokCapabilities.hello == null) {
+      return {
+        tone: "brand",
+        message: t("logicAnalyzer.highRateConfigV2Required"),
+      };
+    }
+
+    if (boundedCapabilityReason != null) {
+      return {
+        tone: "warn",
+        message: boundedCapabilityReason,
+      };
+    }
+
+    if (streamCapabilityReason != null && normalizedConfig.sampleRateHz > 25000000) {
+      return {
+        tone: "warn",
+        message: streamCapabilityReason,
+      };
+    }
+
+    return {
+      tone: "brand",
+      message: t("logicAnalyzer.streamHighRateAutoStopHint"),
+    };
+  }, [
+    boundedCapabilityReason,
+    highRatePackedBurst,
+    normalizedConfig.sampleRateHz,
+    sigrokCapabilities.hello,
+    streamCapabilityReason,
+    t,
+    unsupportedRateReason,
+  ]);
 
   useEffect(() => {
     setDecoderConfigs((current) => {
@@ -360,6 +508,7 @@ export function LogicAnalyzerCard({
   const handleArm = useCallback(async () => {
     if (armInFlightRef.current) return;
     setError(null);
+    setStreamNotice(null);
     const nextConfig = normalizedConfig;
     setConfig(nextConfig);
     if (nextConfig.selectedPins.length === 0) { setError("Select at least one pin"); return; }
@@ -367,8 +516,9 @@ export function LogicAnalyzerCard({
     setIsArming(true);
     const hasTrigger = nextConfig.triggerType !== "none";
     try {
-      const sigrokRequest = buildSigrokCaptureRequest(nextConfig);
       await sigrokEnsureConnected();
+      const sigrokRequest = buildSigrokCaptureRequest(nextConfig, sigrokGetServerCapabilities());
+      const requestedSampleTarget = sigrokRequest.preSamples + sigrokRequest.postSamples;
       const ack = await sigrokConfigure(sigrokRequest);
       const actualRate = ack.actualRateKhz * 1000;
       await sigrokStart();
@@ -398,7 +548,7 @@ export function LogicAnalyzerCard({
           });
           receivedSampleCount += frame.meta.sampleCount;
           setState("capturing");
-          if (triggerObserved && receivedSampleCount >= sigrokRequest.postSamples) {
+          if (triggerObserved && receivedSampleCount >= requestedSampleTarget) {
             clientStopIssued = true;
             await stopAndCloseSigrok("bounded capture sample completion cleanup");
             stopped = true;
@@ -424,7 +574,7 @@ export function LogicAnalyzerCard({
             triggerSampleIndex = eventFrame.payload.sampleIndex;
             triggerObserved = true;
             setState("capturing");
-            if (receivedSampleCount >= sigrokRequest.postSamples) {
+            if (receivedSampleCount >= requestedSampleTarget) {
               clientStopIssued = true;
               await stopAndCloseSigrok("bounded capture trigger completion cleanup");
               stopped = true;
@@ -454,7 +604,7 @@ export function LogicAnalyzerCard({
       if (hasTrigger && triggerSampleIndex == null) {
         throw new Error("Capture completed without TRIGGERED event");
       }
-      if (receivedSampleCount < sigrokRequest.postSamples) {
+      if (receivedSampleCount < requestedSampleTarget) {
         throw new Error("Capture stopped before requested sample count was received");
       }
 
@@ -488,15 +638,17 @@ export function LogicAnalyzerCard({
       setError(err instanceof Error ? err.message : "Network error"); setState("idle");
       await stopAndCloseSigrok("capture error cleanup");
     } finally { armInFlightRef.current = false; setIsArming(false); }
-  }, [assembleBoundedSigrokCapture, normalizedConfig, sigrokConfigure, sigrokEnsureConnected, sigrokReadCaptureFrame, sigrokStart, stopAndCloseSigrok]);
+  }, [assembleBoundedSigrokCapture, normalizedConfig, sigrokConfigure, sigrokEnsureConnected, sigrokGetServerCapabilities, sigrokReadCaptureFrame, sigrokStart, stopAndCloseSigrok]);
 
   const handleCancel = useCallback(async () => {
     setError(null);
+    setStreamNotice(null);
     await stopAndCloseSigrok("manual cancel");
     setState("idle");
   }, [stopAndCloseSigrok]);
 
   const stopStream = useCallback(async () => {
+    manualStreamStopRef.current = true;
     streamingRef.current = false;
     setStreaming(false);
     await stopAndCloseSigrok("stream stop");
@@ -505,27 +657,81 @@ export function LogicAnalyzerCard({
   const startStream = useCallback(async () => {
     if (streamingRef.current) return;
     setError(null);
+    setStreamNotice(null);
     const cfg = normalizedConfig;
     if (cfg.selectedPins.length === 0) { setError("Select at least one pin"); return; }
     try {
-      const sigrokRequest = buildSigrokCaptureRequest(cfg, { stream: true });
       await sigrokEnsureConnected();
+      const sigrokRequest = buildSigrokCaptureRequest(cfg, { ...sigrokGetServerCapabilities(), stream: true });
       await sigrokConfigure(sigrokRequest);
       await sigrokStart();
+      manualStreamStopRef.current = false;
       streamingRef.current = true;
       setStreaming(true);
       void (async () => {
         try {
           while (streamingRef.current) {
-            const data = await sigrokReadData(8000);
-            if (!data) break;
-            const values = unpackSigrokSamples(data.samples, sigrokRequest.channelMask);
-            const arr = streamSamplesRef.current;
-            for (const v of values) arr.push(v);
-            if (arr.length > STREAM_BUFFER_CAP) arr.splice(0, arr.length - STREAM_BUFFER_CAP);
-            streamSequenceRef.current += 1; streamTotalRef.current += values.length; streamDirtyRef.current = true;
+            const frame = await sigrokReadCaptureFrame(8000);
+            if (!frame) {
+              throw new Error("Timed out waiting for stream data");
+            }
+
+            if (isSigrokDataFrame(frame)) {
+              const values = unpackSigrokSamples(frame.samples, sigrokRequest.channelMask);
+              const arr = streamSamplesRef.current;
+              for (const value of values) arr.push(value);
+              if (arr.length > STREAM_BUFFER_CAP) arr.splice(0, arr.length - STREAM_BUFFER_CAP);
+              streamSequenceRef.current += 1;
+              streamTotalRef.current += values.length;
+              streamDirtyRef.current = true;
+              continue;
+            }
+
+            if (isSigrokErrorFrame(frame)) {
+              throw new Error(formatSigrokErrorMessage(frame.payload));
+            }
+
+            if (!isSigrokEventFrame(frame)) {
+              throw new Error("Unexpected stream frame");
+            }
+
+            switch (frame.payload.typeDetail) {
+              case SigrokEventCode.ARMED:
+              case SigrokEventCode.TRIGGERED:
+              case SigrokEventCode.RUNNING:
+                break;
+              case SigrokEventCode.STOPPED: {
+                const stopReason = classifyLogicAnalyzerStreamStop({
+                  config: cfg,
+                  sampleCount: streamTotalRef.current,
+                  userInitiated: manualStreamStopRef.current || !streamingRef.current,
+                });
+                if (stopReason === "auto_buffer_full") {
+                  setStreamNotice({
+                    tone: "brand",
+                    message: t("logicAnalyzer.streamAutoStopped"),
+                  });
+                } else if (stopReason === "unexpected_stop") {
+                  throw new Error(t("logicAnalyzer.streamUnexpectedStop"));
+                }
+                streamingRef.current = false;
+                break;
+              }
+              case SigrokEventCode.OVERRUN:
+                throw new Error("Capture overrun");
+              case SigrokEventCode.ERROR:
+                throw new Error("Capture failed");
+              default:
+                throw new Error(
+                  `Unexpected stream event ${sigrokEventCodeName(frame.payload.typeDetail)}`
+                );
+            }
           }
-        } catch (err) { if (streamingRef.current) setError(err instanceof Error ? err.message : "stream failed"); }
+        } catch (err) {
+          if (streamingRef.current) {
+            setError(err instanceof Error ? err.message : "stream failed");
+          }
+        }
         finally {
           streamingRef.current = false;
           setStreaming(false);
@@ -537,7 +743,16 @@ export function LogicAnalyzerCard({
       await stopAndCloseSigrok("stream setup cleanup");
       return;
     }
-  }, [normalizedConfig, sigrokConfigure, sigrokEnsureConnected, sigrokReadData, sigrokStart, stopAndCloseSigrok]);
+  }, [
+    normalizedConfig,
+    sigrokConfigure,
+    sigrokEnsureConnected,
+    sigrokGetServerCapabilities,
+    sigrokReadCaptureFrame,
+    sigrokStart,
+    stopAndCloseSigrok,
+    t,
+  ]);
 
 
 
@@ -1016,10 +1231,11 @@ export function LogicAnalyzerCard({
               <input
                 type="number"
                 min="0"
+                max={LOGIC_ANALYZER_MAX_PRE_TRIGGER_SAMPLES}
                 step="1"
-                value={0}
-                disabled
-                readOnly
+                value={config.preSamples}
+                onChange={(e) => updateConfig((c) => ({ ...c, preSamples: Number(e.target.value) }))}
+                disabled={controlsDisabled || !preTriggerAvailable}
                 className="mt-1 w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-xs text-ink"
               />
             </label>
@@ -1029,12 +1245,22 @@ export function LogicAnalyzerCard({
               <input
                 type="number"
                 min="1"
+                max={
+                  normalizedConfig.preSamples > 0
+                    ? LOGIC_ANALYZER_MAX_PRE_TRIGGER_TOTAL_SAMPLES - normalizedConfig.preSamples
+                    : undefined
+                }
                 step="1"
                 value={config.postSamples}
                 onChange={(e) => updateConfig((c) => ({ ...c, postSamples: Number(e.target.value) }))}
                 className="mt-1 w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-xs text-ink"
               />
             </label>
+            {preTriggerHelperText != null && (
+              <span className="col-span-2 -mt-1 block text-[9px] text-ink-dim/60">
+                {preTriggerHelperText}
+              </span>
+            )}
             <span className="col-span-2 -mt-1 block text-[9px] text-ink-dim/60">
               {t("logicAnalyzer.captureSemantics")}
             </span>
