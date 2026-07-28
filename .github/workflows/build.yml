@@ -246,6 +246,8 @@ jobs:
       - name: Install Linux cross-compile tools
         if: runner.os == 'Linux'
         run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
           rustup target add "${{ matrix.target }}"
           python3 -m pip install cargo-zigbuild==0.23.0 ziglang==0.16.0
 
