@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef BIT
@@ -27,6 +28,97 @@ static struct linkr_debugger_la_config base_config(void)
 	config.post_samples = 16U;
 	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_NONE;
 	return config;
+}
+
+static struct linkr_debugger_la_config fast4_config(void)
+{
+	struct linkr_debugger_la_config config;
+
+	memset(&config, 0, sizeof(config));
+	config.pin_base = 10U;
+	config.pin_count = 4U;
+	config.sample_rate_hz = 1000000U;
+	config.post_samples = 16U;
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_NONE;
+	return config;
+}
+
+static void wide11_model_store(uint32_t *sm_a_words, uint32_t *sm_b_words,
+	uint32_t sample_index, uint16_t sample)
+{
+	uint32_t sm_a_word = sample_index /
+		LINKR_DEBUGGER_LA_WIDE11_BURST_LANE_A_SAMPLES_PER_WORD;
+	uint32_t sm_b_word = sample_index /
+		LINKR_DEBUGGER_LA_WIDE11_BURST_LANE_B_SAMPLES_PER_WORD;
+	uint8_t sm_a_shift = (uint8_t)((sample_index %
+		LINKR_DEBUGGER_LA_WIDE11_BURST_LANE_A_SAMPLES_PER_WORD) * 8U);
+	uint8_t sm_b_shift = (uint8_t)(2U + ((sample_index %
+		LINKR_DEBUGGER_LA_WIDE11_BURST_LANE_B_SAMPLES_PER_WORD) * 3U));
+	uint32_t sm_a_mask = 0xffU << sm_a_shift;
+	uint32_t sm_b_mask = 0x07U << sm_b_shift;
+
+	sm_a_words[sm_a_word] &= ~sm_a_mask;
+	sm_a_words[sm_a_word] |= ((uint32_t)sample & 0x00ffU) << sm_a_shift;
+	sm_b_words[sm_b_word] &= ~sm_b_mask;
+	sm_b_words[sm_b_word] |= (((uint32_t)sample >> 8U) & 0x07U) << sm_b_shift;
+}
+
+static uint16_t wide11_target_expected_sample(uint32_t sample_index)
+{
+	switch (sample_index) {
+	case 0U:
+		return 0x0000U;
+	case 1U:
+		return LINKR_DEBUGGER_LA_WIDE11_BURST_SAMPLE_MASK;
+	case 2U:
+		return 0x0001U;
+	case 31U:
+		return 0x0401U;
+	case 32U:
+		return 0x0555U;
+	case 33U:
+		return 0x02aaU;
+	case 99998U:
+		return 0x0400U;
+	case 99999U:
+		return 0x0563U;
+	default:
+		return 0x0000U;
+	}
+}
+
+static void assert_u16_span_filled(const uint16_t *values, size_t count, uint16_t value)
+{
+	for (size_t i = 0U; i < count; i++) {
+		assert(values[i] == value);
+	}
+}
+
+static uint32_t *alloc_lane_words(uint32_t word_count)
+{
+	uint32_t *words = calloc(word_count, sizeof(*words));
+
+	assert(words != NULL);
+	return words;
+}
+
+static void fill_single_lane_packed_ring_from_raw_samples(
+	const struct linkr_debugger_la_config *config,
+	const struct linkr_debugger_la_packed_ring_plan *plan,
+	uint32_t *lane_words,
+	const uint32_t *raw_ring,
+	uint32_t ring_samples);
+
+static struct linkr_debugger_la_config wide11_exact_config(void);
+static struct linkr_debugger_la_config single_plan_config(uint32_t post_samples);
+static struct linkr_debugger_la_config fast8_plan_config(uint32_t post_samples);
+static void packed_ring_lane_store(const struct linkr_debugger_la_packed_ring_lane *lane,
+	uint32_t *words, uint32_t sample_index, uint32_t lane_value);
+
+static uint32_t ring_test_start_sample(const struct linkr_debugger_la_packed_ring_plan *plan,
+	uint32_t ring_samples, uint32_t first_index)
+{
+	return (plan->sample_capacity - ring_samples + first_index) % plan->sample_capacity;
 }
 
 struct sink_test_context {
@@ -117,20 +209,62 @@ static void test_rate_quantization(void)
 	assert(linkr_debugger_logic_analyzer_sample_period_ps(125000000U) == 8000ULL);
 }
 
-static void test_dma_block_size(void)
+static void test_sample_capacity_and_ring_constants(void)
 {
-	assert(linkr_debugger_logic_analyzer_dma_block_size(0U) == 0U);
-	assert(linkr_debugger_logic_analyzer_dma_block_size(1U) == 4U);
-	assert(linkr_debugger_logic_analyzer_dma_block_size(512U) == 2048U);
-	assert(linkr_debugger_logic_analyzer_dma_block_size(513U) == 0U);
 	assert(linkr_debugger_logic_analyzer_max_samples(4U, 2048U) == 512U);
 	assert(linkr_debugger_logic_analyzer_max_samples(0U, 2048U) == 0U);
 	assert(LINKR_DEBUGGER_LA_RING_BUFFER_BYTES == 32768U);
 	assert(LINKR_DEBUGGER_LA_RING_SIZE_BITS == 15U);
 	assert(LINKR_DEBUGGER_LA_RING_SAMPLES == 8192U);
-	assert(LINKR_DEBUGGER_LA_RING_SAFETY_SAMPLES == 1024U);
+	assert(LINKR_DEBUGGER_LA_RING_SAFETY_SAMPLES == 2048U);
 	assert(LINKR_DEBUGGER_LA_STREAM_HALF_SAMPLES == 1024U);
 	assert(LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES == 2048U);
+}
+
+static void test_wide11_burst_plan_counts_and_overflow(void)
+{
+	struct linkr_debugger_la_wide11_burst_plan plan;
+
+	assert(LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES == 100000U);
+	assert(LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_LANE_A_WORDS == 25000U);
+	assert(LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_LANE_B_WORDS == 10000U);
+	assert(LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_LANE_A_BYTES == 100000U);
+	assert(LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_LANE_B_BYTES == 40000U);
+	assert(LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_TOTAL_BYTES == 140000U);
+
+	memset(&plan, 0, sizeof(plan));
+	assert(linkr_debugger_logic_analyzer_wide11_burst_plan(20U, &plan) == 0);
+	assert(plan.sample_count == 20U);
+	assert(plan.lane_a_word_count == 5U);
+	assert(plan.lane_b_word_count == 2U);
+	assert(plan.lane_a_byte_count == 20U);
+	assert(plan.lane_b_byte_count == 8U);
+	assert(plan.total_byte_count == 28U);
+
+	memset(&plan, 0, sizeof(plan));
+	assert(linkr_debugger_logic_analyzer_wide11_burst_plan(40U, &plan) == 0);
+	assert(plan.lane_a_word_count == 10U);
+	assert(plan.lane_b_word_count == 4U);
+	assert(plan.total_byte_count == 56U);
+
+	memset(&plan, 0, sizeof(plan));
+	assert(linkr_debugger_logic_analyzer_wide11_burst_plan(
+		LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES, &plan) == 0);
+	assert(plan.lane_a_word_count == LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_LANE_A_WORDS);
+	assert(plan.lane_b_word_count == LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_LANE_B_WORDS);
+	assert(plan.lane_a_byte_count == LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_LANE_A_BYTES);
+	assert(plan.lane_b_byte_count == LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_LANE_B_BYTES);
+	assert(plan.total_byte_count == LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_TOTAL_BYTES);
+
+	assert(linkr_debugger_logic_analyzer_wide11_burst_plan(0U, &plan) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_wide11_burst_plan(1U, &plan) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_wide11_burst_plan(32U, &plan) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_wide11_burst_plan(100001U, &plan) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_wide11_burst_plan(0x80000000U,
+		&plan) < 0);
+	assert(linkr_debugger_logic_analyzer_wide11_burst_plan(0x79000000U,
+		&plan) < 0);
+	assert(linkr_debugger_logic_analyzer_wide11_burst_plan(32U, NULL) == -EINVAL);
 }
 
 static void test_ring_delta_wraps_without_equal_addr_assumption(void)
@@ -274,6 +408,61 @@ static void test_ring_drainable_samples_batches_complete_chunks(void)
 	assert(linkr_debugger_logic_analyzer_ring_drainable_samples(1500U, 1500U, 1024U) == 1500U);
 	assert(linkr_debugger_logic_analyzer_ring_drainable_samples(3000U, 2500U, 1024U) == 2500U);
 	assert(linkr_debugger_logic_analyzer_ring_drainable_samples(3000U, 0U, 0U) == 0U);
+}
+
+static void test_ring_freeze_before_overwrite_retains_tail_window(void)
+{
+	uint32_t retained = 0U;
+
+	assert(!linkr_debugger_logic_analyzer_ring_should_freeze_before_overwrite(
+		1000U, 0U, 6000U, 8192U, 1024U, &retained));
+	assert(retained == 7000U);
+	assert(!linkr_debugger_logic_analyzer_ring_should_freeze_before_overwrite(
+		0U, 500U, 1000U, 8192U, 1024U, &retained));
+	assert(retained == 500U);
+	assert(linkr_debugger_logic_analyzer_ring_should_freeze_before_overwrite(
+		1000U, 0U, 6169U, 8192U, 1024U, &retained));
+	assert(retained == 7169U);
+	assert(linkr_debugger_logic_analyzer_ring_should_freeze_before_overwrite(
+		9000U, 0U, 100U, 8192U, 1024U, &retained));
+	assert(retained == 8192U);
+	assert(linkr_debugger_logic_analyzer_ring_should_freeze_before_overwrite(
+		100U, 200U, 1U, 8192U, 1024U, &retained));
+	assert(retained == 0U);
+}
+
+static void test_ring_terminal_emit_count_drains_partial_tail_only_when_terminal(void)
+{
+	assert(linkr_debugger_logic_analyzer_ring_terminal_emit_count(
+		400U, 0U, 1024U, false) == 0U);
+	assert(linkr_debugger_logic_analyzer_ring_terminal_emit_count(
+		400U, 0U, 1024U, true) == 400U);
+	assert(linkr_debugger_logic_analyzer_ring_terminal_emit_count(
+		2048U, 0U, 1024U, true) == 1024U);
+	assert(linkr_debugger_logic_analyzer_ring_terminal_emit_count(
+		1500U, 500U, 1024U, true) == 500U);
+	assert(linkr_debugger_logic_analyzer_ring_terminal_emit_count(
+		1500U, 0U, 0U, true) == 0U);
+}
+
+static void test_ring_freeze_policy_stops_required_stream_hardware(void)
+{
+	struct linkr_debugger_la_ring_freeze_policy single =
+		linkr_debugger_logic_analyzer_ring_freeze_policy(1U);
+	struct linkr_debugger_la_ring_freeze_policy dual =
+		linkr_debugger_logic_analyzer_ring_freeze_policy(2U);
+
+	assert(single.stop_sampler_sm_a);
+	assert(!single.stop_sampler_sm_b);
+	assert(single.stop_trigger_sm);
+	assert(single.abort_dma_a);
+	assert(!single.abort_dma_b);
+
+	assert(dual.stop_sampler_sm_a);
+	assert(dual.stop_sampler_sm_b);
+	assert(dual.stop_trigger_sm);
+	assert(dual.abort_dma_a);
+	assert(dual.abort_dma_b);
 }
 
 static void test_ring_metrics_track_time_maxima_without_resetting_lower_values(void)
@@ -481,9 +670,13 @@ static void test_stream_sink_success_lifecycle_advances_after_payload_complete(v
 	struct linkr_debugger_la_stream_sink_commit commit;
 	struct linkr_debugger_la_ring_progress progress;
 	struct linkr_debugger_la_ring_metrics metrics;
-	struct linkr_debugger_la_config config = base_config();
+	struct linkr_debugger_la_config config = fast4_config();
+	struct linkr_debugger_la_packed_ring_plan plan;
 	uint32_t raw_ring[] = { 0U, (uint32_t)BIT(0), (uint32_t)BIT(1),
 		(uint32_t)(BIT(0) | BIT(1)) };
+	uint32_t *lane_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
 	uint16_t values_or;
 	uint16_t values_and;
 
@@ -492,6 +685,11 @@ static void test_stream_sink_success_lifecycle_advances_after_payload_complete(v
 	memset(&metrics, 0, sizeof(metrics));
 	ctx.capacity = sizeof(ctx.storage);
 	sink = sink_for_context(&ctx);
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_words = alloc_lane_words(plan.lanes[0].word_count);
+	fill_single_lane_packed_ring_from_raw_samples(&config, &plan, lane_words, raw_ring, 4U);
+	lane_ptrs[0] = lane_words;
+	lane_counts[0] = plan.lanes[0].word_count;
 	progress.generation = 3U;
 	progress.writer_seq = 4U;
 	progress.reader_seq = 0U;
@@ -501,8 +699,9 @@ static void test_stream_sink_success_lifecycle_advances_after_payload_complete(v
 	assert(ctx.lease_calls == 1U);
 	assert(lease.payload == ctx.storage);
 	assert(lease.token == &ctx);
-	assert(linkr_debugger_logic_analyzer_stream_sink_write_raw_payload(&config,
-		raw_ring, 4U, 0U, 4U, 1U, lease.payload, lease.capacity,
+	assert(linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(&plan,
+		lane_ptrs, lane_counts, ring_test_start_sample(&plan, 4U, 0U),
+		4U, 1U, lease.payload, lease.capacity,
 		&values_or, &values_and) == 0);
 	assert(progress.reader_seq == 0U);
 	assert(memcmp(ctx.storage, (uint8_t[]){0x00U, 0x01U, 0x02U, 0x03U}, 4U) == 0);
@@ -528,6 +727,7 @@ static void test_stream_sink_success_lifecycle_advances_after_payload_complete(v
 	assert(ctx.terminal_calls == 1U);
 	assert(ctx.terminal_status == LINKR_DEBUGGER_LA_RING_POLL_OK);
 	assert(ctx.terminal_sequence == 10U);
+	free(lane_words);
 }
 
 static void test_stream_sink_capacity_failure_aborts_exactly_once(void)
@@ -535,20 +735,31 @@ static void test_stream_sink_capacity_failure_aborts_exactly_once(void)
 	struct sink_test_context ctx;
 	struct linkr_debugger_la_stream_sink sink;
 	struct linkr_debugger_la_stream_sink_lease lease;
-	struct linkr_debugger_la_config config = base_config();
+	struct linkr_debugger_la_config config = fast4_config();
+	struct linkr_debugger_la_packed_ring_plan plan;
 	uint32_t raw_ring[] = { 0U, 1U, 2U, 3U };
+	uint32_t *lane_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
 
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.capacity = 2U;
 	sink = sink_for_context(&ctx);
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_words = alloc_lane_words(plan.lanes[0].word_count);
+	fill_single_lane_packed_ring_from_raw_samples(&config, &plan, lane_words, raw_ring, 4U);
+	lane_ptrs[0] = lane_words;
+	lane_counts[0] = plan.lanes[0].word_count;
 	assert(linkr_debugger_logic_analyzer_stream_sink_lease_payload(&sink, 4U,
 		&lease) == 0);
-	assert(linkr_debugger_logic_analyzer_stream_sink_write_raw_payload(&config,
-		raw_ring, 4U, 0U, 4U, 1U, lease.payload, lease.capacity,
+	assert(linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(&plan,
+		lane_ptrs, lane_counts, ring_test_start_sample(&plan, 4U, 0U),
+		4U, 1U, lease.payload, lease.capacity,
 		NULL, NULL) == -ENOSPC);
 	linkr_debugger_logic_analyzer_stream_sink_abort_payload(&sink, &lease);
 	linkr_debugger_logic_analyzer_stream_sink_abort_payload(&sink, &lease);
 	assert(ctx.abort_calls == 1U);
+	free(lane_words);
 }
 
 static void test_stream_sink_stale_generation_aborts_without_reader_advance(void)
@@ -558,21 +769,31 @@ static void test_stream_sink_stale_generation_aborts_without_reader_advance(void
 	struct linkr_debugger_la_stream_sink_lease lease;
 	struct linkr_debugger_la_ring_progress progress;
 	struct linkr_debugger_la_ring_metrics metrics;
-	struct linkr_debugger_la_config config = base_config();
+	struct linkr_debugger_la_config config = fast4_config();
+	struct linkr_debugger_la_packed_ring_plan plan;
 	uint32_t raw_ring[] = { 0U, 1U, 2U, 3U };
+	uint32_t *lane_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
 
 	memset(&ctx, 0, sizeof(ctx));
 	memset(&progress, 0, sizeof(progress));
 	memset(&metrics, 0, sizeof(metrics));
 	ctx.capacity = sizeof(ctx.storage);
 	sink = sink_for_context(&ctx);
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_words = alloc_lane_words(plan.lanes[0].word_count);
+	fill_single_lane_packed_ring_from_raw_samples(&config, &plan, lane_words, raw_ring, 4U);
+	lane_ptrs[0] = lane_words;
+	lane_counts[0] = plan.lanes[0].word_count;
 	progress.generation = 5U;
 	progress.writer_seq = 4U;
 	progress.reader_seq = 0U;
 	assert(linkr_debugger_logic_analyzer_stream_sink_lease_payload(&sink, 4U,
 		&lease) == 0);
-	assert(linkr_debugger_logic_analyzer_stream_sink_write_raw_payload(&config,
-		raw_ring, 4U, 0U, 4U, 1U, lease.payload, lease.capacity,
+	assert(linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(&plan,
+		lane_ptrs, lane_counts, ring_test_start_sample(&plan, 4U, 0U),
+		4U, 1U, lease.payload, lease.capacity,
 		NULL, NULL) == 0);
 	assert(!linkr_debugger_logic_analyzer_stream_copy_complete_advance_reader(
 		&progress, &metrics, false, 5U, 0U, 4U));
@@ -580,6 +801,7 @@ static void test_stream_sink_stale_generation_aborts_without_reader_advance(void
 	linkr_debugger_logic_analyzer_stream_sink_abort_payload(&sink, &lease);
 	assert(ctx.abort_calls == 1U);
 	assert(ctx.commit_calls == 0U);
+	free(lane_words);
 }
 
 static void test_stream_sink_commit_failure_aborts_after_reader_advance(void)
@@ -590,8 +812,12 @@ static void test_stream_sink_commit_failure_aborts_after_reader_advance(void)
 	struct linkr_debugger_la_stream_sink_commit commit;
 	struct linkr_debugger_la_ring_progress progress;
 	struct linkr_debugger_la_ring_metrics metrics;
-	struct linkr_debugger_la_config config = base_config();
+	struct linkr_debugger_la_config config = fast4_config();
+	struct linkr_debugger_la_packed_ring_plan plan;
 	uint32_t raw_ring[] = { 0U, 1U, 2U, 3U };
+	uint32_t *lane_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
 
 	memset(&ctx, 0, sizeof(ctx));
 	memset(&progress, 0, sizeof(progress));
@@ -599,13 +825,19 @@ static void test_stream_sink_commit_failure_aborts_after_reader_advance(void)
 	ctx.capacity = sizeof(ctx.storage);
 	ctx.commit_ret = -EIO;
 	sink = sink_for_context(&ctx);
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_words = alloc_lane_words(plan.lanes[0].word_count);
+	fill_single_lane_packed_ring_from_raw_samples(&config, &plan, lane_words, raw_ring, 4U);
+	lane_ptrs[0] = lane_words;
+	lane_counts[0] = plan.lanes[0].word_count;
 	progress.generation = 6U;
 	progress.writer_seq = 4U;
 	progress.reader_seq = 0U;
 	assert(linkr_debugger_logic_analyzer_stream_sink_lease_payload(&sink, 4U,
 		&lease) == 0);
-	assert(linkr_debugger_logic_analyzer_stream_sink_write_raw_payload(&config,
-		raw_ring, 4U, 0U, 4U, 1U, lease.payload, lease.capacity,
+	assert(linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(&plan,
+		lane_ptrs, lane_counts, ring_test_start_sample(&plan, 4U, 0U),
+		4U, 1U, lease.payload, lease.capacity,
 		NULL, NULL) == 0);
 	assert(linkr_debugger_logic_analyzer_stream_copy_complete_advance_reader(
 		&progress, &metrics, true, 6U, 0U, 4U));
@@ -620,6 +852,7 @@ static void test_stream_sink_commit_failure_aborts_after_reader_advance(void)
 	linkr_debugger_logic_analyzer_stream_sink_abort_payload(&sink, &lease);
 	assert(ctx.commit_calls == 1U);
 	assert(ctx.abort_calls == 1U);
+	free(lane_words);
 }
 
 static void test_stream_sink_commit_positive_return_requests_handoff(void)
@@ -642,10 +875,14 @@ static void test_stream_sink_commit_positive_return_requests_handoff(void)
 	assert(ctx.abort_calls == 0U);
 }
 
-static void test_stream_sink_single_packed_output_wraps_raw_ring(void)
+static void test_stream_sink_single_packed_output_wraps_packed_ring_words(void)
 {
 	struct linkr_debugger_la_config config;
+	struct linkr_debugger_la_packed_ring_plan plan;
 	uint32_t raw_ring[4];
+	uint32_t *lane_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
 	uint8_t out[5];
 	uint16_t values_or;
 	uint16_t values_and;
@@ -660,13 +897,20 @@ static void test_stream_sink_single_packed_output_wraps_raw_ring(void)
 	raw_ring[1] = 0U;
 	raw_ring[2] = 0U;
 	raw_ring[3] = (uint32_t)BIT(0);
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_words = alloc_lane_words(plan.lanes[0].word_count);
+	fill_single_lane_packed_ring_from_raw_samples(&config, &plan, lane_words, raw_ring, 4U);
+	lane_ptrs[0] = lane_words;
+	lane_counts[0] = plan.lanes[0].word_count;
 	memset(out, 0xff, sizeof(out));
-	assert(linkr_debugger_logic_analyzer_stream_sink_write_raw_payload(&config,
-		raw_ring, 4U, 2U, 5U, 1U, out, sizeof(out), &values_or,
+	assert(linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(&plan,
+		lane_ptrs, lane_counts, ring_test_start_sample(&plan, 4U, 2U),
+		5U, 1U, out, sizeof(out), &values_or,
 		&values_and) == 0);
 	assert(memcmp(out, (uint8_t[]){0x00U, 0x01U, 0x01U, 0x00U, 0x00U}, 5U) == 0);
 	assert(values_or == 0x0001U);
 	assert(values_and == 0x0000U);
+	free(lane_words);
 }
 
 static void assert_single_sink_matches_generic(
@@ -676,6 +920,10 @@ static void assert_single_sink_matches_generic(
 	uint64_t first_seq,
 	uint32_t sample_count)
 {
+	struct linkr_debugger_la_packed_ring_plan plan;
+	uint32_t *lane_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
 	uint8_t out[8];
 	uint8_t expected[8];
 	uint16_t values_or;
@@ -684,10 +932,17 @@ static void assert_single_sink_matches_generic(
 	uint16_t expected_and = 0xffffU;
 
 	assert(sample_count <= sizeof(out));
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(config, &plan) == 0);
+	lane_words = alloc_lane_words(plan.lanes[0].word_count);
+	fill_single_lane_packed_ring_from_raw_samples(config, &plan, lane_words, raw_ring, ring_samples);
+	lane_ptrs[0] = lane_words;
+	lane_counts[0] = plan.lanes[0].word_count;
 	memset(out, 0xff, sizeof(out));
 	memset(expected, 0xff, sizeof(expected));
-	assert(linkr_debugger_logic_analyzer_stream_sink_write_raw_payload(config,
-		raw_ring, ring_samples, first_seq, sample_count, 1U, out, sample_count,
+	assert(linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(&plan,
+		lane_ptrs, lane_counts,
+		ring_test_start_sample(&plan, ring_samples, (uint32_t)first_seq),
+		sample_count, 1U, out, sample_count,
 		&values_or, &values_and) == 0);
 
 	for (uint32_t i = 0U; i < sample_count; i++) {
@@ -701,6 +956,47 @@ static void assert_single_sink_matches_generic(
 	}
 
 	assert(memcmp(out, expected, sample_count) == 0);
+	assert(values_or == expected_or);
+	assert(values_and == expected_and);
+	free(lane_words);
+}
+
+static void assert_sink_matches_decoded_span(
+	const struct linkr_debugger_la_packed_ring_plan *plan,
+	const uint32_t * const lane_ptrs[],
+	const uint32_t lane_counts[],
+	uint32_t first_sample,
+	uint32_t sample_count)
+{
+	uint8_t out[16];
+	uint8_t expected[16];
+	uint16_t values_or;
+	uint16_t values_and;
+	uint16_t expected_or = 0U;
+	uint16_t expected_and = 0xffffU;
+	uint8_t bytes_per_sample = plan->bytes_per_sample;
+
+	assert((size_t)sample_count * bytes_per_sample <= sizeof(out));
+	memset(out, 0xa5, sizeof(out));
+	memset(expected, 0x5a, sizeof(expected));
+	assert(linkr_debugger_logic_analyzer_decode_packed_ring_span(plan, lane_ptrs,
+		lane_counts, first_sample, expected,
+		(size_t)sample_count * bytes_per_sample, sample_count) == 0);
+	assert(linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(plan,
+		lane_ptrs, lane_counts, first_sample, sample_count, bytes_per_sample, out,
+		(size_t)sample_count * bytes_per_sample, &values_or, &values_and) == 0);
+	assert(memcmp(out, expected, (size_t)sample_count * bytes_per_sample) == 0);
+
+	for (uint32_t i = 0U; i < sample_count; i++) {
+		uint16_t sample = expected[(size_t)i * bytes_per_sample];
+
+		if (bytes_per_sample > 1U) {
+			sample |= (uint16_t)expected[((size_t)i * bytes_per_sample) + 1U] << 8U;
+		}
+		expected_or |= sample;
+		expected_and &= sample;
+	}
+
 	assert(values_or == expected_or);
 	assert(values_and == expected_and);
 }
@@ -757,6 +1053,74 @@ static void test_stream_sink_single_fast_path_span_boundaries_match_generic(void
 	assert_single_sink_matches_generic(&config, raw_ring, 6U, 4U, 5U);
 }
 
+static void test_stream_sink_wrap_batch_matches_decode_span_single_byte(void)
+{
+	struct linkr_debugger_la_config config = fast8_plan_config(0U);
+	struct linkr_debugger_la_packed_ring_plan plan;
+	uint32_t raw_ring[] = {
+		0U,
+		(uint32_t)BIT(2),
+		(uint32_t)(BIT(0) | BIT(7)),
+		(uint32_t)BIT(7),
+		(uint32_t)BIT(0),
+	};
+	uint32_t *lane_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_words = alloc_lane_words(plan.lanes[0].word_count);
+	fill_single_lane_packed_ring_from_raw_samples(&config, &plan, lane_words, raw_ring,
+		sizeof(raw_ring) / sizeof(raw_ring[0]));
+	lane_ptrs[0] = lane_words;
+	lane_counts[0] = plan.lanes[0].word_count;
+	assert_sink_matches_decoded_span(&plan, lane_ptrs, lane_counts,
+		ring_test_start_sample(&plan, 5U, 3U), 7U);
+	free(lane_words);
+}
+
+static void test_stream_sink_wrap_batch_matches_decode_span_two_bytes(void)
+{
+	struct linkr_debugger_la_config config = wide11_exact_config();
+	struct linkr_debugger_la_packed_ring_plan plan;
+	static const uint16_t ring_samples[] = {
+		0x0000U,
+		0x0401U,
+		0x0555U,
+		0x02aaU,
+	};
+	uint32_t *lane_a_words;
+	uint32_t *lane_b_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t base;
+
+	config.post_samples = 0U;
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	assert(plan.lane_count == 2U);
+	assert(plan.bytes_per_sample == 2U);
+	lane_a_words = alloc_lane_words(plan.lanes[0].word_count);
+	lane_b_words = alloc_lane_words(plan.lanes[1].word_count);
+	base = plan.sample_capacity - (uint32_t)(sizeof(ring_samples) / sizeof(ring_samples[0]));
+	for (uint32_t i = 0U; i < (uint32_t)(sizeof(ring_samples) / sizeof(ring_samples[0])); i++) {
+		uint16_t sample = ring_samples[i];
+
+		packed_ring_lane_store(&plan.lanes[0], lane_a_words, base + i, sample & 0x00ffU);
+		packed_ring_lane_store(&plan.lanes[1], lane_b_words, base + i,
+			(sample >> 8U) & 0x07U);
+		packed_ring_lane_store(&plan.lanes[0], lane_a_words, i, sample & 0x00ffU);
+		packed_ring_lane_store(&plan.lanes[1], lane_b_words, i,
+			(sample >> 8U) & 0x07U);
+	}
+	lane_ptrs[0] = lane_a_words;
+	lane_ptrs[1] = lane_b_words;
+	lane_counts[0] = plan.lanes[0].word_count;
+	lane_counts[1] = plan.lanes[1].word_count;
+	assert_sink_matches_decoded_span(&plan, lane_ptrs, lane_counts, base + 2U, 5U);
+	free(lane_a_words);
+	free(lane_b_words);
+}
+
 static void test_stream_sink_single_fast_path_default_selection_matches_generic(void)
 {
 	struct linkr_debugger_la_config config;
@@ -773,22 +1137,26 @@ static void test_stream_sink_single_fast_path_default_selection_matches_generic(
 static void test_stream_sink_single_fast_path_rejects_invalid_offsets(void)
 {
 	struct linkr_debugger_la_config config;
-	uint32_t raw_ring[] = { 0U };
+	struct linkr_debugger_la_packed_ring_plan plan;
+	uint32_t *lane_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
 	uint8_t out[1];
 
 	memset(&config, 0, sizeof(config));
-	config.pin_base = 10U;
+	config.pin_base = 9U;
 	config.pin_count = 1U;
 	config.selected_pins[0] = 9U;
 	config.selected_pin_count = 1U;
 	config.sample_rate_hz = 1000000U;
-	assert(linkr_debugger_logic_analyzer_stream_sink_write_raw_payload(&config,
-		raw_ring, 1U, 0U, 1U, 1U, out, sizeof(out), NULL, NULL) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_words = alloc_lane_words(plan.lanes[0].word_count);
+	lane_ptrs[0] = lane_words;
+	lane_counts[0] = plan.lanes[0].word_count;
+	assert(linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(&plan,
+		lane_ptrs, lane_counts, 0U, 1U, 1U, out, sizeof(out), NULL, NULL) == 0);
 
-	config.pin_base = 0U;
-	config.selected_pins[0] = 32U;
-	assert(linkr_debugger_logic_analyzer_stream_sink_write_raw_payload(&config,
-		raw_ring, 1U, 0U, 1U, 1U, out, sizeof(out), NULL, NULL) == -EINVAL);
+	free(lane_words);
 }
 
 static void test_stream_sink_helpers_do_not_change_callback_protocol_gate(void)
@@ -809,8 +1177,8 @@ static void test_stream_sink_helpers_do_not_change_callback_protocol_gate(void)
 	assert(linkr_debugger_logic_analyzer_stream_sink_should_yield_for_handoff(true, 2048U));
 	assert(!linkr_debugger_logic_analyzer_stream_sink_should_yield_for_handoff(true, 2049U));
 	assert(!linkr_debugger_logic_analyzer_stream_sink_should_explicit_yield(false, 0U));
-	assert(!linkr_debugger_logic_analyzer_stream_sink_should_explicit_yield(true, 0U));
-	assert(!linkr_debugger_logic_analyzer_stream_sink_should_explicit_yield(true, 2048U));
+	assert(linkr_debugger_logic_analyzer_stream_sink_should_explicit_yield(true, 0U));
+	assert(linkr_debugger_logic_analyzer_stream_sink_should_explicit_yield(true, 2048U));
 	assert(!linkr_debugger_logic_analyzer_stream_sink_should_explicit_yield(true, 2049U));
 }
 
@@ -823,7 +1191,7 @@ static void test_validation(void)
 	config = base_config();
 	config.selected_pins[0] = 7U;
 	config.selected_pins[1] = 10U;
-	config.selected_pins[2] = 29U;
+	config.selected_pins[2] = 20U;
 	config.selected_pin_count = 3U;
 	config.pin_count = 3U;
 	assert(linkr_debugger_logic_analyzer_validate_config(&config, 512U) == 0);
@@ -857,7 +1225,7 @@ static void test_validation(void)
 	config.trigger_pin = 1U;
 	config.pre_samples = 8U;
 	config.post_samples = 8U;
-	assert(linkr_debugger_logic_analyzer_validate_config(&config, 512U) == 0);
+	assert(linkr_debugger_logic_analyzer_validate_config(&config, 512U) == -EINVAL);
 
 	config = base_config();
 	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_EITHER;
@@ -865,7 +1233,7 @@ static void test_validation(void)
 	config.pre_samples = 8U;
 	config.post_samples = 8U;
 	config.sample_rate_hz = 25000000U;
-	assert(linkr_debugger_logic_analyzer_validate_config(&config, 512U) == 0);
+	assert(linkr_debugger_logic_analyzer_validate_config(&config, 512U) == -EINVAL);
 
 	config = base_config();
 	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_RISING;
@@ -919,6 +1287,195 @@ static void test_stream_validation_allows_unlimited_and_uint16_bounded(void)
 	assert(linkr_debugger_logic_analyzer_validate_stream_config(&config) == -EINVAL);
 }
 
+static void test_bounded_pre_trigger_uses_prepared_packed_ring(void)
+{
+	struct linkr_debugger_la_config config = fast8_plan_config(16U);
+	struct linkr_debugger_la_hardware_plan plan;
+	struct linkr_debugger_la_packed_ring_plan ring_plan;
+	struct linkr_debugger_la_session_contract contract;
+
+	config.sample_rate_hz = 1000000U;
+	config.pre_samples = 16U;
+	assert(linkr_debugger_logic_analyzer_validate_config(&config,
+		LINKR_DEBUGGER_LA_MAX_EXPORTED_SAMPLES) == 0);
+	assert(linkr_debugger_logic_analyzer_validate_stream_config(&config) == 0);
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false,
+		&plan) == 0);
+	assert(plan.supported);
+	assert(plan.pipeline_family == LINKR_DEBUGGER_LA_PIPELINE_FAMILY_COMMON_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_RING_STREAM);
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &ring_plan) == 0);
+	assert(linkr_debugger_logic_analyzer_session_contract(&config, &contract) == 0);
+	assert(contract.pre_samples == 16U);
+	assert(contract.post_samples == 16U);
+	assert(contract.stop_policy == LINKR_DEBUGGER_LA_STOP_POLICY_BOUNDED);
+}
+
+static void test_bounded_pre_trigger_rejects_unsupported_contract_shapes(void)
+{
+	struct linkr_debugger_la_config config = fast8_plan_config(1U);
+
+	config.sample_rate_hz = 1000000U;
+	config.pre_samples = 1U;
+	assert(linkr_debugger_logic_analyzer_validate_stream_config(&config) == 0);
+
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_NONE;
+	assert(linkr_debugger_logic_analyzer_validate_stream_config(&config) == -EINVAL);
+
+	config = fast8_plan_config(0U);
+	config.sample_rate_hz = 1000000U;
+	config.pre_samples = 1U;
+	assert(linkr_debugger_logic_analyzer_validate_stream_config(&config) == -EINVAL);
+
+	config = fast8_plan_config(1U);
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_PRE_TRIGGER_SAMPLE_RATE_HZ + 1U;
+	config.pre_samples = 1U;
+	assert(linkr_debugger_logic_analyzer_validate_stream_config(&config) == -EINVAL);
+
+	config = fast8_plan_config(1U);
+	config.sample_rate_hz = 1000000U;
+	config.pre_samples = LINKR_DEBUGGER_LA_MAX_EXPORTED_SAMPLES;
+	assert(linkr_debugger_logic_analyzer_validate_stream_config(&config) == -EINVAL);
+}
+
+static void test_bounded_pre_trigger_window_preserves_index_and_wraps(void)
+{
+	struct linkr_debugger_la_config config = fast8_plan_config(4U);
+	struct linkr_debugger_la_pre_trigger_window window;
+	uint32_t target_samples = 0U;
+
+	config.sample_rate_hz = 1000000U;
+	config.pre_samples = 4U;
+	assert(linkr_debugger_logic_analyzer_bounded_sample_target(4U, 4U,
+		&target_samples) == 0);
+	assert(target_samples == 8U);
+	assert(linkr_debugger_logic_analyzer_pre_trigger_supported(config.trigger,
+		config.sample_rate_hz, config.pre_samples, config.post_samples));
+	assert(linkr_debugger_logic_analyzer_pre_trigger_window(&config, 34U, 30U,
+		32U, 4U, &window) == 0);
+	assert(window.first_sequence == 26U);
+	assert(window.end_sequence == 34U);
+	assert(window.sample_count == 8U);
+	assert(window.trigger_index == 4U);
+	assert(window.first_sequence % 32U == 26U);
+	assert(window.end_sequence % 32U == 2U);
+	assert(linkr_debugger_logic_analyzer_pre_trigger_window(&config, 4U, 3U,
+		32U, 4U, &window) == -ENODATA);
+	assert(linkr_debugger_logic_analyzer_pre_trigger_window(&config, 55U, 30U,
+		32U, 4U, &window) == -EOVERFLOW);
+	assert(linkr_debugger_logic_analyzer_bounded_sample_target(UINT32_MAX, 1U,
+		&target_samples) == -EOVERFLOW);
+}
+
+static void test_bounded_pre_trigger_plan_feasibility(void)
+{
+	struct linkr_debugger_la_config config;
+	struct linkr_debugger_la_hardware_plan hardware_plan;
+	struct linkr_debugger_la_packed_ring_plan ring_plan;
+	uint32_t required_samples = 0U;
+
+	assert(linkr_debugger_logic_analyzer_pre_trigger_minimum_retention_samples(
+		1000000U, &required_samples) == 0);
+	assert(required_samples == 2000U);
+	assert(linkr_debugger_logic_analyzer_pre_trigger_minimum_retention_samples(
+		25000000U, &required_samples) == 0);
+	assert(required_samples == 50000U);
+	assert(linkr_debugger_logic_analyzer_pre_trigger_minimum_retention_samples(
+		UINT32_MAX, &required_samples) == 0);
+	assert(required_samples == 8589936U);
+
+	config = single_plan_config(256U);
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_RISING;
+	config.pre_samples = 256U;
+	config.sample_rate_hz = 25000000U;
+	assert(linkr_debugger_logic_analyzer_pre_trigger_supported(config.trigger,
+		config.sample_rate_hz, config.pre_samples, config.post_samples));
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &ring_plan) == 0);
+	assert(linkr_debugger_logic_analyzer_pre_trigger_plan_feasible(&ring_plan,
+		linkr_debugger_logic_analyzer_actual_rate(config.sample_rate_hz)));
+	assert(linkr_debugger_logic_analyzer_pre_trigger_plan_supported(&config));
+	assert(linkr_debugger_logic_analyzer_validate_config(&config,
+		LINKR_DEBUGGER_LA_MAX_EXPORTED_SAMPLES) == 0);
+	assert(linkr_debugger_logic_analyzer_validate_stream_config(&config) == 0);
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false,
+		&hardware_plan) == 0);
+	assert(hardware_plan.supported);
+
+	for (enum linkr_debugger_la_trigger_type trigger = LINKR_DEBUGGER_LA_TRIGGER_RISING;
+	     trigger <= LINKR_DEBUGGER_LA_TRIGGER_EITHER; trigger++) {
+		config.trigger = trigger;
+		config.sample_rate_hz = 1000000U;
+		assert(linkr_debugger_logic_analyzer_pre_trigger_plan_supported(&config));
+	}
+
+	config = fast8_plan_config(256U);
+	config.pre_samples = 256U;
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &ring_plan) == 0);
+	assert(!linkr_debugger_logic_analyzer_pre_trigger_plan_feasible(&ring_plan,
+		linkr_debugger_logic_analyzer_actual_rate(config.sample_rate_hz)));
+	assert(!linkr_debugger_logic_analyzer_pre_trigger_plan_supported(&config));
+	assert(linkr_debugger_logic_analyzer_validate_config(&config,
+		LINKR_DEBUGGER_LA_MAX_EXPORTED_SAMPLES) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_validate_stream_config(&config) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false,
+		&hardware_plan) == 0);
+	assert(!hardware_plan.supported);
+
+	config = wide11_exact_config();
+	config.sample_rate_hz = 25000000U;
+	config.pre_samples = 256U;
+	config.post_samples = 256U;
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_FALLING;
+	config.trigger_pin = 0U;
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &ring_plan) == 0);
+	assert(!linkr_debugger_logic_analyzer_pre_trigger_plan_feasible(&ring_plan,
+		linkr_debugger_logic_analyzer_actual_rate(config.sample_rate_hz)));
+	assert(!linkr_debugger_logic_analyzer_pre_trigger_plan_supported(&config));
+	assert(linkr_debugger_logic_analyzer_validate_stream_config(&config) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false,
+		&hardware_plan) == 0);
+	assert(!hardware_plan.supported);
+
+	config = single_plan_config(256U);
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_NONE;
+	config.pre_samples = 256U;
+	assert(!linkr_debugger_logic_analyzer_pre_trigger_plan_supported(&config));
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_RISING;
+	config.post_samples = 0U;
+	assert(!linkr_debugger_logic_analyzer_pre_trigger_plan_supported(&config));
+	config.post_samples = 257U;
+	assert(!linkr_debugger_logic_analyzer_pre_trigger_plan_supported(&config));
+}
+
+static void test_bounded_pre_trigger_scan_guards(void)
+{
+	assert(linkr_debugger_logic_analyzer_pre_trigger_scan_start(0U, 16U) == 16U);
+	assert(linkr_debugger_logic_analyzer_pre_trigger_scan_start(16U, 16U) == 16U);
+	assert(linkr_debugger_logic_analyzer_pre_trigger_scan_start(31U, 16U) == 16U);
+	assert(linkr_debugger_logic_analyzer_pre_trigger_scan_start(32U, 16U) == 16U);
+	assert(linkr_debugger_logic_analyzer_pre_trigger_scan_start(33U, 16U) == 17U);
+
+	assert(linkr_debugger_logic_analyzer_pre_trigger_edge_matches(
+		LINKR_DEBUGGER_LA_TRIGGER_RISING, 0U, 1U));
+	assert(!linkr_debugger_logic_analyzer_pre_trigger_edge_matches(
+		LINKR_DEBUGGER_LA_TRIGGER_RISING, 1U, 0U));
+	assert(linkr_debugger_logic_analyzer_pre_trigger_edge_matches(
+		LINKR_DEBUGGER_LA_TRIGGER_FALLING, 1U, 0U));
+	assert(!linkr_debugger_logic_analyzer_pre_trigger_edge_matches(
+		LINKR_DEBUGGER_LA_TRIGGER_FALLING, 0U, 1U));
+	assert(linkr_debugger_logic_analyzer_pre_trigger_edge_matches(
+		LINKR_DEBUGGER_LA_TRIGGER_EITHER, 0U, 1U));
+	assert(linkr_debugger_logic_analyzer_pre_trigger_edge_matches(
+		LINKR_DEBUGGER_LA_TRIGGER_EITHER, 1U, 0U));
+	assert(!linkr_debugger_logic_analyzer_pre_trigger_edge_matches(
+		LINKR_DEBUGGER_LA_TRIGGER_EITHER, 1U, 1U));
+
+	assert(!linkr_debugger_logic_analyzer_pre_trigger_scan_source_overrun(
+		14336U, 0U, 16384U, 2048U));
+	assert(linkr_debugger_logic_analyzer_pre_trigger_scan_source_overrun(
+		14337U, 0U, 16384U, 2048U));
+}
+
 static void test_compression(void)
 {
 	struct linkr_debugger_la_config config = base_config();
@@ -931,58 +1488,971 @@ static void test_compression(void)
 
 	config.selected_pins[0] = 7U;
 	config.selected_pins[1] = 10U;
-	config.selected_pins[2] = 29U;
+	config.selected_pins[2] = 20U;
 	config.selected_pin_count = 3U;
 	config.pin_count = 3U;
 
 	assert(linkr_debugger_logic_analyzer_compress_raw_sample(
-		(uint32_t)(BIT(0) | BIT(22)), &config) == 5U);
+		(uint32_t)(BIT(0) | BIT(13)), &config) == 5U);
 	assert(linkr_debugger_logic_analyzer_compress_raw_sample(
 		(uint32_t)BIT(3), &config) == 2U);
 }
 
-static void test_finite_stream_helpers(void)
+static void test_stream_irq_clear_helper(void)
 {
 	struct linkr_debugger_la_config config = base_config();
 
-	assert(!linkr_debugger_logic_analyzer_finite_stream_eligible(NULL));
 	assert(!linkr_debugger_logic_analyzer_stream_config_needs_irq_clear(NULL));
 
-	assert(linkr_debugger_logic_analyzer_finite_stream_eligible(&config));
 	assert(!linkr_debugger_logic_analyzer_stream_config_needs_irq_clear(&config));
 
 	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_NONE;
-	assert(linkr_debugger_logic_analyzer_finite_stream_eligible(&config));
 	assert(!linkr_debugger_logic_analyzer_stream_config_needs_irq_clear(&config));
 
 	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_RISING;
-	assert(linkr_debugger_logic_analyzer_finite_stream_eligible(&config));
 	assert(linkr_debugger_logic_analyzer_stream_config_needs_irq_clear(&config));
 
 	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_FALLING;
-	assert(linkr_debugger_logic_analyzer_finite_stream_eligible(&config));
 	assert(linkr_debugger_logic_analyzer_stream_config_needs_irq_clear(&config));
 
 	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_EITHER;
-	assert(linkr_debugger_logic_analyzer_finite_stream_eligible(&config));
 	assert(linkr_debugger_logic_analyzer_stream_config_needs_irq_clear(&config));
 
 	config.pre_samples = 1U;
-	assert(!linkr_debugger_logic_analyzer_finite_stream_eligible(&config));
-	assert(linkr_debugger_logic_analyzer_stream_config_needs_irq_clear(&config));
+	assert(!linkr_debugger_logic_analyzer_stream_config_needs_irq_clear(&config));
+}
 
+static struct linkr_debugger_la_config wide11_exact_config(void)
+{
+	static const uint8_t pins[] = {
+		10U, 11U, 12U, 13U, 14U, 15U,
+		16U, 17U, 18U, 19U, 20U,
+	};
+	struct linkr_debugger_la_config config;
+
+	memset(&config, 0, sizeof(config));
+	config.pin_base = 10U;
+	config.pin_count = 11U;
+	memcpy(config.selected_pins, pins, sizeof(pins));
+	config.selected_pin_count = 11U;
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_RATE_HZ;
 	config.pre_samples = 0U;
+	config.post_samples = LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES;
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_NONE;
+	return config;
+}
+
+static void test_wide11_burst_exact_eligibility_is_strict(void)
+{
+	struct linkr_debugger_la_config config = wide11_exact_config();
+
+	assert(linkr_debugger_logic_analyzer_wide11_burst_exact_eligible(&config));
+
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_RISING;
+	config.trigger_pin = 10U;
+	assert(linkr_debugger_logic_analyzer_wide11_burst_exact_eligible(&config));
+
+	config = wide11_exact_config();
+	config.sample_rate_hz = 99999000U;
+	assert(!linkr_debugger_logic_analyzer_wide11_burst_exact_eligible(&config));
+
+	config = wide11_exact_config();
+	config.post_samples = LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES - 1U;
+	assert(!linkr_debugger_logic_analyzer_wide11_burst_exact_eligible(&config));
+
+	config = wide11_exact_config();
+	config.pre_samples = 1U;
+	assert(!linkr_debugger_logic_analyzer_wide11_burst_exact_eligible(&config));
+
+	config = wide11_exact_config();
+	config.selected_pins[10] = 21U;
+	assert(!linkr_debugger_logic_analyzer_wide11_burst_exact_eligible(&config));
+
+	config = wide11_exact_config();
+	config.selected_pin_count = 0U;
+	assert(!linkr_debugger_logic_analyzer_wide11_burst_exact_eligible(&config));
+}
+
+static struct linkr_debugger_la_config single_plan_config(uint32_t post_samples)
+{
+	struct linkr_debugger_la_config config;
+
+	memset(&config, 0, sizeof(config));
+	config.pin_base = 10U;
+	config.pin_count = 1U;
+	config.selected_pins[0] = 10U;
+	config.selected_pin_count = 1U;
+	config.sample_rate_hz = 1000000U;
+	config.post_samples = post_samples;
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_NONE;
+	return config;
+}
+
+static struct linkr_debugger_la_config fast8_plan_config(uint32_t post_samples)
+{
+	struct linkr_debugger_la_config config;
+
+	memset(&config, 0, sizeof(config));
+	config.pin_base = 10U;
+	config.pin_count = 8U;
+	config.sample_rate_hz = 25000000U;
+	config.post_samples = post_samples;
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_RISING;
+	config.trigger_pin = 0U;
+	return config;
+}
+
+static void packed_lane_store(const struct linkr_debugger_la_packed_burst_lane *lane,
+	uint32_t *words, uint32_t sample_index, uint32_t lane_value)
+{
+	uint32_t word_index = sample_index / lane->samples_per_word;
+	uint8_t in_word = (uint8_t)(sample_index % lane->samples_per_word);
+	uint8_t shift = (uint8_t)((32U - lane->autopush_bits) +
+		((uint32_t)in_word * lane->bits_per_sample));
+	uint32_t mask = ((1UL << lane->bits_per_sample) - 1UL) << shift;
+
+	words[word_index] &= ~mask;
+	words[word_index] |= (lane_value << shift) & mask;
+}
+
+static void packed_ring_lane_store(const struct linkr_debugger_la_packed_ring_lane *lane,
+	uint32_t *words, uint32_t sample_index, uint32_t lane_value)
+{
+	uint32_t word_index = (sample_index % lane->sample_capacity) / lane->samples_per_word;
+	uint8_t in_word = (uint8_t)((sample_index % lane->sample_capacity) % lane->samples_per_word);
+	uint8_t shift = (uint8_t)((32U - lane->autopush_bits) +
+		((uint32_t)in_word * lane->bits_per_sample));
+	uint32_t mask = ((1UL << lane->bits_per_sample) - 1UL) << shift;
+
+	words[word_index] &= ~mask;
+	words[word_index] |= (lane_value << shift) & mask;
+}
+
+static void assert_packed_ring_trigger_edge(
+	const struct linkr_debugger_la_packed_ring_plan *plan,
+	const uint32_t * const lane_words[],
+	const uint32_t lane_word_counts[],
+	uint8_t trigger_pin,
+	enum linkr_debugger_la_trigger_type trigger,
+	uint64_t first_sequence,
+	uint64_t end_sequence,
+	uint8_t previous_level,
+	uint64_t expected_sequence,
+	uint8_t expected_level)
+{
+	bool edge_found = false;
+	uint64_t edge_sequence = 0U;
+	uint8_t last_level = 0U;
+
+	assert(linkr_debugger_logic_analyzer_pre_trigger_scan_packed_ring(plan, lane_words,
+		lane_word_counts, trigger_pin, trigger, first_sequence, end_sequence,
+		previous_level, &edge_sequence, &last_level, &edge_found) == 0);
+	assert(edge_found);
+	assert(edge_sequence == expected_sequence);
+	assert(last_level == expected_level);
+}
+
+static void test_packed_ring_pre_trigger_word_scan(void)
+{
+	struct linkr_debugger_la_config config;
+	struct linkr_debugger_la_packed_ring_plan plan;
+	const uint32_t *lane_words[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_word_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t *lane_a_words;
+	uint32_t *lane_b_words;
+	uint64_t wrap_sequence;
+
+	config = single_plan_config(8U);
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_RISING;
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_a_words = alloc_lane_words(plan.lanes[0].word_count);
+	lane_words[0] = lane_a_words;
+	lane_word_counts[0] = plan.lanes[0].word_count;
+	packed_ring_lane_store(&plan.lanes[0], lane_a_words, 31U, 0U);
+	packed_ring_lane_store(&plan.lanes[0], lane_a_words, 32U, 1U);
+	assert_packed_ring_trigger_edge(&plan, lane_words, lane_word_counts, 0U,
+		LINKR_DEBUGGER_LA_TRIGGER_RISING, 31U, 34U, 0U, 32U, 1U);
+	memset(lane_a_words, 0, (size_t)plan.lanes[0].word_count * sizeof(*lane_a_words));
+	packed_ring_lane_store(&plan.lanes[0], lane_a_words, 48U, 1U);
+	assert_packed_ring_trigger_edge(&plan, lane_words, lane_word_counts, 0U,
+		LINKR_DEBUGGER_LA_TRIGGER_RISING, 32U, 64U, 0U, 48U, 1U);
+	memset(lane_a_words, 0, (size_t)plan.lanes[0].word_count * sizeof(*lane_a_words));
+	wrap_sequence = plan.lanes[0].sample_capacity;
+	packed_ring_lane_store(&plan.lanes[0], lane_a_words, (uint32_t)(wrap_sequence - 1U), 0U);
+	packed_ring_lane_store(&plan.lanes[0], lane_a_words, 0U, 1U);
+	assert_packed_ring_trigger_edge(&plan, lane_words, lane_word_counts, 0U,
+		LINKR_DEBUGGER_LA_TRIGGER_RISING, wrap_sequence - 1U, wrap_sequence + 2U,
+		0U, wrap_sequence, 1U);
+	free(lane_a_words);
+
+	memset(lane_words, 0, sizeof(lane_words));
+	memset(lane_word_counts, 0, sizeof(lane_word_counts));
+	config = fast8_plan_config(8U);
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_FALLING;
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_a_words = alloc_lane_words(plan.lanes[0].word_count);
+	lane_words[0] = lane_a_words;
+	lane_word_counts[0] = plan.lanes[0].word_count;
+	packed_ring_lane_store(&plan.lanes[0], lane_a_words, 3U, 1U);
+	packed_ring_lane_store(&plan.lanes[0], lane_a_words, 4U, 0U);
+	assert_packed_ring_trigger_edge(&plan, lane_words, lane_word_counts, 0U,
+		LINKR_DEBUGGER_LA_TRIGGER_FALLING, 3U, 6U, 1U, 4U, 0U);
+	free(lane_a_words);
+
+	memset(lane_words, 0, sizeof(lane_words));
+	memset(lane_word_counts, 0, sizeof(lane_word_counts));
+	config = wide11_exact_config();
+	config.sample_rate_hz = 25000000U;
+	config.pre_samples = 16U;
+	config.post_samples = 16U;
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_EITHER;
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_a_words = alloc_lane_words(plan.lanes[0].word_count);
+	lane_b_words = alloc_lane_words(plan.lanes[1].word_count);
+	lane_words[0] = lane_a_words;
+	lane_words[1] = lane_b_words;
+	lane_word_counts[0] = plan.lanes[0].word_count;
+	lane_word_counts[1] = plan.lanes[1].word_count;
+	packed_ring_lane_store(&plan.lanes[0], lane_a_words, 3U, 0U);
+	packed_ring_lane_store(&plan.lanes[0], lane_a_words, 4U, 1U);
+	assert_packed_ring_trigger_edge(&plan, lane_words, lane_word_counts, 0U,
+		LINKR_DEBUGGER_LA_TRIGGER_EITHER, 3U, 6U, 0U, 4U, 1U);
+	packed_ring_lane_store(&plan.lanes[1], lane_b_words, 9U, 0U);
+	packed_ring_lane_store(&plan.lanes[1], lane_b_words, 10U, 1U);
+	assert_packed_ring_trigger_edge(&plan, lane_words, lane_word_counts, 8U,
+		LINKR_DEBUGGER_LA_TRIGGER_EITHER, 9U, 12U, 0U, 10U, 1U);
+	memset(lane_b_words, 0, (size_t)plan.lanes[1].word_count * sizeof(*lane_b_words));
+	wrap_sequence = plan.lanes[1].sample_capacity;
+	packed_ring_lane_store(&plan.lanes[1], lane_b_words, (uint32_t)(wrap_sequence - 1U), 0U);
+	packed_ring_lane_store(&plan.lanes[1], lane_b_words, 0U, 1U);
+	assert_packed_ring_trigger_edge(&plan, lane_words, lane_word_counts, 8U,
+		LINKR_DEBUGGER_LA_TRIGGER_EITHER, wrap_sequence - 1U, wrap_sequence + 2U,
+		0U, wrap_sequence, 1U);
+	free(lane_a_words);
+	free(lane_b_words);
+}
+
+static void fill_single_lane_packed_ring_from_raw_samples(
+	const struct linkr_debugger_la_config *config,
+	const struct linkr_debugger_la_packed_ring_plan *plan,
+	uint32_t *lane_words,
+	const uint32_t *raw_ring,
+	uint32_t ring_samples)
+{
+	uint32_t base = plan->sample_capacity - ring_samples;
+
+	for (uint32_t i = 0U; i < ring_samples; i++) {
+		uint32_t value = linkr_debugger_logic_analyzer_compress_raw_sample(raw_ring[i], config);
+
+		packed_ring_lane_store(&plan->lanes[0], lane_words, base + i, value);
+		packed_ring_lane_store(&plan->lanes[0], lane_words, i, value);
+	}
+}
+
+static void test_packed_burst_plan_sizing_and_continuous_capacity(void)
+{
+	static const uint32_t depths[] = { 513U, 65535U, 65536U, 99999U, 100000U };
+	struct linkr_debugger_la_config config;
+	struct linkr_debugger_la_packed_burst_plan plan;
+
+	for (size_t i = 0U; i < sizeof(depths) / sizeof(depths[0]); i++) {
+		uint32_t aligned_single = ((depths[i] + 31U) / 32U) * 32U;
+		uint32_t aligned_fast8 = ((depths[i] + 3U) / 4U) * 4U;
+
+		config = single_plan_config(depths[i]);
+		config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ;
+		assert(linkr_debugger_logic_analyzer_packed_burst_plan(&config, &plan) == 0);
+		assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED);
+		assert(plan.lane_count == 1U);
+		assert(plan.bytes_per_sample == 1U);
+		assert(plan.emitted_sample_count == depths[i]);
+		assert(plan.source_sample_count == aligned_single);
+		assert(plan.lanes[0].word_count == aligned_single / 32U);
+		assert(plan.lanes[0].byte_count == (aligned_single / 32U) * 4U);
+
+		config = fast8_plan_config(depths[i]);
+		config.sample_rate_hz = LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_RATE_HZ;
+		assert(linkr_debugger_logic_analyzer_packed_burst_plan(&config, &plan) == 0);
+		assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED);
+		assert(plan.lane_count == 1U);
+		assert(plan.bytes_per_sample == 1U);
+		assert(plan.emitted_sample_count == depths[i]);
+		assert(plan.source_sample_count == aligned_fast8);
+		assert(plan.lanes[0].word_count == aligned_fast8 / 4U);
+		assert(plan.lanes[0].byte_count == (aligned_fast8 / 4U) * 4U);
+	}
+
+	config = wide11_exact_config();
+	config.post_samples = 99999U;
+	assert(linkr_debugger_logic_analyzer_packed_burst_plan(&config, &plan) == 0);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_WIDE11_SPLIT_PACKED);
+	assert(plan.lane_count == 2U);
+	assert(plan.bytes_per_sample == 2U);
+	assert(plan.emitted_sample_count == 99999U);
+	assert(plan.source_sample_count == 100000U);
+	assert(plan.total_byte_count == 140000U);
+
+	config = single_plan_config(0U);
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ;
+	assert(linkr_debugger_logic_analyzer_packed_burst_plan(&config, &plan) == 0);
+	assert(plan.continuous_until_capacity);
+	assert(plan.requested_sample_count == 0U);
+	assert(plan.emitted_sample_count == LINKR_DEBUGGER_LA_PACKED_BURST_CONTINUOUS_SAMPLES);
+	assert(plan.source_sample_count == LINKR_DEBUGGER_LA_PACKED_BURST_CONTINUOUS_SAMPLES);
+
+	config.post_samples = LINKR_DEBUGGER_LA_PACKED_BURST_MAX_SAMPLES + 1U;
+	assert(linkr_debugger_logic_analyzer_packed_burst_plan(&config, &plan) == -EINVAL);
+}
+
+static void test_packed_burst_decode_selected_pin_compaction(void)
+{
+	struct linkr_debugger_la_config config = fast8_plan_config(32U);
+	struct linkr_debugger_la_packed_burst_plan plan;
+	uint32_t lane_words[8];
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = { lane_words, NULL };
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = { 0U, 0U };
+	uint8_t packed[4];
+
+	memset(lane_words, 0, sizeof(lane_words));
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_RATE_HZ;
+	config.pin_count = 8U;
+	config.selected_pin_count = 3U;
+	config.selected_pins[0] = 10U;
+	config.selected_pins[1] = 12U;
+	config.selected_pins[2] = 17U;
+	assert(linkr_debugger_logic_analyzer_packed_burst_plan(&config, &plan) == 0);
+	lane_counts[0] = plan.lanes[0].word_count;
+	packed_lane_store(&plan.lanes[0], lane_words, 0U, BIT(0) | BIT(7));
+	packed_lane_store(&plan.lanes[0], lane_words, 1U, BIT(2));
+	packed_lane_store(&plan.lanes[0], lane_words, 2U, BIT(0) | BIT(2) | BIT(7));
+	packed_lane_store(&plan.lanes[0], lane_words, 3U, 0U);
+
+	memset(packed, 0xa5, sizeof(packed));
+	assert(linkr_debugger_logic_analyzer_decode_packed_burst_span(&plan, lane_ptrs,
+		lane_counts, 0U, packed, sizeof(packed), 4U) == 0);
+	assert(packed[0] == 0x05U);
+	assert(packed[1] == 0x02U);
+	assert(packed[2] == 0x07U);
+	assert(packed[3] == 0x00U);
+}
+
+static void test_packed_ring_plan_sizing_and_chunk_limits(void)
+{
+	struct linkr_debugger_la_config config;
+	struct linkr_debugger_la_packed_ring_plan plan;
+
+	config = single_plan_config(0U);
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED);
+	assert(plan.lane_count == 1U);
+	assert(plan.chunk_samples == 2048U);
+	assert(plan.sample_capacity == 262144U);
+	assert(plan.usable_sample_capacity == 260096U);
+	assert(plan.lanes[0].word_count == 8192U);
+
+	config = fast8_plan_config(0U);
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED);
+	assert(plan.chunk_samples == 2048U);
+	assert(plan.sample_capacity == 32768U);
+	assert(plan.usable_sample_capacity == 30720U);
+
+	config = wide11_exact_config();
 	config.post_samples = 0U;
-	assert(!linkr_debugger_logic_analyzer_finite_stream_eligible(&config));
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_WIDE11_SPLIT_PACKED);
+	assert(plan.lane_count == 2U);
+	assert(plan.chunk_samples == 1024U);
+	assert(plan.sample_capacity == 16384U);
+	assert(plan.usable_sample_capacity == 14336U);
+	assert(plan.lanes[0].word_count == 4096U);
+	assert(plan.lanes[1].word_count == 2048U);
+	assert(plan.lanes[1].sample_capacity == 20480U);
+}
 
-	config.post_samples = 1U;
-	assert(linkr_debugger_logic_analyzer_finite_stream_eligible(&config));
+static void test_packed_ring_decode_wrap_and_sparse_selection(void)
+{
+	struct linkr_debugger_la_config config = fast8_plan_config(0U);
+	struct linkr_debugger_la_packed_ring_plan plan;
+	uint32_t *lane_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint8_t packed[4];
 
-	config.post_samples = LINKR_DEBUGGER_LA_FINITE_GATED_MAX_SAMPLES;
-	assert(linkr_debugger_logic_analyzer_finite_stream_eligible(&config));
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_NONE;
+	config.pin_count = 8U;
+	config.selected_pin_count = 3U;
+	config.selected_pins[0] = 10U;
+	config.selected_pins[1] = 12U;
+	config.selected_pins[2] = 17U;
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_words = alloc_lane_words(plan.lanes[0].word_count);
+	packed_ring_lane_store(&plan.lanes[0], lane_words, plan.sample_capacity - 2U,
+		BIT(0) | BIT(7));
+	packed_ring_lane_store(&plan.lanes[0], lane_words, plan.sample_capacity - 1U,
+		BIT(2));
+	packed_ring_lane_store(&plan.lanes[0], lane_words, 0U,
+		BIT(0) | BIT(2) | BIT(7));
+	packed_ring_lane_store(&plan.lanes[0], lane_words, 1U, 0U);
+	lane_ptrs[0] = lane_words;
+	lane_counts[0] = plan.lanes[0].word_count;
+	memset(packed, 0xa5, sizeof(packed));
+	assert(linkr_debugger_logic_analyzer_decode_packed_ring_span(&plan, lane_ptrs,
+		lane_counts, plan.sample_capacity - 2U, packed, sizeof(packed), 4U) == 0);
+	assert(packed[0] == 0x05U);
+	assert(packed[1] == 0x02U);
+	assert(packed[2] == 0x07U);
+	assert(packed[3] == 0x00U);
+	free(lane_words);
+}
 
-	config.post_samples = LINKR_DEBUGGER_LA_FINITE_GATED_MAX_SAMPLES + 1U;
-	assert(!linkr_debugger_logic_analyzer_finite_stream_eligible(&config));
+static void test_packed_ring_decode_keeps_wide11_sequence_above_u32(void)
+{
+	struct linkr_debugger_la_config config = wide11_exact_config();
+	struct linkr_debugger_la_packed_ring_plan plan;
+	uint32_t *lane_a_words;
+	uint32_t *lane_b_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	const uint8_t lane_a_values[] = {0x12U, 0x34U, 0x56U, 0x78U};
+	const uint8_t lane_b_values[] = {0x01U, 0x02U, 0x03U, 0x04U};
+	const uint64_t first_sequence = (UINT64_C(1) << 32U) + 16382U;
+	uint8_t packed[8];
+
+	config.post_samples = 0U;
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_a_words = alloc_lane_words(plan.lanes[0].word_count);
+	lane_b_words = alloc_lane_words(plan.lanes[1].word_count);
+	for (uint32_t index = 0U; index < 4U; index++) {
+		uint64_t sequence = first_sequence + index;
+
+		packed_ring_lane_store(&plan.lanes[0], lane_a_words,
+			(uint32_t)(sequence % plan.lanes[0].sample_capacity), lane_a_values[index]);
+		packed_ring_lane_store(&plan.lanes[1], lane_b_words,
+			(uint32_t)(sequence % plan.lanes[1].sample_capacity), lane_b_values[index]);
+	}
+	lane_ptrs[0] = lane_a_words;
+	lane_ptrs[1] = lane_b_words;
+	lane_counts[0] = plan.lanes[0].word_count;
+	lane_counts[1] = plan.lanes[1].word_count;
+	assert(linkr_debugger_logic_analyzer_decode_packed_ring_span(&plan, lane_ptrs,
+		lane_counts, first_sequence, packed, sizeof(packed), 4U) == 0);
+	for (uint32_t index = 0U; index < 4U; index++) {
+		assert(packed[index * 2U] == lane_a_values[index]);
+		assert(packed[index * 2U + 1U] == lane_b_values[index]);
+	}
+	free(lane_b_words);
+	free(lane_a_words);
+}
+
+static void test_packed_ring_observe_dual_lane_min_seq_and_skew(void)
+{
+	struct linkr_debugger_la_config config = wide11_exact_config();
+	struct linkr_debugger_la_packed_ring_plan plan;
+	struct linkr_debugger_la_ring_progress progress;
+	uint32_t lane_last_hw_indices[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint64_t lane_writer_seqs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t hw_indices[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t produced = 0U;
+	uint32_t skew = 0U;
+
+	config.post_samples = 0U;
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	memset(&progress, 0, sizeof(progress));
+	progress.generation = 42U;
+	assert(linkr_debugger_logic_analyzer_packed_ring_observe(&progress,
+		lane_last_hw_indices, lane_writer_seqs, hw_indices, 0U, 1000000U, 0U,
+		&plan, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_OK);
+	assert(produced == 0U);
+
+	hw_indices[0] = 4U;
+	hw_indices[1] = 1U;
+	assert(linkr_debugger_logic_analyzer_packed_ring_observe(&progress,
+		lane_last_hw_indices, lane_writer_seqs, hw_indices, 100U, 1000000U, 0U,
+		&plan, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_OK);
+	assert(produced == 10U);
+	assert(progress.writer_seq == 10U);
+	assert(skew == 6U);
+
+	hw_indices[0] = 9U;
+	hw_indices[1] = 3U;
+	assert(linkr_debugger_logic_analyzer_packed_ring_observe(&progress,
+		lane_last_hw_indices, lane_writer_seqs, hw_indices, 200U, 1000000U, 10U,
+		&plan, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_OK);
+	assert(progress.reader_seq == 10U);
+	assert(produced == 20U);
+	assert(progress.writer_seq == 30U);
+	assert(skew <= 20U);
+
+	hw_indices[0] = 19U;
+	hw_indices[1] = 4U;
+	assert(linkr_debugger_logic_analyzer_packed_ring_observe(&progress,
+		lane_last_hw_indices, lane_writer_seqs, hw_indices, 300U, 1000000U, 0U,
+		&plan, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_DEFINITE_OVERRUN);
+	assert(skew > 20U);
+}
+
+static void test_session_contract_trigger_gate_and_stop_policy(void)
+{
+	struct linkr_debugger_la_config config = single_plan_config(16U);
+	struct linkr_debugger_la_session_contract contract;
+
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_NONE;
+	assert(linkr_debugger_logic_analyzer_session_contract(&config, &contract) == 0);
+	assert(contract.trigger_gate == LINKR_DEBUGGER_LA_TRIGGER_NONE);
+	assert(contract.stop_policy == LINKR_DEBUGGER_LA_STOP_POLICY_BOUNDED);
+	assert(contract.post_samples == 16U);
+
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_RISING;
+	assert(linkr_debugger_logic_analyzer_session_contract(&config, &contract) == 0);
+	assert(contract.trigger_gate == LINKR_DEBUGGER_LA_TRIGGER_RISING);
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_FALLING;
+	assert(linkr_debugger_logic_analyzer_session_contract(&config, &contract) == 0);
+	assert(contract.trigger_gate == LINKR_DEBUGGER_LA_TRIGGER_FALLING);
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_EITHER;
+	assert(linkr_debugger_logic_analyzer_session_contract(&config, &contract) == 0);
+	assert(contract.trigger_gate == LINKR_DEBUGGER_LA_TRIGGER_EITHER);
+
+	config.post_samples = 0U;
+	assert(linkr_debugger_logic_analyzer_session_contract(&config, &contract) == 0);
+	assert(contract.stop_policy == LINKR_DEBUGGER_LA_STOP_POLICY_CONTINUOUS);
+	assert(strcmp(linkr_debugger_logic_analyzer_stop_reason_name(
+		LINKR_DEBUGGER_LA_STOP_REASON_HOST_STOP), "host_stop") == 0);
+	assert(strcmp(linkr_debugger_logic_analyzer_stop_reason_name(
+		LINKR_DEBUGGER_LA_STOP_REASON_DMA_ERROR), "dma_error") == 0);
+	assert(strcmp(linkr_debugger_logic_analyzer_stop_reason_name(
+		LINKR_DEBUGGER_LA_STOP_REASON_UNSUPPORTED), "unsupported") == 0);
+}
+
+static void test_hardware_plan_selector_normalizes_post512_and_post513(void)
+{
+	struct linkr_debugger_la_config config = single_plan_config(512U);
+	struct linkr_debugger_la_hardware_plan plan512;
+	struct linkr_debugger_la_hardware_plan plan513;
+
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false,
+		&plan512) == 0);
+	assert(plan512.supported);
+	assert(plan512.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED);
+	assert(plan512.pipeline_family == LINKR_DEBUGGER_LA_PIPELINE_FAMILY_COMMON_PACKED);
+	assert(plan512.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+	assert(plan512.bytes_per_sample == 1U);
+
+	config.post_samples = 513U;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false,
+		&plan513) == 0);
+	assert(plan513.supported);
+	assert(plan513.kind == plan512.kind);
+	assert(plan513.pipeline_family == plan512.pipeline_family);
+	assert(plan513.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+
+	config.post_samples = 0U;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false,
+		&plan513) == 0);
+	assert(plan513.supported);
+	assert(plan513.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED);
+	assert(plan513.pipeline_family == LINKR_DEBUGGER_LA_PIPELINE_FAMILY_COMMON_PACKED);
+	assert(plan513.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_RING_STREAM);
+
+	config = single_plan_config(512U);
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false,
+		&plan512) == 0);
+	assert(plan512.supported);
+	assert(plan512.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED);
+	assert(plan512.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+	config.post_samples = 513U;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false,
+		&plan513) == 0);
+	assert(plan513.supported);
+	assert(plan513.kind == plan512.kind);
+	assert(plan513.pipeline_family == plan512.pipeline_family);
+	assert(plan513.legacy_adapter == plan512.legacy_adapter);
+}
+
+static void test_hardware_plan_selector_capability_matrix(void)
+{
+	struct linkr_debugger_la_config config = fast8_plan_config(0U);
+	struct linkr_debugger_la_hardware_plan plan;
+
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false, &plan) == 0);
+	assert(plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED);
+	assert(plan.pipeline_family == LINKR_DEBUGGER_LA_PIPELINE_FAMILY_COMMON_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_RING_STREAM);
+	assert(strcmp(linkr_debugger_logic_analyzer_hardware_plan_name(plan.kind),
+		"fast8_packed") == 0);
+
+	config = wide11_exact_config();
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &plan) == 0);
+	assert(plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_WIDE11_SPLIT_PACKED);
+	assert(plan.pipeline_family == LINKR_DEBUGGER_LA_PIPELINE_FAMILY_COMMON_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+	assert(plan.bytes_per_sample == LINKR_DEBUGGER_LA_WIDE11_BURST_PACKED_SAMPLE_BYTES);
+	assert(strcmp(plan.reason, "supported") == 0);
+
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false, &plan) == 0);
+	assert(!plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_WIDE11_SPLIT_PACKED);
+	assert(plan.pipeline_family == LINKR_DEBUGGER_LA_PIPELINE_FAMILY_COMMON_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_NONE);
+	assert(strcmp(plan.reason, "config_v2_required") == 0);
+
+	config = wide11_exact_config();
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &plan) == 0);
+	assert(!plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_UNSUPPORTED);
+	assert(plan.unsupported_reason == LINKR_DEBUGGER_LA_STOP_REASON_UNSUPPORTED);
+	assert(strcmp(plan.reason, "unsupported_pin_plan") == 0);
+
+	config = single_plan_config((uint32_t)UINT16_MAX + 1U);
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false, &plan) == 0);
+	assert(!plan.supported);
+	assert(strcmp(plan.reason, "config_v2_required") == 0);
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &plan) == 0);
+	assert(plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+	assert(strcmp(plan.reason, "supported") == 0);
+
+	config = single_plan_config((uint32_t)UINT16_MAX + 1U);
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false, &plan) == 0);
+	assert(!plan.supported);
+	assert(strcmp(plan.reason, "config_v2_required") == 0);
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &plan) == 0);
+	assert(plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+	assert(strcmp(plan.reason, "supported") == 0);
+}
+
+static void test_packed_burst_nominal_rate_routing_regressions(void)
+{
+	struct linkr_debugger_la_config config;
+	struct linkr_debugger_la_hardware_plan plan;
+
+	config = single_plan_config(LINKR_DEBUGGER_LA_PACKED_BURST_MAX_SAMPLES);
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_RATE_HZ;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &plan) == 0);
+	assert(plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &plan) == 0);
+	assert(plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ - 1U;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &plan) == 0);
+	assert(plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+	assert(strcmp(plan.reason, "supported") == 0);
+
+	config = fast8_plan_config(LINKR_DEBUGGER_LA_PACKED_BURST_MAX_SAMPLES);
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_RATE_HZ;
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_NONE;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &plan) == 0);
+	assert(plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &plan) == 0);
+	assert(plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ - 1U;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &plan) == 0);
+	assert(plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+	assert(strcmp(plan.reason, "supported") == 0);
+
+	config = wide11_exact_config();
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &plan) == 0);
+	assert(plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_WIDE11_SPLIT_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+	assert(strcmp(plan.reason, "supported") == 0);
+
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &plan) == 0);
+	assert(!plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_UNSUPPORTED);
+	assert(plan.unsupported_reason == LINKR_DEBUGGER_LA_STOP_REASON_UNSUPPORTED);
+	assert(strcmp(plan.reason, "unsupported_pin_plan") == 0);
+
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ - 1U;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &plan) == 0);
+	assert(!plan.supported);
+	assert(plan.legacy_adapter != LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+	assert(strcmp(plan.reason, "unsupported_pin_plan") == 0);
+}
+
+static void test_packed_burst_requested_rate_cap_allows_quantized_125mhz(void)
+{
+	struct linkr_debugger_la_config config;
+	struct linkr_debugger_la_hardware_plan hardware_plan;
+	struct linkr_debugger_la_packed_burst_plan burst_plan;
+
+	config = single_plan_config(513U);
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ;
+	assert(linkr_debugger_logic_analyzer_packed_burst_plan(&config, &burst_plan) == 0);
+	assert(burst_plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED);
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &hardware_plan) == 0);
+	assert(hardware_plan.supported);
+	assert(hardware_plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED);
+
+	config = fast8_plan_config(513U);
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ;
+	assert(linkr_debugger_logic_analyzer_packed_burst_plan(&config, &burst_plan) == 0);
+	assert(burst_plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED);
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, true, &hardware_plan) == 0);
+	assert(hardware_plan.supported);
+	assert(hardware_plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED);
+}
+
+static void test_packed_physical_plan_rate_policy_prefers_requested_limit(void)
+{
+	assert(linkr_debugger_logic_analyzer_packed_rate_limit_supported(
+		125000000U, 125081000U, 125000000U));
+	assert(!linkr_debugger_logic_analyzer_packed_rate_limit_supported(
+		125000001U, 125081000U, 125000000U));
+	assert(!linkr_debugger_logic_analyzer_packed_rate_limit_supported(
+		125000000U, 0U, 125000000U));
+	assert(!linkr_debugger_logic_analyzer_packed_rate_limit_supported(
+		125000000U, 100000000U, 100000000U));
+}
+
+static void test_hardware_plan_selector_rejects_removed_raw32_shapes(void)
+{
+	struct linkr_debugger_la_config config;
+	struct linkr_debugger_la_hardware_plan plan;
+
+	config = wide11_exact_config();
+	config.post_samples = 0U;
+	config.sample_rate_hz = 25000000U;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false, &plan) == 0);
+	assert(plan.supported);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_WIDE11_SPLIT_PACKED);
+	assert(plan.pipeline_family == LINKR_DEBUGGER_LA_PIPELINE_FAMILY_COMMON_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_RING_STREAM);
+	assert(strcmp(plan.reason, "supported") == 0);
+
+	config = single_plan_config(65535U);
+	config.pin_base = 7U;
+	config.pin_count = 3U;
+	config.selected_pins[0] = 7U;
+	config.selected_pins[1] = 10U;
+	config.selected_pins[2] = 20U;
+	config.selected_pin_count = 3U;
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_EITHER;
+	config.trigger_pin = 2U;
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&config, false, &plan) == 0);
+	assert(!plan.supported);
+	assert(strcmp(plan.reason, "unsupported_pin_plan") == 0);
+}
+
+static void test_packed_burst_prepare_rejects_ordinary_stream_routing(void)
+{
+	struct sink_test_context ctx;
+	struct linkr_debugger_la_stream_sink sink;
+	struct linkr_debugger_la_config config = single_plan_config(0U);
+	struct linkr_debugger_la_start_prepare prepare;
+
+	memset(&ctx, 0, sizeof(ctx));
+	memset(&prepare, 0, sizeof(prepare));
+	ctx.capacity = sizeof(ctx.storage);
+	sink = sink_for_context(&ctx);
+	config.sample_rate_hz = LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ;
+	assert(linkr_debugger_logic_analyzer_prepare_stream_start_sink(&config, false,
+		&sink, &prepare) == -EINVAL);
+
+	memset(&prepare, 0, sizeof(prepare));
+	assert(linkr_debugger_logic_analyzer_prepare_wide11_burst_start_sink(&config,
+		NULL, NULL, &prepare) == 0);
+	assert(prepare.hardware_prepared);
+	assert(prepare.plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+	assert(linkr_debugger_logic_analyzer_start_prepare_cancel(&prepare) == 0);
+
+	config = single_plan_config(513U);
+	config.sample_rate_hz = 1000000U;
+	memset(&prepare, 0, sizeof(prepare));
+	assert(linkr_debugger_logic_analyzer_prepare_stream_start_sink(&config, false,
+		&sink, &prepare) == -EINVAL);
+}
+
+static void test_wide11_burst_start_prepare_ordering_and_cleanup(void)
+{
+	struct linkr_debugger_la_config config = wide11_exact_config();
+	struct linkr_debugger_la_start_prepare prepare;
+	struct linkr_debugger_la_start_prepare second;
+	uint32_t first_generation;
+
+	memset(&prepare, 0, sizeof(prepare));
+	memset(&second, 0, sizeof(second));
+	assert(linkr_debugger_logic_analyzer_prepare_wide11_burst_start(
+		&config, &prepare) == 0);
+	assert(prepare.generation != 0U);
+	assert(prepare.state == LINKR_DEBUGGER_LA_START_PREPARE_READY);
+	assert(prepare.requested_sample_rate_hz ==
+		LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_RATE_HZ);
+	assert(prepare.actual_sample_rate_hz ==
+		LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_RATE_HZ);
+	assert(prepare.sample_period_ps == 10000ULL);
+	assert(strcmp(prepare.backend, linkr_debugger_logic_analyzer_backend()) == 0);
+	first_generation = prepare.generation;
+
+	assert(linkr_debugger_logic_analyzer_prepare_wide11_burst_start(
+		&config, &second) == -EBUSY);
+	assert(linkr_debugger_logic_analyzer_start_prepare_go(&prepare) == -EPROTO);
+	assert(linkr_debugger_logic_analyzer_start_prepare_mark_armed_event_sent(
+		&prepare) == -EPROTO);
+	assert(prepare.state == LINKR_DEBUGGER_LA_START_PREPARE_READY);
+
+	assert(linkr_debugger_logic_analyzer_start_prepare_mark_response_sent(
+		&prepare) == 0);
+	assert(prepare.state == LINKR_DEBUGGER_LA_START_PREPARE_RESPONSE_SENT);
+	assert(linkr_debugger_logic_analyzer_start_prepare_mark_response_sent(
+		&prepare) == -EPROTO);
+	assert(linkr_debugger_logic_analyzer_start_prepare_go(&prepare) == -ENOTSUP);
+	assert(prepare.state == LINKR_DEBUGGER_LA_START_PREPARE_GO_FAILED);
+	assert(linkr_debugger_logic_analyzer_start_prepare_go(&prepare) == -EALREADY);
+
+	memset(&second, 0, sizeof(second));
+	assert(linkr_debugger_logic_analyzer_prepare_wide11_burst_start(
+		&config, &second) == 0);
+	assert(second.generation != first_generation);
+	assert(linkr_debugger_logic_analyzer_start_prepare_cancel(&second) == 0);
+	assert(second.state == LINKR_DEBUGGER_LA_START_PREPARE_CANCELLED);
+	assert(linkr_debugger_logic_analyzer_start_prepare_cancel(&second) == 0);
+}
+
+static void test_wide11_burst_triggered_start_prepare_requires_armed_event_mark(void)
+{
+	struct linkr_debugger_la_config config = wide11_exact_config();
+	struct linkr_debugger_la_start_prepare prepare;
+
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_RISING;
+	config.trigger_pin = 11U;
+	memset(&prepare, 0, sizeof(prepare));
+	assert(linkr_debugger_logic_analyzer_prepare_wide11_burst_start(
+		&config, &prepare) == 0);
+	assert(linkr_debugger_logic_analyzer_start_prepare_mark_response_sent(
+		&prepare) == 0);
+	assert(linkr_debugger_logic_analyzer_start_prepare_go(&prepare) == -EPROTO);
+	assert(linkr_debugger_logic_analyzer_start_prepare_mark_armed_event_sent(
+		&prepare) == 0);
+	assert(prepare.state == LINKR_DEBUGGER_LA_START_PREPARE_ARMED_EVENT_SENT);
+	assert(linkr_debugger_logic_analyzer_start_prepare_go(&prepare) == -ENOTSUP);
+	assert(prepare.state == LINKR_DEBUGGER_LA_START_PREPARE_GO_FAILED);
+}
+
+static void test_wide11_burst_start_prepare_rejects_invalid_and_stale_tokens(void)
+{
+	struct linkr_debugger_la_config config = wide11_exact_config();
+	struct linkr_debugger_la_start_prepare prepare;
+	struct linkr_debugger_la_start_prepare stale;
+
+	memset(&prepare, 0, sizeof(prepare));
+	assert(linkr_debugger_logic_analyzer_prepare_wide11_burst_start(
+		NULL, &prepare) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_prepare_wide11_burst_start(
+		&config, NULL) == -EINVAL);
+	config.post_samples = LINKR_DEBUGGER_LA_PACKED_BURST_MAX_SAMPLES + 1U;
+	assert(linkr_debugger_logic_analyzer_prepare_wide11_burst_start(
+		&config, &prepare) == -EINVAL);
+
+	config = wide11_exact_config();
+	assert(linkr_debugger_logic_analyzer_prepare_wide11_burst_start(
+		&config, &prepare) == 0);
+	stale = prepare;
+	stale.generation++;
+	assert(linkr_debugger_logic_analyzer_start_prepare_mark_response_sent(
+		&stale) == -ESTALE);
+	stale = prepare;
+	stale.state = LINKR_DEBUGGER_LA_START_PREPARE_RESPONSE_SENT;
+	assert(linkr_debugger_logic_analyzer_start_prepare_mark_armed_event_sent(
+		&stale) == -ESTALE);
+	assert(linkr_debugger_logic_analyzer_start_prepare_cancel(&prepare) == 0);
+
+	assert(linkr_debugger_logic_analyzer_prepare_wide11_burst_start(
+		&config, &prepare) == 0);
+	assert(linkr_debugger_logic_analyzer_cancel() == 0);
+	assert(linkr_debugger_logic_analyzer_start_prepare_mark_response_sent(
+		&prepare) == -EINVAL);
+	memset(&prepare, 0, sizeof(prepare));
+	assert(linkr_debugger_logic_analyzer_start_prepare_cancel(&prepare) == -EINVAL);
+}
+
+static void test_stream_start_prepare_sets_hardware_barrier_before_response(void)
+{
+	struct sink_test_context ctx;
+	struct linkr_debugger_la_stream_sink sink;
+	struct linkr_debugger_la_config config = fast8_plan_config(0U);
+	struct linkr_debugger_la_start_prepare prepare;
+	struct linkr_debugger_la_start_prepare second;
+
+	memset(&ctx, 0, sizeof(ctx));
+	memset(&prepare, 0, sizeof(prepare));
+	memset(&second, 0, sizeof(second));
+	ctx.capacity = sizeof(ctx.storage);
+	sink = sink_for_context(&ctx);
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_NONE;
+	config.trigger_pin = 0U;
+	assert(linkr_debugger_logic_analyzer_prepare_stream_start_sink(&config, false,
+		&sink, &prepare) == 0);
+	assert(prepare.state == LINKR_DEBUGGER_LA_START_PREPARE_READY);
+	assert(prepare.sink_bound);
+	assert(prepare.hardware_prepared);
+	assert(prepare.plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_RING_STREAM);
+	assert(linkr_debugger_logic_analyzer_prepare_stream_start_sink(&config, false,
+		&sink, &second) == -EBUSY);
+	assert(linkr_debugger_logic_analyzer_start_prepare_go(&prepare) == -EPROTO);
+	assert(prepare.state == LINKR_DEBUGGER_LA_START_PREPARE_READY);
+	assert(linkr_debugger_logic_analyzer_start_prepare_mark_response_sent(
+		&prepare) == 0);
+	assert(linkr_debugger_logic_analyzer_start_prepare_go(&prepare) == 0);
+
+	memset(&second, 0, sizeof(second));
+	assert(linkr_debugger_logic_analyzer_prepare_stream_start_sink(&config, false,
+		&sink, &second) == 0);
+	assert(second.hardware_prepared);
+	assert(linkr_debugger_logic_analyzer_start_prepare_cancel(&second) == 0);
+	assert(second.state == LINKR_DEBUGGER_LA_START_PREPARE_CANCELLED);
+	memset(&second, 0, sizeof(second));
+	assert(linkr_debugger_logic_analyzer_prepare_stream_start_sink(&config, false,
+		&sink, &second) == 0);
+	assert(linkr_debugger_logic_analyzer_start_prepare_cancel(&second) == 0);
+}
+
+static void test_stream_start_prepare_triggered_requires_armed_marker(void)
+{
+	struct sink_test_context ctx;
+	struct linkr_debugger_la_stream_sink sink;
+	struct linkr_debugger_la_config config = fast8_plan_config(0U);
+	struct linkr_debugger_la_start_prepare prepare;
+
+	memset(&ctx, 0, sizeof(ctx));
+	memset(&prepare, 0, sizeof(prepare));
+	ctx.capacity = sizeof(ctx.storage);
+	sink = sink_for_context(&ctx);
+	assert(linkr_debugger_logic_analyzer_prepare_stream_start_sink(&config, false,
+		&sink, &prepare) == 0);
+	assert(prepare.hardware_prepared);
+	assert(linkr_debugger_logic_analyzer_start_prepare_mark_response_sent(
+		&prepare) == 0);
+	assert(linkr_debugger_logic_analyzer_start_prepare_go(&prepare) == -EPROTO);
+	assert(linkr_debugger_logic_analyzer_start_prepare_mark_armed_event_sent(
+		&prepare) == 0);
+	assert(linkr_debugger_logic_analyzer_start_prepare_go(&prepare) == 0);
 }
 
 static void test_effective_trigger_helper(void)
@@ -1038,6 +2508,285 @@ static void test_capture_program_shapes_and_errors(void)
 		false, 0U, instructions, 1U, NULL) == -EINVAL);
 }
 
+static void test_wide11_burst_program_builders(void)
+{
+	struct linkr_debugger_la_pio_program_layout layout;
+	uint16_t instructions[2] = {0xaaaaU, 0xbbbbU};
+
+	memset(&layout, 0xff, sizeof(layout));
+	assert(linkr_debugger_logic_analyzer_build_wide11_sm_a_program(
+		31U, instructions, 1U, &layout) == 0);
+	assert(instructions[0] == 0x4008U);
+	assert(instructions[1] == 0xbbbbU);
+	assert(layout.length == 1U);
+	assert(layout.wrap_target == 0U);
+	assert(layout.wrap == 0U);
+
+	memset(&layout, 0xff, sizeof(layout));
+	instructions[0] = 0xaaaaU;
+	instructions[1] = 0xbbbbU;
+	assert(linkr_debugger_logic_analyzer_build_wide11_sm_b_program(
+		31U, instructions, 1U, &layout) == 0);
+	assert(instructions[0] == 0x4003U);
+	assert(instructions[1] == 0xbbbbU);
+	assert(layout.length == 1U);
+	assert(layout.wrap_target == 0U);
+	assert(layout.wrap == 0U);
+
+	assert(linkr_debugger_logic_analyzer_build_wide11_sm_a_program(
+		32U, instructions, 1U, &layout) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_build_wide11_sm_b_program(
+		32U, instructions, 1U, &layout) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_build_wide11_sm_a_program(
+		0U, instructions, 0U, &layout) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_build_wide11_sm_b_program(
+		0U, instructions, 0U, &layout) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_build_wide11_sm_a_program(
+		0U, NULL, 1U, &layout) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_build_wide11_sm_b_program(
+		0U, instructions, 1U, NULL) == -EINVAL);
+}
+
+static void test_wide11_burst_decode_model_patterns(void)
+{
+	uint32_t sm_a_words[16];
+	uint32_t sm_b_words[4];
+	uint16_t decoded[42];
+	uint16_t expected[40];
+
+	memset(sm_a_words, 0, sizeof(sm_a_words));
+	memset(sm_b_words, 0, sizeof(sm_b_words));
+	memset(expected, 0, sizeof(expected));
+	for (size_t i = 0U; i < sizeof(decoded) / sizeof(decoded[0]); i++) {
+		decoded[i] = 0xa55aU;
+	}
+
+	expected[0] = 0x0000U;
+	expected[1] = LINKR_DEBUGGER_LA_WIDE11_BURST_SAMPLE_MASK;
+	for (uint8_t bit = 0U; bit < 11U; bit++) {
+		expected[2U + bit] = (uint16_t)BIT(bit);
+	}
+	expected[14] = 0x0555U;
+	expected[15] = 0x02aaU;
+	expected[16] = 0x0163U;
+	expected[17] = 0x069cU;
+	expected[39] = 0x0001U;
+
+	for (uint32_t i = 0U; i < 40U; i++) {
+		wide11_model_store(sm_a_words, sm_b_words, i, expected[i]);
+	}
+
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst(
+		sm_a_words, 10U, sm_b_words, 4U, &decoded[1], 40U) == 0);
+	assert(decoded[0] == 0xa55aU);
+	assert(decoded[41] == 0xa55aU);
+	for (uint32_t i = 0U; i < 40U; i++) {
+		assert(decoded[1U + i] == expected[i]);
+	}
+}
+
+static void test_wide11_burst_decode_target_boundaries(void)
+{
+	struct linkr_debugger_la_wide11_burst_plan plan;
+	uint32_t *sm_a_words;
+	uint32_t *sm_b_words;
+	uint16_t *decoded;
+
+	assert(linkr_debugger_logic_analyzer_wide11_burst_plan(
+		LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES, &plan) == 0);
+	sm_a_words = calloc(plan.lane_a_word_count, sizeof(sm_a_words[0]));
+	sm_b_words = calloc(plan.lane_b_word_count, sizeof(sm_b_words[0]));
+	decoded = malloc(((size_t)plan.sample_count + 2U) * sizeof(decoded[0]));
+	assert(sm_a_words != NULL);
+	assert(sm_b_words != NULL);
+	assert(decoded != NULL);
+
+	for (uint32_t i = 0U; i < plan.sample_count + 2U; i++) {
+		decoded[i] = 0xa55aU;
+	}
+
+	wide11_model_store(sm_a_words, sm_b_words, 0U, wide11_target_expected_sample(0U));
+	wide11_model_store(sm_a_words, sm_b_words, 1U, wide11_target_expected_sample(1U));
+	wide11_model_store(sm_a_words, sm_b_words, 2U, wide11_target_expected_sample(2U));
+	wide11_model_store(sm_a_words, sm_b_words, 31U, wide11_target_expected_sample(31U));
+	wide11_model_store(sm_a_words, sm_b_words, 32U, wide11_target_expected_sample(32U));
+	wide11_model_store(sm_a_words, sm_b_words, 33U, wide11_target_expected_sample(33U));
+	wide11_model_store(sm_a_words, sm_b_words, 99998U,
+		wide11_target_expected_sample(99998U));
+	wide11_model_store(sm_a_words, sm_b_words, 99999U,
+		wide11_target_expected_sample(99999U));
+
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst(
+		sm_a_words, plan.lane_a_word_count, sm_b_words, plan.lane_b_word_count,
+		&decoded[1], plan.sample_count) == 0);
+	assert(decoded[0] == 0xa55aU);
+	assert(decoded[plan.sample_count + 1U] == 0xa55aU);
+	for (uint32_t i = 0U; i < plan.sample_count; i++) {
+		assert(decoded[1U + i] == wide11_target_expected_sample(i));
+	}
+
+	free(sm_a_words);
+	free(sm_b_words);
+	free(decoded);
+}
+
+static void test_wide11_burst_decode_rejects_invalid_sizes_without_writes(void)
+{
+	uint32_t sm_a_words[16];
+	uint32_t sm_b_words[4];
+	uint16_t decoded[42];
+
+	memset(sm_a_words, 0, sizeof(sm_a_words));
+	memset(sm_b_words, 0, sizeof(sm_b_words));
+	for (size_t i = 0U; i < sizeof(decoded) / sizeof(decoded[0]); i++) {
+		decoded[i] = 0xa55aU;
+	}
+
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst(
+		sm_a_words, 10U, sm_b_words, 4U, &decoded[1], 0U) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst(
+		sm_a_words, 10U, sm_b_words, 4U, &decoded[1], 31U) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst(
+		sm_a_words, 9U, sm_b_words, 4U, &decoded[1], 40U) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst(
+		sm_a_words, 10U, sm_b_words, 3U, &decoded[1], 40U) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst(
+		NULL, 10U, sm_b_words, 4U, &decoded[1], 40U) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst(
+		sm_a_words, 10U, NULL, 4U, &decoded[1], 40U) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst(
+		sm_a_words, 10U, sm_b_words, 4U, NULL, 40U) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst(
+		sm_a_words, 0U, sm_b_words, 0U, &decoded[1], 0x80000000U) == -EINVAL);
+	assert_u16_span_filled(decoded, sizeof(decoded) / sizeof(decoded[0]), 0xa55aU);
+}
+
+static void test_wide11_burst_decode_span_outputs_packed_le_slices(void)
+{
+	uint32_t sm_a_words[32];
+	uint32_t sm_b_words[8];
+	uint8_t packed[12];
+	const uint16_t expected[] = { 0x0555U, 0x02aaU, 0x0163U, 0x069cU };
+
+	memset(sm_a_words, 0, sizeof(sm_a_words));
+	memset(sm_b_words, 0, sizeof(sm_b_words));
+	memset(packed, 0xa5, sizeof(packed));
+
+	for (uint32_t i = 0U; i < 80U; i++) {
+		wide11_model_store(sm_a_words, sm_b_words, i, (uint16_t)(i & 0x07ffU));
+	}
+	for (uint32_t i = 0U; i < sizeof(expected) / sizeof(expected[0]); i++) {
+		wide11_model_store(sm_a_words, sm_b_words, 14U + i, expected[i]);
+	}
+
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst_span(
+		sm_a_words, 20U, sm_b_words, 8U, 80U, 14U, &packed[2], 8U, 4U) == 0);
+	assert(packed[0] == 0xa5U);
+	assert(packed[1] == 0xa5U);
+	assert(packed[10] == 0xa5U);
+	assert(packed[11] == 0xa5U);
+	for (uint32_t i = 0U; i < 4U; i++) {
+		assert(packed[2U + (i * 2U)] == (uint8_t)(expected[i] & 0xffU));
+		assert(packed[3U + (i * 2U)] == (uint8_t)((expected[i] >> 8) & 0xffU));
+	}
+}
+
+static void test_wide11_burst_decode_span_rejects_bad_ranges_without_writes(void)
+{
+	uint32_t sm_a_words[16];
+	uint32_t sm_b_words[4];
+	uint8_t packed[8];
+
+	memset(sm_a_words, 0, sizeof(sm_a_words));
+	memset(sm_b_words, 0, sizeof(sm_b_words));
+	memset(packed, 0xa5, sizeof(packed));
+
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst_span(
+		sm_a_words, 10U, sm_b_words, 4U, 40U, 0U, &packed[0], 8U, 0U) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst_span(
+		sm_a_words, 10U, sm_b_words, 4U, 40U, 37U, &packed[0], 8U, 4U) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst_span(
+		sm_a_words, 10U, sm_b_words, 4U, 40U, 0U, &packed[0], 7U, 4U) == -EMSGSIZE);
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst_span(
+		sm_a_words, 9U, sm_b_words, 4U, 40U, 0U, &packed[0], 8U, 4U) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst_span(
+		NULL, 10U, sm_b_words, 4U, 40U, 0U, &packed[0], 8U, 4U) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst_span(
+		sm_a_words, 10U, NULL, 4U, 40U, 0U, &packed[0], 8U, 4U) == -EINVAL);
+	assert(linkr_debugger_logic_analyzer_decode_wide11_burst_span(
+		sm_a_words, 10U, sm_b_words, 4U, 40U, 0U, NULL, 8U, 4U) == -EINVAL);
+	assert_u16_span_filled((const uint16_t *)packed, sizeof(packed) / sizeof(uint16_t), 0xa5a5U);
+}
+
+static void test_wide11_burst_completion_mask_generation_model(void)
+{
+	bool complete = true;
+	uint8_t mask = 0U;
+
+	mask = linkr_debugger_logic_analyzer_wide11_burst_completion_mask_update(
+		7U, 6U, mask, 1U, &complete);
+	assert(mask == 0U);
+	assert(!complete);
+	mask = linkr_debugger_logic_analyzer_wide11_burst_completion_mask_update(
+		7U, 7U, mask, 1U, &complete);
+	assert(mask == 1U);
+	assert(!complete);
+	mask = linkr_debugger_logic_analyzer_wide11_burst_completion_mask_update(
+		7U, 8U, mask, 2U, &complete);
+	assert(mask == 1U);
+	assert(!complete);
+	mask = linkr_debugger_logic_analyzer_wide11_burst_completion_mask_update(
+		7U, 7U, mask, 2U, &complete);
+	assert(mask == 3U);
+	assert(complete);
+	mask = linkr_debugger_logic_analyzer_wide11_burst_completion_mask_update(
+		7U, 7U, mask, 4U, &complete);
+	assert(mask == 3U);
+	assert(!complete);
+}
+
+static void test_wide11_burst_100000_chunk_accounting(void)
+{
+	uint32_t emitted = 0U;
+	uint32_t chunks = 0U;
+	uint32_t sequence = 0U;
+
+	while (emitted < LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES) {
+		uint32_t chunk = LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES - emitted;
+
+		if (chunk > 1024U) {
+			chunk = 1024U;
+		}
+		assert(chunk > 0U);
+		assert(chunk <= 1024U);
+		assert(sequence == chunks);
+		emitted += chunk;
+		chunks++;
+		sequence++;
+	}
+	assert(emitted == LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES);
+	assert(chunks == 98U);
+}
+
+static void test_wide11_burst_triggered_configured_pin_count_stays_11(void)
+{
+	struct linkr_debugger_la_config config = wide11_exact_config();
+
+	assert(linkr_debugger_logic_analyzer_wide11_burst_configured_pin_count_model(
+		&config) == 11U);
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_RISING;
+	config.trigger_pin = 10U;
+	assert(linkr_debugger_logic_analyzer_wide11_burst_configured_pin_count_model(
+		&config) == 11U);
+	config.trigger = LINKR_DEBUGGER_LA_TRIGGER_EITHER;
+	config.trigger_pin = 0U;
+	assert(linkr_debugger_logic_analyzer_wide11_burst_configured_pin_count_model(
+		&config) == 11U);
+	config.selected_pin_count = 10U;
+	assert(linkr_debugger_logic_analyzer_wide11_burst_configured_pin_count_model(
+		&config) == 0U);
+}
+
 static void test_capture_snapshot_copy_contract(void)
 {
 	struct linkr_debugger_la_capture capture;
@@ -1080,8 +2829,10 @@ static void test_capture_snapshot_copy_contract(void)
 
 int main(void)
 {
+	assert(linkr_debugger_logic_analyzer_init() == 0);
 	test_rate_quantization();
-	test_dma_block_size();
+	test_sample_capacity_and_ring_constants();
+	test_wide11_burst_plan_counts_and_overflow();
 	test_ring_delta_wraps_without_equal_addr_assumption();
 	test_ring_elapsed_window_possible_overrun();
 	test_ring_sequence_definite_overrun();
@@ -1091,6 +2842,9 @@ int main(void)
 	test_ring_observe_definite_overrun();
 	test_ring_next_emit_count_gates_partial_tails();
 	test_ring_drainable_samples_batches_complete_chunks();
+	test_ring_freeze_before_overwrite_retains_tail_window();
+	test_ring_terminal_emit_count_drains_partial_tail_only_when_terminal();
+	test_ring_freeze_policy_stops_required_stream_hardware();
 	test_ring_metrics_track_time_maxima_without_resetting_lower_values();
 	test_ring_consume_metrics_track_max_totals_and_count();
 	test_ring_consumer_latency_and_handoff_metrics();
@@ -1104,18 +2858,55 @@ int main(void)
 	test_stream_sink_stale_generation_aborts_without_reader_advance();
 	test_stream_sink_commit_failure_aborts_after_reader_advance();
 	test_stream_sink_commit_positive_return_requests_handoff();
-	test_stream_sink_single_packed_output_wraps_raw_ring();
+	test_stream_sink_single_packed_output_wraps_packed_ring_words();
 	test_stream_sink_single_fast_path_matches_generic_patterns();
 	test_stream_sink_single_fast_path_span_boundaries_match_generic();
+	test_stream_sink_wrap_batch_matches_decode_span_single_byte();
+	test_stream_sink_wrap_batch_matches_decode_span_two_bytes();
 	test_stream_sink_single_fast_path_default_selection_matches_generic();
 	test_stream_sink_single_fast_path_rejects_invalid_offsets();
 	test_stream_sink_helpers_do_not_change_callback_protocol_gate();
 	test_validation();
 	test_stream_validation_allows_unlimited_and_uint16_bounded();
+	test_bounded_pre_trigger_uses_prepared_packed_ring();
+	test_bounded_pre_trigger_rejects_unsupported_contract_shapes();
+	test_bounded_pre_trigger_window_preserves_index_and_wraps();
+	test_bounded_pre_trigger_plan_feasibility();
+	test_bounded_pre_trigger_scan_guards();
 	test_compression();
-	test_finite_stream_helpers();
+	test_stream_irq_clear_helper();
+	test_wide11_burst_exact_eligibility_is_strict();
+	test_session_contract_trigger_gate_and_stop_policy();
+	test_packed_burst_plan_sizing_and_continuous_capacity();
+	test_packed_burst_decode_selected_pin_compaction();
+	test_packed_ring_plan_sizing_and_chunk_limits();
+	test_packed_ring_pre_trigger_word_scan();
+	test_packed_ring_decode_wrap_and_sparse_selection();
+	test_packed_ring_decode_keeps_wide11_sequence_above_u32();
+	test_packed_ring_observe_dual_lane_min_seq_and_skew();
+	test_hardware_plan_selector_normalizes_post512_and_post513();
+	test_hardware_plan_selector_capability_matrix();
+	test_packed_burst_nominal_rate_routing_regressions();
+	test_packed_burst_requested_rate_cap_allows_quantized_125mhz();
+	test_packed_physical_plan_rate_policy_prefers_requested_limit();
+	test_hardware_plan_selector_rejects_removed_raw32_shapes();
+	test_packed_burst_prepare_rejects_ordinary_stream_routing();
+	test_wide11_burst_start_prepare_ordering_and_cleanup();
+	test_wide11_burst_triggered_start_prepare_requires_armed_event_mark();
+	test_wide11_burst_start_prepare_rejects_invalid_and_stale_tokens();
+	test_stream_start_prepare_sets_hardware_barrier_before_response();
+	test_stream_start_prepare_triggered_requires_armed_marker();
 	test_effective_trigger_helper();
 	test_capture_program_shapes_and_errors();
+	test_wide11_burst_program_builders();
+	test_wide11_burst_decode_model_patterns();
+	test_wide11_burst_decode_target_boundaries();
+	test_wide11_burst_decode_rejects_invalid_sizes_without_writes();
+	test_wide11_burst_decode_span_outputs_packed_le_slices();
+	test_wide11_burst_decode_span_rejects_bad_ranges_without_writes();
+	test_wide11_burst_completion_mask_generation_model();
+	test_wide11_burst_100000_chunk_accounting();
+	test_wide11_burst_triggered_configured_pin_count_stays_11();
 	test_capture_snapshot_copy_contract();
 	return 0;
 }

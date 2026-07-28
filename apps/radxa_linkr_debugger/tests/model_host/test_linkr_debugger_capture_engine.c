@@ -113,7 +113,7 @@ static void test_marked_window_export_off_by_one_and_u16(void)
 
 	memset(out, 0, sizeof(out));
 	assert(linkr_debugger_capture_engine_export_marked_window(out, sizeof(out),
-		ring, 8U, 5U, 1U, 3U, 2U, 0x0fffU, &sample_bytes) == 0);
+		ring, 8U, 5U, 1U, 3U, 2U, 0x07ffU, &sample_bytes) == 0);
 	assert(sample_bytes == 8U);
 	assert(out[0] == 0x04U);
 	assert(out[1] == 0x01U);
@@ -225,7 +225,7 @@ static void test_logic_session_stop_disconnect_and_overrun(void)
 	config.session_id = 12U;
 	config.ring_samples = 4U;
 	config.bytes_per_sample = 2U;
-	config.backend = "host-wide12";
+	config.backend = "host-wide11";
 	assert(linkr_debugger_logic_session_start(&config) == 0);
 	assert(linkr_debugger_logic_session_disconnect(
 		LINKR_DEBUGGER_LOGIC_SESSION_OWNER_BEAGLELOGIC, 12U) == 0);
