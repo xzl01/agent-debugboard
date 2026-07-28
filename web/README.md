@@ -99,19 +99,63 @@ frames remain on this binary WebSocket session.
 
 Bounded **Arm** captures use the firmware sigrok session with requested sample
 rates from 100,000 through 125,000,000 Hz (100kHz-125MHz) and a post-trigger
-sample count from `1` through `65535` (`uint16`). Pre-trigger capture is
-intentionally not exposed in the Web UI; Web requests always send `pre_samples=0`
-explicitly. Bounded pre=0 and post=1..512 use exact finite PIO+DMA: trigger NONE
-is ungated immediate, rising/falling are hardware IRQ-gated, EITHER snapshots the
-current pin level in firmware then waits for the opposite edge (arm-time race
-exists). Post>512 bounded and continuous Stream (post=0) use ring streaming.
-Validated Web results: WS SINGLE rising/falling post=512 at 5, 25, 50, 100 MHz;
-WS SINGLE EITHER post=512 at 5 and 100 MHz.
+sample count from `1` through `65535` (`uint16`). Web UI bounded pre-trigger
+supports `rising`, `falling`, and `either` only. The contract is
+`pre_samples >= 1`, `post_samples >= 1`, and `pre_samples + post_samples <= 512`.
+Requested rates are 1-25 MHz, and the selected physical plan must retain at
+least `2 * ceil(actual_rate / 1000)` samples. SINGLE supports through 25 MHz,
+FAST8 through 10 MHz and rejects 25 MHz, and WIDE11 through 5 MHz and rejects
+10 MHz and 25 MHz. Before first connection, the UI permits local editing when
+generic constraints pass, then uses real per-mode CAPS and rejects or disables
+old firmware or a selected mode without mode flag bit 5 (`PRE_TRIGGER`, `1 << 5`).
+HELLO server flags bit 0 (`CONFIG_V2`) and bit 1 (`GENERIC_PACKED_BURST`) are
+separate capabilities. Completion is `pre_samples + post_samples`, with
+`triggerIndex` equal to `pre_samples`. Stream still forces pre and post to zero;
+trigger NONE, unsupported or high-rate generic packed burst, and ordinary deep
+capture remain pre=0. See the [dated HIL report](../doc/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md).
 
-Continuous **Stream** mode also uses the sigrok live session and currently
-supports 1-25 MHz in the browser. Stream requests send `post_samples=0` and run
-until stopped by the user. Web Sigrok pin selection is limited to `GP10-GP20`
-plus `GP29`; `GP7-GP9` are shown but disabled on this browser path.
+Firmware reuses the prepared common packed ring/sink lifecycle. After prefill,
+packed samples are the sole trigger authority, edge detection is performed in
+software, and the exact `[T-pre, T+post)` window is frozen and drained. No new
+IRQ pairing or buffer is introduced. The existing deep post behavior remains
+when pre=0. At negotiated high rates with GENERIC_PACKED_BURST, post=0 uses
+packed burst (exactly 100000 samples, then auto-STOP/drain); at lower non-packed
+rates post=0 runs until the user stops.
+HELLO server_flags bit 0 advertises CONFIG_V2 and bit 1 advertises GENERIC_PACKED_BURST;
+the Web UI uses frame0x0b (CONFIG_V2_REQ, 16B) for bounded post above 65535.
+With both flags, bounded pre=0 and post=65536..100000 uses the same common
+packed pipeline at every otherwise supported rate and pin plan. WIDE11 at
+requested 125 MHz remains invalid. The 100/125 MHz FAST8 and 100 MHz WIDE11
+matrix applies specifically to high-rate post=0 auto-stop capacity bursts.
+
+The v1 frame0x05 (12B) remains for bounded captures with post <= 65535
+and the post=0 stream sentinel.
+
+Validated Web results on the final WIDE11 freeze build: WS SINGLE rising/falling
+post=512 at 5, 25, 50, 100 MHz; WS SINGLE EITHER post=512 at 5 and 100 MHz;
+WIDE11 100 MHz / post=100000 exact capture. The full 54/54 TCP+WS matrix and
+the 62/62 high-rate matrix are HIL-confirmed on the same build. The 54-case
+matrix contains 36 bounded NONE cases and 18 five-second continuous NONE cases
+across SINGLE/FAST8/WIDE11, 1/5/25 MHz, and both transports. All 18 continuous
+cases ended via explicit capacity OVERRUN (4 before the first DATA frame); `pass` means the
+lossless-or-stop contract held at the rate actually delivered, not that every
+requested rate was sustained. The multi-wire mapping HIL drove only GP10 with
+a UART-style stimulus: 8192 samples checked, 9 transitions decoded, GP11-GP20
+remained low. Independent high-state mapping for GP11-GP20 and lane B is not
+validated by this run and would require an external pattern generator. When an
+OVERRUN or other error terminates the capture, the firmware stops the sampler
+SMs and the endless DMA channels before draining committed data, so the
+consumer never reads samples that hardware could overwrite after the terminal
+event. CDC ACM shell BOOTSEL and combined-UF2 HTTP BOOTSEL recovery were
+also confirmed on the same freeze build. Historical WIDE12 baseline
+(100 MHz / post=100000): `doc/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md`.
+
+**Stream** mode also uses the sigrok live session. At negotiated high rates with
+GENERIC_PACKED_BURST, post=0 captures exactly 100000 samples losslessly then
+auto-STOP/drain (one capture, not continuous streaming). At lower non-packed rates
+(1-25 MHz in browser), Stream mode sends `post_samples=0` and runs until stopped
+by the user. Web Sigrok pin selection is limited to `GP10-GP20`; GP29 is excluded from LA
+(available as ordinary GPIO/ADC3); `GP7-GP9` are shown but disabled.
 
 Completed captures can be previewed in the waveform view and exported as CSV or
 PulseView `.sr` files. The browser decoder still operates on completed bounded
