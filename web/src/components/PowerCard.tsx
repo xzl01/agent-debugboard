@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, Clock3, Power, Zap } from "lucide-react";
+import { Activity, ChartLine, Clock3, List, Power, Zap } from "lucide-react";
 import { Badge, Card, Toggle } from "./ui";
 import type { AdcReading, CaptureConfig, PowerCapture, PowerOutput, SafeGpio } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
@@ -14,6 +14,13 @@ import {
 } from "@/lib/power";
 import { PowerSparkline } from "./PowerSparkline";
 import { PowerAnalyzer } from "./PowerAnalyzer";
+
+const POWER_TRENDS_STORAGE_KEY = "linkr-power-trends-expanded";
+
+function initialTrendsExpanded() {
+  if (typeof localStorage === "undefined") return false;
+  return localStorage.getItem(POWER_TRENDS_STORAGE_KEY) === "true";
+}
 
 export function PowerCard({
   outputs,
@@ -44,6 +51,7 @@ export function PowerCard({
 }) {
   const { t } = useI18n();
   const [metric, setMetric] = useState<PowerMetric>("current");
+  const [trendsExpanded, setTrendsExpanded] = useState(initialTrendsExpanded);
   const [clockMs, setClockMs] = useState(() => Date.now());
   const railTimersRef = useRef(new Map<string, { startedAtMs: number; approximate: boolean }>());
   const observedRailsRef = useRef(new Set<string>());
@@ -78,33 +86,50 @@ export function PowerCard({
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    localStorage.setItem(POWER_TRENDS_STORAGE_KEY, String(trendsExpanded));
+  }, [trendsExpanded]);
+
   return (
     <Card
       title={t("power.combined.title")}
       subtitle={t("power.combined.subtitle")}
       icon={Power}
       right={
-        <div
-          role="tablist"
-          aria-label={t("power.chart.metric")}
-          className="grid grid-cols-2 rounded-lg border border-line/70 bg-panel2/60 p-0.5"
-        >
-          {(["current", "power"] as const).map((item) => (
-            <button
-              key={item}
-              type="button"
-              role="tab"
-              aria-selected={metric === item}
-              onClick={() => setMetric(item)}
-              className={cn(
-                "inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors",
-                metric === item ? "bg-brand text-white" : "text-ink-dim hover:text-ink"
-              )}
+        <div className="flex max-w-full flex-wrap items-center justify-end gap-1.5">
+          {trendsExpanded && (
+            <div
+              role="tablist"
+              aria-label={t("power.chart.metric")}
+              className="grid grid-cols-2 rounded-lg border border-line/70 bg-panel2/60 p-0.5"
             >
-              {item === "current" ? <Activity size={12} /> : <Zap size={12} />}
-              {t(`power.chart.${item}`)}
-            </button>
-          ))}
+              {(["current", "power"] as const).map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  role="tab"
+                  aria-selected={metric === item}
+                  onClick={() => setMetric(item)}
+                  className={cn(
+                    "inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40",
+                    metric === item ? "bg-brand text-white" : "text-ink-dim hover:text-ink"
+                  )}
+                >
+                  {item === "current" ? <Activity size={12} /> : <Zap size={12} />}
+                  {t(`power.chart.${item}`)}
+                </button>
+              ))}
+            </div>
+          )}
+          <button
+            type="button"
+            aria-pressed={trendsExpanded}
+            onClick={() => setTrendsExpanded((expanded) => !expanded)}
+            className="inline-flex min-h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-line/70 bg-panel2/60 px-2.5 text-xs font-medium text-ink-dim transition-colors hover:border-brand/30 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+          >
+            {trendsExpanded ? <List size={13} /> : <ChartLine size={13} />}
+            {t(trendsExpanded ? "power.chart.compact" : "power.chart.expand")}
+          </button>
         </div>
       }
     >
@@ -120,7 +145,13 @@ export function PowerCard({
               const powerValue = reading ? readingMetric(reading, "power") : null;
               const onTiming = on ? railTimersRef.current.get(name) : undefined;
               return (
-                <li key={name} className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 py-3">
+                <li
+                  key={name}
+                  className={cn(
+                    "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1",
+                    trendsExpanded ? "py-3" : "py-2.5"
+                  )}
+                >
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium text-ink">{powerRailLabel(name)}</span>
@@ -167,7 +198,7 @@ export function PowerCard({
                 {reading && !reading.power_enabled && (
                   <div className="col-span-2 text-[11px] text-warn">{t("adc.disabled")}</div>
                 )}
-                {reading && (
+                {reading && trendsExpanded && (
                   <div className="col-span-2 mt-1">
                     <PowerSparkline reading={reading} metric={metric} />
                   </div>

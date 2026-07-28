@@ -1,4 +1,11 @@
-import { useCallback, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import {
   Activity,
   ChevronDown,
@@ -6,6 +13,8 @@ import {
   ServerCrash,
   SlidersHorizontal,
   Terminal,
+  Wrench,
+  type LucideIcon,
 } from "lucide-react";
 import { useBoard } from "@/hooks/useBoard";
 import { StatusBar } from "./components/StatusBar";
@@ -34,6 +43,42 @@ import {
   getWorkspaceTabId,
   type WorkspaceTabId,
 } from "@/lib/workspaceTabs";
+
+function ToolGroup({
+  title,
+  subtitle,
+  count,
+  icon: Icon,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  count: string;
+  icon: LucideIcon;
+  children: ReactNode;
+}) {
+  return (
+    <details className="group min-w-0 rounded-2xl border border-line/70 bg-panel shadow-sm sm:col-span-2 xl:col-span-1">
+      <summary className="flex min-h-16 cursor-pointer list-none items-center gap-3 rounded-2xl px-4 py-3 outline-none transition-colors hover:bg-panel2/50 focus-visible:ring-2 focus-visible:ring-brand/40">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand/10 text-brand">
+          <Icon size={17} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold text-ink">{title}</span>
+          <span className="block text-xs text-ink-dim sm:truncate">{subtitle}</span>
+        </span>
+        <Badge tone="neutral">{count}</Badge>
+        <ChevronDown
+          size={17}
+          className="shrink-0 text-ink-dim transition-transform duration-200 group-open:rotate-180"
+        />
+      </summary>
+      <div className="grid min-w-0 gap-4 border-t border-line/60 p-3 lg:grid-cols-2 xl:grid-cols-1">
+        {children}
+      </div>
+    </details>
+  );
+}
 
 export default function App() {
   const board = useBoard();
@@ -103,7 +148,7 @@ export default function App() {
       />
 
       {!board.connected && (
-        <div className="mx-auto max-w-[1400px] px-4 pt-4">
+        <div className="mx-auto max-w-[1600px] px-4 pt-4">
           <div className="flex items-center gap-3 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3">
             <ServerCrash size={20} className="text-danger" />
             <div className="flex-1">
@@ -119,14 +164,14 @@ export default function App() {
         </div>
       )}
 
-      <main className="mx-auto max-w-[1400px] px-4 py-5">
+      <main className="mx-auto max-w-[1600px] px-4 py-5">
         {board.loading && !board.hasData ? (
           <div className="flex flex-col items-center justify-center gap-3 py-24 text-ink-dim">
             <Loader2 size={24} className="animate-spin text-brand" />
             <span className="text-sm">{t("loading")}</span>
           </div>
         ) : (
-          <div className="grid animate-fade-up items-start gap-4 xl:grid-cols-[minmax(340px,400px)_minmax(0,1fr)]">
+          <div className="grid animate-fade-up items-start gap-4 xl:grid-cols-[minmax(320px,370px)_minmax(0,1fr)]">
             <aside className="grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-1">
               <div className="min-w-0 sm:col-span-2 xl:col-span-1">
                 <PowerCard
@@ -148,51 +193,50 @@ export default function App() {
                 <SwitchCard switches={board.snapshot.switches} onSet={board.setSwitch} />
               </div>
 
-              <details className="group min-w-0 rounded-2xl border border-line/70 bg-panel shadow-sm sm:col-span-2 xl:col-span-1">
-                <summary className="flex min-h-16 cursor-pointer list-none items-center gap-3 rounded-2xl px-4 py-3 outline-none transition-colors hover:bg-panel2/50 focus-visible:ring-2 focus-visible:ring-brand/40">
-                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand/10 text-brand">
-                    <SlidersHorizontal size={17} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-ink">{t("advanced.title")}</span>
-                    <span className="block truncate text-xs text-ink-dim">{t("advanced.subtitle")}</span>
-                  </span>
-                  <Badge tone="neutral">{t("advanced.count")}</Badge>
-                  <ChevronDown
-                    size={17}
-                    className="shrink-0 text-ink-dim transition-transform duration-200 group-open:rotate-180"
+              <ToolGroup
+                title={t("advanced.title")}
+                subtitle={t("advanced.subtitle")}
+                count={t("advanced.count")}
+                icon={SlidersHorizontal}
+              >
+                <div className="min-w-0 lg:col-span-2 xl:col-span-1">
+                  <StartupPowerAnalysis
+                    outputs={board.snapshot.powerOutputs}
+                    captureState={board.captureState}
+                    captures={board.captures}
+                    captureCapacity={POWER_CAPTURE_SAMPLE_CAPACITY}
+                    serialRef={serialAutomationRef}
+                    onSetPower={board.setPower}
+                    onReadPower={board.readPower}
+                    onArmCapture={board.armCapture}
+                    onCancelCapture={board.cancelCapture}
+                    taskControl={automationTaskControl}
                   />
-                </summary>
-                <div className="grid min-w-0 gap-4 border-t border-line/60 p-3 lg:grid-cols-2 xl:grid-cols-1">
-                  <div className="min-w-0 lg:col-span-2 xl:col-span-1">
-                    <StartupPowerAnalysis
-                      outputs={board.snapshot.powerOutputs}
-                      captureState={board.captureState}
-                      captures={board.captures}
-                      captureCapacity={POWER_CAPTURE_SAMPLE_CAPACITY}
-                      serialRef={serialAutomationRef}
-                      onSetPower={board.setPower}
-                      onReadPower={board.readPower}
-                      onArmCapture={board.armCapture}
-                      onCancelCapture={board.cancelCapture}
-                      taskControl={automationTaskControl}
-                    />
-                  </div>
-                  <div className="min-w-0 lg:col-span-2 xl:col-span-1">
-                    <TestAutomation
-                      board={board}
-                      serialRef={serialAutomationRef}
-                      taskControl={automationTaskControl}
-                    />
-                  </div>
-                  <OtaCard status={ota} setStatus={setOta} />
+                </div>
+                <div className="min-w-0 lg:col-span-2 xl:col-span-1">
+                  <TestAutomation
+                    board={board}
+                    serialRef={serialAutomationRef}
+                    taskControl={automationTaskControl}
+                  />
+                </div>
+                <div className="min-w-0 lg:col-span-2 xl:col-span-1">
                   <TargetRecoveryCard
                     outputs={board.snapshot.powerOutputs}
                     onEnter={board.enterTargetRecovery}
                   />
-                  <BootCard onBoot={board.enterBootloader} />
                 </div>
-              </details>
+              </ToolGroup>
+
+              <ToolGroup
+                title={t("firmwareTools.title")}
+                subtitle={t("firmwareTools.subtitle")}
+                count={t("firmwareTools.count")}
+                icon={Wrench}
+              >
+                <OtaCard status={ota} setStatus={setOta} />
+                <BootCard onBoot={board.enterBootloader} />
+              </ToolGroup>
             </aside>
             <div className="min-w-0 xl:sticky xl:top-[116px]">
               <div className="flex min-h-0 min-w-0 flex-col gap-3">

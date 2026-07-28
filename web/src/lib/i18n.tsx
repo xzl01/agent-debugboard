@@ -50,9 +50,12 @@ const en: Dict = {
 
   "loading": "Loading board state…",
 
-  "advanced.title": "Advanced & recovery",
-  "advanced.subtitle": "Startup analysis, target recovery, MCUboot OTA, and firmware recovery",
-  "advanced.count": "5 tools",
+  "advanced.title": "Automation & target recovery",
+  "advanced.subtitle": "Startup analysis, scripted tests, and target recovery",
+  "advanced.count": "3 tools",
+  "firmwareTools.title": "Firmware maintenance",
+  "firmwareTools.subtitle": "MCUboot OTA and ROM BOOTSEL",
+  "firmwareTools.count": "2 tools",
 
   "workspace.tabs": "Right workspace",
   "workspace.terminalTab": "Web Terminal",
@@ -73,6 +76,8 @@ const en: Dict = {
   "power.chart.now": "now",
   "power.chart.collecting": "Collecting samples…",
   "power.chart.trend": "trend",
+  "power.chart.compact": "Compact",
+  "power.chart.expand": "Show trends",
   "power.onDuration": "On for",
   "power.onDurationHint": "Timing starts when this page first observes the rail on; ≥ means it was already on when monitoring began.",
 
@@ -645,9 +650,12 @@ const zh: Dict = {
 
   "loading": "正在加载调试板状态…",
 
-  "advanced.title": "高级与恢复",
-  "advanced.subtitle": "启动分析、目标设备恢复、MCUboot OTA 与固件恢复",
-  "advanced.count": "5 项工具",
+  "advanced.title": "自动化与目标恢复",
+  "advanced.subtitle": "启动分析、自动化测试与目标设备恢复",
+  "advanced.count": "3 项工具",
+  "firmwareTools.title": "固件维护",
+  "firmwareTools.subtitle": "MCUboot OTA 与 ROM BOOTSEL",
+  "firmwareTools.count": "2 项工具",
 
   "workspace.tabs": "右侧工作区",
   "workspace.terminalTab": "Web 串口终端",
@@ -668,6 +676,8 @@ const zh: Dict = {
   "power.chart.now": "现在",
   "power.chart.collecting": "正在采集样本…",
   "power.chart.trend": "趋势",
+  "power.chart.compact": "精简显示",
+  "power.chart.expand": "显示趋势",
   "power.onDuration": "已导通",
   "power.onDurationHint": "计时从本页面首次观察到电源轨开启开始；≥ 表示开始监测前电源轨就已开启。",
 

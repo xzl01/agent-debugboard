@@ -784,7 +784,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
           onClick={() => terminalHostRef.current?.focus()}
           onKeyDownCapture={handleTerminalKeyDown}
           onPasteCapture={handleTerminalPaste}
-          className={`${compact ? "h-[clamp(320px,52vh,680px)]" : "h-[clamp(380px,58vh,740px)]"} terminal-host min-h-0 flex-1 bg-terminal p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand/40 [&_.xterm]:h-full`}
+          className={`${compact ? "min-h-[clamp(400px,60vh,780px)]" : "min-h-[clamp(440px,65vh,820px)] md:min-h-[clamp(560px,72vh,920px)]"} terminal-host flex-1 bg-terminal p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand/40 [&_.xterm]:h-full`}
         />
 
         <div className="flex min-h-9 flex-wrap items-center gap-x-4 gap-y-1 border-t border-line/70 bg-terminal px-3 py-1.5 text-[10px] text-ink-dim transition-colors">

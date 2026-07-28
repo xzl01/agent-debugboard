@@ -158,7 +158,7 @@ export function StatusBar({
 
   return (
     <header className="sticky top-0 z-20 border-b border-line/70 bg-bg/90 shadow-sm backdrop-blur-md">
-      <div className="mx-auto flex max-w-[1400px] items-center justify-between gap-3 px-4 py-3">
+      <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-3 px-4 py-3">
         <div className="flex min-w-0 items-center gap-3">
           <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand/15 text-brand">
             <Cpu size={20} />
@@ -207,7 +207,7 @@ export function StatusBar({
         </div>
       </div>
 
-      <div className="mx-auto flex max-w-[1400px] flex-wrap items-center justify-between gap-x-5 gap-y-2 px-4 pb-3">
+      <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-x-5 gap-y-2 px-4 pb-3">
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
           {connected ? (
             <Badge tone="ok">
