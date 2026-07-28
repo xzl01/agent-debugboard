@@ -10,6 +10,7 @@ Welcome to the Radxa Linkr Debugger developer guide. This section covers everyth
 - [Build Firmware](build.md) — Detailed build instructions (Nix and manual)
 - [Flashing](flashing.md) — BOOTSEL and OTA flashing procedures
 - [Contributing](contributing.md) — Testing, HIL, CI, and coding conventions
+- [Versioning](versioning.md) — Single-source version updates and release gates
 - [Hardware Mapping](hardware-mapping.md) — RP2350A pin assignments and schematic references
 
 ## Repository Layout

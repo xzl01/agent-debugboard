@@ -10,6 +10,7 @@
 - [构建固件](build.zh-CN.md) — 详细构建说明（Nix 和手动方式）
 - [烧录](flashing.zh-CN.md) — BOOTSEL 和 OTA 烧录流程
 - [参与贡献](contributing.zh-CN.md) — 测试、HIL、CI 和编码规范
+- [版本管理](versioning.zh-CN.md) — 单一版本数据源、自动同步与发布门禁
 - [硬件映射](hardware-mapping.zh-CN.md) — RP2350A 引脚分配和原理图参考
 
 ## 仓库结构

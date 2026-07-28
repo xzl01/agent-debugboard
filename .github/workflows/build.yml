@@ -10,8 +10,28 @@ permissions:
   contents: read
 
 jobs:
+  version-gate:
+    name: Check synchronized project version
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Test version tooling
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+
+      - name: Check synchronized versions
+        run: python3 scripts/version_sync.py check
+
   decoder:
     name: Build and test Rust logic decoder (WASM)
+    needs: version-gate
     runs-on: ubuntu-latest
 
     steps:
@@ -56,6 +76,7 @@ jobs:
 
   web:
     name: Build Web frontend
+    needs: version-gate
     runs-on: ubuntu-latest
 
     steps:
@@ -96,6 +117,7 @@ jobs:
 
   scripts:
     name: Check install and helper scripts
+    needs: version-gate
     runs-on: ubuntu-latest
 
     steps:
@@ -119,6 +141,7 @@ jobs:
 
   windows-installer:
     name: Check Windows installer
+    needs: version-gate
     runs-on: windows-latest
 
     steps:
@@ -133,6 +156,7 @@ jobs:
 
   firmware:
     name: Build RP2350 UF2 firmware
+    needs: version-gate
     runs-on: ubuntu-latest
 
     steps:
@@ -190,6 +214,7 @@ jobs:
 
   host-cli:
     name: Test advanced/Agent Rust host CLI
+    needs: version-gate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -312,6 +337,7 @@ jobs:
 
   skill-bundle:
     name: Upload skill bundle artifact
+    needs: version-gate
     runs-on: ubuntu-latest
 
     steps:

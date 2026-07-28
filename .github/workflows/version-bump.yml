@@ -1,0 +1,86 @@
+name: Version Bump
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New SemVer without a leading v (for example, 0.3.0)"
+        required: true
+        type: string
+      base_branch:
+        description: "Branch that receives the version-update PR"
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: version-bump-${{ inputs.version }}-${{ inputs.base_branch }}
+  cancel-in-progress: false
+
+jobs:
+  version-bump:
+    name: Synchronize versions and open PR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout base branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.base_branch }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Synchronize project versions
+        env:
+          NEW_VERSION: ${{ inputs.version }}
+        run: python3 scripts/version_sync.py set "$NEW_VERSION"
+
+      - name: Run version gate and tests
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+          python3 scripts/version_sync.py check
+          git diff --check
+          if git diff --quiet; then
+            echo "No version files changed; VERSION already has the requested value" >&2
+            exit 1
+          fi
+
+      - name: Commit changes and open pull request
+        id: pull-request
+        env:
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(tr -d '\n' < VERSION)"
+          branch="chore/version-${version}-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add \
+            VERSION \
+            cmd-ng/Cargo.toml \
+            cmd-ng/Cargo.lock \
+            web/package.json \
+            web/package-lock.json \
+            web/decoder/Cargo.toml \
+            web/decoder/Cargo.lock \
+            nix/package.nix
+          git commit -m "chore(release): prepare v${version}"
+          git push --set-upstream origin "$branch"
+          pr_url="$(gh pr create \
+            --base "$BASE_BRANCH" \
+            --head "$branch" \
+            --title "chore(release): prepare v${version}" \
+            --body "Synchronizes every managed project version with VERSION=${version}. The Build and Release workflows will reject any later drift.")"
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "Created [$pr_url]($pr_url)" >> "$GITHUB_STEP_SUMMARY"
