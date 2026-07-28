@@ -39,6 +39,14 @@ linkr_debugger_add_host_test(linkr_debugger_http_body_test
   model_host/test_linkr_debugger_http_body.c
 )
 
+linkr_debugger_add_host_test(linkr_debugger_capture_arena_test
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_capture_arena.c
+  model_host/test_linkr_debugger_capture_arena.c
+)
+target_compile_definitions(linkr_debugger_capture_arena_test PRIVATE
+  LINKR_DEBUGGER_CAPTURE_ARENA_HOST_TEST
+)
+
 linkr_debugger_add_host_test(linkr_debugger_logic_analyzer_test
   ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_logic_analyzer.c
   model_host/test_linkr_debugger_logic_analyzer.c

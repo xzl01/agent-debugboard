@@ -85,6 +85,7 @@ target_sources(app PRIVATE
   src/main.c
   src/linkr_debugger_captive_portal.c
   src/linkr_debugger_capture_arbiter.c
+  src/linkr_debugger_capture_arena.c
   src/linkr_debugger_control.c
   src/linkr_debugger_http_body.c
   src/linkr_debugger_http.c

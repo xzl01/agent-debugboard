@@ -49,6 +49,15 @@ cc -std=c11 -Wall -Wextra -Werror \
 "${OUT}/linkr_debugger_http_body_test"
 
 cc -std=c11 -Wall -Wextra -Werror \
+	-DLINKR_DEBUGGER_CAPTURE_ARENA_HOST_TEST \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_capture_arena.c" \
+	-o "${OUT}/linkr_debugger_capture_arena_test"
+
+"${OUT}/linkr_debugger_capture_arena_test"
+
+cc -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_LA_HOST_TEST \
 	-DCONFIG_SOC_SERIES_RP2350 \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
@@ -60,11 +69,13 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 cc -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST \
+	-DLINKR_DEBUGGER_CAPTURE_ARENA_HOST_TEST \
 	-DLINKR_DEBUGGER_LA_HOST_TEST \
 	-DLINKR_DEBUGGER_SIGROK_LINKR_HOST_TEST \
 	-DCONFIG_SOC_SERIES_RP2350 \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_arbiter.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_logic_analyzer.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_sigrok_linkr.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_sigrok_linkr.c" \
