@@ -31,9 +31,11 @@ FRAME_START_REQ = 0x07
 FRAME_START_RESP = 0x08
 FRAME_STOP_REQ = 0x09
 FRAME_STOP_RESP = 0x0a
+FRAME_CONFIG_V2_REQ = 0x0b
 FRAME_EVENT = 0x10
 FRAME_DATA = 0x11
 FRAME_ERROR = 0x7f
+SERVER_FLAG_CONFIG_V2 = 1 << 0
 
 ERROR_BUSY = 8
 
@@ -80,9 +82,42 @@ def parse_hello_resp(payload: bytes) -> dict:
     return {
         "protocol_version": protocol_version,
         "server_flags": server_flags,
+        "supports_config_v2": (server_flags & SERVER_FLAG_CONFIG_V2) != 0,
         "mode_count": mode_count,
         "max_payload_len": max_payload_len,
     }
+
+
+def build_config_payload(mode_id: int, trigger_type: int, channel_mask: int,
+                         samplerate_khz: int, pre_samples: int = 0, post_samples: int = 0,
+                         trigger_channel: int = 0) -> bytes:
+    if not 0 <= pre_samples <= 0xFFFF or not 0 <= post_samples <= 0xFFFF:
+        raise ValueError("CONFIG v1 pre/post samples must fit uint16")
+    payload = struct.pack("<BBBH", mode_id, trigger_type, trigger_channel, channel_mask)
+    payload += struct.pack("<I", samplerate_khz)[:3]
+    payload += struct.pack("<HH", pre_samples, post_samples)
+    return payload
+
+
+def build_config_v2_payload(mode_id: int, trigger_type: int, channel_mask: int,
+                            samplerate_khz: int, pre_samples: int = 0, post_samples: int = 0,
+                            trigger_channel: int = 0) -> bytes:
+    if not 0 <= pre_samples <= 0xFFFFFFFF or not 0 <= post_samples <= 0xFFFFFFFF:
+        raise ValueError("CONFIG_V2 pre/post samples must fit uint32")
+    payload = struct.pack("<BBBH", mode_id, trigger_type, trigger_channel, channel_mask)
+    payload += struct.pack("<I", samplerate_khz)[:3]
+    payload += struct.pack("<II", pre_samples, post_samples)
+    return payload
+
+
+def build_config_request(mode_id: int, trigger_type: int, channel_mask: int,
+                         samplerate_khz: int, pre_samples: int = 0, post_samples: int = 0,
+                         trigger_channel: int = 0, supports_config_v2: bool = False) -> tuple[int, bytes]:
+    if pre_samples <= 0xFFFF and post_samples <= 0xFFFF:
+        return FRAME_CONFIG_REQ, build_config_payload(mode_id, trigger_type, channel_mask, samplerate_khz, pre_samples, post_samples, trigger_channel)
+    if not supports_config_v2:
+        raise ValueError("CONFIG_V2 required but HELLO server_flags bit0 is not set")
+    return FRAME_CONFIG_V2_REQ, build_config_v2_payload(mode_id, trigger_type, channel_mask, samplerate_khz, pre_samples, post_samples, trigger_channel)
 
 
 def parse_caps_resp(payload: bytes) -> dict:
@@ -202,15 +237,15 @@ def recv_frame(ws, timeout: float = 5.0) -> tuple:
         return None, None
 
 
-def send_hello(ws) -> bool:
+def send_hello(ws) -> dict | None:
     ws.send(build_frame(FRAME_HELLO_REQ), opcode=websocket.ABNF.OPCODE_BINARY)
     frame_type, payload = recv_frame(ws)
     if frame_type is None or frame_type != FRAME_HELLO_RESP:
         print(f"  FAIL: Expected HELLO_RESP (0x02), got {frame_type}")
-        return False
+        return None
     hello = parse_hello_resp(payload)
-    print(f"  HELLO: protocol_version={hello['protocol_version']}, mode_count={hello['mode_count']}")
-    return True
+    print(f"  HELLO: protocol_version={hello['protocol_version']}, server_flags=0x{hello['server_flags']:02x}, config_v2={hello['supports_config_v2']}, mode_count={hello['mode_count']}")
+    return hello
 
 
 def send_caps(ws) -> bool:
@@ -228,11 +263,9 @@ def send_caps(ws) -> bool:
 
 def send_config(ws, mode_id: int, trigger_type: int, channel_mask: int,
                  samplerate_khz: int, pre_samples: int = 0, post_samples: int = 0,
-                 trigger_channel: int = 0) -> dict:
-    payload = struct.pack("<BBBH", mode_id, trigger_type, trigger_channel, channel_mask)
-    payload += struct.pack("<I", samplerate_khz)[:3]
-    payload += struct.pack("<HH", pre_samples, post_samples)
-    ws.send(build_frame(FRAME_CONFIG_REQ, payload), opcode=websocket.ABNF.OPCODE_BINARY)
+                 trigger_channel: int = 0, supports_config_v2: bool = False) -> dict:
+    frame_type, payload = build_config_request(mode_id, trigger_type, channel_mask, samplerate_khz, pre_samples, post_samples, trigger_channel, supports_config_v2)
+    ws.send(build_frame(frame_type, payload), opcode=websocket.ABNF.OPCODE_BINARY)
     frame_type, payload = recv_frame(ws)
     if frame_type is None or frame_type != FRAME_CONFIG_RESP:
         print(f"  FAIL: Expected CONFIG_RESP (0x06), got {frame_type}")
@@ -373,12 +406,15 @@ def test_config_start_stop() -> bool:
     print("Testing CONFIG/START/STOP flow...")
     ws = websocket.create_connection(create_session(), timeout=5)
     try:
-        send_hello(ws)
+        hello = send_hello(ws)
+        if hello is None:
+            return False
         send_caps(ws)
 
         print("  Sending CONFIG (mode=1, rate=1000kHz)...")
         ack = send_config(ws, mode_id=1, trigger_type=TRIGGER_NONE,
-                          channel_mask=0x01, samplerate_khz=1000)
+                          channel_mask=0x01, samplerate_khz=1000,
+                          supports_config_v2=bool(hello["supports_config_v2"]))
         if ack is None:
             return False
         print(f"  CONFIG: session_id={ack['session_id']}, state={ack['state']}, rate={ack['actual_rate_khz']}kHz")
@@ -447,11 +483,15 @@ def test_rates() -> bool:
         print(f"  Testing {rate_khz} kHz...")
         ws = websocket.create_connection(create_session(), timeout=5)
         try:
-            send_hello(ws)
+            hello = send_hello(ws)
+            if hello is None:
+                all_pass = False
+                continue
             send_caps(ws)
 
             ack = send_config(ws, mode_id=1, trigger_type=TRIGGER_NONE,
-                              channel_mask=0x01, samplerate_khz=rate_khz)
+                              channel_mask=0x01, samplerate_khz=rate_khz,
+                              supports_config_v2=bool(hello["supports_config_v2"]))
             if ack is None:
                 print(f"    FAIL: CONFIG failed")
                 all_pass = False
@@ -502,7 +542,7 @@ def test_rates() -> bool:
     return all_pass
 
 
-def test_trigger(args) -> bool:
+def run_trigger(args) -> bool:
     print("Testing trigger modes...")
     triggers = [
         (TRIGGER_RISING, "rising"),
@@ -515,13 +555,17 @@ def test_trigger(args) -> bool:
         print(f"  Testing {trigger_name} trigger...")
         ws = websocket.create_connection(create_session(), timeout=5)
         try:
-            send_hello(ws)
+            hello = send_hello(ws)
+            if hello is None:
+                all_pass = False
+                continue
             send_caps(ws)
 
             ack = send_config(ws, mode_id=1, trigger_type=trigger_type,
                               channel_mask=0x01, samplerate_khz=1000,
                               pre_samples=0, post_samples=args.trigger_post_samples,
-                              trigger_channel=args.trigger_channel)
+                              trigger_channel=args.trigger_channel,
+                              supports_config_v2=bool(hello["supports_config_v2"]))
             if ack is None:
                 print(f"    FAIL: CONFIG failed")
                 all_pass = False
@@ -628,7 +672,7 @@ def main():
     tests = {
         "hello": test_hello,
         "rates": test_rates,
-        "trigger": lambda: test_trigger(args),
+        "trigger": lambda: run_trigger(args),
         "concurrent": test_concurrent,
     }
 

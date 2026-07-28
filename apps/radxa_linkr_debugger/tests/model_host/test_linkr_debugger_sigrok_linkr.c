@@ -59,6 +59,59 @@ static size_t append_frame(uint8_t *out, size_t out_len, uint8_t frame_type,
 	return len + payload_len;
 }
 
+static bool hello_flags_support_config_v2(uint8_t server_flags)
+{
+	return (server_flags & LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAG_CONFIG_V2) != 0U;
+}
+
+static bool hello_flags_support_generic_packed_burst(uint8_t server_flags)
+{
+	return (server_flags &
+		LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAG_GENERIC_PACKED_BURST) != 0U;
+}
+
+static void encode_config_v1(uint8_t *payload, uint8_t mode_id, uint8_t trigger_type,
+	uint8_t trigger_channel, uint16_t channel_mask, uint32_t samplerate_khz,
+	uint16_t pre_samples, uint16_t post_samples)
+{
+	memset(payload, 0, LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_BYTES);
+	payload[0] = mode_id;
+	payload[1] = trigger_type;
+	payload[2] = trigger_channel;
+	payload[3] = (uint8_t)(channel_mask & 0xffU);
+	payload[4] = (uint8_t)((channel_mask >> 8) & 0xffU);
+	payload[5] = (uint8_t)(samplerate_khz & 0xffU);
+	payload[6] = (uint8_t)((samplerate_khz >> 8) & 0xffU);
+	payload[7] = (uint8_t)((samplerate_khz >> 16) & 0xffU);
+	payload[8] = (uint8_t)(pre_samples & 0xffU);
+	payload[9] = (uint8_t)((pre_samples >> 8) & 0xffU);
+	payload[10] = (uint8_t)(post_samples & 0xffU);
+	payload[11] = (uint8_t)((post_samples >> 8) & 0xffU);
+}
+
+static void encode_config_v2(uint8_t *payload, uint8_t mode_id, uint8_t trigger_type,
+	uint8_t trigger_channel, uint16_t channel_mask, uint32_t samplerate_khz,
+	uint32_t pre_samples, uint32_t post_samples)
+{
+	memset(payload, 0, LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES);
+	payload[0] = mode_id;
+	payload[1] = trigger_type;
+	payload[2] = trigger_channel;
+	payload[3] = (uint8_t)(channel_mask & 0xffU);
+	payload[4] = (uint8_t)((channel_mask >> 8) & 0xffU);
+	payload[5] = (uint8_t)(samplerate_khz & 0xffU);
+	payload[6] = (uint8_t)((samplerate_khz >> 8) & 0xffU);
+	payload[7] = (uint8_t)((samplerate_khz >> 16) & 0xffU);
+	payload[8] = (uint8_t)(pre_samples & 0xffU);
+	payload[9] = (uint8_t)((pre_samples >> 8) & 0xffU);
+	payload[10] = (uint8_t)((pre_samples >> 16) & 0xffU);
+	payload[11] = (uint8_t)((pre_samples >> 24) & 0xffU);
+	payload[12] = (uint8_t)(post_samples & 0xffU);
+	payload[13] = (uint8_t)((post_samples >> 8) & 0xffU);
+	payload[14] = (uint8_t)((post_samples >> 16) & 0xffU);
+	payload[15] = (uint8_t)((post_samples >> 24) & 0xffU);
+}
+
 static void test_decode_next_request_frame_rejects_truncated_boundaries(void)
 {
 	uint8_t data[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + 3U];
@@ -101,6 +154,31 @@ static void test_decode_next_request_frame_rejects_overlong_control_payload(void
 	assert(disconnect);
 	assert(error_code == LINKR_DEBUGGER_SIGROK_LINKR_ERROR_OVERSIZE_PAYLOAD);
 	assert(next_offset == 0U);
+}
+
+static void test_decode_next_request_frame_accepts_config_v2_control_payload(void)
+{
+	uint8_t frame[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES];
+	uint8_t config_payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES];
+	struct linkr_debugger_sigrok_linkr_request request;
+	size_t next_offset = 0U;
+	bool disconnect = false;
+	enum linkr_debugger_sigrok_linkr_error_code error_code = 0;
+	size_t len;
+
+	encode_config_v2(config_payload, LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8,
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE, 0U, 0x00ffU, 500U, 0U, 100000U);
+	len = append_frame(frame, sizeof(frame), LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_V2_REQ,
+		21U, config_payload, sizeof(config_payload));
+	assert(linkr_debugger_sigrok_linkr_decode_next_request_frame(frame, len,
+		0U, &request, &next_offset, &disconnect, &error_code) == 0);
+	assert(!disconnect);
+	assert(error_code == 0U);
+	assert(next_offset == len);
+	assert(request.header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_V2_REQ);
+	assert(request.header.payload_len == LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES);
+	assert(request.payload == frame + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES);
 }
 
 static void test_decode_next_request_frame_processes_concatenated_fifo(void)
@@ -253,6 +331,103 @@ static void test_validate_request_hello_with_payload(void)
 	assert(error_code == LINKR_DEBUGGER_SIGROK_LINKR_ERROR_INVALID_LENGTH);
 }
 
+static void test_validate_request_config_lengths_are_versioned(void)
+{
+	uint8_t payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES];
+	struct linkr_debugger_sigrok_linkr_request request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_REQ,
+			.id = 20U,
+			.payload_len = LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES,
+		},
+		.payload = payload,
+	};
+	bool disconnect = false;
+	enum linkr_debugger_sigrok_linkr_error_code error_code = 0;
+
+	assert(linkr_debugger_sigrok_linkr_validate_request(&request, &disconnect,
+		&error_code) == -EMSGSIZE);
+	assert(!disconnect);
+	assert(error_code == LINKR_DEBUGGER_SIGROK_LINKR_ERROR_INVALID_LENGTH);
+
+	request.header.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_V2_REQ;
+	request.header.payload_len = LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_BYTES;
+	error_code = 0;
+	assert(linkr_debugger_sigrok_linkr_validate_request(&request, &disconnect,
+		&error_code) == -EMSGSIZE);
+	assert(!disconnect);
+	assert(error_code == LINKR_DEBUGGER_SIGROK_LINKR_ERROR_INVALID_LENGTH);
+
+	request.header.payload_len = LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES;
+	error_code = 0;
+	assert(linkr_debugger_sigrok_linkr_validate_request(&request, &disconnect,
+		&error_code) == 0);
+	assert(!disconnect);
+	assert(error_code == 0U);
+}
+
+static void test_decode_config_v1_keeps_12_byte_uint16_samples(void)
+{
+	uint8_t payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_BYTES];
+	struct linkr_debugger_sigrok_linkr_config config;
+
+	encode_config_v1(payload, LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11,
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_RISING, 10U, 0x07ffU, 125000U,
+		1234U, UINT16_MAX);
+	memset(&config, 0, sizeof(config));
+	assert(linkr_debugger_sigrok_linkr_decode_config(payload, sizeof(payload),
+		&config) == 0);
+	assert(config.mode_id == LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11);
+	assert(config.trigger_type == LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_RISING);
+	assert(config.trigger_channel == 10U);
+	assert(config.channel_mask == 0x07ffU);
+	assert(config.samplerate_khz == 125000U);
+	assert(config.pre_samples == 1234U);
+	assert(config.post_samples == UINT16_MAX);
+}
+
+static void test_decode_config_v2_accepts_u32_samples_and_zero_post_sentinel(void)
+{
+	uint8_t payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES];
+	struct linkr_debugger_sigrok_linkr_config config;
+
+	encode_config_v2(payload, LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8,
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE, 0U, 0x00ffU, 500U, 0U, 100000U);
+	memset(&config, 0, sizeof(config));
+	assert(linkr_debugger_sigrok_linkr_decode_config(payload, sizeof(payload),
+		&config) == 0);
+	assert(config.mode_id == LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8);
+	assert(config.trigger_type == LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE);
+	assert(config.channel_mask == 0x00ffU);
+	assert(config.samplerate_khz == 500U);
+	assert(config.pre_samples == 0U);
+	assert(config.post_samples == 100000U);
+	assert(linkr_debugger_sigrok_linkr_validate_config(&config, NULL, NULL) == 0);
+
+	encode_config_v2(payload, LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8,
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE, 0U, 0x00ffU, 500U, 0U, 0U);
+	memset(&config, 0xff, sizeof(config));
+	assert(linkr_debugger_sigrok_linkr_decode_config(payload, sizeof(payload),
+		&config) == 0);
+	assert(config.post_samples == 0U);
+	assert(linkr_debugger_sigrok_linkr_validate_config(&config, NULL, NULL) == 0);
+}
+
+static void test_decode_config_rejects_unknown_lengths_cleanly(void)
+{
+	uint8_t payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES] = {0};
+	struct linkr_debugger_sigrok_linkr_config config;
+
+	assert(linkr_debugger_sigrok_linkr_decode_config(payload,
+		LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_BYTES - 1U, &config) == -EINVAL);
+	assert(linkr_debugger_sigrok_linkr_decode_config(payload,
+		LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_BYTES + 1U, &config) == -EINVAL);
+	assert(linkr_debugger_sigrok_linkr_decode_config(payload,
+		LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES + 1U, &config) == -EINVAL);
+}
+
 static void test_validate_config_fast8(void)
 {
 	struct linkr_debugger_sigrok_linkr_config config = {
@@ -270,13 +445,13 @@ static void test_validate_config_fast8(void)
 	assert(linkr_debugger_sigrok_linkr_validate_config(&config, &error_code, &detail) == 0);
 }
 
-static void test_validate_config_wide12(void)
+static void test_validate_config_wide11(void)
 {
 	struct linkr_debugger_sigrok_linkr_config config = {
-		.mode_id = LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE12,
+		.mode_id = LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11,
 		.trigger_type = LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE,
 		.trigger_channel = 0U,
-		.channel_mask = 0x0fffU,
+		.channel_mask = 0x07ffU,
 		.samplerate_khz = 125000U,
 		.pre_samples = 0U,
 		.post_samples = 0U,
@@ -323,7 +498,7 @@ static void test_validate_config_trigger_channel_not_in_mask(void)
 	assert(error_code == LINKR_DEBUGGER_SIGROK_LINKR_ERROR_INVALID_CONFIG);
 }
 
-static void test_validate_config_rejects_pre_samples(void)
+static void test_validate_config_accepts_only_bounded_pre_trigger_contract(void)
 {
 	struct linkr_debugger_sigrok_linkr_config config = {
 		.mode_id = LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8,
@@ -331,15 +506,125 @@ static void test_validate_config_rejects_pre_samples(void)
 		.trigger_channel = 0U,
 		.channel_mask = 0x0001U,
 		.samplerate_khz = 1000U,
-		.pre_samples = 1U,
-		.post_samples = 1024U,
+		.pre_samples = 16U,
+		.post_samples = 16U,
 	};
 	enum linkr_debugger_sigrok_linkr_error_code error_code = 0;
 	uint16_t detail = 0U;
 
+	assert(linkr_debugger_sigrok_linkr_validate_config(&config, &error_code, &detail) == 0);
+
+	config.trigger_type = LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE;
+	assert(linkr_debugger_sigrok_linkr_validate_config(&config, &error_code, &detail) == -EINVAL);
+
+	config.trigger_type = LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_RISING;
+	config.post_samples = 0U;
+	assert(linkr_debugger_sigrok_linkr_validate_config(&config, &error_code, &detail) == -EINVAL);
+
+	config.post_samples = 1U;
+	config.samplerate_khz = 25001U;
+	assert(linkr_debugger_sigrok_linkr_validate_config(&config, &error_code, &detail) == -EINVAL);
+
+	config.samplerate_khz = 1000U;
+	config.pre_samples = 512U;
 	assert(linkr_debugger_sigrok_linkr_validate_config(&config, &error_code, &detail) == -EINVAL);
 	assert(error_code == LINKR_DEBUGGER_SIGROK_LINKR_ERROR_INVALID_CONFIG);
-	assert(detail == 1U);
+
+	config.pre_samples = 256U;
+	config.post_samples = 256U;
+	config.samplerate_khz = 25000U;
+	config.channel_mask = 0x0001U;
+	assert(linkr_debugger_sigrok_linkr_validate_config(&config, &error_code, &detail) == 0);
+
+	config.channel_mask = 0x00ffU;
+	assert(linkr_debugger_sigrok_linkr_validate_config(&config, &error_code, &detail) == -EINVAL);
+	assert(error_code == LINKR_DEBUGGER_SIGROK_LINKR_ERROR_INVALID_CONFIG);
+
+	config.mode_id = LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11;
+	config.channel_mask = 0x07ffU;
+	assert(linkr_debugger_sigrok_linkr_validate_config(&config, &error_code, &detail) == -EINVAL);
+}
+
+static void test_to_la_config_preserves_bounded_pre_trigger(void)
+{
+	struct linkr_debugger_sigrok_linkr_config config = {
+		.mode_id = LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8,
+		.trigger_type = LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_EITHER,
+		.trigger_channel = 2U,
+		.channel_mask = 0x0005U,
+		.samplerate_khz = 1000U,
+		.pre_samples = 16U,
+		.post_samples = 16U,
+	};
+	struct linkr_debugger_la_config la_config;
+	struct linkr_debugger_la_hardware_plan plan;
+
+	assert(linkr_debugger_sigrok_linkr_to_la_config(&config, true, &la_config) == 0);
+	assert(la_config.trigger == LINKR_DEBUGGER_LA_TRIGGER_EITHER);
+	assert(la_config.trigger_pin == 1U);
+	assert(la_config.pre_samples == 16U);
+	assert(la_config.post_samples == 16U);
+	assert(linkr_debugger_logic_analyzer_select_hardware_plan(&la_config, false,
+		&plan) == 0);
+	assert(plan.supported);
+	assert(plan.pipeline_family == LINKR_DEBUGGER_LA_PIPELINE_FAMILY_COMMON_PACKED);
+	assert(plan.legacy_adapter == LINKR_DEBUGGER_LA_LEGACY_ADAPTER_RING_STREAM);
+}
+
+static void test_to_la_config_rejects_infeasible_bounded_pre_trigger(void)
+{
+	struct linkr_debugger_sigrok_linkr_config config = {
+		.mode_id = LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8,
+		.trigger_type = LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_RISING,
+		.trigger_channel = 0U,
+		.channel_mask = 0x00ffU,
+		.samplerate_khz = 25000U,
+		.pre_samples = 256U,
+		.post_samples = 256U,
+	};
+	struct linkr_debugger_la_config la_config;
+
+	assert(linkr_debugger_sigrok_linkr_to_la_config(&config, true, &la_config) == -EINVAL);
+
+	config.mode_id = LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11;
+	config.channel_mask = 0x07ffU;
+	assert(linkr_debugger_sigrok_linkr_to_la_config(&config, true, &la_config) == -EINVAL);
+}
+
+static void test_handle_config_accepts_bounded_pre_trigger(void)
+{
+	uint8_t config_payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_BYTES];
+	uint8_t response_payload[LINKR_DEBUGGER_SIGROK_LINKR_CONTROL_MAX_RESPONSE_BYTES];
+	struct linkr_debugger_sigrok_linkr_session session;
+	struct linkr_debugger_sigrok_linkr_request request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_REQ,
+			.id = 61U,
+			.payload_len = LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_BYTES,
+		},
+	};
+	struct linkr_debugger_sigrok_linkr_header response_header;
+	struct linkr_debugger_sigrok_linkr_action_result action;
+	size_t response_len = 0U;
+	bool disconnect = false;
+
+	encode_config_v1(config_payload, LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8,
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_RISING, 0U, 0x0001U, 1000U,
+		16U, 16U);
+	request.payload = config_payload;
+	linkr_debugger_sigrok_linkr_session_reset(&session);
+	session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_READY;
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &request, &response_header,
+		response_payload, sizeof(response_payload), &response_len, &action,
+		&disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_RESP);
+	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED);
+	assert(session.config.pre_samples == 16U);
+	assert(session.config.post_samples == 16U);
+	assert(!disconnect);
 }
 
 static void assert_la_mapping(
@@ -406,21 +691,21 @@ static void test_to_la_config_fast8_full_mask(void)
 		0x00ffU, 7U, 7U, 8U, pins, 8U);
 }
 
-static void test_to_la_config_wide12_sparse_mask_with_bit11(void)
+static void test_to_la_config_wide11_sparse_mask_with_bit10(void)
 {
-	const uint8_t pins[] = { 11U, 14U, 20U, 29U };
+	const uint8_t pins[] = { 11U, 14U, 20U };
 
-	assert_la_mapping(LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE12,
-		0x0c12U, 11U, 3U, 12U, pins, 4U);
+	assert_la_mapping(LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11,
+		0x0412U, 10U, 2U, 11U, pins, 3U);
 }
 
-static void test_to_la_config_wide12_full_mask(void)
+static void test_to_la_config_wide11_full_mask(void)
 {
 	const uint8_t pins[] = { 10U, 11U, 12U, 13U, 14U, 15U,
-		16U, 17U, 18U, 19U, 20U, 29U };
+		16U, 17U, 18U, 19U, 20U };
 
-	assert_la_mapping(LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE12,
-		0x0fffU, 11U, 11U, 12U, pins, 12U);
+	assert_la_mapping(LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11,
+		0x07ffU, 10U, 10U, 11U, pins, 11U);
 }
 
 static void test_to_la_config_rejects_unselected_trigger_bit(void)
@@ -466,8 +751,27 @@ static void test_handle_hello(void)
 		&action, &disconnect) == 0);
 	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_HELLO_RESP);
 	assert(payload_len == LINKR_DEBUGGER_SIGROK_LINKR_HELLO_BYTES);
+	assert(payload[1] == LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAGS_CURRENT);
+	assert(payload[1] ==
+		(LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAG_CONFIG_V2 |
+		 LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAG_GENERIC_PACKED_BURST));
+	assert(hello_flags_support_config_v2(payload[1]));
+	assert(hello_flags_support_generic_packed_burst(payload[1]));
 	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_READY);
 	assert(!action.has_event);
+}
+
+static void test_hello_flags_distinguish_legacy_config_v2_from_generic_packed(void)
+{
+	uint8_t legacy_flags = LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAG_CONFIG_V2;
+	uint8_t generic_flags = LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAGS_CURRENT;
+
+	assert(hello_flags_support_config_v2(legacy_flags));
+	assert(!hello_flags_support_generic_packed_burst(legacy_flags));
+	assert(hello_flags_support_config_v2(generic_flags));
+	assert(hello_flags_support_generic_packed_burst(generic_flags));
+	assert((LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAG_CONFIG_V2 &
+		LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAG_GENERIC_PACKED_BURST) == 0U);
 }
 
 static void test_handle_caps(void)
@@ -546,6 +850,452 @@ static void test_handle_config(void)
 	assert(session.config.samplerate_khz == 500U);
 	assert(session.config.channel_mask == 0x00ffU);
 	assert(session.config.mode_id == LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8);
+	assert(session.config.pre_samples == 0U);
+	assert(session.config.post_samples == 0U);
+}
+
+static void test_handle_config_v2_fast8_large_post_prepares_on_start(void)
+{
+	struct linkr_debugger_sigrok_linkr_session session;
+	uint8_t config_payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES];
+	struct linkr_debugger_sigrok_linkr_request config_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_V2_REQ,
+			.id = 34U,
+			.payload_len = LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES,
+		},
+		.payload = config_payload,
+	};
+	struct linkr_debugger_sigrok_linkr_request start_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_REQ,
+			.id = 35U,
+			.payload_len = 0U,
+		},
+		.payload = NULL,
+	};
+	struct linkr_debugger_sigrok_linkr_header response_header;
+	uint8_t payload[256];
+	size_t payload_len = 0U;
+	struct linkr_debugger_sigrok_linkr_action_result action;
+	bool disconnect = false;
+
+	encode_config_v2(config_payload, LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8,
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE, 0U, 0x00ffU, 500U, 0U, 100000U);
+	linkr_debugger_sigrok_linkr_session_reset(&session);
+	session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_READY;
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &config_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_RESP);
+	assert(payload_len == LINKR_DEBUGGER_SIGROK_LINKR_ACK_BYTES);
+	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED);
+	assert(session.config.pre_samples == 0U);
+	assert(session.config.post_samples == 100000U);
+	assert(action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_NONE);
+	assert(!action.has_event);
+	assert(!disconnect);
+
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &start_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_RESP);
+	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING);
+	assert(action.capture_action ==
+		LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_PREPARE_IMMEDIATE);
+	assert(action.has_event);
+	assert(action.event.type_detail ==
+		(uint8_t)LINKR_DEBUGGER_SIGROK_LINKR_EVENT_RUNNING);
+	assert(!disconnect);
+}
+
+static void test_handle_config_v2_exact_wide11_large_post_prepares_on_start(void)
+{
+	struct linkr_debugger_sigrok_linkr_session session;
+	uint8_t config_payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES];
+	struct linkr_debugger_sigrok_linkr_request config_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_V2_REQ,
+			.id = 70U,
+			.payload_len = LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES,
+		},
+		.payload = config_payload,
+	};
+	struct linkr_debugger_sigrok_linkr_request start_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_REQ,
+			.id = 71U,
+			.payload_len = 0U,
+		},
+		.payload = NULL,
+	};
+	struct linkr_debugger_sigrok_linkr_header response_header;
+	uint8_t payload[256];
+	size_t payload_len = 0U;
+	struct linkr_debugger_sigrok_linkr_action_result action;
+	bool disconnect = false;
+
+	encode_config_v2(config_payload, LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11,
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE, 0U, 0x07ffU,
+		LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_RATE_HZ / 1000U, 0U,
+		LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES);
+	linkr_debugger_sigrok_linkr_session_reset(&session);
+	session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_READY;
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &config_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_RESP);
+	assert(session.config.post_samples == LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES);
+
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &start_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_RESP);
+	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING);
+	assert(action.capture_action ==
+		LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_PREPARE_IMMEDIATE);
+	assert(!action.has_event);
+	assert(!disconnect);
+}
+
+static void test_handle_config_v2_wide11_125mhz_large_post_rejects_on_start(void)
+{
+	struct linkr_debugger_sigrok_linkr_session session;
+	uint8_t config_payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES];
+	struct linkr_debugger_sigrok_linkr_request config_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_V2_REQ,
+			.id = 74U,
+			.payload_len = LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES,
+		},
+		.payload = config_payload,
+	};
+	struct linkr_debugger_sigrok_linkr_request start_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_REQ,
+			.id = 75U,
+			.payload_len = 0U,
+		},
+		.payload = NULL,
+	};
+	struct linkr_debugger_sigrok_linkr_header response_header;
+	uint8_t payload[256];
+	size_t payload_len = 0U;
+	struct linkr_debugger_sigrok_linkr_action_result action;
+	bool disconnect = false;
+
+	encode_config_v2(config_payload, LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11,
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE, 0U, 0x07ffU, 125000U, 0U,
+		LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES);
+	linkr_debugger_sigrok_linkr_session_reset(&session);
+	session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_READY;
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &config_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_RESP);
+	assert(session.config.post_samples == LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES);
+
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &start_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_ERROR);
+	assert(payload_len == LINKR_DEBUGGER_SIGROK_LINKR_ERROR_BYTES);
+	assert(payload[0] == LINKR_DEBUGGER_SIGROK_LINKR_ERROR_INVALID_CONFIG);
+	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED);
+	assert(action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_NONE);
+	assert(!action.has_event);
+	assert(!disconnect);
+}
+
+static void test_handle_config_v2_sparse_wide11_125mhz_rejects_on_start(void)
+{
+	struct linkr_debugger_sigrok_linkr_session session;
+	uint8_t config_payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES];
+	struct linkr_debugger_sigrok_linkr_request config_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_V2_REQ,
+			.id = 94U,
+			.payload_len = LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES,
+		},
+		.payload = config_payload,
+	};
+	struct linkr_debugger_sigrok_linkr_request start_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_REQ,
+			.id = 95U,
+			.payload_len = 0U,
+		},
+		.payload = NULL,
+	};
+	struct linkr_debugger_sigrok_linkr_header response_header;
+	uint8_t payload[256];
+	size_t payload_len = 0U;
+	struct linkr_debugger_sigrok_linkr_action_result action;
+	bool disconnect = false;
+
+	encode_config_v2(config_payload, LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11,
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE, 0U, 0x0089U, 125000U, 0U,
+		65536U);
+	linkr_debugger_sigrok_linkr_session_reset(&session);
+	session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_READY;
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &config_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_RESP);
+	assert(session.config.mode_id == LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11);
+	assert(session.config.channel_mask == 0x0089U);
+	assert(session.config.samplerate_khz == 125000U);
+	assert(session.config.post_samples == 65536U);
+
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &start_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_ERROR);
+	assert(payload_len == LINKR_DEBUGGER_SIGROK_LINKR_ERROR_BYTES);
+	assert(payload[0] == LINKR_DEBUGGER_SIGROK_LINKR_ERROR_INVALID_CONFIG);
+	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED);
+	assert(action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_NONE);
+	assert(!action.has_event);
+	assert(!disconnect);
+}
+
+static void test_handle_config_v2_exact_wide11_triggered_prepares_with_armed_event(void)
+{
+	struct linkr_debugger_sigrok_linkr_session session;
+	uint8_t config_payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES];
+	struct linkr_debugger_sigrok_linkr_request config_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_V2_REQ,
+			.id = 72U,
+			.payload_len = LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES,
+		},
+		.payload = config_payload,
+	};
+	struct linkr_debugger_sigrok_linkr_request start_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_REQ,
+			.id = 73U,
+			.payload_len = 0U,
+		},
+		.payload = NULL,
+	};
+	struct linkr_debugger_sigrok_linkr_header response_header;
+	uint8_t payload[256];
+	size_t payload_len = 0U;
+	struct linkr_debugger_sigrok_linkr_action_result action;
+	bool disconnect = false;
+
+	encode_config_v2(config_payload, LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11,
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_RISING, 10U, 0x07ffU,
+		LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_RATE_HZ / 1000U, 0U,
+		LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES);
+	linkr_debugger_sigrok_linkr_session_reset(&session);
+	session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_READY;
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &config_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_RESP);
+
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &start_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_RESP);
+	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_ARMED);
+	assert(action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_PREPARE_ARMED);
+	assert(action.has_event);
+	assert(action.event.type_detail == (uint8_t)LINKR_DEBUGGER_SIGROK_LINKR_EVENT_ARMED);
+}
+
+static void test_handle_config_v2_preserves_zero_post_start_behavior(void)
+{
+	struct linkr_debugger_sigrok_linkr_session session;
+	uint8_t config_payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES];
+	struct linkr_debugger_sigrok_linkr_request config_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_V2_REQ,
+			.id = 36U,
+			.payload_len = LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES,
+		},
+		.payload = config_payload,
+	};
+	struct linkr_debugger_sigrok_linkr_request start_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_REQ,
+			.id = 37U,
+			.payload_len = 0U,
+		},
+		.payload = NULL,
+	};
+	struct linkr_debugger_sigrok_linkr_header response_header;
+	uint8_t payload[256];
+	size_t payload_len = 0U;
+	struct linkr_debugger_sigrok_linkr_action_result action;
+	bool disconnect = false;
+
+	encode_config_v2(config_payload, LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8,
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE, 0U, 0x00ffU, 500U, 0U, 0U);
+	linkr_debugger_sigrok_linkr_session_reset(&session);
+	session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_READY;
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &config_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_RESP);
+	assert(session.config.post_samples == 0U);
+
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &start_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_RESP);
+	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING);
+	assert(action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_PREPARE_IMMEDIATE);
+	assert(action.has_event);
+}
+
+static void test_handle_config_v2_sparse_fast8_125mhz_large_post_prepares_on_start(void)
+{
+	struct linkr_debugger_sigrok_linkr_session session;
+	uint8_t config_payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES];
+	struct linkr_debugger_sigrok_linkr_request config_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_V2_REQ,
+			.id = 86U,
+			.payload_len = LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES,
+		},
+		.payload = config_payload,
+	};
+	struct linkr_debugger_sigrok_linkr_request start_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_REQ,
+			.id = 87U,
+			.payload_len = 0U,
+		},
+		.payload = NULL,
+	};
+	struct linkr_debugger_sigrok_linkr_header response_header;
+	uint8_t payload[256];
+	size_t payload_len = 0U;
+	struct linkr_debugger_sigrok_linkr_action_result action;
+	bool disconnect = false;
+
+	encode_config_v2(config_payload, LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8,
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE, 0U, 0x0089U,
+		LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ / 1000U, 0U, 65536U);
+	linkr_debugger_sigrok_linkr_session_reset(&session);
+	session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_READY;
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &config_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_RESP);
+	assert(session.config.channel_mask == 0x0089U);
+	assert(session.config.samplerate_khz == 125000U);
+	assert(session.config.post_samples == 65536U);
+
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &start_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_RESP);
+	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING);
+	assert(action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_PREPARE_IMMEDIATE);
+	assert(action.has_event);
+	assert(!disconnect);
+}
+
+static void test_handle_config_v2_rejects_post_above_packed_burst_capacity_on_start(void)
+{
+	struct linkr_debugger_sigrok_linkr_session session;
+	uint8_t config_payload[LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES];
+	struct linkr_debugger_sigrok_linkr_request config_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_V2_REQ,
+			.id = 88U,
+			.payload_len = LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES,
+		},
+		.payload = config_payload,
+	};
+	struct linkr_debugger_sigrok_linkr_request start_request = {
+		.header = {
+			.magic = LINKR_DEBUGGER_SIGROK_LINKR_MAGIC,
+			.version = LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION,
+			.type = LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_REQ,
+			.id = 89U,
+			.payload_len = 0U,
+		},
+		.payload = NULL,
+	};
+	struct linkr_debugger_sigrok_linkr_header response_header;
+	uint8_t payload[256];
+	size_t payload_len = 0U;
+	struct linkr_debugger_sigrok_linkr_action_result action;
+	bool disconnect = false;
+
+	encode_config_v2(config_payload, LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8,
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE, 0U, 0x00ffU,
+		LINKR_DEBUGGER_LA_MAX_SAMPLE_RATE_HZ / 1000U, 0U,
+		LINKR_DEBUGGER_LA_PACKED_BURST_MAX_SAMPLES + 1U);
+	linkr_debugger_sigrok_linkr_session_reset(&session);
+	session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_READY;
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &config_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_RESP);
+	assert(session.config.post_samples == LINKR_DEBUGGER_LA_PACKED_BURST_MAX_SAMPLES + 1U);
+
+	assert(linkr_debugger_sigrok_linkr_handle_request(&session,
+		LINKR_DEBUGGER_CAPTURE_OWNER_NONE, &start_request,
+		&response_header, payload, sizeof(payload), &payload_len,
+		&action, &disconnect) == 0);
+	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_ERROR);
+	assert(payload_len == LINKR_DEBUGGER_SIGROK_LINKR_ERROR_BYTES);
+	assert(payload[0] == LINKR_DEBUGGER_SIGROK_LINKR_ERROR_INVALID_CONFIG);
+	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED);
+	assert(action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_NONE);
+	assert(!action.has_event);
+	assert(!disconnect);
 }
 
 static uint32_t ack_actual_rate_khz(const uint8_t *payload)
@@ -629,7 +1379,7 @@ static void test_handle_start_immediate(void)
 		&action, &disconnect) == 0);
 	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_RESP);
 	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING);
-	assert(action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_START_IMMEDIATE);
+	assert(action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_PREPARE_IMMEDIATE);
 	assert(action.has_event);
 	assert(action.event.type_detail == (uint8_t)LINKR_DEBUGGER_SIGROK_LINKR_EVENT_RUNNING);
 }
@@ -662,7 +1412,7 @@ static void test_handle_start_armed(void)
 		&response_header, payload, sizeof(payload), &payload_len,
 		&action, &disconnect) == 0);
 	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_ARMED);
-	assert(action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_START_ARMED);
+	assert(action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_PREPARE_ARMED);
 	assert(action.has_event);
 	assert(action.event.type_detail == (uint8_t)LINKR_DEBUGGER_SIGROK_LINKR_EVENT_ARMED);
 }
@@ -812,7 +1562,7 @@ static void test_handle_stop_preserves_same_socket_config_start_reuse(void)
 		&action, &disconnect) == 0);
 	assert(response_header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_RESP);
 	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING);
-	assert(action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_START_IMMEDIATE);
+	assert(action.capture_action == LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_PREPARE_IMMEDIATE);
 	assert(action.has_event);
 	assert(!disconnect);
 }
@@ -858,11 +1608,412 @@ static void test_start_error_code_mapping(void)
 		LINKR_DEBUGGER_SIGROK_LINKR_ERROR_INTERNAL);
 }
 
+static struct linkr_debugger_sigrok_linkr_session exact_wide11_session(
+	enum linkr_debugger_sigrok_linkr_trigger_type trigger)
+{
+	struct linkr_debugger_sigrok_linkr_session session;
+
+	linkr_debugger_sigrok_linkr_session_reset(&session);
+	session.state = trigger == LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE ?
+		LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING :
+		LINKR_DEBUGGER_SIGROK_LINKR_SESSION_ARMED;
+	session.active_session_id = 9U;
+	session.config.mode_id = LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11;
+	session.config.trigger_type = (uint8_t)trigger;
+	session.config.trigger_channel = 10U;
+	session.config.channel_mask = 0x07ffU;
+	session.config.samplerate_khz =
+		LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_RATE_HZ / 1000U;
+	session.config.pre_samples = 0U;
+	session.config.post_samples = LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES;
+	return session;
+}
+
+static struct linkr_debugger_sigrok_linkr_session fast8_session(
+	uint32_t samplerate_khz, uint32_t post_samples)
+{
+	struct linkr_debugger_sigrok_linkr_session session;
+
+	linkr_debugger_sigrok_linkr_session_reset(&session);
+	session.state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING;
+	session.active_session_id = 10U;
+	session.config.mode_id = LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8;
+	session.config.trigger_type = LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE;
+	session.config.trigger_channel = 0U;
+	session.config.channel_mask = 0x00ffU;
+	session.config.samplerate_khz = samplerate_khz;
+	session.config.pre_samples = 0U;
+	session.config.post_samples = post_samples;
+	return session;
+}
+
+static int test_burst_sink_lease(uint32_t sample_count, uint8_t bytes_per_sample,
+	void *user_data, struct linkr_debugger_la_stream_sink_lease *lease)
+{
+	static uint8_t payload[LINKR_DEBUGGER_LA_WIDE11_BURST_PACKED_SAMPLE_BYTES * 1024U];
+
+	(void)user_data;
+	assert(sample_count <= 1024U);
+	assert(bytes_per_sample == LINKR_DEBUGGER_LA_WIDE11_BURST_PACKED_SAMPLE_BYTES);
+	lease->payload = payload;
+	lease->capacity = sizeof(payload);
+	lease->token = payload;
+	return 0;
+}
+
+static int test_burst_sink_commit(
+	const struct linkr_debugger_la_stream_sink_commit *commit, void *user_data)
+{
+	uint32_t *total = user_data;
+
+	assert(commit != NULL);
+	assert(commit->token != NULL);
+	assert(commit->sample_count <= 1024U);
+	assert(commit->bytes_per_sample == LINKR_DEBUGGER_LA_WIDE11_BURST_PACKED_SAMPLE_BYTES);
+	assert(commit->payload_len ==
+		(size_t)commit->sample_count * LINKR_DEBUGGER_LA_WIDE11_BURST_PACKED_SAMPLE_BYTES);
+	*total += commit->sample_count;
+	return 0;
+}
+
+static void test_burst_sink_abort(void *token, void *user_data)
+{
+	(void)token;
+	(void)user_data;
+}
+
+static void test_burst_sink_terminal(enum linkr_debugger_la_ring_poll_result status,
+	uint32_t sequence, void *user_data)
+{
+	(void)sequence;
+	(void)user_data;
+	assert(status == LINKR_DEBUGGER_LA_RING_POLL_OK);
+}
+
+static struct linkr_debugger_la_stream_sink test_wide11_burst_sink(uint32_t *total)
+{
+	struct linkr_debugger_la_stream_sink sink = {
+		.format = LINKR_DEBUGGER_LA_STREAM_PAYLOAD_PACKED_LE_BYTES,
+		.bytes_per_sample = LINKR_DEBUGGER_LA_WIDE11_BURST_PACKED_SAMPLE_BYTES,
+		.max_chunk_samples = 1024U,
+		.lease = test_burst_sink_lease,
+		.commit = test_burst_sink_commit,
+		.abort = test_burst_sink_abort,
+		.terminal = test_burst_sink_terminal,
+		.user_data = total,
+	};
+
+	return sink;
+}
+
+struct test_generic_burst_sink_context {
+	uint32_t total;
+	uint8_t expected_bytes_per_sample;
+	uint32_t expected_max_chunk_samples;
+};
+
+static int test_generic_burst_sink_lease(uint32_t sample_count, uint8_t bytes_per_sample,
+	void *user_data, struct linkr_debugger_la_stream_sink_lease *lease)
+{
+	static uint8_t payload[LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_PAYLOAD_BYTES];
+	struct test_generic_burst_sink_context *ctx = user_data;
+
+	assert(ctx != NULL);
+	assert(sample_count <= ctx->expected_max_chunk_samples);
+	assert(bytes_per_sample == ctx->expected_bytes_per_sample);
+	lease->payload = payload;
+	lease->capacity = sizeof(payload);
+	lease->token = payload;
+	return 0;
+}
+
+static int test_generic_burst_sink_commit(
+	const struct linkr_debugger_la_stream_sink_commit *commit, void *user_data)
+{
+	struct test_generic_burst_sink_context *ctx = user_data;
+
+	assert(ctx != NULL);
+	assert(commit != NULL);
+	assert(commit->token != NULL);
+	assert(commit->sample_count <= ctx->expected_max_chunk_samples);
+	assert(commit->bytes_per_sample == ctx->expected_bytes_per_sample);
+	assert(commit->payload_len ==
+		(size_t)commit->sample_count * ctx->expected_bytes_per_sample);
+	ctx->total += commit->sample_count;
+	return 0;
+}
+
+static struct linkr_debugger_la_stream_sink test_generic_burst_sink(
+	struct test_generic_burst_sink_context *ctx)
+{
+	struct linkr_debugger_la_stream_sink sink = {
+		.format = LINKR_DEBUGGER_LA_STREAM_PAYLOAD_PACKED_LE_BYTES,
+		.bytes_per_sample = ctx->expected_bytes_per_sample,
+		.max_chunk_samples = ctx->expected_max_chunk_samples,
+		.lease = test_generic_burst_sink_lease,
+		.commit = test_generic_burst_sink_commit,
+		.abort = test_burst_sink_abort,
+		.terminal = test_burst_sink_terminal,
+		.user_data = ctx,
+	};
+
+	return sink;
+}
+
+static void assert_exact_prepare_order(bool ws_transport,
+	enum linkr_debugger_sigrok_linkr_trigger_type trigger)
+{
+	struct linkr_debugger_sigrok_linkr_session session = exact_wide11_session(trigger);
+	struct linkr_debugger_sigrok_linkr_start_prepare prepare;
+	struct linkr_debugger_sigrok_linkr_start_sequence_model model;
+	uint32_t sink_total = 0U;
+	struct linkr_debugger_la_stream_sink sink = test_wide11_burst_sink(&sink_total);
+	int ret;
+
+	linkr_debugger_capture_arbiter_reset();
+	linkr_debugger_capture_arena_init();
+	assert(linkr_debugger_logic_analyzer_cancel() == 0);
+	linkr_debugger_sigrok_linkr_start_prepare_reset(&prepare);
+	ret = linkr_debugger_sigrok_linkr_start_prepare_exact_burst(&prepare,
+		&session, ws_transport, ws_transport ? 77U : 0U,
+		ws_transport ? 3U : 0U, ws_transport ? 3U : 0U,
+		&sink);
+	assert(ret == 0);
+	assert(prepare.state == LINKR_DEBUGGER_SIGROK_LINKR_START_PREPARE_PREPARED);
+	assert(prepare.capture_owner_held);
+	assert(prepare.la_prepare_held);
+	assert(prepare.arena_held);
+	assert(prepare.ws_burst_pool_held == ws_transport);
+	assert(session.capture_owner_held);
+
+	linkr_debugger_sigrok_linkr_start_sequence_model_init(&model, prepare.generation);
+	assert(linkr_debugger_sigrok_linkr_start_sequence_model_record(&model,
+		LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_PREPARE, prepare.generation) == 0);
+	assert(linkr_debugger_sigrok_linkr_start_prepare_go(&prepare, &session) == -ESTALE);
+	assert(linkr_debugger_sigrok_linkr_start_prepare_mark_response_sent(&prepare) == 0);
+	assert(linkr_debugger_sigrok_linkr_start_sequence_model_record(&model,
+		LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_START_RESP, prepare.generation) == 0);
+
+	if (trigger != LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE) {
+		assert(linkr_debugger_sigrok_linkr_start_prepare_go(&prepare, &session) == -EPROTO);
+		assert(linkr_debugger_sigrok_linkr_start_prepare_mark_armed_event_sent(&prepare) == 0);
+		assert(linkr_debugger_sigrok_linkr_start_sequence_model_record(&model,
+			LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_ARMED_EVENT,
+			prepare.generation) == 0);
+	}
+
+	ret = linkr_debugger_sigrok_linkr_start_prepare_go(&prepare, &session);
+	assert(ret == 0);
+	assert(linkr_debugger_sigrok_linkr_start_sequence_model_record(&model,
+		LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_GO, prepare.generation) == 0);
+	assert(session.capture_owner_held);
+	assert(linkr_debugger_capture_arbiter_owner() ==
+		LINKR_DEBUGGER_CAPTURE_OWNER_SIGROK_LINKR);
+	assert(linkr_debugger_logic_analyzer_stop_stream() == 0);
+	assert(linkr_debugger_capture_arbiter_release(
+		LINKR_DEBUGGER_CAPTURE_OWNER_SIGROK_LINKR));
+	session.capture_owner_held = false;
+
+	assert(model.steps[0] == LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_PREPARE);
+	assert(model.steps[1] == LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_START_RESP);
+	if (trigger == LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE) {
+		assert(model.step_count == 3U);
+		assert(model.steps[2] == LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_GO);
+	} else {
+		assert(model.step_count == 4U);
+		assert(model.steps[2] == LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_ARMED_EVENT);
+		assert(model.steps[3] == LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_GO);
+	}
+}
+
+static void test_tcp_exact_prepare_order_none_and_triggered(void)
+{
+	assert_exact_prepare_order(false, LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE);
+	assert_exact_prepare_order(false, LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_RISING);
+}
+
+static void test_ws_exact_prepare_order_none_and_triggered(void)
+{
+	assert_exact_prepare_order(true, LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE);
+	assert_exact_prepare_order(true, LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_RISING);
+}
+
+static void test_exact_prepare_cancels_without_go_on_response_failure(void)
+{
+	struct linkr_debugger_sigrok_linkr_session session = exact_wide11_session(
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE);
+	struct linkr_debugger_sigrok_linkr_start_prepare prepare;
+	struct linkr_debugger_sigrok_linkr_start_sequence_model model;
+	uint32_t sink_total = 0U;
+	struct linkr_debugger_la_stream_sink sink = test_wide11_burst_sink(&sink_total);
+
+	linkr_debugger_capture_arbiter_reset();
+	linkr_debugger_capture_arena_init();
+	assert(linkr_debugger_logic_analyzer_cancel() == 0);
+	linkr_debugger_sigrok_linkr_start_prepare_reset(&prepare);
+	assert(linkr_debugger_sigrok_linkr_start_prepare_exact_burst(&prepare,
+		&session, false, 0U, 0U, 0U, &sink) == 0);
+	linkr_debugger_sigrok_linkr_start_sequence_model_init(&model, prepare.generation);
+	assert(linkr_debugger_sigrok_linkr_start_sequence_model_record(&model,
+		LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_PREPARE, prepare.generation) == 0);
+	linkr_debugger_sigrok_linkr_start_prepare_cancel(&prepare, &session);
+	assert(model.step_count == 1U);
+	assert(!model.go_called);
+	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED);
+	assert(linkr_debugger_capture_arbiter_owner() == LINKR_DEBUGGER_CAPTURE_OWNER_NONE);
+}
+
+static void test_exact_prepare_cancels_without_go_on_armed_event_failure(void)
+{
+	struct linkr_debugger_sigrok_linkr_session session = exact_wide11_session(
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_RISING);
+	struct linkr_debugger_sigrok_linkr_start_prepare prepare;
+	struct linkr_debugger_sigrok_linkr_start_sequence_model model;
+	uint32_t sink_total = 0U;
+	struct linkr_debugger_la_stream_sink sink = test_wide11_burst_sink(&sink_total);
+
+	linkr_debugger_capture_arbiter_reset();
+	linkr_debugger_capture_arena_init();
+	assert(linkr_debugger_logic_analyzer_cancel() == 0);
+	linkr_debugger_sigrok_linkr_start_prepare_reset(&prepare);
+	assert(linkr_debugger_sigrok_linkr_start_prepare_exact_burst(&prepare,
+		&session, false, 0U, 0U, 0U, &sink) == 0);
+	linkr_debugger_sigrok_linkr_start_sequence_model_init(&model, prepare.generation);
+	assert(linkr_debugger_sigrok_linkr_start_sequence_model_record(&model,
+		LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_PREPARE, prepare.generation) == 0);
+	assert(linkr_debugger_sigrok_linkr_start_prepare_mark_response_sent(&prepare) == 0);
+	assert(linkr_debugger_sigrok_linkr_start_sequence_model_record(&model,
+		LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_START_RESP, prepare.generation) == 0);
+	linkr_debugger_sigrok_linkr_start_prepare_cancel(&prepare, &session);
+	assert(model.step_count == 2U);
+	assert(!model.go_called);
+	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED);
+	assert(linkr_debugger_capture_arbiter_owner() == LINKR_DEBUGGER_CAPTURE_OWNER_NONE);
+}
+
+static void test_ws_exact_prepare_partial_cleanup_releases_arena_and_owner(void)
+{
+	struct linkr_debugger_sigrok_linkr_session session = exact_wide11_session(
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE);
+	struct linkr_debugger_sigrok_linkr_start_prepare prepare;
+	uint32_t sink_total = 0U;
+	struct linkr_debugger_la_stream_sink sink = test_wide11_burst_sink(&sink_total);
+
+	linkr_debugger_capture_arbiter_reset();
+	linkr_debugger_capture_arena_init();
+	assert(linkr_debugger_logic_analyzer_cancel() == 0);
+	linkr_debugger_sigrok_linkr_start_prepare_reset(&prepare);
+	assert(linkr_debugger_sigrok_linkr_start_prepare_exact_burst(&prepare,
+		&session, true, 88U, 5U, 5U, &sink) == 0);
+	assert(prepare.arena_held);
+	assert(prepare.ws_burst_pool_held);
+	assert(linkr_debugger_capture_arena_owner() ==
+		LINKR_DEBUGGER_CAPTURE_ARENA_OWNER_WIDE11_BURST);
+	assert(linkr_debugger_capture_arbiter_owner() ==
+		LINKR_DEBUGGER_CAPTURE_OWNER_SIGROK_LINKR);
+	linkr_debugger_sigrok_linkr_start_prepare_cancel(&prepare, &session);
+	assert(session.state == LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED);
+	assert(!session.capture_owner_held);
+	assert(!prepare.arena_held);
+	assert(!prepare.ws_burst_pool_held);
+	assert(linkr_debugger_capture_arena_owner() ==
+		LINKR_DEBUGGER_CAPTURE_ARENA_OWNER_NONE);
+	assert(linkr_debugger_capture_arbiter_owner() == LINKR_DEBUGGER_CAPTURE_OWNER_NONE);
+}
+
+static void test_generic_packed_burst_prepare_acquires_arena_for_fast8_and_post0(void)
+{
+	struct linkr_debugger_sigrok_linkr_start_prepare prepare;
+	struct test_generic_burst_sink_context ctx = {
+		.expected_bytes_per_sample = 1U,
+		.expected_max_chunk_samples =
+			LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_PAYLOAD_BYTES,
+	};
+	struct linkr_debugger_la_stream_sink sink = test_generic_burst_sink(&ctx);
+	struct linkr_debugger_sigrok_linkr_session session = fast8_session(
+		LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_RATE_HZ / 1000U,
+		LINKR_DEBUGGER_LA_PACKED_BURST_MAX_SAMPLES);
+
+	linkr_debugger_capture_arbiter_reset();
+	linkr_debugger_capture_arena_init();
+	assert(linkr_debugger_logic_analyzer_cancel() == 0);
+	linkr_debugger_sigrok_linkr_start_prepare_reset(&prepare);
+	assert(linkr_debugger_sigrok_linkr_start_prepare_capture(&prepare, &session,
+		true, 91U, 6U, 6U, &sink) == 0);
+	assert(prepare.capture_owner_held);
+	assert(prepare.arena_held);
+	assert(prepare.ws_burst_pool_held);
+	assert(prepare.la_prepare_held);
+	assert(prepare.la_prepare.hardware_prepared);
+	assert(prepare.la_prepare.plan.legacy_adapter ==
+		LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+	assert(prepare.la_prepare.sink.bytes_per_sample == 1U);
+	assert(prepare.la_prepare.sink.max_chunk_samples ==
+		LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_PAYLOAD_BYTES);
+	linkr_debugger_sigrok_linkr_start_prepare_cancel(&prepare, &session);
+	assert(linkr_debugger_capture_arena_owner() ==
+		LINKR_DEBUGGER_CAPTURE_ARENA_OWNER_NONE);
+	assert(linkr_debugger_capture_arbiter_owner() == LINKR_DEBUGGER_CAPTURE_OWNER_NONE);
+
+	session = exact_wide11_session(LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE);
+	session.config.post_samples = 0U;
+	ctx.expected_bytes_per_sample = LINKR_DEBUGGER_LA_WIDE11_BURST_PACKED_SAMPLE_BYTES;
+	ctx.expected_max_chunk_samples =
+		linkr_debugger_sigrok_linkr_packed_burst_max_chunk_samples(
+			ctx.expected_bytes_per_sample);
+	sink = test_generic_burst_sink(&ctx);
+	linkr_debugger_sigrok_linkr_start_prepare_reset(&prepare);
+	assert(linkr_debugger_sigrok_linkr_start_prepare_capture(&prepare, &session,
+		true, 92U, 7U, 7U, &sink) == 0);
+	assert(prepare.arena_held);
+	assert(prepare.ws_burst_pool_held);
+	assert(prepare.la_prepare.hardware_prepared);
+	assert(prepare.la_prepare.plan.legacy_adapter ==
+		LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+	assert(prepare.la_prepare.sink.bytes_per_sample ==
+		LINKR_DEBUGGER_LA_WIDE11_BURST_PACKED_SAMPLE_BYTES);
+	assert(prepare.la_prepare.sink.max_chunk_samples ==
+		ctx.expected_max_chunk_samples);
+	linkr_debugger_sigrok_linkr_start_prepare_cancel(&prepare, &session);
+	assert(linkr_debugger_capture_arena_owner() ==
+		LINKR_DEBUGGER_CAPTURE_ARENA_OWNER_NONE);
+	assert(linkr_debugger_capture_arbiter_owner() == LINKR_DEBUGGER_CAPTURE_OWNER_NONE);
+}
+
+static void test_low_rate_post513_prepare_uses_ordinary_stream_without_arena(void)
+{
+	struct linkr_debugger_sigrok_linkr_start_prepare prepare;
+	struct test_generic_burst_sink_context ctx = {
+		.expected_bytes_per_sample = 1U,
+		.expected_max_chunk_samples = LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES,
+	};
+	struct linkr_debugger_la_stream_sink sink = test_generic_burst_sink(&ctx);
+	struct linkr_debugger_sigrok_linkr_session session = fast8_session(500U, 513U);
+
+	linkr_debugger_capture_arbiter_reset();
+	linkr_debugger_capture_arena_init();
+	assert(linkr_debugger_logic_analyzer_cancel() == 0);
+	linkr_debugger_sigrok_linkr_start_prepare_reset(&prepare);
+	assert(linkr_debugger_sigrok_linkr_start_prepare_capture(&prepare, &session,
+		true, 93U, 8U, 8U, &sink) == 0);
+	assert(prepare.capture_owner_held);
+	assert(prepare.arena_held);
+	assert(prepare.ws_burst_pool_held);
+	assert(prepare.la_prepare_held);
+	assert(prepare.la_prepare.hardware_prepared);
+	assert(prepare.la_prepare.plan.legacy_adapter ==
+		LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST);
+	linkr_debugger_sigrok_linkr_start_prepare_cancel(&prepare, &session);
+	assert(linkr_debugger_capture_arena_owner() ==
+		LINKR_DEBUGGER_CAPTURE_ARENA_OWNER_NONE);
+	assert(linkr_debugger_capture_arbiter_owner() == LINKR_DEBUGGER_CAPTURE_OWNER_NONE);
+}
+
 static void test_start_failure_rollback_and_error_response(void)
 {
 	struct linkr_debugger_sigrok_linkr_session session;
 	struct linkr_debugger_sigrok_linkr_action_result action = {
-		.capture_action = LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_START_IMMEDIATE,
+		.capture_action = LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_PREPARE_IMMEDIATE,
 		.has_event = true,
 		.event = {
 			.session_id = 9U,
@@ -928,7 +2079,7 @@ static void test_caps_init(void)
 	assert(LINKR_DEBUGGER_SIGROK_LINKR_MAX_PAYLOAD_BYTES ==
 		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + 4096U);
 	assert(LINKR_DEBUGGER_SIGROK_LINKR_CONTROL_MAX_REQUEST_BYTES ==
-		LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_BYTES);
+		LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES);
 	assert(LINKR_DEBUGGER_SIGROK_LINKR_CONTROL_MAX_RESPONSE_BYTES ==
 		1U + ((size_t)LINKR_DEBUGGER_SIGROK_LINKR_MODE_CAPS_BYTES *
 		LINKR_DEBUGGER_SIGROK_LINKR_CAPS_MODE_COUNT));
@@ -943,31 +2094,31 @@ static void test_caps_init(void)
 	assert(caps.mode_count == LINKR_DEBUGGER_SIGROK_LINKR_CAPS_MODE_COUNT);
 	assert(caps.modes[0].mode_id == LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8);
 	assert(caps.modes[0].channel_count == 8U);
-	assert((caps.modes[0].mode_flags & LINKR_DEBUGGER_SIGROK_LINKR_MODE_FLAG_PRE_TRIGGER) == 0U);
+	assert((caps.modes[0].mode_flags & LINKR_DEBUGGER_SIGROK_LINKR_MODE_FLAG_PRE_TRIGGER) != 0U);
 	assert(caps.modes[0].sample_bytes == 1U);
 	assert(caps.modes[0].max_samplerate_khz == 125000U);
-	assert(caps.modes[1].mode_id == LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE12);
-	assert(caps.modes[1].channel_count == 12U);
-	assert((caps.modes[1].mode_flags & LINKR_DEBUGGER_SIGROK_LINKR_MODE_FLAG_PRE_TRIGGER) == 0U);
+	assert(caps.modes[1].mode_id == LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11);
+	assert(caps.modes[1].channel_count == 11U);
+	assert((caps.modes[1].mode_flags & LINKR_DEBUGGER_SIGROK_LINKR_MODE_FLAG_PRE_TRIGGER) != 0U);
 	assert(caps.modes[1].sample_bytes == 2U);
 	assert(caps.modes[1].max_samplerate_khz == 125000U);
 }
 
 static void test_bytes_per_sample_by_mode_width(void)
 {
-	uint16_t samples[2] = { 0x0001U, 0x0f01U };
+	uint16_t samples[2] = { 0x0001U, 0x0701U };
 	uint8_t out[4];
 
 	assert(linkr_debugger_sigrok_linkr_bytes_per_sample(0x0000U) == 0U);
 	assert(linkr_debugger_sigrok_linkr_bytes_per_sample(0x0001U) == 1U);
 	assert(linkr_debugger_sigrok_linkr_bytes_per_sample(0x00ffU) == 1U);
-	assert(linkr_debugger_sigrok_linkr_bytes_per_sample(0x0fffU) == 2U);
-	assert(linkr_debugger_sigrok_linkr_compress_bit_pack(samples, 2U, 0x0fffU,
+	assert(linkr_debugger_sigrok_linkr_bytes_per_sample(0x07ffU) == 2U);
+	assert(linkr_debugger_sigrok_linkr_compress_bit_pack(samples, 2U, 0x07ffU,
 		out, sizeof(out)) == 4U);
 	assert(out[0] == 0x01U);
 	assert(out[1] == 0x00U);
 	assert(out[2] == 0x01U);
-	assert(out[3] == 0x0fU);
+	assert(out[3] == 0x07U);
 }
 
 static void test_bit_pack_single_fast_path_encodes_one_byte_per_sample(void)
@@ -989,8 +2140,8 @@ static void test_packed_data_len_is_exact_by_channel_width(void)
 	assert(linkr_debugger_sigrok_linkr_packed_data_len(0x0000U, 128U) == 0U);
 	assert(linkr_debugger_sigrok_linkr_packed_data_len(0x0001U, 128U) == 128U);
 	assert(linkr_debugger_sigrok_linkr_packed_data_len(0x00ffU, 4096U) == 4096U);
-	assert(linkr_debugger_sigrok_linkr_packed_data_len(0x0fffU, 2048U) == 4096U);
-	assert(linkr_debugger_sigrok_linkr_packed_data_len(0x0fffU, 2049U) == 4098U);
+	assert(linkr_debugger_sigrok_linkr_packed_data_len(0x07ffU, 2048U) == 4096U);
+	assert(linkr_debugger_sigrok_linkr_packed_data_len(0x07ffU, 2049U) == 4098U);
 }
 
 static void test_bit_pack_rle_encodes_idle_1_byte_units(void)
@@ -1084,13 +2235,35 @@ static void test_bit_pack_rle_single_run_length_byte_order_and_capacity(void)
 
 static void test_bit_pack_rle_encodes_2_byte_units_with_channel_mapping(void)
 {
-	uint16_t samples[] = {0x0801U, 0x0801U, 0x0801U, 0x0001U, 0x0001U};
+	uint16_t samples[] = {0x0401U, 0x0401U, 0x0401U, 0x0001U, 0x0001U};
 	uint8_t out[10];
 
-	assert(linkr_debugger_sigrok_linkr_compress_bit_pack_rle(samples, 5U, 0x0fffU,
+	assert(linkr_debugger_sigrok_linkr_compress_bit_pack_rle(samples, 5U, 0x07ffU,
 		out, sizeof(out)) == 8U);
-	assert(memcmp(out, (uint8_t[]){0x01U, 0x08U, 0x03U, 0x00U, 0x01U, 0x00U,
+	assert(memcmp(out, (uint8_t[]){0x01U, 0x04U, 0x03U, 0x00U, 0x01U, 0x00U,
 		0x02U, 0x00U}, 8U) == 0);
+}
+
+static void test_packed_wide11_sender_prefers_bit_pack_rle_when_smaller(void)
+{
+	uint8_t packed[2048];
+	uint8_t frame[64];
+	struct linkr_debugger_sigrok_linkr_header header;
+	size_t len;
+	const uint8_t *meta;
+	const uint8_t *payload;
+
+	memset(packed, 0, sizeof(packed));
+	len = linkr_debugger_sigrok_linkr_encode_packed_data_frame(7U, 1024U, 0x07ffU,
+		packed, sizeof(packed), true, frame, sizeof(frame));
+	assert(len == LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + 4U);
+	assert(linkr_debugger_sigrok_linkr_decode_header(frame, len, &header) == 0);
+	assert(header.payload_len == LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + 4U);
+	meta = frame + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
+	assert(meta[5] == LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_BIT_PACK_RLE);
+	payload = meta + LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES;
+	assert(memcmp(payload, (uint8_t[]){0x00U, 0x00U, 0x00U, 0x04U}, 4U) == 0);
 }
 
 static size_t decode_single_rle(const uint8_t *payload, size_t payload_len,
@@ -1391,6 +2564,28 @@ static void test_packed_sender_2048_single_frame_capacity_boundary(void)
 		frame, sizeof(frame)) == 0U);
 }
 
+static void test_packed_sender_sparse_fast8_1696_tail_frame_encodes(void)
+{
+	uint8_t packed[1696U];
+	uint8_t frame[LINKR_DEBUGGER_SIGROK_LINKR_WS_MAX_FRAME_BYTES];
+	struct linkr_debugger_sigrok_linkr_header header;
+	size_t len;
+
+	memset(packed, 0xa5, sizeof(packed));
+	len = linkr_debugger_sigrok_linkr_encode_packed_data_frame(98304U, 1696U,
+		0x0089U, packed, sizeof(packed), true, frame, sizeof(frame));
+	assert(len > LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES);
+	assert(len <= LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + sizeof(packed));
+	assert(linkr_debugger_sigrok_linkr_decode_header(frame,
+		LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES, &header) == 0);
+	assert(header.type == LINKR_DEBUGGER_SIGROK_LINKR_FRAME_DATA);
+	assert(header.payload_len > LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES);
+	assert(header.payload_len <= LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES +
+		sizeof(packed));
+}
+
 static void test_stream_queue_capacity_reserves_terminal_slot(void)
 {
 	assert(LINKR_DEBUGGER_SIGROK_LINKR_STREAM_QDEPTH_LIMIT == 32U);
@@ -1406,7 +2601,7 @@ static void test_ws_fixed_pool_capacity_has_8_data_plus_terminal_reserve(void)
 {
 	assert(LINKR_DEBUGGER_SIGROK_LINKR_WS_DATA_SLOT_COUNT == 8U);
 	assert(LINKR_DEBUGGER_SIGROK_LINKR_WS_TERMINAL_SLOT_COUNT == 1U);
-	assert(LINKR_DEBUGGER_SIGROK_LINKR_WS_WIDE12_PAYLOAD_BYTES == 2048U);
+	assert(LINKR_DEBUGGER_SIGROK_LINKR_WS_WIDE11_PAYLOAD_BYTES == 2048U);
 	assert(LINKR_DEBUGGER_SIGROK_LINKR_WS_MAX_FRAME_BYTES == 2065U);
 	assert(linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(0U, false));
 	assert(linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(7U, false));
@@ -1415,6 +2610,322 @@ static void test_ws_fixed_pool_capacity_has_8_data_plus_terminal_reserve(void)
 	assert(!linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(7U, true));
 	assert(linkr_debugger_sigrok_linkr_ws_pool_terminal_has_capacity(false));
 	assert(!linkr_debugger_sigrok_linkr_ws_pool_terminal_has_capacity(true));
+}
+
+static void test_raw_burst_queue_capacity_and_backpressure_wake_model(void)
+{
+	uint32_t queued = 0U;
+
+	assert(LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_COUNT == 12U);
+	assert(LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_MAX_SAMPLES_PER_ITEM == 1024U);
+	assert(LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_MAX_FRAME_BYTES == 2065U);
+	assert(linkr_debugger_sigrok_linkr_raw_burst_queue_memory_bytes(
+		LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_COUNT,
+		LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_MAX_FRAME_BYTES) <
+		LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_QUEUE_MEMORY_LIMIT_BYTES);
+	while (queued < LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_COUNT) {
+		assert(linkr_debugger_sigrok_linkr_raw_burst_queue_has_space(queued,
+			LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_COUNT));
+		queued++;
+	}
+	assert(!linkr_debugger_sigrok_linkr_raw_burst_queue_has_space(queued,
+		LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_COUNT));
+	queued--;
+	assert(linkr_debugger_sigrok_linkr_raw_burst_queue_has_space(queued,
+		LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_COUNT));
+}
+
+static void test_raw_burst_exact_98_frame_accounting(void)
+{
+	uint32_t emitted = 0U;
+	uint32_t frames = 0U;
+	uint32_t sample_index = 0U;
+
+	while (emitted < LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES) {
+		uint16_t count = linkr_debugger_sigrok_linkr_raw_burst_frame_sample_count(
+			emitted, LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES,
+			LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_MAX_SAMPLES_PER_ITEM);
+
+		assert(count > 0U);
+		assert(count <= LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_MAX_SAMPLES_PER_ITEM);
+		assert(sample_index == (emitted & LINKR_DEBUGGER_SIGROK_LINKR_MAX_SAMPLE_INDEX));
+		sample_index = linkr_debugger_sigrok_linkr_advance_sample_index(sample_index,
+			count);
+		emitted += count;
+		frames++;
+	}
+	assert(frames == 98U);
+	assert(emitted == 100000U);
+	assert(linkr_debugger_sigrok_linkr_raw_burst_frame_sample_count(emitted,
+		LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES,
+		LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_MAX_SAMPLES_PER_ITEM) == 0U);
+}
+
+static void test_ws_burst_reused_slots_deliver_2048_tail_before_stopped_model(void)
+{
+	enum {
+		WS_BURST_MODEL_DATA = 1,
+		WS_BURST_MODEL_STOPPED = 2,
+	};
+	uint8_t order[50];
+	uint32_t emitted = 0U;
+	uint32_t frames = 0U;
+	uint32_t outstanding = 0U;
+	uint32_t free_slots = 2U;
+	uint32_t slot_use[2] = { 0U, 0U };
+
+	while (emitted < LINKR_DEBUGGER_LA_PACKED_BURST_MAX_SAMPLES) {
+		uint16_t count = linkr_debugger_sigrok_linkr_raw_burst_frame_sample_count(
+			emitted, LINKR_DEBUGGER_LA_PACKED_BURST_MAX_SAMPLES,
+			LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES);
+		uint32_t slot;
+
+		assert(count > 0U);
+		assert(free_slots > 0U);
+		free_slots--;
+		outstanding++;
+		slot = frames % 2U;
+		slot_use[slot]++;
+
+		order[frames++] = WS_BURST_MODEL_DATA;
+		if (frames <= 48U) {
+			assert(count == LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES);
+		} else {
+			assert(count == 1696U);
+		}
+		emitted += count;
+
+		assert(outstanding > 0U);
+		outstanding--;
+		free_slots++;
+	}
+	order[frames++] = WS_BURST_MODEL_STOPPED;
+
+	assert(frames == 50U);
+	assert(emitted == LINKR_DEBUGGER_LA_PACKED_BURST_MAX_SAMPLES);
+	assert(slot_use[0] == 25U);
+	assert(slot_use[1] == 24U);
+	assert(outstanding == 0U);
+	assert(free_slots == 2U);
+	for (uint32_t i = 0U; i < frames - 1U; i++) {
+		assert(order[i] == WS_BURST_MODEL_DATA);
+	}
+	assert(order[48] == WS_BURST_MODEL_DATA);
+	assert(order[49] == WS_BURST_MODEL_STOPPED);
+}
+
+static void test_ws_burst_lease_vs_inflight_terminal_model(void)
+{
+	uint32_t open_leases = 0U;
+	uint32_t inflight_frames = 0U;
+	bool terminal_committed = false;
+	bool terminal_free = true;
+	bool source_decode_complete = false;
+
+	/* A TRIGGERED event that has already entered FIFO must not block STOPPED enqueue. */
+	open_leases++;
+	assert(open_leases == 1U);
+	assert(inflight_frames == 0U);
+	open_leases--;
+	inflight_frames++;
+	assert(open_leases == 0U);
+	assert(inflight_frames == 1U);
+	assert(open_leases == 0U && terminal_free);
+
+	open_leases++;
+	terminal_free = false;
+	assert(open_leases == 1U);
+	open_leases--;
+	inflight_frames++;
+	terminal_committed = true;
+	source_decode_complete = true;
+	assert(terminal_committed);
+	assert(inflight_frames == 2U);
+	assert(!(source_decode_complete && terminal_committed && terminal_free &&
+		open_leases == 0U && inflight_frames == 0U));
+
+	/* Drain requires sender-owned TRIGGERED and terminal frames to release. */
+	inflight_frames--;
+	assert(inflight_frames == 1U);
+	terminal_free = true;
+	inflight_frames--;
+	assert(source_decode_complete && terminal_committed && terminal_free &&
+		open_leases == 0U && inflight_frames == 0U);
+}
+
+static void test_ws_burst_open_lease_blocks_terminal_model(void)
+{
+	uint32_t open_leases = 0U;
+	uint32_t inflight_frames = 0U;
+	bool terminal_free = true;
+
+	open_leases++;
+	assert(!(open_leases == 0U && terminal_free));
+
+	open_leases--;
+	inflight_frames++;
+	assert(open_leases == 0U && terminal_free);
+	assert(inflight_frames == 1U);
+}
+
+static void test_ws_burst_stop_pending_waits_for_source_done_and_drained_model(void)
+{
+	bool stop_pending = true;
+	bool abort_pending = false;
+	bool burst_active = true;
+	bool source_done = false;
+	bool terminal_committed = false;
+	bool terminal_free = true;
+	uint32_t open_leases = 0U;
+	uint32_t inflight_frames = 0U;
+	bool capture_released = false;
+
+	/* Consumer observes FIFO empty before producer commits the final DATA and STOPPED. */
+	assert(stop_pending);
+	assert(!abort_pending);
+	assert(burst_active);
+	assert(!(source_done && terminal_committed && terminal_free && open_leases == 0U &&
+		inflight_frames == 0U));
+	assert(!capture_released);
+
+	/* Producer then commits final DATA and terminal; normal stop must still wait. */
+	inflight_frames += 2U;
+	terminal_committed = true;
+	terminal_free = false;
+	source_done = true;
+	assert(stop_pending);
+	assert(!(source_done && terminal_committed && terminal_free && open_leases == 0U &&
+		inflight_frames == 0U));
+	assert(!capture_released);
+
+	/* DATA release alone is insufficient; terminal release completes the drain. */
+	inflight_frames--;
+	assert(!capture_released);
+	terminal_free = true;
+	inflight_frames--;
+	assert(source_done && terminal_committed && terminal_free && open_leases == 0U &&
+		inflight_frames == 0U);
+	stop_pending = false;
+	capture_released = true;
+	assert(capture_released);
+}
+
+static void test_ws_burst_drain_failure_abort_pending_releases_immediately_model(void)
+{
+	bool stop_pending = true;
+	bool abort_pending = true;
+	bool source_done = true;
+	bool terminal_committed = true;
+	bool terminal_free = false;
+	uint32_t open_leases = 0U;
+	uint32_t inflight_frames = 2U;
+	bool capture_released = false;
+
+	assert(!(source_done && terminal_committed && terminal_free && open_leases == 0U &&
+		inflight_frames == 0U));
+	if (abort_pending) {
+		abort_pending = false;
+		stop_pending = false;
+		capture_released = true;
+	}
+
+	assert(!abort_pending);
+	assert(!stop_pending);
+	assert(capture_released);
+}
+
+static void test_raw_burst_disconnect_unblocks_waiter_model(void)
+{
+	bool active = true;
+	bool aborted = false;
+	uint32_t queued = LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_COUNT;
+
+	assert(!linkr_debugger_sigrok_linkr_raw_burst_queue_has_space(queued,
+		LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_COUNT));
+	aborted = true;
+	active = false;
+	queued--;
+	assert(aborted);
+	assert(!active);
+	assert(linkr_debugger_sigrok_linkr_raw_burst_queue_has_space(queued,
+		LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_COUNT));
+}
+
+static void test_raw_burst_terminal_order_model(void)
+{
+	enum {
+		RAW_BURST_MODEL_DATA = 1,
+		RAW_BURST_MODEL_TERMINAL = 2,
+	};
+	uint8_t order[99];
+	uint32_t emitted = 0U;
+	uint32_t frames = 0U;
+
+	while (emitted < LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES) {
+		uint16_t count = linkr_debugger_sigrok_linkr_raw_burst_frame_sample_count(
+			emitted, LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES,
+			LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_MAX_SAMPLES_PER_ITEM);
+
+		order[frames++] = RAW_BURST_MODEL_DATA;
+		emitted += count;
+	}
+	order[frames++] = RAW_BURST_MODEL_TERMINAL;
+	assert(frames == 99U);
+	for (uint32_t i = 0U; i < frames - 1U; i++) {
+		assert(order[i] == RAW_BURST_MODEL_DATA);
+	}
+	assert(order[frames - 1U] == RAW_BURST_MODEL_TERMINAL);
+}
+
+static void test_raw_burst_triggered_exact_order_and_one_shot_model(void)
+{
+	enum {
+		RAW_BURST_MODEL_START_RESP = 1,
+		RAW_BURST_MODEL_ARMED = 2,
+		RAW_BURST_MODEL_TRIGGERED = 3,
+		RAW_BURST_MODEL_DATA = 4,
+		RAW_BURST_MODEL_STOPPED = 5,
+	};
+	uint8_t order[102];
+	uint32_t emitted = 0U;
+	uint32_t frames = 0U;
+	bool triggered_committed = false;
+	uint32_t triggered_count = 0U;
+
+	assert(!linkr_debugger_sigrok_linkr_raw_burst_should_emit_triggered_event(
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_NONE, false));
+	assert(linkr_debugger_sigrok_linkr_raw_burst_should_emit_triggered_event(
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_RISING, false));
+	assert(!linkr_debugger_sigrok_linkr_raw_burst_should_emit_triggered_event(
+		LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_RISING, true));
+
+	order[frames++] = RAW_BURST_MODEL_START_RESP;
+	order[frames++] = RAW_BURST_MODEL_ARMED;
+	while (emitted < LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES) {
+		uint16_t count = linkr_debugger_sigrok_linkr_raw_burst_frame_sample_count(
+			emitted, LINKR_DEBUGGER_LA_WIDE11_BURST_TARGET_SAMPLES,
+			LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_MAX_SAMPLES_PER_ITEM);
+
+		if (linkr_debugger_sigrok_linkr_raw_burst_should_emit_triggered_event(
+		    LINKR_DEBUGGER_SIGROK_LINKR_TRIGGER_RISING, triggered_committed)) {
+			order[frames++] = RAW_BURST_MODEL_TRIGGERED;
+			triggered_committed = true;
+			triggered_count++;
+		}
+		order[frames++] = RAW_BURST_MODEL_DATA;
+		emitted += count;
+	}
+	order[frames++] = RAW_BURST_MODEL_STOPPED;
+
+	assert(frames == 102U);
+	assert(triggered_count == 1U);
+	assert(order[0] == RAW_BURST_MODEL_START_RESP);
+	assert(order[1] == RAW_BURST_MODEL_ARMED);
+	assert(order[2] == RAW_BURST_MODEL_TRIGGERED);
+	for (uint32_t i = 3U; i < frames - 1U; i++) {
+		assert(order[i] == RAW_BURST_MODEL_DATA);
+	}
+	assert(order[frames - 1U] == RAW_BURST_MODEL_STOPPED);
 }
 
 static void test_ws_slot_state_contract_returns_slots_exactly_once(void)
@@ -1606,6 +3117,18 @@ static void test_bounded_capture_helpers(void)
 	session.config.post_samples = UINT16_MAX;
 	session.emitted_samples = UINT16_MAX - 10U;
 	assert(linkr_debugger_sigrok_linkr_bounded_chunk_count(&session, 1024U) == 10U);
+
+	session.config.pre_samples = 16U;
+	session.config.post_samples = 16U;
+	session.emitted_samples = 0U;
+	assert(linkr_debugger_sigrok_linkr_bounded_sample_target(&session) == 32U);
+	assert(linkr_debugger_sigrok_linkr_trigger_sample_index(&session) == 16U);
+	assert(linkr_debugger_sigrok_linkr_bounded_chunk_count(&session, 32U) == 32U);
+	assert(!linkr_debugger_sigrok_linkr_bounded_capture_done(&session));
+	session.emitted_samples = 31U;
+	assert(!linkr_debugger_sigrok_linkr_bounded_capture_done(&session));
+	session.emitted_samples = 32U;
+	assert(linkr_debugger_sigrok_linkr_bounded_capture_done(&session));
 }
 
 static void test_coalesce_helper_limits_count_and_buffer_capacity(void)
@@ -1661,6 +3184,7 @@ int main(void)
 	test_header_roundtrip();
 	test_decode_next_request_frame_rejects_truncated_boundaries();
 	test_decode_next_request_frame_rejects_overlong_control_payload();
+	test_decode_next_request_frame_accepts_config_v2_control_payload();
 	test_decode_next_request_frame_processes_concatenated_fifo();
 	test_decode_next_request_frame_rejects_extra_nonframe_tail();
 	test_validate_header_bad_magic();
@@ -1668,20 +3192,36 @@ int main(void)
 	test_validate_header_oversize();
 	test_validate_request_hello_no_payload();
 	test_validate_request_hello_with_payload();
+	test_validate_request_config_lengths_are_versioned();
+	test_decode_config_v1_keeps_12_byte_uint16_samples();
+	test_decode_config_v2_accepts_u32_samples_and_zero_post_sentinel();
+	test_decode_config_rejects_unknown_lengths_cleanly();
 	test_validate_config_fast8();
-	test_validate_config_wide12();
+	test_validate_config_wide11();
 	test_validate_config_fast8_too_fast();
 	test_validate_config_trigger_channel_not_in_mask();
-	test_validate_config_rejects_pre_samples();
+	test_validate_config_accepts_only_bounded_pre_trigger_contract();
 	test_to_la_config_fast8_single_mask();
 	test_to_la_config_fast8_sparse_mask();
 	test_to_la_config_fast8_full_mask();
-	test_to_la_config_wide12_sparse_mask_with_bit11();
-	test_to_la_config_wide12_full_mask();
+	test_to_la_config_wide11_sparse_mask_with_bit10();
+	test_to_la_config_wide11_full_mask();
 	test_to_la_config_rejects_unselected_trigger_bit();
+	test_to_la_config_preserves_bounded_pre_trigger();
+	test_to_la_config_rejects_infeasible_bounded_pre_trigger();
+	test_handle_config_accepts_bounded_pre_trigger();
 	test_handle_hello();
+	test_hello_flags_distinguish_legacy_config_v2_from_generic_packed();
 	test_handle_caps();
 	test_handle_config();
+	test_handle_config_v2_fast8_large_post_prepares_on_start();
+	test_handle_config_v2_exact_wide11_large_post_prepares_on_start();
+	test_handle_config_v2_wide11_125mhz_large_post_rejects_on_start();
+	test_handle_config_v2_sparse_wide11_125mhz_rejects_on_start();
+	test_handle_config_v2_exact_wide11_triggered_prepares_with_armed_event();
+	test_handle_config_v2_preserves_zero_post_start_behavior();
+	test_handle_config_v2_sparse_fast8_125mhz_large_post_prepares_on_start();
+	test_handle_config_v2_rejects_post_above_packed_burst_capacity_on_start();
 	test_handle_config_ack_uses_current_request_rate();
 	test_handle_start_immediate();
 	test_handle_start_armed();
@@ -1690,6 +3230,13 @@ int main(void)
 	test_handle_stop_preserves_same_socket_config_start_reuse();
 	test_handle_start_busy();
 	test_start_error_code_mapping();
+	test_tcp_exact_prepare_order_none_and_triggered();
+	test_ws_exact_prepare_order_none_and_triggered();
+	test_exact_prepare_cancels_without_go_on_response_failure();
+	test_exact_prepare_cancels_without_go_on_armed_event_failure();
+	test_ws_exact_prepare_partial_cleanup_releases_arena_and_owner();
+	test_generic_packed_burst_prepare_acquires_arena_for_fast8_and_post0();
+	test_low_rate_post513_prepare_uses_ordinary_stream_without_arena();
 	test_start_failure_rollback_and_error_response();
 	test_session_reset();
 	test_caps_init();
@@ -1703,6 +3250,7 @@ int main(void)
 	test_bit_pack_rle_alternating_falls_back_when_no_benefit();
 	test_bit_pack_rle_single_run_length_byte_order_and_capacity();
 	test_bit_pack_rle_encodes_2_byte_units_with_channel_mapping();
+	test_packed_wide11_sender_prefers_bit_pack_rle_when_smaller();
 	test_packed_single_sender_rle_frame_decodes_to_original_bytes();
 	test_packed_single_sender_fallback_frame_matches_bit_pack_bytes();
 	test_packed_sender_rle_helper_falls_back_before_growth();
@@ -1711,8 +3259,19 @@ int main(void)
 	test_packed_sender_rle_single_fast_path_matches_reference_randomized();
 	test_packed_sender_multiple_deferred_frames_fit_tx_buffer();
 	test_packed_sender_2048_single_frame_capacity_boundary();
+	test_packed_sender_sparse_fast8_1696_tail_frame_encodes();
 	test_stream_queue_capacity_reserves_terminal_slot();
 	test_ws_fixed_pool_capacity_has_8_data_plus_terminal_reserve();
+	test_raw_burst_queue_capacity_and_backpressure_wake_model();
+	test_raw_burst_exact_98_frame_accounting();
+	test_ws_burst_reused_slots_deliver_2048_tail_before_stopped_model();
+	test_ws_burst_lease_vs_inflight_terminal_model();
+	test_ws_burst_open_lease_blocks_terminal_model();
+	test_ws_burst_stop_pending_waits_for_source_done_and_drained_model();
+	test_ws_burst_drain_failure_abort_pending_releases_immediately_model();
+	test_raw_burst_disconnect_unblocks_waiter_model();
+	test_raw_burst_terminal_order_model();
+	test_raw_burst_triggered_exact_order_and_one_shot_model();
 	test_ws_slot_state_contract_returns_slots_exactly_once();
 	test_ws_slot_commit_gate_requires_popped_matching_owner_generation();
 	test_stream_queue_byte_capacity_enforces_36kib_boundary();

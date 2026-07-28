@@ -8,6 +8,8 @@
 #define RADXA_LINKR_DEBUGGER_SIGROK_LINKR_H_
 
 #include "linkr_debugger_capture_arbiter.h"
+#include "linkr_debugger_capture_arena.h"
+#include "linkr_debugger_logic_analyzer.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -20,6 +22,7 @@
 
 #define LINKR_DEBUGGER_SIGROK_LINKR_HELLO_BYTES 5U
 #define LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_BYTES 12U
+#define LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES 16U
 #define LINKR_DEBUGGER_SIGROK_LINKR_ACK_BYTES 6U
 #define LINKR_DEBUGGER_SIGROK_LINKR_EVENT_BYTES 6U
 #define LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES 8U
@@ -31,7 +34,7 @@
 	(LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + LINKR_DEBUGGER_SIGROK_LINKR_MAX_DATA_BYTES)
 #define LINKR_DEBUGGER_SIGROK_LINKR_CAPS_MODE_COUNT 2U
 #define LINKR_DEBUGGER_SIGROK_LINKR_CONTROL_MAX_REQUEST_BYTES \
-	LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_BYTES
+	LINKR_DEBUGGER_SIGROK_LINKR_CONFIG_V2_BYTES
 #define LINKR_DEBUGGER_SIGROK_LINKR_CONTROL_MAX_RESPONSE_BYTES \
 	(1U + ((size_t)LINKR_DEBUGGER_SIGROK_LINKR_CAPS_MODE_COUNT * \
 	LINKR_DEBUGGER_SIGROK_LINKR_MODE_CAPS_BYTES))
@@ -43,11 +46,23 @@
 #define LINKR_DEBUGGER_SIGROK_LINKR_STREAM_WAKE_TIMEOUT_MS 8U
 #define LINKR_DEBUGGER_SIGROK_LINKR_WS_DATA_SLOT_COUNT 8U
 #define LINKR_DEBUGGER_SIGROK_LINKR_WS_TERMINAL_SLOT_COUNT 1U
-#define LINKR_DEBUGGER_SIGROK_LINKR_WS_WIDE12_PAYLOAD_BYTES 2048U
+#define LINKR_DEBUGGER_SIGROK_LINKR_WS_WIDE11_PAYLOAD_BYTES 2048U
 #define LINKR_DEBUGGER_SIGROK_LINKR_WS_MAX_FRAME_BYTES \
 	(LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + \
 	 LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + \
-	 LINKR_DEBUGGER_SIGROK_LINKR_WS_WIDE12_PAYLOAD_BYTES)
+	 LINKR_DEBUGGER_SIGROK_LINKR_WS_WIDE11_PAYLOAD_BYTES)
+#define LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_COUNT 12U
+#define LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_MAX_SAMPLES_PER_ITEM 1024U
+#define LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_PAYLOAD_BYTES \
+	(LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_MAX_SAMPLES_PER_ITEM * \
+	 LINKR_DEBUGGER_LA_WIDE11_BURST_PACKED_SAMPLE_BYTES)
+#define LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_MAX_FRAME_BYTES \
+	(LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + \
+	 LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + \
+	 LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_PAYLOAD_BYTES)
+#define LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_TERMINAL_FRAME_BYTES \
+	(LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + LINKR_DEBUGGER_SIGROK_LINKR_EVENT_BYTES)
+#define LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_QUEUE_MEMORY_LIMIT_BYTES 49152U
 
 enum linkr_debugger_sigrok_linkr_frame_type {
 	LINKR_DEBUGGER_SIGROK_LINKR_FRAME_HELLO_REQ = 0x01,
@@ -60,6 +75,7 @@ enum linkr_debugger_sigrok_linkr_frame_type {
 	LINKR_DEBUGGER_SIGROK_LINKR_FRAME_START_RESP = 0x08,
 	LINKR_DEBUGGER_SIGROK_LINKR_FRAME_STOP_REQ = 0x09,
 	LINKR_DEBUGGER_SIGROK_LINKR_FRAME_STOP_RESP = 0x0a,
+	LINKR_DEBUGGER_SIGROK_LINKR_FRAME_CONFIG_V2_REQ = 0x0b,
 	LINKR_DEBUGGER_SIGROK_LINKR_FRAME_EVENT = 0x10,
 	LINKR_DEBUGGER_SIGROK_LINKR_FRAME_DATA = 0x11,
 	LINKR_DEBUGGER_SIGROK_LINKR_FRAME_ERROR = 0x7f,
@@ -76,9 +92,9 @@ enum linkr_debugger_sigrok_linkr_error_code {
 	LINKR_DEBUGGER_SIGROK_LINKR_ERROR_BUSY = 8,
 };
 
-enum linkr_debugger_sigrok_linkr_mode_id {
+	enum linkr_debugger_sigrok_linkr_mode_id {
 	LINKR_DEBUGGER_SIGROK_LINKR_MODE_FAST8 = 1,
-	LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE12 = 2,
+	LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11 = 2,
 };
 
 enum linkr_debugger_sigrok_linkr_trigger_type {
@@ -95,6 +111,21 @@ enum linkr_debugger_sigrok_linkr_mode_flags {
 	LINKR_DEBUGGER_SIGROK_LINKR_MODE_FLAG_TRIGGER_FALLING = 1U << 3,
 	LINKR_DEBUGGER_SIGROK_LINKR_MODE_FLAG_TRIGGER_EITHER = 1U << 4,
 	LINKR_DEBUGGER_SIGROK_LINKR_MODE_FLAG_PRE_TRIGGER = 1U << 5,
+};
+
+enum linkr_debugger_sigrok_linkr_server_flags {
+	/* Bit 0 advertises CONFIG_V2 frame encoding only. */
+	LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAG_CONFIG_V2 = 1U << 0,
+	/*
+	 * Bit 1 advertises the generic packed-burst matrix: SINGLE/FAST8
+	 * high-rate packed support plus WIDE11 100 MHz post0/1..100000.
+	 * WIDE11 125 MHz remains excluded by the capture matrix/plan
+	 * validation, not by this flag alone.
+	 */
+	LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAG_GENERIC_PACKED_BURST = 1U << 1,
+	LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAGS_CURRENT =
+		LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAG_CONFIG_V2 |
+		LINKR_DEBUGGER_SIGROK_LINKR_SERVER_FLAG_GENERIC_PACKED_BURST,
 };
 
 enum linkr_debugger_sigrok_linkr_compression {
@@ -125,7 +156,25 @@ enum linkr_debugger_sigrok_linkr_capture_action {
 	LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_NONE = 0,
 	LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_START_IMMEDIATE,
 	LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_START_ARMED,
+	LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_PREPARE_IMMEDIATE,
+	LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_PREPARE_ARMED,
 	LINKR_DEBUGGER_SIGROK_LINKR_CAPTURE_ACTION_STOP,
+};
+
+enum linkr_debugger_sigrok_linkr_start_prepare_state {
+	LINKR_DEBUGGER_SIGROK_LINKR_START_PREPARE_IDLE = 0,
+	LINKR_DEBUGGER_SIGROK_LINKR_START_PREPARE_PREPARED,
+	LINKR_DEBUGGER_SIGROK_LINKR_START_PREPARE_GOING,
+	LINKR_DEBUGGER_SIGROK_LINKR_START_PREPARE_DONE,
+	LINKR_DEBUGGER_SIGROK_LINKR_START_PREPARE_CANCELLED,
+};
+
+enum linkr_debugger_sigrok_linkr_start_sequence_step {
+	LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_PREPARE = 1,
+	LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_START_RESP,
+	LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_ARMED_EVENT,
+	LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_GO,
+	LINKR_DEBUGGER_SIGROK_LINKR_START_SEQUENCE_ERROR,
 };
 
 enum linkr_debugger_sigrok_linkr_stream_wake_action {
@@ -191,8 +240,8 @@ struct linkr_debugger_sigrok_linkr_config {
 	uint8_t trigger_channel;
 	uint16_t channel_mask;
 	uint32_t samplerate_khz;
-	uint16_t pre_samples;
-	uint16_t post_samples;
+	uint32_t pre_samples;
+	uint32_t post_samples;
 };
 
 struct linkr_debugger_la_config;
@@ -238,6 +287,32 @@ struct linkr_debugger_sigrok_linkr_action_result {
 	struct linkr_debugger_sigrok_linkr_event event;
 };
 
+struct linkr_debugger_sigrok_linkr_start_prepare {
+	enum linkr_debugger_sigrok_linkr_start_prepare_state state;
+	uint32_t generation;
+	uint16_t sigrok_session_id;
+	uint32_t ws_session_id;
+	uint32_t ws_stream_generation;
+	uint32_t source_generation;
+	bool capture_owner_held;
+	bool arena_held;
+	bool ws_burst_pool_held;
+	bool la_prepare_held;
+	bool response_sent;
+	bool armed_event_sent;
+	struct linkr_debugger_capture_arena_lease arena_lease;
+	struct linkr_debugger_la_start_prepare la_prepare;
+};
+
+struct linkr_debugger_sigrok_linkr_start_sequence_model {
+	uint32_t generation;
+	uint8_t step_count;
+	bool prepared;
+	bool response_sent;
+	bool go_called;
+	enum linkr_debugger_sigrok_linkr_start_sequence_step steps[8];
+};
+
 void linkr_debugger_sigrok_linkr_caps_init(struct linkr_debugger_sigrok_linkr_caps *caps);
 void linkr_debugger_sigrok_linkr_session_reset(struct linkr_debugger_sigrok_linkr_session *session);
 
@@ -261,6 +336,15 @@ int linkr_debugger_sigrok_linkr_to_la_config(
 	const struct linkr_debugger_sigrok_linkr_config *config,
 	bool armed,
 	struct linkr_debugger_la_config *la_config);
+bool linkr_debugger_sigrok_linkr_config_is_wide11_exact_burst(
+	const struct linkr_debugger_sigrok_linkr_config *config);
+bool linkr_debugger_sigrok_linkr_config_is_packed_burst(
+	const struct linkr_debugger_sigrok_linkr_config *config);
+int linkr_debugger_sigrok_linkr_packed_burst_plan(
+	const struct linkr_debugger_sigrok_linkr_config *config,
+	struct linkr_debugger_la_packed_burst_plan *plan);
+uint32_t linkr_debugger_sigrok_linkr_packed_burst_max_chunk_samples(
+	uint8_t bytes_per_sample);
 
 void linkr_debugger_sigrok_linkr_init_response_header(
 	struct linkr_debugger_sigrok_linkr_header *header,
@@ -332,6 +416,41 @@ void linkr_debugger_sigrok_linkr_build_error_response(
 void linkr_debugger_sigrok_linkr_rollback_start_failure(
 	struct linkr_debugger_sigrok_linkr_session *session,
 	struct linkr_debugger_sigrok_linkr_action_result *action);
+void linkr_debugger_sigrok_linkr_start_prepare_reset(
+	struct linkr_debugger_sigrok_linkr_start_prepare *prepare);
+int linkr_debugger_sigrok_linkr_start_prepare_exact_burst(
+	struct linkr_debugger_sigrok_linkr_start_prepare *prepare,
+	struct linkr_debugger_sigrok_linkr_session *session,
+	bool ws_transport,
+	uint32_t ws_session_id,
+	uint32_t ws_stream_generation,
+	uint32_t source_generation,
+	const struct linkr_debugger_la_stream_sink *sink);
+int linkr_debugger_sigrok_linkr_start_prepare_capture(
+	struct linkr_debugger_sigrok_linkr_start_prepare *prepare,
+	struct linkr_debugger_sigrok_linkr_session *session,
+	bool ws_transport,
+	uint32_t ws_session_id,
+	uint32_t ws_stream_generation,
+	uint32_t source_generation,
+	const struct linkr_debugger_la_stream_sink *sink);
+void linkr_debugger_sigrok_linkr_start_prepare_cancel(
+	struct linkr_debugger_sigrok_linkr_start_prepare *prepare,
+	struct linkr_debugger_sigrok_linkr_session *session);
+int linkr_debugger_sigrok_linkr_start_prepare_mark_response_sent(
+	struct linkr_debugger_sigrok_linkr_start_prepare *prepare);
+int linkr_debugger_sigrok_linkr_start_prepare_mark_armed_event_sent(
+	struct linkr_debugger_sigrok_linkr_start_prepare *prepare);
+int linkr_debugger_sigrok_linkr_start_prepare_go(
+	struct linkr_debugger_sigrok_linkr_start_prepare *prepare,
+	struct linkr_debugger_sigrok_linkr_session *session);
+void linkr_debugger_sigrok_linkr_start_sequence_model_init(
+	struct linkr_debugger_sigrok_linkr_start_sequence_model *model,
+	uint32_t generation);
+int linkr_debugger_sigrok_linkr_start_sequence_model_record(
+	struct linkr_debugger_sigrok_linkr_start_sequence_model *model,
+	enum linkr_debugger_sigrok_linkr_start_sequence_step step,
+	uint32_t generation);
 
 int linkr_debugger_sigrok_linkr_init(void);
 
@@ -372,6 +491,14 @@ bool linkr_debugger_sigrok_linkr_ws_slot_commit_allowed(
 bool linkr_debugger_sigrok_linkr_stream_queue_bytes_has_capacity(size_t qbytes,
 	size_t next_item_bytes, size_t byte_limit, bool needs_terminal_event,
 	size_t terminal_item_bytes);
+size_t linkr_debugger_sigrok_linkr_raw_burst_queue_memory_bytes(uint32_t slot_count,
+	size_t slot_frame_bytes);
+bool linkr_debugger_sigrok_linkr_raw_burst_queue_has_space(uint32_t queued_items,
+	uint32_t slot_count);
+uint16_t linkr_debugger_sigrok_linkr_raw_burst_frame_sample_count(uint32_t emitted,
+	uint32_t total_samples, uint32_t max_samples_per_item);
+bool linkr_debugger_sigrok_linkr_raw_burst_should_emit_triggered_event(
+	uint8_t trigger_type, bool triggered_committed);
 bool linkr_debugger_sigrok_linkr_coalesce_can_append(size_t current_len,
 	size_t next_frame_len, size_t buffer_capacity, uint8_t current_count,
 	uint8_t max_count);
@@ -399,6 +526,10 @@ uint32_t linkr_debugger_sigrok_linkr_advance_sample_index(uint32_t sample_index,
 uint16_t linkr_debugger_sigrok_linkr_bounded_chunk_count(
 	const struct linkr_debugger_sigrok_linkr_session *session,
 	uint32_t offered_count);
+uint32_t linkr_debugger_sigrok_linkr_bounded_sample_target(
+	const struct linkr_debugger_sigrok_linkr_session *session);
+uint32_t linkr_debugger_sigrok_linkr_trigger_sample_index(
+	const struct linkr_debugger_sigrok_linkr_session *session);
 bool linkr_debugger_sigrok_linkr_bounded_capture_done(
 	const struct linkr_debugger_sigrok_linkr_session *session);
 size_t linkr_debugger_sigrok_linkr_compress_bit_pack(
