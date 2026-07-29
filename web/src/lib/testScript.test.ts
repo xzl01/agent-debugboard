@@ -12,6 +12,7 @@ import {
   serializeTestScript,
   isRunSuccessful,
   isTestLoop,
+  isTestUnit,
   buildExecutionPlan,
 } from "./testScript.ts";
 
@@ -247,6 +248,61 @@ describe("serializeTestScript / parseTestScript", () => {
       "delay@loop1:3",
     ]);
     assert.deepEqual(plan.map((step) => step.loopIteration), [1, 1, 2, 2, 3, 3]);
+  });
+
+  it("round-trips a named Unit and executes its packaged steps once", () => {
+    const original = defaultScript();
+    original.steps = [
+      {
+        id: "unit1",
+        type: "loop",
+        params: {
+          count: 1,
+          unit: { name: "Stress test" },
+          steps: [
+            { id: "login", type: "serial_wait", params: { channel: "uart0", pattern: "# ", timeout_ms: 30000 } },
+            { id: "stress", type: "serial_expect", params: { channel: "uart0", command: "stress-ng --cpu 4 --timeout 30s", pattern: "", timeout_ms: 40000 } },
+          ],
+        },
+      },
+    ];
+
+    const parsed = parseTestScript(serializeTestScript(original));
+    assert.equal(isTestUnit(parsed.steps[0]), true);
+    if (!isTestUnit(parsed.steps[0])) throw new Error("expected Unit");
+    assert.equal(parsed.steps[0].params.unit.name, "Stress test");
+    const plan = buildExecutionPlan(parsed);
+    assert.equal(plan.length, 2);
+    assert.deepEqual(plan.map((step) => step.unitId), ["unit1", "unit1"]);
+    assert.deepEqual(plan.map((step) => step.unitName), ["Stress test", "Stress test"]);
+  });
+
+  it("rejects invalid Unit names before execution", () => {
+    const header = JSON.stringify({ schema: "linkr-test.v1", name: "Bad Unit" });
+    const unit = JSON.stringify({
+      id: "unit1",
+      type: "loop",
+      params: {
+        count: 1,
+        unit: { name: "" },
+        steps: [{ id: "delay", type: "delay", params: { ms: 1 } }],
+      },
+    });
+    assert.throws(() => parseTestScript(`${header}\n${unit}\n`), /unit "name"/);
+  });
+
+  it("rejects Unit repeat counts so repeated side effects cannot be hidden", () => {
+    const header = JSON.stringify({ schema: "linkr-test.v1", name: "Repeated Unit" });
+    const unit = JSON.stringify({
+      id: "unit1",
+      type: "loop",
+      params: {
+        count: 2,
+        unit: { name: "Power cycle" },
+        steps: [{ id: "off", type: "power_off", params: { rail: "5v_out" } }],
+      },
+    });
+    assert.throws(() => parseTestScript(`${header}\n${unit}\n`), /unit "count" must be exactly 1/);
   });
 
   it("rejects invalid, empty, and nested loop blocks", () => {

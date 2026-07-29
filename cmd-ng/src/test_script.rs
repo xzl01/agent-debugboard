@@ -157,6 +157,24 @@ pub fn expand_steps(steps: &[TestStep]) -> Result<Vec<TestStep>> {
             "loop {} count must be an integer between {MIN_LOOP_COUNT} and {MAX_LOOP_COUNT}",
             step.id
         );
+        let unit_name = match step.params.get("unit").filter(|unit| !unit.is_null()) {
+            None => None,
+            Some(unit) => {
+                let name = unit
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty() && name.chars().count() <= 80)
+                    .with_context(|| {
+                        format!(
+                            "unit {} name must be a non-empty string up to 80 characters",
+                            step.id
+                        )
+                    })?;
+                ensure!(count == 1, "unit {} count must be exactly 1", step.id);
+                Some(name.to_string())
+            }
+        };
         let children = step.params["steps"]
             .as_array()
             .with_context(|| format!("loop {} steps must be a non-empty array", step.id))?;
@@ -209,6 +227,12 @@ pub fn expand_steps(steps: &[TestStep]) -> Result<Vec<TestStep>> {
                 executable.id
             );
             apply_defaults(&mut executable);
+            if let (Some(unit_name), Some(params)) =
+                (unit_name.as_ref(), executable.params.as_object_mut())
+            {
+                params.insert("__unit_id".to_string(), Value::String(step.id.clone()));
+                params.insert("__unit_name".to_string(), Value::String(unit_name.clone()));
+            }
             child_templates.push(executable);
         }
 
@@ -332,6 +356,27 @@ mod tests {
         assert_eq!(expanded[1].id, "wait@loop1:1");
         assert_eq!(expanded[4].id, "send@loop1:3");
         assert_eq!(expanded[0].params["channel"], "uart1");
+    }
+
+    #[test]
+    fn unit_blocks_execute_once_and_preserve_identity() {
+        let input = r#"{"schema":"linkr-test.v1","name":"unit","version":"1.0"}
+{"id":"unit1","type":"loop","params":{"count":1,"unit":{"name":"Boot and login"},"steps":[{"id":"wait","type":"delay","params":{"ms":10}}]}}"#;
+        let script = parse_script(input.as_bytes()).unwrap();
+        let expanded = expand_steps(&script.steps).unwrap();
+        assert_eq!(expanded.len(), 1);
+        assert_eq!(expanded[0].params["__unit_id"], "unit1");
+        assert_eq!(expanded[0].params["__unit_name"], "Boot and login");
+    }
+
+    #[test]
+    fn repeated_unit_blocks_are_rejected() {
+        let input = r#"{"schema":"linkr-test.v1","name":"unit","version":"1.0"}
+{"id":"unit1","type":"loop","params":{"count":2,"unit":{"name":"Power cycle"},"steps":[{"id":"off","type":"power_off","params":{"rail":"5v_out"}}]}}"#;
+        assert!(parse_script(input.as_bytes())
+            .unwrap_err()
+            .to_string()
+            .contains("count must be exactly 1"));
     }
 
     #[test]

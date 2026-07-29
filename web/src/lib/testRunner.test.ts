@@ -434,6 +434,27 @@ describe("createTestRunner", () => {
     assert.deepEqual(summary.results.map((result) => result.loopCount), [3, 3, 3]);
   });
 
+  it("preserves Unit identity in step results", async () => {
+    const script: TestScript = {
+      schema: "linkr-test.v1",
+      version: "1.0",
+      name: "unit",
+      steps: [{
+        id: "unit1",
+        type: "loop",
+        params: {
+          count: 1,
+          unit: { name: "Boot and login" },
+          steps: [{ id: "wait", type: "delay", params: { ms: 1 } }],
+        },
+      }],
+    };
+
+    const summary = await run(script, baseBoard() as any, serialWithCommandOutput(""));
+    assert.equal(summary.results[0].unitId, "unit1");
+    assert.equal(summary.results[0].unitName, "Boot and login");
+  });
+
   it("executes switch_route step", async () => {
     const calls: Array<{ name: string; route: string }> = [];
     const board = baseBoard() as any;

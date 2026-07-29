@@ -317,6 +317,8 @@ export function createTestRunner(
       loopId: step.loopId,
       loopIteration: step.loopIteration,
       loopCount: step.loopCount,
+      unitId: step.unitId,
+      unitName: step.unitName,
     };
     let ctx: AssertionContext = {};
     let error: string | undefined;
@@ -563,6 +565,8 @@ export function createTestRunner(
       loopId: step.loopId,
       loopIteration: step.loopIteration,
       loopCount: step.loopCount,
+      unitId: step.unitId,
+      unitName: step.unitName,
       stepType: step.type,
       status: "skip",
       startedAtMs: startMs,

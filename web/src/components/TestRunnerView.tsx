@@ -115,7 +115,10 @@ export function TestRunnerView({
               <span className="min-w-0 flex-1 truncate font-medium text-ink">
                 {t(`test.step.${step.type}`)}
               </span>
-              {step.loopIteration != null && step.loopCount != null && (
+              {step.unitName && (
+                <Badge tone="brand">{step.unitName}</Badge>
+              )}
+              {!step.unitName && step.loopIteration != null && step.loopCount != null && (
                 <Badge tone="brand">
                   {t("test.loop.iteration", { current: step.loopIteration, total: step.loopCount })}
                 </Badge>

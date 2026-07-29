@@ -29,6 +29,10 @@ pub struct RunSummary {
 pub struct StepResult {
     pub step_id: String,
     pub step_type: StepType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit_name: Option<String>,
     pub status: StepStatus,
     pub started_at_ms: u64,
     pub finished_at_ms: u64,
@@ -143,7 +147,10 @@ pub fn write_json_report(
 }
 
 pub fn write_csv_report(writer: &mut dyn Write, results: &[StepResult]) -> anyhow::Result<()> {
-    writeln!(writer, "step_id,status,duration_ms,error,detail,adc_ua")?;
+    writeln!(
+        writer,
+        "step_id,status,duration_ms,error,detail,adc_ua,unit_id,unit_name"
+    )?;
     for r in results {
         let detail = r
             .assertion_result
@@ -157,7 +164,7 @@ pub fn write_csv_report(writer: &mut dyn Write, results: &[StepResult]) -> anyho
             .unwrap_or_default();
         writeln!(
             writer,
-            "{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{}",
             csv_escape(&r.step_id),
             serde_json::to_string(&r.status)
                 .unwrap_or_default()
@@ -165,7 +172,9 @@ pub fn write_csv_report(writer: &mut dyn Write, results: &[StepResult]) -> anyho
             r.duration_ms,
             csv_escape(error),
             csv_escape(detail),
-            adc
+            adc,
+            csv_escape(r.unit_id.as_deref().unwrap_or("")),
+            csv_escape(r.unit_name.as_deref().unwrap_or(""))
         )?;
     }
     Ok(())
@@ -207,6 +216,8 @@ pub fn write_ndjson_report(writer: &mut dyn Write, results: &[StepResult]) -> an
             "type": "step_result",
             "step_id": r.step_id,
             "step_type": r.step_type,
+            "unit_id": r.unit_id,
+            "unit_name": r.unit_name,
             "status": r.status,
             "duration_ms": r.duration_ms,
             "error": r.error,
@@ -292,6 +303,8 @@ mod tests {
         StepResult {
             step_id: "boot,check".to_string(),
             step_type: StepType::Delay,
+            unit_id: Some("unit1".to_string()),
+            unit_name: Some("Boot".to_string()),
             status: StepStatus::Pass,
             started_at_ms: 1,
             finished_at_ms: 2,

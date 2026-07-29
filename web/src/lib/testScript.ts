@@ -71,6 +71,9 @@ export interface TestLoop {
   params: {
     count: number;
     steps: TestStep[];
+    unit?: {
+      name: string;
+    };
   };
 }
 
@@ -82,6 +85,8 @@ export interface ExecutionStep extends TestStep {
   loopId?: string;
   loopIteration?: number;
   loopCount?: number;
+  unitId?: string;
+  unitName?: string;
 }
 
 export interface TestScript {
@@ -111,6 +116,8 @@ export interface StepResult {
   loopId?: string;
   loopIteration?: number;
   loopCount?: number;
+  unitId?: string;
+  unitName?: string;
   stepType: StepType;
   status: StepStatus;
   startedAtMs: number;
@@ -234,6 +241,12 @@ export function isTestLoop(item: TestScriptItem): item is TestLoop {
   return item.type === "loop";
 }
 
+export function isTestUnit(item: TestScriptItem): item is TestLoop & {
+  params: TestLoop["params"] & { unit: { name: string } };
+} {
+  return isTestLoop(item) && typeof item.params.unit?.name === "string";
+}
+
 export function countScriptCommands(script: TestScript): number {
   return script.steps.reduce(
     (total, item) => total + (isTestLoop(item) ? item.params.steps.length : 1),
@@ -274,6 +287,9 @@ export function buildExecutionPlan(script: TestScript): ExecutionStep[] {
     if (item.params.steps.length === 0) {
       throw new Error(`Loop ${item.id}: at least one step is required`);
     }
+    if (isTestUnit(item) && count !== 1) {
+      throw new Error(`Unit ${item.id}: count must be exactly 1`);
+    }
     if (plan.length + item.params.steps.length * count > MAX_EXECUTION_STEPS) {
       throw new Error(`Expanded test exceeds ${MAX_EXECUTION_STEPS} executable steps`);
     }
@@ -295,6 +311,7 @@ export function buildExecutionPlan(script: TestScript): ExecutionStep[] {
           loopId: item.id,
           loopIteration: iteration,
           loopCount: count,
+          ...(isTestUnit(item) ? { unitId: item.id, unitName: item.params.unit.name } : {}),
         });
       }
     }
@@ -338,6 +355,7 @@ export function parseTestScript(ndjson: string): TestScript {
     if (obj.type === "loop") {
       const count = obj.params?.count;
       const childSteps = obj.params?.steps;
+      const unit = obj.params?.unit;
       if (!Number.isInteger(count) || count < MIN_LOOP_COUNT || count > MAX_LOOP_COUNT) {
         throw new Error(
           `Line ${i + 1}: loop "count" must be an integer between ${MIN_LOOP_COUNT} and ${MAX_LOOP_COUNT}`,
@@ -345,6 +363,18 @@ export function parseTestScript(ndjson: string): TestScript {
       }
       if (!Array.isArray(childSteps) || childSteps.length === 0) {
         throw new Error(`Line ${i + 1}: loop "steps" must be a non-empty array`);
+      }
+      if (unit != null && (
+        typeof unit !== "object"
+        || Array.isArray(unit)
+        || typeof unit.name !== "string"
+        || unit.name.trim().length === 0
+        || unit.name.length > 80
+      )) {
+        throw new Error(`Line ${i + 1}: unit "name" must be a non-empty string up to 80 characters`);
+      }
+      if (unit != null && count !== 1) {
+        throw new Error(`Line ${i + 1}: unit "count" must be exactly 1`);
       }
       const parsedChildren = childSteps.map((child, childIndex) => {
         if (!child || typeof child !== "object") {
@@ -371,7 +401,15 @@ export function parseTestScript(ndjson: string): TestScript {
           continue_on_error: child.continue_on_error,
         } satisfies TestStep;
       });
-      steps.push({ id: obj.id, type: "loop", params: { count, steps: parsedChildren } });
+      steps.push({
+        id: obj.id,
+        type: "loop",
+        params: {
+          count,
+          steps: parsedChildren,
+          ...(unit == null ? {} : { unit: { name: unit.name.trim() } }),
+        },
+      });
       continue;
     }
     if (!STEP_TYPES.includes(obj.type)) throw new Error(`Line ${i + 1}: unknown step type "${obj.type}"`);

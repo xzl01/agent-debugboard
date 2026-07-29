@@ -149,6 +149,8 @@ pub fn run_script(
                         StepResult {
                             step_id: step.id.clone(),
                             step_type: step.step_type,
+                            unit_id: step.params["__unit_id"].as_str().map(str::to_string),
+                            unit_name: step.params["__unit_name"].as_str().map(str::to_string),
                             status,
                             started_at_ms,
                             finished_at_ms,
@@ -162,6 +164,8 @@ pub fn run_script(
                     Ok(None) => StepResult {
                         step_id: step.id.clone(),
                         step_type: step.step_type,
+                        unit_id: step.params["__unit_id"].as_str().map(str::to_string),
+                        unit_name: step.params["__unit_name"].as_str().map(str::to_string),
                         status: StepStatus::Pass,
                         started_at_ms,
                         finished_at_ms,
@@ -174,6 +178,8 @@ pub fn run_script(
                     Err(error) => StepResult {
                         step_id: step.id.clone(),
                         step_type: step.step_type,
+                        unit_id: step.params["__unit_id"].as_str().map(str::to_string),
+                        unit_name: step.params["__unit_name"].as_str().map(str::to_string),
                         status: StepStatus::Error,
                         started_at_ms,
                         finished_at_ms,
@@ -192,6 +198,8 @@ pub fn run_script(
                     StepResult {
                         step_id: step.id.clone(),
                         step_type: step.step_type,
+                        unit_id: step.params["__unit_id"].as_str().map(str::to_string),
+                        unit_name: step.params["__unit_name"].as_str().map(str::to_string),
                         status: StepStatus::Aborted,
                         started_at_ms,
                         finished_at_ms,
@@ -205,6 +213,8 @@ pub fn run_script(
                     StepResult {
                         step_id: step.id.clone(),
                         step_type: step.step_type,
+                        unit_id: step.params["__unit_id"].as_str().map(str::to_string),
+                        unit_name: step.params["__unit_name"].as_str().map(str::to_string),
                         status: StepStatus::Skip,
                         started_at_ms,
                         finished_at_ms,
@@ -218,6 +228,8 @@ pub fn run_script(
                     StepResult {
                         step_id: step.id.clone(),
                         step_type: step.step_type,
+                        unit_id: step.params["__unit_id"].as_str().map(str::to_string),
+                        unit_name: step.params["__unit_name"].as_str().map(str::to_string),
                         status: StepStatus::Error,
                         started_at_ms,
                         finished_at_ms,

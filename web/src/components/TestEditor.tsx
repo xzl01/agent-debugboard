@@ -13,6 +13,7 @@ import {
   Hourglass,
   Send,
   MessageSquareText,
+  Package,
   Repeat2,
   SquareCheckBig,
   Activity,
@@ -43,6 +44,7 @@ import {
   generateLoopId,
   generateStepId,
   isTestLoop,
+  isTestUnit,
   parseTestScript,
   serializeTestScript,
 } from "@/lib/testScript";
@@ -419,7 +421,7 @@ const StepCard = memo(function StepCard({
             type="button"
             role="checkbox"
             aria-checked={selected}
-            aria-label={t("test.loop.selectStep")}
+            aria-label={t("test.group.selectItem")}
             onClick={onSelect}
             className={`grid h-5 w-5 shrink-0 place-items-center rounded border text-[10px] transition-colors ${
               selected
@@ -477,6 +479,9 @@ const LoopCard = memo(function LoopCard({
   onMoveUp,
   onMoveDown,
   maxCount,
+  selectable = false,
+  selected = false,
+  onSelect,
 }: {
   loop: TestLoop;
   index: number;
@@ -487,8 +492,13 @@ const LoopCard = memo(function LoopCard({
   onMoveUp: () => void;
   onMoveDown: () => void;
   maxCount: number;
+  selectable?: boolean;
+  selected?: boolean;
+  onSelect?: () => void;
 }) {
   const { t } = useI18n();
+  const unit = isTestUnit(loop);
+  const [expanded, setExpanded] = useState(!unit);
 
   const updateChild = (childIndex: number, step: TestStep) => {
     const steps = [...loop.params.steps];
@@ -523,9 +533,25 @@ const LoopCard = memo(function LoopCard({
   return (
     <section
       className="rounded-xl border border-brand/40 bg-brand/[0.06] p-2"
-      aria-label={t("test.loop.title")}
+      aria-label={unit ? loop.params.unit.name : t("test.loop.title")}
     >
       <div className="mb-2 flex flex-wrap items-center gap-2 px-1">
+        {unit && selectable && (
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={selected}
+            aria-label={t("test.group.selectItem")}
+            onClick={onSelect}
+            className={`grid h-5 w-5 shrink-0 place-items-center rounded border text-[10px] transition-colors ${
+              selected
+                ? "border-brand bg-brand text-white"
+                : "border-line bg-panel text-transparent hover:border-brand/60"
+            }`}
+          >
+            ✓
+          </button>
+        )}
         <div className="flex flex-col gap-0.5">
           <button type="button" onClick={onMoveUp} disabled={index === 0} className="text-ink-dim hover:text-ink disabled:opacity-30" title={t("test.step.up")}>
             <ChevronUp size={12} />
@@ -535,43 +561,60 @@ const LoopCard = memo(function LoopCard({
           </button>
         </div>
         <span className="grid h-7 w-7 place-items-center rounded-lg bg-brand/15 text-brand">
-          <Repeat2 size={14} />
+          {unit ? <Package size={14} /> : <Repeat2 size={14} />}
         </span>
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-semibold text-ink">{t("test.loop.title")}</div>
+          <div className="truncate text-xs font-semibold text-ink">
+            {unit ? loop.params.unit.name : t("test.loop.title")}
+          </div>
           <div className="text-[10px] text-ink-dim">
-            {t("test.loop.summary", { commands: loop.params.steps.length, executions })}
+            {unit
+              ? t("test.unit.summary", { commands: loop.params.steps.length })
+              : t("test.loop.summary", { commands: loop.params.steps.length, executions })}
           </div>
         </div>
-        <label className="flex items-center gap-1.5 text-[11px] text-ink-dim">
-          <input
-            type="number"
-            min={MIN_LOOP_COUNT}
-            max={maxCount}
-            value={loop.params.count}
-            onChange={(event) => {
-              const count = Math.min(
-                maxCount,
-                Math.max(MIN_LOOP_COUNT, Math.trunc(Number(event.target.value) || MIN_LOOP_COUNT)),
-              );
-              onChange({ ...loop, params: { ...loop.params, count } });
-            }}
-            className={`${inputCls} w-20 text-center font-mono`}
-            aria-label={t("test.loop.rounds")}
-          />
-          {t("test.loop.rounds")}
-        </label>
+        {!unit && (
+          <label className="flex items-center gap-1.5 text-[11px] text-ink-dim">
+            <input
+              type="number"
+              min={MIN_LOOP_COUNT}
+              max={maxCount}
+              value={loop.params.count}
+              onChange={(event) => {
+                const count = Math.min(
+                  maxCount,
+                  Math.max(MIN_LOOP_COUNT, Math.trunc(Number(event.target.value) || MIN_LOOP_COUNT)),
+                );
+                onChange({ ...loop, params: { ...loop.params, count } });
+              }}
+              className={`${inputCls} w-20 text-center font-mono`}
+              aria-label={t("test.loop.rounds")}
+            />
+            {t("test.loop.rounds")}
+          </label>
+        )}
+        {unit && (
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            className="rounded-md p-1.5 text-ink-dim hover:bg-panel/70 hover:text-ink"
+            aria-label={expanded ? t("test.unit.collapse") : t("test.unit.expand")}
+            title={expanded ? t("test.unit.collapse") : t("test.unit.expand")}
+          >
+            <ChevronDown size={14} className={`transition-transform ${expanded ? "rotate-180" : ""}`} />
+          </button>
+        )}
         <button
           type="button"
           onClick={onUngroup}
           className="rounded-md p-1.5 text-ink-dim hover:bg-panel/70 hover:text-ink"
-          title={t("test.loop.ungroup")}
-          aria-label={t("test.loop.ungroup")}
+          title={unit ? t("test.unit.ungroup") : t("test.loop.ungroup")}
+          aria-label={unit ? t("test.unit.ungroup") : t("test.loop.ungroup")}
         >
           <Ungroup size={14} />
         </button>
       </div>
-      <div className="space-y-1.5 border-l-2 border-brand/30 pl-2">
+      {(!unit || expanded) && <div className="space-y-1.5 border-l-2 border-brand/30 pl-2">
         {loop.params.steps.map((step, childIndex) => (
           <StepCard
             key={step.id}
@@ -584,7 +627,7 @@ const LoopCard = memo(function LoopCard({
             onMoveDown={() => moveChild(childIndex, childIndex + 1)}
           />
         ))}
-      </div>
+      </div>}
     </section>
   );
 });
@@ -608,6 +651,18 @@ export interface TestEditorProps {
   runDisabled?: boolean;
 }
 
+function flattenGroupItems(items: TestScriptItem[]): TestStep[] {
+  const usedIds = new Set<string>();
+  return items
+    .flatMap((item) => isTestUnit(item) ? item.params.steps : [item as TestStep])
+    .map((step) => {
+      let id = step.id;
+      while (usedIds.has(id)) id = generateStepId();
+      usedIds.add(id);
+      return { ...step, id };
+    });
+}
+
 export function TestEditor({ script, onChange, onRun, runDisabled = false }: TestEditorProps) {
   const { t } = useI18n();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -615,6 +670,7 @@ export function TestEditor({ script, onChange, onRun, runDisabled = false }: Tes
   const [importError, setImportError] = useState<string | null>(null);
   const [selectingLoop, setSelectingLoop] = useState(false);
   const [selectedStepIds, setSelectedStepIds] = useState<Set<string>>(new Set());
+  const [unitName, setUnitName] = useState("");
 
   const commandCount = countScriptCommands(script);
   const executionCount = useMemo(() => {
@@ -633,7 +689,7 @@ export function TestEditor({ script, onChange, onRun, runDisabled = false }: Tes
   );
   const selectionIsContiguous = selectedIndexes.length > 0
     && selectedIndexes.every((index, offset) => index === selectedIndexes[0] + offset)
-    && selectedIndexes.every((index) => !isTestLoop(script.steps[index]));
+    && selectedIndexes.every((index) => !isTestLoop(script.steps[index]) || isTestUnit(script.steps[index]));
 
   const maxLoopCount = useCallback((loop: TestLoop) => {
     const otherExecutions = script.steps.reduce((total, item) => {
@@ -689,6 +745,7 @@ export function TestEditor({ script, onChange, onRun, runDisabled = false }: Tes
   const cancelLoopSelection = useCallback(() => {
     setSelectingLoop(false);
     setSelectedStepIds(new Set());
+    setUnitName("");
   }, []);
 
   const toggleLoopStep = useCallback((id: string) => {
@@ -704,8 +761,8 @@ export function TestEditor({ script, onChange, onRun, runDisabled = false }: Tes
     if (!selectionIsContiguous) return;
     const firstIndex = selectedIndexes[0];
     const selectedItems = selectedIndexes.map((index) => script.steps[index]);
-    if (selectedItems.some(isTestLoop)) return;
-    const selectedSteps = selectedItems as TestStep[];
+    if (selectedItems.some((item) => isTestLoop(item) && !isTestUnit(item))) return;
+    const selectedSteps = flattenGroupItems(selectedItems);
     const otherExecutions = executionCount - selectedSteps.length;
     const count = Math.max(
       MIN_LOOP_COUNT,
@@ -721,6 +778,26 @@ export function TestEditor({ script, onChange, onRun, runDisabled = false }: Tes
     onChange({ ...script, steps });
     cancelLoopSelection();
   }, [cancelLoopSelection, executionCount, onChange, script, selectedIndexes, selectionIsContiguous]);
+
+  const createUnit = useCallback(() => {
+    if (!selectionIsContiguous) return;
+    const firstIndex = selectedIndexes[0];
+    const selectedItems = selectedIndexes.map((index) => script.steps[index]);
+    if (selectedItems.some((item) => isTestLoop(item) && !isTestUnit(item))) return;
+    const unit: TestLoop = {
+      id: generateLoopId(),
+      type: "loop",
+      params: {
+        count: 1,
+        steps: flattenGroupItems(selectedItems),
+        unit: { name: unitName.trim() || t("test.unit.defaultName") },
+      },
+    };
+    const steps = [...script.steps];
+    steps.splice(firstIndex, selectedItems.length, unit);
+    onChange({ ...script, steps });
+    cancelLoopSelection();
+  }, [cancelLoopSelection, onChange, script, selectedIndexes, selectionIsContiguous, t, unitName]);
 
   const ungroupLoop = useCallback((index: number, loop: TestLoop) => {
     const steps = [...script.steps];
@@ -783,7 +860,7 @@ export function TestEditor({ script, onChange, onRun, runDisabled = false }: Tes
         <Button
           variant={selectingLoop ? "default" : "ghost"}
           onClick={() => selectingLoop ? cancelLoopSelection() : setSelectingLoop(true)}
-          disabled={!selectingLoop && script.steps.every(isTestLoop)}
+          disabled={!selectingLoop && script.steps.every((item) => isTestLoop(item) && !isTestUnit(item))}
         >
           <SquareCheckBig size={14} />
           {selectingLoop ? t("test.loop.cancelSelection") : t("test.loop.select")}
@@ -797,11 +874,23 @@ export function TestEditor({ script, onChange, onRun, runDisabled = false }: Tes
       {selectingLoop && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-brand/30 bg-brand/[0.06] px-3 py-2">
           <SquareCheckBig size={14} className="text-brand" />
-          <span className="min-w-[180px] flex-1 text-xs text-ink-dim">{t("test.loop.selectHint")}</span>
+          <span className="min-w-[180px] flex-1 text-xs text-ink-dim">{t("test.group.selectHint")}</span>
           <Badge tone="brand">{t("test.loop.selected", { n: selectedIndexes.length })}</Badge>
           {selectedIndexes.length > 1 && !selectionIsContiguous && (
             <span className="text-[11px] text-warn">{t("test.loop.nonContiguous")}</span>
           )}
+          <input
+            className={`${inputCls} min-w-[150px] flex-1`}
+            value={unitName}
+            maxLength={80}
+            onChange={(event) => setUnitName(event.target.value)}
+            placeholder={t("test.unit.namePlaceholder")}
+            aria-label={t("test.unit.name")}
+          />
+          <Button variant="default" onClick={createUnit} disabled={!selectionIsContiguous}>
+            <Package size={14} />
+            {t("test.unit.create")}
+          </Button>
           <Button variant="primary" onClick={createLoop} disabled={!selectionIsContiguous}>
             <Repeat2 size={14} />
             {t("test.loop.create")}
@@ -828,6 +917,9 @@ export function TestEditor({ script, onChange, onRun, runDisabled = false }: Tes
             onMoveUp={() => moveItem(i, i - 1)}
             onMoveDown={() => moveItem(i, i + 1)}
             maxCount={maxLoopCount(item)}
+            selectable={selectingLoop && isTestUnit(item)}
+            selected={selectedStepIds.has(item.id)}
+            onSelect={() => toggleLoopStep(item.id)}
           />
         ) : (
           <StepCard

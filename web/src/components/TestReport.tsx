@@ -157,9 +157,53 @@ function ResultsTable({ results, startedAtMs }: { results: StepResult[]; started
     if (s === "error") return <Badge tone="danger">{t("test.status.error")}</Badge>;
     return <Badge tone="neutral">{s}</Badge>;
   };
+  const unitMap = new Map<string, { name: string; results: StepResult[] }>();
+  for (const result of results) {
+    if (!result.unitId || !result.unitName) continue;
+    const entry = unitMap.get(result.unitId) ?? { name: result.unitName, results: [] };
+    entry.results.push(result);
+    unitMap.set(result.unitId, entry);
+  }
+  const unitSummaries = Array.from(unitMap, ([id, unit]) => {
+    const status: StepResult["status"] = unit.results.some((result) => result.status === "error")
+      ? "error"
+      : unit.results.some((result) => result.status === "fail")
+        ? "fail"
+        : unit.results.some((result) => result.status === "aborted")
+          ? "aborted"
+          : unit.results.some((result) => result.status === "skip")
+            ? "skip"
+            : "pass";
+    return {
+      id,
+      name: unit.name,
+      status,
+      durationMs: unit.results.reduce((total, result) => total + result.durationMs, 0),
+      stepCount: unit.results.length,
+    };
+  });
 
   return (
-    <div className="rounded-xl border border-line/50 bg-panel2/30">
+    <div className="space-y-2">
+      {unitSummaries.length > 0 && (
+        <div className="rounded-xl border border-line/50 bg-panel2/30 p-3">
+          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
+            {t("test.report.unitResults")}
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {unitSummaries.map((unit) => (
+              <div key={unit.id} className="flex items-center gap-2 rounded-lg border border-line/40 bg-panel px-2.5 py-2">
+                <span className="min-w-0 flex-1 truncate text-xs font-semibold text-ink">{unit.name}</span>
+                <span className="text-[10px] text-ink-dim">
+                  {t("test.report.unitSteps", { n: unit.stepCount })} · {formatMs(unit.durationMs)}
+                </span>
+                {statusBadge(unit.status)}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="rounded-xl border border-line/50 bg-panel2/30">
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-line/40 text-[10px] uppercase tracking-wider text-ink-dim">
@@ -176,7 +220,10 @@ function ResultsTable({ results, startedAtMs }: { results: StepResult[]; started
               <td className="px-3 py-1.5 text-ink-dim">{i + 1}</td>
               <td className="px-3 py-1.5 font-medium text-ink">
                 {t(`test.step.${r.stepType}`)}
-                {r.loopIteration != null && r.loopCount != null && (
+                {r.unitName && (
+                  <div className="mt-0.5 text-[9px] font-normal text-brand">{r.unitName}</div>
+                )}
+                {!r.unitName && r.loopIteration != null && r.loopCount != null && (
                   <div className="mt-0.5 text-[9px] font-normal text-brand">
                     {t("test.loop.iteration", { current: r.loopIteration, total: r.loopCount })}
                   </div>
@@ -191,6 +238,7 @@ function ResultsTable({ results, startedAtMs }: { results: StepResult[]; started
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -261,9 +309,9 @@ export function TestReport({ script, summary, serialLogs, adcSamples, onReRun }:
   };
 
   const handleExportCsv = () => {
-    const header = "step_id,status,duration_ms,error,detail,adc_ua";
+    const header = "step_id,status,duration_ms,error,detail,adc_ua,unit_id,unit_name";
     const rows = summary.results.map((r) =>
-      [r.stepId, r.status, r.durationMs, r.error ?? "", r.assertionResult?.detail ?? "", r.adcValueUa ?? ""]
+      [r.stepId, r.status, r.durationMs, r.error ?? "", r.assertionResult?.detail ?? "", r.adcValueUa ?? "", r.unitId ?? "", r.unitName ?? ""]
         .map((v) => (/[",\n]/.test(String(v)) ? `"${String(v).replaceAll('"', '""')}"` : v))
         .join(","),
     );
