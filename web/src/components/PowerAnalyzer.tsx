@@ -180,8 +180,13 @@ export function PowerAnalyzer({
     // useBoard exposes the actionable error through the shared board status.
   });
 
+  const Container = showHeader ? "details" : "section";
+
   return (
-    <details className="rounded-xl border border-line/60 bg-panel2/25" open={defaultOpen}>
+    <Container
+      className="rounded-xl border border-line/60 bg-panel2/25"
+      {...(showHeader ? { open: defaultOpen } : {})}
+    >
       {showHeader && (
         <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-sm font-medium text-ink">
           <Activity size={15} className="text-brand" />
@@ -279,6 +284,6 @@ export function PowerAnalyzer({
           <div className="mt-1 flex justify-between text-[9px] text-ink-dim"><span>{minX.toFixed(0)} ms</span><span>{t("analyzer.triggerAt")}</span><span>{maxX.toFixed(0)} ms</span></div>
         </div>}
       </div>
-    </details>
+    </Container>
   );
 }

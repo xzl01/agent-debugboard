@@ -11,6 +11,7 @@ import {
   Binary,
   Download,
   Loader2,
+  MousePointerClick,
   Radio,
   Square,
   Trash2,
@@ -899,14 +900,26 @@ export function LogicAnalyzerCard({
         </div>
       )}
 
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
-        <div className="text-[11px] text-ink-dim lg:max-w-[220px]">
-          <div className="flex items-baseline justify-between gap-2">
-            {t("logicAnalyzer.selectPins")}
-            <span className="text-[9px] text-ink-dim/70">{t("logicAnalyzer.pinHint")}</span>
+      <div className="grid items-start gap-3 lg:grid-cols-[300px_minmax(0,1fr)]">
+        <section className="min-w-0 rounded-xl border border-line/60 bg-panel2/35 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs font-semibold text-ink">{t("logicAnalyzer.selectPins")}</div>
+            <Badge tone={config.selectedPins.length > 0 ? "brand" : "neutral"}>
+              {config.selectedPins.length}/{boardGpios?.length ?? AVAILABLE_PINS.length}
+            </Badge>
+          </div>
+          <div className="mt-2 grid grid-cols-2 overflow-hidden rounded-lg border border-line/50 bg-panel/70 text-[10px] leading-4 text-ink-dim">
+            <span className="inline-flex min-w-0 items-center gap-1.5 px-2.5 py-2">
+              <MousePointerClick size={13} className="shrink-0 text-warn" />
+              {t("logicAnalyzer.leftClickAction")}
+            </span>
+            <span className="inline-flex min-w-0 items-center gap-1.5 border-l border-line/50 px-2.5 py-2">
+              <MousePointerClick size={13} className="shrink-0 text-brand" />
+              {t("logicAnalyzer.rightClickAction")}
+            </span>
           </div>
           {boardGpios && boardGpios.length > 0 ? (
-            <div className="mt-1">
+            <div className="mt-3">
               <GpioPinoutSvg
                 gpios={boardGpios}
                 selectedPins={config.selectedPins}
@@ -951,7 +964,7 @@ export function LogicAnalyzerCard({
               />
             </div>
           ) : (
-            <div className="mt-1 flex flex-wrap gap-1.5">
+            <div className="mt-3 flex flex-wrap gap-1.5">
               {AVAILABLE_PINS.map((pin) => (
                 <label
                   key={pin.pin}
@@ -979,9 +992,9 @@ export function LogicAnalyzerCard({
               ))}
             </div>
           )}
-        </div>
+        </section>
 
-        <div className="lg:flex-1">
+        <section className="min-w-0 rounded-xl border border-line/60 bg-panel2/20 p-3">
           <div className="grid grid-cols-2 gap-x-3 gap-y-2">
             <label className="text-[11px] text-ink-dim">
               {t("logicAnalyzer.sampleRate")}
@@ -1057,6 +1070,81 @@ export function LogicAnalyzerCard({
                   ))}
                 </select>
               </label>
+            )}
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line/50 pt-3">
+            <span className="mr-1 text-[10px] font-medium uppercase tracking-wide text-ink-dim">
+              {t("logicAnalyzer.captureActions")}
+            </span>
+            {streaming ? (
+              <Button type="button" onClick={() => { void stopStream(); }}>
+                <Square size={15} />
+                {t("logicAnalyzer.stopStream")}
+              </Button>
+            ) : state === "idle" ? (
+              <>
+                <Button
+                  type="button"
+                  variant="primary"
+                  onClick={handleArm}
+                  disabled={controlsDisabled || config.selectedPins.length === 0}
+                >
+                  {isArming ? <Loader2 size={15} className="animate-spin" /> : <Radio size={15} />}
+                  {isArming ? t("logicAnalyzer.arming") : t("logicAnalyzer.arm")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  title={streamRateExceeded ? t("logicAnalyzer.streamRateLimit") : undefined}
+                  onClick={() => {
+                    streamSamplesRef.current = [];
+                    streamSequenceRef.current = 0;
+                    streamTotalRef.current = 0;
+                    setStreamSampleCount(0);
+                    void startStream();
+                  }}
+                  disabled={config.selectedPins.length === 0 || streamRateExceeded}
+                >
+                  <Zap size={15} />
+                  {t("logicAnalyzer.startStream")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => { void runDeep(); }}
+                  disabled={config.selectedPins.length === 0 || deepBusy !== null}
+                >
+                  <Binary size={15} />
+                  {t("logicAnalyzer.deep")}
+                </Button>
+                {streamRateExceeded && (
+                  <span className="text-[10px] text-ink-dim">
+                    {t("logicAnalyzer.streamRateLimit")}
+                  </span>
+                )}
+              </>
+            ) : (
+              <Button type="button" onClick={handleCancel}>
+                <Square size={15} />
+                {t("logicAnalyzer.cancel")}
+              </Button>
+            )}
+
+            {capture && state === "done" && (
+              <div className="ml-auto flex flex-wrap items-center gap-1 border-l border-line/50 pl-2">
+                <Button type="button" variant="ghost" onClick={() => exportToCsv(capture)}>
+                  <Download size={13} />
+                  CSV
+                </Button>
+                <Button type="button" variant="ghost" onClick={() => exportToSr(capture)}>
+                  <Download size={13} />
+                  PulseView (.sr)
+                </Button>
+                <Button type="button" variant="ghost" onClick={handleClear} aria-label={t("logicAnalyzer.clear")}>
+                  <Trash2 size={13} />
+                </Button>
+              </div>
             )}
           </div>
 
@@ -1341,7 +1429,7 @@ export function LogicAnalyzerCard({
               </div>
             </div>
           )}
-        </div>
+        </section>
       </div>
 
       <div className="mt-2 flex flex-wrap gap-4 text-[10px] text-ink-dim">
@@ -1368,78 +1456,6 @@ export function LogicAnalyzerCard({
             {rate.label}={formatDuration(maxSamples, rate.value)}
           </span>
         ))}
-      </div>
-
-      <div className="mt-3 flex flex-wrap gap-2">
-        {streaming ? (
-          <Button type="button" onClick={() => { void stopStream(); }}>
-            <Square size={15} />
-            {t("logicAnalyzer.stopStream")}
-          </Button>
-        ) : state === "idle" ? (
-          <>
-            <Button
-              type="button"
-              variant="primary"
-              onClick={handleArm}
-              disabled={controlsDisabled || config.selectedPins.length === 0}
-            >
-              {isArming ? <Loader2 size={15} className="animate-spin" /> : <Radio size={15} />}
-              {isArming ? t("logicAnalyzer.arming") : t("logicAnalyzer.arm")}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              title={streamRateExceeded ? t("logicAnalyzer.streamRateLimit") : undefined}
-              onClick={() => {
-                streamSamplesRef.current = [];
-                streamSequenceRef.current = 0;
-                streamTotalRef.current = 0;
-                setStreamSampleCount(0);
-                void startStream();
-              }}
-              disabled={config.selectedPins.length === 0 || streamRateExceeded}
-            >
-              <Zap size={15} />
-              {t("logicAnalyzer.startStream")}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => { void runDeep(); }}
-              disabled={config.selectedPins.length === 0 || deepBusy !== null}
-            >
-              <Binary size={15} />
-              {t("logicAnalyzer.deep")}
-            </Button>
-            {streamRateExceeded && (
-              <span className="self-center text-[10px] text-ink-dim">
-                {t("logicAnalyzer.streamRateLimit")}
-              </span>
-            )}
-          </>
-        ) : (
-          <Button type="button" onClick={handleCancel}>
-            <Square size={15} />
-            {t("logicAnalyzer.cancel")}
-          </Button>
-        )}
-
-        {capture && state === "done" && (
-          <>
-            <Button type="button" variant="ghost" onClick={() => exportToCsv(capture)}>
-              <Download size={13} />
-              CSV
-            </Button>
-            <Button type="button" variant="ghost" onClick={() => exportToSr(capture)}>
-              <Download size={13} />
-              PulseView (.sr)
-            </Button>
-            <Button type="button" variant="ghost" onClick={handleClear}>
-              <Trash2 size={13} />
-            </Button>
-          </>
-        )}
       </div>
 
       {deepBusy && (

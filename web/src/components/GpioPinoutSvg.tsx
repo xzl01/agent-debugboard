@@ -16,29 +16,41 @@ export interface GpioPinoutSvgProps {
   onSetTriggerPin?: (pin: number | null) => void;
 }
 
-const PIN_RADIUS = 12;
+const PIN_RADIUS = 15;
 const COL_GAP = 6;
 const ROW_GAP = 4;
 const PADDING = 6;
 const HEADER_HEIGHT = 14;
-const TRIGGER_BADGE_OFFSET = 2;
-const TOUCH_TARGET_RADIUS = 16;
+const TOUCH_TARGET_RADIUS = 17;
 
-const FILL_UNSELECTED = "#1f2937";
-const FILL_SELECTED = "#22c55e";
-const FILL_TRIGGER = "#facc15";
-const STROKE_TRIGGER = "#a16207";
-const STROKE_DEFAULT = "#475569";
-const LABEL_LIGHT = "#e2e8f0";
-const LABEL_DARK = "#1a1a1a";
-const LABEL_DIM = "#94a3b8";
-const HEADER_TEXT = "#cbd5e1";
-const CONNECTOR_OUTLINE = "#94a3b8";
+const FILL_UNSELECTED = "rgb(var(--c-panel))";
+const FILL_SELECTED = "rgb(var(--c-brand) / 0.14)";
+const FILL_TRIGGER = "rgb(var(--c-warn) / 0.14)";
+const STROKE_SELECTED = "rgb(var(--c-brand) / 0.75)";
+const STROKE_TRIGGER = "rgb(var(--c-warn) / 0.8)";
+const STROKE_DEFAULT = "rgb(var(--c-line))";
+const LABEL_DEFAULT = "rgb(var(--c-ink))";
+const LABEL_SELECTED = "rgb(var(--c-brand))";
+const LABEL_TRIGGER = "rgb(var(--c-warn))";
+const LABEL_DIM = "rgb(var(--c-ink-dim))";
+const HEADER_TEXT = "rgb(var(--c-ink))";
+const CONNECTOR_OUTLINE = "rgb(var(--c-line))";
 
 interface PlacedCell {
   cell: GpioLayoutCell;
   cx: number;
   cy: number;
+}
+
+function pinLabelFontSize(label: string): number {
+  if (label.length <= 4) return 9.5;
+  if (label.length <= 5) return 8;
+  return 7.5;
+}
+
+function pinLabelLines(label: string): string[] {
+  if (label.length <= 5) return [label];
+  return [label.slice(0, 4), label.slice(4)];
 }
 
 function placeGroup(group: GpioLayoutGroup): {
@@ -83,12 +95,11 @@ function renderGroup(
         y={0.5}
         width={width - 1}
         height={height - 1}
-        rx={6}
-        ry={6}
-        fill="none"
+        rx={10}
+        ry={10}
+        fill="rgb(var(--c-panel2) / 0.45)"
         stroke={CONNECTOR_OUTLINE}
         strokeWidth={1}
-        strokeDasharray="3 2"
       />
       <text
         x={width / 2}
@@ -119,12 +130,23 @@ function renderGroup(
           : isSelected
             ? FILL_SELECTED
             : FILL_UNSELECTED;
-        const stroke = isTrigger ? STROKE_TRIGGER : STROKE_DEFAULT;
-        const strokeWidth = isTrigger ? 2 : 1;
-        const labelFill = isTrigger ? LABEL_DARK : LABEL_LIGHT;
+        const stroke = isTrigger
+          ? STROKE_TRIGGER
+          : isSelected
+            ? STROKE_SELECTED
+            : STROKE_DEFAULT;
+        const strokeWidth = isTrigger || isSelected ? 1.5 : 1;
+        const labelFill = isTrigger
+          ? LABEL_TRIGGER
+          : isSelected
+            ? LABEL_SELECTED
+            : LABEL_DEFAULT;
+        const labelFontSize = pinLabelFontSize(cell.layoutLabel);
+        const labelLines = pinLabelLines(cell.layoutLabel);
         return (
           <g
             key={`pin-${cell.pin}`}
+            className="transition-opacity duration-150 hover:opacity-80"
             style={{ cursor: "pointer" }}
             onClick={() => {
               if (isTrigger) {
@@ -148,28 +170,19 @@ function renderGroup(
             />
             <text
               x={cx}
-              y={cy + 4}
+              y={labelLines.length === 1 ? cy + labelFontSize * 0.34 : cy - 1.5}
               textAnchor="middle"
               fontFamily="monospace"
-              fontSize={11}
+              fontSize={labelFontSize}
               fontWeight={700}
               fill={labelFill}
             >
-              {cell.layoutLabel}
+              {labelLines.map((line, index) => (
+                <tspan key={line} x={cx} dy={index === 0 ? 0 : labelFontSize * 0.95}>
+                  {line}
+                </tspan>
+              ))}
             </text>
-            {isTrigger && (
-              <text
-                x={cx}
-                y={cy - PIN_RADIUS - TRIGGER_BADGE_OFFSET}
-                textAnchor="middle"
-                fontFamily="monospace"
-                fontSize={9}
-                fontWeight={700}
-                fill={STROKE_TRIGGER}
-              >
-                TRIG
-              </text>
-            )}
             <circle
               cx={cx}
               cy={cy}
@@ -211,21 +224,17 @@ export function GpioPinoutSvg({
   if (j16) groups.push({ group: j16, label: t("logicAnalyzer.j16Subtitle") });
 
   const placed = groups.map((g) => ({ ...g, ...placeGroup(g.group) }));
-  const gap = 4;
+  const gap = 8;
   const totalWidth = placed.reduce(
-    (max, g) => Math.max(max, g.width),
-    100
-  );
-  const totalHeight = placed.reduce(
-    (sum, g, idx) => (idx === 0 ? g.height : sum + g.height + gap),
+    (sum, g, idx) => sum + g.width + (idx === 0 ? 0 : gap),
     0
   );
+  const totalHeight = placed.reduce((max, g) => Math.max(max, g.height), 1);
 
-  let cursorY = 0;
+  let cursorX = 0;
   const groupNodes = placed.map((g, idx) => {
-    const offsetX = (totalWidth - g.width) / 2;
     const node = (
-      <g key={`g-${g.group.group}-${idx}`} transform={`translate(${offsetX}, ${cursorY})`}>
+      <g key={`g-${g.group.group}-${idx}`} transform={`translate(${cursorX}, 0)`}>
         {renderGroup(
           g.group,
           selectedSet,
@@ -237,40 +246,40 @@ export function GpioPinoutSvg({
         )}
       </g>
     );
-    cursorY += g.height + (idx === placed.length - 1 ? 0 : gap);
+    cursorX += g.width + (idx === placed.length - 1 ? 0 : gap);
     return node;
   });
 
   return (
-    <div className="space-y-1">
+    <div className="space-y-2">
       <svg
         role="img"
         aria-labelledby={titleId}
         viewBox={`0 0 ${totalWidth} ${totalHeight}`}
-        className="w-full"
-        style={{ maxWidth: 160 }}
+        className="mx-auto w-full"
+        style={{ maxWidth: 224 }}
       >
         <title id={titleId}>{t("logicAnalyzer.pinoutAria")}</title>
         {groupNodes}
       </svg>
-      <div className="flex flex-wrap items-center gap-2 text-[10px] text-ink-dim">
+      <div className="grid grid-cols-3 gap-1 border-t border-line/50 pt-2 text-[9px] leading-3 text-ink-dim">
         <span className="inline-flex items-center gap-1">
           <span
-            className="inline-block h-2 w-2 rounded-full"
+            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
             style={{ background: FILL_UNSELECTED, border: `1px solid ${STROKE_DEFAULT}` }}
           />
           {t("logicAnalyzer.pinout.legend.unselected")}
         </span>
         <span className="inline-flex items-center gap-1">
           <span
-            className="inline-block h-2 w-2 rounded-full"
+            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
             style={{ background: FILL_SELECTED }}
           />
           {t("logicAnalyzer.pinout.legend.selected")}
         </span>
         <span className="inline-flex items-center gap-1">
           <span
-            className="inline-block h-2 w-2 rounded-full"
+            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
             style={{ background: FILL_TRIGGER, border: `1px solid ${STROKE_TRIGGER}` }}
           />
           {t("logicAnalyzer.pinout.legend.trigger")}
