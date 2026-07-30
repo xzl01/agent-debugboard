@@ -155,6 +155,54 @@ describe("createTestRunner", () => {
     assert.equal(summary.results[1].status, "pass");
   });
 
+  it("records the UART channel and receive timestamp for serial evidence", async () => {
+    const listeners = new Map<string, Set<(text: string, receivedAtMs: number) => void>>();
+    const serial = {
+      isConnected: (channel: string) => channel === "uart0",
+      connectedChannels: () => ["uart0"],
+      clear() {},
+      setAutomationActive() {},
+      subscribe(listener: (text: string, receivedAtMs: number) => void, channel = "uart0") {
+        const channelListeners = listeners.get(channel) ?? new Set();
+        channelListeners.add(listener);
+        listeners.set(channel, channelListeners);
+        return () => channelListeners.delete(listener);
+      },
+      async write() {},
+    };
+    const board = baseBoard() as any;
+    board.setPower = async (_rail: string, on: boolean) => {
+      if (on) {
+        for (const listener of listeners.get("uart0") ?? []) listener("BOOT0 ready\n", 1234);
+      }
+    };
+    const script: TestScript = {
+      schema: "linkr-test.v1",
+      version: "1.0",
+      name: "serial evidence",
+      steps: [
+        { id: "power", type: "power_on", params: { rail: "5v_out" } },
+        { id: "boot", type: "serial_wait", params: { channel: "uart0", pattern: "BOOT0", timeout_ms: 10 } },
+      ],
+    };
+    const logs: Array<{ channel: string; timestampMs: number }> = [];
+    let summary: RunSummary | null = null;
+    const runnerCallbacks = callbacks((value) => { summary = value; });
+    runnerCallbacks.onSerialLog = (_stepId, channel, _text, _direction, timestampMs) => {
+      logs.push({ channel, timestampMs });
+    };
+    const runner = createTestRunner(
+      script,
+      { current: board } as never,
+      { current: serial } as never,
+      runnerCallbacks,
+    );
+    await runner.start();
+
+    assert.ok(summary);
+    assert.deepEqual(logs, [{ channel: "uart0", timestampMs: 1234 }]);
+  });
+
   it("preserves later milestones that arrived in the same early serial chunk", async () => {
     const listeners = new Set<(text: string, receivedAtMs: number) => void>();
     const serial = {
@@ -313,8 +361,9 @@ describe("createTestRunner", () => {
     };
 
     const summary = await run(script, board, serialWithCommandOutput(""));
-    assert.equal(summary.results[0].status, "error");
-    assert.match(summary.results[0].error ?? "", /supports 2048/);
+    assert.equal(summary.results.length, 0);
+    assert.match(summary.infrastructureError ?? "", /supports 2048/);
+    assert.equal(summary.completed, false);
     assert.equal(armCalls, 0);
   });
 
@@ -355,6 +404,45 @@ describe("createTestRunner", () => {
     assert.equal(summary.totalSteps, 2);
   });
 
+  it("runs safe cleanup after a step failure", async () => {
+    const powerCalls: boolean[] = [];
+    const board = baseBoard() as any;
+    board.setPower = async (_rail: string, on: boolean) => { powerCalls.push(on); };
+    board.readPower = async () => { throw new Error("ADC unavailable"); };
+    const script: TestScript = {
+      schema: "linkr-test.v1",
+      version: "1.0",
+      name: "cleanup after failure",
+      steps: [
+        { id: "power", type: "power_on", params: { rail: "5v_out" } },
+        { id: "adc", type: "adc_read", params: { channel: "5v_out" } },
+      ],
+    };
+
+    const summary = await run(script, board, serialWithCommandOutput(""));
+    assert.deepEqual(powerCalls, [true, false]);
+    assert.equal(summary.results[1].status, "error");
+    assert.equal(summary.cleanup?.passed, true);
+  });
+
+  it("reports cleanup failures as infrastructure errors", async () => {
+    const board = baseBoard() as any;
+    board.setPower = async (_rail: string, on: boolean) => {
+      if (!on) throw new Error("power off failed");
+    };
+    const script: TestScript = {
+      schema: "linkr-test.v1",
+      version: "1.0",
+      name: "cleanup failure",
+      steps: [{ id: "power", type: "power_on", params: { rail: "5v_out" } }],
+    };
+
+    const summary = await run(script, board, serialWithCommandOutput(""));
+    assert.equal(summary.cleanup?.passed, false);
+    assert.match(summary.infrastructureError ?? "", /cleanup failed.*power off failed/);
+    assert.equal(summary.completed, false);
+  });
+
   it("executes power_on and power_off steps", async () => {
     const calls: string[] = [];
     const board = baseBoard() as any;
@@ -369,9 +457,10 @@ describe("createTestRunner", () => {
       ],
     };
     const summary = await run(script, board, serialWithCommandOutput(""));
-    assert.deepEqual(calls, ["12v_out:true", "12v_out:false"]);
+    assert.deepEqual(calls, ["12v_out:true", "12v_out:false", "12v_out:false"]);
     assert.equal(summary.results[0].status, "pass");
     assert.equal(summary.results[1].status, "pass");
+    assert.equal(summary.cleanup?.passed, true);
   });
 
   it("executes adc_read step and reports current", async () => {
@@ -389,9 +478,9 @@ describe("createTestRunner", () => {
   });
 
   it("executes gpio_set step", async () => {
-    const calls: Array<{ pin: string; dir: string; val: number }> = [];
+    const calls: Array<{ pin: string; dir: string; val?: number }> = [];
     const board = baseBoard() as any;
-    board.setGpio = async (pin: string, dir: string, val: number) => { calls.push({ pin, dir, val }); };
+    board.setGpio = async (pin: string, dir: string, val?: number) => { calls.push({ pin, dir, val }); };
     const script: TestScript = {
       schema: "linkr-test.v1",
       version: "1.0",
@@ -399,14 +488,18 @@ describe("createTestRunner", () => {
       steps: [{ id: "s1", type: "gpio_set", params: { pin: "GP13", value: 1 } }],
     };
     const summary = await run(script, board, serialWithCommandOutput(""));
-    assert.deepEqual(calls, [{ pin: "GP13", dir: "output", val: 1 }]);
+    assert.deepEqual(calls, [
+      { pin: "GP13", dir: "output", val: 1 },
+      { pin: "GP13", dir: "input", val: undefined },
+    ]);
     assert.equal(summary.results[0].status, "pass");
+    assert.equal(summary.cleanup?.passed, true);
   });
 
   it("executes loop steps for every round with unique result identities", async () => {
-    const calls: number[] = [];
+    const calls: Array<number | undefined> = [];
     const board = baseBoard() as any;
-    board.setGpio = async (_pin: string, _direction: string, value: number) => {
+    board.setGpio = async (_pin: string, _direction: string, value?: number) => {
       calls.push(value);
     };
     const script: TestScript = {
@@ -424,7 +517,7 @@ describe("createTestRunner", () => {
     };
 
     const summary = await run(script, board, serialWithCommandOutput(""));
-    assert.deepEqual(calls, [1, 1, 1]);
+    assert.deepEqual(calls, [1, 1, 1, undefined]);
     assert.equal(summary.totalSteps, 3);
     assert.deepEqual(
       summary.results.map((result) => result.stepId),
@@ -456,9 +549,9 @@ describe("createTestRunner", () => {
   });
 
   it("runs only the true branch when a condition assertion passes", async () => {
-    const values: number[] = [];
+    const values: Array<number | undefined> = [];
     const board = baseBoard() as any;
-    board.setGpio = async (_pin: string, _direction: string, value: number) => values.push(value);
+    board.setGpio = async (_pin: string, _direction: string, value?: number) => values.push(value);
     const script: TestScript = {
       schema: "linkr-test.v1",
       version: "1.0",
@@ -479,16 +572,16 @@ describe("createTestRunner", () => {
     };
 
     const summary = await run(script, board, serialWithCommandOutput("Linux"));
-    assert.deepEqual(values, [1]);
+    assert.deepEqual(values, [1, undefined]);
     assert.equal(summary.results[0].conditionOutcome, true);
     assert.equal(summary.results[2].conditionalSkip, true);
     assert.equal(summary.completed, true);
   });
 
   it("runs only the false branch without treating a false condition as test failure", async () => {
-    const values: number[] = [];
+    const values: Array<number | undefined> = [];
     const board = baseBoard() as any;
-    board.setGpio = async (_pin: string, _direction: string, value: number) => values.push(value);
+    board.setGpio = async (_pin: string, _direction: string, value?: number) => values.push(value);
     const script: TestScript = {
       schema: "linkr-test.v1",
       version: "1.0",
@@ -509,7 +602,7 @@ describe("createTestRunner", () => {
     };
 
     const summary = await run(script, board, serialWithCommandOutput("Darwin"));
-    assert.deepEqual(values, [0]);
+    assert.deepEqual(values, [0, undefined]);
     assert.equal(summary.results[0].status, "pass");
     assert.equal(summary.results[0].conditionOutcome, false);
     assert.equal(summary.results[1].conditionalSkip, true);
@@ -531,20 +624,29 @@ describe("createTestRunner", () => {
     assert.equal(summary.results[0].status, "pass");
   });
 
-  it("skips serial steps when serial is not connected", async () => {
+  it("fails preflight before hardware actions when required serial is not connected", async () => {
     const serial = {
       isConnected: () => false,
       connectedChannels: () => [] as string[],
       subscribe: () => () => {},
       async write() {},
     };
+    const board = baseBoard() as any;
+    let powerCalls = 0;
+    board.setPower = async () => { powerCalls += 1; };
     const script: TestScript = {
       schema: "linkr-test.v1",
       version: "1.0",
       name: "skip",
-      steps: [{ id: "s1", type: "serial_send", params: { channel: "uart0", text: "hello" } }],
+      steps: [
+        { id: "power", type: "power_on", params: { rail: "5v_out" } },
+        { id: "serial", type: "serial_send", params: { channel: "uart0", text: "hello" } },
+      ],
     };
-    const summary = await run(script, baseBoard(), serial);
-    assert.equal(summary.results[0].status, "skip");
+    const summary = await run(script, board, serial);
+    assert.equal(summary.results.length, 0);
+    assert.match(summary.infrastructureError ?? "", /UART0.*not connected/);
+    assert.equal(summary.completed, false);
+    assert.equal(powerCalls, 0);
   });
 });

@@ -19,7 +19,7 @@ import { getDragPayload, setDragPayload, unitFromTemplate } from "./utils";
 interface WorkflowDragDropOptions {
   script: TestScript;
   customUnits: CustomUnitTemplate[];
-  commitSteps: (steps: TestScriptItem[]) => void;
+  commitSteps: (steps: TestScriptItem[]) => boolean;
   addStep: (type: StepType, index?: number) => void;
   addCustomUnit: (template: CustomUnitTemplate, index?: number) => void;
   selectItem: (id: string) => void;
@@ -57,8 +57,7 @@ export function useWorkflowDragDrop({
     const [item] = steps.splice(fromIndex, 1);
     const targetIndex = fromIndex < insertIndex ? insertIndex - 1 : insertIndex;
     steps.splice(Math.max(0, Math.min(targetIndex, steps.length)), 0, item);
-    commitSteps(steps);
-    selectItem(item.id);
+    if (commitSteps(steps)) selectItem(item.id);
   }, [addCustomUnit, addStep, commitSteps, customUnits, drag.payload, script.steps, selectItem]);
 
   const handleNestedItemDrop = useCallback((
@@ -94,8 +93,7 @@ export function useWorkflowDragDrop({
 
     const steps = nestItemInScript(script.steps, nestedItem, containerId, branch, sourceItemId);
     if (!steps) return;
-    commitSteps(steps);
-    selectItem(containerId);
+    if (commitSteps(steps)) selectItem(containerId);
   }, [commitSteps, customUnits, drag.payload, script.steps, selectItem]);
 
   const handleNodeDragStart = useCallback((event: DragEvent<HTMLButtonElement>, index: number) => {

@@ -670,6 +670,8 @@ const en: Dict = {
   "test.report.colDuration": "Duration",
   "test.report.colDetail": "Detail",
   "test.report.passedCount": "{n}/{total} passed",
+  "test.report.cleanupPassed": "Safe cleanup completed",
+  "test.report.cleanupFailed": "Safe cleanup or infrastructure failed",
   "test.running.step": "Step {current}/{total}",
 
   "test.param.rail": "Rail",
@@ -1356,6 +1358,8 @@ const zh: Dict = {
   "test.report.colDuration": "耗时",
   "test.report.colDetail": "详情",
   "test.report.passedCount": "{n}/{total} 通过",
+  "test.report.cleanupPassed": "安全清理已完成",
+  "test.report.cleanupFailed": "安全清理或基础设施执行失败",
   "test.running.step": "步骤 {current}/{total}",
 
   "test.param.rail": "电源轨",

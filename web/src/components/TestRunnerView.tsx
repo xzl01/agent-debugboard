@@ -169,6 +169,7 @@ export function TestRunnerView({
             {serialLogs.slice(-200).map((log, i) => (
               <div key={i} className={log.direction === "tx" ? "text-brand" : ""}>
                 <span className="text-ink-dim/50">[{((log.timestampMs - startedAtMs) / 1000).toFixed(1)}s]</span>
+                <span className="ml-1 text-ink-dim/70">[{log.channel.toUpperCase()}]</span>
                 {log.direction === "tx" ? " → " : " "}
                 {log.text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "").slice(0, 200)}
               </div>

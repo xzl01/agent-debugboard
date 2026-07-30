@@ -168,10 +168,26 @@ export interface RunSummary {
   startedAtMs: number;
   finishedAtMs: number;
   results: StepResult[];
+  cleanup?: CleanupSummary;
+  infrastructureError?: string;
+}
+
+export interface CleanupActionResult {
+  kind: "capture" | "gpio" | "power";
+  target: string;
+  status: "pass" | "error";
+  error?: string;
+}
+
+export interface CleanupSummary {
+  attempted: boolean;
+  passed: boolean;
+  actions: CleanupActionResult[];
 }
 
 export function isRunSuccessful(summary: RunSummary): boolean {
-  return summary.completed && !summary.aborted && summary.results.length === summary.totalSteps &&
+  return summary.completed && !summary.aborted && !summary.infrastructureError && summary.cleanup?.passed !== false &&
+    summary.results.length === summary.totalSteps &&
     summary.results.every((result) => result.status === "pass" || (
       result.status === "skip" && result.conditionalSkip === true
     ));
@@ -186,9 +202,34 @@ export interface AdcSampleEntry {
 
 export interface SerialLogEntry {
   stepId: string;
+  channel: SerialChannel;
   text: string;
   direction: "rx" | "tx";
   timestampMs: number;
+}
+
+const ASSERTION_FIELDS_BY_STEP: Partial<Record<StepType, ReadonlySet<keyof StepAssertion>>> = {
+  adc_read: new Set(["current_range"]),
+  serial_wait: new Set(["contains", "regex"]),
+  serial_expect: new Set(["contains", "regex", "exit_code"]),
+  gpio_assert: new Set(["pin_direction", "pin_value"]),
+  capture: new Set(["peak_current_max_a", "energy_max_j"]),
+};
+
+/** Preserve only assertion fields that remain meaningful after a step type change. */
+export function compatibleAssertionForStepType(
+  assertion: StepAssertion | undefined,
+  type: StepType,
+): StepAssertion | undefined {
+  if (!assertion) return undefined;
+  const allowed = ASSERTION_FIELDS_BY_STEP[type] ?? new Set<keyof StepAssertion>();
+  const next: StepAssertion = {};
+  if (assertion.continue_on_error != null) next.continue_on_error = assertion.continue_on_error;
+  for (const key of allowed) {
+    const value = assertion[key];
+    if (value != null) Object.assign(next, { [key]: value });
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
 }
 
 export const STEP_TYPES: StepType[] = [

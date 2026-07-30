@@ -14,9 +14,8 @@ import type {
   StepAssertion,
   StepResult,
   RunSummary,
-  AdcSampleEntry,
-  SerialLogEntry,
   ExecutionStep,
+  CleanupSummary,
 } from "./testScript";
 import { buildExecutionPlan } from "./testScript.ts";
 import { POWER_CAPTURE_SAMPLE_CAPACITY } from "./power.ts";
@@ -24,7 +23,13 @@ import { POWER_CAPTURE_SAMPLE_CAPACITY } from "./power.ts";
 export interface RunnerCallbacks {
   onStepStart(stepId: string): void;
   onStepResult(result: StepResult): void;
-  onSerialLog(stepId: string, text: string, direction: "rx" | "tx"): void;
+  onSerialLog(
+    stepId: string,
+    channel: SerialChannelId,
+    text: string,
+    direction: "rx" | "tx",
+    timestampMs: number,
+  ): void;
   onAdcSample(stepId: string, channel: string, currentUa: number, timestampMs: number): void;
   onComplete(summary: RunSummary): void;
   onError(error: string): void;
@@ -43,6 +48,69 @@ class RunnerAbortedError extends Error {
 }
 
 const SERIAL_BUFFER_LIMIT = 65_536;
+
+function validateRegex(pattern: string, label: string) {
+  if (pattern.length === 0) throw new Error(`${label} must not be empty`);
+  if (pattern.length > 500) throw new Error(`${label} is too long`);
+  try {
+    new RegExp(pattern, "im");
+  } catch {
+    throw new Error(`invalid ${label}: ${pattern}`);
+  }
+}
+
+function validateExecutionPreconditions(
+  executionPlan: ExecutionStep[],
+  board: UseBoard | null,
+  serial: SerialAutomationHandle | null,
+) {
+  if (!board || board.connected === false) throw new Error("debug board is not connected");
+
+  const requiredChannels = new Set<SerialChannelId>();
+  for (const step of executionPlan) {
+    if (step.type === "serial_wait") {
+      const params = step.params as import("./testScript").SerialWaitParams;
+      requiredChannels.add(params.channel);
+      validateRegex(params.pattern, `serial wait pattern for ${step.sourceStepId}`);
+    } else if (step.type === "serial_send") {
+      requiredChannels.add((step.params as import("./testScript").SerialSendParams).channel);
+    } else if (step.type === "serial_expect") {
+      const params = step.params as import("./testScript").SerialExpectParams;
+      requiredChannels.add(params.channel);
+      if (params.pattern.trim()) validateRegex(params.pattern, `serial assertion pattern for ${step.sourceStepId}`);
+    } else if (step.type === "capture") {
+      const params = step.params as import("./testScript").CaptureParams;
+      if (!Number.isFinite(params.duration_ms) || params.duration_ms <= 0) {
+        throw new Error(`capture duration for ${step.sourceStepId} must be greater than zero`);
+      }
+      const samples = Math.max(2, Math.ceil((params.duration_ms / 1000) * 100));
+      if (samples > POWER_CAPTURE_SAMPLE_CAPACITY) {
+        throw new Error(
+          `capture ${step.sourceStepId} requires ${samples} samples, but this firmware supports ${POWER_CAPTURE_SAMPLE_CAPACITY}`,
+        );
+      }
+      if (params.trigger === "gpio") {
+        throw new Error(`GPIO-triggered capture is not supported by step ${step.sourceStepId}`);
+      }
+    }
+  }
+
+  for (const channel of requiredChannels) {
+    if (!serial?.isConnected(channel)) {
+      throw new Error(`${channel.toUpperCase()} is required by this workflow but is not connected`);
+    }
+  }
+}
+
+export function preflightTestRun(
+  script: TestScript,
+  board: UseBoard | null,
+  serial: SerialAutomationHandle | null,
+): ExecutionStep[] {
+  const executionPlan = buildExecutionPlan(script);
+  validateExecutionPreconditions(executionPlan, board, serial);
+  return executionPlan;
+}
 
 function appendBoundedText(current: string, text: string): string {
   const combined = current + text;
@@ -278,6 +346,8 @@ export function createTestRunner(
   const executionPlan = buildExecutionPlan(script);
   const startedAtMs = Date.now();
   const serialBuffers = new Map<SerialChannelId, { text: string; cursor: number }>();
+  const touchedRails = new Set<string>();
+  const touchedGpios = new Set<string>();
   let activeStepId = "run";
   const getBoard = () => {
     if (!boardRef.current) throw new Error("device state is unavailable");
@@ -332,12 +402,14 @@ export function createTestRunner(
       switch (step.type) {
         case "power_on": {
           const p = step.params as import("./testScript").PowerOnParams;
+          touchedRails.add(p.rail);
           await getBoard().setPower(p.rail, true);
           await sleep(500, signal);
           break;
         }
         case "power_off": {
           const p = step.params as import("./testScript").PowerOffParams;
+          touchedRails.add(p.rail);
           await getBoard().setPower(p.rail, false);
           break;
         }
@@ -350,7 +422,7 @@ export function createTestRunner(
           const p = step.params as import("./testScript").SerialWaitParams;
           const channel = p.channel as SerialChannelId;
           if (!serialRef.current?.isConnected(channel)) {
-            return makeSkip(step, stepStartedAt, "no serial connection");
+            throw new Error(`${channel.toUpperCase()} disconnected during workflow execution`);
           }
           serialRef.current?.setAutomationActive(true, channel);
           try {
@@ -377,9 +449,9 @@ export function createTestRunner(
           const p = step.params as import("./testScript").SerialSendParams;
           const channel = p.channel as SerialChannelId;
           if (!serialRef.current?.isConnected(channel)) {
-            return makeSkip(step, stepStartedAt, "no serial connection");
+            throw new Error(`${channel.toUpperCase()} disconnected during workflow execution`);
           }
-          callbacks.onSerialLog(step.executionId, p.text, "tx");
+          callbacks.onSerialLog(step.executionId, channel, p.text, "tx", Date.now());
           await serialRef.current.write(p.text, channel);
           break;
         }
@@ -387,7 +459,7 @@ export function createTestRunner(
           const p = step.params as import("./testScript").SerialExpectParams;
           const channel = p.channel as SerialChannelId;
           if (!serialRef.current?.isConnected(channel)) {
-            return makeSkip(step, stepStartedAt, "no serial connection");
+            throw new Error(`${channel.toUpperCase()} disconnected during workflow execution`);
           }
           serialRef.current?.setAutomationActive(true, channel);
           try {
@@ -397,7 +469,7 @@ export function createTestRunner(
               p.command,
               p.pattern,
               p.timeout_ms,
-              (text) => callbacks.onSerialLog(step.executionId, text, "tx"),
+              (text) => callbacks.onSerialLog(step.executionId, channel, text, "tx", Date.now()),
               signal,
             );
             serialOutput = result.output;
@@ -427,6 +499,7 @@ export function createTestRunner(
         }
         case "gpio_set": {
           const p = step.params as import("./testScript").GpioSetParams;
+          touchedGpios.add(p.pin);
           await getBoard().setGpio(p.pin, "output", p.value);
           break;
         }
@@ -482,6 +555,7 @@ export function createTestRunner(
           if (trigger === "manual") {
             getBoard().triggerCapture();
           } else if (trigger === "power_on") {
+            touchedRails.add(rail);
             await getBoard().setPower(rail, false);
             await sleep(500, signal);
             await getBoard().setPower(rail, true);
@@ -589,20 +663,60 @@ export function createTestRunner(
     };
   }
 
+  async function performSafeCleanup(): Promise<CleanupSummary> {
+    const actions: CleanupSummary["actions"] = [];
+    const record = async (
+      kind: CleanupSummary["actions"][number]["kind"],
+      target: string,
+      action: () => void | Promise<void>,
+    ) => {
+      try {
+        await action();
+        actions.push({ kind, target, status: "pass" });
+      } catch (reason) {
+        actions.push({
+          kind,
+          target,
+          status: "error",
+          error: reason instanceof Error ? reason.message : String(reason),
+        });
+      }
+    };
+
+    if (captureActive) {
+      await record("capture", "active capture", () => getBoard().cancelCapture());
+      captureActive = false;
+    }
+    for (const pin of touchedGpios) {
+      await record("gpio", pin, () => getBoard().setGpio(pin, "input"));
+    }
+    for (const rail of touchedRails) {
+      await record("power", rail, () => getBoard().setPower(rail, false));
+    }
+    return {
+      attempted: actions.length > 0,
+      passed: actions.every((action) => action.status === "pass"),
+      actions,
+    };
+  }
+
   return {
     async start() {
       const serialUnsubscribers: Array<() => void> = [];
-      const serial = serialRef.current;
-      if (serial) {
-        for (const channel of ["uart0", "uart1"] as const) {
-          serialUnsubscribers.push(serial.subscribe((text) => {
-            appendSerialBuffer(channel, text);
-            callbacks.onSerialLog(activeStepId, text, "rx");
-          }, channel));
-        }
-      }
       const conditionOutcomes = new Map<string, boolean>();
+      let infrastructureError: string | undefined;
+      let cleanup: CleanupSummary = { attempted: false, passed: true, actions: [] };
       try {
+        validateExecutionPreconditions(executionPlan, boardRef.current, serialRef.current);
+        const serial = serialRef.current;
+        if (serial) {
+          for (const channel of ["uart0", "uart1"] as const) {
+            serialUnsubscribers.push(serial.subscribe((text, receivedAtMs) => {
+              appendSerialBuffer(channel, text);
+              callbacks.onSerialLog(activeStepId, channel, text, "rx", receivedAtMs ?? Date.now());
+            }, channel));
+          }
+        }
         for (const step of executionPlan) {
           if (aborted) break;
           activeStepId = step.executionId;
@@ -653,12 +767,22 @@ export function createTestRunner(
           }
         }
       } catch (e) {
-        callbacks.onError(e instanceof Error ? e.message : String(e));
+        infrastructureError = e instanceof Error ? e.message : String(e);
       } finally {
         for (const unsubscribe of serialUnsubscribers) unsubscribe();
+        cleanup = await performSafeCleanup();
       }
 
       const finishedAtMs = Date.now();
+      if (!cleanup.passed) {
+        const cleanupError = cleanup.actions
+          .filter((action) => action.status === "error")
+          .map((action) => `${action.kind} ${action.target}: ${action.error ?? "cleanup failed"}`)
+          .join("; ");
+        infrastructureError = infrastructureError
+          ? `${infrastructureError}; cleanup failed: ${cleanupError}`
+          : `cleanup failed: ${cleanupError}`;
+      }
       const summary: RunSummary = {
         totalSteps: executionPlan.length,
         passed: results.filter((r) => r.status === "pass").length,
@@ -666,11 +790,13 @@ export function createTestRunner(
         skipped: results.filter((r) => r.status === "skip").length,
         errored: results.filter((r) => r.status === "error").length,
         aborted,
-        completed: !aborted && results.length === executionPlan.length,
+        completed: !aborted && !infrastructureError && cleanup.passed && results.length === executionPlan.length,
         durationMs: finishedAtMs - startedAtMs,
         startedAtMs,
         finishedAtMs,
         results,
+        cleanup,
+        infrastructureError,
       };
       callbacks.onComplete(summary);
     },

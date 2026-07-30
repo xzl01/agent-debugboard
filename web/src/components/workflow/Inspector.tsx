@@ -18,6 +18,7 @@ import {
   MAX_LOOP_COUNT,
   MIN_LOOP_COUNT,
   STEP_TYPES,
+  compatibleAssertionForStepType,
   defaultStepParams,
   generateStepId,
   isTestCondition,
@@ -268,7 +269,13 @@ function StepCollectionEditor({
                         value={(step as TestStep).type}
                         onChange={(event) => {
                           const type = event.target.value as StepType;
-                          updateStep(index, { id: step.id, type, params: defaultStepParams(type) });
+                          const current = step as TestStep;
+                          updateStep(index, {
+                            ...current,
+                            type,
+                            params: defaultStepParams(type),
+                            assert: compatibleAssertionForStepType(current.assert, type),
+                          });
                         }}
                       >
                         {STEP_TYPES.map((type) => (
@@ -343,9 +350,18 @@ function ConditionInspector({
           <select
             className={inputClass}
             value={condition.params.check.type}
-            onChange={(event) => updateParams({
-              check: createConditionCheck(event.target.value as ConditionCheckType),
-            })}
+            onChange={(event) => {
+              const type = event.target.value as ConditionCheckType;
+              const next = createConditionCheck(type);
+              updateParams({
+                check: {
+                  ...next,
+                  id: condition.params.check.id,
+                  continue_on_error: condition.params.check.continue_on_error,
+                  assert: compatibleAssertionForStepType(condition.params.check.assert, type),
+                },
+              });
+            }}
           >
             {CONDITION_CHECK_TYPES.map((type) => (
               <option key={type} value={type}>{t(`test.step.${type}`)}</option>

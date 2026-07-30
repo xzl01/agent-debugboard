@@ -75,6 +75,7 @@ export function WorkflowComposer({
   const [groupSelection, setGroupSelection] = useState<Set<string>>(new Set());
   const [unitName, setUnitName] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<string | null>(null);
   const [showGroupHint, setShowGroupHint] = useState(false);
   const { customUnits, addCustomUnitTemplate, removeCustomUnit } = useCustomUnits();
   const { push: pushHistory, undo, redo, canUndo, canRedo } = useWorkflowHistory();
@@ -93,7 +94,8 @@ export function WorkflowComposer({
 
   // ─── Derived state ─────────────────────────────────────────────────────────
 
-  const executionCount = useMemo(() => tryBuildExecutionPlan(script).plan.length, [script]);
+  const execution = useMemo(() => tryBuildExecutionPlan(script), [script]);
+  const executionCount = execution.plan.length;
   const commandCount = countScriptCommands(script);
   const selectedIndex = script.steps.findIndex((item) => item.id === selectedId);
   const selectedItem = selectedIndex >= 0 ? script.steps[selectedIndex] : undefined;
@@ -112,9 +114,17 @@ export function WorkflowComposer({
 
   // ─── Core mutation helper (pushes undo history) ─────────────────────────────
 
-  const commitSteps = useCallback((steps: TestScriptItem[]) => {
+  const commitSteps = useCallback((steps: TestScriptItem[]): boolean => {
+    const candidate = { ...scriptRef.current, steps };
+    const attempt = tryBuildExecutionPlan(candidate);
+    if (attempt.error?.includes(`exceeds ${MAX_EXECUTION_STEPS}`)) {
+      setMutationError(attempt.error);
+      return false;
+    }
+    setMutationError(null);
     pushHistory(scriptRef.current);
-    onChange({ ...scriptRef.current, steps });
+    onChange(candidate);
+    return true;
   }, [onChange, pushHistory]);
 
   // ─── Step operations ─────────────────────────────────────────────────────────
@@ -124,7 +134,7 @@ export function WorkflowComposer({
     const step: TestStep = { id: generateStepId(), type, params: defaultStepParams(type) };
     const steps = [...script.steps];
     steps.splice(index, 0, step);
-    commitSteps(steps);
+    if (!commitSteps(steps)) return;
     setSelectedId(step.id);
   }, [commitSteps, executionCount, script.steps]);
 
@@ -133,7 +143,7 @@ export function WorkflowComposer({
     const loop: TestLoop = { id: generateLoopId(), type: "loop", params: { count: 2, steps: [child] } };
     const steps = [...script.steps];
     steps.splice(index, 0, loop);
-    commitSteps(steps);
+    if (!commitSteps(steps)) return;
     setSelectedId(loop.id);
   }, [commitSteps, script.steps]);
 
@@ -149,7 +159,7 @@ export function WorkflowComposer({
     };
     const steps = [...script.steps];
     steps.splice(index, 0, condition);
-    commitSteps(steps);
+    if (!commitSteps(steps)) return;
     setSelectedId(condition.id);
   }, [commitSteps, script.steps]);
 
@@ -157,7 +167,7 @@ export function WorkflowComposer({
     const unit = unitFromTemplate(template);
     const steps = [...script.steps];
     steps.splice(index, 0, unit);
-    commitSteps(steps);
+    if (!commitSteps(steps)) return;
     setSelectedId(unit.id);
   }, [commitSteps, script.steps]);
 
@@ -193,7 +203,7 @@ export function WorkflowComposer({
     const duplicate = cloneItem(script.steps[index]);
     const steps = [...script.steps];
     steps.splice(index + 1, 0, duplicate);
-    commitSteps(steps);
+    if (!commitSteps(steps)) return;
     setSelectedId(duplicate.id);
   }, [commitSteps, script.steps]);
 
@@ -224,7 +234,7 @@ export function WorkflowComposer({
     };
     const next = [...script.steps];
     next.splice(firstIndex, selectedItems.length, group);
-    commitSteps(next);
+    if (!commitSteps(next)) return;
     if (kind === "unit") {
       const templateName = unitName.trim() || t("test.unit.defaultName");
       addCustomUnitTemplate({
@@ -243,7 +253,7 @@ export function WorkflowComposer({
     if (!selectedItem || !isTestLoop(selectedItem) || selectedIndex < 0) return;
     const steps = [...script.steps];
     steps.splice(selectedIndex, 1, ...selectedItem.params.steps);
-    commitSteps(steps);
+    if (!commitSteps(steps)) return;
     setSelectedId(selectedItem.params.steps[0]?.id ?? null);
   }, [commitSteps, script.steps, selectedIndex, selectedItem]);
 
@@ -264,7 +274,7 @@ export function WorkflowComposer({
       nestedItemId,
     );
     if (!steps) return;
-    commitSteps(steps);
+    if (!commitSteps(steps)) return;
     setSelectedId(containerId);
   }, [commitSteps]);
   const {
@@ -296,6 +306,7 @@ export function WorkflowComposer({
       try {
         const imported = parseTestScript(String(reader.result));
         setImportError(null);
+        setMutationError(null);
         setGroupSelection(new Set());
         setSelectedId(imported.steps[0]?.id ?? null);
         pushHistory(script);
@@ -427,9 +438,9 @@ export function WorkflowComposer({
         </div>
       )}
 
-      {importError && (
+      {(importError || mutationError || execution.error) && (
         <div role="alert" className="mx-4 mt-3 shrink-0 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
-          {importError}
+          {importError || mutationError || execution.error}
         </div>
       )}
 

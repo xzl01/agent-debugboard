@@ -87,7 +87,8 @@ export function Palette({
             <button
               type="button"
               onClick={onAddLoop}
-              className="flex min-h-11 w-full items-center gap-2 rounded-xl border border-transparent px-2.5 py-2 text-left text-xs font-medium text-ink transition-colors hover:border-line/70 hover:bg-panel"
+              disabled={atLimit}
+              className="flex min-h-11 w-full items-center gap-2 rounded-xl border border-transparent px-2.5 py-2 text-left text-xs font-medium text-ink transition-colors hover:border-line/70 hover:bg-panel disabled:cursor-not-allowed disabled:opacity-40"
             >
               <span className="grid h-7 w-7 place-items-center rounded-lg bg-violet-500/10 text-violet-500">
                 <Repeat2 size={14} />
@@ -98,7 +99,8 @@ export function Palette({
             <button
               type="button"
               onClick={onAddCondition}
-              className="flex min-h-11 w-full items-center gap-2 rounded-xl border border-transparent px-2.5 py-2 text-left text-xs font-medium text-ink transition-colors hover:border-line/70 hover:bg-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+              disabled={atLimit}
+              className="flex min-h-11 w-full items-center gap-2 rounded-xl border border-transparent px-2.5 py-2 text-left text-xs font-medium text-ink transition-colors hover:border-line/70 hover:bg-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <span className="grid h-7 w-7 place-items-center rounded-lg bg-violet-500/10 text-violet-500">
                 <GitFork size={14} />
@@ -130,7 +132,7 @@ export function Palette({
                 <div key={unit.id} className="group/unit flex items-center rounded-xl hover:bg-panel">
                   <button
                     type="button"
-                    draggable
+                    draggable={!atLimit}
                     onDragStart={(event) => {
                       const payload = { kind: "unit" as const, templateId: unit.id };
                       setDragPayload(event, payload);
@@ -138,7 +140,8 @@ export function Palette({
                     }}
                     onDragEnd={() => dragDispatch({ type: "end" })}
                     onClick={() => onAddCustomUnit(unit)}
-                    className="flex min-h-11 min-w-0 flex-1 cursor-grab items-center gap-2 px-2.5 py-2 text-left text-xs font-medium text-ink active:cursor-grabbing"
+                    disabled={atLimit}
+                    className="flex min-h-11 min-w-0 flex-1 cursor-grab items-center gap-2 px-2.5 py-2 text-left text-xs font-medium text-ink active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-violet-500/10 text-violet-500">
                       <Package size={14} />

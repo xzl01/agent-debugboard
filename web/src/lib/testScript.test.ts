@@ -17,6 +17,7 @@ import {
   tryBuildExecutionPlan,
   nestItemInScript,
   removeNestedItemFromScript,
+  compatibleAssertionForStepType,
 } from "./testScript.ts";
 
 describe("stepTypeLabel", () => {
@@ -70,6 +71,38 @@ describe("isRunSuccessful", () => {
         { ...result("skip"), conditionalSkip: true },
       ],
     }), true);
+  });
+
+  it("rejects a run when safe cleanup fails", () => {
+    assert.equal(isRunSuccessful({
+      totalSteps: 1, passed: 1, failed: 0, skipped: 0, errored: 0,
+      aborted: false, completed: false, durationMs: 1, startedAtMs: 0,
+      finishedAtMs: 1, results: [result("pass")],
+      cleanup: {
+        attempted: true,
+        passed: false,
+        actions: [{ kind: "power", target: "5v_out", status: "error", error: "failed" }],
+      },
+    }), false);
+  });
+});
+
+describe("compatibleAssertionForStepType", () => {
+  it("retains generic and compatible assertion fields during type conversion", () => {
+    assert.deepEqual(compatibleAssertionForStepType({
+      continue_on_error: true,
+      contains: "Linux",
+      exit_code: 0,
+      current_range: { min_a: 0, max_a: 1 },
+    }, "serial_expect"), {
+      continue_on_error: true,
+      contains: "Linux",
+      exit_code: 0,
+    });
+  });
+
+  it("drops incompatible assertion fields instead of applying them to missing data", () => {
+    assert.equal(compatibleAssertionForStepType({ contains: "Linux" }, "delay"), undefined);
   });
 });
 

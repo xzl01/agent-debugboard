@@ -7,7 +7,7 @@ import type { UseBoard } from "@/hooks/useBoard";
 import type { SerialAutomationHandle } from "./SerialCard";
 import type { TestScript, StepResult, StepStatus, RunSummary, AdcSampleEntry, SerialLogEntry } from "@/lib/testScript";
 import { defaultScript, parseTestScript, serializeTestScript, tryBuildExecutionPlan } from "@/lib/testScript";
-import { createTestRunner, type RunnerCallbacks, type RunnerHandle } from "@/lib/testRunner";
+import { createTestRunner, preflightTestRun, type RunnerCallbacks, type RunnerHandle } from "@/lib/testRunner";
 import { useI18n } from "@/lib/i18n";
 import type { AutomationTaskControl } from "@/lib/automationTask";
 
@@ -51,6 +51,8 @@ export function TestAutomation({
   const [startedAtMs, setStartedAtMs] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const serialLogsRef = useRef<SerialLogEntry[]>([]);
+  const adcSamplesRef = useRef<AdcSampleEntry[]>([]);
   const runnerRef = useRef<RunnerHandle | null>(null);
   const runningRef = useRef(false);
   const boardRef = useRef(board);
@@ -80,21 +82,29 @@ export function TestAutomation({
         setStepResults((prev) => [...prev, r]);
         setStepStates((prev) => new Map(prev).set(r.stepId, r.status));
       },
-      onSerialLog: (_id, text, direction) =>
+      onSerialLog: (_id, channel, text, direction, timestampMs) => {
+        const entry: SerialLogEntry = { stepId: _id, channel, text, direction, timestampMs };
+        serialLogsRef.current.push(entry);
         setSerialLogs((prev) => {
-          const next = [...prev, { stepId: _id, text, direction, timestampMs: Date.now() }];
-          return next.length > 10000 ? next.slice(-5000) : next;
-        }),
-      onAdcSample: (_id, channel, currentUa, timestampMs) =>
+          const next = [...prev, entry];
+          return next.length > 1000 ? next.slice(-1000) : next;
+        });
+      },
+      onAdcSample: (_id, channel, currentUa, timestampMs) => {
+        const entry: AdcSampleEntry = { stepId: _id, channel, currentUa, timestampMs };
+        adcSamplesRef.current.push(entry);
         setAdcSamples((prev) => {
-          const next = [...prev, { stepId: _id, channel, currentUa, timestampMs }];
-          return next.length > 5000 ? next.slice(-2500) : next;
-        }),
+          const next = [...prev, entry];
+          return next.length > 1000 ? next.slice(-1000) : next;
+        });
+      },
       onComplete: (summary) => {
         taskControl.release("test");
         runningRef.current = false;
         runnerRef.current = null;
         setIsRunning(false);
+        setSerialLogs([...serialLogsRef.current]);
+        setAdcSamples([...adcSamplesRef.current]);
         setRunSummary(summary);
         setTab("report");
       },
@@ -116,6 +126,12 @@ export function TestAutomation({
       setRunError(execution.error);
       return;
     }
+    try {
+      preflightTestRun(script, boardRef.current, serialRef.current);
+    } catch (reason) {
+      setRunError(reason instanceof Error ? reason.message : String(reason));
+      return;
+    }
     if (!taskControl.acquire("test")) {
       setRunError(t("test.error.taskBusy"));
       return;
@@ -126,6 +142,8 @@ export function TestAutomation({
     setTab("running");
     setStepStates(new Map());
     setStepResults([]);
+    serialLogsRef.current = [];
+    adcSamplesRef.current = [];
     setSerialLogs([]);
     setAdcSamples([]);
     setRunSummary(null);

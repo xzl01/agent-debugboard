@@ -83,12 +83,24 @@ function PowerChart({
   const { t } = useI18n();
   if (samples.length < 2) return null;
 
-  const points = samples.map((s) => ({
-    x: s.timestampMs - startedAtMs,
-    y: s.currentUa / 1_000_000,
+  const channelSamples = new Map<string, AdcSampleEntry[]>();
+  for (const sample of samples) {
+    const entries = channelSamples.get(sample.channel) ?? [];
+    entries.push(sample);
+    channelSamples.set(sample.channel, entries);
+  }
+  const series = Array.from(channelSamples, ([channel, entries]) => ({
+    channel,
+    points: entries
+      .map((sample) => ({
+        x: sample.timestampMs - startedAtMs,
+        y: sample.currentUa / 1_000_000,
+      }))
+      .sort((a, b) => a.x - b.x),
   }));
-  const maxY = points.reduce((max, p) => Math.max(max, p.y), 0.1);
-  const maxX = points[points.length - 1].x;
+  const allPoints = series.flatMap((entry) => entry.points);
+  const maxY = allPoints.reduce((max, point) => Math.max(max, point.y), 0.1);
+  const maxX = allPoints.reduce((max, point) => Math.max(max, point.x), 0);
   if (maxX <= 0) return null;
 
   const W = 600;
@@ -100,7 +112,7 @@ function PowerChart({
   const sx = (x: number) => pad.left + (x / maxX) * plotW;
   const sy = (y: number) => pad.top + plotH - (y / maxY) * plotH;
 
-  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"}${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" ");
+  const colors = ["#4f7cff", "#f59e0b", "#22c55e", "#a855f7"];
 
   return (
     <div className="rounded-xl border border-line/50 bg-panel2/30 p-3">
@@ -130,7 +142,17 @@ function PowerChart({
         <line x1={pad.left} y1={pad.top + plotH} x2={pad.left + plotW} y2={pad.top + plotH} stroke="currentColor" strokeOpacity={0.1} />
         <line x1={pad.left} y1={pad.top} x2={pad.left} y2={pad.top + plotH} stroke="currentColor" strokeOpacity={0.1} />
 
-        <path d={linePath} fill="none" stroke="#4f7cff" strokeWidth="1.5" />
+        {series.map((entry, index) => (
+          <path
+            key={entry.channel}
+            d={entry.points.map((point, pointIndex) => (
+              `${pointIndex === 0 ? "M" : "L"}${sx(point.x).toFixed(1)},${sy(point.y).toFixed(1)}`
+            )).join(" ")}
+            fill="none"
+            stroke={colors[index % colors.length]}
+            strokeWidth="1.5"
+          />
+        ))}
 
         <text x={pad.left} y={H - 2} fill="currentColor" fontSize="8" opacity={0.4}>0s</text>
         <text x={W - pad.right} y={H - 2} fill="currentColor" fontSize="8" opacity={0.4} textAnchor="end">
@@ -143,6 +165,14 @@ function PowerChart({
           0
         </text>
       </svg>
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+        {series.map((entry, index) => (
+          <span key={entry.channel} className="inline-flex items-center gap-1 text-[9px] text-ink-dim">
+            <span className="h-1.5 w-3 rounded-full" style={{ backgroundColor: colors[index % colors.length] }} />
+            {entry.channel.replace(/_out$/, "").toUpperCase()}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -271,6 +301,7 @@ function SerialLogPanel({ logs, startedAtMs }: { logs: SerialLogEntry[]; started
         {logs.map((log, i) => (
           <div key={i} className={log.direction === "tx" ? "text-brand" : ""}>
             <span className="text-ink-dim/50">[{((log.timestampMs - startedAtMs) / 1000).toFixed(1)}s]</span>
+            <span className="ml-1 text-ink-dim/70">[{log.channel.toUpperCase()}]</span>
             {log.direction === "tx" ? " → " : " "}
             {log.text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "").slice(0, 500)}
           </div>
@@ -305,6 +336,8 @@ export function TestReport({ script, summary, serialLogs, adcSamples, onReRun }:
         aborted: summary.aborted,
         completed: summary.completed,
         duration_ms: summary.durationMs,
+        infrastructure_error: summary.infrastructureError,
+        cleanup: summary.cleanup,
       },
       results: summary.results,
       adc_samples: adcSamples,
@@ -389,6 +422,20 @@ export function TestReport({ script, summary, serialLogs, adcSamples, onReRun }:
       </div>
 
       <TimelineBar results={summary.results} totalDuration={summary.durationMs} />
+      {(summary.infrastructureError || summary.cleanup) && (
+        <div className={`rounded-xl border px-3 py-2 text-xs ${
+          summary.cleanup?.passed !== false && !summary.infrastructureError
+            ? "border-ok/30 bg-ok/10 text-ok"
+            : "border-danger/30 bg-danger/10 text-danger"
+        }`}>
+          <div className="font-semibold">
+            {summary.cleanup?.passed !== false && !summary.infrastructureError
+              ? t("test.report.cleanupPassed")
+              : t("test.report.cleanupFailed")}
+          </div>
+          {summary.infrastructureError && <div className="mt-1 break-words">{summary.infrastructureError}</div>}
+        </div>
+      )}
       <PowerChart samples={adcSamples} results={summary.results} startedAtMs={summary.startedAtMs} />
       <ResultsTable results={summary.results} startedAtMs={summary.startedAtMs} />
       <SerialLogPanel logs={serialLogs} startedAtMs={summary.startedAtMs} />
