@@ -7,6 +7,7 @@ export function Card({
   subtitle,
   icon: Icon,
   right,
+  headerLeading,
   children,
   className,
   contentClassName,
@@ -15,6 +16,8 @@ export function Card({
   subtitle?: string;
   icon?: LucideIcon;
   right?: ReactNode;
+  /** Replaces the standard icon/title block in the card header. */
+  headerLeading?: ReactNode;
   children?: ReactNode;
   className?: string;
   contentClassName?: string;
@@ -26,23 +29,27 @@ export function Card({
         className
       )}
     >
-      {(title || right) && (
+      {(title || right || headerLeading) && (
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line/60 px-4 py-3">
-          <div className="flex items-center gap-3 min-w-0">
-            {Icon && (
-              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand/10 text-brand">
-                <Icon size={16} />
-              </span>
-            )}
-            <div className="min-w-0">
-              {title && (
-                <h2 className="truncate text-sm font-semibold tracking-wide text-ink">
-                  {title}
-                </h2>
+          {headerLeading ? (
+            <div className="min-w-0 max-w-full">{headerLeading}</div>
+          ) : (
+            <div className="flex min-w-0 items-center gap-3">
+              {Icon && (
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand/10 text-brand">
+                  <Icon size={16} />
+                </span>
               )}
-              {subtitle && <p className="truncate text-xs text-ink-dim">{subtitle}</p>}
+              <div className="min-w-0">
+                {title && (
+                  <h2 className="truncate text-sm font-semibold tracking-wide text-ink">
+                    {title}
+                  </h2>
+                )}
+                {subtitle && <p className="truncate text-xs text-ink-dim">{subtitle}</p>}
+              </div>
             </div>
-          </div>
+          )}
           {right && <div className="max-w-full shrink-0">{right}</div>}
         </header>
       )}

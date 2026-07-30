@@ -123,20 +123,33 @@ export function TestRunnerView({
                   {t("test.loop.iteration", { current: step.loopIteration, total: step.loopCount })}
                 </Badge>
               )}
+              {step.conditionRole && (
+                <Badge tone="neutral">{t(`test.condition.branch.${step.conditionRole}`)}</Badge>
+              )}
               {result && (
                 <span className="font-mono text-[10px] text-ink-dim">{formatMs(result.durationMs)}</span>
               )}
-              {result?.error && (
+              {result?.error && !result.conditionalSkip && (
                 <span className="max-w-[200px] truncate text-[10px] text-danger" title={result.error}>
                   {result.error}
                 </span>
               )}
-              {result?.assertionResult && (
+              {result?.conditionOutcome != null ? (
+                <Badge tone={result.conditionOutcome ? "ok" : "neutral"}>
+                  {result.conditionOutcome
+                    ? t("test.condition.outcomeTrue")
+                    : t("test.condition.outcomeFalse")}
+                </Badge>
+              ) : result?.assertionResult ? (
                 <Badge tone={result.assertionResult.passed ? "ok" : "danger"}>
                   {result.assertionResult.passed ? t("test.status.pass") : t("test.status.fail")}
                 </Badge>
+              ) : null}
+              {status === "skip" && (
+                <Badge tone="warn">
+                  {result?.conditionalSkip ? t("test.condition.notSelected") : t("test.status.skip")}
+                </Badge>
               )}
-              {status === "skip" && <Badge tone="warn">{t("test.status.skip")}</Badge>}
               {status === "aborted" && <Badge tone="warn">{t("test.status.aborted")}</Badge>}
             </div>
           );

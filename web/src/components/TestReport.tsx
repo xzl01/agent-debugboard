@@ -228,11 +228,20 @@ function ResultsTable({ results, startedAtMs }: { results: StepResult[]; started
                     {t("test.loop.iteration", { current: r.loopIteration, total: r.loopCount })}
                   </div>
                 )}
+                {r.conditionRole && (
+                  <div className="mt-0.5 text-[9px] font-normal text-violet-500">
+                    {t(`test.condition.branch.${r.conditionRole}`)}
+                  </div>
+                )}
               </td>
               <td className="px-3 py-1.5">{statusBadge(r.status)}</td>
               <td className="px-3 py-1.5 text-right font-mono text-ink-dim">{formatMs(r.durationMs)}</td>
               <td className="max-w-[300px] truncate px-3 py-1.5 text-ink-dim">
-                {r.error ?? r.assertionResult?.detail ?? (r.adcValueUa != null ? `${(r.adcValueUa / 1_000_000).toFixed(3)}A` : "—")}
+                {r.conditionOutcome != null
+                  ? r.conditionOutcome ? t("test.condition.outcomeTrue") : t("test.condition.outcomeFalse")
+                  : r.conditionalSkip
+                    ? t("test.condition.notSelected")
+                    : r.error ?? r.assertionResult?.detail ?? (r.adcValueUa != null ? `${(r.adcValueUa / 1_000_000).toFixed(3)}A` : "—")}
               </td>
             </tr>
           ))}
@@ -309,9 +318,22 @@ export function TestReport({ script, summary, serialLogs, adcSamples, onReRun }:
   };
 
   const handleExportCsv = () => {
-    const header = "step_id,status,duration_ms,error,detail,adc_ua,unit_id,unit_name";
+    const header = "step_id,status,duration_ms,error,detail,adc_ua,unit_id,unit_name,condition_id,condition_role,condition_outcome,conditional_skip";
     const rows = summary.results.map((r) =>
-      [r.stepId, r.status, r.durationMs, r.error ?? "", r.assertionResult?.detail ?? "", r.adcValueUa ?? "", r.unitId ?? "", r.unitName ?? ""]
+      [
+        r.stepId,
+        r.status,
+        r.durationMs,
+        r.error ?? "",
+        r.assertionResult?.detail ?? "",
+        r.adcValueUa ?? "",
+        r.unitId ?? "",
+        r.unitName ?? "",
+        r.conditionId ?? "",
+        r.conditionRole ?? "",
+        r.conditionOutcome ?? "",
+        r.conditionalSkip ?? false,
+      ]
         .map((v) => (/[",\n]/.test(String(v)) ? `"${String(v).replaceAll('"', '""')}"` : v))
         .join(","),
     );

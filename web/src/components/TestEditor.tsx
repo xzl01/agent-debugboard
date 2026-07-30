@@ -26,6 +26,7 @@ import {
 import { Badge, Button } from "./ui";
 import type {
   TestLoop,
+  TestNestedItem,
   TestScript,
   TestScriptItem,
   TestStep,
@@ -43,6 +44,7 @@ import {
   defaultStepParams,
   generateLoopId,
   generateStepId,
+  isTestCondition,
   isTestLoop,
   isTestUnit,
   parseTestScript,
@@ -61,7 +63,7 @@ function iconFor(type: StepType): LucideIcon {
   return ICON_MAP[stepTypeIcon(type)] ?? Zap;
 }
 
-function StepParams({
+export function StepParams({
   step,
   onParamChange,
 }: {
@@ -248,7 +250,7 @@ function StepParams({
   }
 }
 
-function StepAssertions({
+export function StepAssertions({
   step,
   assert,
   onAssertChange,
@@ -355,62 +357,6 @@ const StepCard = memo(function StepCard({
   const { t } = useI18n();
   const Icon = iconFor(step.type);
 
-  const updateParam = (key: string, value: unknown) => {
-    onChange({ ...step, params: { ...step.params, [key]: value } });
-  };
-
-  const updateAssert = (key: string, value: unknown) => {
-    const prev = step.assert ?? {};
-    onChange({ ...step, assert: { ...prev, [key]: value } });
-  };
-
-  const removeAssert = (key: string) => {
-    if (!step.assert) return;
-    const next = { ...step.assert };
-    delete (next as Record<string, unknown>)[key];
-    onChange({ ...step, assert: Object.keys(next).length > 0 ? next : undefined });
-  };
-
-  const summary = (): string => {
-    switch (step.type) {
-      case "power_on":
-      case "power_off":
-        return (step.params as import("@/lib/testScript").PowerOnParams).rail;
-      case "delay":
-        return `${(step.params as import("@/lib/testScript").DelayParams).ms}ms`;
-      case "serial_wait": {
-        const p = step.params as import("@/lib/testScript").SerialWaitParams;
-        return `${p.channel} "${p.pattern}" ${p.timeout_ms}ms`;
-      }
-      case "serial_send": {
-        const p = step.params as import("@/lib/testScript").SerialSendParams;
-        return `${p.channel} "${p.text.replace(/\n/g, "\\n")}"`;
-      }
-      case "serial_expect": {
-        const p = step.params as import("@/lib/testScript").SerialExpectParams;
-        return `${p.channel} cmd="${p.command}"`;
-      }
-      case "adc_read":
-        return (step.params as import("@/lib/testScript").AdcReadParams).channel;
-      case "gpio_set": {
-        const p = step.params as import("@/lib/testScript").GpioSetParams;
-        return `${p.pin}=${p.value}`;
-      }
-      case "gpio_assert": {
-        const p = step.params as import("@/lib/testScript").GpioAssertParams;
-        return `${p.pin} ${p.direction}`;
-      }
-      case "switch_route": {
-        const p = step.params as import("@/lib/testScript").SwitchRouteParams;
-        return `${p.switch} → ${p.route}`;
-      }
-      case "capture": {
-        const p = step.params as import("@/lib/testScript").CaptureParams;
-        return `${p.rail} ${p.trigger} ${p.duration_ms}ms`;
-      }
-    }
-  };
-
   return (
     <div className={`rounded-xl border px-3 py-2 transition-colors ${
       selected ? "border-brand/60 bg-brand/10" : "border-line/50 bg-panel2/30"
@@ -445,7 +391,7 @@ const StepCard = memo(function StepCard({
         </span>
         <span className="min-w-0 flex-1">
           <span className="text-xs font-semibold text-ink">{t(`test.step.${step.type}`)}</span>
-          <span className="ml-2 truncate text-[11px] text-ink-dim">{summary()}</span>
+          <span className="ml-2 truncate text-[11px] text-ink-dim">{testStepSummary(step)}</span>
         </span>
         <Badge tone="neutral">{index + 1}</Badge>
         <button
@@ -461,13 +407,85 @@ const StepCard = memo(function StepCard({
       </div>
       {expanded && (
         <div className="mt-2 space-y-1 pl-8">
-          <StepParams step={step} onParamChange={updateParam} />
-          <StepAssertions step={step} assert={step.assert} onAssertChange={updateAssert} onAssertRemove={removeAssert} />
+          <TestStepInspector step={step} onChange={onChange} />
         </div>
       )}
     </div>
   );
 });
+
+export function testStepSummary(step: TestStep): string {
+  switch (step.type) {
+    case "power_on":
+    case "power_off":
+      return (step.params as import("@/lib/testScript").PowerOnParams).rail;
+    case "delay":
+      return `${(step.params as import("@/lib/testScript").DelayParams).ms}ms`;
+    case "serial_wait": {
+      const p = step.params as import("@/lib/testScript").SerialWaitParams;
+      return `${p.channel} · ${p.pattern} · ${p.timeout_ms}ms`;
+    }
+    case "serial_send": {
+      const p = step.params as import("@/lib/testScript").SerialSendParams;
+      return `${p.channel} · ${p.text.replace(/\n/g, "\\n")}`;
+    }
+    case "serial_expect": {
+      const p = step.params as import("@/lib/testScript").SerialExpectParams;
+      return `${p.channel} · ${p.command}`;
+    }
+    case "adc_read":
+      return (step.params as import("@/lib/testScript").AdcReadParams).channel;
+    case "gpio_set": {
+      const p = step.params as import("@/lib/testScript").GpioSetParams;
+      return `${p.pin}=${p.value}`;
+    }
+    case "gpio_assert": {
+      const p = step.params as import("@/lib/testScript").GpioAssertParams;
+      return `${p.pin} · ${p.direction} · ${p.value}`;
+    }
+    case "switch_route": {
+      const p = step.params as import("@/lib/testScript").SwitchRouteParams;
+      return `${p.switch} → ${p.route}`;
+    }
+    case "capture": {
+      const p = step.params as import("@/lib/testScript").CaptureParams;
+      return `${p.rail} · ${p.trigger} · ${p.duration_ms}ms`;
+    }
+  }
+}
+
+export function TestStepInspector({
+  step,
+  onChange,
+}: {
+  step: TestStep;
+  onChange: (step: TestStep) => void;
+}) {
+  const updateParam = (key: string, value: unknown) => {
+    onChange({ ...step, params: { ...step.params, [key]: value } });
+  };
+  const updateAssert = (key: string, value: unknown) => {
+    onChange({ ...step, assert: { ...(step.assert ?? {}), [key]: value } });
+  };
+  const removeAssert = (key: string) => {
+    if (!step.assert) return;
+    const next = { ...step.assert };
+    delete (next as Record<string, unknown>)[key];
+    onChange({ ...step, assert: Object.keys(next).length > 0 ? next : undefined });
+  };
+
+  return (
+    <>
+      <StepParams step={step} onParamChange={updateParam} />
+      <StepAssertions
+        step={step}
+        assert={step.assert}
+        onAssertChange={updateAssert}
+        onAssertRemove={removeAssert}
+      />
+    </>
+  );
+}
 
 const LoopCard = memo(function LoopCard({
   loop,
@@ -500,7 +518,7 @@ const LoopCard = memo(function LoopCard({
   const unit = isTestUnit(loop);
   const [expanded, setExpanded] = useState(!unit);
 
-  const updateChild = (childIndex: number, step: TestStep) => {
+  const updateChild = (childIndex: number, step: TestNestedItem) => {
     const steps = [...loop.params.steps];
     steps[childIndex] = step;
     onChange({ ...loop, params: { ...loop.params, steps } });
@@ -615,7 +633,26 @@ const LoopCard = memo(function LoopCard({
         </button>
       </div>
       {(!unit || expanded) && <div className="space-y-1.5 border-l-2 border-brand/30 pl-2">
-        {loop.params.steps.map((step, childIndex) => (
+        {loop.params.steps.map((step, childIndex) => isTestLoop(step) ? (
+          <LoopCard
+            key={step.id}
+            loop={step}
+            index={childIndex}
+            total={loop.params.steps.length}
+            onChange={(value) => updateChild(childIndex, value)}
+            onDelete={() => deleteChild(childIndex)}
+            onUngroup={() => onChange({
+              ...loop,
+              params: {
+                ...loop.params,
+                steps: loop.params.steps.flatMap((entry, index) => index === childIndex ? step.params.steps : [entry]),
+              },
+            })}
+            onMoveUp={() => moveChild(childIndex, childIndex - 1)}
+            onMoveDown={() => moveChild(childIndex, childIndex + 1)}
+            maxCount={1}
+          />
+        ) : (
           <StepCard
             key={step.id}
             step={step}
@@ -654,7 +691,9 @@ export interface TestEditorProps {
 function flattenGroupItems(items: TestScriptItem[]): TestStep[] {
   const usedIds = new Set<string>();
   return items
-    .flatMap((item) => isTestUnit(item) ? item.params.steps : [item as TestStep])
+    .flatMap((item) => isTestUnit(item)
+      ? item.params.steps.filter((step): step is TestStep => !isTestLoop(step))
+      : [item as TestStep])
     .map((step) => {
       let id = step.id;
       while (usedIds.has(id)) id = generateStepId();
@@ -905,7 +944,16 @@ export function TestEditor({ script, onChange, onRun, runDisabled = false }: Tes
       )}
 
       <div className="space-y-1.5">
-        {script.steps.map((item, i) => isTestLoop(item) ? (
+        {script.steps.map((item, i) => isTestCondition(item) ? (
+          <div key={item.id} className="flex min-h-12 items-center gap-2 rounded-xl border border-violet-500/30 bg-violet-500/[0.06] px-3 py-2">
+            <GitBranch size={14} className="text-violet-500" />
+            <span className="min-w-0 flex-1 text-xs font-semibold text-ink">{t("test.condition.title")}</span>
+            <span className="text-[10px] text-ink-dim">{t("test.condition.summary", { then: item.params.then_steps.length, else: item.params.else_steps.length })}</span>
+            <button type="button" onClick={() => deleteItem(i)} className="text-ink-dim hover:text-danger" title={t("test.step.delete")}>
+              <Trash2 size={13} />
+            </button>
+          </div>
+        ) : isTestLoop(item) ? (
           <LoopCard
             key={item.id}
             loop={item}
