@@ -1,6 +1,6 @@
-export type WorkspaceTabId = "terminal" | "logicAnalyzer";
+export type WorkspaceTabId = "terminal" | "powerAnalysis" | "logicAnalyzer" | "automation";
 
-export const WORKSPACE_TABS: WorkspaceTabId[] = ["terminal", "logicAnalyzer"];
+export const WORKSPACE_TABS: WorkspaceTabId[] = ["terminal", "powerAnalysis", "logicAnalyzer", "automation"];
 
 export function getWorkspaceTabId(tab: WorkspaceTabId) {
   return `workspace-tab-${tab}`;

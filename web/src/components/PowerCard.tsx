@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Activity, ChartLine, Clock3, List, Power, Zap } from "lucide-react";
 import { Badge, Card, Toggle } from "./ui";
-import type { AdcReading, CaptureConfig, PowerCapture, PowerOutput, SafeGpio } from "@/lib/types";
+import type { AdcReading, PowerOutput } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { formatUptime } from "@/lib/utils";
@@ -13,7 +13,6 @@ import {
   type PowerMetric,
 } from "@/lib/power";
 import { PowerSparkline } from "./PowerSparkline";
-import { PowerAnalyzer } from "./PowerAnalyzer";
 
 const POWER_TRENDS_STORAGE_KEY = "linkr-power-trends-expanded";
 
@@ -26,28 +25,10 @@ export function PowerCard({
   outputs,
   readings,
   onSet,
-  gpios,
-  captureState,
-  captureProgress,
-  captures,
-  onArmCapture,
-  onTriggerCapture,
-  onCancelCapture,
-  onClearCaptures,
-  captureCapacity,
 }: {
   outputs: PowerOutput[];
   readings: AdcReading[];
   onSet: (name: string, on: boolean) => void;
-  gpios: SafeGpio[];
-  captureState: "idle" | "connecting" | "armed" | "receiving";
-  captureProgress: { received: number; total: number } | null;
-  captures: PowerCapture[];
-  onArmCapture: (config: CaptureConfig) => Promise<void>;
-  onTriggerCapture: () => void;
-  onCancelCapture: () => void;
-  onClearCaptures: () => void;
-  captureCapacity: number;
 }) {
   const { t } = useI18n();
   const [metric, setMetric] = useState<PowerMetric>("current");
@@ -207,18 +188,6 @@ export function PowerCard({
               );
             })}
           </ul>
-          <PowerAnalyzer
-            metric={metric}
-            gpios={gpios}
-            state={captureState}
-            progress={captureProgress}
-            captures={captures}
-            onArm={onArmCapture}
-            onTrigger={onTriggerCapture}
-            onCancel={onCancelCapture}
-            onClear={onClearCaptures}
-            capacity={captureCapacity}
-          />
         </>
       )}
     </Card>

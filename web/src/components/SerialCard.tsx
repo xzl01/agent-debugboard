@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type MouseEvent,
+  type ReactNode,
 } from "react";
 import {
   Check,
@@ -73,8 +74,9 @@ export const SerialCard = forwardRef<
   {
     vinRoute?: string;
     onSetVin: (route: "1.8v" | "3.3v") => Promise<void>;
+    workspaceTabs?: ReactNode;
   }
->(function SerialCard({ vinRoute, onSetVin }, automationRef) {
+>(function SerialCard({ vinRoute, onSetVin, workspaceTabs }, automationRef) {
   const { t } = useI18n();
   const isSecureContext = typeof window !== "undefined" && window.isSecureContext;
   const hasWebSerialApi = typeof navigator !== "undefined" && "serial" in navigator;
@@ -343,12 +345,18 @@ export const SerialCard = forwardRef<
   return (
     <>
       <Card
-        title={t("serial.title")}
-        subtitle={t("serial.subtitle")}
+        title={workspaceTabs ? undefined : t("serial.title")}
+        subtitle={workspaceTabs ? undefined : t("serial.subtitle")}
         icon={TerminalIcon}
+        headerLeading={workspaceTabs}
         contentClassName="flex min-h-0 flex-col"
-        right={
-          <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
+      >
+        <div
+          role="toolbar"
+          aria-label={t("serial.title")}
+          className="mb-3 flex max-w-full flex-wrap items-center justify-between gap-2 rounded-xl border border-line/60 bg-panel2/35 p-2"
+        >
+          <div className="flex max-w-full flex-wrap items-center gap-2">
             {layout === "tabs" && (
               <div
                 className="inline-flex rounded-xl border border-line/70 bg-panel2 p-1"
@@ -422,31 +430,31 @@ export const SerialCard = forwardRef<
                 <Columns2 size={15} />
               </button>
             </div>
-            <label
-              className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-warn/35 bg-warn/10 px-2.5 text-xs font-medium text-warn"
-              title={t("serial.vioWarning")}
-            >
-              <ShieldAlert size={15} aria-hidden="true" />
-              <span>VIO</span>
-              <select
-                aria-label={t("serial.vioLabel")}
-                value={vinRoute === "1.8v" || vinRoute === "3.3v" ? vinRoute : ""}
-                onChange={(event) =>
-                  void changeVin(event.target.value as "1.8v" | "3.3v")
-                }
-                disabled={!vinRoute || changingVoltage}
-                className="rounded-md border border-warn/30 bg-panel px-2 py-1 text-xs font-semibold text-ink outline-none focus-visible:ring-2 focus-visible:ring-warn/40 disabled:opacity-50"
-              >
-                <option value="" disabled>
-                  —
-                </option>
-                <option value="3.3v">3.3V</option>
-                <option value="1.8v">1.8V</option>
-              </select>
-            </label>
           </div>
-        }
-      >
+          <label
+            className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-warn/35 bg-warn/10 px-2.5 text-xs font-medium text-warn"
+            title={t("serial.vioWarning")}
+          >
+            <ShieldAlert size={15} aria-hidden="true" />
+            <span>VIO</span>
+            <select
+              aria-label={t("serial.vioLabel")}
+              value={vinRoute === "1.8v" || vinRoute === "3.3v" ? vinRoute : ""}
+              onChange={(event) =>
+                void changeVin(event.target.value as "1.8v" | "3.3v")
+              }
+              disabled={!vinRoute || changingVoltage}
+              className="rounded-md border border-warn/30 bg-panel px-2 py-1 text-xs font-semibold text-ink outline-none focus-visible:ring-2 focus-visible:ring-warn/40 disabled:opacity-50"
+            >
+              <option value="" disabled>
+                —
+              </option>
+              <option value="3.3v">3.3V</option>
+              <option value="1.8v">1.8V</option>
+            </select>
+          </label>
+        </div>
+
         {sharedError && (
           <div className="mb-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
             {sharedError}

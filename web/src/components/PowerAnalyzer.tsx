@@ -116,6 +116,8 @@ export function PowerAnalyzer({
   onCancel,
   onClear,
   capacity,
+  defaultOpen = false,
+  showHeader = true,
 }: {
   metric: PowerMetric;
   gpios: SafeGpio[];
@@ -127,6 +129,10 @@ export function PowerAnalyzer({
   onCancel: () => void;
   onClear: () => void;
   capacity: number;
+  /** Opens the analyzer when it is displayed as the main workspace content. */
+  defaultOpen?: boolean;
+  /** Lets a workspace provide the analyzer title alongside its local navigation. */
+  showHeader?: boolean;
 }) {
   const { t } = useI18n();
   const [trigger, setTrigger] = useState<CaptureTrigger>("manual");
@@ -175,15 +181,17 @@ export function PowerAnalyzer({
   });
 
   return (
-    <details className="mt-4 rounded-xl border border-line/60 bg-panel2/25">
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-sm font-medium text-ink">
-        <Activity size={15} className="text-brand" />
-        <span className="flex-1">{t("analyzer.title")}</span>
-        <Badge tone={state === "idle" ? "neutral" : state === "armed" ? "warn" : "brand"}>
-          {t(`analyzer.state.${state}`)}
-        </Badge>
-      </summary>
-      <div className="border-t border-line/60 p-3">
+    <details className="rounded-xl border border-line/60 bg-panel2/25" open={defaultOpen}>
+      {showHeader && (
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-sm font-medium text-ink">
+          <Activity size={15} className="text-brand" />
+          <span className="flex-1">{t("analyzer.title")}</span>
+          <Badge tone={state === "idle" ? "neutral" : state === "armed" ? "warn" : "brand"}>
+            {t(`analyzer.state.${state}`)}
+          </Badge>
+        </summary>
+      )}
+      <div className={showHeader ? "border-t border-line/60 p-3" : "p-3"}>
         <div className="grid gap-2 sm:grid-cols-3">
           <label className="text-[11px] text-ink-dim">{t("analyzer.trigger")}
             <select value={trigger} onChange={(event) => setTrigger(event.target.value as CaptureTrigger)} disabled={state !== "idle"}

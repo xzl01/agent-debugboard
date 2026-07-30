@@ -5,7 +5,7 @@
  * Copyright (c) Jiali Chen <chenjiali@radxa.com>
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   Binary,
@@ -226,7 +226,13 @@ function decoderSignalPins(
   };
 }
 
-export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
+export function LogicAnalyzerCard({
+  boardGpios,
+  workspaceTabs,
+}: {
+  boardGpios?: SafeGpio[];
+  workspaceTabs?: ReactNode;
+}) {
   const { t } = useI18n();
   const [config, setConfig] = useState<LogicAnalyzerConfig>(DEFAULT_CONFIG);
   const [state, setState] = useState<LogicAnalyzerState>("idle");
@@ -877,9 +883,10 @@ export function LogicAnalyzerCard({ boardGpios }: { boardGpios?: SafeGpio[] }) {
 
   return (
     <Card
-      title={t("logicAnalyzer.title")}
-      subtitle={t("logicAnalyzer.subtitle")}
+      title={workspaceTabs ? undefined : t("logicAnalyzer.title")}
+      subtitle={workspaceTabs ? undefined : t("logicAnalyzer.subtitle")}
       icon={Activity}
+      headerLeading={workspaceTabs}
       right={
         <Badge tone={state === "idle" ? "neutral" : state === "armed" ? "warn" : "brand"}>
           {t(`logicAnalyzer.state.${state}`)}

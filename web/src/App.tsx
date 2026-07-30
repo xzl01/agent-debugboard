@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -11,8 +12,8 @@ import {
   ChevronDown,
   Loader2,
   ServerCrash,
-  SlidersHorizontal,
   Terminal,
+  Workflow,
   Wrench,
   type LucideIcon,
 } from "lucide-react";
@@ -23,7 +24,7 @@ import { SwitchCard } from "./components/SwitchCard";
 import { BootCard } from "./components/BootCard";
 import { TargetRecoveryCard } from "./components/TargetRecoveryCard";
 import { SerialCard, type SerialAutomationHandle } from "./components/SerialCard";
-import { StartupPowerAnalysis } from "./components/StartupPowerAnalysis";
+import { PowerAnalysisWorkspace } from "./components/PowerAnalysisWorkspace";
 import { TestAutomation } from "./components/TestAutomation";
 import { LogicAnalyzerCard } from "./components/LogicAnalyzerCard";
 import { OtaCard } from "./components/OtaCard";
@@ -104,15 +105,28 @@ export default function App() {
 
   const workspaceTabRefs = useRef<Record<WorkspaceTabId, HTMLButtonElement | null>>({
     terminal: null,
+    powerAnalysis: null,
     logicAnalyzer: null,
+    automation: null,
   });
+  const pendingWorkspaceFocusRef = useRef<WorkspaceTabId | null>(null);
   const [selectedWorkspaceTab, setSelectedWorkspaceTab] = useState<WorkspaceTabId>("terminal");
   const workspaceTabs = [
     { id: "terminal" as const, icon: Terminal, label: t("workspace.terminalTab") },
     {
+      id: "powerAnalysis" as const,
+      icon: Activity,
+      label: t("workspace.powerAnalysisTab"),
+    },
+    {
       id: "logicAnalyzer" as const,
       icon: Activity,
       label: t("workspace.logicAnalyzerTab"),
+    },
+    {
+      id: "automation" as const,
+      icon: Workflow,
+      label: t("workspace.automationTab"),
     },
   ];
 
@@ -130,8 +144,56 @@ export default function App() {
     const nextTab = workspaceTabs[nextIndex]?.id;
     if (!nextTab) return;
     workspaceTabRefs.current[nextTab]?.focus();
+    pendingWorkspaceFocusRef.current = nextTab;
     setSelectedWorkspaceTab(nextTab);
   };
+
+  useEffect(() => {
+    const nextTab = pendingWorkspaceFocusRef.current;
+    if (!nextTab) return;
+    workspaceTabRefs.current[nextTab]?.focus();
+    pendingWorkspaceFocusRef.current = null;
+  }, [selectedWorkspaceTab]);
+
+  const workspaceTabList = (
+    <div className="max-w-full overflow-x-auto">
+      <div
+        role="tablist"
+        aria-label={t("workspace.tabs")}
+        aria-orientation="horizontal"
+        className="inline-flex min-w-max rounded-xl border border-line/70 bg-panel2 p-1"
+      >
+        {workspaceTabs.map((tab, index) => {
+          const Icon = tab.icon;
+          const selected = selectedWorkspaceTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              ref={(node) => {
+                workspaceTabRefs.current[tab.id] = node;
+              }}
+              id={getWorkspaceTabId(tab.id)}
+              type="button"
+              role="tab"
+              tabIndex={selected ? 0 : -1}
+              aria-selected={selected}
+              aria-controls={getWorkspacePanelId(tab.id)}
+              onClick={() => setSelectedWorkspaceTab(tab.id)}
+              onKeyDown={(event) => onWorkspaceTabKeyDown(event, index)}
+              className={`flex min-h-9 items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium transition-colors sm:justify-start ${
+                selected
+                  ? "bg-panel text-brand shadow-sm"
+                  : "text-ink-dim hover:text-ink"
+              }`}
+            >
+              <Icon size={15} />
+              <span className="whitespace-nowrap">{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   return (
     <div className="min-h-full bg-bg text-ink">
@@ -178,55 +240,17 @@ export default function App() {
                   outputs={board.snapshot.powerOutputs}
                   readings={board.snapshot.adc}
                   onSet={board.setPower}
-                  gpios={board.snapshot.gpios}
-                  captureState={board.captureState}
-                  captureProgress={board.captureProgress}
-                  captures={board.captures}
-                  onArmCapture={board.armCapture}
-                  onTriggerCapture={board.triggerCapture}
-                  onCancelCapture={board.cancelCapture}
-                  onClearCaptures={board.clearCaptures}
-                  captureCapacity={POWER_CAPTURE_SAMPLE_CAPACITY}
                 />
               </div>
               <div className="min-w-0">
                 <SwitchCard switches={board.snapshot.switches} onSet={board.setSwitch} />
               </div>
-
-              <ToolGroup
-                title={t("advanced.title")}
-                subtitle={t("advanced.subtitle")}
-                count={t("advanced.count")}
-                icon={SlidersHorizontal}
-              >
-                <div className="min-w-0 lg:col-span-2 xl:col-span-1">
-                  <StartupPowerAnalysis
-                    outputs={board.snapshot.powerOutputs}
-                    captureState={board.captureState}
-                    captures={board.captures}
-                    captureCapacity={POWER_CAPTURE_SAMPLE_CAPACITY}
-                    serialRef={serialAutomationRef}
-                    onSetPower={board.setPower}
-                    onReadPower={board.readPower}
-                    onArmCapture={board.armCapture}
-                    onCancelCapture={board.cancelCapture}
-                    taskControl={automationTaskControl}
-                  />
-                </div>
-                <div className="min-w-0 lg:col-span-2 xl:col-span-1">
-                  <TestAutomation
-                    board={board}
-                    serialRef={serialAutomationRef}
-                    taskControl={automationTaskControl}
-                  />
-                </div>
-                <div className="min-w-0 lg:col-span-2 xl:col-span-1">
-                  <TargetRecoveryCard
-                    outputs={board.snapshot.powerOutputs}
-                    onEnter={board.enterTargetRecovery}
-                  />
-                </div>
-              </ToolGroup>
+              <div className="min-w-0 sm:col-span-2 xl:col-span-1">
+                <TargetRecoveryCard
+                  outputs={board.snapshot.powerOutputs}
+                  onEnter={board.enterTargetRecovery}
+                />
+              </div>
 
               <ToolGroup
                 title={t("firmwareTools.title")}
@@ -239,45 +263,7 @@ export default function App() {
               </ToolGroup>
             </aside>
             <div className="min-w-0 xl:sticky xl:top-[116px]">
-              <div className="flex min-h-0 min-w-0 flex-col gap-3">
-                <div className="overflow-x-auto pb-1">
-                  <div
-                    role="tablist"
-                    aria-label={t("workspace.tabs")}
-                    aria-orientation="horizontal"
-                    className="inline-flex min-w-full rounded-xl border border-line/70 bg-panel p-1 shadow-sm sm:min-w-0"
-                  >
-                    {workspaceTabs.map((tab, index) => {
-                      const Icon = tab.icon;
-                      const selected = selectedWorkspaceTab === tab.id;
-                      return (
-                        <button
-                          key={tab.id}
-                          ref={(node) => {
-                            workspaceTabRefs.current[tab.id] = node;
-                          }}
-                          id={getWorkspaceTabId(tab.id)}
-                          type="button"
-                          role="tab"
-                          tabIndex={selected ? 0 : -1}
-                          aria-selected={selected}
-                          aria-controls={getWorkspacePanelId(tab.id)}
-                          onClick={() => setSelectedWorkspaceTab(tab.id)}
-                          onKeyDown={(event) => onWorkspaceTabKeyDown(event, index)}
-                          className={`flex min-h-10 flex-1 items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium transition-colors sm:flex-none sm:justify-start ${
-                            selected
-                              ? "bg-brand/12 text-brand shadow-sm"
-                              : "text-ink-dim hover:text-ink"
-                          }`}
-                        >
-                          <Icon size={16} />
-                          <span className="whitespace-nowrap">{tab.label}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
+              <div className="min-h-0 min-w-0">
                 <div
                   id={getWorkspacePanelId("terminal")}
                   role="tabpanel"
@@ -289,6 +275,33 @@ export default function App() {
                     ref={serialAutomationRef}
                     vinRoute={board.snapshot.switches.vin}
                     onSetVin={(route) => board.setSwitch("vin", route)}
+                    workspaceTabs={selectedWorkspaceTab === "terminal" ? workspaceTabList : undefined}
+                  />
+                </div>
+
+                <div
+                  id={getWorkspacePanelId("powerAnalysis")}
+                  role="tabpanel"
+                  aria-labelledby={getWorkspaceTabId("powerAnalysis")}
+                  hidden={selectedWorkspaceTab !== "powerAnalysis"}
+                  className="min-h-0 min-w-0"
+                >
+                  <PowerAnalysisWorkspace
+                    outputs={board.snapshot.powerOutputs}
+                    gpios={board.snapshot.gpios}
+                    captureState={board.captureState}
+                    captureProgress={board.captureProgress}
+                    captures={board.captures}
+                    captureCapacity={POWER_CAPTURE_SAMPLE_CAPACITY}
+                    serialRef={serialAutomationRef}
+                    onSetPower={board.setPower}
+                    onReadPower={board.readPower}
+                    onArmCapture={board.armCapture}
+                    onTriggerCapture={board.triggerCapture}
+                    onCancelCapture={board.cancelCapture}
+                    onClearCaptures={board.clearCaptures}
+                    taskControl={automationTaskControl}
+                    workspaceTabs={selectedWorkspaceTab === "powerAnalysis" ? workspaceTabList : undefined}
                   />
                 </div>
 
@@ -299,7 +312,25 @@ export default function App() {
                   hidden={selectedWorkspaceTab !== "logicAnalyzer"}
                   className="min-h-0 min-w-0"
                 >
-                  <LogicAnalyzerCard boardGpios={board.snapshot?.gpios} />
+                  <LogicAnalyzerCard
+                    boardGpios={board.snapshot?.gpios}
+                    workspaceTabs={selectedWorkspaceTab === "logicAnalyzer" ? workspaceTabList : undefined}
+                  />
+                </div>
+
+                <div
+                  id={getWorkspacePanelId("automation")}
+                  role="tabpanel"
+                  aria-labelledby={getWorkspaceTabId("automation")}
+                  hidden={selectedWorkspaceTab !== "automation"}
+                  className="min-h-0 min-w-0"
+                >
+                  <TestAutomation
+                    board={board}
+                    serialRef={serialAutomationRef}
+                    taskControl={automationTaskControl}
+                    workspaceTabs={selectedWorkspaceTab === "automation" ? workspaceTabList : undefined}
+                  />
                 </div>
               </div>
             </div>
