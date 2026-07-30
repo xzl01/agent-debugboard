@@ -13,6 +13,10 @@ use crate::json_contract::JSON_SCHEMA;
 use crate::test_assertions::AssertionResult;
 use crate::test_script::{StepType, TestStep};
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RunSummary {
     pub total: usize,
@@ -33,6 +37,14 @@ pub struct StepResult {
     pub unit_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unit_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition_outcome: Option<bool>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub conditional_skip: bool,
     pub status: StepStatus,
     pub started_at_ms: u64,
     pub finished_at_ms: u64,
@@ -114,14 +126,19 @@ impl ReportBuilder {
             skipped,
             errored,
             aborted: self.aborted,
-            completed: !self.aborted && (passed + skipped) == total_steps,
+            completed: !self.aborted && self.steps.len() == total_steps,
             duration_ms: duration.as_millis() as u64,
         }
     }
 
     pub fn is_successful(&self, total_steps: usize) -> bool {
         let summary = self.summary(total_steps);
-        summary.completed && !summary.aborted && summary.failed == 0 && summary.errored == 0
+        summary.completed
+            && !summary.aborted
+            && self.steps.iter().all(|result| {
+                result.status == StepStatus::Pass
+                    || (result.status == StepStatus::Skip && result.conditional_skip)
+            })
     }
 }
 
@@ -149,7 +166,7 @@ pub fn write_json_report(
 pub fn write_csv_report(writer: &mut dyn Write, results: &[StepResult]) -> anyhow::Result<()> {
     writeln!(
         writer,
-        "step_id,status,duration_ms,error,detail,adc_ua,unit_id,unit_name"
+        "step_id,status,duration_ms,error,detail,adc_ua,unit_id,unit_name,condition_id,condition_role,condition_outcome,conditional_skip"
     )?;
     for r in results {
         let detail = r
@@ -164,7 +181,7 @@ pub fn write_csv_report(writer: &mut dyn Write, results: &[StepResult]) -> anyho
             .unwrap_or_default();
         writeln!(
             writer,
-            "{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{}",
             csv_escape(&r.step_id),
             serde_json::to_string(&r.status)
                 .unwrap_or_default()
@@ -174,7 +191,13 @@ pub fn write_csv_report(writer: &mut dyn Write, results: &[StepResult]) -> anyho
             csv_escape(detail),
             adc,
             csv_escape(r.unit_id.as_deref().unwrap_or("")),
-            csv_escape(r.unit_name.as_deref().unwrap_or(""))
+            csv_escape(r.unit_name.as_deref().unwrap_or("")),
+            csv_escape(r.condition_id.as_deref().unwrap_or("")),
+            csv_escape(r.condition_role.as_deref().unwrap_or("")),
+            r.condition_outcome
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            r.conditional_skip
         )?;
     }
     Ok(())
@@ -305,6 +328,10 @@ mod tests {
             step_type: StepType::Delay,
             unit_id: Some("unit1".to_string()),
             unit_name: Some("Boot".to_string()),
+            condition_id: None,
+            condition_role: None,
+            condition_outcome: None,
+            conditional_skip: false,
             status: StepStatus::Pass,
             started_at_ms: 1,
             finished_at_ms: 2,
@@ -404,5 +431,24 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(value["ok"], false);
         assert_eq!(value["error"]["code"], "test_failed");
+    }
+
+    #[test]
+    fn only_condition_branch_skips_are_successful() {
+        let mut report = ReportBuilder::new();
+        report.add_result(sample_result());
+        let mut skipped = sample_result();
+        skipped.step_id = "else@condition1:else".to_string();
+        skipped.status = StepStatus::Skip;
+        skipped.conditional_skip = true;
+        report.add_result(skipped);
+        assert!(report.is_successful(2));
+
+        let mut regular_skip = ReportBuilder::new();
+        let mut skipped = sample_result();
+        skipped.status = StepStatus::Skip;
+        skipped.conditional_skip = false;
+        regular_skip.add_result(skipped);
+        assert!(!regular_skip.is_successful(1));
     }
 }

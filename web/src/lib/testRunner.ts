@@ -319,6 +319,8 @@ export function createTestRunner(
       loopCount: step.loopCount,
       unitId: step.unitId,
       unitName: step.unitName,
+      conditionId: step.conditionId,
+      conditionRole: step.conditionRole,
     };
     let ctx: AssertionContext = {};
     let error: string | undefined;
@@ -403,8 +405,11 @@ export function createTestRunner(
             ctx.exitCode = result.exitCode;
             if (!result.completed) {
               error = "timeout waiting for command completion";
-            } else if (!result.matched) {
-              error = `command output did not match: ${p.pattern}`;
+            } else {
+              const pattern = p.pattern.trim();
+              implicitAssertion = pattern
+                ? { regex: pattern, exit_code: 0 }
+                : { exit_code: 0 };
             }
           } finally {
             consumeSerialBuffer(channel);
@@ -558,7 +563,12 @@ export function createTestRunner(
     };
   }
 
-  function makeSkip(step: ExecutionStep, startMs: number, reason: string): StepResult {
+  function makeSkip(
+    step: ExecutionStep,
+    startMs: number,
+    reason: string,
+    conditionalSkip = false,
+  ): StepResult {
     return {
       stepId: step.executionId,
       sourceStepId: step.sourceStepId,
@@ -567,6 +577,9 @@ export function createTestRunner(
       loopCount: step.loopCount,
       unitId: step.unitId,
       unitName: step.unitName,
+      conditionId: step.conditionId,
+      conditionRole: step.conditionRole,
+      conditionalSkip: conditionalSkip || undefined,
       stepType: step.type,
       status: "skip",
       startedAtMs: startMs,
@@ -588,15 +601,49 @@ export function createTestRunner(
           }, channel));
         }
       }
+      const conditionOutcomes = new Map<string, boolean>();
       try {
         for (const step of executionPlan) {
           if (aborted) break;
           activeStepId = step.executionId;
           callbacks.onStepStart(step.executionId);
-          const result = await executeStep(step);
+          if (step.conditionId && (step.conditionRole === "then" || step.conditionRole === "else")) {
+            const outcome = conditionOutcomes.get(step.conditionId);
+            const branchSelected = outcome != null && (
+              (step.conditionRole === "then" && outcome)
+              || (step.conditionRole === "else" && !outcome)
+            );
+            if (!branchSelected) {
+              const result = makeSkip(step, Date.now(), "condition branch not selected", true);
+              results.push(result);
+              callbacks.onStepResult(result);
+              continue;
+            }
+          }
+
+          let result = await executeStep(step);
+          if (step.conditionId && step.conditionRole === "check") {
+            if (result.status === "pass") {
+              conditionOutcomes.set(step.conditionId, true);
+              result = { ...result, conditionOutcome: true };
+            } else if (result.status === "fail") {
+              conditionOutcomes.set(step.conditionId, false);
+              result = {
+                ...result,
+                status: "pass",
+                conditionOutcome: false,
+              };
+            }
+          }
           results.push(result);
           callbacks.onStepResult(result);
           if (result.status === "aborted") break;
+          if (
+            step.conditionRole === "check"
+            && result.conditionOutcome == null
+          ) {
+            break;
+          }
           if (
             (result.status === "fail" || result.status === "error") &&
             !step.continue_on_error &&

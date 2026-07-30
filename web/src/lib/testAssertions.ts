@@ -54,6 +54,7 @@ export function evaluateAssertion(
   if (assert.regex != null && requireValue(ctx.serialOutput, "serial output")) {
     const clean = ctx.serialOutput.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replaceAll("\uFFFD", "");
     try {
+      if (assert.regex.length === 0) throw new Error("empty pattern");
       if (assert.regex.length > 500) throw new Error("pattern too long");
       if (!new RegExp(assert.regex).test(clean)) {
         results.push({ passed: false, detail: `output does not match /${assert.regex}/` });

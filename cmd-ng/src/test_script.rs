@@ -63,6 +63,7 @@ pub enum StepType {
     SwitchRoute,
     Capture,
     Loop,
+    Condition,
 }
 
 #[derive(Debug, Clone)]
@@ -113,10 +114,9 @@ pub fn parse_script(reader: impl Read) -> Result<TestScript> {
     Ok(TestScript { header, steps })
 }
 
-/// Expand top-level loop blocks into executable steps.
-///
-/// Loop steps are assigned stable per-iteration IDs compatible with the WebUI:
-/// `<child-id>@<loop-id>:<one-based-iteration>`.
+/// Expand flow blocks into executable steps. Named Units may be nested one
+/// level inside loops and condition branches; anonymous loops and conditions
+/// remain top-level to keep the workflow graph bounded and predictable.
 pub fn expand_steps(steps: &[TestStep]) -> Result<Vec<TestStep>> {
     let mut expanded = Vec::new();
     let mut item_ids = HashSet::new();
@@ -130,51 +130,139 @@ pub fn expand_steps(steps: &[TestStep]) -> Result<Vec<TestStep>> {
             step.id
         );
 
-        if step.step_type != StepType::Loop {
-            let mut executable = step.clone();
-            apply_defaults(&mut executable);
-            ensure!(
-                execution_ids.insert(executable.id.clone()),
-                "duplicate execution step id: {}",
-                executable.id
-            );
-            expanded.push(executable);
-            ensure!(
-                expanded.len() <= MAX_EXECUTION_STEPS,
-                "expanded test exceeds {MAX_EXECUTION_STEPS} executable steps"
-            );
-            continue;
-        }
+        if step.step_type == StepType::Condition {
+            let check = step
+                .params
+                .get("check")
+                .with_context(|| format!("condition {} check must be a test step", step.id))?;
+            let then_steps = step
+                .params
+                .get("then_steps")
+                .and_then(Value::as_array)
+                .with_context(|| format!("condition {} then_steps must be an array", step.id))?;
+            let else_steps = step
+                .params
+                .get("else_steps")
+                .and_then(Value::as_array)
+                .with_context(|| format!("condition {} else_steps must be an array", step.id))?;
+            let mut entries = Vec::with_capacity(1 + then_steps.len() + else_steps.len());
+            entries.push(("check", check));
+            entries.extend(then_steps.iter().map(|child| ("then", child)));
+            entries.extend(else_steps.iter().map(|child| ("else", child)));
+            let mut child_ids = HashSet::new();
 
-        let count = step.params["count"].as_u64().with_context(|| {
-            format!(
-                "loop {} count must be an integer between {MIN_LOOP_COUNT} and {MAX_LOOP_COUNT}",
-                step.id
-            )
-        })?;
-        ensure!(
-            (MIN_LOOP_COUNT..=MAX_LOOP_COUNT).contains(&count),
-            "loop {} count must be an integer between {MIN_LOOP_COUNT} and {MAX_LOOP_COUNT}",
-            step.id
-        );
-        let unit_name = match step.params.get("unit").filter(|unit| !unit.is_null()) {
-            None => None,
-            Some(unit) => {
-                let name = unit
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty() && name.chars().count() <= 80)
-                    .with_context(|| {
+            for (role, child) in entries {
+                let executable: TestStep =
+                    serde_json::from_value(child.clone()).with_context(|| {
                         format!(
-                            "unit {} name must be a non-empty string up to 80 characters",
+                            "condition {} {role} entry is not a valid test step",
                             step.id
                         )
                     })?;
-                ensure!(count == 1, "unit {} count must be exactly 1", step.id);
-                Some(name.to_string())
+                ensure!(
+                    !executable.id.is_empty(),
+                    "condition {} {role} step has an empty id",
+                    step.id
+                );
+                ensure!(
+                    child_ids.insert(executable.id.clone()),
+                    "condition {} has duplicate child step id: {}",
+                    step.id,
+                    executable.id
+                );
+                if role == "check" {
+                    ensure!(
+                        matches!(
+                            executable.step_type,
+                            StepType::SerialExpect | StepType::AdcRead | StepType::GpioAssert
+                        ),
+                        "condition {} has unsupported check type",
+                        step.id
+                    );
+                    if executable.step_type == StepType::AdcRead {
+                        ensure!(
+                            condition_check_has_assertion(&executable),
+                            "condition {} adc_read check requires an assert",
+                            step.id
+                        );
+                    }
+                    if executable.step_type == StepType::SerialExpect {
+                        ensure!(
+                            serial_pattern_is_non_empty(&executable),
+                            "condition {} serial_expect check pattern must be non-empty",
+                            step.id
+                        );
+                    }
+                }
+                ensure!(
+                    executable.step_type != StepType::Condition,
+                    "nested conditions are not supported (condition {})",
+                    step.id
+                );
+
+                if executable.step_type == StepType::Loop {
+                    ensure!(
+                        role != "check",
+                        "condition {} has unsupported check type",
+                        step.id
+                    );
+                    let (unit_name, unit_steps) = parse_unit(&executable, "condition branch")?;
+                    for mut unit_step in unit_steps {
+                        let source_id = unit_step.id.clone();
+                        unit_step.id =
+                            format!("{}@{}:1@{}:{role}", unit_step.id, executable.id, step.id);
+                        set_execution_metadata(
+                            &mut unit_step,
+                            &source_id,
+                            Some((&executable.id, &unit_name)),
+                            Some((&step.id, role)),
+                        );
+                        push_execution(&mut expanded, &mut execution_ids, unit_step)?;
+                    }
+                    continue;
+                }
+
+                let mut executable = executable;
+                ensure!(
+                    executable.params == Value::Null || executable.params.is_object(),
+                    "condition {} {role} step params must be an object",
+                    step.id
+                );
+                apply_defaults(&mut executable);
+                ensure_serial_wait_pattern(&executable)?;
+                let source_id = executable.id.clone();
+                executable.id = format!("{}@{}:{role}", executable.id, step.id);
+                set_execution_metadata(&mut executable, &source_id, None, Some((&step.id, role)));
+                push_execution(&mut expanded, &mut execution_ids, executable)?;
             }
-        };
+            continue;
+        }
+
+        if step.step_type != StepType::Loop {
+            let mut executable = step.clone();
+            apply_defaults(&mut executable);
+            ensure_serial_wait_pattern(&executable)?;
+            push_execution(&mut expanded, &mut execution_ids, executable)?;
+            continue;
+        }
+
+        if step.params.get("unit").is_some_and(|unit| !unit.is_null()) {
+            let (unit_name, unit_steps) = parse_unit(step, "top-level Unit")?;
+            for mut unit_step in unit_steps {
+                let source_id = unit_step.id.clone();
+                unit_step.id = format!("{}@{}:1", unit_step.id, step.id);
+                set_execution_metadata(
+                    &mut unit_step,
+                    &source_id,
+                    Some((&step.id, &unit_name)),
+                    None,
+                );
+                push_execution(&mut expanded, &mut execution_ids, unit_step)?;
+            }
+            continue;
+        }
+
+        let count = loop_count(step)?;
         let children = step.params["steps"]
             .as_array()
             .with_context(|| format!("loop {} steps must be a non-empty array", step.id))?;
@@ -183,19 +271,10 @@ pub fn expand_steps(steps: &[TestStep]) -> Result<Vec<TestStep>> {
             "loop {} steps must be a non-empty array",
             step.id
         );
-        let loop_step_count = children
-            .len()
-            .checked_mul(count as usize)
-            .context("expanded test size overflow")?;
-        ensure!(
-            loop_step_count <= MAX_EXECUTION_STEPS.saturating_sub(expanded.len()),
-            "expanded test exceeds {MAX_EXECUTION_STEPS} executable steps"
-        );
-
         let mut child_ids = HashSet::new();
         let mut child_templates = Vec::with_capacity(children.len());
         for (child_index, child) in children.iter().enumerate() {
-            let mut executable: TestStep =
+            let executable: TestStep =
                 serde_json::from_value(child.clone()).with_context(|| {
                     format!(
                         "loop {} step {} is not a valid test step",
@@ -216,41 +295,208 @@ pub fn expand_steps(steps: &[TestStep]) -> Result<Vec<TestStep>> {
                 executable.id
             );
             ensure!(
-                executable.step_type != StepType::Loop,
-                "nested loops are not supported (loop {})",
+                executable.step_type != StepType::Condition,
+                "nested conditions are not supported (loop {})",
                 step.id
             );
-            ensure!(
-                executable.params == Value::Null || executable.params.is_object(),
-                "loop {} step {} params must be an object",
-                step.id,
-                executable.id
-            );
-            apply_defaults(&mut executable);
-            if let (Some(unit_name), Some(params)) =
-                (unit_name.as_ref(), executable.params.as_object_mut())
-            {
-                params.insert("__unit_id".to_string(), Value::String(step.id.clone()));
-                params.insert("__unit_name".to_string(), Value::String(unit_name.clone()));
-            }
             child_templates.push(executable);
         }
 
         for iteration in 1..=count {
             for child in &child_templates {
+                if child.step_type == StepType::Loop {
+                    let (unit_name, unit_steps) = parse_unit(child, "loop body")?;
+                    for mut unit_step in unit_steps {
+                        let source_id = unit_step.id.clone();
+                        unit_step.id =
+                            format!("{}@{}:1@{}:{iteration}", unit_step.id, child.id, step.id);
+                        set_execution_metadata(
+                            &mut unit_step,
+                            &source_id,
+                            Some((&child.id, &unit_name)),
+                            None,
+                        );
+                        push_execution(&mut expanded, &mut execution_ids, unit_step)?;
+                    }
+                    continue;
+                }
                 let mut executable = child.clone();
-                executable.id = format!("{}@{}:{iteration}", executable.id, step.id);
                 ensure!(
-                    execution_ids.insert(executable.id.clone()),
-                    "duplicate execution step id: {}",
+                    executable.params == Value::Null || executable.params.is_object(),
+                    "loop {} step {} params must be an object",
+                    step.id,
                     executable.id
                 );
-                expanded.push(executable);
+                apply_defaults(&mut executable);
+                ensure_serial_wait_pattern(&executable)?;
+                let source_id = executable.id.clone();
+                executable.id = format!("{}@{}:{iteration}", executable.id, step.id);
+                set_execution_metadata(&mut executable, &source_id, None, None);
+                push_execution(&mut expanded, &mut execution_ids, executable)?;
             }
         }
     }
 
     Ok(expanded)
+}
+
+fn condition_check_has_assertion(step: &TestStep) -> bool {
+    let Some(assert) = step.assert.as_ref() else {
+        return false;
+    };
+    let Some(object) = assert.as_object() else {
+        return false;
+    };
+    object
+        .iter()
+        .any(|(key, value)| key != "continue_on_error" && !value.is_null())
+}
+
+fn serial_pattern_is_non_empty(step: &TestStep) -> bool {
+    step.params
+        .get("pattern")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|pattern| !pattern.is_empty())
+}
+
+fn ensure_serial_wait_pattern(step: &TestStep) -> Result<()> {
+    if step.step_type == StepType::SerialWait {
+        ensure!(
+            serial_pattern_is_non_empty(step),
+            "step {} serial_wait pattern must be non-empty",
+            step.id
+        );
+    }
+    Ok(())
+}
+
+fn loop_count(step: &TestStep) -> Result<u64> {
+    let count = step.params["count"].as_u64().with_context(|| {
+        format!(
+            "loop {} count must be an integer between {MIN_LOOP_COUNT} and {MAX_LOOP_COUNT}",
+            step.id
+        )
+    })?;
+    ensure!(
+        (MIN_LOOP_COUNT..=MAX_LOOP_COUNT).contains(&count),
+        "loop {} count must be an integer between {MIN_LOOP_COUNT} and {MAX_LOOP_COUNT}",
+        step.id
+    );
+    Ok(count)
+}
+
+fn parse_unit(step: &TestStep, location: &str) -> Result<(String, Vec<TestStep>)> {
+    ensure!(
+        step.step_type == StepType::Loop,
+        "{location} must contain a Unit"
+    );
+    let count = loop_count(step)?;
+    let name = step
+        .params
+        .get("unit")
+        .and_then(|unit| unit.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && name.chars().count() <= 80)
+        .with_context(|| format!("{location}: only named Units may be nested"))?;
+    ensure!(count == 1, "unit {} count must be exactly 1", step.id);
+    let children = step.params["steps"]
+        .as_array()
+        .with_context(|| format!("unit {} steps must be a non-empty array", step.id))?;
+    ensure!(
+        !children.is_empty(),
+        "unit {} steps must be a non-empty array",
+        step.id
+    );
+    let mut child_ids = HashSet::new();
+    let mut parsed = Vec::with_capacity(children.len());
+    for (index, child) in children.iter().enumerate() {
+        let mut executable: TestStep =
+            serde_json::from_value(child.clone()).with_context(|| {
+                format!(
+                    "unit {} step {} is not a valid test step",
+                    step.id,
+                    index + 1
+                )
+            })?;
+        ensure!(
+            !executable.id.is_empty(),
+            "unit {} step has an empty id",
+            step.id
+        );
+        ensure!(
+            child_ids.insert(executable.id.clone()),
+            "unit {} has duplicate child step id: {}",
+            step.id,
+            executable.id
+        );
+        ensure!(
+            !matches!(executable.step_type, StepType::Loop | StepType::Condition),
+            "unit {} cannot contain nested flow blocks",
+            step.id
+        );
+        ensure!(
+            executable.params == Value::Null || executable.params.is_object(),
+            "unit {} step {} params must be an object",
+            step.id,
+            executable.id
+        );
+        apply_defaults(&mut executable);
+        ensure_serial_wait_pattern(&executable)?;
+        parsed.push(executable);
+    }
+    Ok((name.to_string(), parsed))
+}
+
+fn set_execution_metadata(
+    step: &mut TestStep,
+    source_id: &str,
+    unit: Option<(&str, &str)>,
+    condition: Option<(&str, &str)>,
+) {
+    let Some(params) = step.params.as_object_mut() else {
+        return;
+    };
+    params.insert(
+        "__source_step_id".to_string(),
+        Value::String(source_id.to_string()),
+    );
+    if let Some((unit_id, unit_name)) = unit {
+        params.insert("__unit_id".to_string(), Value::String(unit_id.to_string()));
+        params.insert(
+            "__unit_name".to_string(),
+            Value::String(unit_name.to_string()),
+        );
+    }
+    if let Some((condition_id, role)) = condition {
+        params.insert(
+            "__condition_id".to_string(),
+            Value::String(condition_id.to_string()),
+        );
+        params.insert(
+            "__condition_role".to_string(),
+            Value::String(role.to_string()),
+        );
+    }
+}
+
+fn push_execution(
+    expanded: &mut Vec<TestStep>,
+    execution_ids: &mut HashSet<String>,
+    executable: TestStep,
+) -> Result<()> {
+    ensure!(
+        expanded.len() < MAX_EXECUTION_STEPS,
+        "expanded test exceeds {MAX_EXECUTION_STEPS} executable steps"
+    );
+    ensure!(
+        execution_ids.insert(executable.id.clone()),
+        "duplicate execution step id: {}",
+        executable.id
+    );
+    expanded.push(executable);
+    Ok(())
 }
 
 /// Apply default params for a step type (matches WebUI defaultStepParams).
@@ -279,6 +525,11 @@ pub fn apply_defaults(step: &mut TestStep) {
             serde_json::json!({"rail": "5v_out", "trigger": "manual", "duration_ms": 5000, "threshold_a": 0.1})
         }
         StepType::Loop => serde_json::json!({"count": 2, "steps": []}),
+        StepType::Condition => serde_json::json!({
+            "check": {"id": "check", "type": "serial_expect", "params": {}},
+            "then_steps": [],
+            "else_steps": []
+        }),
     };
 
     if let (Some(defaults_obj), Some(params_obj)) =
@@ -356,6 +607,8 @@ mod tests {
         assert_eq!(expanded[1].id, "wait@loop1:1");
         assert_eq!(expanded[4].id, "send@loop1:3");
         assert_eq!(expanded[0].params["channel"], "uart1");
+        assert_eq!(expanded[0].params["__source_step_id"], "send");
+        assert_eq!(expanded[1].params["__source_step_id"], "wait");
     }
 
     #[test]
@@ -367,6 +620,87 @@ mod tests {
         assert_eq!(expanded.len(), 1);
         assert_eq!(expanded[0].params["__unit_id"], "unit1");
         assert_eq!(expanded[0].params["__unit_name"], "Boot and login");
+    }
+
+    #[test]
+    fn condition_blocks_expand_with_branch_metadata() {
+        let input = r#"{"schema":"linkr-test.v1","name":"condition","version":"1.0"}
+{"id":"condition1","type":"condition","params":{"check":{"id":"check","type":"adc_read","params":{"channel":"5v_out"},"assert":{"current_range":{"min_a":0.1,"max_a":1.0}}},"then_steps":[{"id":"then","type":"delay","params":{"ms":10}}],"else_steps":[{"id":"else","type":"power_off","params":{"rail":"5v_out"}}]}}"#;
+        let script = parse_script(input.as_bytes()).unwrap();
+        let expanded = expand_steps(&script.steps).unwrap();
+        assert_eq!(expanded.len(), 3);
+        assert_eq!(expanded[0].id, "check@condition1:check");
+        assert_eq!(expanded[1].id, "then@condition1:then");
+        assert_eq!(expanded[2].id, "else@condition1:else");
+        assert_eq!(expanded[0].params["__condition_id"], "condition1");
+        assert_eq!(expanded[1].params["__condition_role"], "then");
+        assert_eq!(expanded[2].params["__condition_role"], "else");
+    }
+
+    #[test]
+    fn units_can_run_inside_loops_with_stable_identity() {
+        let input = r#"{"schema":"linkr-test.v1","name":"looped-unit"}
+{"id":"outer","type":"loop","params":{"count":2,"steps":[{"id":"stress-unit","type":"loop","params":{"count":1,"unit":{"name":"Stress"},"steps":[{"id":"run","type":"serial_expect","params":{"channel":"uart0","command":"stress-ng","pattern":"","timeout_ms":1000}},{"id":"cooldown","type":"delay","params":{"ms":10}}]}}]}}"#;
+        let script = parse_script(input.as_bytes()).unwrap();
+        let expanded = expand_steps(&script.steps).unwrap();
+        assert_eq!(expanded.len(), 4);
+        assert_eq!(expanded[0].id, "run@stress-unit:1@outer:1");
+        assert_eq!(expanded[1].id, "cooldown@stress-unit:1@outer:1");
+        assert_eq!(expanded[2].id, "run@stress-unit:1@outer:2");
+        assert_eq!(expanded[0].params["__unit_id"], "stress-unit");
+        assert_eq!(expanded[0].params["__unit_name"], "Stress");
+    }
+
+    #[test]
+    fn units_can_run_inside_condition_branches() {
+        let input = r#"{"schema":"linkr-test.v1","name":"conditional-unit"}
+{"id":"gate","type":"condition","params":{"check":{"id":"check","type":"gpio_assert","params":{"pin":"GP13","direction":"input","value":1}},"then_steps":[{"id":"pass-unit","type":"loop","params":{"count":1,"unit":{"name":"Pass path"},"steps":[{"id":"pass-delay","type":"delay","params":{"ms":1}}]}}],"else_steps":[{"id":"fail-unit","type":"loop","params":{"count":1,"unit":{"name":"Fail path"},"steps":[{"id":"fail-delay","type":"delay","params":{"ms":1}}]}}]}}"#;
+        let script = parse_script(input.as_bytes()).unwrap();
+        let expanded = expand_steps(&script.steps).unwrap();
+        assert_eq!(expanded.len(), 3);
+        assert_eq!(expanded[1].id, "pass-delay@pass-unit:1@gate:then");
+        assert_eq!(expanded[2].id, "fail-delay@fail-unit:1@gate:else");
+        assert_eq!(expanded[1].params["__condition_role"], "then");
+        assert_eq!(expanded[2].params["__condition_role"], "else");
+        assert_eq!(expanded[1].params["__unit_name"], "Pass path");
+    }
+
+    #[test]
+    fn condition_blocks_reject_unsupported_checks_and_duplicate_children() {
+        let unsupported = r#"{"schema":"linkr-test.v1","name":"condition"}
+{"id":"condition1","type":"condition","params":{"check":{"id":"check","type":"delay","params":{"ms":1}},"then_steps":[],"else_steps":[]}}"#;
+        assert!(parse_script(unsupported.as_bytes())
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported check type"));
+
+        let bare_adc = r#"{"schema":"linkr-test.v1","name":"condition"}
+{"id":"condition1","type":"condition","params":{"check":{"id":"check","type":"adc_read","params":{"channel":"5v_out"}},"then_steps":[],"else_steps":[]}}"#;
+        assert!(parse_script(bare_adc.as_bytes())
+            .unwrap_err()
+            .to_string()
+            .contains("adc_read check requires an assert"));
+
+        let empty_serial_expect = r#"{"schema":"linkr-test.v1","name":"condition"}
+{"id":"condition1","type":"condition","params":{"check":{"id":"check","type":"serial_expect","params":{"channel":"uart0","command":"true","pattern":"","timeout_ms":100}},"then_steps":[],"else_steps":[]}}"#;
+        assert!(parse_script(empty_serial_expect.as_bytes())
+            .unwrap_err()
+            .to_string()
+            .contains("serial_expect check pattern must be non-empty"));
+
+        let empty_wait = r#"{"schema":"linkr-test.v1","name":"wait"}
+{"id":"wait1","type":"serial_wait","params":{"channel":"uart0","pattern":"   ","timeout_ms":1000}}"#;
+        assert!(parse_script(empty_wait.as_bytes())
+            .unwrap_err()
+            .to_string()
+            .contains("serial_wait pattern must be non-empty"));
+
+        let duplicate = r#"{"schema":"linkr-test.v1","name":"condition"}
+{"id":"condition1","type":"condition","params":{"check":{"id":"same","type":"gpio_assert","params":{"pin":"GP13","direction":"input","value":0}},"then_steps":[{"id":"same","type":"delay","params":{"ms":1}}],"else_steps":[]}}"#;
+        assert!(parse_script(duplicate.as_bytes())
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate child step id"));
     }
 
     #[test]
@@ -390,7 +724,7 @@ mod tests {
         assert!(parse_script(nested.as_bytes())
             .unwrap_err()
             .to_string()
-            .contains("nested loops"));
+            .contains("only named Units may be nested"));
     }
 
     #[test]

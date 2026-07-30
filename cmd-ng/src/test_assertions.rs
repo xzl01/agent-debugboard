@@ -90,21 +90,25 @@ pub fn evaluate(assert: &StepAssertion, ctx: &AssertionContext) -> AssertionResu
     }
 
     if let Some(ref pattern) = assert.regex {
-        match &ctx.serial_output {
-            Some(output) => {
-                let stripped = strip_ansi(output);
-                match regex::Regex::new(pattern) {
-                    Ok(re) => {
-                        if re.is_match(&stripped) {
-                            passes.push(format!("output matches /{}/", pattern));
-                        } else {
-                            failures.push(format!("output does not match /{}/", pattern));
+        if pattern.is_empty() {
+            failures.push("invalid regex: empty pattern".to_string());
+        } else {
+            match &ctx.serial_output {
+                Some(output) => {
+                    let stripped = strip_ansi(output);
+                    match regex::Regex::new(pattern) {
+                        Ok(re) => {
+                            if re.is_match(&stripped) {
+                                passes.push(format!("output matches /{}/", pattern));
+                            } else {
+                                failures.push(format!("output does not match /{}/", pattern));
+                            }
                         }
+                        Err(e) => failures.push(format!("invalid regex: {e}")),
                     }
-                    Err(e) => failures.push(format!("invalid regex: {e}")),
                 }
+                None => failures.push("serialOutput is unavailable".to_string()),
             }
-            None => failures.push("serialOutput is unavailable".to_string()),
         }
     }
 
@@ -287,6 +291,21 @@ mod tests {
             ..Default::default()
         };
         assert!(!evaluate(&assert, &ctx).passed);
+    }
+
+    #[test]
+    fn empty_regex_is_invalid() {
+        let assert = StepAssertion {
+            regex: Some(String::new()),
+            ..Default::default()
+        };
+        let ctx = AssertionContext {
+            serial_output: Some("anything".to_string()),
+            ..Default::default()
+        };
+        let result = evaluate(&assert, &ctx);
+        assert!(!result.passed);
+        assert!(result.detail.contains("empty pattern"));
     }
 
     #[test]

@@ -119,6 +119,15 @@ describe("evaluateAssertion", () => {
       assert.equal(result.passed, false);
       assert.match(result.detail, /invalid regex/);
     });
+
+    it("rejects empty regex patterns", () => {
+      const result = evaluateAssertion(
+        { regex: "" },
+        { serialOutput: "anything" },
+      );
+      assert.equal(result.passed, false);
+      assert.match(result.detail, /invalid regex/);
+    });
   });
 
   describe("exit_code", () => {

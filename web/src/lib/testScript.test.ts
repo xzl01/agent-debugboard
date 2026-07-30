@@ -14,6 +14,9 @@ import {
   isTestLoop,
   isTestUnit,
   buildExecutionPlan,
+  tryBuildExecutionPlan,
+  nestItemInScript,
+  removeNestedItemFromScript,
 } from "./testScript.ts";
 
 describe("stepTypeLabel", () => {
@@ -55,6 +58,18 @@ describe("isRunSuccessful", () => {
       aborted: true, completed: false, durationMs: 1, startedAtMs: 0,
       finishedAtMs: 1, results: [result("pass"), result("aborted")],
     }), false);
+  });
+
+  it("accepts skips caused only by an unselected condition branch", () => {
+    assert.equal(isRunSuccessful({
+      totalSteps: 2, passed: 1, failed: 0, skipped: 1, errored: 0,
+      aborted: false, completed: true, durationMs: 1, startedAtMs: 0,
+      finishedAtMs: 1,
+      results: [
+        result("pass"),
+        { ...result("skip"), conditionalSkip: true },
+      ],
+    }), true);
   });
 });
 
@@ -125,6 +140,152 @@ describe("defaultStepParams", () => {
 
   it("returns ms for delay", () => {
     assert.equal(defaultStepParams("delay").ms, 1000);
+  });
+});
+
+describe("nestItemInScript", () => {
+  const unit = {
+    id: "stress-unit",
+    type: "loop" as const,
+    params: {
+      count: 1,
+      unit: { name: "Stress" },
+      steps: [{ id: "stress", type: "delay" as const, params: { ms: 1000 } }],
+    },
+  };
+
+  it("moves an existing top-level Unit into a loop body", () => {
+    const loop = {
+      id: "outer-loop",
+      type: "loop" as const,
+      params: {
+        count: 2,
+        steps: [{ id: "wait", type: "delay" as const, params: { ms: 10 } }],
+      },
+    };
+    const result = nestItemInScript([unit, loop], unit, loop.id, "body", unit.id);
+    assert.ok(result);
+    assert.deepEqual(result.map((item) => item.id), [loop.id]);
+    assert.equal(isTestLoop(result[0]) && result[0].params.steps[1].id, unit.id);
+  });
+
+  it("moves an existing top-level Unit into a condition branch", () => {
+    const condition = {
+      id: "gate",
+      type: "condition" as const,
+      params: {
+        check: { id: "check", type: "gpio_assert" as const, params: { pin: "GP13", direction: "input" as const, value: 1 as const } },
+        then_steps: [],
+        else_steps: [],
+      },
+    };
+    const result = nestItemInScript([condition, unit], unit, condition.id, "else", unit.id);
+    assert.ok(result);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].type === "condition" && result[0].params.else_steps[0].id, unit.id);
+  });
+
+  it("copies a primitive palette step into a loop body", () => {
+    const loop = {
+      id: "outer-loop",
+      type: "loop" as const,
+      params: { count: 2, steps: [] },
+    };
+    const step = { id: "new-delay", type: "delay" as const, params: { ms: 250 } };
+    const result = nestItemInScript([loop], step, loop.id, "body");
+    assert.ok(result);
+    assert.equal(isTestLoop(result[0]) && result[0].params.steps[0].id, step.id);
+  });
+
+  it("moves an existing primitive step into a condition branch", () => {
+    const step = { id: "power-on", type: "power_on" as const, params: { rail: "5v_out" } };
+    const condition = {
+      id: "gate",
+      type: "condition" as const,
+      params: {
+        check: { id: "check", type: "gpio_assert" as const, params: { pin: "GP13", direction: "input" as const, value: 1 as const } },
+        then_steps: [],
+        else_steps: [],
+      },
+    };
+    const result = nestItemInScript([step, condition], step, condition.id, "then", step.id);
+    assert.ok(result);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].type === "condition" && result[0].params.then_steps[0].id, step.id);
+  });
+
+  it("rejects invalid targets without removing the source item", () => {
+    const step = { id: "delay", type: "delay" as const, params: { ms: 1 } };
+    assert.equal(nestItemInScript([unit, step], unit, step.id, "body", unit.id), null);
+  });
+});
+
+describe("removeNestedItemFromScript", () => {
+  it("removes a child from a loop body without mutating the source", () => {
+    const loop = {
+      id: "outer-loop",
+      type: "loop" as const,
+      params: {
+        count: 2,
+        steps: [
+          { id: "first", type: "delay" as const, params: { ms: 10 } },
+          { id: "second", type: "delay" as const, params: { ms: 20 } },
+        ],
+      },
+    };
+    const result = removeNestedItemFromScript([loop], loop.id, "body", "first");
+    assert.ok(result);
+    assert.equal(isTestLoop(result[0]) && result[0].params.steps.length, 1);
+    assert.equal(isTestLoop(result[0]) && result[0].params.steps[0].id, "second");
+    assert.equal(loop.params.steps.length, 2);
+  });
+
+  it("removes only the requested condition branch item", () => {
+    const condition = {
+      id: "gate",
+      type: "condition" as const,
+      params: {
+        check: { id: "check", type: "gpio_assert" as const, params: { pin: "GP13", direction: "input" as const, value: 1 as const } },
+        then_steps: [{ id: "then-delay", type: "delay" as const, params: { ms: 10 } }],
+        else_steps: [{ id: "else-delay", type: "delay" as const, params: { ms: 20 } }],
+      },
+    };
+    const result = removeNestedItemFromScript([condition], condition.id, "else", "else-delay");
+    assert.ok(result);
+    assert.equal(result[0].type === "condition" && result[0].params.then_steps.length, 1);
+    assert.equal(result[0].type === "condition" && result[0].params.else_steps.length, 0);
+  });
+
+  it("returns null when the nested item is not present", () => {
+    const loop = {
+      id: "outer-loop",
+      type: "loop" as const,
+      params: { count: 2, steps: [] },
+    };
+    assert.equal(removeNestedItemFromScript([loop], loop.id, "body", "missing"), null);
+  });
+
+  it("allows the editor to remove the last child without throwing during render", () => {
+    const loop = {
+      id: "outer-loop",
+      type: "loop" as const,
+      params: {
+        count: 2,
+        steps: [{ id: "only-child", type: "delay" as const, params: { ms: 10 } }],
+      },
+    };
+    const result = removeNestedItemFromScript([loop], loop.id, "body", "only-child");
+    assert.ok(result);
+    assert.equal(isTestLoop(result[0]) && result[0].params.steps.length, 0);
+
+    const attempt = tryBuildExecutionPlan({
+      schema: "linkr-test.v1",
+      name: "Incomplete editor draft",
+      version: "1.0",
+      steps: result,
+    });
+    assert.deepEqual(attempt.plan, []);
+    assert.match(attempt.error ?? "", /at least one step is required/);
   });
 });
 
@@ -277,6 +438,200 @@ describe("serializeTestScript / parseTestScript", () => {
     assert.deepEqual(plan.map((step) => step.unitName), ["Stress test", "Stress test"]);
   });
 
+  it("round-trips condition branches with stable execution metadata", () => {
+    const original = defaultScript();
+    original.steps = [{
+      id: "condition1",
+      type: "condition",
+      params: {
+        check: {
+          id: "check",
+          type: "adc_read",
+          params: { channel: "5v_out" },
+          assert: { current_range: { min_a: 0.1, max_a: 1 } },
+        },
+        then_steps: [{ id: "then", type: "delay", params: { ms: 10 } }],
+        else_steps: [{ id: "else", type: "power_off", params: { rail: "5v_out" } }],
+      },
+    }];
+
+    const parsed = parseTestScript(serializeTestScript(original));
+    assert.equal(parsed.steps[0].type, "condition");
+    const plan = buildExecutionPlan(parsed);
+    assert.deepEqual(plan.map((step) => step.executionId), [
+      "check@condition1:check",
+      "then@condition1:then",
+      "else@condition1:else",
+    ]);
+    assert.deepEqual(plan.map((step) => step.conditionRole), ["check", "then", "else"]);
+  });
+
+  it("allows named Units inside a loop without losing Unit or iteration identity", () => {
+    const header = JSON.stringify({ schema: "linkr-test.v1", name: "Looped Unit" });
+    const loop = JSON.stringify({
+      id: "outer",
+      type: "loop",
+      params: {
+        count: 2,
+        steps: [{
+          id: "stress-unit",
+          type: "loop",
+          params: {
+            count: 1,
+            unit: { name: "Stress" },
+            steps: [
+              { id: "run", type: "serial_expect", params: { channel: "uart0", command: "stress-ng", pattern: "", timeout_ms: 1000 } },
+              { id: "cooldown", type: "delay", params: { ms: 10 } },
+            ],
+          },
+        }],
+      },
+    });
+    const parsed = parseTestScript(`${header}\n${loop}\n`);
+    const plan = buildExecutionPlan(parsed);
+    assert.deepEqual(plan.map((step) => step.executionId), [
+      "run@stress-unit:1@outer:1",
+      "cooldown@stress-unit:1@outer:1",
+      "run@stress-unit:1@outer:2",
+      "cooldown@stress-unit:1@outer:2",
+    ]);
+    assert.deepEqual(plan.map((step) => step.unitName), ["Stress", "Stress", "Stress", "Stress"]);
+    assert.deepEqual(plan.map((step) => step.loopIteration), [1, 1, 2, 2]);
+    assert.equal(serializeTestScript(parsed).includes('"unit":{"name":"Stress"}'), true);
+  });
+
+  it("allows named Units in both condition branches and preserves branch identity", () => {
+    const header = JSON.stringify({ schema: "linkr-test.v1", name: "Conditional Unit" });
+    const unit = (id: string, name: string) => ({
+      id,
+      type: "loop",
+      params: {
+        count: 1,
+        unit: { name },
+        steps: [{ id: `${id}-delay`, type: "delay", params: { ms: 1 } }],
+      },
+    });
+    const condition = JSON.stringify({
+      id: "gate",
+      type: "condition",
+      params: {
+        check: { id: "check", type: "gpio_assert", params: { pin: "GP13", direction: "input", value: 1 } },
+        then_steps: [unit("pass-unit", "Pass path")],
+        else_steps: [unit("fail-unit", "Fail path")],
+      },
+    });
+    const plan = buildExecutionPlan(parseTestScript(`${header}\n${condition}\n`));
+    assert.deepEqual(plan.map((step) => step.executionId), [
+      "check@gate:check",
+      "pass-unit-delay@pass-unit:1@gate:then",
+      "fail-unit-delay@fail-unit:1@gate:else",
+    ]);
+    assert.deepEqual(plan.map((step) => step.conditionRole), ["check", "then", "else"]);
+    assert.deepEqual(plan.map((step) => step.unitName), [undefined, "Pass path", "Fail path"]);
+  });
+
+  it("rejects unsupported condition checks and duplicate child IDs", () => {
+    const header = JSON.stringify({ schema: "linkr-test.v1", name: "Bad condition" });
+    assert.throws(() => parseTestScript([
+      header,
+      JSON.stringify({
+        id: "condition1",
+        type: "condition",
+        params: {
+          check: { id: "check", type: "delay", params: { ms: 1 } },
+          then_steps: [],
+          else_steps: [],
+        },
+      }),
+    ].join("\n")), /unsupported (condition )?check type/);
+    assert.throws(() => parseTestScript([
+      header,
+      JSON.stringify({
+        id: "condition1",
+        type: "condition",
+        params: {
+          check: { id: "same", type: "gpio_assert", params: { pin: "GP13", direction: "input", value: 0 } },
+          then_steps: [{ id: "same", type: "delay", params: { ms: 1 } }],
+          else_steps: [],
+        },
+      }),
+    ].join("\n")), /duplicate child step ID/);
+    assert.throws(() => parseTestScript([
+      header,
+      JSON.stringify({
+        id: "condition1",
+        type: "condition",
+        params: {
+          check: { id: "check", type: "adc_read", params: { channel: "5v_out" } },
+          then_steps: [],
+          else_steps: [],
+        },
+      }),
+    ].join("\n")), /adc_read check requires an assert/);
+  });
+
+  it("loads incomplete editor drafts without requiring a valid execution plan", () => {
+    const header = JSON.stringify({ schema: "linkr-test.v1", name: "Draft" });
+    const loop = JSON.stringify({
+      id: "loop1",
+      type: "loop",
+      params: { count: 2, steps: [] },
+    });
+    const draft = parseTestScript(`${header}\n${loop}\n`, { validatePlan: false });
+    assert.equal(draft.steps[0].type, "loop");
+    assert.equal(isTestLoop(draft.steps[0]) && draft.steps[0].params.steps.length, 0);
+    assert.throws(() => parseTestScript(`${header}\n${loop}\n`), /non-empty array|at least one step is required/);
+    assert.match(
+      tryBuildExecutionPlan(draft).error ?? "",
+      /at least one step is required/,
+    );
+
+    const bareAdc = JSON.stringify({
+      id: "condition1",
+      type: "condition",
+      params: {
+        check: { id: "check", type: "adc_read", params: { channel: "5v_out" } },
+        then_steps: [],
+        else_steps: [],
+      },
+    });
+    const incompleteCondition = parseTestScript(`${header}\n${bareAdc}\n`, { validatePlan: false });
+    assert.equal(incompleteCondition.steps[0].type, "condition");
+    assert.throws(() => parseTestScript(`${header}\n${bareAdc}\n`), /adc_read check requires an assert/);
+    assert.match(
+      tryBuildExecutionPlan(incompleteCondition).error ?? "",
+      /adc_read check requires an assert/,
+    );
+  });
+
+  it("rejects empty serial_wait patterns and empty condition serial_expect patterns", () => {
+    const header = JSON.stringify({ schema: "linkr-test.v1", name: "Empty pattern" });
+    assert.throws(() => parseTestScript([
+      header,
+      JSON.stringify({
+        id: "wait1",
+        type: "serial_wait",
+        params: { channel: "uart0", pattern: "   ", timeout_ms: 1000 },
+      }),
+    ].join("\n")), /serial_wait pattern must be non-empty/);
+    assert.throws(() => parseTestScript([
+      header,
+      JSON.stringify({
+        id: "condition1",
+        type: "condition",
+        params: {
+          check: {
+            id: "check",
+            type: "serial_expect",
+            params: { channel: "uart0", command: "true", pattern: "", timeout_ms: 100 },
+          },
+          then_steps: [],
+          else_steps: [],
+        },
+      }),
+    ].join("\n")), /serial_expect check pattern must be non-empty/);
+  });
+
   it("rejects invalid Unit names before execution", () => {
     const header = JSON.stringify({ schema: "linkr-test.v1", name: "Bad Unit" });
     const unit = JSON.stringify({
@@ -322,7 +677,7 @@ describe("serializeTestScript / parseTestScript", () => {
         type: "loop",
         params: { count: 2, steps: [{ id: "loop2", type: "loop", params: { count: 2, steps: [] } }] },
       }),
-    ].join("\n")), /nested loops/);
+    ].join("\n")), /only named Units may be nested/);
     assert.throws(() => parseTestScript([
       header,
       JSON.stringify({

@@ -3,6 +3,7 @@
 // Test runner: executes linkr-test.v1 scripts against the board.
 
 use anyhow::{bail, ensure, Context, Result};
+use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -116,6 +117,7 @@ pub fn run_script(
 
     // Validate every serial channel before performing any board-side action.
     let mut serial = TestSerialPorts::open_steps(&execution_steps, opts)?;
+    let mut condition_outcomes = HashMap::<String, bool>::new();
 
     for step in &mut execution_steps {
         if abort.load(Ordering::SeqCst) {
@@ -130,118 +132,161 @@ pub fn run_script(
             writeln!(stderr, "  [{}] {} ...", step.id, step.step_type_name())?;
         }
 
-        let result = execute_step(step, client, &mut serial, &abort, opts, stderr);
+        let condition_id = step.params["__condition_id"].as_str();
+        let condition_role = step.params["__condition_role"].as_str();
+        let branch_selected = match (condition_id, condition_role) {
+            (Some(id), Some("then")) => condition_outcomes.get(id).copied() == Some(true),
+            (Some(id), Some("else")) => condition_outcomes.get(id).copied() == Some(false),
+            _ => true,
+        };
+        let result =
+            branch_selected.then(|| execute_step(step, client, &mut serial, &abort, opts, stderr));
 
         let finished_at_ms = now_ms();
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        let step_result = match result {
-            Ok(mut ctx) => {
-                // Evaluate assertions
-                match assertion_for_step(step) {
+        let mut continue_on_error = step.continue_on_error == Some(true);
+        let timing = StepTiming {
+            started_at_ms,
+            finished_at_ms,
+            duration_ms,
+        };
+        let mut step_result = match result {
+            None => make_step_result(
+                step,
+                condition_id,
+                condition_role,
+                StepOutcome {
+                    status: StepStatus::Skip,
+                    timing,
+                    error: Some("condition branch not selected".to_string()),
+                    assertion_result: None,
+                    adc_value_ua: None,
+                    serial_output: None,
+                    conditional_skip: true,
+                },
+            ),
+            Some(result) => match result {
+                Ok(mut ctx) => match assertion_for_step(step) {
                     Ok(Some(assertion)) => {
-                        let result = test_assertions::evaluate(&assertion, &ctx);
-                        let status = if result.passed {
+                        continue_on_error |= assertion.continue_on_error == Some(true);
+                        let evaluated = test_assertions::evaluate(&assertion, &ctx);
+                        let status = if evaluated.passed {
                             StepStatus::Pass
                         } else {
                             StepStatus::Fail
                         };
-                        StepResult {
-                            step_id: step.id.clone(),
-                            step_type: step.step_type,
-                            unit_id: step.params["__unit_id"].as_str().map(str::to_string),
-                            unit_name: step.params["__unit_name"].as_str().map(str::to_string),
-                            status,
-                            started_at_ms,
-                            finished_at_ms,
-                            duration_ms,
+                        make_step_result(
+                            step,
+                            condition_id,
+                            condition_role,
+                            StepOutcome {
+                                status,
+                                timing,
+                                error: None,
+                                assertion_result: Some(evaluated),
+                                adc_value_ua: ctx.adc_value_ua.take(),
+                                serial_output: ctx.serial_output.take(),
+                                conditional_skip: false,
+                            },
+                        )
+                    }
+                    Ok(None) => make_step_result(
+                        step,
+                        condition_id,
+                        condition_role,
+                        StepOutcome {
+                            status: StepStatus::Pass,
+                            timing,
                             error: None,
-                            assertion_result: Some(result),
+                            assertion_result: None,
                             adc_value_ua: ctx.adc_value_ua.take(),
                             serial_output: ctx.serial_output.take(),
-                        }
-                    }
-                    Ok(None) => StepResult {
-                        step_id: step.id.clone(),
-                        step_type: step.step_type,
-                        unit_id: step.params["__unit_id"].as_str().map(str::to_string),
-                        unit_name: step.params["__unit_name"].as_str().map(str::to_string),
-                        status: StepStatus::Pass,
-                        started_at_ms,
-                        finished_at_ms,
-                        duration_ms,
-                        error: None,
-                        assertion_result: None,
-                        adc_value_ua: ctx.adc_value_ua.take(),
-                        serial_output: ctx.serial_output.take(),
-                    },
-                    Err(error) => StepResult {
-                        step_id: step.id.clone(),
-                        step_type: step.step_type,
-                        unit_id: step.params["__unit_id"].as_str().map(str::to_string),
-                        unit_name: step.params["__unit_name"].as_str().map(str::to_string),
-                        status: StepStatus::Error,
-                        started_at_ms,
-                        finished_at_ms,
-                        duration_ms,
-                        error: Some(error.to_string()),
-                        assertion_result: None,
-                        adc_value_ua: ctx.adc_value_ua.take(),
-                        serial_output: ctx.serial_output.take(),
-                    },
-                }
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                if abort.load(Ordering::SeqCst) || msg == "aborted" {
-                    report.set_aborted();
-                    StepResult {
-                        step_id: step.id.clone(),
-                        step_type: step.step_type,
-                        unit_id: step.params["__unit_id"].as_str().map(str::to_string),
-                        unit_name: step.params["__unit_name"].as_str().map(str::to_string),
-                        status: StepStatus::Aborted,
-                        started_at_ms,
-                        finished_at_ms,
-                        duration_ms,
-                        error: Some(msg),
-                        assertion_result: None,
-                        adc_value_ua: None,
-                        serial_output: None,
-                    }
-                } else if msg.contains("skip") {
-                    StepResult {
-                        step_id: step.id.clone(),
-                        step_type: step.step_type,
-                        unit_id: step.params["__unit_id"].as_str().map(str::to_string),
-                        unit_name: step.params["__unit_name"].as_str().map(str::to_string),
-                        status: StepStatus::Skip,
-                        started_at_ms,
-                        finished_at_ms,
-                        duration_ms,
-                        error: Some(msg),
-                        assertion_result: None,
-                        adc_value_ua: None,
-                        serial_output: None,
-                    }
-                } else {
-                    StepResult {
-                        step_id: step.id.clone(),
-                        step_type: step.step_type,
-                        unit_id: step.params["__unit_id"].as_str().map(str::to_string),
-                        unit_name: step.params["__unit_name"].as_str().map(str::to_string),
-                        status: StepStatus::Error,
-                        started_at_ms,
-                        finished_at_ms,
-                        duration_ms,
-                        error: Some(msg),
-                        assertion_result: None,
-                        adc_value_ua: None,
-                        serial_output: None,
+                            conditional_skip: false,
+                        },
+                    ),
+                    Err(error) => make_step_result(
+                        step,
+                        condition_id,
+                        condition_role,
+                        StepOutcome {
+                            status: StepStatus::Error,
+                            timing,
+                            error: Some(error.to_string()),
+                            assertion_result: None,
+                            adc_value_ua: ctx.adc_value_ua.take(),
+                            serial_output: ctx.serial_output.take(),
+                            conditional_skip: false,
+                        },
+                    ),
+                },
+                Err(e) => {
+                    let msg = e.to_string();
+                    if abort.load(Ordering::SeqCst) || msg == "aborted" {
+                        report.set_aborted();
+                        make_step_result(
+                            step,
+                            condition_id,
+                            condition_role,
+                            StepOutcome {
+                                status: StepStatus::Aborted,
+                                timing,
+                                error: Some(msg),
+                                assertion_result: None,
+                                adc_value_ua: None,
+                                serial_output: None,
+                                conditional_skip: false,
+                            },
+                        )
+                    } else if msg.contains("skip") {
+                        make_step_result(
+                            step,
+                            condition_id,
+                            condition_role,
+                            StepOutcome {
+                                status: StepStatus::Skip,
+                                timing,
+                                error: Some(msg),
+                                assertion_result: None,
+                                adc_value_ua: None,
+                                serial_output: None,
+                                conditional_skip: false,
+                            },
+                        )
+                    } else {
+                        make_step_result(
+                            step,
+                            condition_id,
+                            condition_role,
+                            StepOutcome {
+                                status: StepStatus::Error,
+                                timing,
+                                error: Some(msg),
+                                assertion_result: None,
+                                adc_value_ua: None,
+                                serial_output: None,
+                                conditional_skip: false,
+                            },
+                        )
                     }
                 }
-            }
+            },
         };
+
+        if let (Some(id), Some("check")) = (condition_id, condition_role) {
+            match step_result.status {
+                StepStatus::Pass => {
+                    condition_outcomes.insert(id.to_string(), true);
+                    step_result.condition_outcome = Some(true);
+                }
+                StepStatus::Fail => {
+                    condition_outcomes.insert(id.to_string(), false);
+                    step_result.status = StepStatus::Pass;
+                    step_result.condition_outcome = Some(false);
+                }
+                _ => {}
+            }
+        }
 
         // Print step result
         if !opts.json_output {
@@ -269,10 +314,13 @@ pub fn run_script(
             }
         }
 
-        let should_stop = matches!(
-            step_result.status,
-            StepStatus::Fail | StepStatus::Error | StepStatus::Aborted
-        ) && step.continue_on_error != Some(true);
+        let unresolved_condition =
+            condition_role == Some("check") && step_result.condition_outcome.is_none();
+        let should_stop = unresolved_condition
+            || matches!(
+                step_result.status,
+                StepStatus::Fail | StepStatus::Error | StepStatus::Aborted
+            ) && !continue_on_error;
 
         report.add_result(step_result);
 
@@ -368,14 +416,14 @@ fn execute_step(
 
             let result =
                 serial.send_and_expect(command, pattern, Duration::from_millis(timeout_ms))?;
+            // The assertion engine below reports a pattern mismatch as a test failure,
+            // while transport timeouts remain infrastructure errors.
+            let _ = result.pattern_matched;
             ctx.serial_output = Some(result.output.clone());
             ctx.exit_code = Some(result.exit_code);
 
             if !result.completed {
                 bail!("timeout waiting for command completion");
-            }
-            if !result.pattern_matched {
-                bail!("command output did not match: {pattern}");
             }
         }
 
@@ -458,7 +506,9 @@ fn execute_step(
             bail!("capture step not yet implemented in CLI; use WebUI for power capture");
         }
 
-        StepType::Loop => bail!("loop step was not expanded before execution"),
+        StepType::Loop | StepType::Condition => {
+            bail!("flow-control step was not expanded before execution")
+        }
     }
 
     Ok(ctx)
@@ -511,6 +561,53 @@ fn required_serial_channels_for_steps(steps: &[TestStep]) -> Result<(bool, bool)
     Ok((uart0, uart1))
 }
 
+#[derive(Clone, Copy)]
+struct StepTiming {
+    started_at_ms: u64,
+    finished_at_ms: u64,
+    duration_ms: u64,
+}
+
+struct StepOutcome {
+    status: StepStatus,
+    timing: StepTiming,
+    error: Option<String>,
+    assertion_result: Option<test_assertions::AssertionResult>,
+    adc_value_ua: Option<f64>,
+    serial_output: Option<String>,
+    conditional_skip: bool,
+}
+
+fn make_step_result(
+    step: &crate::test_script::TestStep,
+    condition_id: Option<&str>,
+    condition_role: Option<&str>,
+    outcome: StepOutcome,
+) -> StepResult {
+    StepResult {
+        step_id: step.id.clone(),
+        step_type: step.step_type,
+        unit_id: step.params["__unit_id"].as_str().map(str::to_string),
+        unit_name: step.params["__unit_name"].as_str().map(str::to_string),
+        condition_id: condition_id
+            .or_else(|| step.params["__condition_id"].as_str())
+            .map(str::to_string),
+        condition_role: condition_role
+            .or_else(|| step.params["__condition_role"].as_str())
+            .map(str::to_string),
+        condition_outcome: None,
+        conditional_skip: outcome.conditional_skip,
+        status: outcome.status,
+        started_at_ms: outcome.timing.started_at_ms,
+        finished_at_ms: outcome.timing.finished_at_ms,
+        duration_ms: outcome.timing.duration_ms,
+        error: outcome.error,
+        assertion_result: outcome.assertion_result,
+        adc_value_ua: outcome.adc_value_ua,
+        serial_output: outcome.serial_output,
+    }
+}
+
 fn assertion_for_step(step: &crate::test_script::TestStep) -> Result<Option<StepAssertion>> {
     let mut value = step.assert.clone().unwrap_or_else(|| serde_json::json!({}));
 
@@ -528,6 +625,23 @@ fn assertion_for_step(step: &crate::test_script::TestStep) -> Result<Option<Step
             step.id
         );
         test_assertions::merge_gpio_assertion(&mut value, direction, pin_value as i32);
+    }
+
+    if step.step_type == StepType::SerialExpect {
+        let object = value
+            .as_object_mut()
+            .with_context(|| format!("invalid assertion for step {}", step.id))?;
+        let pattern = step.params["pattern"].as_str().unwrap_or("Linux").trim();
+        if !pattern.is_empty() {
+            object
+                .entry("regex")
+                .or_insert_with(|| serde_json::json!(pattern));
+        } else {
+            object.remove("regex");
+        }
+        object
+            .entry("exit_code")
+            .or_insert_with(|| serde_json::json!(0));
     }
 
     if value.as_object().is_some_and(serde_json::Map::is_empty) {
@@ -565,6 +679,7 @@ impl StepTypeName for crate::test_script::TestStep {
             StepType::SwitchRoute => "switch_route",
             StepType::Capture => "capture",
             StepType::Loop => "loop",
+            StepType::Condition => "condition",
         }
     }
 }
@@ -605,6 +720,43 @@ mod tests {
             None,
         );
         assert!(assertion_for_step(&step).is_err());
+    }
+
+    #[test]
+    fn serial_expect_uses_pattern_and_zero_exit_code_as_assertions() {
+        let step = TestStep {
+            id: "serial-check".to_string(),
+            step_type: StepType::SerialExpect,
+            params: serde_json::json!({
+                "channel": "uart0",
+                "command": "uname -a",
+                "pattern": "Linux"
+            }),
+            assert: None,
+            continue_on_error: None,
+        };
+        let assertion = assertion_for_step(&step).unwrap().unwrap();
+        assert_eq!(assertion.regex.as_deref(), Some("Linux"));
+        assert_eq!(assertion.exit_code, Some(0));
+    }
+
+    #[test]
+    fn serial_expect_skips_empty_pattern_and_keeps_assert_continue_flag() {
+        let step = TestStep {
+            id: "serial-check".to_string(),
+            step_type: StepType::SerialExpect,
+            params: serde_json::json!({
+                "channel": "uart0",
+                "command": "stress-ng",
+                "pattern": "   "
+            }),
+            assert: Some(serde_json::json!({"continue_on_error": true})),
+            continue_on_error: None,
+        };
+        let assertion = assertion_for_step(&step).unwrap().unwrap();
+        assert_eq!(assertion.regex, None);
+        assert_eq!(assertion.exit_code, Some(0));
+        assert_eq!(assertion.continue_on_error, Some(true));
     }
 
     fn serial_step(channel: &str) -> TestStep {

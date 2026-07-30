@@ -70,14 +70,29 @@ export interface TestLoop {
   type: "loop";
   params: {
     count: number;
-    steps: TestStep[];
+    steps: TestNestedItem[];
     unit?: {
       name: string;
     };
   };
 }
 
-export type TestScriptItem = TestStep | TestLoop;
+export type ConditionCheckType = "serial_expect" | "adc_read" | "gpio_assert";
+
+export interface TestCondition {
+  id: string;
+  type: "condition";
+  params: {
+    check: TestStep<ConditionCheckType>;
+    then_steps: TestNestedItem[];
+    else_steps: TestNestedItem[];
+  };
+}
+
+/** Nested flows accept primitive steps and named Units, but not conditions or bare loops. */
+export type TestNestedItem = TestStep | TestLoop;
+export type TestScriptItem = TestStep | TestLoop | TestCondition;
+export type TestNestedBranch = "body" | "then" | "else";
 
 export interface ExecutionStep extends TestStep {
   executionId: string;
@@ -87,6 +102,13 @@ export interface ExecutionStep extends TestStep {
   loopCount?: number;
   unitId?: string;
   unitName?: string;
+  conditionId?: string;
+  conditionRole?: "check" | "then" | "else";
+}
+
+export interface ExecutionPlanAttempt {
+  plan: ExecutionStep[];
+  error: string | null;
 }
 
 export interface TestScript {
@@ -118,6 +140,10 @@ export interface StepResult {
   loopCount?: number;
   unitId?: string;
   unitName?: string;
+  conditionId?: string;
+  conditionRole?: "check" | "then" | "else";
+  conditionOutcome?: boolean;
+  conditionalSkip?: boolean;
   stepType: StepType;
   status: StepStatus;
   startedAtMs: number;
@@ -146,7 +172,9 @@ export interface RunSummary {
 
 export function isRunSuccessful(summary: RunSummary): boolean {
   return summary.completed && !summary.aborted && summary.results.length === summary.totalSteps &&
-    summary.results.every((result) => result.status === "pass");
+    summary.results.every((result) => result.status === "pass" || (
+      result.status === "skip" && result.conditionalSkip === true
+    ));
 }
 
 export interface AdcSampleEntry {
@@ -213,7 +241,7 @@ export function stepTypeIcon(type: StepType): string {
   return ICONS[type] ?? "Circle";
 }
 
-function generateItemId(prefix: "s" | "l"): string {
+function generateItemId(prefix: "s" | "l" | "c"): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
     return `${prefix}${globalThis.crypto.randomUUID().slice(0, 8)}`;
   }
@@ -237,6 +265,10 @@ export function generateLoopId(): string {
   return generateItemId("l");
 }
 
+export function generateConditionId(): string {
+  return generateItemId("c");
+}
+
 export function isTestLoop(item: TestScriptItem): item is TestLoop {
   return item.type === "loop";
 }
@@ -247,11 +279,175 @@ export function isTestUnit(item: TestScriptItem): item is TestLoop & {
   return isTestLoop(item) && typeof item.params.unit?.name === "string";
 }
 
+export function isNestableTestItem(item: TestScriptItem): item is TestNestedItem {
+  return !isTestCondition(item) && (!isTestLoop(item) || isTestUnit(item));
+}
+
+export function isTestCondition(item: TestScriptItem): item is TestCondition {
+  return item.type === "condition";
+}
+
+function conditionCheckHasAssertion(step: TestStep): boolean {
+  if (!step.assert) return false;
+  return Object.entries(step.assert).some(([key, value]) => (
+    key !== "continue_on_error" && value != null
+  ));
+}
+
+function serialPattern(params: unknown): string {
+  if (params === null || typeof params !== "object") return "";
+  const { pattern } = params as { pattern?: unknown };
+  return typeof pattern === "string" ? pattern.trim() : "";
+}
+
+function assertSerialWaitPattern(step: TestStep, location: string) {
+  if (step.type === "serial_wait" && serialPattern(step.params) === "") {
+    throw new Error(`${location}: serial_wait pattern must be non-empty`);
+  }
+}
+
+function assertConditionCheck(step: TestStep, location: string) {
+  if (!(["serial_expect", "adc_read", "gpio_assert"] as StepType[]).includes(step.type)) {
+    throw new Error(`${location}: unsupported check type "${step.type}"`);
+  }
+  if (step.type === "adc_read" && !conditionCheckHasAssertion(step)) {
+    throw new Error(`${location}: adc_read check requires an assert`);
+  }
+  if (
+    step.type === "serial_expect"
+    && serialPattern(step.params) === ""
+  ) {
+    throw new Error(`${location}: serial_expect check pattern must be non-empty`);
+  }
+}
+
+/**
+ * Inserts a primitive step or named Unit into a loop body or condition branch
+ * without mutating the workflow. When sourceItemId is provided, the item is
+ * moved from the top-level workflow; otherwise the supplied item is copied in.
+ */
+export function nestItemInScript(
+  items: TestScriptItem[],
+  item: TestNestedItem,
+  containerId: string,
+  branch: TestNestedBranch,
+  sourceItemId?: string,
+): TestScriptItem[] | null {
+  if (!isNestableTestItem(item)) return null;
+
+  const next = [...items];
+  let nestedItem: TestNestedItem = item;
+  if (sourceItemId) {
+    const sourceIndex = next.findIndex((item) => item.id === sourceItemId);
+    if (sourceIndex < 0) return null;
+    const source = next[sourceIndex];
+    if (!isNestableTestItem(source)) return null;
+    nestedItem = source;
+    next.splice(sourceIndex, 1);
+  }
+
+  const containerIndex = next.findIndex((item) => item.id === containerId);
+  if (containerIndex < 0) return null;
+  const container = next[containerIndex];
+
+  if (isTestCondition(container) && branch !== "body") {
+    const key = branch === "then" ? "then_steps" : "else_steps";
+    if (container.params[key].some((item) => item.id === nestedItem.id)) return null;
+    next[containerIndex] = {
+      ...container,
+      params: {
+        ...container.params,
+        [key]: [...container.params[key], nestedItem],
+      },
+    };
+    return next;
+  }
+
+  if (isTestLoop(container) && !isTestUnit(container) && branch === "body") {
+    if (container.params.steps.some((item) => item.id === nestedItem.id)) return null;
+    next[containerIndex] = {
+      ...container,
+      params: {
+        ...container.params,
+        steps: [...container.params.steps, nestedItem],
+      },
+    };
+    return next;
+  }
+
+  return null;
+}
+
+/** Removes one nested item from a loop/Unit body or condition branch. */
+export function removeNestedItemFromScript(
+  items: TestScriptItem[],
+  containerId: string,
+  branch: TestNestedBranch,
+  nestedItemId: string,
+): TestScriptItem[] | null {
+  const containerIndex = items.findIndex((item) => item.id === containerId);
+  if (containerIndex < 0) return null;
+  const container = items[containerIndex];
+  const next = [...items];
+
+  if (isTestCondition(container) && branch !== "body") {
+    const key = branch === "then" ? "then_steps" : "else_steps";
+    const nestedItems = container.params[key];
+    if (!nestedItems.some((item) => item.id === nestedItemId)) return null;
+    next[containerIndex] = {
+      ...container,
+      params: {
+        ...container.params,
+        [key]: nestedItems.filter((item) => item.id !== nestedItemId),
+      },
+    };
+    return next;
+  }
+
+  if (isTestLoop(container) && branch === "body") {
+    if (!container.params.steps.some((item) => item.id === nestedItemId)) return null;
+    next[containerIndex] = {
+      ...container,
+      params: {
+        ...container.params,
+        steps: container.params.steps.filter((item) => item.id !== nestedItemId),
+      },
+    };
+    return next;
+  }
+
+  return null;
+}
+
+/** @deprecated Use nestItemInScript for primitive steps and named Units. */
+export function nestUnitInScript(
+  items: TestScriptItem[],
+  unit: TestLoop,
+  containerId: string,
+  branch: TestNestedBranch,
+  sourceItemId?: string,
+): TestScriptItem[] | null {
+  return nestItemInScript(items, unit, containerId, branch, sourceItemId);
+}
+
 export function countScriptCommands(script: TestScript): number {
-  return script.steps.reduce(
-    (total, item) => total + (isTestLoop(item) ? item.params.steps.length : 1),
-    0,
+  const countNested = (item: TestNestedItem): number => (
+    isTestLoop(item)
+      ? item.params.steps.reduce((total, child) => total + countNested(child), 0)
+      : 1
   );
+  return script.steps.reduce((total, item) => {
+    if (isTestLoop(item)) {
+      return total + item.params.steps.reduce((sum, child) => sum + countNested(child), 0);
+    }
+    if (isTestCondition(item)) {
+      return total
+        + 1
+        + item.params.then_steps.reduce((sum, child) => sum + countNested(child), 0)
+        + item.params.else_steps.reduce((sum, child) => sum + countNested(child), 0);
+    }
+    return total + 1;
+  }, 0);
 }
 
 export function buildExecutionPlan(script: TestScript): ExecutionStep[] {
@@ -260,11 +456,67 @@ export function buildExecutionPlan(script: TestScript): ExecutionStep[] {
   const executionIds = new Set<string>();
 
   const appendStep = (step: ExecutionStep) => {
+    if (plan.length >= MAX_EXECUTION_STEPS) {
+      throw new Error(`Expanded test exceeds ${MAX_EXECUTION_STEPS} executable steps`);
+    }
     if (executionIds.has(step.executionId)) {
       throw new Error(`Duplicate execution step ID: ${step.executionId}`);
     }
     executionIds.add(step.executionId);
     plan.push(step);
+  };
+
+  type ExpansionContext = Pick<
+    ExecutionStep,
+    "loopId" | "loopIteration" | "loopCount" | "unitId" | "unitName" | "conditionId" | "conditionRole"
+  > & { suffix: string };
+
+  const appendPrimitive = (step: TestStep, context: ExpansionContext) => {
+    appendStep({
+      ...step,
+      executionId: `${step.id}${context.suffix}`,
+      sourceStepId: step.id,
+      loopId: context.loopId,
+      loopIteration: context.loopIteration,
+      loopCount: context.loopCount,
+      unitId: context.unitId,
+      unitName: context.unitName,
+      conditionId: context.conditionId,
+      conditionRole: context.conditionRole,
+    });
+  };
+
+  const assertUniqueChildren = (items: TestNestedItem[], location: string) => {
+    const childIds = new Set<string>();
+    for (const child of items) {
+      if (childIds.has(child.id)) throw new Error(`${location}: duplicate child step ID: ${child.id}`);
+      childIds.add(child.id);
+    }
+  };
+
+  const expandUnit = (unit: TestLoop, context: ExpansionContext) => {
+    if (!isTestUnit(unit)) throw new Error(`Nested loop ${unit.id}: only named Units may be nested`);
+    if (unit.params.count !== 1) throw new Error(`Unit ${unit.id}: count must be exactly 1`);
+    if (unit.params.steps.length === 0) throw new Error(`Unit ${unit.id}: at least one step is required`);
+    assertUniqueChildren(unit.params.steps, `Unit ${unit.id}`);
+    for (const child of unit.params.steps) {
+      if (isTestLoop(child)) throw new Error(`Unit ${unit.id}: nested Units are not supported`);
+      assertSerialWaitPattern(child, `Unit ${unit.id}`);
+      appendPrimitive(child, {
+        ...context,
+        suffix: `@${unit.id}:1${context.suffix}`,
+        unitId: unit.id,
+        unitName: unit.params.unit.name,
+        loopId: context.loopId ?? unit.id,
+        loopIteration: context.loopIteration ?? 1,
+        loopCount: context.loopCount ?? 1,
+      });
+    }
+  };
+
+  const expandNested = (item: TestNestedItem, context: ExpansionContext) => {
+    if (isTestLoop(item)) expandUnit(item, context);
+    else appendPrimitive(item, context);
   };
 
   for (const item of script.steps) {
@@ -273,8 +525,40 @@ export function buildExecutionPlan(script: TestScript): ExecutionStep[] {
     }
     itemIds.add(item.id);
 
+    if (isTestCondition(item)) {
+      assertConditionCheck(item.params.check, `Condition ${item.id}`);
+      assertUniqueChildren(
+        [item.params.check, ...item.params.then_steps, ...item.params.else_steps],
+        `Condition ${item.id}`,
+      );
+      assertSerialWaitPattern(item.params.check, `Condition ${item.id} check`);
+      appendPrimitive(item.params.check, {
+        suffix: `@${item.id}:check`,
+        conditionId: item.id,
+        conditionRole: "check",
+      });
+      for (const child of item.params.then_steps) {
+        if (!isTestLoop(child)) assertSerialWaitPattern(child, `Condition ${item.id} then`);
+        expandNested(child, {
+          suffix: `@${item.id}:then`,
+          conditionId: item.id,
+          conditionRole: "then",
+        });
+      }
+      for (const child of item.params.else_steps) {
+        if (!isTestLoop(child)) assertSerialWaitPattern(child, `Condition ${item.id} else`);
+        expandNested(child, {
+          suffix: `@${item.id}:else`,
+          conditionId: item.id,
+          conditionRole: "else",
+        });
+      }
+      continue;
+    }
+
     if (!isTestLoop(item)) {
-      appendStep({ ...item, executionId: item.id, sourceStepId: item.id });
+      assertSerialWaitPattern(item, `Step ${item.id}`);
+      appendPrimitive(item, { suffix: "" });
       continue;
     }
 
@@ -290,28 +574,21 @@ export function buildExecutionPlan(script: TestScript): ExecutionStep[] {
     if (isTestUnit(item) && count !== 1) {
       throw new Error(`Unit ${item.id}: count must be exactly 1`);
     }
-    if (plan.length + item.params.steps.length * count > MAX_EXECUTION_STEPS) {
-      throw new Error(`Expanded test exceeds ${MAX_EXECUTION_STEPS} executable steps`);
-    }
+    assertUniqueChildren(item.params.steps, `${isTestUnit(item) ? "Unit" : "Loop"} ${item.id}`);
 
-    const childIds = new Set<string>();
-    for (const step of item.params.steps) {
-      if (childIds.has(step.id)) {
-        throw new Error(`Loop ${item.id}: duplicate child step ID: ${step.id}`);
-      }
-      childIds.add(step.id);
+    if (isTestUnit(item)) {
+      expandUnit(item, { suffix: "" });
+      continue;
     }
 
     for (let iteration = 1; iteration <= count; iteration += 1) {
-      for (const step of item.params.steps) {
-        appendStep({
-          ...step,
-          executionId: `${step.id}@${item.id}:${iteration}`,
-          sourceStepId: step.id,
+      for (const child of item.params.steps) {
+        if (!isTestLoop(child)) assertSerialWaitPattern(child, `Loop ${item.id}`);
+        expandNested(child, {
+          suffix: `@${item.id}:${iteration}`,
           loopId: item.id,
           loopIteration: iteration,
           loopCount: count,
-          ...(isTestUnit(item) ? { unitId: item.id, unitName: item.params.unit.name } : {}),
         });
       }
     }
@@ -321,6 +598,24 @@ export function buildExecutionPlan(script: TestScript): ExecutionStep[] {
     throw new Error(`Expanded test exceeds ${MAX_EXECUTION_STEPS} executable steps`);
   }
   return plan;
+}
+
+/**
+ * Build an execution plan without throwing through an interactive editor render.
+ *
+ * Empty loops and Units are useful transient states while a user is composing a
+ * workflow. Callers that execute, import, or validate a script must continue to
+ * use buildExecutionPlan so incomplete workflows remain strictly rejected.
+ */
+export function tryBuildExecutionPlan(script: TestScript): ExecutionPlanAttempt {
+  try {
+    return { plan: buildExecutionPlan(script), error: null };
+  } catch (error) {
+    return {
+      plan: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 export function defaultStepParams<T extends StepType>(type: T): StepParamsFor<T> {
@@ -340,12 +635,92 @@ export function defaultStepParams<T extends StepType>(type: T): StepParamsFor<T>
   return params[type] as unknown as StepParamsFor<T>;
 }
 
-export function parseTestScript(ndjson: string): TestScript {
+export function parseTestScript(
+  ndjson: string,
+  options: { validatePlan?: boolean } = {},
+): TestScript {
+  const validatePlan = options.validatePlan !== false;
   const lines = ndjson.split("\n").filter((l) => l.trim());
   if (lines.length === 0) throw new Error("Empty script");
   const header = JSON.parse(lines[0]);
   if (header.schema !== "linkr-test.v1") throw new Error(`Unknown schema: ${header.schema}`);
   const steps: TestScriptItem[] = [];
+  const parseChildStep = (child: unknown, location: string): TestStep => {
+    if (!child || typeof child !== "object" || Array.isArray(child)) {
+      throw new Error(`${location} must be an object`);
+    }
+    const value = child as Record<string, unknown>;
+    if (!value.id || typeof value.id !== "string") {
+      throw new Error(`${location} has an invalid "id"`);
+    }
+    if (!STEP_TYPES.includes(value.type as StepType)) {
+      throw new Error(`${location} has unknown step type "${String(value.type)}"`);
+    }
+    if (value.params != null && (typeof value.params !== "object" || Array.isArray(value.params))) {
+      throw new Error(`${location} "params" must be an object`);
+    }
+    const type = value.type as StepType;
+    const step: TestStep = {
+      id: value.id,
+      type,
+      params: {
+        ...defaultStepParams(type),
+        ...((value.params as Record<string, unknown> | undefined) ?? {}),
+      } as StepParamsFor<StepType>,
+      assert: value.assert as StepAssertion | undefined,
+      continue_on_error: value.continue_on_error as boolean | undefined,
+    };
+    if (validatePlan) assertSerialWaitPattern(step, location);
+    return step;
+  };
+
+  const parseNestedUnit = (child: unknown, location: string): TestLoop => {
+    if (!child || typeof child !== "object" || Array.isArray(child)) {
+      throw new Error(`${location} must be an object`);
+    }
+    const value = child as Record<string, unknown>;
+    const params = value.params as Record<string, unknown> | undefined;
+    const unit = params?.unit as Record<string, unknown> | undefined;
+    const unitSteps = params?.steps;
+    if (value.type !== "loop") throw new Error(`${location} must be a Unit`);
+    if (!value.id || typeof value.id !== "string") throw new Error(`${location} has an invalid "id"`);
+    if (!unit) throw new Error(`${location}: only named Units may be nested`);
+    if (params?.count !== 1) throw new Error(`${location} Unit "count" must be exactly 1`);
+    if (
+      typeof unit.name !== "string" || unit.name.trim().length === 0 || unit.name.length > 80
+    ) {
+      throw new Error(`${location} Unit "name" must be a non-empty string up to 80 characters`);
+    }
+    if (!Array.isArray(unitSteps)) {
+      throw new Error(`${location} Unit "steps" must be an array`);
+    }
+    if (validatePlan && unitSteps.length === 0) {
+      throw new Error(`${location} Unit "steps" must be a non-empty array`);
+    }
+    return {
+      id: value.id,
+      type: "loop",
+      params: {
+        count: 1,
+        unit: { name: unit.name.trim() },
+        steps: unitSteps.map((unitStep: unknown, index: number) => {
+          const nestedType = (unitStep as { type?: string } | null)?.type;
+          if (nestedType === "loop" || nestedType === "condition") {
+            throw new Error(`${location} Unit cannot contain nested flow blocks`);
+          }
+          return parseChildStep(unitStep, `${location} Unit step ${index + 1}`);
+        }),
+      },
+    };
+  };
+
+  const parseNestedItem = (child: unknown, location: string): TestNestedItem => {
+    const nestedType = (child as { type?: string } | null)?.type;
+    if (nestedType === "loop") return parseNestedUnit(child, location);
+    if (nestedType === "condition") throw new Error(`${location}: nested conditions are not supported`);
+    return parseChildStep(child, location);
+  };
+
   for (let i = 1; i < lines.length; i++) {
     const obj = JSON.parse(lines[i]);
     if (!obj.id || typeof obj.id !== "string") throw new Error(`Line ${i + 1}: missing or invalid "id"`);
@@ -361,7 +736,10 @@ export function parseTestScript(ndjson: string): TestScript {
           `Line ${i + 1}: loop "count" must be an integer between ${MIN_LOOP_COUNT} and ${MAX_LOOP_COUNT}`,
         );
       }
-      if (!Array.isArray(childSteps) || childSteps.length === 0) {
+      if (!Array.isArray(childSteps)) {
+        throw new Error(`Line ${i + 1}: loop "steps" must be an array`);
+      }
+      if (validatePlan && childSteps.length === 0) {
         throw new Error(`Line ${i + 1}: loop "steps" must be a non-empty array`);
       }
       if (unit != null && (
@@ -376,31 +754,12 @@ export function parseTestScript(ndjson: string): TestScript {
       if (unit != null && count !== 1) {
         throw new Error(`Line ${i + 1}: unit "count" must be exactly 1`);
       }
-      const parsedChildren = childSteps.map((child, childIndex) => {
-        if (!child || typeof child !== "object") {
-          throw new Error(`Line ${i + 1}: loop step ${childIndex + 1} must be an object`);
-        }
-        if (child.type === "loop") {
-          throw new Error(`Line ${i + 1}: nested loops are not supported`);
-        }
-        if (!child.id || typeof child.id !== "string") {
-          throw new Error(`Line ${i + 1}: loop step ${childIndex + 1} has an invalid "id"`);
-        }
-        if (!STEP_TYPES.includes(child.type)) {
-          throw new Error(`Line ${i + 1}: unknown loop step type "${child.type}"`);
-        }
-        if (child.params != null && (typeof child.params !== "object" || Array.isArray(child.params))) {
-          throw new Error(`Line ${i + 1}: loop step ${childIndex + 1} "params" must be an object`);
-        }
-        const type = child.type as StepType;
-        return {
-          id: child.id,
-          type,
-          params: { ...defaultStepParams(type), ...(child.params ?? {}) } as StepParamsFor<StepType>,
-          assert: child.assert,
-          continue_on_error: child.continue_on_error,
-        } satisfies TestStep;
-      });
+      const parsedChildren = childSteps.map((child, childIndex) => (
+        parseNestedItem(child, `Line ${i + 1}: loop step ${childIndex + 1}`)
+      ));
+      if (unit != null && parsedChildren.some(isTestLoop)) {
+        throw new Error(`Line ${i + 1}: Unit cannot contain nested Units`);
+      }
       steps.push({
         id: obj.id,
         type: "loop",
@@ -412,15 +771,41 @@ export function parseTestScript(ndjson: string): TestScript {
       });
       continue;
     }
+    if (obj.type === "condition") {
+      const check = parseChildStep(obj.params?.check, `Line ${i + 1}: condition check`);
+      if (validatePlan) assertConditionCheck(check, `Line ${i + 1}: condition check`);
+      else if (!(["serial_expect", "adc_read", "gpio_assert"] as StepType[]).includes(check.type)) {
+        throw new Error(`Line ${i + 1}: unsupported condition check type "${check.type}"`);
+      }
+      if (!Array.isArray(obj.params?.then_steps) || !Array.isArray(obj.params?.else_steps)) {
+        throw new Error(`Line ${i + 1}: condition branches must be arrays`);
+      }
+      steps.push({
+        id: obj.id,
+        type: "condition",
+        params: {
+          check: check as TestStep<ConditionCheckType>,
+          then_steps: obj.params.then_steps.map((child: unknown, childIndex: number) => (
+            parseNestedItem(child, `Line ${i + 1}: then step ${childIndex + 1}`)
+          )),
+          else_steps: obj.params.else_steps.map((child: unknown, childIndex: number) => (
+            parseNestedItem(child, `Line ${i + 1}: else step ${childIndex + 1}`)
+          )),
+        },
+      });
+      continue;
+    }
     if (!STEP_TYPES.includes(obj.type)) throw new Error(`Line ${i + 1}: unknown step type "${obj.type}"`);
     const type = obj.type as StepType;
-    steps.push({
+    const step: TestStep = {
       id: obj.id,
       type,
       params: { ...defaultStepParams(type), ...(obj.params ?? {}) } as StepParamsFor<StepType>,
       assert: obj.assert,
       continue_on_error: obj.continue_on_error,
-    });
+    };
+    if (validatePlan) assertSerialWaitPattern(step, `Line ${i + 1}`);
+    steps.push(step);
   }
   const script: TestScript = {
     schema: "linkr-test.v1",
@@ -430,7 +815,7 @@ export function parseTestScript(ndjson: string): TestScript {
     created: header.created,
     steps,
   };
-  buildExecutionPlan(script);
+  if (validatePlan) buildExecutionPlan(script);
   return script;
 }
 
@@ -445,8 +830,10 @@ export function serializeTestScript(script: TestScript): string {
   const lines = [JSON.stringify(header)];
   for (const step of script.steps) {
     const obj: Record<string, unknown> = { id: step.id, type: step.type, params: step.params };
-    if (!isTestLoop(step) && step.assert) obj.assert = step.assert;
-    if (!isTestLoop(step) && step.continue_on_error) obj.continue_on_error = step.continue_on_error;
+    if (!isTestLoop(step) && !isTestCondition(step) && step.assert) obj.assert = step.assert;
+    if (!isTestLoop(step) && !isTestCondition(step) && step.continue_on_error) {
+      obj.continue_on_error = step.continue_on_error;
+    }
     lines.push(JSON.stringify(obj));
   }
   return lines.join("\n") + "\n";

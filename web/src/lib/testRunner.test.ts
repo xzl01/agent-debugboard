@@ -77,8 +77,8 @@ describe("createTestRunner", () => {
       }],
     };
     const summary = await run(script, baseBoard(), serialWithCommandOutput("Darwin"));
-    assert.equal(summary.results[0].status, "error");
-    assert.match(summary.results[0].error ?? "", /did not match/);
+    assert.equal(summary.results[0].status, "fail");
+    assert.match(summary.results[0].assertionResult?.detail ?? "", /does not match/);
   });
 
   it("passes serial_expect only after command completion and output match", async () => {
@@ -453,6 +453,67 @@ describe("createTestRunner", () => {
     const summary = await run(script, baseBoard() as any, serialWithCommandOutput(""));
     assert.equal(summary.results[0].unitId, "unit1");
     assert.equal(summary.results[0].unitName, "Boot and login");
+  });
+
+  it("runs only the true branch when a condition assertion passes", async () => {
+    const values: number[] = [];
+    const board = baseBoard() as any;
+    board.setGpio = async (_pin: string, _direction: string, value: number) => values.push(value);
+    const script: TestScript = {
+      schema: "linkr-test.v1",
+      version: "1.0",
+      name: "condition true",
+      steps: [{
+        id: "condition1",
+        type: "condition",
+        params: {
+          check: {
+            id: "check",
+            type: "serial_expect",
+            params: { channel: "uart0", command: "uname -s", pattern: "Linux", timeout_ms: 100 },
+          },
+          then_steps: [{ id: "then", type: "gpio_set", params: { pin: "GP13", value: 1 } }],
+          else_steps: [{ id: "else", type: "gpio_set", params: { pin: "GP13", value: 0 } }],
+        },
+      }],
+    };
+
+    const summary = await run(script, board, serialWithCommandOutput("Linux"));
+    assert.deepEqual(values, [1]);
+    assert.equal(summary.results[0].conditionOutcome, true);
+    assert.equal(summary.results[2].conditionalSkip, true);
+    assert.equal(summary.completed, true);
+  });
+
+  it("runs only the false branch without treating a false condition as test failure", async () => {
+    const values: number[] = [];
+    const board = baseBoard() as any;
+    board.setGpio = async (_pin: string, _direction: string, value: number) => values.push(value);
+    const script: TestScript = {
+      schema: "linkr-test.v1",
+      version: "1.0",
+      name: "condition false",
+      steps: [{
+        id: "condition1",
+        type: "condition",
+        params: {
+          check: {
+            id: "check",
+            type: "serial_expect",
+            params: { channel: "uart0", command: "uname -s", pattern: "Linux", timeout_ms: 100 },
+          },
+          then_steps: [{ id: "then", type: "gpio_set", params: { pin: "GP13", value: 1 } }],
+          else_steps: [{ id: "else", type: "gpio_set", params: { pin: "GP13", value: 0 } }],
+        },
+      }],
+    };
+
+    const summary = await run(script, board, serialWithCommandOutput("Darwin"));
+    assert.deepEqual(values, [0]);
+    assert.equal(summary.results[0].status, "pass");
+    assert.equal(summary.results[0].conditionOutcome, false);
+    assert.equal(summary.results[1].conditionalSkip, true);
+    assert.equal(summary.completed, true);
   });
 
   it("executes switch_route step", async () => {
