@@ -47,6 +47,9 @@ const LOG_FLUSH_INTERVAL_MS = 100;
 const LOG_FLUSH_CHARS = 64 * 1024;
 const LOG_CACHE_RETRY_BASE_MS = 1000;
 const LOG_CACHE_RETRY_MAX_MS = 60_000;
+const RX_COUNTER_INTERVAL_MS = 250;
+const TERMINAL_RENDER_CHUNK_CHARS = 64 * 1024;
+const TERMINAL_RENDER_BUFFER_CHARS = 1024 * 1024;
 
 export type SerialChannelId = "uart0" | "uart1";
 type Source = "webserial" | "bridge" | null;
@@ -177,7 +180,12 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   const terminalHostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const pendingOutputRef = useRef("");
+  const pendingOutputChunksRef = useRef<string[]>([]);
+  const pendingOutputCharsRef = useRef(0);
+  const terminalRenderFrameRef = useRef<number | null>(null);
+  const visibleRef = useRef(visible);
+  const totalRxBytesRef = useRef(0);
+  const rxCounterTimerRef = useRef<number | null>(null);
   const receiveListenersRef = useRef(new Set<(text: string, receivedAtMs: number) => void>());
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const writeGenerationRef = useRef(0);
@@ -251,10 +259,82 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     }
   }
 
-  const append = (text: string) => {
-    if (termRef.current) termRef.current.write(text);
-    else pendingOutputRef.current += text;
-  };
+  function flushTerminalOutput() {
+    terminalRenderFrameRef.current = null;
+    if (!visibleRef.current || !termRef.current) return;
+
+    const output: string[] = [];
+    let remaining = TERMINAL_RENDER_CHUNK_CHARS;
+    let consumed = 0;
+    while (remaining > 0 && pendingOutputChunksRef.current.length > 0) {
+      const first = pendingOutputChunksRef.current[0];
+      if (first.length <= remaining) {
+        pendingOutputChunksRef.current.shift();
+        output.push(first);
+        remaining -= first.length;
+        consumed += first.length;
+      } else {
+        output.push(first.slice(0, remaining));
+        pendingOutputChunksRef.current[0] = first.slice(remaining);
+        consumed += remaining;
+        remaining = 0;
+      }
+    }
+    pendingOutputCharsRef.current -= consumed;
+    if (output.length > 0) termRef.current.write(output.join(""));
+    if (pendingOutputCharsRef.current > 0) scheduleTerminalOutput();
+  }
+
+  function scheduleTerminalOutput() {
+    if (
+      !visibleRef.current
+      || !termRef.current
+      || terminalRenderFrameRef.current != null
+    ) return;
+    terminalRenderFrameRef.current = window.requestAnimationFrame(flushTerminalOutput);
+  }
+
+  function append(text: string) {
+    if (!text) return;
+    pendingOutputChunksRef.current.push(text);
+    pendingOutputCharsRef.current += text.length;
+    trimTerminalOutputBuffer();
+    scheduleTerminalOutput();
+  }
+
+  function prependTerminalOutput(text: string) {
+    if (!text) return;
+    pendingOutputChunksRef.current.unshift(text);
+    pendingOutputCharsRef.current += text.length;
+    trimTerminalOutputBuffer();
+    scheduleTerminalOutput();
+  }
+
+  function trimTerminalOutputBuffer() {
+    let overflow = pendingOutputCharsRef.current - TERMINAL_RENDER_BUFFER_CHARS;
+    while (overflow > 0 && pendingOutputChunksRef.current.length > 0) {
+      const first = pendingOutputChunksRef.current[0];
+      if (first.length <= overflow) {
+        pendingOutputChunksRef.current.shift();
+        pendingOutputCharsRef.current -= first.length;
+        overflow -= first.length;
+      } else {
+        pendingOutputChunksRef.current[0] = first.slice(overflow);
+        pendingOutputCharsRef.current -= overflow;
+        overflow = 0;
+      }
+    }
+  }
+
+  function recordRxBytes(byteLength: number) {
+    if (byteLength <= 0) return;
+    totalRxBytesRef.current += byteLength;
+    if (rxCounterTimerRef.current != null) return;
+    rxCounterTimerRef.current = window.setTimeout(() => {
+      rxCounterTimerRef.current = null;
+      setRxBytes(totalRxBytesRef.current);
+    }, RX_COUNTER_INTERVAL_MS);
+  }
 
   const appendReceived = (text: string) => {
     append(text);
@@ -266,8 +346,19 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   const clear = () => {
     const generation = logCacheGenerationRef.current + 1;
     logCacheGenerationRef.current = generation;
+    totalRxBytesRef.current = 0;
+    if (rxCounterTimerRef.current != null) {
+      window.clearTimeout(rxCounterTimerRef.current);
+      rxCounterTimerRef.current = null;
+    }
     setRxBytes(0);
     setCachedLogBytes(0);
+    if (terminalRenderFrameRef.current != null) {
+      window.cancelAnimationFrame(terminalRenderFrameRef.current);
+      terminalRenderFrameRef.current = null;
+    }
+    pendingOutputChunksRef.current = [];
+    pendingOutputCharsRef.current = 0;
     pendingLogRef.current = "";
     if (logFlushTimerRef.current != null) {
       window.clearTimeout(logFlushTimerRef.current);
@@ -378,11 +469,8 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       term.open(host);
       termRef.current = term;
       fitAddonRef.current = fitAddon;
-      if (cachedLog.snapshot.text) term.write(cachedLog.snapshot.text);
-      if (pendingOutputRef.current) {
-        term.write(pendingOutputRef.current);
-        pendingOutputRef.current = "";
-      }
+      prependTerminalOutput(cachedLog.snapshot.text);
+      scheduleTerminalOutput();
       resizeObserver = new ResizeObserver(fit);
       resizeObserver.observe(host);
       themeObserver = new MutationObserver(() => {
@@ -402,6 +490,14 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       resizeObserver?.disconnect();
       themeObserver?.disconnect();
       document.removeEventListener("fullscreenchange", fit);
+      if (terminalRenderFrameRef.current != null) {
+        window.cancelAnimationFrame(terminalRenderFrameRef.current);
+        terminalRenderFrameRef.current = null;
+      }
+      if (rxCounterTimerRef.current != null) {
+        window.clearTimeout(rxCounterTimerRef.current);
+        rxCounterTimerRef.current = null;
+      }
       term?.dispose();
       termRef.current = null;
       fitAddonRef.current = null;
@@ -422,8 +518,16 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!visible) return;
+    visibleRef.current = visible;
+    if (!visible) {
+      if (terminalRenderFrameRef.current != null) {
+        window.cancelAnimationFrame(terminalRenderFrameRef.current);
+        terminalRenderFrameRef.current = null;
+      }
+      return;
+    }
     requestAnimationFrame(() => {
+      flushTerminalOutput();
       try { fitAddonRef.current?.fit(); } catch { /* Ignore a transient layout change. */ }
     });
   }, [compact, visible]);
@@ -456,7 +560,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
             const { value, done } = await reader.read();
             if (done) break;
             if (value) {
-              setRxBytes((count) => count + value.byteLength);
+              recordRxBytes(value.byteLength);
               appendReceived(decoder.decode(value, { stream: true }));
             }
           }
@@ -510,7 +614,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
         const msg = JSON.parse(event.data);
         if (msg.type === "data") {
           const text = String(msg.text ?? "");
-          setRxBytes((count) => count + new TextEncoder().encode(text).byteLength);
+          recordRxBytes(new TextEncoder().encode(text).byteLength);
           appendReceived(text);
         } else if (msg.type === "opened") {
           if (wsRef.current !== ws) return;
@@ -784,7 +888,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
           onClick={() => terminalHostRef.current?.focus()}
           onKeyDownCapture={handleTerminalKeyDown}
           onPasteCapture={handleTerminalPaste}
-          className={`${compact ? "min-h-[clamp(400px,60vh,780px)]" : "min-h-[clamp(440px,65vh,820px)] md:min-h-[clamp(560px,72vh,920px)]"} terminal-host flex-1 bg-terminal p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand/40 [&_.xterm]:h-full`}
+          className={`${compact ? "h-[clamp(400px,52vh,620px)]" : "h-[clamp(480px,62vh,760px)]"} terminal-host min-h-0 min-w-0 shrink-0 overflow-hidden bg-terminal p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand/40 fullscreen:h-auto fullscreen:flex-1 [&_.xterm]:h-full [&_.xterm]:max-w-full`}
         />
 
         <div className="flex min-h-9 flex-wrap items-center gap-x-4 gap-y-1 border-t border-line/70 bg-terminal px-3 py-1.5 text-[10px] text-ink-dim transition-colors">
