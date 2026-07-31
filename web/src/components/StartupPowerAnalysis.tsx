@@ -220,6 +220,15 @@ async function downloadPowerData(run: StartupRun, format: "csv" | "ndjson") {
     "stage",
     "stage_label",
     "stage_elapsed_ms",
+    "rail",
+    "power_enabled",
+    "adc_raw",
+    "sense_mv",
+    "reported_current_ua",
+    "effective_current_ua",
+    "current_a",
+    "voltage_v",
+    "power_w",
   ] as const;
   await exportPowerCaptureToFile(capture, format, undefined, {
     fileName: `linkr-startup-${run.id}-power.${format}`,
@@ -227,6 +236,11 @@ async function downloadPowerData(run: StartupRun, format: "csv" | "ndjson") {
     extraValues: (sample) => {
       const relativeMs = (sample.deviceTimeUs - triggerTimeUs) / 1000;
       const stage = startupStageAt(run, relativeMs);
+      const reading = sample.readings.find((item) => item.name === run.rail);
+      const effectiveCurrentUa = reading?.power_enabled
+        ? Math.max(0, reading.current_ua)
+        : 0;
+      const voltageV = nominalVoltage(run.rail) ?? 0;
       return {
         run_id: run.id,
         attempt: run.attempt,
@@ -236,6 +250,15 @@ async function downloadPowerData(run: StartupRun, format: "csv" | "ndjson") {
         stage: stage.key,
         stage_label: stage.label,
         stage_elapsed_ms: Math.max(0, relativeMs - stage.startedAtMs),
+        rail: run.rail,
+        power_enabled: reading?.power_enabled ?? false,
+        adc_raw: reading?.raw ?? null,
+        sense_mv: reading?.mv ?? 0,
+        reported_current_ua: reading?.current_ua ?? 0,
+        effective_current_ua: effectiveCurrentUa,
+        current_a: effectiveCurrentUa / 1_000_000,
+        voltage_v: voltageV,
+        power_w: effectiveCurrentUa / 1_000_000 * voltageV,
       };
     },
   });

@@ -28,10 +28,10 @@ function sample(offset: number): CaptureSample {
     deviceTimeUs: 1_000_000 + offset * 10_000,
     readings: ["5v_out", "12v_out", "20v_out"].map((name, index) => ({
       name,
-      signal: "",
+      signal: `${name}-sense`,
       power_enabled: index === 0,
-      raw: null,
-      mv: 0,
+      raw: 120 + index,
+      mv: 10 + index,
       sensor_channel: "current",
       unit: "uA",
       current_ua: (offset + 1) * 1000,
@@ -85,6 +85,17 @@ test("streams archived CSV one chunk at a time with progress", async () => {
   assert.equal(output.trimEnd().split("\n").length, 4);
   assert.match(output, /capture_id,trigger,source/);
   assert.match(output, /42,manual,5v_out/);
+  assert.match(output, /sample_sequence/);
+  assert.match(output, /5v_out_adc_raw/);
+  assert.match(output, /5v_out_sense_mv/);
+  const [header, firstRow] = output.trimEnd().split("\n");
+  const columns = header.split(",");
+  const values = firstRow.split(",");
+  assert.equal(values[columns.indexOf("5v_out_adc_raw")], "120");
+  assert.equal(values[columns.indexOf("5v_out_sense_mv")], "10");
+  assert.equal(values[columns.indexOf("5v_out_signal")], "5v_out-sense");
+  assert.equal(values[columns.indexOf("12v_out_current_ua")], "0");
+  assert.equal(values[columns.indexOf("12v_out_reported_current_ua")], "1000");
 });
 
 test("streams NDJSON without building an all-sample rows array", async () => {
@@ -103,6 +114,11 @@ test("streams NDJSON without building an all-sample rows array", async () => {
   const rows = writes.join("").trimEnd().split("\n").map((line) => JSON.parse(line));
   assert.equal(rows.length, 3);
   assert.deepEqual(rows.map((row) => row.relative_us), [-10_000, 0, 10_000]);
+  assert.equal(rows[0].sample_sequence, 10);
+  assert.equal(rows[0].readings[0].signal, "5v_out-sense");
+  assert.equal(rows[0].readings[0].raw, 120);
+  assert.equal(rows[0].readings[0].mv, 10);
+  assert.equal(rows[0].readings[0].reported_current_ua, 1000);
 });
 
 test("streams caller metadata for startup-stage exports", async () => {

@@ -37,7 +37,7 @@ function sample(offset: number): CaptureSample {
       name,
       signal: `${name}-signal`,
       power_enabled: index !== 1,
-      raw: 123 + index,
+      raw: index === 2 ? null : 123 + index,
       mv: 12 + index,
       sensor_channel: "current",
       unit: "uA",
@@ -81,6 +81,7 @@ test("stores long capture data in ordered compact chunks", async () => {
   assert.equal(restored[1].triggered, true);
   assert.equal(restored[3].readings[0].current_ua, 3000);
   assert.equal(restored[3].readings[1].power_enabled, false);
+  assert.deepEqual(restored[3].readings, sample(3).readings);
   assert.deepEqual((await listRecentPowerCaptures()).map((item) => item.archiveId), [
     "archive-ordered",
   ]);
@@ -202,7 +203,47 @@ test("marks a persisted capture with dropped samples as incomplete", async () =>
 
 test("estimates bounded binary archive capacity with a safety margin", () => {
   assert.equal(estimatePowerCaptureBytes(0), 0);
-  assert.equal(estimatePowerCaptureBytes(1000), 43_200);
+  assert.equal(estimatePowerCaptureBytes(1000), 76_800);
+});
+
+test("continues to read version 2 chunks without inventing ADC diagnostics", async () => {
+  await clearPowerCaptureArchives({ includeRecording: true });
+  const metadata = capture("archive-v2");
+  await beginPowerCaptureArchive(metadata);
+
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open("radxa-linkr-debugger-power-captures", 1);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  const transaction = database.transaction("chunks", "readwrite");
+  transaction.objectStore("chunks").put({
+    archiveId: metadata.archiveId,
+    index: 0,
+    version: 2,
+    channels: ["5v_out"],
+    sampleCount: 1,
+    offsets: new Uint32Array([7]),
+    flags: new Uint8Array([1]),
+    sequences: new Uint32Array([107]),
+    deviceTimesUs: new Float64Array([1_070_000]),
+    enabledMasks: new Uint32Array([1]),
+    currentsUa: new Int32Array([12_345]),
+    estimatedBytes: 64,
+  });
+  await new Promise<void>((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+  database.close();
+
+  const [restored] = await readPowerCaptureSamples(metadata.archiveId!);
+  assert.equal(restored.sampleSequence, 107);
+  assert.equal(restored.readings[0].current_ua, 12_345);
+  assert.equal(restored.readings[0].raw, null);
+  assert.equal(restored.readings[0].mv, 0);
+  assert.equal(restored.readings[0].signal, "");
 });
 
 test("deletes capture metadata and all raw chunks", async () => {

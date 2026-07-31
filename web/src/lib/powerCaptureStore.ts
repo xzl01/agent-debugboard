@@ -49,7 +49,7 @@ interface LegacyCaptureChunkRecord {
   samples: CompactSample[];
 }
 
-interface BinaryCaptureChunkRecord {
+interface BinaryCaptureChunkRecordV2 {
   archiveId: string;
   index: number;
   version: 2;
@@ -64,7 +64,35 @@ interface BinaryCaptureChunkRecord {
   estimatedBytes: number;
 }
 
-type CaptureChunkRecord = LegacyCaptureChunkRecord | BinaryCaptureChunkRecord;
+interface CaptureChannelMetadata {
+  name: string;
+  signal: string;
+  sensorChannel: string;
+  unit: string;
+}
+
+interface BinaryCaptureChunkRecordV3 {
+  archiveId: string;
+  index: number;
+  version: 3;
+  channels: CaptureChannelMetadata[];
+  sampleCount: number;
+  offsets: Uint32Array;
+  flags: Uint8Array;
+  sequences: Uint32Array;
+  deviceTimesUs: Float64Array;
+  enabled: Uint8Array;
+  rawValid: Uint8Array;
+  raw: Int32Array;
+  millivolts: Int32Array;
+  currentsUa: Int32Array;
+  estimatedBytes: number;
+}
+
+type CaptureChunkRecord =
+  | LegacyCaptureChunkRecord
+  | BinaryCaptureChunkRecordV2
+  | BinaryCaptureChunkRecordV3;
 
 export interface PowerCaptureChunkWriteResult {
   chunkCount: number;
@@ -102,7 +130,7 @@ export interface PowerCaptureArchiveInfo {
   error?: string;
 }
 
-const ESTIMATED_SAMPLE_BYTES = 36;
+const ESTIMATED_SAMPLE_BYTES = 64;
 const STORAGE_SAFETY_FACTOR = 1.2;
 const MINIMUM_STORAGE_RESERVE_BYTES = 100 * 1024 * 1024;
 const STORAGE_RESERVE_RATIO = 0.1;
@@ -171,21 +199,34 @@ function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
-function isBinaryChunk(chunk: CaptureChunkRecord): chunk is BinaryCaptureChunkRecord {
+function isBinaryChunkV2(chunk: CaptureChunkRecord): chunk is BinaryCaptureChunkRecordV2 {
   return "version" in chunk && chunk.version === 2;
+}
+
+function isBinaryChunkV3(chunk: CaptureChunkRecord): chunk is BinaryCaptureChunkRecordV3 {
+  return "version" in chunk && chunk.version === 3;
 }
 
 function compactSamples(
   archiveId: string,
   index: number,
   samples: CaptureSample[],
-): BinaryCaptureChunkRecord {
-  const channels = samples[0]?.readings.map((reading) => reading.name) ?? [];
+): BinaryCaptureChunkRecordV3 {
+  const channels = samples[0]?.readings.map((reading) => ({
+    name: reading.name,
+    signal: reading.signal,
+    sensorChannel: reading.sensor_channel,
+    unit: reading.unit,
+  })) ?? [];
   const offsets = new Uint32Array(samples.length);
   const flags = new Uint8Array(samples.length);
   const sequences = new Uint32Array(samples.length);
   const deviceTimesUs = new Float64Array(samples.length);
-  const enabledMasks = new Uint32Array(samples.length);
+  const valueCount = samples.length * channels.length;
+  const enabled = new Uint8Array(valueCount);
+  const rawValid = new Uint8Array(valueCount);
+  const raw = new Int32Array(valueCount);
+  const millivolts = new Int32Array(valueCount);
   const currentsUa = new Int32Array(samples.length * channels.length);
 
   samples.forEach((sample, sampleIndex) => {
@@ -193,36 +234,68 @@ function compactSamples(
     flags[sampleIndex] = sample.triggered ? 1 : 0;
     sequences[sampleIndex] = Math.max(0, Math.round(sample.sampleSequence));
     deviceTimesUs[sampleIndex] = sample.deviceTimeUs;
-    let enabledMask = 0;
     channels.forEach((channel, channelIndex) => {
-      const reading = sample.readings.find((item) => item.name === channel);
-      if (reading?.power_enabled && channelIndex < 32) enabledMask |= (1 << channelIndex) >>> 0;
-      currentsUa[sampleIndex * channels.length + channelIndex] = Math.round(reading?.current_ua ?? 0);
+      const reading = sample.readings.find((item) => item.name === channel.name);
+      const valueIndex = sampleIndex * channels.length + channelIndex;
+      enabled[valueIndex] = reading?.power_enabled ? 1 : 0;
+      if (reading?.raw != null) {
+        rawValid[valueIndex] = 1;
+        raw[valueIndex] = Math.round(reading.raw);
+      }
+      millivolts[valueIndex] = Math.round(reading?.mv ?? 0);
+      currentsUa[valueIndex] = Math.round(reading?.current_ua ?? 0);
     });
-    enabledMasks[sampleIndex] = enabledMask >>> 0;
   });
 
   const estimatedBytes = offsets.byteLength + flags.byteLength + sequences.byteLength +
-    deviceTimesUs.byteLength + enabledMasks.byteLength + currentsUa.byteLength +
-    channels.reduce((total, channel) => total + channel.length * 2, 0) + 128;
+    deviceTimesUs.byteLength + enabled.byteLength + rawValid.byteLength + raw.byteLength +
+    millivolts.byteLength + currentsUa.byteLength + channels.reduce(
+      (total, channel) => total +
+        (channel.name.length + channel.signal.length + channel.sensorChannel.length + channel.unit.length) * 2,
+      0,
+    ) + 192;
   return {
     archiveId,
     index,
-    version: 2,
+    version: 3,
     channels,
     sampleCount: samples.length,
     offsets,
     flags,
     sequences,
     deviceTimesUs,
-    enabledMasks,
+    enabled,
+    rawValid,
+    raw,
+    millivolts,
     currentsUa,
     estimatedBytes,
   };
 }
 
 function expandChunk(chunk: CaptureChunkRecord): CaptureSample[] {
-  if (isBinaryChunk(chunk)) {
+  if (isBinaryChunkV3(chunk)) {
+    return Array.from({ length: chunk.sampleCount }, (_, sampleIndex) => ({
+      offset: chunk.offsets[sampleIndex] ?? 0,
+      triggered: (chunk.flags[sampleIndex] ?? 0) !== 0,
+      sampleSequence: chunk.sequences[sampleIndex] ?? 0,
+      deviceTimeUs: chunk.deviceTimesUs[sampleIndex] ?? 0,
+      readings: chunk.channels.map((channel, channelIndex) => {
+        const valueIndex = sampleIndex * chunk.channels.length + channelIndex;
+        return {
+          name: channel.name,
+          signal: channel.signal,
+          power_enabled: (chunk.enabled[valueIndex] ?? 0) !== 0,
+          raw: (chunk.rawValid[valueIndex] ?? 0) !== 0 ? chunk.raw[valueIndex] ?? 0 : null,
+          mv: chunk.millivolts[valueIndex] ?? 0,
+          sensor_channel: channel.sensorChannel,
+          unit: channel.unit,
+          current_ua: chunk.currentsUa[valueIndex] ?? 0,
+        };
+      }),
+    }));
+  }
+  if (isBinaryChunkV2(chunk)) {
     return Array.from({ length: chunk.sampleCount }, (_, sampleIndex) => ({
       offset: chunk.offsets[sampleIndex] ?? 0,
       triggered: (chunk.flags[sampleIndex] ?? 0) !== 0,
@@ -298,12 +371,14 @@ function archiveInfo(record: CaptureArchiveRecord): PowerCaptureArchiveInfo {
 
 function chunkSampleCount(chunk: CaptureChunkRecord | undefined): number {
   if (!chunk) return 0;
-  return isBinaryChunk(chunk) ? chunk.sampleCount : chunk.samples.length;
+  return isBinaryChunkV2(chunk) || isBinaryChunkV3(chunk)
+    ? chunk.sampleCount
+    : chunk.samples.length;
 }
 
 function chunkEstimatedBytes(chunk: CaptureChunkRecord | undefined): number {
   if (!chunk) return 0;
-  if (isBinaryChunk(chunk)) return chunk.estimatedBytes;
+  if (isBinaryChunkV2(chunk) || isBinaryChunkV3(chunk)) return chunk.estimatedBytes;
   return chunk.samples.length * ESTIMATED_SAMPLE_BYTES * 3;
 }
 

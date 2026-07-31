@@ -86,14 +86,23 @@ function exportRow(
     triggered: sample.triggered,
     device_t_mono_us: sample.deviceTimeUs,
     relative_us: sample.deviceTimeUs - triggerTime,
+    sample_sequence: sample.sampleSequence,
     ...extras,
     readings: sample.readings.map((reading) => {
       const voltage = nominalVoltage(reading.name) ?? 0;
       const currentUa = reading.power_enabled ? reading.current_ua : 0;
       return {
         name: reading.name,
+        signal: reading.signal,
+        sensor_channel: reading.sensor_channel,
+        unit: reading.unit,
         power_enabled: reading.power_enabled,
+        raw: reading.raw,
+        mv: reading.mv,
+        reported_current_ua: reading.current_ua,
         current_ua: currentUa,
+        current_a: currentUa / 1_000_000,
+        nominal_voltage_v: voltage,
         power_w: currentUa / 1_000_000 * voltage,
       };
     }),
@@ -108,6 +117,17 @@ function csvHeader(options?: PowerCaptureExportOptions): string {
     ...USER_POWER_RAILS.flatMap((railName) => [
       `${railName}_current_ua`,
       `${railName}_power_w`,
+    ]),
+    "sample_sequence",
+    ...USER_POWER_RAILS.flatMap((railName) => [
+      `${railName}_signal`,
+      `${railName}_sensor_channel`,
+      `${railName}_unit`,
+      `${railName}_power_enabled`,
+      `${railName}_adc_raw`,
+      `${railName}_sense_mv`,
+      `${railName}_reported_current_ua`,
+      `${railName}_nominal_voltage_v`,
     ]),
   ].map(csvField).join(",") + "\n";
 }
@@ -144,6 +164,17 @@ function serializeSamples(
       ...USER_POWER_RAILS.flatMap((railName) => [
         values.get(railName)?.current_ua ?? 0,
         values.get(railName)?.power_w ?? 0,
+      ]),
+      row.sample_sequence,
+      ...USER_POWER_RAILS.flatMap((railName) => [
+        values.get(railName)?.signal ?? "",
+        values.get(railName)?.sensor_channel ?? "",
+        values.get(railName)?.unit ?? "",
+        values.get(railName)?.power_enabled ?? false,
+        values.get(railName)?.raw ?? null,
+        values.get(railName)?.mv ?? 0,
+        values.get(railName)?.reported_current_ua ?? 0,
+        values.get(railName)?.nominal_voltage_v ?? 0,
       ]),
     ].map(csvField).join(",");
   }).join("\n") + (samples.length > 0 ? "\n" : "");
