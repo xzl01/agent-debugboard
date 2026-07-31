@@ -1,8 +1,9 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import {
   Activity,
   CheckCircle,
   Clock,
+  Download,
   FileJson,
   FileSpreadsheet,
   FileText,
@@ -17,10 +18,13 @@ import type {
   StepResult,
   SerialLogEntry,
   AdcSampleEntry,
+  PowerCaptureEvidenceEntry,
 } from "@/lib/testScript";
 import { isRunSuccessful } from "@/lib/testScript";
 import { downloadBlob, formatMs } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { buildPowerChartAxis, formatPowerChartTick } from "./PowerChartAxis";
+import { exportPowerCaptureToFile } from "@/lib/powerCaptureExport";
 
 function TimelineBar({
   results,
@@ -75,10 +79,12 @@ function PowerChart({
   samples,
   results,
   startedAtMs,
+  preview = false,
 }: {
   samples: AdcSampleEntry[];
   results: StepResult[];
   startedAtMs: number;
+  preview?: boolean;
 }) {
   const { t } = useI18n();
   if (samples.length < 2) return null;
@@ -99,7 +105,11 @@ function PowerChart({
       .sort((a, b) => a.x - b.x),
   }));
   const allPoints = series.flatMap((entry) => entry.points);
-  const maxY = allPoints.reduce((max, point) => Math.max(max, point.y), 0.1);
+  const chartAxis = buildPowerChartAxis(
+    "current",
+    allPoints.reduce((max, point) => Math.max(max, point.y), 0.001),
+  );
+  const maxY = chartAxis.maximum;
   const maxX = allPoints.reduce((max, point) => Math.max(max, point.x), 0);
   if (maxX <= 0) return null;
 
@@ -119,8 +129,16 @@ function PowerChart({
       <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
         <Activity size={10} className="mr-1 inline" />
         {t("test.report.powerChart")}
+        {preview && <span className="ml-1 font-normal normal-case">· {t("test.report.preview")}</span>}
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 150 }} role="img" aria-label={t("test.report.powerChart")}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full"
+        style={{ maxHeight: 150 }}
+        role="img"
+        aria-label={`${t("test.report.powerChart")} (${chartAxis.unit})`}
+      >
+        <title>{`${t("test.report.powerChart")} (${chartAxis.unit})`}</title>
 
         {results.map((r) => {
           const x1 = sx(r.startedAtMs - startedAtMs);
@@ -139,8 +157,33 @@ function PowerChart({
           );
         })}
 
-        <line x1={pad.left} y1={pad.top + plotH} x2={pad.left + plotW} y2={pad.top + plotH} stroke="currentColor" strokeOpacity={0.1} />
-        <line x1={pad.left} y1={pad.top} x2={pad.left} y2={pad.top + plotH} stroke="currentColor" strokeOpacity={0.1} />
+        {chartAxis.ticks.map((tick, index) => {
+          const y = sy(tick);
+          return (
+            <g key={tick}>
+              <line
+                x1={pad.left}
+                y1={y}
+                x2={pad.left + plotW}
+                y2={y}
+                stroke="currentColor"
+                strokeDasharray={index === chartAxis.ticks.length - 1 ? undefined : "3 5"}
+                strokeOpacity={index === chartAxis.ticks.length - 1 ? 0.16 : 0.1}
+              />
+              <text
+                x={pad.left - 4}
+                y={y + 3}
+                fill="currentColor"
+                fontSize="8"
+                opacity="0.55"
+                textAnchor="end"
+              >
+                {formatPowerChartTick(tick, chartAxis.multiplier)}{index === 0 ? ` ${chartAxis.unit}` : ""}
+              </text>
+            </g>
+          );
+        })}
+        <line x1={pad.left} y1={pad.top} x2={pad.left} y2={pad.top + plotH} stroke="currentColor" strokeOpacity={0.16} />
 
         {series.map((entry, index) => (
           <path
@@ -157,12 +200,6 @@ function PowerChart({
         <text x={pad.left} y={H - 2} fill="currentColor" fontSize="8" opacity={0.4}>0s</text>
         <text x={W - pad.right} y={H - 2} fill="currentColor" fontSize="8" opacity={0.4} textAnchor="end">
           {formatMs(maxX)}
-        </text>
-        <text x={pad.left - 3} y={pad.top + 4} fill="currentColor" fontSize="8" opacity={0.4} textAnchor="end">
-          {maxY.toFixed(1)}
-        </text>
-        <text x={pad.left - 3} y={pad.top + plotH} fill="currentColor" fontSize="8" opacity={0.4} textAnchor="end">
-          0
         </text>
       </svg>
       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
@@ -316,12 +353,14 @@ export interface TestReportProps {
   summary: RunSummary;
   serialLogs: SerialLogEntry[];
   adcSamples: AdcSampleEntry[];
+  powerCaptures: PowerCaptureEvidenceEntry[];
   onReRun: () => void;
 }
 
-export function TestReport({ script, summary, serialLogs, adcSamples, onReRun }: TestReportProps) {
+export function TestReport({ script, summary, serialLogs, adcSamples, powerCaptures, onReRun }: TestReportProps) {
   const { t } = useI18n();
   const passed = isRunSuccessful(summary);
+  const [captureExportError, setCaptureExportError] = useState<string | null>(null);
 
   const handleExportJson = () => {
     const report = {
@@ -341,6 +380,17 @@ export function TestReport({ script, summary, serialLogs, adcSamples, onReRun }:
       },
       results: summary.results,
       adc_samples: adcSamples,
+      power_captures: powerCaptures.map(({ stepId, rail, capture }) => ({
+        step_id: stepId,
+        rail,
+        capture_id: capture.id,
+        archive_id: capture.archiveId ?? null,
+        sample_count: capture.sampleCount ?? capture.samples.length,
+        dropped_samples: capture.droppedSamples ?? 0,
+        incomplete: capture.incomplete ?? false,
+        interruption_reason: capture.interruptionReason ?? null,
+        summaries: capture.summaries ?? null,
+      })),
       serial_log: serialLogs,
     };
     downloadBlob(
@@ -436,7 +486,42 @@ export function TestReport({ script, summary, serialLogs, adcSamples, onReRun }:
           {summary.infrastructureError && <div className="mt-1 break-words">{summary.infrastructureError}</div>}
         </div>
       )}
-      <PowerChart samples={adcSamples} results={summary.results} startedAtMs={summary.startedAtMs} />
+      {powerCaptures.length > 0 && (
+        <div className="rounded-xl border border-line/50 bg-panel2/30 p-3">
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
+            <Download size={10} />
+            {t("test.report.powerEvidence")}
+          </div>
+          <div className="space-y-2">
+            {powerCaptures.map(({ stepId, rail, capture }) => (
+              <div key={`${stepId}-${capture.id}`} className="flex flex-wrap items-center gap-2 rounded-lg border border-line/60 bg-panel px-2.5 py-2 text-[10px]">
+                <span className="font-mono text-ink">{stepId}</span>
+                <span className="text-ink-dim">{rail} · {(capture.sampleCount ?? capture.samples.length).toLocaleString()} {t("test.report.samples")}</span>
+                {(capture.incomplete || (capture.droppedSamples ?? 0) > 0) && (
+                  <Badge tone="danger">{t("test.report.incomplete")}</Badge>
+                )}
+                <span className="flex-1" />
+                {(["csv", "ndjson"] as const).map((format) => (
+                  <Button
+                    key={format}
+                    variant="ghost"
+                    className="min-h-7 px-2 py-1 text-[10px]"
+                    onClick={() => void exportPowerCaptureToFile(capture, format, undefined, {
+                      fileName: `test-${stepId}-power.${format}`,
+                    }).then(() => setCaptureExportError(null)).catch((reason) => {
+                      setCaptureExportError(reason instanceof Error ? reason.message : String(reason));
+                    })}
+                  >
+                    <Download size={11} />{format.toUpperCase()}
+                  </Button>
+                ))}
+              </div>
+            ))}
+          </div>
+          {captureExportError && <div className="mt-2 text-[10px] text-danger">{captureExportError}</div>}
+        </div>
+      )}
+      <PowerChart samples={adcSamples} results={summary.results} startedAtMs={summary.startedAtMs} preview={powerCaptures.length > 0} />
       <ResultsTable results={summary.results} startedAtMs={summary.startedAtMs} />
       <SerialLogPanel logs={serialLogs} startedAtMs={summary.startedAtMs} />
     </div>

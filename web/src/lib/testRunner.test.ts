@@ -9,6 +9,7 @@ function callbacks(onComplete: (summary: RunSummary) => void): RunnerCallbacks {
     onStepResult() {},
     onSerialLog() {},
     onAdcSample() {},
+    onPowerCapture() {},
     onComplete,
     onError(error) {
       throw new Error(error);
@@ -345,10 +346,33 @@ describe("createTestRunner", () => {
     }
   });
 
-  it("rejects captures larger than the RP235x firmware capacity before arming", async () => {
+  it("streams long captures on the host instead of applying a firmware sample cap", async () => {
     const board = baseBoard() as any;
-    let armCalls = 0;
-    board.armCapture = async () => { armCalls += 1; };
+    let armedConfig: Record<string, unknown> | null = null;
+    board.armCapture = async (config: Record<string, unknown>) => {
+      armedConfig = config;
+      setTimeout(() => {
+        board.captures = [{
+          id: 2,
+          trigger: "manual",
+          source: "5v_out",
+          edge: "rising",
+          thresholdUa: 0,
+          rateHz: 100,
+          preSamples: 0,
+          postSamples: 1,
+          triggerOffset: 0,
+          capturedAt: Date.now(),
+          samples: [{
+            offset: 0,
+            triggered: true,
+            sampleSequence: 1,
+            deviceTimeUs: 1_000,
+            readings: [{ name: "5v_out", current_ua: 200_000 }],
+          }],
+        }];
+      }, 10);
+    };
     const script: TestScript = {
       schema: "linkr-test.v1",
       version: "1.0",
@@ -361,10 +385,126 @@ describe("createTestRunner", () => {
     };
 
     const summary = await run(script, board, serialWithCommandOutput(""));
-    assert.equal(summary.results.length, 0);
-    assert.match(summary.infrastructureError ?? "", /supports 2048/);
-    assert.equal(summary.completed, false);
-    assert.equal(armCalls, 0);
+    assert.equal(summary.results[0].status, "pass");
+    assert.equal(summary.completed, true);
+    assert.equal(armedConfig?.streaming, true);
+    assert.equal(armedConfig?.stopAfterMs, 30_000);
+  });
+
+  it("evaluates capture assertions from the complete host summary instead of the preview", async () => {
+    const board = baseBoard() as any;
+    board.armCapture = async () => {
+      setTimeout(() => {
+        board.captures = [{
+          id: 3,
+          trigger: "manual",
+          source: "5v_out",
+          edge: "rising",
+          thresholdUa: 0,
+          rateHz: 100,
+          preSamples: 0,
+          postSamples: 10_000,
+          triggerOffset: 0,
+          capturedAt: Date.now(),
+          samples: [],
+          summaries: {
+            "5v_out": {
+              nominalVoltageV: 5,
+              durationMs: 10_000,
+              averageCurrentA: 0.4,
+              peakCurrentA: 0.8,
+              averagePowerW: 2,
+              peakPowerW: 4,
+              milliampHours: 1.111,
+              wattHours: 0.005556,
+            },
+          },
+        }];
+      }, 10);
+    };
+    const script: TestScript = {
+      schema: "linkr-test.v1",
+      version: "1.0",
+      name: "capture summary",
+      steps: [{
+        id: "capture",
+        type: "capture",
+        params: { rail: "5v_out", trigger: "manual", duration_ms: 10_000 },
+        assert: { peak_current_max_a: 0.5 },
+      }],
+    };
+
+    const summary = await run(script, board, serialWithCommandOutput(""));
+    assert.equal(summary.results[0].status, "fail");
+    assert.match(
+      summary.results[0].assertionResult?.detail ?? "",
+      /peak 0\.800A exceeds max 0\.5A/,
+    );
+  });
+
+  it("fails incomplete captures as infrastructure errors and preserves their evidence", async () => {
+    const board = baseBoard() as any;
+    const incompleteCapture = {
+      id: 4,
+      trigger: "manual",
+      source: "5v_out",
+      edge: "rising",
+      thresholdUa: 0,
+      rateHz: 100,
+      preSamples: 0,
+      postSamples: 1,
+      triggerOffset: 0,
+      capturedAt: 0,
+      samples: [],
+      sampleCount: 500,
+      droppedSamples: 7,
+      incomplete: true,
+      interruptionReason: "host storage fell behind",
+      summaries: {
+        "5v_out": {
+          nominalVoltageV: 5,
+          durationMs: 5000,
+          averageCurrentA: 0.2,
+          peakCurrentA: 0.4,
+          averagePowerW: 1,
+          peakPowerW: 2,
+          milliampHours: 0.278,
+          wattHours: 0.001389,
+        },
+      },
+    };
+    board.armCapture = async () => {
+      setTimeout(() => {
+        board.captures = [{ ...incompleteCapture, capturedAt: Date.now() }];
+      }, 10);
+    };
+    const script: TestScript = {
+      schema: "linkr-test.v1",
+      version: "1.0",
+      name: "incomplete capture",
+      steps: [{
+        id: "capture",
+        type: "capture",
+        params: { rail: "5v_out", trigger: "manual", duration_ms: 100 },
+      }],
+    };
+    const evidence: unknown[] = [];
+    let summary: RunSummary | null = null;
+    const runnerCallbacks = callbacks((value) => { summary = value; });
+    runnerCallbacks.onPowerCapture = (value) => evidence.push(value);
+    const runner = createTestRunner(
+      script,
+      { current: board } as never,
+      { current: serialWithCommandOutput("") } as never,
+      runnerCallbacks,
+    );
+    await runner.start();
+
+    assert.ok(summary);
+    assert.equal((summary as RunSummary).results[0].status, "error");
+    assert.equal((summary as RunSummary).completed, false);
+    assert.match((summary as RunSummary).infrastructureError ?? "", /host storage fell behind/);
+    assert.equal(evidence.length, 1);
   });
 
   it("executes multi-step scripts and accumulates results", async () => {

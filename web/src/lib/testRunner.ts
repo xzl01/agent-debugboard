@@ -2,6 +2,7 @@ import type { RefObject } from "react";
 import type { UseBoard } from "../hooks/useBoard";
 import type { SerialAutomationHandle, SerialChannelId } from "../components/SerialCard";
 import type { PowerCapture } from "./types";
+import { summarizePowerCapture } from "./powerCapture.ts";
 import {
   commandEnvelope,
   commandMarker,
@@ -16,9 +17,9 @@ import type {
   RunSummary,
   ExecutionStep,
   CleanupSummary,
+  PowerCaptureEvidenceEntry,
 } from "./testScript";
 import { buildExecutionPlan } from "./testScript.ts";
-import { POWER_CAPTURE_SAMPLE_CAPACITY } from "./power.ts";
 
 export interface RunnerCallbacks {
   onStepStart(stepId: string): void;
@@ -31,6 +32,7 @@ export interface RunnerCallbacks {
     timestampMs: number,
   ): void;
   onAdcSample(stepId: string, channel: string, currentUa: number, timestampMs: number): void;
+  onPowerCapture(evidence: PowerCaptureEvidenceEntry): void;
   onComplete(summary: RunSummary): void;
   onError(error: string): void;
 }
@@ -82,12 +84,6 @@ function validateExecutionPreconditions(
       const params = step.params as import("./testScript").CaptureParams;
       if (!Number.isFinite(params.duration_ms) || params.duration_ms <= 0) {
         throw new Error(`capture duration for ${step.sourceStepId} must be greater than zero`);
-      }
-      const samples = Math.max(2, Math.ceil((params.duration_ms / 1000) * 100));
-      if (samples > POWER_CAPTURE_SAMPLE_CAPACITY) {
-        throw new Error(
-          `capture ${step.sourceStepId} requires ${samples} samples, but this firmware supports ${POWER_CAPTURE_SAMPLE_CAPACITY}`,
-        );
       }
       if (params.trigger === "gpio") {
         throw new Error(`GPIO-triggered capture is not supported by step ${step.sourceStepId}`);
@@ -340,6 +336,7 @@ export function createTestRunner(
 ): RunnerHandle {
   let aborted = false;
   let captureActive = false;
+  let captureInfrastructureError: string | undefined;
   const abortController = new AbortController();
   const { signal } = abortController;
   const results: StepResult[] = [];
@@ -535,11 +532,6 @@ export function createTestRunner(
             throw new Error("capture duration must be greater than zero");
           }
           const samples = Math.max(2, Math.ceil((durationMs / 1000) * rateHz));
-          if (samples > POWER_CAPTURE_SAMPLE_CAPACITY) {
-            throw new Error(
-              `capture requires ${samples} samples, but this firmware supports ${POWER_CAPTURE_SAMPLE_CAPACITY}`,
-            );
-          }
           const preSamples = Math.min(64, Math.floor(samples / 4));
           const captureStartedAt = Date.now();
           await getBoard().armCapture({
@@ -550,6 +542,8 @@ export function createTestRunner(
             rateHz,
             preSamples,
             postSamples: Math.max(1, samples - preSamples - 1),
+            streaming: true,
+            stopAfterMs: durationMs,
           });
           captureActive = true;
           if (trigger === "manual") {
@@ -568,17 +562,16 @@ export function createTestRunner(
             break;
           }
           captureActive = false;
-          const railReadings = capture.samples.flatMap((s) => {
-            const r = s.readings.find((rd) => rd.name === rail);
-            return r ? [r.current_ua] : [];
-          });
-          ctx.peakCurrentUa = railReadings.length > 0 ? railReadings.reduce((max, v) => Math.max(max, v), 0) : 0;
-          const nominalVoltage = rail.startsWith("12v") ? 12 : rail.startsWith("20v") ? 20 : 5;
-          const samplePeriodSeconds = 1 / Math.max(1, capture.rateHz);
-          ctx.energyUj = railReadings.reduce(
-            (sum, currentUa) => sum + currentUa * nominalVoltage * samplePeriodSeconds,
-            0,
-          );
+          callbacks.onPowerCapture({ stepId: step.executionId, rail, capture });
+          if (capture.incomplete || (capture.droppedSamples ?? 0) > 0) {
+            captureInfrastructureError = capture.interruptionReason ??
+              `power capture is incomplete (${capture.droppedSamples ?? 0} dropped samples)`;
+            error = captureInfrastructureError;
+            break;
+          }
+          const captureSummary = summarizePowerCapture(capture, rail);
+          ctx.peakCurrentUa = captureSummary.peakCurrentA * 1_000_000;
+          ctx.energyUj = captureSummary.wattHours * 3_600_000_000;
           const lastDeviceTimeUs = capture.samples.at(-1)?.deviceTimeUs ?? 0;
           for (const sample of capture.samples) {
             const reading = sample.readings.find((item) => item.name === rail);
@@ -774,6 +767,7 @@ export function createTestRunner(
       }
 
       const finishedAtMs = Date.now();
+      infrastructureError = infrastructureError ?? captureInfrastructureError;
       if (!cleanup.passed) {
         const cleanupError = cleanup.actions
           .filter((action) => action.status === "error")

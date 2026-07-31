@@ -5,7 +5,7 @@ import { TestRunnerView } from "./TestRunnerView";
 import { TestReport } from "./TestReport";
 import type { UseBoard } from "@/hooks/useBoard";
 import type { SerialAutomationHandle } from "./SerialCard";
-import type { TestScript, StepResult, StepStatus, RunSummary, AdcSampleEntry, SerialLogEntry } from "@/lib/testScript";
+import type { TestScript, StepResult, StepStatus, RunSummary, AdcSampleEntry, SerialLogEntry, PowerCaptureEvidenceEntry } from "@/lib/testScript";
 import { defaultScript, parseTestScript, serializeTestScript, tryBuildExecutionPlan } from "@/lib/testScript";
 import { createTestRunner, preflightTestRun, type RunnerCallbacks, type RunnerHandle } from "@/lib/testRunner";
 import { useI18n } from "@/lib/i18n";
@@ -47,12 +47,14 @@ export function TestAutomation({
   const [stepResults, setStepResults] = useState<StepResult[]>([]);
   const [serialLogs, setSerialLogs] = useState<SerialLogEntry[]>([]);
   const [adcSamples, setAdcSamples] = useState<AdcSampleEntry[]>([]);
+  const [powerCaptures, setPowerCaptures] = useState<PowerCaptureEvidenceEntry[]>([]);
   const [runSummary, setRunSummary] = useState<RunSummary | null>(null);
   const [startedAtMs, setStartedAtMs] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const serialLogsRef = useRef<SerialLogEntry[]>([]);
   const adcSamplesRef = useRef<AdcSampleEntry[]>([]);
+  const powerCapturesRef = useRef<PowerCaptureEvidenceEntry[]>([]);
   const runnerRef = useRef<RunnerHandle | null>(null);
   const runningRef = useRef(false);
   const boardRef = useRef(board);
@@ -98,6 +100,10 @@ export function TestAutomation({
           return next.length > 1000 ? next.slice(-1000) : next;
         });
       },
+      onPowerCapture: (evidence) => {
+        powerCapturesRef.current.push(evidence);
+        setPowerCaptures([...powerCapturesRef.current]);
+      },
       onComplete: (summary) => {
         taskControl.release("test");
         runningRef.current = false;
@@ -105,6 +111,7 @@ export function TestAutomation({
         setIsRunning(false);
         setSerialLogs([...serialLogsRef.current]);
         setAdcSamples([...adcSamplesRef.current]);
+        setPowerCaptures([...powerCapturesRef.current]);
         setRunSummary(summary);
         setTab("report");
       },
@@ -144,8 +151,10 @@ export function TestAutomation({
     setStepResults([]);
     serialLogsRef.current = [];
     adcSamplesRef.current = [];
+    powerCapturesRef.current = [];
     setSerialLogs([]);
     setAdcSamples([]);
+    setPowerCaptures([]);
     setRunSummary(null);
     const now = Date.now();
     setStartedAtMs(now);
@@ -253,6 +262,7 @@ export function TestAutomation({
             summary={runSummary}
             serialLogs={serialLogs}
             adcSamples={adcSamples}
+            powerCaptures={powerCaptures}
             onReRun={handleReRun}
           />
         )}

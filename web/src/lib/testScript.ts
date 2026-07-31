@@ -200,6 +200,12 @@ export interface AdcSampleEntry {
   timestampMs: number;
 }
 
+export interface PowerCaptureEvidenceEntry {
+  stepId: string;
+  rail: string;
+  capture: PowerCapture;
+}
+
 export interface SerialLogEntry {
   stepId: string;
   channel: SerialChannel;
@@ -888,3 +894,4 @@ export function defaultScript(): TestScript {
     steps: [],
   };
 }
+import type { PowerCapture } from "./types.ts";
