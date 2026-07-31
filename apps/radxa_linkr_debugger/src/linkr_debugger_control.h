@@ -55,6 +55,7 @@ int linkr_debugger_control_init(void);
 int linkr_debugger_watchdog_supervisor_start(void);
 
 const char *linkr_debugger_json_schema(void);
+const char *linkr_debugger_power_capture_protocol(void);
 const char *linkr_debugger_mcu_name(void);
 const char *linkr_debugger_reserved_gpios(void);
 const char *linkr_debugger_usb_mode(void);

@@ -17,12 +17,12 @@ export function PowerAnalysisWorkspace({
   captureState,
   captureProgress,
   captures,
-  captureCapacity,
   serialRef,
   onSetPower,
   onReadPower,
   onArmCapture,
   onTriggerCapture,
+  onStopCapture,
   onCancelCapture,
   onClearCaptures,
   taskControl,
@@ -30,15 +30,21 @@ export function PowerAnalysisWorkspace({
 }: {
   outputs: PowerOutput[];
   gpios: SafeGpio[];
-  captureState: "idle" | "connecting" | "armed" | "receiving";
-  captureProgress: { received: number; total: number } | null;
+  captureState: "idle" | "connecting" | "armed" | "recording" | "receiving";
+  captureProgress: {
+    received: number;
+    total: number;
+    persisted?: number;
+    queuedChunks?: number;
+    dropped?: number;
+  } | null;
   captures: PowerCapture[];
-  captureCapacity: number;
   serialRef: RefObject<SerialAutomationHandle>;
   onSetPower: (name: string, on: boolean) => Promise<void>;
   onReadPower: (name: string) => Promise<{ state: string; currentUa: number }>;
   onArmCapture: (config: CaptureConfig) => Promise<void>;
   onTriggerCapture: () => void;
+  onStopCapture: () => void;
   onCancelCapture: () => void;
   onClearCaptures: () => void;
   taskControl: AutomationTaskControl;
@@ -129,9 +135,9 @@ export function PowerAnalysisWorkspace({
             captures={captures}
             onArm={onArmCapture}
             onTrigger={onTriggerCapture}
+            onStop={onStopCapture}
             onCancel={onCancelCapture}
             onClear={onClearCaptures}
-            capacity={captureCapacity}
             defaultOpen
             showHeader={false}
           />
@@ -141,11 +147,11 @@ export function PowerAnalysisWorkspace({
           outputs={outputs}
           captureState={captureState}
           captures={captures}
-          captureCapacity={captureCapacity}
           serialRef={serialRef}
           onSetPower={onSetPower}
           onReadPower={onReadPower}
           onArmCapture={onArmCapture}
+          onStopCapture={onStopCapture}
           onCancelCapture={onCancelCapture}
           taskControl={taskControl}
         />

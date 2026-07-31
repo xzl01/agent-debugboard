@@ -14,6 +14,28 @@ import type {
   SwitchState,
   WatchdogStatus,
 } from "@/lib/types";
+import {
+  appendPowerCapturePreview,
+  appendPowerCaptureSummary,
+  createPowerCaptureAccumulator,
+  finalizePowerCaptureSummaries,
+  MAX_POWER_CAPTURE_PRE_TRIGGER_SAMPLES,
+  POWER_CAPTURE_PROTOCOL,
+  type PowerCaptureAccumulator,
+} from "@/lib/powerCapture";
+import {
+  appendPowerCaptureChunk,
+  beginPowerCaptureArchive,
+  clearPowerCaptureArchives,
+  deletePowerCaptureArchive,
+  ensurePowerCaptureStorageCapacity,
+  finishPowerCaptureArchive,
+  interruptPowerCaptureArchive,
+  listRecentPowerCaptures,
+  POWER_CAPTURE_LEASE_DURATION_MS,
+  recoverStalePowerCaptureArchives,
+  renewPowerCaptureArchiveLease,
+} from "@/lib/powerCaptureStore";
 
 const EMPTY: BoardSnapshot = {
   powerOutputs: [],
@@ -170,6 +192,10 @@ function mapStatus(status: unknown, adc: AdcReading[]): BoardSnapshot {
   return {
     mcu: typeof record.mcu === "string" ? record.mcu : undefined,
     usb: typeof record.usb === "string" ? record.usb : undefined,
+    powerCaptureProtocol:
+      typeof record.power_capture_protocol === "string"
+        ? record.power_capture_protocol
+        : undefined,
     powerOutputs,
     switches,
     gpios,
@@ -217,6 +243,10 @@ function mergeWsSnapshot(prev: BoardSnapshot, msg: any): BoardSnapshot {
 
   return {
     ...prev,
+    powerCaptureProtocol:
+      typeof record.power_capture_protocol === "string"
+        ? record.power_capture_protocol
+        : prev.powerCaptureProtocol,
     powerOutputs,
     switches: rawSwitches
       ? {
@@ -248,11 +278,18 @@ export interface UseBoard {
   setGpio: (identifier: string, direction: "input" | "output", value?: number) => Promise<void>;
   enterBootloader: () => Promise<void>;
   enterTargetRecovery: (mode: api.TargetRecoveryMode, rail: string) => Promise<void>;
-  captureState: "idle" | "connecting" | "armed" | "receiving";
-  captureProgress: { received: number; total: number } | null;
+  captureState: "idle" | "connecting" | "armed" | "recording" | "receiving";
+  captureProgress: {
+    received: number;
+    total: number;
+    persisted?: number;
+    queuedChunks?: number;
+    dropped?: number;
+  } | null;
   captures: PowerCapture[];
   armCapture: (config: CaptureConfig) => Promise<void>;
   triggerCapture: () => void;
+  stopCapture: () => void;
   cancelCapture: () => void;
   clearCaptures: () => void;
 }
@@ -262,20 +299,293 @@ type CaptureBuilder = Omit<PowerCapture, "samples" | "capturedAt"> & {
   expected: number;
 };
 
+const TELEMETRY_STREAM_BATCH_SIZE = 20;
+const LIVE_TELEMETRY_RATE_HZ = 10;
+const LIVE_TELEMETRY_BATCH_SIZE = 2;
+const MAX_WEB_STREAMING_RATE_HZ = 500;
+const POWER_ARCHIVE_CHUNK_SAMPLES = 200;
+const POWER_PREVIEW_MAX_SAMPLES = 3000;
+const POWER_ARCHIVE_MAX_QUEUED_CHUNKS = 8;
+const POWER_CAPTURE_LEASE_RENEW_INTERVAL_MS = 10_000;
+
+interface StreamingCaptureBuilder {
+  config: CaptureConfig;
+  archiveId: string;
+  ownerId: string;
+  captureId: number;
+  capturedAt: number;
+  triggerDeviceTimeUs: number;
+  triggerSampleSequence: number;
+  triggerOffset: number;
+  triggered: boolean;
+  finishing: boolean;
+  archiveStarted: boolean;
+  preBuffer: CaptureSample[];
+  pendingChunk: CaptureSample[];
+  preview: CaptureSample[];
+  previewStride: number;
+  totalSamples: number;
+  droppedSamples: number;
+  lastStoredSequence: number;
+  chunkIndex: number;
+  writeChain: Promise<void>;
+  queuedChunks: number;
+  persistedSamples: number;
+  persistedBytes: number;
+  lastPersistedSequence: number;
+  writeError: Error | null;
+  accumulator: PowerCaptureAccumulator;
+  stopTimer: ReturnType<typeof setTimeout> | null;
+  lastProgressAt: number;
+  lastLeaseRenewedAt: number;
+}
+
+function createArchiveId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function readingFromRecord(reading: Record<string, unknown>): AdcReading {
+  return {
+    name: String(reading.name ?? ""),
+    signal: String(reading.signal ?? ""),
+    power_enabled: reading.power_enabled === true,
+    raw: typeof reading.raw === "number" ? reading.raw : null,
+    mv: Number(reading.mv ?? 0),
+    sensor_channel: "current",
+    unit: "uA",
+    current_ua: Number(reading.current_ua ?? 0),
+  };
+}
+
+function telemetrySamples(message: Record<string, unknown>): CaptureSample[] {
+  if (message.type === "telemetry" && Array.isArray(message.readings)) {
+    return [{
+      offset: 0,
+      triggered: false,
+      sampleSequence: Number(message.sample_sequence ?? message.sequence ?? 0),
+      deviceTimeUs: Number(message.device_t_mono_us ?? message.uptime_us ?? 0),
+      readings: message.readings.filter(isRecord).map(readingFromRecord),
+    }];
+  }
+  if (message.type !== "telemetry-batch" || !Array.isArray(message.samples)) return [];
+
+  const channels = Array.isArray(message.channels)
+    ? message.channels.filter(isRecord).map((channel) => ({
+        name: String(channel.name ?? ""),
+        signal: String(channel.signal ?? ""),
+      }))
+    : [];
+  return message.samples.filter(isRecord).map((sample) => {
+    const values = Array.isArray(sample.values) ? sample.values : [];
+    return {
+      offset: 0,
+      triggered: false,
+      sampleSequence: Number(sample.sample_sequence ?? sample.sequence ?? 0),
+      deviceTimeUs: Number(sample.device_t_mono_us ?? sample.uptime_us ?? 0),
+      readings: channels.map((channel, index) => {
+        const value = Array.isArray(values[index]) ? values[index] : [];
+        return {
+          name: channel.name,
+          signal: channel.signal,
+          power_enabled: Number(value[0] ?? 0) !== 0,
+          raw: Number(value[1] ?? 0),
+          mv: Number(value[2] ?? 0),
+          sensor_channel: "current",
+          unit: "uA",
+          current_ua: Number(value[3] ?? 0),
+        };
+      }),
+    };
+  });
+}
+
+function subscribeMessage(rateHz: number, batchSize: number) {
+  return {
+    type: "subscribe",
+    topic: "live",
+    rate_hz: Math.max(1, Math.min(1000, Math.round(rateHz))),
+    batch_size: Math.max(1, Math.min(TELEMETRY_STREAM_BATCH_SIZE, Math.round(batchSize))),
+    id: "web",
+  };
+}
+
+function appendCaptureSamples(builder: CaptureBuilder, frames: unknown[]) {
+  for (const frame of frames) {
+    if (!isRecord(frame)) continue;
+    const readings = Array.isArray(frame.readings) ? frame.readings : [];
+    builder.samples.push({
+      offset: Number(frame.offset ?? builder.samples.length),
+      triggered: frame.triggered === true,
+      sampleSequence: Number(frame.sample_sequence ?? 0),
+      deviceTimeUs: Number(frame.device_t_mono_us ?? 0),
+      readings: readings.filter(isRecord).map((reading) => ({
+        name: String(reading.name ?? ""),
+        signal: "",
+        power_enabled: reading.power_enabled === true,
+        raw: null,
+        mv: 0,
+        sensor_channel: "current",
+        unit: "A",
+        current_ua: Number(reading.current_ua ?? 0),
+      })),
+    });
+  }
+}
+
 function captureArmMessage(config: CaptureConfig) {
   return {
     type: "command",
     command: "capture_arm",
     id: "web-capture",
+    mode: POWER_CAPTURE_PROTOCOL,
     trigger: config.trigger,
     output: config.trigger === "gpio" ? "" : config.source,
     gpio: config.trigger === "gpio" ? config.source : "",
     edge: config.edge,
     threshold_ua: config.thresholdUa,
     rate_hz: config.rateHz,
-    pre_samples: config.preSamples,
-    post_samples: config.postSamples,
+    // Streaming mode uses the capture engine only as a precise trigger
+    // detector. The complete record flows through telemetry and is persisted
+    // by the host, so it is not bounded by firmware capture RAM.
+    // These fields are retained only so the Web UI can still arm older
+    // firmware. Trigger-only firmware ignores them; the host owns buffering.
+    pre_samples: 0,
+    post_samples: 1,
   };
+}
+
+function streamingCaptureRecord(
+  builder: StreamingCaptureBuilder,
+  incomplete = false,
+  interruptionReason?: string,
+): PowerCapture {
+  const hasDroppedSamples = builder.droppedSamples > 0;
+  const finalIncomplete = incomplete || hasDroppedSamples;
+  const finalInterruptionReason = interruptionReason ?? (hasDroppedSamples
+    ? `The debugger reported ${builder.droppedSamples} dropped samples`
+    : undefined);
+  return {
+    id: builder.captureId,
+    trigger: builder.config.trigger,
+    source: builder.config.source,
+    edge: builder.config.edge,
+    thresholdUa: builder.config.thresholdUa,
+    rateHz: builder.config.rateHz,
+    preSamples: builder.triggerOffset,
+    postSamples: Math.max(0, builder.totalSamples - builder.triggerOffset - 1),
+    triggerOffset: builder.preview.findIndex((sample) => sample.triggered),
+    samples: builder.preview,
+    capturedAt: builder.capturedAt,
+    archiveId: builder.archiveId,
+    sampleCount: builder.totalSamples,
+    droppedSamples: builder.droppedSamples,
+    triggerDeviceTimeUs: builder.triggerDeviceTimeUs,
+    incomplete: finalIncomplete,
+    interruptionReason: finalInterruptionReason,
+    summaries: finalizePowerCaptureSummaries(builder.accumulator),
+  };
+}
+
+function archiveLease(builder: StreamingCaptureBuilder) {
+  return {
+    ownerId: builder.ownerId,
+    leaseDurationMs: POWER_CAPTURE_LEASE_DURATION_MS,
+    droppedSamples: builder.droppedSamples,
+  };
+}
+
+function queueStreamingLeaseRenewal(
+  builder: StreamingCaptureBuilder,
+  onWriteError: (error: Error) => void,
+): void {
+  const now = Date.now();
+  if (
+    !builder.archiveStarted ||
+    builder.finishing ||
+    builder.writeError ||
+    now - builder.lastLeaseRenewedAt < POWER_CAPTURE_LEASE_RENEW_INTERVAL_MS
+  ) return;
+
+  builder.lastLeaseRenewedAt = now;
+  builder.writeChain = builder.writeChain
+    .then(() => renewPowerCaptureArchiveLease(builder.archiveId, archiveLease(builder)))
+    .catch((reason: unknown) => {
+      const error = reason instanceof Error ? reason : new Error(String(reason));
+      if (!builder.writeError) {
+        builder.writeError = error;
+        onWriteError(error);
+      }
+      throw error;
+    });
+}
+
+function queueStreamingSamples(
+  builder: StreamingCaptureBuilder,
+  incoming: CaptureSample[],
+  onWriteError: (error: Error) => void,
+): void {
+  if (builder.finishing || builder.writeError) return;
+  const normalized: CaptureSample[] = [];
+  for (const sample of incoming) {
+    if (sample.sampleSequence <= builder.lastStoredSequence) continue;
+    const offset = builder.totalSamples;
+    const triggered = builder.triggerOffset < 0 && (builder.triggerSampleSequence > 0
+      ? sample.sampleSequence >= builder.triggerSampleSequence
+      : sample.deviceTimeUs >= builder.triggerDeviceTimeUs);
+    if (triggered) builder.triggerOffset = offset;
+    const next = { ...sample, offset, triggered };
+    builder.lastStoredSequence = sample.sampleSequence;
+    builder.totalSamples += 1;
+    normalized.push(next);
+  }
+  if (normalized.length === 0) return;
+
+  appendPowerCaptureSummary(builder.accumulator, normalized);
+  builder.previewStride = appendPowerCapturePreview(
+    builder.preview,
+    normalized,
+    builder.previewStride,
+    POWER_PREVIEW_MAX_SAMPLES,
+  );
+  builder.pendingChunk.push(...normalized);
+  while (builder.pendingChunk.length >= POWER_ARCHIVE_CHUNK_SAMPLES) {
+    const chunk = builder.pendingChunk.splice(0, POWER_ARCHIVE_CHUNK_SAMPLES);
+    const index = builder.chunkIndex++;
+    if (builder.queuedChunks >= POWER_ARCHIVE_MAX_QUEUED_CHUNKS) {
+      const error = new Error(
+        "Host storage is not keeping up with the capture stream; recording was stopped before browser memory could grow without limit",
+      );
+      builder.writeError = error;
+      onWriteError(error);
+      return;
+    }
+    builder.queuedChunks += 1;
+    builder.writeChain = builder.writeChain
+      .then(() => appendPowerCaptureChunk(
+        builder.archiveId,
+        index,
+        chunk,
+        archiveLease(builder),
+      ))
+      .then((result) => {
+        builder.queuedChunks = Math.max(0, builder.queuedChunks - 1);
+        builder.persistedSamples = result.persistedSamples;
+        builder.persistedBytes = result.estimatedBytes;
+        builder.lastPersistedSequence = result.lastSequence;
+      })
+      .catch((reason: unknown) => {
+        builder.queuedChunks = Math.max(0, builder.queuedChunks - 1);
+        const error = reason instanceof Error ? reason : new Error(String(reason));
+        if (!builder.writeError) {
+          builder.writeError = error;
+          onWriteError(error);
+        }
+        throw error;
+      });
+  }
 }
 
 export function useBoard(): UseBoard {
@@ -286,16 +596,145 @@ export function useBoard(): UseBoard {
   const [loading, setLoading] = useState(true);
   const [auto, setAuto] = useState(true);
   const [live, setLive] = useState(false);
+  const [pageVisible, setPageVisible] = useState(
+    () => typeof document === "undefined" || !document.hidden
+  );
   const [captureState, setCaptureState] = useState<UseBoard["captureState"]>("idle");
   const [captureProgress, setCaptureProgress] = useState<UseBoard["captureProgress"]>(null);
   const [captures, setCaptures] = useState<PowerCapture[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const pendingCaptureRef = useRef<CaptureConfig | null>(null);
   const captureBuilderRef = useRef<CaptureBuilder | null>(null);
+  const streamingCaptureRef = useRef<StreamingCaptureBuilder | null>(null);
+  const captureOwnerRef = useRef(createArchiveId());
+  const lastTelemetryPreviewAtRef = useRef(0);
   const captureArmPromiseRef = useRef<{
     resolve: () => void;
     reject: (reason: Error) => void;
   } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void recoverStalePowerCaptureArchives().then(() => listRecentPowerCaptures()).then((archived) => {
+      if (!cancelled && archived.length > 0) setCaptures(archived);
+    }).catch(() => {
+      // IndexedDB is an optional browser capability. A recording attempt will
+      // surface an actionable error if persistent storage is unavailable.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const updateVisibility = () => {
+      // Do not interrupt an armed or active capture just because its tab was
+      // backgrounded. Once the capture is idle, the hidden tab can release its
+      // polling/WebSocket load and reconnect when it becomes visible again.
+      setPageVisible(!document.hidden || captureState !== "idle");
+    };
+    updateVisibility();
+    document.addEventListener("visibilitychange", updateVisibility);
+    return () => document.removeEventListener("visibilitychange", updateVisibility);
+  }, [captureState]);
+
+  const finalizeStreamingCapture = useCallback(async (
+    incomplete = false,
+    interruptionReason?: string,
+  ) => {
+    const builder = streamingCaptureRef.current;
+    if (!builder || !builder.triggered || builder.finishing) return;
+    builder.finishing = true;
+    if (builder.stopTimer) clearTimeout(builder.stopTimer);
+    builder.stopTimer = null;
+    setCaptureState("receiving");
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: "command",
+        command: "capture_stop",
+        id: "web-stop",
+      }));
+    }
+
+    if (!builder.writeError && builder.pendingChunk.length > 0) {
+      const chunk = builder.pendingChunk.splice(0);
+      const index = builder.chunkIndex++;
+      builder.queuedChunks += 1;
+      builder.writeChain = builder.writeChain
+        .then(() => appendPowerCaptureChunk(
+          builder.archiveId,
+          index,
+          chunk,
+          archiveLease(builder),
+        ))
+        .then((result) => {
+          builder.queuedChunks = Math.max(0, builder.queuedChunks - 1);
+          builder.persistedSamples = result.persistedSamples;
+          builder.persistedBytes = result.estimatedBytes;
+          builder.lastPersistedSequence = result.lastSequence;
+        });
+    }
+
+    try {
+      await builder.writeChain;
+      if (builder.writeError) throw builder.writeError;
+      const completed = streamingCaptureRecord(builder, incomplete, interruptionReason);
+      const archived = await finishPowerCaptureArchive(completed, builder.chunkIndex);
+      setCaptures((previous) => [...previous, archived.capture].slice(-4));
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      const partial = streamingCaptureRecord(builder, true, interruptionReason ?? message);
+      partial.sampleCount = builder.persistedSamples;
+      partial.samples = partial.samples.filter(
+        (sample) => sample.sampleSequence <= builder.lastPersistedSequence,
+      );
+      try {
+        const archived = await interruptPowerCaptureArchive(
+          builder.archiveId,
+          partial,
+          interruptionReason ?? message,
+          builder.writeError != null,
+        );
+        setCaptures((previous) => [...previous, archived.capture].slice(-4));
+      } catch {
+        // Opening the archive itself may have failed. The original storage
+        // error is more useful than a secondary metadata update failure.
+      }
+      setError(message);
+    } finally {
+      if (streamingCaptureRef.current === builder) streamingCaptureRef.current = null;
+      setCaptureProgress(null);
+      setCaptureState("idle");
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify(subscribeMessage(
+          LIVE_TELEMETRY_RATE_HZ,
+          LIVE_TELEMETRY_BATCH_SIZE,
+        )));
+      }
+    }
+  }, []);
+
+  const discardStreamingCapture = useCallback(() => {
+    const builder = streamingCaptureRef.current;
+    if (!builder) return;
+    builder.finishing = true;
+    if (builder.stopTimer) clearTimeout(builder.stopTimer);
+    builder.stopTimer = null;
+    streamingCaptureRef.current = null;
+    if (builder.archiveStarted) {
+      void builder.writeChain
+        .then(() => deletePowerCaptureArchive(builder.archiveId))
+        .catch(() => undefined);
+    }
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(subscribeMessage(
+        LIVE_TELEMETRY_RATE_HZ,
+        LIVE_TELEMETRY_BATCH_SIZE,
+      )));
+    }
+  }, []);
 
   const resetCapture = useCallback((reason?: Error) => {
     if (captureArmPromiseRef.current) {
@@ -304,9 +743,10 @@ export function useBoard(): UseBoard {
     }
     pendingCaptureRef.current = null;
     captureBuilderRef.current = null;
+    discardStreamingCapture();
     setCaptureProgress(null);
     setCaptureState("idle");
-  }, []);
+  }, [discardStreamingCapture]);
 
   const refresh = useCallback(async () => {
     try {
@@ -327,7 +767,7 @@ export function useBoard(): UseBoard {
 
   // Polling mode (default) or WebSocket live mode.
   useEffect(() => {
-    if (live) {
+    if (live && pageVisible) {
       let ws: WebSocket | null = null;
       let cancelled = false;
       let sessionId: number | null = null;
@@ -384,61 +824,153 @@ export function useBoard(): UseBoard {
         ws = new WebSocket(api.liveWebSocketUrl(session.ws_url));
         wsRef.current = ws;
         ws.onopen = () => {
-          ws?.send(JSON.stringify({ type: "subscribe", topic: "live", rate_hz: 10, id: "web" }));
+          const pending = pendingCaptureRef.current;
+          ws?.send(JSON.stringify(subscribeMessage(
+            pending?.streaming ? pending.rateHz : LIVE_TELEMETRY_RATE_HZ,
+            pending?.streaming ? TELEMETRY_STREAM_BATCH_SIZE : LIVE_TELEMETRY_BATCH_SIZE,
+          )));
           if (pendingCaptureRef.current) {
             ws?.send(JSON.stringify(captureArmMessage(pendingCaptureRef.current)));
           }
         };
         ws.onmessage = (ev) => {
           try {
-            const msg = JSON.parse(ev.data);
+            const parsed: unknown = JSON.parse(ev.data);
+            if (!isRecord(parsed)) return;
+            const msg = parsed;
             if (msg.type === "snapshot") {
               setSnapshot((prev) => mergeWsSnapshot(prev, msg));
-            } else if (msg.type === "telemetry" && Array.isArray(msg.readings)) {
-              setSnapshot((prev) => ({ ...prev, adc: msg.readings }));
+            } else if (msg.type === "telemetry" || msg.type === "telemetry-batch") {
+              const samples = telemetrySamples(msg);
+              const latestReadings = samples.at(-1)?.readings;
+              const now = performance.now();
+              if (latestReadings && now - lastTelemetryPreviewAtRef.current >= 100) {
+                lastTelemetryPreviewAtRef.current = now;
+                setSnapshot((prev) => ({ ...prev, adc: latestReadings }));
+              }
+
+              const streaming = streamingCaptureRef.current;
+              if (streaming && !streaming.finishing) {
+                streaming.droppedSamples += Math.max(0, Number(msg.dropped_samples ?? 0));
+                const stopForStorageError = (storageError: Error) => {
+                  setError(storageError.message);
+                  void finalizeStreamingCapture(true, storageError.message);
+                };
+                queueStreamingLeaseRenewal(streaming, stopForStorageError);
+                if (!streaming.triggered) {
+                  streaming.preBuffer.push(...samples);
+                  const keep = Math.max(
+                    streaming.config.preSamples + TELEMETRY_STREAM_BATCH_SIZE * 2,
+                    TELEMETRY_STREAM_BATCH_SIZE * 2,
+                  );
+                  if (streaming.preBuffer.length > keep) {
+                    streaming.preBuffer.splice(0, streaming.preBuffer.length - keep);
+                  }
+                } else {
+                  queueStreamingSamples(streaming, samples, stopForStorageError);
+                  if (now - streaming.lastProgressAt >= 250) {
+                    streaming.lastProgressAt = now;
+                    const expected = streaming.config.stopAfterMs
+                      ? streaming.triggerOffset + 1 + Math.round(
+                        streaming.config.stopAfterMs * streaming.config.rateHz / 1000,
+                      )
+                      : 0;
+                    setCaptureProgress({
+                      received: streaming.totalSamples,
+                      total: expected,
+                      persisted: streaming.persistedSamples,
+                      queuedChunks: streaming.queuedChunks,
+                      dropped: streaming.droppedSamples,
+                    });
+                  }
+                }
+              }
             } else if (msg.type === "result" && msg.command === "capture_arm") {
               pendingCaptureRef.current = null;
               setCaptureState("armed");
               captureArmPromiseRef.current?.resolve();
               captureArmPromiseRef.current = null;
-            } else if (msg.type === "capture_begin") {
+            } else if (msg.type === "capture_triggered") {
+              const streaming = streamingCaptureRef.current;
+              if (streaming) {
+                streaming.captureId = Number(msg.capture_id ?? Date.now());
+                streaming.capturedAt = Date.now();
+                streaming.triggerDeviceTimeUs = Number(msg.device_t_mono_us ?? 0);
+                streaming.triggerSampleSequence = Number(msg.sample_sequence ?? 0);
+                streaming.droppedSamples = Math.max(
+                  streaming.droppedSamples,
+                  Math.max(0, Number(msg.dropped_samples ?? 0)),
+                );
+                streaming.triggered = true;
+                streaming.archiveStarted = true;
+                const before = streaming.preBuffer
+                  .filter((sample) => streaming.triggerSampleSequence > 0
+                    ? sample.sampleSequence < streaming.triggerSampleSequence
+                    : sample.deviceTimeUs < streaming.triggerDeviceTimeUs)
+                  .slice(-streaming.config.preSamples);
+                const atOrAfter = streaming.preBuffer.filter(
+                  (sample) => streaming.triggerSampleSequence > 0
+                    ? sample.sampleSequence >= streaming.triggerSampleSequence
+                    : sample.deviceTimeUs >= streaming.triggerDeviceTimeUs,
+                );
+                streaming.preBuffer = [];
+                const initial = streamingCaptureRecord(streaming);
+                streaming.lastLeaseRenewedAt = Date.now();
+                streaming.writeChain = beginPowerCaptureArchive(initial, archiveLease(streaming));
+                queueStreamingSamples(streaming, [...before, ...atOrAfter], (storageError) => {
+                  setError(storageError.message);
+                  void finalizeStreamingCapture(true, storageError.message);
+                });
+                setCaptureState("recording");
+                setCaptureProgress({
+                  received: streaming.totalSamples,
+                  total: streaming.config.stopAfterMs
+                    ? streaming.triggerOffset + 1 + Math.round(
+                      streaming.config.stopAfterMs * streaming.config.rateHz / 1000,
+                    )
+                    : 0,
+                  persisted: streaming.persistedSamples,
+                  queuedChunks: streaming.queuedChunks,
+                  dropped: streaming.droppedSamples,
+                });
+                if (streaming.config.stopAfterMs && streaming.config.stopAfterMs > 0) {
+                  streaming.stopTimer = setTimeout(
+                    () => void finalizeStreamingCapture(),
+                    streaming.config.stopAfterMs,
+                  );
+                }
+              } else {
+                setCaptureState("recording");
+              }
+            } else if (msg.type === "result" && msg.command === "capture_stop") {
+              if (streamingCaptureRef.current) setCaptureState("receiving");
+            } else if (msg.type === "capture_begin" && !streamingCaptureRef.current) {
               captureBuilderRef.current = {
-                id: msg.capture_id,
-                trigger: msg.trigger,
-                source: msg.source,
-                edge: msg.edge,
-                thresholdUa: msg.threshold_ua,
-                rateHz: msg.rate_hz,
-                preSamples: msg.pre_samples,
-                postSamples: msg.post_samples,
-                triggerOffset: msg.trigger_offset,
-                expected: msg.sample_count,
+                id: Number(msg.capture_id ?? 0),
+                trigger: String(msg.trigger ?? ""),
+                source: String(msg.source ?? ""),
+                edge: String(msg.edge ?? ""),
+                thresholdUa: Number(msg.threshold_ua ?? 0),
+                rateHz: Number(msg.rate_hz ?? 0),
+                preSamples: Number(msg.pre_samples ?? 0),
+                postSamples: Number(msg.post_samples ?? 0),
+                triggerOffset: Number(msg.trigger_offset ?? 0),
+                expected: Number(msg.sample_count ?? 0),
                 samples: [],
               };
               setCaptureState("receiving");
-              setCaptureProgress({ received: 0, total: msg.sample_count });
-            } else if (msg.type === "capture_sample" && captureBuilderRef.current) {
+              setCaptureProgress({ received: 0, total: Number(msg.sample_count ?? 0) });
+            } else if (msg.type === "capture_sample" && captureBuilderRef.current && !streamingCaptureRef.current) {
               const builder = captureBuilderRef.current;
-              builder.samples.push({
-                offset: msg.offset,
-                triggered: !!msg.triggered,
-                sampleSequence: msg.sample_sequence,
-                deviceTimeUs: msg.device_t_mono_us,
-                readings: (msg.readings ?? []).map((reading: any) => ({
-                  name: reading.name,
-                  signal: "",
-                  power_enabled: !!reading.power_enabled,
-                  raw: null,
-                  mv: 0,
-                  sensor_channel: "current",
-                  unit: "A",
-                  current_ua: reading.current_ua ?? 0,
-                })),
-              });
+              appendCaptureSamples(builder, [msg]);
               if (builder.samples.length % 20 === 0 || builder.samples.length === builder.expected) {
                 setCaptureProgress({ received: builder.samples.length, total: builder.expected });
               }
-            } else if (msg.type === "capture_complete" && captureBuilderRef.current) {
+            } else if (msg.type === "capture_samples" && captureBuilderRef.current && !streamingCaptureRef.current && Array.isArray(msg.samples)) {
+              const builder = captureBuilderRef.current;
+              appendCaptureSamples(builder, msg.samples);
+              setCaptureProgress({ received: builder.samples.length, total: builder.expected });
+            } else if (msg.type === "capture_complete" && captureBuilderRef.current && !streamingCaptureRef.current) {
               const builder = captureBuilderRef.current;
               const completed: PowerCapture = {
                 id: builder.id,
@@ -457,8 +989,14 @@ export function useBoard(): UseBoard {
               captureBuilderRef.current = null;
               setCaptureProgress(null);
               setCaptureState("idle");
+            } else if (msg.type === "error" && msg.command === "capture_stop") {
+              if (streamingCaptureRef.current) {
+                const detail = isRecord(msg.error) ? msg.error : {};
+                setError(String(detail.message ?? "Power capture could not be stopped"));
+              }
             } else if (msg.type === "error" && msg.command === "capture") {
-              const message = msg.error?.message ?? "Power capture failed";
+              const detail = isRecord(msg.error) ? msg.error : {};
+              const message = String(detail.message ?? "Power capture failed");
               resetCapture(new Error(message));
               setError(message);
             }
@@ -468,7 +1006,11 @@ export function useBoard(): UseBoard {
         };
         ws.onerror = () => {
           if (!cancelled) {
-            resetCapture(new Error("Live WebSocket error"));
+            if (streamingCaptureRef.current?.triggered) {
+              void finalizeStreamingCapture(true, "Live WebSocket error");
+            } else {
+              resetCapture(new Error("Live WebSocket error"));
+            }
             setError("Live WebSocket error");
           }
         };
@@ -476,7 +1018,11 @@ export function useBoard(): UseBoard {
           if (wsRef.current === ws) wsRef.current = null;
           void releaseSession();
           if (!cancelled) {
-            resetCapture(new Error("Live WebSocket disconnected"));
+            if (streamingCaptureRef.current?.triggered) {
+              void finalizeStreamingCapture(true, "Live WebSocket disconnected");
+            } else {
+              resetCapture(new Error("Live WebSocket disconnected"));
+            }
             setLive(false);
             setError("Live WebSocket disconnected");
           }
@@ -485,7 +1031,11 @@ export function useBoard(): UseBoard {
 
       return () => {
         cancelled = true;
-        resetCapture();
+        if (streamingCaptureRef.current?.triggered) {
+          void finalizeStreamingCapture(true, "Live session ended before the recording stopped");
+        } else if (!streamingCaptureRef.current?.finishing) {
+          resetCapture();
+        }
         if (wsRef.current === ws) wsRef.current = null;
         if (ws && ws.readyState < WebSocket.CLOSING) {
           ws.close();
@@ -495,12 +1045,16 @@ export function useBoard(): UseBoard {
       };
     }
 
+    if (!pageVisible) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     refresh();
     if (!auto) return;
     const id = setInterval(refresh, 2000);
     return () => clearInterval(id);
-  }, [auto, live, refresh, resetCapture]);
+  }, [auto, finalizeStreamingCapture, live, pageVisible, refresh, resetCapture]);
 
   const setPower = useCallback(
     async (name: string, on: boolean) => {
@@ -566,20 +1120,88 @@ export function useBoard(): UseBoard {
     [live, refresh]
   );
 
-  const armCapture = useCallback((config: CaptureConfig) => new Promise<void>((resolve, reject) => {
+  const armCapture = useCallback(async (config: CaptureConfig) => {
+    if (config.streaming) {
+      if (snapshot.powerCaptureProtocol !== POWER_CAPTURE_PROTOCOL) {
+        const reported = snapshot.powerCaptureProtocol ?? "not reported";
+        const message = `Power capture requires firmware protocol ${POWER_CAPTURE_PROTOCOL}; the debugger reported ${reported}`;
+        setError(message);
+        throw new Error(message);
+      }
+      if (config.rateHz > MAX_WEB_STREAMING_RATE_HZ) {
+        const message = `Continuous Web recording is limited to ${MAX_WEB_STREAMING_RATE_HZ} Hz to keep USB telemetry and the control API responsive`;
+        setError(message);
+        throw new Error(message);
+      }
+      if (config.preSamples > MAX_POWER_CAPTURE_PRE_TRIGGER_SAMPLES) {
+        const message = `Pre-trigger history is limited to ${MAX_POWER_CAPTURE_PRE_TRIGGER_SAMPLES} samples to protect browser memory`;
+        setError(message);
+        throw new Error(message);
+      }
+      try {
+        await ensurePowerCaptureStorageCapacity({
+          rateHz: config.rateHz,
+          preSamples: config.preSamples,
+          stopAfterMs: config.stopAfterMs,
+        });
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setError(message);
+        throw reason;
+      }
+    }
+    return new Promise<void>((resolve, reject) => {
     captureArmPromiseRef.current?.reject(new Error("Power capture arming was superseded"));
     captureArmPromiseRef.current = { resolve, reject };
     pendingCaptureRef.current = config;
     captureBuilderRef.current = null;
+    streamingCaptureRef.current = config.streaming ? {
+      config,
+      archiveId: createArchiveId(),
+      ownerId: captureOwnerRef.current,
+      captureId: 0,
+      capturedAt: 0,
+      triggerDeviceTimeUs: 0,
+      triggerSampleSequence: 0,
+      triggerOffset: -1,
+      triggered: false,
+      finishing: false,
+      archiveStarted: false,
+      preBuffer: [],
+      pendingChunk: [],
+      preview: [],
+      previewStride: 1,
+      totalSamples: 0,
+      droppedSamples: 0,
+      lastStoredSequence: 0,
+      chunkIndex: 0,
+      writeChain: Promise.resolve(),
+      queuedChunks: 0,
+      persistedSamples: 0,
+      persistedBytes: 0,
+      lastPersistedSequence: 0,
+      writeError: null,
+      accumulator: createPowerCaptureAccumulator(),
+      stopTimer: null,
+      lastProgressAt: 0,
+      lastLeaseRenewedAt: 0,
+    } : null;
     setCaptureProgress(null);
     setCaptureState("connecting");
     setError(null);
     if (wsRef.current?.readyState === WebSocket.OPEN) {
+      if (config.streaming) {
+        wsRef.current.send(JSON.stringify(subscribeMessage(
+          config.rateHz,
+          TELEMETRY_STREAM_BATCH_SIZE,
+        )));
+      }
       wsRef.current.send(JSON.stringify(captureArmMessage(config)));
     } else {
       setLive(true);
     }
-  }), []);
+    });
+  }, [snapshot.powerCaptureProtocol]);
 
   const triggerCapture = useCallback(() => {
     wsRef.current?.send(JSON.stringify({
@@ -587,14 +1209,33 @@ export function useBoard(): UseBoard {
     }));
   }, []);
 
-  const cancelCapture = useCallback(() => {
+  const stopCapture = useCallback(() => {
+    if (streamingCaptureRef.current?.triggered) {
+      void finalizeStreamingCapture();
+      return;
+    }
     wsRef.current?.send(JSON.stringify({
-      type: "command", command: "capture_cancel", id: "web-cancel",
+      type: "command", command: "capture_stop", id: "web-stop",
     }));
+  }, [finalizeStreamingCapture]);
+
+  const cancelCapture = useCallback(() => {
+    if (streamingCaptureRef.current) {
+      wsRef.current?.send(JSON.stringify({
+        type: "command", command: "capture_cancel", id: "web-cancel",
+      }));
+    }
     resetCapture(new Error("Power capture was cancelled"));
   }, [resetCapture]);
 
-  const clearCaptures = useCallback(() => setCaptures([]), []);
+  const clearCaptures = useCallback(() => {
+    const activeArchiveId = streamingCaptureRef.current?.archiveId;
+    void clearPowerCaptureArchives({ activeArchiveId }).then(() => listRecentPowerCaptures()).then(
+      setCaptures,
+    ).catch((reason) => {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    });
+  }, []);
 
   return {
     snapshot,
@@ -618,6 +1259,7 @@ export function useBoard(): UseBoard {
     captures,
     armCapture,
     triggerCapture,
+    stopCapture,
     cancelCapture,
     clearCaptures,
   };

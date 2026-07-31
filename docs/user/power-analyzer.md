@@ -2,26 +2,39 @@
 
 # Power Analyzer
 
-Firmware-backed power analysis using a ring buffer with device monotonic
-timestamps. The power analyzer captures current waveforms from power rails,
-supports multiple trigger types, and provides overlay comparison of up to four
-captures.
+Power analysis with device monotonic timestamps and continuous host-side
+recording. The power analyzer captures current waveforms from power rails,
+supports multiple trigger types, and can record for hours without retaining the
+complete sample set in debugger RAM or page memory.
 
-The power analyzer is available in the Web UI dashboard under the **Power &
-current** card, and in the **Advanced & recovery** toolbox for startup power
-analysis.
+The power analyzer is available in the Web UI's right-hand **Power analysis**
+workspace, with live capture and startup analysis provided as two local modes.
 
-## Capture Capacity
+## Capture Storage
 
-| Board | Capacity |
-| --- | --- |
-| RP2350 | 2048 samples |
+Firmware detects the exact trigger and reports its device timestamp and sample
+sequence; it does not retain the waveform. Samples are sent to the host
+continuously, in batches,
+and written as compact IndexedDB chunks. A 256-sample debugger RAM ring absorbs
+short transport stalls. If that ring overruns, the result shows the reported
+`dropped_samples` count, marks the archive incomplete, and disables battery
+sizing so a partial waveform cannot be mistaken for a complete energy result.
 
-The constraint `pre_samples + post_samples + 1` must not exceed board capacity.
+Pre-trigger history is different from the hours-long record after the trigger:
+it must remain immediately available in page memory. The Web UI therefore caps
+it at 60,000 samples (120 seconds at the Web UI's 500 Hz continuous-recording
+limit). Post-trigger samples continue to
+stream to IndexedDB and are not subject to that page-memory limit.
 
-Capture storage uses a firmware-owned global ring buffer because only one
-hardware ADC capture can be active at a time. Closing the owning WebSocket
-cancels the capture.
+Each active archive also carries a browser-session lease renewed by live sample
+traffic. A second tab will not recover or modify the archive while that lease is
+valid. After an actual page or browser failure, recovery rebuilds the bounded
+preview, trigger offset, current/power summary, charge, and energy from the raw
+IndexedDB chunks and keeps the result explicitly marked as interrupted.
+
+The selected rate is a requested upper bound. Reports show the effective rate,
+and energy is integrated from device monotonic timestamps when ADC or transport
+throughput is lower than requested.
 
 ## Trigger Types
 
@@ -37,9 +50,10 @@ cancels the capture.
 The capture lifecycle uses WebSocket commands on the existing live session:
 
 1. **Arm**: send `capture_arm` command with trigger configuration
-2. **Begin**: firmware responds with `capture_begin`
-3. **Samples**: firmware sends `capture_sample` for each buffered sample (ordered)
-4. **Complete**: firmware sends `capture_complete`
+2. **Triggered**: firmware sends `capture_triggered` with device time and sample sequence
+3. **Record**: the host writes incoming ADC telemetry to IndexedDB
+4. **Stop**: the configured duration ends or the user stops manually; the host sends `capture_stop`
+5. **Complete**: the host finalizes the archive and report
 
 Example arm command:
 
@@ -48,23 +62,27 @@ Example arm command:
   "type": "command",
   "command": "capture_arm",
   "id": "capture-1",
+  "mode": "host-stream-v1",
   "trigger": "current",
   "output": "5v_out",
   "threshold_ua": 500000,
-  "rate_hz": 100,
-  "pre_samples": 100,
-  "post_samples": 300
+  "rate_hz": 100
 }
 ```
 
-For manual captures, send `capture_trigger` after arming. Cancel with
-`capture_cancel`.
+The Web UI verifies that status reports
+`power_capture_protocol: "host-stream-v1"` before arming. A missing or different
+value means the firmware and Web UI are incompatible, so no hardware action is
+performed.
+
+For manual captures, send `capture_trigger` after arming. Send `capture_stop`
+after the host finishes recording. `capture_cancel` disarms the trigger.
 
 ### Timestamp Normalization
 
-Normalize the x-axis against `trigger_offset` in the capture response. Host
-receive time is not a reliable sampling clock — use the device monotonic
-timestamps provided with each sample.
+Match `capture_triggered.sample_sequence` to telemetry and normalize the x-axis
+at that sample. Host receive time is not a reliable sampling clock — use device
+monotonic timestamps.
 
 ## Web UI
 
@@ -79,6 +97,18 @@ The dashboard **Power & current** card provides:
 - Export to CSV or NDJSON with device timestamps
 - Duration, mAh, and Wh reporting for the latest capture using trapezoidal
   integration over device monotonic timestamps
+- Timed recordings from seconds to hours, or manual stop
+- Continuous host-side persistence with a bounded decimated chart preview
+- Storage preflight with a safety reserve before a timed capture touches hardware
+- Atomic IndexedDB updates for binary sample chunks and archive progress, so a
+  terminated page can retain the portion that reached storage
+- Cursor-based CSV/NDJSON streaming directly to a file without materializing the
+  full sample set or output text in page memory
+- Immediate stop and explicit received/persisted/queued/dropped counters when
+  host storage cannot keep up
+
+Keep the Web page and debugger connection open while recording. The complete
+raw record is stored on the host running the browser, not in debugger flash.
 
 ### Export Formats
 
@@ -89,6 +119,8 @@ The dashboard **Power & current** card provides:
 
 Both formats preserve trigger configuration, source rail, edge/threshold
 settings, sampling rate, and pre/post window sizes.
+Large exports require a Chromium-based browser with direct file-stream support.
+Other browsers only use the bounded in-memory fallback for small exports.
 
 ## CLI: `adc record`
 
@@ -123,8 +155,8 @@ radxa-linkr-debuggerctl adc record /tmp/adc.csv 1000 --rate-hz 250
 
 ## Startup Power Analysis
 
-Located under **Advanced & recovery** in the Web UI. Records power-on current
-waveform and serial boot milestones together.
+Located in the **Startup analysis** mode of the Web UI **Power analysis**
+workspace. Records power-on current waveform and serial boot milestones together.
 
 ### Requirements
 

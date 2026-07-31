@@ -6,6 +6,9 @@ import type { CaptureConfig, PowerCapture, PowerOutput } from "@/lib/types";
 import type { SerialAutomationHandle, SerialChannelId } from "./SerialCard";
 import { nominalVoltage, powerRailLabel, USER_POWER_RAILS } from "@/lib/power";
 import { useI18n } from "@/lib/i18n";
+import { buildPowerChartAxis, PowerChartYAxis } from "./PowerChartAxis";
+import { summarizePowerCapture } from "@/lib/powerCapture";
+import { exportPowerCaptureToFile } from "@/lib/powerCaptureExport";
 import { appendStartupRunHistory } from "@/lib/startupRunHistory";
 import {
   detectStartupMilestones,
@@ -60,6 +63,7 @@ interface StartupRun {
   serialComplete: boolean;
   timedOut: boolean;
   completionStarted: boolean;
+  captureStopRequested: boolean;
   initialCaptureIds: Set<number>;
   automation: StartupAutomation;
   capture?: PowerCapture;
@@ -174,21 +178,13 @@ function startupStageAt(run: StartupRun, relativeMs: number): StartupStage {
 
 function calculateStats(run: StartupRun): RunStats | null {
   if (!run.capture) return null;
-  const points = readingPower(run.capture, run.rail);
-  if (points.length < 2) return null;
-  let energyJ = 0;
-  for (let index = 1; index < points.length; index += 1) {
-    const previous = points[index - 1];
-    const current = points[index];
-    const durationS = Math.max(0, current.xMs - previous.xMs) / 1000;
-    energyJ += ((previous.powerW + current.powerW) / 2) * durationS;
-  }
-  const durationMs = Math.max(0, points.at(-1)!.xMs - points[0].xMs);
+  const summary = summarizePowerCapture(run.capture, run.rail);
+  if (summary.durationMs <= 0) return null;
   return {
-    durationMs,
-    peakCurrentA: Math.max(...points.map((point) => point.currentA)),
-    averagePowerW: durationMs > 0 ? energyJ / (durationMs / 1000) : 0,
-    energyJ,
+    durationMs: summary.durationMs,
+    peakCurrentA: summary.peakCurrentA,
+    averagePowerW: summary.averagePowerW,
+    energyJ: summary.wattHours * 3600,
   };
 }
 
@@ -210,66 +206,44 @@ function downloadSerial(run: StartupRun) {
   downloadBlob(`linkr-startup-${run.id}-${run.serialChannel}-serial.log`, run.serial.join(""), "text/plain;charset=utf-8");
 }
 
-function powerDataRows(run: StartupRun) {
-  if (!run.capture) return [];
-  const voltageV = nominalVoltage(run.rail) ?? 0;
-  const triggerTimeUs = run.capture.samples[run.capture.triggerOffset]?.deviceTimeUs ?? 0;
-  return run.capture.samples.flatMap((sample) => {
-    const reading = sample.readings.find((item) => item.name === run.rail);
-    if (!reading) return [];
-    const relativeUs = sample.deviceTimeUs - triggerTimeUs;
-    const relativeMs = relativeUs / 1000;
-    const stage = startupStageAt(run, relativeMs);
-    const effectiveCurrentUa = reading.power_enabled ? Math.max(0, reading.current_ua) : 0;
-    return [{
-      run_id: run.id,
-      attempt: run.attempt,
-      rail: run.rail,
-      serial_channel: run.serialChannel,
-      detected_bootloader: run.detectedBootloader ?? run.bootloaderMode,
-      sample_offset: sample.offset,
-      sample_sequence: sample.sampleSequence,
-      triggered: sample.triggered,
-      device_t_mono_us: sample.deviceTimeUs,
-      relative_us: relativeUs,
-      relative_ms: relativeMs,
-      stage: stage.key,
-      stage_label: stage.label,
-      stage_elapsed_ms: Math.max(0, relativeMs - stage.startedAtMs),
-      power_enabled: reading.power_enabled,
-      adc_raw: reading.raw,
-      sense_mv: reading.mv,
-      reported_current_ua: reading.current_ua,
-      effective_current_ua: effectiveCurrentUa,
-      current_a: effectiveCurrentUa / 1_000_000,
-      voltage_v: voltageV,
-      power_w: (effectiveCurrentUa / 1_000_000) * voltageV,
-    }];
+async function downloadPowerData(run: StartupRun, format: "csv" | "ndjson") {
+  const capture = run.capture;
+  if (!capture) return;
+  const triggerTimeUs = capture.triggerDeviceTimeUs ??
+    capture.samples.find((sample) => sample.triggered)?.deviceTimeUs ?? 0;
+  const extraColumns = [
+    "run_id",
+    "attempt",
+    "serial_channel",
+    "detected_bootloader",
+    "relative_ms",
+    "stage",
+    "stage_label",
+    "stage_elapsed_ms",
+  ] as const;
+  await exportPowerCaptureToFile(capture, format, undefined, {
+    fileName: `linkr-startup-${run.id}-power.${format}`,
+    extraColumns,
+    extraValues: (sample) => {
+      const relativeMs = (sample.deviceTimeUs - triggerTimeUs) / 1000;
+      const stage = startupStageAt(run, relativeMs);
+      return {
+        run_id: run.id,
+        attempt: run.attempt,
+        serial_channel: run.serialChannel,
+        detected_bootloader: run.detectedBootloader ?? run.bootloaderMode,
+        relative_ms: relativeMs,
+        stage: stage.key,
+        stage_label: stage.label,
+        stage_elapsed_ms: Math.max(0, relativeMs - stage.startedAtMs),
+      };
+    },
   });
 }
 
-function csvCell(value: unknown) {
-  const text = value == null ? "" : String(value);
-  return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-}
-
-function downloadPowerData(run: StartupRun, format: "csv" | "ndjson") {
-  const rows = powerDataRows(run);
-  const base = `linkr-startup-${run.id}-power`;
-  if (format === "ndjson") {
-    downloadBlob(`${base}.ndjson`, rows.map((row) => JSON.stringify(row)).join("\n") + "\n", "application/x-ndjson");
-    return;
-  }
-  const columns = rows.length > 0 ? Object.keys(rows[0]) as Array<keyof typeof rows[number]> : [];
-  const csv = [
-    columns.join(","),
-    ...rows.map((row) => columns.map((column) => csvCell(row[column])).join(",")),
-  ].join("\n") + "\n";
-  downloadBlob(`${base}.csv`, csv, "text/csv;charset=utf-8");
-}
-
 function taskPassed(run: StartupRun) {
-  return !!run.capture && run.milestones.login != null &&
+  return !!run.capture && !run.capture.incomplete && (run.capture.droppedSamples ?? 0) === 0 &&
+    run.milestones.login != null &&
     (!run.automation.enabled || run.automation.state === "passed");
 }
 
@@ -297,6 +271,11 @@ function taskReport(run: StartupRun) {
       peak_current_a: stats.peakCurrentA,
       average_power_w: stats.averagePowerW,
       energy_j: stats.energyJ,
+      sample_count: run.capture?.sampleCount ?? run.capture?.samples.length ?? 0,
+      dropped_samples: run.capture?.droppedSamples ?? 0,
+      incomplete: run.capture?.incomplete ?? false,
+      interruption_reason: run.capture?.interruptionReason ?? null,
+      archive_id: run.capture?.archiveId ?? null,
     } : null,
     login: run.automation.enabled ? {
       username: run.automation.username,
@@ -326,22 +305,22 @@ export function StartupPowerAnalysis({
   outputs,
   captureState,
   captures,
-  captureCapacity,
   serialRef,
   onSetPower,
   onReadPower,
   onArmCapture,
+  onStopCapture,
   onCancelCapture,
   taskControl,
 }: {
   outputs: PowerOutput[];
-  captureState: "idle" | "connecting" | "armed" | "receiving";
+  captureState: "idle" | "connecting" | "armed" | "recording" | "receiving";
   captures: PowerCapture[];
-  captureCapacity: number;
   serialRef: RefObject<SerialAutomationHandle>;
   onSetPower: (name: string, on: boolean) => Promise<void>;
   onReadPower: (name: string) => Promise<{ state: string; currentUa: number }>;
   onArmCapture: (config: CaptureConfig) => Promise<void>;
+  onStopCapture: () => void;
   onCancelCapture: () => void;
   taskControl: AutomationTaskControl;
 }) {
@@ -459,12 +438,19 @@ export function StartupPowerAnalysis({
     } else {
       setPhase("partial");
       const serialConnected = serialRef.current?.isConnected(run.serialChannel) ?? false;
-      setError(run.automation.error ??
+      setError(run.capture.incomplete || (run.capture.droppedSamples ?? 0) > 0
+        ? t("startup.error.captureIncomplete")
+          .replaceAll("{dropped}", String(run.capture.droppedSamples ?? 0))
+        : run.automation.error ??
         t(!serialConnected ? "startup.error.disconnected" : run.postPowerMeaningfulBytes === 0 ? "startup.error.noSerial" : "startup.error.noLogin"));
     }
   };
 
   const maybeCompleteRun = (run: StartupRun) => {
+    if (!run.capture && run.serialComplete && !run.captureStopRequested) {
+      run.captureStopRequested = true;
+      onStopCapture();
+    }
     if (run.capture && run.serialComplete) void completeRun(run, run.timedOut);
   };
 
@@ -561,6 +547,7 @@ export function StartupPowerAnalysis({
       serialComplete: false,
       timedOut: false,
       completionStarted: false,
+      captureStopRequested: false,
       initialCaptureIds: new Set(captures.map((item) => item.id)),
       automation: {
         enabled: automationEnabled,
@@ -732,7 +719,9 @@ export function StartupPowerAnalysis({
         thresholdUa: 0,
         rateHz,
         preSamples: 0,
-        postSamples: Math.max(1, captureCapacity - 1),
+        postSamples: Math.max(1, timeoutSeconds * rateHz),
+        streaming: true,
+        stopAfterMs: timeoutSeconds * 1000,
       });
       if (operationRef.current !== operation) return;
 
@@ -784,6 +773,7 @@ export function StartupPowerAnalysis({
         if (operationRef.current !== operation) return;
         run.attempt = 2;
         run.capture = undefined;
+        run.captureStopRequested = false;
         run.milestones = {};
         run.detectedBootloader = undefined;
         run.poweredOnAtMs = null;
@@ -857,7 +847,11 @@ export function StartupPowerAnalysis({
   const allPoints = chartSeries.flatMap((series) => series.points);
   const minX = Math.min(-1, ...allPoints.map((point) => point.xMs));
   const maxX = Math.max(1, ...allPoints.map((point) => point.xMs));
-  const maxY = Math.max(0.01, ...allPoints.map((point) => point.powerW)) * 1.1;
+  const chartAxis = buildPowerChartAxis(
+    "power",
+    Math.max(0.01, ...allPoints.map((point) => point.powerW)),
+  );
+  const maxY = chartAxis.maximum;
   const currentStats = current ? calculateStats(current) : null;
   const previousStats = previous ? calculateStats(previous) : null;
   const busy = ["powering_off", "waiting", "arming", "capturing", "retrying", "logging_in", "executing", "finalizing"].includes(phase);
@@ -924,7 +918,7 @@ export function StartupPowerAnalysis({
         </label>
         <div className="text-[11px] text-ink-dim">{t("startup.window")}
           <div className="mt-1 rounded-lg border border-line bg-panel2/55 px-2 py-2 font-mono text-xs text-ink">
-            {(captureCapacity / rateHz).toFixed(1)} s
+            {timeoutSeconds.toFixed(1)} s
           </div>
         </div>
       </div>
@@ -1035,23 +1029,30 @@ export function StartupPowerAnalysis({
       </div>}
 
       {chartSeries.length > 0 && <div className="mt-3">
-        <div className="mb-1 flex items-center gap-3 text-[10px] text-ink-dim">
+        <div className="mb-1 flex flex-wrap items-center gap-3 text-[10px] text-ink-dim">
+          <span className="mr-auto font-medium text-ink">
+            {t("power.chart.power")} <span className="font-mono font-normal text-ink-dim">({chartAxis.unit})</span>
+          </span>
           {chartSeries.map(({ run }, index) => <span key={run.id}><i className={`mr-1 inline-block h-2 w-2 rounded-full ${index === chartSeries.length - 1 ? "bg-brand" : "bg-warn"}`} />{index === chartSeries.length - 1 ? t("startup.current") : t("startup.previous")}</span>)}
         </div>
-        <svg viewBox="0 0 640 150" preserveAspectRatio="none" role="img" aria-label={t("startup.chartAria")} className="h-36 w-full rounded-lg border border-line/60 bg-panel2/30">
-          <title>{t("startup.chartAria")}</title>
-          {currentStageBands.map((stage) => <rect key={stage.key}
-            x={((stage.start - minX) / (maxX - minX)) * 640}
-            width={((stage.end - stage.start) / (maxX - minX)) * 640}
-            y="0" height="150" fill={STAGE_COLORS[stage.key]} opacity="0.08" />)}
-          <line x1={((-minX) / (maxX - minX)) * 640} x2={((-minX) / (maxX - minX)) * 640} y1="0" y2="150" stroke="rgb(var(--c-danger))" strokeDasharray="4 4" />
-          {currentMilestoneMarkers.filter((marker) => marker.xMs >= minX && marker.xMs <= maxX).map((marker) => <line key={marker.key}
-            x1={((marker.xMs - minX) / (maxX - minX)) * 640}
-            x2={((marker.xMs - minX) / (maxX - minX)) * 640}
-            y1="0" y2="150" stroke={MILESTONE_COLORS[marker.key]} strokeWidth="1" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />)}
-          {chartSeries.map(({ run, points }, index) => <polyline key={run.id} fill="none" stroke={index === chartSeries.length - 1 ? "rgb(var(--c-brand))" : "rgb(var(--c-warn))"} strokeWidth="1.8" vectorEffect="non-scaling-stroke"
-            points={points.map((point) => `${((point.xMs - minX) / (maxX - minX)) * 640},${146 - (point.powerW / maxY) * 140}`).join(" ")} />)}
-        </svg>
+        <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-x-2">
+          <PowerChartYAxis axis={chartAxis} className="h-36" />
+          <svg viewBox="0 0 640 150" preserveAspectRatio="none" role="img" aria-label={`${t("startup.chartAria")} · ${chartAxis.unit}`} className="h-36 w-full rounded-lg border border-line/60 bg-panel2/30">
+            <title>{`${t("startup.chartAria")} · ${chartAxis.unit}`}</title>
+            {[0.25, 0.5, 0.75].map((ratio) => <line key={ratio} x1="0" x2="640" y1={150 * ratio} y2={150 * ratio} stroke="rgb(var(--c-line))" strokeDasharray="3 5" />)}
+            {currentStageBands.map((stage) => <rect key={stage.key}
+              x={((stage.start - minX) / (maxX - minX)) * 640}
+              width={((stage.end - stage.start) / (maxX - minX)) * 640}
+              y="0" height="150" fill={STAGE_COLORS[stage.key]} opacity="0.08" />)}
+            <line x1={((-minX) / (maxX - minX)) * 640} x2={((-minX) / (maxX - minX)) * 640} y1="0" y2="150" stroke="rgb(var(--c-danger))" strokeDasharray="4 4" />
+            {currentMilestoneMarkers.filter((marker) => marker.xMs >= minX && marker.xMs <= maxX).map((marker) => <line key={marker.key}
+              x1={((marker.xMs - minX) / (maxX - minX)) * 640}
+              x2={((marker.xMs - minX) / (maxX - minX)) * 640}
+              y1="0" y2="150" stroke={MILESTONE_COLORS[marker.key]} strokeWidth="1" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />)}
+            {chartSeries.map(({ run, points }, index) => <polyline key={run.id} fill="none" stroke={index === chartSeries.length - 1 ? "rgb(var(--c-brand))" : "rgb(var(--c-warn))"} strokeWidth="1.8" vectorEffect="non-scaling-stroke"
+              points={points.map((point) => `${((point.xMs - minX) / (maxX - minX)) * 640},${146 - (point.powerW / maxY) * 140}`).join(" ")} />)}
+          </svg>
+        </div>
         {currentStages.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5" aria-label={t("startup.stageLegend")}>
           {currentStages.map((stage) => <span key={stage.key} className="inline-flex items-center gap-1 rounded-full border border-line/70 bg-panel2/55 px-2 py-1 text-[9px] text-ink-dim">
             <i className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: STAGE_COLORS[stage.key] }} />
@@ -1064,8 +1065,8 @@ export function StartupPowerAnalysis({
       {current && <div className="mt-3 flex flex-wrap justify-end gap-1.5">
         <Button variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => downloadTaskReport(current)}><Download size={13} />{t("startup.downloadResult")}</Button>
         <Button variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => downloadSerial(current)}><Download size={13} />{t("startup.download")}</Button>
-        {current.capture && <Button variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => downloadPowerData(current, "csv")}><Download size={13} />{t("startup.downloadPowerCsv")}</Button>}
-        {current.capture && <Button variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => downloadPowerData(current, "ndjson")}><Download size={13} />{t("startup.downloadPowerNdjson")}</Button>}
+        {current.capture && <Button variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => void downloadPowerData(current, "csv").catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))}><Download size={13} />{t("startup.downloadPowerCsv")}</Button>}
+        {current.capture && <Button variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => void downloadPowerData(current, "ndjson").catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))}><Download size={13} />{t("startup.downloadPowerNdjson")}</Button>}
       </div>}
       <p className="mt-3 text-[10px] leading-relaxed text-ink-dim"><Activity size={11} className="mr-1 inline" /><Zap size={11} className="mr-1 inline" />{t("startup.note")}</p>
     </Card>

@@ -272,7 +272,16 @@ Arm 捕获。
 {"type": "command", "command": "power_set", "id": "1", "output": "12v_out", "state": "on"}
 ```
 
-可用命令：`power_set`、`switch_route`、`gpio_set`、`target_recovery`、`bootloader`、`capture_arm`、`capture_trigger`、`capture_cancel`。
+可用命令：`power_set`、`switch_route`、`gpio_set`、`target_recovery`、`bootloader`、`capture_arm`、`capture_trigger`、`capture_stop`、`capture_cancel`。
+
+功耗捕获必须显式指定上位机流式协议模式：
+
+```json
+{"type":"command","command":"capture_arm","id":"capture-1","mode":"host-stream-v1","trigger":"current","output":"5v_out","threshold_ua":500000,"rate_hz":100}
+```
+
+布防前应将 `mode` 与状态响应中的 `power_capture_protocol` 对比，避免固件与 Web
+版本不一致时无限等待。
 
 目标设备恢复命令：
 
@@ -284,7 +293,7 @@ Arm 捕获。
 
 **状态快照**（状态变化时推送）：
 ```json
-{"type": "snapshot", "topic": "status", "sequence": 1, "power_outputs": [...], "switches": {...}, "watchdog": {...}, "gpios": [...], "board_monitoring": {...}}
+{"type": "snapshot", "topic": "status", "power_capture_protocol": "host-stream-v1", "sequence": 1, "power_outputs": [...], "switches": {...}, "watchdog": {...}, "gpios": [...], "board_monitoring": {...}}
 ```
 
 **ADC 遥测**（按订阅速率推送）：
@@ -297,12 +306,24 @@ Arm 捕获。
 {"type": "telemetry-batch", "topic": "adc", "channels": [...], "samples": [...]}
 ```
 
+每个 WebSocket 客户端由 256 点遥测环形缓冲支持。批处理消息包含
+`dropped_samples`；非零表示客户端消费速度不足，长时上位机归档必须标记为
+不完整。长时记录应持续保存这些遥测批次，而不是把完整数据累积在调试板捕获
+RAM 中。
+
 **命令结果**：
 ```json
 {"type": "result", "command": "power_set", "id": "1", "ok": true}
 ```
 
-**捕获消息**：`capture_begin` → `capture_sample`（每个样本）→ `capture_complete`。
+**捕获事件**：
+```json
+{"type":"capture_triggered","capture_id":1,"device_t_mono_us":123456,"sample_sequence":42,"dropped_samples":0}
+```
+
+固件只保存触发状态和元数据。原始样本持续通过 ADC 遥测发送，由上位机完成
+缓冲和持久化。`dropped_samples` 是所属遥测游标从本次订阅开始累计的溢出数量。
+`capture_stop` 释放已触发捕获；`capture_cancel` 解除触发器。
 
 ## 错误码
 

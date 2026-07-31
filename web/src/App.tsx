@@ -32,7 +32,6 @@ import { Badge, Button } from "./components/ui";
 import { useI18n } from "@/lib/i18n";
 import { apiEndpoint } from "@/lib/api";
 import type { OtaStatus } from "@/lib/ota";
-import { POWER_CAPTURE_SAMPLE_CAPACITY } from "@/lib/power";
 import {
   createAutomationTaskLock,
   type AutomationTaskControl,
@@ -292,12 +291,12 @@ export default function App() {
                     captureState={board.captureState}
                     captureProgress={board.captureProgress}
                     captures={board.captures}
-                    captureCapacity={POWER_CAPTURE_SAMPLE_CAPACITY}
                     serialRef={serialAutomationRef}
                     onSetPower={board.setPower}
                     onReadPower={board.readPower}
                     onArmCapture={board.armCapture}
                     onTriggerCapture={board.triggerCapture}
+                    onStopCapture={board.stopCapture}
                     onCancelCapture={board.cancelCapture}
                     onClearCaptures={board.clearCaptures}
                     taskControl={automationTaskControl}

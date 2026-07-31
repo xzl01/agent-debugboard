@@ -49,6 +49,7 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #define HEARTBEAT_LED_NODE DT_CHOSEN(zephyr_heartbeat_led)
 
 #define LINKR_DEBUGGER_JSON_SCHEMA "radxa-linkr-debugger.v1"
+#define LINKR_DEBUGGER_POWER_CAPTURE_PROTOCOL "host-stream-v1"
 #define LINKR_DEBUGGER_USB_MODE "ncm-http"
 #define LINKR_DEBUGGER_MCU_NAME "rp2350"
 #define LINKR_DEBUGGER_RESERVED_GPIOS "GP00-GP06 GP22-GP25 GP26-GP28"
@@ -819,6 +820,11 @@ static int read_current_adc_debug(const struct linkr_debugger_current_desc *curr
 const char *linkr_debugger_json_schema(void)
 {
 	return LINKR_DEBUGGER_JSON_SCHEMA;
+}
+
+const char *linkr_debugger_power_capture_protocol(void)
+{
+	return LINKR_DEBUGGER_POWER_CAPTURE_PROTOCOL;
 }
 
 const char *linkr_debugger_mcu_name(void)

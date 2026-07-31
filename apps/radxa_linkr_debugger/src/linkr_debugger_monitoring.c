@@ -12,7 +12,6 @@
 #include <string.h>
 
 #include <zephyr/device.h>
-#include <zephyr/debug/cpu_load.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/kernel.h>
 #include <zephyr/net/net_pkt.h>
@@ -40,9 +39,16 @@ static const struct device *const linkr_debugger_temperature_device =
 #endif
 
 static struct k_mutex linkr_debugger_monitoring_lock;
-#if defined(CONFIG_CPU_LOAD)
+#if defined(CONFIG_SCHED_THREAD_USAGE_ALL)
+#define LINKR_DEBUGGER_CPU_LOAD_WINDOW_MIN_MS 1000U
 static bool linkr_debugger_cpu_previous_valid;
+static bool linkr_debugger_cpu_cached_valid;
 static int64_t linkr_debugger_cpu_previous_uptime_ms;
+static k_thread_runtime_stats_t linkr_debugger_cpu_previous_stats;
+static uint32_t linkr_debugger_cpu_cached_active_pct_x100;
+static uint32_t linkr_debugger_cpu_cached_window_ms;
+static uint64_t linkr_debugger_cpu_cached_busy_cycles_delta;
+static uint64_t linkr_debugger_cpu_cached_total_cycles_delta;
 #endif
 
 static uint32_t linkr_debugger_monitoring_pct_x100(size_t used, size_t total)
@@ -61,6 +67,28 @@ static uint32_t linkr_debugger_monitoring_pct_x100(size_t used, size_t total)
 
 	scaled = (uint64_t)used * 10000ULL;
 	return (uint32_t)(scaled / (uint64_t)total);
+}
+
+static uint32_t linkr_debugger_monitoring_ratio_x100_u64(uint64_t used, uint64_t total)
+{
+	uint64_t divisor;
+
+	if (total == 0U) {
+		return 0U;
+	}
+	if (used >= total) {
+		return 10000U;
+	}
+
+	/* A status request may arrive hours after the previous one. Scale both
+	 * cycle counts together before multiplying so long windows cannot
+	 * overflow while preserving their ratio.
+	 */
+	divisor = total / (UINT64_MAX / 10000ULL) +
+		(total % (UINT64_MAX / 10000ULL) != 0U ? 1U : 0U);
+	used /= divisor;
+	total /= divisor;
+	return (uint32_t)((used * 10000ULL) / total);
 }
 
 static size_t linkr_debugger_monitoring_size_add(size_t a, size_t b)
@@ -512,36 +540,84 @@ static void linkr_debugger_monitoring_cpu_get(struct linkr_debugger_monitoring_c
 	cpu->total_cycles_delta = 0U;
 	cpu->error = 0;
 
-	uint32_t load_per_mille;
+	k_thread_runtime_stats_t stats;
+	uint64_t busy_cycles_delta;
+	uint64_t total_cycles_delta;
 	int64_t uptime_ms;
+	int64_t elapsed_ms;
 	uint32_t window_ms;
+	int ret;
 
-#if defined(CONFIG_CPU_LOAD)
-	load_per_mille = cpu_load_get(true);
-
+#if defined(CONFIG_SCHED_THREAD_USAGE_ALL)
 	uptime_ms = k_uptime_get();
 	if (!linkr_debugger_cpu_previous_valid) {
+		ret = k_thread_runtime_stats_all_get(&linkr_debugger_cpu_previous_stats);
+		if (ret < 0) {
+			cpu->reason = "runtime_stats_read_failed";
+			cpu->error = ret;
+			return;
+		}
 		linkr_debugger_cpu_previous_valid = true;
 		linkr_debugger_cpu_previous_uptime_ms = uptime_ms;
 		cpu->reason = "insufficient_runtime_window";
 		return;
 	}
-	window_ms = uptime_ms > linkr_debugger_cpu_previous_uptime_ms ?
-		(uint32_t)(uptime_ms - linkr_debugger_cpu_previous_uptime_ms) : 0U;
-	linkr_debugger_cpu_previous_uptime_ms = uptime_ms;
-	if (window_ms == 0U) {
-		cpu->reason = "insufficient_runtime_window";
+	elapsed_ms = uptime_ms > linkr_debugger_cpu_previous_uptime_ms ?
+		uptime_ms - linkr_debugger_cpu_previous_uptime_ms : 0;
+	if (elapsed_ms < LINKR_DEBUGGER_CPU_LOAD_WINDOW_MIN_MS) {
+		if (!linkr_debugger_cpu_cached_valid) {
+			cpu->reason = "insufficient_runtime_window";
+			return;
+		}
+		cpu->available = true;
+		cpu->reason = "";
+		cpu->active_pct_x100 = linkr_debugger_cpu_cached_active_pct_x100;
+		cpu->window_ms = linkr_debugger_cpu_cached_window_ms;
+		cpu->busy_cycles_delta = linkr_debugger_cpu_cached_busy_cycles_delta;
+		cpu->total_cycles_delta = linkr_debugger_cpu_cached_total_cycles_delta;
 		return;
 	}
 
+	ret = k_thread_runtime_stats_all_get(&stats);
+	if (ret < 0) {
+		cpu->reason = "runtime_stats_read_failed";
+		cpu->error = ret;
+		return;
+	}
+	if (stats.total_cycles < linkr_debugger_cpu_previous_stats.total_cycles ||
+	    stats.execution_cycles < linkr_debugger_cpu_previous_stats.execution_cycles) {
+		linkr_debugger_cpu_previous_stats = stats;
+		linkr_debugger_cpu_previous_uptime_ms = uptime_ms;
+		cpu->reason = "runtime_stats_reset";
+		return;
+	}
+
+	window_ms = (uint32_t)MIN(elapsed_ms, (int64_t)UINT32_MAX);
+	busy_cycles_delta = stats.total_cycles - linkr_debugger_cpu_previous_stats.total_cycles;
+	total_cycles_delta = stats.execution_cycles -
+		linkr_debugger_cpu_previous_stats.execution_cycles;
+	if (total_cycles_delta == 0U) {
+		cpu->reason = "insufficient_runtime_cycles";
+		return;
+	}
+
+	cpu->active_pct_x100 = linkr_debugger_monitoring_ratio_x100_u64(
+		busy_cycles_delta, total_cycles_delta);
 	cpu->available = true;
 	cpu->reason = "";
-	cpu->busy_cycles_delta = 0U;
-	cpu->total_cycles_delta = 0U;
-	cpu->active_pct_x100 = load_per_mille * 10U;
+	cpu->busy_cycles_delta = busy_cycles_delta;
+	cpu->total_cycles_delta = total_cycles_delta;
 	cpu->window_ms = window_ms;
+
+	linkr_debugger_cpu_previous_stats = stats;
+	linkr_debugger_cpu_previous_uptime_ms = uptime_ms;
+	linkr_debugger_cpu_cached_valid = true;
+	linkr_debugger_cpu_cached_active_pct_x100 = cpu->active_pct_x100;
+	linkr_debugger_cpu_cached_window_ms = window_ms;
+	linkr_debugger_cpu_cached_busy_cycles_delta = busy_cycles_delta;
+	linkr_debugger_cpu_cached_total_cycles_delta = total_cycles_delta;
 #else
-	cpu->reason = "cpu_load_disabled";
+	cpu->reason = "thread_runtime_stats_disabled";
 #endif
 }
 

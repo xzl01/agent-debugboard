@@ -815,6 +815,8 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 	    linkr_debugger_http_json_string(&env, linkr_debugger_mcu_name()) < 0 ||
 	    linkr_debugger_http_append(&env, ",\"usb\":") < 0 ||
 	    linkr_debugger_http_json_string(&env, linkr_debugger_usb_mode()) < 0 ||
+	    linkr_debugger_http_append(&env, ",\"power_capture_protocol\":") < 0 ||
+	    linkr_debugger_http_json_string(&env, linkr_debugger_power_capture_protocol()) < 0 ||
 	    linkr_debugger_http_append(&env,
 				 ",\"power_inputs\":[{\"name\":\"5v_fin\",\"controllable\":false,\"measured\":false}]"
 				 ",\"power_outputs\":") < 0 ||

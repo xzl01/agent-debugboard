@@ -55,6 +55,10 @@ export interface CaptureConfig {
   rateHz: number;
   preSamples: number;
   postSamples: number;
+  /** Stream samples to the host instead of retaining the whole record in firmware RAM. */
+  streaming?: boolean;
+  /** Host-side automatic stop deadline for a streaming capture. */
+  stopAfterMs?: number;
 }
 
 export interface CaptureSample {
@@ -77,6 +81,25 @@ export interface PowerCapture {
   triggerOffset: number;
   samples: CaptureSample[];
   capturedAt: number;
+  /** IndexedDB archive containing every raw sample; `samples` may only be a preview. */
+  archiveId?: string;
+  sampleCount?: number;
+  droppedSamples?: number;
+  triggerDeviceTimeUs?: number;
+  incomplete?: boolean;
+  interruptionReason?: string;
+  summaries?: Record<string, PowerCaptureAggregate>;
+}
+
+export interface PowerCaptureAggregate {
+  nominalVoltageV: number;
+  durationMs: number;
+  averageCurrentA: number;
+  peakCurrentA: number;
+  averagePowerW: number;
+  peakPowerW: number;
+  milliampHours: number;
+  wattHours: number;
 }
 
 export interface SafeGpio {
@@ -144,6 +167,7 @@ export interface BoardMonitoring {
 export interface BoardSnapshot {
   mcu?: string;
   usb?: string;
+  powerCaptureProtocol?: string;
   powerOutputs: PowerOutput[];
   switches: SwitchState;
   gpios: SafeGpio[];

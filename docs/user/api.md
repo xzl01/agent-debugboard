@@ -232,7 +232,16 @@ Up to 4 concurrent clients.
 {"type": "command", "command": "power_set", "id": "1", "output": "12v_out", "state": "on"}
 ```
 
-Available commands: `power_set`, `switch_route`, `gpio_set`, `target_recovery`, `bootloader`, `capture_arm`, `capture_trigger`, `capture_cancel`.
+Available commands: `power_set`, `switch_route`, `gpio_set`, `target_recovery`, `bootloader`, `capture_arm`, `capture_trigger`, `capture_stop`, `capture_cancel`.
+
+Power capture requires an explicit host-stream protocol mode:
+
+```json
+{"type":"command","command":"capture_arm","id":"capture-1","mode":"host-stream-v1","trigger":"current","output":"5v_out","threshold_ua":500000,"rate_hz":100}
+```
+
+Compare `mode` with the `power_capture_protocol` advertised by status before
+arming. This prevents mixed firmware/Web versions from waiting indefinitely.
 
 Target recovery command:
 
@@ -244,7 +253,7 @@ Target recovery command:
 
 **Status snapshot** (pushed on state change):
 ```json
-{"type": "snapshot", "topic": "status", "sequence": 1, "power_outputs": [...], "switches": {...}, "watchdog": {...}, "gpios": [...], "board_monitoring": {...}}
+{"type": "snapshot", "topic": "status", "power_capture_protocol": "host-stream-v1", "sequence": 1, "power_outputs": [...], "switches": {...}, "watchdog": {...}, "gpios": [...], "board_monitoring": {...}}
 ```
 
 **ADC telemetry** (at subscribed rate):
@@ -257,12 +266,26 @@ Target recovery command:
 {"type": "telemetry-batch", "topic": "adc", "channels": [...], "samples": [...]}
 ```
 
+Each WebSocket client is backed by a 256-sample telemetry ring. Batch messages
+include `dropped_samples`; a non-zero value means the client fell behind and
+must mark a long-running host archive as incomplete. Long recordings should
+persist these telemetry batches continuously instead of accumulating them in
+debugger capture RAM.
+
 **Command result**:
 ```json
 {"type": "result", "command": "power_set", "id": "1", "ok": true}
 ```
 
-**Capture messages**: `capture_begin` → `capture_sample` (per sample) → `capture_complete`.
+**Capture event**:
+```json
+{"type":"capture_triggered","capture_id":1,"device_t_mono_us":123456,"sample_sequence":42,"dropped_samples":0}
+```
+
+Firmware keeps only trigger state and metadata. Raw samples continue through
+ADC telemetry and must be buffered/persisted by the host. `dropped_samples` is
+the owning telemetry cursor's cumulative overrun count since subscription.
+`capture_stop` releases a triggered capture; `capture_cancel` disarms it.
 
 ## Error Codes
 

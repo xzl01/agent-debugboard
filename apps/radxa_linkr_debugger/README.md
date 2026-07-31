@@ -78,10 +78,11 @@ samples carry `sequence` and `uptime_us`; host clients normalize those values to
 the same timing aliases. Single-sample telemetry
 includes `dropped_samples` only when the per-client ring skipped one or more
 samples. The same session can arm a triggered power capture with a
-firmware ring buffer: 2048 samples on RP2350. Manual, current
-threshold, allowlisted GPIO edge, and power-output off-to-on triggers are
-supported. Triggered capture uses one global hardware buffer and therefore has
-only one capture owner at a time. See
+trigger-only state machine. Manual, current threshold, allowlisted GPIO edge,
+and power-output off-to-on triggers are supported. Firmware reports the trigger
+device timestamp, sample sequence, and telemetry dropped counter; the host
+persists the waveform from ADC telemetry. Only one trigger owner is allowed at
+a time. See
 [the power analyzer protocol](../../doc/power-analyzer.md).
 When HTTP/WS is unavailable but the CDC ACM shell still works, the local shell
 command below enters the current MCU's ROM BOOTSEL path used by the HTTP API:

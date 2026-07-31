@@ -497,19 +497,21 @@ analyzing cadence, and treat
 sampling ring overran. A `.csv` output path writes device time and three current
 channels directly, using `device_t_mono_us` first, then `uptime_us`, then `0`.
 
-For triggered acquisition, arm the firmware ring buffer over the same live
-WebSocket. RP2350 supports 2048 samples; require
-`pre_samples + post_samples + 1` to stay within capacity. Trigger names are
-`manual`, `current`, `gpio`, and `power_on`:
+For triggered acquisition, arm the trigger detector over the same live
+WebSocket. Firmware does not retain the waveform; subscribe to ADC telemetry
+first and persist the stream on the host. Trigger names are `manual`, `current`,
+`gpio`, and `power_on`:
 
 ```json
-{"type":"command","command":"capture_arm","id":"capture-1","trigger":"current","output":"5v_out","threshold_ua":500000,"rate_hz":100,"pre_samples":100,"post_samples":300}
+{"type":"command","command":"capture_arm","id":"capture-1","mode":"host-stream-v1","trigger":"current","output":"5v_out","threshold_ua":500000,"rate_hz":100}
 ```
 
 For manual capture send `{"type":"command","command":"capture_trigger"}`.
-Cancel with `capture_cancel`. Firmware returns `capture_begin`, ordered
-`capture_sample` frames, and `capture_complete`; normalize time against the
-sample at `trigger_offset`. Only the owning WebSocket can trigger or cancel it.
+Firmware emits `capture_triggered` when recording starts. Send `capture_stop`
+after host recording ends, or `capture_cancel` to disarm it. The trigger event
+contains `device_t_mono_us`, `sample_sequence`, and cumulative
+`dropped_samples`; match the sequence against telemetry to align the waveform.
+Only the owning WebSocket can trigger, stop, or cancel it.
 
 WebSocket clients can subscribe to telemetry and send control commands on the
 same connection. Example subscription payload:
