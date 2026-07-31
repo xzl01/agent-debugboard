@@ -201,6 +201,13 @@ headers needed by the browser. Override the upstream address when necessary:
 LINKR_BOARD_URL=http://172.29.203.1:8080 npm run device-bridge
 ```
 
+On macOS, both `npm run dev` and `npm run device-bridge` automatically insert a
+loopback-only raw TCP forwarder when targeting the default USB-NCM address.
+This avoids repeated Vite `502 Bad Gateway` responses when macOS permits native
+tools such as `curl` to use the interface but rejects direct Node.js sockets.
+The forwarder carries REST, OTA, and WebSocket traffic and exits with its parent
+process; no manual system proxy is required.
+
 ## Related
 
 - [OTA firmware update](ota.md)

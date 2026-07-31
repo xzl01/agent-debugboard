@@ -9,10 +9,13 @@
 import http from "node:http";
 import WebSocket, { WebSocketServer } from "ws";
 import { SerialPort } from "serialport";
+import { startNcmLoopback } from "./scripts/ncm-loopback.mjs";
 
 const BRIDGE_HOST = "127.0.0.1";
 const BRIDGE_PORT = Number(process.env.LINKR_BRIDGE_PORT || 8787);
-const BOARD_HTTP = process.env.LINKR_BOARD_URL || "http://172.29.203.1:8080";
+const configuredBoardHttp = process.env.LINKR_BOARD_URL || "http://172.29.203.1:8080";
+const boardForwarder = await startNcmLoopback(configuredBoardHttp);
+const BOARD_HTTP = boardForwarder.target;
 const BOARD_WS = BOARD_HTTP.replace(/^http/, "ws");
 
 function durationFromEnv(name, fallback) {
@@ -325,7 +328,40 @@ server.on("upgrade", (request, socket, head) => {
 
 server.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
   console.log(`Linkr device gateway listening on http://${BRIDGE_HOST}:${BRIDGE_PORT}`);
+  if (boardForwarder.forwarded) {
+    console.log(`USB-NCM loopback: ${BOARD_HTTP} -> ${boardForwarder.upstream}`);
+  }
   console.log(`Forwarding board API to ${BOARD_HTTP}`);
 });
 
-server.on("close", () => clearInterval(heartbeatTimer));
+server.on("error", (error) => {
+  console.error(`Linkr device gateway failed: ${error.message}`);
+  void boardForwarder.close().finally(() => process.exit(1));
+});
+
+server.on("close", () => {
+  clearInterval(heartbeatTimer);
+  void boardForwarder.close();
+});
+
+let shuttingDown = false;
+function shutdown(exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  for (const client of apiWss.clients) client.terminate();
+  for (const client of serialWss.clients) client.terminate();
+  for (const upstream of upstreamSockets) upstream.terminate();
+  server.close(() => {
+    void boardForwarder.close().finally(() => process.exit(exitCode));
+  });
+  setTimeout(() => process.exit(exitCode || 1), 2_000).unref();
+}
+
+void boardForwarder.exited.then((error) => {
+  if (!error || shuttingDown) return;
+  console.error(error.message);
+  shutdown(1);
+});
+
+process.once("SIGINT", () => shutdown(0));
+process.once("SIGTERM", () => shutdown(0));

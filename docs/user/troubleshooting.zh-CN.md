@@ -29,6 +29,28 @@
 3. 用无痕/隐私窗口试试——扩展程序可能干扰。
 4. macOS 上如果之前关掉过 captive portal 提示，需要手动输入 URL。
 
+## macOS 本地 Vite 持续返回 502
+
+**症状：** `curl http://172.29.203.1/api/v1/status` 返回 200，但
+`http://127.0.0.1:5173/api/v1/status` 返回 `502 Bad Gateway`，Vite 日志中
+出现来自 Node.js socket 的 `EHOSTUNREACH`。
+
+请使用仓库提供的启动命令，不要直接运行 `vite`：
+
+```sh
+cd web
+npm run dev
+```
+
+启动器会自动为 USB-NCM 接口建立仅监听本机回环地址的原生 TCP 转发器，
+HTTP 和 WebSocket 代理都会使用它。如果问题仍存在，请确认
+`/usr/bin/ruby` 存在，并且启动日志中出现 `USB-NCM loopback:`。
+`LINKR_NCM_FORWARDER=off` 仅用于诊断；受影响的 macOS 主机不应设置它。
+
+启动器会监控转发器；转发器意外退出时，会在同一个回环端口自动重启。如果连续
+恢复失败，Vite 会显示明确的转发器错误并退出，而不会维持一个只会不断返回 502
+的假在线服务。
+
 ## macOS Gatekeeper 拦截 CLI
 
 **症状：** 弹出"Apple 无法验证此软件"对话框。

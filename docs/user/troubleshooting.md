@@ -32,6 +32,30 @@ Common problems and how to fix them.
 4. On macOS, the captive portal prompt may not appear if you dismissed it
    before. Navigate to the URL manually.
 
+## Local Vite repeatedly returns 502 on macOS
+
+**Symptom:** `curl http://172.29.203.1/api/v1/status` returns 200, but
+`http://127.0.0.1:5173/api/v1/status` returns `502 Bad Gateway`; the Vite log
+contains `EHOSTUNREACH` from a Node.js socket.
+
+Use the repository launcher rather than invoking `vite` directly:
+
+```sh
+cd web
+npm run dev
+```
+
+The launcher automatically starts a loopback-only native TCP forwarder for the
+USB-NCM interface and uses it for HTTP and WebSocket proxying. If the problem
+persists, confirm that `/usr/bin/ruby` exists and that the startup log includes
+`USB-NCM loopback:`. `LINKR_NCM_FORWARDER=off` disables the workaround for
+diagnostics; it should not be set on an affected macOS host.
+
+The launcher supervises the forwarder and restarts it on the same loopback port
+after an unexpected exit. If repeated restarts fail, Vite exits with an explicit
+forwarder error instead of staying online and returning an endless series of
+502 responses.
+
 ## macOS Gatekeeper blocks the CLI
 
 **Symptom:** "Apple cannot verify this software" dialog.

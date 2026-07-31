@@ -18,6 +18,15 @@ npm run dev
 Open <http://127.0.0.1:5173/>. The board must be connected over USB NCM and
 reachable at `172.29.203.1`.
 
+On macOS, the operating system can allow `/usr/bin/curl` to reach the USB-NCM
+interface while rejecting a direct Node.js socket with `EHOSTUNREACH`. The
+`npm run dev` launcher detects the default NCM target and automatically starts
+a loopback-only raw TCP forwarder, then points Vite at that local endpoint.
+This covers both HTTP and WebSocket traffic and is stopped with Vite. The same
+workaround is used by `npm run device-bridge`. Set
+`LINKR_NCM_FORWARDER=off` only when Node already has working local-network
+access; use `force` to exercise the forwarder on another platform.
+
 The Power & current card includes a triggered power analyzer. It supports
 manual, current-threshold, GPIO-edge, and power-on triggers, keeps four captures
 for overlay comparison, and exports CSV or NDJSON. Captures use firmware device
@@ -69,6 +78,8 @@ The Pages build connects to `http://127.0.0.1:8787/api/v1`. By default, the
 gateway forwards HTTP and WebSocket traffic directly to the firmware service at
 `http://172.29.203.1:8080` and supplies the CORS and Private Network Access
 headers needed by the browser. Override the upstream with `LINKR_BOARD_URL`.
+On macOS the gateway automatically inserts the loopback NCM forwarder described
+above, so Node never opens the USB-NCM socket directly.
 The gateway listens on loopback only and does not expose board controls to the
 LAN. Browser requests are limited to the official Pages origin and local
 development origins. Additional trusted origins can be supplied as a

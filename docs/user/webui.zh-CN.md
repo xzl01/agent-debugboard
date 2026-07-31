@@ -46,7 +46,7 @@ http://172.29.203.1/
 
 电源与电流卡片包含触发式功率分析仪。支持手动、电流阈值、GPIO 边沿和
 上电触发，保留四次捕获用于叠加对比，可导出 CSV 或 NDJSON。捕获使用
-固件设备时间戳和预/后触发环形缓冲区。
+固件设备时间戳；触发前缓冲和触发后持久化均由浏览器完成。
 
 ## Terminal 工作区
 
@@ -183,6 +183,12 @@ WebSocket 流量直接转发到固件服务 `http://172.29.203.1:8080`，并提�
 ```sh
 LINKR_BOARD_URL=http://172.29.203.1:8080 npm run device-bridge
 ```
+
+在 macOS 上，`npm run dev` 和 `npm run device-bridge` 连接默认 USB-NCM
+地址时，会自动插入一个仅监听本机回环地址的原始 TCP 转发器。这样可避免
+macOS 允许 `curl` 等系统工具访问该接口、却拒绝 Node.js 直接 socket 时
+持续出现 Vite `502 Bad Gateway`。该转发器同时承载 REST、OTA 和 WebSocket
+流量，并随父进程退出，不需要手工配置系统代理。
 
 ## 相关文档
 
