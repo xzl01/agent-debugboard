@@ -47,6 +47,20 @@ target_compile_definitions(linkr_debugger_capture_arena_test PRIVATE
   LINKR_DEBUGGER_CAPTURE_ARENA_HOST_TEST
 )
 
+linkr_debugger_add_host_test(linkr_debugger_capture_arbiter_test
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_capture_arbiter.c
+  model_host/test_linkr_debugger_capture_arbiter.c
+)
+target_compile_definitions(linkr_debugger_capture_arbiter_test PRIVATE
+  LINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST
+)
+target_compile_options(linkr_debugger_capture_arbiter_test PRIVATE
+  -std=c11
+  -fsanitize=address,undefined
+  -fno-omit-frame-pointer
+)
+target_link_options(linkr_debugger_capture_arbiter_test PRIVATE -fsanitize=address,undefined)
+
 linkr_debugger_add_host_test(linkr_debugger_logic_analyzer_test
   ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_logic_analyzer.c
   model_host/test_linkr_debugger_logic_analyzer.c

@@ -6,81 +6,105 @@
 
 #include "linkr_debugger_capture_arbiter.h"
 
-#ifndef LINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST
+#ifdef LINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST
+#include <stdatomic.h>
+#else
 #include <zephyr/irq.h>
 #endif
+
+#ifdef LINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST
+
+static atomic_int linkr_debugger_capture_arbiter_current_owner =
+	ATOMIC_VAR_INIT(LINKR_DEBUGGER_CAPTURE_OWNER_NONE);
+
+static void linkr_debugger_capture_arbiter_store(enum linkr_debugger_capture_owner owner)
+{
+	atomic_store_explicit(&linkr_debugger_capture_arbiter_current_owner, owner,
+			      memory_order_release);
+}
+
+static bool linkr_debugger_capture_arbiter_replace(
+	enum linkr_debugger_capture_owner expected,
+	enum linkr_debugger_capture_owner desired)
+{
+	int expected_value = expected;
+
+	return atomic_compare_exchange_strong_explicit(
+		&linkr_debugger_capture_arbiter_current_owner, &expected_value, desired,
+		memory_order_acq_rel, memory_order_acquire);
+}
+
+static enum linkr_debugger_capture_owner linkr_debugger_capture_arbiter_load(void)
+{
+	return (enum linkr_debugger_capture_owner)atomic_load_explicit(
+		&linkr_debugger_capture_arbiter_current_owner, memory_order_acquire);
+}
+
+#else
 
 static enum linkr_debugger_capture_owner linkr_debugger_capture_arbiter_current_owner =
 	LINKR_DEBUGGER_CAPTURE_OWNER_NONE;
 
-static unsigned int linkr_debugger_capture_arbiter_lock(void)
+static void linkr_debugger_capture_arbiter_store(enum linkr_debugger_capture_owner owner)
 {
-#ifdef LINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST
-	return 0U;
-#else
-	return irq_lock();
-#endif
+	unsigned int key = irq_lock();
+
+	linkr_debugger_capture_arbiter_current_owner = owner;
+	irq_unlock(key);
 }
 
-static void linkr_debugger_capture_arbiter_unlock(unsigned int key)
+static bool linkr_debugger_capture_arbiter_replace(
+	enum linkr_debugger_capture_owner expected,
+	enum linkr_debugger_capture_owner desired)
 {
-#ifndef LINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST
+	bool replaced = false;
+	unsigned int key = irq_lock();
+
+	if (linkr_debugger_capture_arbiter_current_owner == expected) {
+		linkr_debugger_capture_arbiter_current_owner = desired;
+		replaced = true;
+	}
 	irq_unlock(key);
-#else
-	(void)key;
-#endif
+	return replaced;
 }
+
+static enum linkr_debugger_capture_owner linkr_debugger_capture_arbiter_load(void)
+{
+	enum linkr_debugger_capture_owner owner;
+	unsigned int key = irq_lock();
+
+	owner = linkr_debugger_capture_arbiter_current_owner;
+	irq_unlock(key);
+	return owner;
+}
+
+#endif
 
 void linkr_debugger_capture_arbiter_reset(void)
 {
-	unsigned int key = linkr_debugger_capture_arbiter_lock();
-
-	linkr_debugger_capture_arbiter_current_owner = LINKR_DEBUGGER_CAPTURE_OWNER_NONE;
-	linkr_debugger_capture_arbiter_unlock(key);
+	linkr_debugger_capture_arbiter_store(LINKR_DEBUGGER_CAPTURE_OWNER_NONE);
 }
 
 bool linkr_debugger_capture_arbiter_try_acquire(enum linkr_debugger_capture_owner owner)
 {
-	bool acquired = false;
-	unsigned int key;
-
 	if (owner == LINKR_DEBUGGER_CAPTURE_OWNER_NONE) {
 		return false;
 	}
 
-	key = linkr_debugger_capture_arbiter_lock();
-	if (linkr_debugger_capture_arbiter_current_owner == LINKR_DEBUGGER_CAPTURE_OWNER_NONE) {
-		linkr_debugger_capture_arbiter_current_owner = owner;
-		acquired = true;
-	}
-	linkr_debugger_capture_arbiter_unlock(key);
-	return acquired;
+	return linkr_debugger_capture_arbiter_replace(LINKR_DEBUGGER_CAPTURE_OWNER_NONE, owner);
 }
 
 bool linkr_debugger_capture_arbiter_release(enum linkr_debugger_capture_owner owner)
 {
-	bool released = false;
-	unsigned int key;
-
 	if (owner == LINKR_DEBUGGER_CAPTURE_OWNER_NONE) {
 		return false;
 	}
 
-	key = linkr_debugger_capture_arbiter_lock();
-	if (linkr_debugger_capture_arbiter_current_owner == owner) {
-		linkr_debugger_capture_arbiter_current_owner = LINKR_DEBUGGER_CAPTURE_OWNER_NONE;
-		released = true;
-	}
-	linkr_debugger_capture_arbiter_unlock(key);
-	return released;
+	return linkr_debugger_capture_arbiter_replace(owner,
+					      LINKR_DEBUGGER_CAPTURE_OWNER_NONE);
 }
 
 enum linkr_debugger_capture_owner linkr_debugger_capture_arbiter_owner(void)
 {
-	enum linkr_debugger_capture_owner owner;
-	unsigned int key = linkr_debugger_capture_arbiter_lock();
-
-	owner = linkr_debugger_capture_arbiter_current_owner;
-	linkr_debugger_capture_arbiter_unlock(key);
-	return owner;
+	return linkr_debugger_capture_arbiter_load();
 }
