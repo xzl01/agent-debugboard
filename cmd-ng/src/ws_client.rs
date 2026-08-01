@@ -5,7 +5,9 @@
 
 #![allow(dead_code)]
 
-use crate::adc::{transform_readings, AdcReading};
+use crate::adc::{
+    transform_readings, validate_compact_kind_unit, AdcCompactReading, AdcKind, AdcReading,
+};
 use crate::json_contract::{JsonError, JSON_SCHEMA};
 use crate::monitoring::BoardMonitoring;
 use anyhow::{anyhow, Result};
@@ -102,7 +104,7 @@ pub struct WsStatusSnapshot {
     pub board_monitoring: BoardMonitoring,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct WsTelemetryMessage {
     #[serde(default)]
     pub r#type: String,
@@ -115,6 +117,41 @@ pub struct WsTelemetryMessage {
     pub readings: Vec<AdcReading>,
     #[serde(default, flatten)]
     pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WsTelemetryWire {
+    #[serde(default)]
+    r#type: String,
+    #[serde(default)]
+    topic: String,
+    #[serde(default)]
+    schema: String,
+    sequence: Option<u64>,
+    #[serde(default)]
+    readings: Vec<AdcCompactReading>,
+    #[serde(default, flatten)]
+    extra: Map<String, Value>,
+}
+
+impl<'de> Deserialize<'de> for WsTelemetryMessage {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = WsTelemetryWire::deserialize(deserializer)?;
+        let readings = wire
+            .readings
+            .into_iter()
+            .map(AdcCompactReading::into_reading)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            r#type: wire.r#type,
+            topic: wire.topic,
+            schema: wire.schema,
+            sequence: wire.sequence,
+            readings,
+            extra: wire.extra,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +187,8 @@ pub struct WsTelemetryBatchChannel {
     pub name: String,
     #[serde(default)]
     pub signal: String,
+    pub kind: AdcKind,
+    pub unit: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,7 +199,9 @@ pub struct WsTelemetryBatchSample {
     pub sample_sequence: Option<u64>,
     #[serde(default)]
     pub device_t_mono_us: Option<u64>,
-    pub values: Vec<[i32; 4]>,
+    #[serde(default)]
+    pub power_enabled_mask: u32,
+    pub values: Vec<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -337,20 +378,33 @@ pub fn expand_telemetry_batch(batch: WsTelemetryBatch) -> Result<Vec<WsTelemetry
             .channels
             .iter()
             .zip(sample.values)
-            .map(|(channel, values)| AdcReading {
-                name: channel.name.clone(),
-                signal: channel.signal.clone(),
-                raw: Some(values[1]),
-                current_valid: None,
-                mv: Some(values[2]),
-                ma_est: None,
-                power_enabled: Some(values[0] != 0),
-                sensor_channel: "current".to_string(),
-                unit: "A".to_string(),
-                sensor_value: None,
-                current_ua: Some(values[3]),
+            .enumerate()
+            .map(|(channel_index, (channel, value))| {
+                validate_compact_kind_unit(channel.kind, &channel.unit)
+                    .map_err(|err| anyhow!(err))?;
+                let power_enabled = match channel.kind {
+                    AdcKind::Current => {
+                        let bit = if channel_index < u32::BITS as usize {
+                            1u32 << channel_index
+                        } else {
+                            0
+                        };
+                        Some(sample.power_enabled_mask & bit != 0)
+                    }
+                    AdcKind::Voltage => None,
+                };
+                AdcCompactReading {
+                    name: channel.name.clone(),
+                    signal: channel.signal.clone(),
+                    kind: channel.kind,
+                    unit: channel.unit.clone(),
+                    power_enabled,
+                    value,
+                }
+                .into_reading()
+                .map_err(|err| anyhow!(err))
             })
-            .collect();
+            .collect::<Result<Vec<AdcReading>>>()?;
         let sample_sequence = sample.sample_sequence.unwrap_or(sample.sequence);
         let device_t_mono_us = sample.device_t_mono_us.unwrap_or(sample.uptime_us);
         let mut extra = Map::new();
@@ -396,6 +450,7 @@ mod tests {
         expand_telemetry_batch, subscribe_batch_request, subscribe_request, WsClient,
         WsCommandRequest, WsEnvelope, WsMessage, WsStatusSnapshot, WsTelemetryBatch,
     };
+    use crate::adc::AdcKind;
     use crate::json_contract::JSON_SCHEMA;
     use crate::monitoring::{
         BoardMonitoring, MonitoringAvailability, MonitoringCpu, MonitoringHeap, MonitoringMemory,
@@ -620,10 +675,10 @@ mod tests {
                 "topic":"adc",
                 "schema":"radxa-linkr-debugger.v1",
                 "dropped_samples":2,
-                "channels":[{"name":"5v_out","signal":"S_C_5V"}],
+                "channels":[{"name":"5v_out","signal":"S_C_5V","kind":"current","unit":"uA"}],
                 "samples":[
-                    {"sequence":10,"uptime_us":1000,"sample_sequence":110,"device_t_mono_us":1001,"values":[[1,12,34,56]]},
-                    {"sequence":11,"uptime_us":2000,"sample_sequence":111,"device_t_mono_us":2001,"values":[[0,13,35,57]]}
+                    {"sequence":10,"uptime_us":1000,"sample_sequence":110,"device_t_mono_us":1001,"power_enabled_mask":1,"values":[56]},
+                    {"sequence":11,"uptime_us":2000,"sample_sequence":111,"device_t_mono_us":2001,"power_enabled_mask":0,"values":[57]}
                 ]
             }"#,
         )
@@ -634,7 +689,9 @@ mod tests {
         assert_eq!(messages[0].sequence, Some(10));
         assert_eq!(messages[0].readings[0].name, "5v_out");
         assert_eq!(messages[0].readings[0].power_enabled, Some(true));
-        assert_eq!(messages[0].readings[0].raw, Some(12));
+        assert_eq!(messages[0].readings[0].kind, AdcKind::Current);
+        assert_eq!(messages[0].readings[0].unit, "uA");
+        assert_eq!(messages[0].readings[0].value, Some(56));
         assert_eq!(messages[0].readings[0].current_ua, Some(56));
         assert_eq!(messages[0].extra["uptime_us"], 1000);
         assert_eq!(messages[0].extra["sample_sequence"], 110);
@@ -651,14 +708,14 @@ mod tests {
     }
 
     #[test]
-    fn expands_old_telemetry_batch_using_legacy_timing_fields() {
+    fn expands_telemetry_batch_using_default_timing_aliases() {
         let batch: WsTelemetryBatch = serde_json::from_str(
             r#"{
                 "type":"telemetry-batch",
                 "topic":"adc",
                 "schema":"radxa-linkr-debugger.v1",
-                "channels":[{"name":"5v_out","signal":"S_C_5V"}],
-                "samples":[{"sequence":12,"uptime_us":3000,"values":[[1,14,36,58]]}]
+                "channels":[{"name":"5v_out","signal":"S_C_5V","kind":"current","unit":"uA"}],
+                "samples":[{"sequence":12,"uptime_us":3000,"power_enabled_mask":1,"values":[58]}]
             }"#,
         )
         .unwrap();
@@ -669,6 +726,52 @@ mod tests {
         assert_eq!(messages[0].extra["uptime_us"], 3000);
         assert_eq!(messages[0].extra["sample_sequence"], 12);
         assert_eq!(messages[0].extra["device_t_mono_us"], 3000);
+    }
+
+    #[test]
+    fn expands_mixed_current_and_voltage_batch_with_power_mask() {
+        let batch: WsTelemetryBatch = serde_json::from_str(
+            r#"{
+                "type":"telemetry-batch",
+                "topic":"adc",
+                "schema":"radxa-linkr-debugger.v1",
+                "channels":[
+                    {"name":"5v_out","signal":"S_C_5V","kind":"current","unit":"uA"},
+                    {"name":"12v_out","signal":"S_C_12V","kind":"current","unit":"uA"},
+                    {"name":"20v_out","signal":"S_C_20V","kind":"current","unit":"uA"},
+                    {"name":"adc3","signal":"ADC3","kind":"voltage","unit":"uV"}
+                ],
+                "samples":[{"sequence":12,"uptime_us":3000,"power_enabled_mask":5,"values":[540000,120000,20000,1234000]}]
+            }"#,
+        )
+        .unwrap();
+
+        let message = expand_telemetry_batch(batch).unwrap().remove(0);
+        assert_eq!(message.readings.len(), 4);
+        assert_eq!(message.readings[0].power_enabled, Some(true));
+        assert_eq!(message.readings[1].power_enabled, Some(false));
+        assert_eq!(message.readings[2].power_enabled, Some(true));
+        assert_eq!(message.readings[3].kind, AdcKind::Voltage);
+        assert_eq!(message.readings[3].voltage_uv, Some(1_234_000));
+        assert_eq!(message.readings[3].current_ua, None);
+    }
+
+    #[test]
+    fn rejects_old_four_element_batch_tuples() {
+        let raw = r#"{
+            "type":"telemetry-batch","topic":"adc","schema":"radxa-linkr-debugger.v1",
+            "channels":[{"name":"5v_out","signal":"S_C_5V","kind":"current","unit":"uA"}],
+            "samples":[{"sequence":1,"uptime_us":2,"values":[[1,2,3,4]]}]
+        }"#;
+
+        assert!(serde_json::from_str::<WsTelemetryBatch>(raw).is_err());
+    }
+
+    #[test]
+    fn rejects_compact_kind_unit_mismatch() {
+        let raw = r#"{"type":"telemetry","topic":"live","schema":"radxa-linkr-debugger.v1","readings":[{"name":"adc3","kind":"voltage","unit":"uA","value":1}]}"#;
+
+        assert!(serde_json::from_str::<super::WsTelemetryMessage>(raw).is_err());
     }
 
     #[test]
@@ -724,10 +827,9 @@ mod tests {
                             "name": "5v_out",
                             "signal": "S_C_5V",
                             "power_enabled": true,
-                            "sensor_channel": "current",
-                            "unit": "A",
-                            "sensor_value": {"val1": 0, "val2": 850000},
-                            "current_ua": 850000
+                            "kind": "current",
+                            "unit": "uA",
+                            "value": 850000
                         }]
                     })
                     .to_string()

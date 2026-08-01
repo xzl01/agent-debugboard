@@ -211,6 +211,9 @@ impl TuiModel {
 
     fn apply_adc_response(&mut self, readings: Vec<AdcReading>) {
         for reading in readings {
+            if reading.kind != crate::adc::AdcKind::Current {
+                continue;
+            }
             if let Some(power_enabled) = reading.power_enabled {
                 self.power_states
                     .insert(reading.name.clone(), power_enabled);
@@ -760,16 +763,21 @@ fn recovery_active_level_label(mode: &str) -> &'static str {
 }
 
 fn current_milliamp_estimate(reading: &AdcReading) -> i32 {
-    if let Some(ma_est) = reading.ma_est {
-        return ma_est;
+    match reading.kind {
+        crate::adc::AdcKind::Current => {
+            if let Some(ma_est) = reading.ma_est {
+                return ma_est;
+            }
+            if let Some(current_ua) = reading.current_ua {
+                return current_ua / 1000;
+            }
+            if let Some(sensor_value) = &reading.sensor_value {
+                return (sensor_value.val1 * 1_000_000 + sensor_value.val2) / 1000;
+            }
+            0
+        }
+        crate::adc::AdcKind::Voltage => 0,
     }
-    if let Some(current_ua) = reading.current_ua {
-        return current_ua / 1000;
-    }
-    if let Some(sensor_value) = &reading.sensor_value {
-        return (sensor_value.val1 * 1_000_000 + sensor_value.val2) / 1000;
-    }
-    0
 }
 
 fn control_targets() -> &'static [&'static str] {
@@ -1314,10 +1322,13 @@ mod tests {
             mv: Some(17),
             ma_est: Some(500),
             power_enabled: Some(true),
+            kind: crate::adc::AdcKind::Current,
             sensor_channel: "current".to_string(),
             unit: "A".to_string(),
+            value: Some(500000),
             sensor_value: None,
             current_ua: Some(500000),
+            voltage_uv: None,
         }]);
 
         assert_eq!(model.power_states.get("5v_out"), Some(&true));
@@ -1334,13 +1345,44 @@ mod tests {
             mv: None,
             ma_est: None,
             power_enabled: Some(true),
+            kind: crate::adc::AdcKind::Current,
             sensor_channel: "current".to_string(),
             unit: "A".to_string(),
+            value: Some(850_000),
             sensor_value: None,
             current_ua: Some(850_000),
+            voltage_uv: None,
         };
 
         assert_eq!(current_milliamp_estimate(&reading), 850);
+    }
+
+    #[test]
+    fn voltage_reading_is_ignored_by_power_history_and_tui_sections() {
+        let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+        model.apply_adc_response(vec![AdcReading {
+            name: "adc3".to_string(),
+            signal: "ADC3".to_string(),
+            raw: Some(42),
+            current_valid: None,
+            mv: Some(1234),
+            ma_est: None,
+            power_enabled: None,
+            kind: crate::adc::AdcKind::Voltage,
+            sensor_channel: "voltage".to_string(),
+            unit: "V".to_string(),
+            sensor_value: Some(crate::adc::AdcSensorValue {
+                val1: 1,
+                val2: 234000,
+            }),
+            value: Some(1_234_000),
+            current_ua: None,
+            voltage_uv: Some(1_234_000),
+        }]);
+
+        assert!(!model.history.contains_key("adc3"));
+        assert!(!model.latest.contains_key("adc3"));
+        assert!(!model.power_states.contains_key("adc3"));
     }
 
     #[test]

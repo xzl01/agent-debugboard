@@ -3,6 +3,7 @@
 // Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
 // Copyright (c) Jiali Chen <chenjiali@radxa.com>
 
+use crate::adc::AdcKind;
 use crate::client::{BoardClient, BoardRequest};
 use crate::json_contract::JSON_SCHEMA;
 use crate::ws_client::{
@@ -248,7 +249,7 @@ fn write_telemetry_csv_row(
         let reading = message
             .readings
             .iter()
-            .find(|reading| reading.name == *rail);
+            .find(|reading| reading.name == *rail && reading.kind == AdcKind::Current);
         write!(
             writer,
             ",{},{}",
@@ -384,14 +385,15 @@ mod tests {
             "type": "telemetry-batch",
             "topic": "adc",
             "schema": JSON_SCHEMA,
-            "channels": [{"name": "5v_out", "signal": "S_C_5V"}],
-            "samples": [{
-                "sequence": 10,
-                "uptime_us": 1234,
-                "sample_sequence": 210,
-                "device_t_mono_us": 2234,
-                "values": [[1, 42, 180, 456000]]
-            }]
+                "channels": [{"name": "5v_out", "signal": "S_C_5V", "kind": "current", "unit": "uA"}],
+                "samples": [{
+                    "sequence": 10,
+                    "uptime_us": 1234,
+                    "sample_sequence": 210,
+                    "device_t_mono_us": 2234,
+                    "power_enabled_mask": 1,
+                    "values": [456000]
+                }]
         }))
         .unwrap();
         let message = expand_telemetry_batch(batch).unwrap().remove(0);
@@ -425,10 +427,13 @@ mod tests {
                 mv: None,
                 ma_est: None,
                 power_enabled: Some(true),
+                kind: crate::adc::AdcKind::Current,
                 sensor_channel: String::new(),
                 unit: String::new(),
                 sensor_value: None,
+                value: Some(123_000),
                 current_ua: Some(123_000),
+                voltage_uv: None,
             }],
             extra,
             ..Default::default()
@@ -452,12 +457,13 @@ mod tests {
             "type": "telemetry-batch",
             "topic": "adc",
             "schema": JSON_SCHEMA,
-            "channels": [{"name": "5v_out", "signal": "S_C_5V"}],
-            "samples": [{
-                "sequence": 10,
-                "uptime_us": 1234,
-                "values": [[1, 42, 180, 456000]]
-            }]
+                "channels": [{"name": "5v_out", "signal": "S_C_5V", "kind": "current", "unit": "uA"}],
+                "samples": [{
+                    "sequence": 10,
+                    "uptime_us": 1234,
+                    "power_enabled_mask": 1,
+                    "values": [456000]
+                }]
         }))
         .unwrap();
         let message = expand_telemetry_batch(batch).unwrap().remove(0);
@@ -469,6 +475,52 @@ mod tests {
         let data = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert!(data.contains("10,3000000,88,1234,true,456000"));
+    }
+
+    #[test]
+    fn ndjson_retains_voltage_adc3_while_csv_schema_stays_three_rails() {
+        let path = temp_file_path("adc3");
+        let mut writer = BufWriter::new(File::create(&path).unwrap());
+        let batch: WsTelemetryBatch = serde_json::from_value(serde_json::json!({
+            "type": "telemetry-batch",
+            "topic": "adc",
+            "schema": JSON_SCHEMA,
+            "channels": [
+                {"name":"5v_out","signal":"S_C_5V","kind":"current","unit":"uA"},
+                {"name":"12v_out","signal":"S_C_12V","kind":"current","unit":"uA"},
+                {"name":"20v_out","signal":"S_C_20V","kind":"current","unit":"uA"},
+                {"name":"adc3","signal":"ADC3","kind":"voltage","unit":"uV"}
+            ],
+            "samples": [{
+                "sequence": 14,
+                "uptime_us": 4321,
+                "power_enabled_mask": 7,
+                "values": [100, 200, 300, 1234000]
+            }]
+        }))
+        .unwrap();
+        let message = expand_telemetry_batch(batch).unwrap().remove(0);
+
+        write_telemetry_record(&mut writer, &message, Duration::ZERO, 1, 1000).unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+        let data = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let record: Value = serde_json::from_str(data.trim()).unwrap();
+
+        assert_eq!(record["readings"][3]["name"], "adc3");
+        assert_eq!(record["readings"][3]["voltage_uv"], 1_234_000);
+
+        let csv_path = temp_file_path("adc3-csv");
+        let mut csv = BufWriter::new(File::create(&csv_path).unwrap());
+        write_csv_header(&mut csv).unwrap();
+        write_telemetry_csv_row(&mut csv, &message, Duration::ZERO, 1).unwrap();
+        csv.flush().unwrap();
+        drop(csv);
+        let csv = std::fs::read_to_string(&csv_path).unwrap();
+        let _ = std::fs::remove_file(&csv_path);
+        assert_eq!(csv.lines().next(), Some("sequence,t_mono_ns,t_unix_ns,device_t_mono_us,5v_out_power_enabled,5v_out_current_ua,12v_out_power_enabled,12v_out_current_ua,20v_out_power_enabled,20v_out_current_ua"));
+        assert!(!csv.contains("adc3"));
     }
 
     #[test]

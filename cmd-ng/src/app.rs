@@ -1503,6 +1503,23 @@ mod tests {
     }
 
     #[test]
+    fn run_adc_read_voltage_renders_volts() {
+        let cli = Cli::parse_from(["cmd", "adc", "read", "adc3"]);
+        let client = FakeClient {
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"adc","action":"read","readings":[{"name":"adc3","signal":"ADC3","raw":42,"mv":1234,"sensor_channel":"voltage","unit":"V","sensor_value":{"val1":1,"val2":234000}}]}"#.to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+
+        assert_eq!(code, 0);
+        assert_eq!(String::from_utf8(stdout).unwrap().trim(), "adc3=1.234000V");
+    }
+
+    #[test]
     fn parse_adc_record_rate_accepts_firmware_supported_range() {
         assert_eq!(parse_adc_record_rate_hz("1").unwrap(), 1);
         assert_eq!(parse_adc_record_rate_hz("1000").unwrap(), 1000);
