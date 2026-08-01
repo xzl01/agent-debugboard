@@ -29,7 +29,9 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 - `--json` 仍要求固件返回 `schema/ok/command`
 - TUI 现在以 HTTP 轮询作为主数据通道，因此可以稳定多开；实时高频采集改由 `adc record` 走 websocket
 - TUI 控件区把 power、Switch（包含 VIN）和 GPIO 合并进同一个控制面，方向键/Tab 统一导航，Space/Enter 切换当前项，`i` 把当前 GPIO 切回输入，`t/u` 仍可直接切到 `target`/`usb-reader`；状态区会同时显示 switch 的 `desired` / `actual` 以便诊断后端回读差异；VIN 只在固件报告时显示，且切换前需要确认
-- GPIO 在 CLI/TUI 中会同时显示 `GPxx` 和 `note`；控制时可使用 `GPxx`、数字引脚（如 `13`）或精确 note（如 `CON_MAS`）
+- GPIO 在 CLI/TUI 中会同时显示 `GPxx` 和 `note`；控制时可使用 `GPxx`、数字引脚（如 `13`）或精确 note（如 `CON_MAS`）。`GP29` 仍在持久化/安全目录中，但由 ADC3 占用时是 input-only；输出请求会被固件拒绝。参见[固件说明](../apps/radxa_linkr_debugger/README.md)与[权威 ADC telemetry contract](../doc/adc-telemetry.md#gp29-ownership)。
+- `adc read` 默认返回四个 descriptor：`5v_out`、`12v_out`、`20v_out`（电流）和 `adc3`（GP29 电压）。HTTP rich path 中三路电流的 `current_ua` 是 signed integer µA，ADC3 从 `sensor_value` 得到 signed integer µV；`adc read -v` 还显示 `signal`、`raw`、`mv`、`sensor_value` 等诊断字段，host 不做 ADC 校准或零点修正。
+- 实时 WebSocket 使用紧凑形状：单样本 reading 包含 `name`、`signal`、`kind`、`unit`、`value`，其中 `value` 是由 `unit` 指定的 signed integer（电流 `uA`、电压 `uV`），且只有电流通道携带 `power_enabled`。Batch 先声明 `channels[]`，每个 `values: i32[]` 按位置与 `channels` 对齐；`power_enabled_mask` 是 unsigned 8-bit 掩码，仅对 `kind="current"` 的通道有意义。WS 不携带 HTTP 的 `raw`、`mv`、`current_ua` 或 `sensor_value`；完整 wire shape 见[权威 ADC telemetry contract](../doc/adc-telemetry.md)。
 - `adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]` 会创建 live websocket session；`.ndjson` 输出完整 telemetry 记录，`.csv` 输出设备时间戳和三路电流列；默认请求 1000Hz，`--rate-hz` 可指定 1..1000Hz，高于 100Hz 时 CLI 请求 batch JSON 并逐样本展开；正常完成或连接、解析、写盘失败后都会关闭并删除自身 session
 - 固件最多支持四个并发 websocket 客户端，多个 `adc record` 可以同时运行；触发式功耗采集使用全局硬件缓冲区，同一时间只能有一个 capture owner
 - recorder 会写入主机接收时间和 `metadata.requested_rate_hz`，并把设备 `sample_sequence`、`uptime_us` 和 `device_t_mono_us` 放入 `metadata.device_timing`；紧凑 batch 仅提供 `sequence` 与 `uptime_us` 时，Rust 会将其归一化为对应别名，也会接受固件显式提供的别名；CSV 时间列优先使用 `device_t_mono_us`，否则回退到 `uptime_us`，再否则为 0；采样环覆盖通过 `metadata.dropped_samples` 显式报告，分析采样间隔时应优先使用设备时间

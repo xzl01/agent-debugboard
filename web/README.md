@@ -32,6 +32,36 @@ manual, current-threshold, GPIO-edge, and power-on triggers, keeps four captures
 for overlay comparison, and exports CSV or NDJSON. Captures use firmware device
 timestamps and a pre/post-trigger ring buffer instead of browser timing.
 
+The Power card consumes the four-descriptor ADC telemetry contract
+documented in [doc/adc-telemetry.md](../doc/adc-telemetry.md):
+
+- One row per controllable current rail (`5v_out`, `12v_out`, `20v_out`),
+  each with a shared `MeasurementSparkline` (`mode="power"`) that runs at
+  10 Hz and keeps a 90-sample rolling window (about 9 seconds of
+  history). Current and power share the same SVG history; both
+  auto-scale, the unit minimum is fixed per metric.
+- A monitor-only `adc3` (`GP29`) section rendered between the current
+  rows and the PowerAnalyzer, only when the firmware reports an `adc3`
+  reading. It reuses the shared `MeasurementSparkline` in
+  `mode="voltage"`, the same 90-sample window and the same 10 Hz
+  cadence, but with a fixed 0..3,300,000 µV Y scale (nominal 0..3.3 V).
+  The voltage channel has no `power_enabled`; clients must treat the
+  newest `value` as the canonical signed integer microvolt reading and
+  must not apply any host-side ADC calibration.
+- PowerAnalyzer remains a current-only triggered capture story:
+  2048 samples, three current channels, manual / current-threshold /
+  GPIO-edge / power-on triggers, four-overlay comparison, CSV/NDJSON
+  export.
+
+GP29 is in the persisted/safe catalog but is input-only while owned by
+the `adc3` voltage monitor; ordinary GPIO output commands against GP29
+must fail at the firmware layer. HTTP `GET /api/v1/adc/read` stays the
+rich read path; the live WebSocket frame is intentionally compact (no
+`raw`/`mv`/`current_ua`/`sensor_value` on the WS wire). The compact
+WebSocket shape is a deliberate atomic breaking change for any client
+that previously consumed verbose telemetry over WebSocket; there is no
+dual-emission shim.
+
 ## Production build
 
 ```sh
@@ -155,7 +185,7 @@ GENERIC_PACKED_BURST, post=0 captures exactly 100000 samples losslessly then
 auto-STOP/drain (one capture, not continuous streaming). At lower non-packed rates
 (1-25 MHz in browser), Stream mode sends `post_samples=0` and runs until stopped
 by the user. Web Sigrok pin selection is limited to `GP10-GP20`; GP29 is excluded from LA
-(available as ordinary GPIO/ADC3); `GP7-GP9` are shown but disabled.
+and remains input-only while used by ADC3; `GP7-GP9` are shown but disabled.
 
 Completed captures can be previewed in the waveform view and exported as CSV or
 PulseView `.sr` files. The browser decoder still operates on completed bounded
