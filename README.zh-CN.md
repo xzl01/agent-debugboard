@@ -27,6 +27,7 @@ RP2354 硬件需要完成专用 board 定义和 HIL 验证后才能声明支持�
 | GPIO | `GP7`–`GP20`；`GP29` 仍保留在目录中，但在 `adc3` 拥有时仅可输入（见 [GP29 ownership](doc/adc-telemetry.md#gp29-ownership)） |
 | OTA 更新 | MCUboot 无签名 OTA |
 | 看门狗 | 自主恢复至 BOOTSEL |
+| 持久化配置 | [一份由固件持有的显式快照](doc/persistent-configuration.md)；安全值在启动时恢复，危险值需要确认，清除快照不会改变实时硬件 |
 | 强制门户 | DHCP option 114/HTTP 自动打开 Web UI |
 
 WIDE11 使用 144184 B 硬件切片和 30720 B WS 遥测环，共享 149048 B 总后备分配。
@@ -60,6 +61,7 @@ Agent skill 本身时，才继续遵循 skill 的 curl-first 工作流。通过 
 
 - **[用户指南](docs/user/README.zh-CN.md)** — CLI、TUI、WebUI、OTA、OpenOCD、逻辑分析仪、功率分析仪
 - **[开发者指南](docs/developer/README.zh-CN.md)** — 构建、刷写、贡献、硬件映射
+- **[持久化配置](doc/persistent-configuration.md)** — 固件持有的快照、恢复与确认行为
 
 ## 给 AI Agent 的使用入口
 

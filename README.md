@@ -28,6 +28,7 @@ definition and HIL validation before it can be declared supported.
 | GPIO | `GP7`–`GP20`; `GP29` remains cataloged but is input-only while owned by `adc3` (see [GP29 ownership](doc/adc-telemetry.md#gp29-ownership)) |
 | OTA update | MCUboot unsigned OTA |
 | Watchdog | Autonomous recovery to BOOTSEL |
+| Persistent configuration | [One explicit firmware-owned snapshot](doc/persistent-configuration.md); safe values restore at boot, dangerous values require confirmation, and clear leaves live hardware unchanged |
 | Captive portal | DHCP option 114/HTTP auto-open for Web UI |
 
 WIDE11 uses a 144184 B hardware slice and a 30720 B WS telemetry ring within the 149048 B total backing allocation.
@@ -64,6 +65,7 @@ human-readable text.
 
 - **[User Guide](docs/user/)** — CLI, TUI, WebUI, OTA, OpenOCD, Logic Analyzer, Power Analyzer
 - **[Developer Guide](docs/developer/)** — Build, flash, contribute, hardware mapping
+- **[Persistent Configuration](doc/persistent-configuration.md)** — Firmware-owned snapshot, restore, and confirmation behavior
 
 ## For AI Agents
 
