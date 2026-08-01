@@ -8,6 +8,8 @@
 
 #include "linkr_debugger_control.h"
 #include "linkr_debugger_capture_arena.h"
+#include "linkr_debugger_config_service.h"
+#include "linkr_debugger_config_store.h"
 #include "linkr_debugger_http.h"
 #include "linkr_debugger_logic_analyzer.h"
 #include "linkr_debugger_network.h"
@@ -74,6 +76,16 @@ int main(void)
 	if (ret < 0) {
 		LOG_ERR("Board control init failed: %d", ret);
 		return 0;
+	}
+
+	ret = linkr_debugger_config_store_init();
+	if (ret != LINKR_DEBUGGER_CONFIG_STORE_OK) {
+		LOG_WRN("Config store init non-OK: %d", ret);
+	}
+
+	ret = linkr_debugger_config_service_init();
+	if (ret != LINKR_DEBUGGER_CONFIG_SERVICE_OK) {
+		LOG_WRN("Config service init non-OK: %d", ret);
 	}
 
 	linkr_debugger_http_init();

@@ -6,6 +6,7 @@
  */
 
 #include "linkr_debugger_control.h"
+#include "linkr_debugger_config_shell.h"
 #include "linkr_debugger_shell.h"
 
 #include <errno.h>
@@ -128,8 +129,16 @@ SHELL_STATIC_SUBCMD_SET_CREATE(tf_wp_cmds,
 	SHELL_CMD(set, NULL, "Set TF card write-protect route: writable or protected.", cmd_tf_wp_set),
 	SHELL_SUBCMD_SET_END);
 
+SHELL_STATIC_SUBCMD_SET_CREATE(config_cmds,
+	SHELL_CMD(show, NULL, "Show configuration status.", linkr_debugger_config_shell_show),
+	SHELL_CMD(save, NULL, "Save configuration snapshot; optional --confirm.", linkr_debugger_config_shell_save),
+	SHELL_CMD(apply, NULL, "Apply saved configuration; required --confirm.", linkr_debugger_config_shell_apply),
+	SHELL_CMD(clear, NULL, "Clear saved configuration; does not change current hardware.", linkr_debugger_config_shell_clear),
+	SHELL_SUBCMD_SET_END);
+
 SHELL_CMD_REGISTER(bootloader, NULL,
-			   "Enter MCU BOOTSEL for UF2/picotool flashing.",
-			   cmd_bootloader);
+				   "Enter MCU BOOTSEL for UF2/picotool flashing.",
+				   cmd_bootloader);
 SHELL_CMD_REGISTER(vin, &vin_cmds, "Control VIN voltage route.", NULL);
+SHELL_CMD_REGISTER(config, &config_cmds, "Control configuration snapshots.", NULL);
 SHELL_CMD_REGISTER(tf_wp, &tf_wp_cmds, "Control TF card write-protect route.", NULL);
