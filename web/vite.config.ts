@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     base: process.env.VITE_BASE_PATH || "/",
+    publicDir: isFirmwareBuild ? false : undefined,
     plugins: [react()],
     build: {
       outDir: process.env.VITE_OUT_DIR || "dist",
