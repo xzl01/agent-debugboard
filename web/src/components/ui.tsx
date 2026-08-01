@@ -1,4 +1,9 @@
-import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import {
+  forwardRef,
+  type ButtonHTMLAttributes,
+  type HTMLAttributes,
+  type ReactNode,
+} from "react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -128,23 +133,27 @@ type Tone = "neutral" | "ok" | "warn" | "danger" | "brand";
 export function Badge({
   children,
   tone = "neutral",
-}: {
-  children: ReactNode;
-  tone?: Tone;
+  className,
+  ...props
+}: HTMLAttributes<HTMLSpanElement> & {
+  readonly children: ReactNode;
+  readonly tone?: Tone;
 }) {
   const tones: Record<Tone, string> = {
     neutral: "bg-panel2 text-ink-dim border-line/70",
-    ok: "bg-ok/15 text-ok border-ok/30",
-    warn: "bg-warn/15 text-warn border-warn/30",
-    danger: "bg-danger/15 text-danger border-danger/30",
-    brand: "bg-brand/15 text-brand border-brand/30",
+    ok: "bg-ok/15 text-ink border-ok/30 [&>svg]:text-ok",
+    warn: "bg-warn/15 text-ink border-warn/30 [&>svg]:text-warn",
+    danger: "bg-danger/15 text-ink border-danger/30 [&>svg]:text-danger",
+    brand: "bg-brand/15 text-ink border-brand/30 [&>svg]:text-brand",
   };
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none",
-        tones[tone]
+        tones[tone],
+        className
       )}
+      {...props}
     >
       {children}
     </span>
