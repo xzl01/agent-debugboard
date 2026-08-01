@@ -7,8 +7,13 @@ mod adc;
 mod app;
 mod cli;
 mod client;
+mod config_command;
 mod json_contract;
 mod monitoring;
+mod persistent_config;
+mod persistent_config_render;
+mod persistent_config_validate;
+mod persistent_config_value;
 mod recorder;
 mod test;
 mod test_assertions;
@@ -18,6 +23,11 @@ mod test_script;
 mod test_serial;
 mod tui;
 mod ws_client;
+
+#[cfg(test)]
+mod persistent_config_model_tests;
+#[cfg(test)]
+mod persistent_config_tests;
 
 use std::process::ExitCode;
 

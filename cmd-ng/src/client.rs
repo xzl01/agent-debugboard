@@ -3,6 +3,9 @@
 // Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
 // Copyright (c) Jiali Chen <chenjiali@radxa.com>
 
+use crate::persistent_config::{
+    ConfigAction, ConfigApplyRequest, ConfigItemId, ConfigSaveRequest, PersistentConfigResponse,
+};
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::{Body, Client};
 use reqwest::{Method, Url};
@@ -28,6 +31,35 @@ pub trait BoardTransport {
     fn send_text(&self, request: BoardRequest) -> Result<String>;
     fn upload_binary(&self, request: BoardBinaryUpload) -> Result<String>;
     fn base_url(&self) -> &str;
+
+    fn config_show(&self) -> Result<PersistentConfigResponse> {
+        config_response(self.send_text(config_show_request())?, &ConfigAction::Get)
+    }
+
+    fn config_save(
+        &self,
+        items: &[ConfigItemId],
+        confirm: bool,
+    ) -> Result<PersistentConfigResponse> {
+        config_response(
+            self.send_text(config_save_request(items, confirm)?)?,
+            &ConfigAction::Save,
+        )
+    }
+
+    fn config_apply(&self, confirm: bool) -> Result<PersistentConfigResponse> {
+        config_response(
+            self.send_text(config_apply_request(confirm)?)?,
+            &ConfigAction::Apply,
+        )
+    }
+
+    fn config_clear(&self) -> Result<PersistentConfigResponse> {
+        config_response(
+            self.send_text(config_clear_request())?,
+            &ConfigAction::Clear,
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +123,26 @@ impl BoardClient {
         Self::response_body(response)
     }
 
+    pub fn config_show(&self) -> Result<PersistentConfigResponse> {
+        self.send_config(config_show_request(), ConfigAction::Get)
+    }
+
+    pub fn config_save(
+        &self,
+        items: &[ConfigItemId],
+        confirm: bool,
+    ) -> Result<PersistentConfigResponse> {
+        self.send_config(config_save_request(items, confirm)?, ConfigAction::Save)
+    }
+
+    pub fn config_apply(&self, confirm: bool) -> Result<PersistentConfigResponse> {
+        self.send_config(config_apply_request(confirm)?, ConfigAction::Apply)
+    }
+
+    pub fn config_clear(&self) -> Result<PersistentConfigResponse> {
+        self.send_config(config_clear_request(), ConfigAction::Clear)
+    }
+
     fn request_url(&self, path: &str, query: &[(String, String)]) -> Result<Url> {
         let mut url = Url::parse(&self.base_url)
             .with_context(|| format!("parse base URL {:?}", self.base_url))?;
@@ -103,6 +155,30 @@ impl BoardClient {
             }
         }
         Ok(url)
+    }
+
+    fn send_config(
+        &self,
+        request: BoardRequest,
+        expected: ConfigAction,
+    ) -> Result<PersistentConfigResponse> {
+        let url = self.request_url(&request.path, &request.query)?;
+        let mut builder = self
+            .http
+            .request(request.method, url)
+            .header("Accept", "application/json");
+        if let Some(body) = request.body {
+            builder = builder
+                .header("Content-Type", "application/json")
+                .json(&body);
+        }
+        let response = builder.send()?;
+        let status = response.status();
+        let body = Self::response_body(response)?;
+        let response = PersistentConfigResponse::from_raw(body)
+            .with_context(|| format!("decode config response from HTTP {status}"))?;
+        response.validate(&expected, Some(status.as_u16()))?;
+        Ok(response)
     }
 
     fn response_text(response: reqwest::blocking::Response) -> Result<String> {
@@ -147,6 +223,68 @@ impl BoardTransport for BoardClient {
     fn base_url(&self) -> &str {
         Self::base_url(self)
     }
+
+    fn config_show(&self) -> Result<PersistentConfigResponse> {
+        Self::config_show(self)
+    }
+
+    fn config_save(
+        &self,
+        items: &[ConfigItemId],
+        confirm: bool,
+    ) -> Result<PersistentConfigResponse> {
+        Self::config_save(self, items, confirm)
+    }
+
+    fn config_apply(&self, confirm: bool) -> Result<PersistentConfigResponse> {
+        Self::config_apply(self, confirm)
+    }
+
+    fn config_clear(&self) -> Result<PersistentConfigResponse> {
+        Self::config_clear(self)
+    }
+}
+
+fn config_show_request() -> BoardRequest {
+    BoardRequest {
+        method: Method::GET,
+        path: "/api/v1/config".to_string(),
+        query: vec![],
+        body: None,
+    }
+}
+
+fn config_save_request(items: &[ConfigItemId], confirm: bool) -> Result<BoardRequest> {
+    Ok(BoardRequest {
+        method: Method::PUT,
+        path: "/api/v1/config".to_string(),
+        query: vec![],
+        body: Some(serde_json::to_value(ConfigSaveRequest { items, confirm })?),
+    })
+}
+
+fn config_apply_request(confirm: bool) -> Result<BoardRequest> {
+    Ok(BoardRequest {
+        method: Method::POST,
+        path: "/api/v1/config/apply".to_string(),
+        query: vec![],
+        body: Some(serde_json::to_value(ConfigApplyRequest { confirm })?),
+    })
+}
+
+fn config_clear_request() -> BoardRequest {
+    BoardRequest {
+        method: Method::DELETE,
+        path: "/api/v1/config".to_string(),
+        query: vec![],
+        body: None,
+    }
+}
+
+fn config_response(raw_json: String, expected: &ConfigAction) -> Result<PersistentConfigResponse> {
+    let response = PersistentConfigResponse::from_raw(raw_json)?;
+    response.validate(expected, None)?;
+    Ok(response)
 }
 
 pub fn resolve_base_url(input: &str) -> String {
