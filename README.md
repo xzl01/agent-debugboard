@@ -32,6 +32,11 @@ definition and HIL validation before it can be declared supported.
 
 WIDE11 uses a 144184 B hardware slice and a 30720 B WS telemetry ring within the 149048 B total backing allocation.
 
+ADC3 contract, wire shapes, and GP29 ownership rules live in
+[doc/adc-telemetry.md](doc/adc-telemetry.md); the dated
+[2026-07-31 ADC3 telemetry HIL report](doc/testing/results/2026-07-31-adc3-telemetry-hil.md)
+is the hardware-validation evidence for the GP29 direct-ownership subcase.
+
 `5V_FIN` is intentionally treated as a separate input/source power input. It is
 not exposed as a controllable output.
 
@@ -88,6 +93,12 @@ radxa-linkr-debuggerctl --version
 radxa-linkr-debuggerctl --json doctor
 radxa-linkr-debuggerctl --json status
 ```
+
+If the released host CLI is not downloaded or installed yet, use the release
+installation path below. When following the Agent skill itself, keep using the
+skill's curl-first workflow. For automation through the CLI, prefer `--json`;
+parse `schema`, `ok`, `command`, and `error.code` instead of human-readable
+text.
 
 ## Repository Layout
 

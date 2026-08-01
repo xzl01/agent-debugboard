@@ -819,8 +819,21 @@ After firmware changes, treat this HTTP BOOTSEL flow and the CDC ACM shell
 fallback below as required validation paths before you finish; verify that the
 serial fallback path still reaches the standard ROM BOOTSEL workflow.
 
-Final current-target HIL footprint: RAM 475896/532480 bytes (89.37%), flash
-701900/847832 bytes (82.79%), combined UF2 1455616 bytes. The dated
+Latest measured canonical/HIL build (pre-token, i.e. measured and verified
+by the 2026-07-31 ADC3 telemetry HIL before the Web-only
+`text-[9px]` to `text-[11px]` token fix in
+`web/src/components/PowerSparkline.tsx` was rebuilt or reflashed): RAM
+494272/532480 bytes (92.82%), flash 734652/847832 bytes (86.65%),
+combined UF2 1521152 bytes
+(SHA256 `9d64df4bba89d6d8b78fa94d6bb0df134e9381b45df8e0ceee3b05cd4f9d8c48`),
+OTA bin 734692 bytes
+(SHA256 `fb68a90bce315e7ed2f3b236b128b1fc37df6afb010c50b9d3e95e4f0084284f`).
+The dated
+[ADC3 telemetry HIL report](../../doc/testing/results/2026-07-31-adc3-telemetry-hil.md)
+records the exact build and recovery evidence for this baseline, including
+the combined-UF2 dual BOOTSEL recovery. The earlier 701900/847832 flash
+(82.79%) with 475896/532480 RAM (89.37%) and 1455616-byte combined UF2
+baseline is historical; the dated
 [pre-trigger and UART HIL report](../../doc/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md)
 records the exact build and recovery evidence. Earlier freeze-build sizes are
 historical and remain unchanged in their dated reports.

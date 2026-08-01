@@ -31,6 +31,10 @@ RP2354 硬件需要完成专用 board 定义和 HIL 验证后才能声明支持�
 
 WIDE11 使用 144184 B 硬件切片和 30720 B WS 遥测环，共享 149048 B 总后备分配。
 
+ADC3 契约、wire shape 和 GP29 所有权规则见
+[doc/adc-telemetry.md](doc/adc-telemetry.md)；[2026-07-31 ADC3 telemetry HIL 报告](doc/testing/results/2026-07-31-adc3-telemetry-hil.md)
+是 GP29 直接所有权子项的硬件验证证据。
+
 `5V_FIN` 会被当作独立的输入/来源电源处理，不作为可控输出暴露给主机。
 
 ## 快速开始
@@ -84,6 +88,11 @@ radxa-linkr-debuggerctl --version
 radxa-linkr-debuggerctl --json doctor
 radxa-linkr-debuggerctl --json status
 ```
+
+如果 release CLI 尚未下载或安装，先按下方 release 安装路径处理。只有在执行
+Agent skill 本身时，才继续遵循 skill 的 curl-first 工作流。通过 CLI 做自动化时，
+优先使用 `--json`，解析 `schema`、`ok`、`command` 和 `error.code`，不要解析面向
+人看的文本输出。
 
 ## 仓库结构
 

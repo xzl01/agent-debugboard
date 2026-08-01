@@ -1119,7 +1119,7 @@ The 2026-07-27 WIDE11 HIL verified the then-current target at 100 MHz with
 delivered exactly 100000 samples in 98 DATA frames with zero sample-index gaps.
 WIDE11 uses two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B
 (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B shared burst slice (overlays the 149048 B total backing allocation).
-GP29 is excluded from WIDE11 LA (available as ordinary GPIO/ADC3). NONE deep burst uses
+GP29 is excluded from WIDE11 LA and remains input-only while used by ADC3. NONE deep burst uses
 two capture SMs; triggered deep burst adds a third SM running the 3-instruction trigger
 program. Two-phase START prepares ownership and quiesce before the response. NONE sends
 START_RESP in RUNNING state with no ARMED event; triggered captures send START_RESP in
@@ -1160,7 +1160,7 @@ verifies these independent bit mappings:
 | ... | ... |
 | GP20 | bit10 |
 
-GP29 / ADC3 is excluded from WIDE11 LA (available as ordinary GPIO/ADC3).
+GP29 / ADC3 is excluded from WIDE11 LA and remains input-only.
 
 Do not use HTTP safe-GPIO outputs as the stimulus source for this case. WIDE11 PIO
 preparation configures GP10-GP20 as inputs (`gpio_pin_configure(...,
@@ -1213,7 +1213,7 @@ DATA bit0 sees both low and high runs, and that the zero mask `0x0c02` remains c
 for every checked sample: GP11(bit1) and GP20(bit10) must stay low.
 Any high sample on bits1/10 is a failure and should be reported as unexpected
 high/crosstalk. This reduced case does **not** validate independent high-state mapping
-for GP11 or GP20. GP29 is excluded from WIDE11 LA (available as ordinary GPIO/ADC3).
+for GP11 or GP20. GP29 is excluded from WIDE11 LA and remains input-only while used by ADC3.
 
 #### 8b.4.3 WIDE11 Shared-Arena Telemetry Isolation HIL
 
