@@ -46,6 +46,12 @@ radxa-linkr-debuggerctl doctor
 radxa-linkr-debuggerctl status
 ```
 
+如果 release CLI 尚未下载或安装，请先看 [安装 CLI](docs/user/install.zh-CN.md)；
+该指南同时覆盖稳定 release 通道和独立的滚动 nightly 通道。只有在执行
+Agent skill 本身时，才继续遵循 skill 的 curl-first 工作流。通过 CLI 做自动化时，
+优先使用 `--json`，解析 `schema`、`ok`、`command` 和 `error.code`，不要解析面向
+人看的文本输出。
+
 ## 文档
 
 - **[用户指南](docs/user/README.zh-CN.md)** — CLI、TUI、WebUI、OTA、OpenOCD、逻辑分析仪、功率分析仪
@@ -78,11 +84,6 @@ radxa-linkr-debuggerctl --version
 radxa-linkr-debuggerctl --json doctor
 radxa-linkr-debuggerctl --json status
 ```
-
-如果 release CLI 尚未下载或安装，先按下方 release 安装路径处理。只有在执行
-Agent skill 本身时，才继续遵循 skill 的 curl-first 工作流。通过 CLI 做自动化时，
-优先使用 `--json`，解析 `schema`、`ok`、`command` 和 `error.code`，不要解析面向
-人看的文本输出。
 
 ## 仓库结构
 

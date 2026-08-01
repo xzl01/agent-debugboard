@@ -1039,6 +1039,26 @@ Both runners use port 80 at `http://172.29.203.1`. The browser runner connects
 to the board-hosted Web UI on the same NCM-assigned address. The shell runner
 also uses port 80 and the same default URL.
 
+## Rolling Nightly Pre-release
+
+The repository publishes a separate rolling nightly channel through
+`.github/workflows/nightly.yml`. It runs daily at 03:00 UTC plus on
+`workflow_dispatch`, and it publishes (and overwrites) a mutable
+`nightly` Git tag together with a prerelease that is explicitly marked
+**not** the latest release. The channel uploads the same nine assets as
+the formal `Release` workflow (combined UF2, OTA bin, ELF, map, three
+Rust CLI archives, the skill bundle, and `SHA256SUMS.txt`) and prunes
+any other assets from previous runs.
+
+The nightly channel is rolling and testing-only. Formal `v*` releases
+keep their own `Release` workflow, semantic tags, signing policy, and
+release assets; the nightly channel does not affect them. Production
+agents and end users must continue to download the formal `Release`
+artifacts. Treat the nightly tag exactly like the other automated
+canaries: do not promote it into production, do not sign or pin it,
+and do not use it to claim board-level HIL has passed without
+following the existing HIL procedure.
+
 ## OpenOCD / JTAG Workflow
 
 Use OpenOCD through the onboard CH347F path when the target board exposes

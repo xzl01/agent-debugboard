@@ -48,6 +48,13 @@ radxa-linkr-debuggerctl doctor
 radxa-linkr-debuggerctl status
 ```
 
+If the released host CLI is not downloaded or installed yet, see
+[Install the CLI](docs/user/install.md) for the stable release channel and the
+separate rolling nightly channel. When following the Agent skill itself, keep
+using the skill's curl-first workflow. For automation through the CLI, prefer
+`--json`; parse `schema`, `ok`, `command`, and `error.code` instead of
+human-readable text.
+
 ## Documentation
 
 - **[User Guide](docs/user/)** — CLI, TUI, WebUI, OTA, OpenOCD, Logic Analyzer, Power Analyzer
@@ -81,12 +88,6 @@ radxa-linkr-debuggerctl --version
 radxa-linkr-debuggerctl --json doctor
 radxa-linkr-debuggerctl --json status
 ```
-
-If the released host CLI is not downloaded or installed yet, use the release
-installation path below. When following the Agent skill itself, keep using the
-skill's curl-first workflow. For automation through the CLI, prefer `--json`;
-parse `schema`, `ok`, `command`, and `error.code` instead of human-readable
-text.
 
 ## Repository Layout
 

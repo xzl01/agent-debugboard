@@ -1883,6 +1883,34 @@ Both runners use `http://172.29.203.1` as the default board URL. The API runner
 default is port 80. The browser runner connects to the board-hosted Web UI on
 the same NCM-assigned address.
 
+### 12h. Rolling Nightly Prerelease Isolation
+
+`.github/workflows/nightly.yml` 在 UTC 03:00 加 `workflow_dispatch` 时产出
+mutable `nightly` Git tag 与一个标记为 `not latest` 的 prerelease，覆盖与
+正式 release 相同的 9 个资产。本节描述 nightly 通道与正式 HIL 的隔离约定，
+本身不要求任何具体实物跑分；它属于发布链路约束，避免污染既有 artifact 与
+HIL 报告。
+
+期望检查项（每条 `required`、`pending`，未跑真实 evidence 之前不能算 pass）：
+
+- nightly workflow 是**仅**修改 GitHub Release 与 tag 的发布链路，不应驱动
+  任何专用 `[passed]` 状态写入 `doc/testing/results/`。任何 `[passed]`
+  标签只能来自真实板卡 HIL 流程。
+- 正式 `v*` release 的 SHA256SUMS、`radxa-linkr-debugger-rp2350.uf2`、
+  `radxa-linkr-debugger-rp2350-ota.bin` 等产物在 nightly run 与正式
+  release run 之间应保持各自独立。即便两类产物在同一天出现，也不应
+  复用同一份产物摘要；CI 必须分别为两条通道跑出 SHA256。
+- 任何由 nightly 渠道驱动的烧写（例如 in-house developer 使用
+  `nightly` tag 验证 bleeding-edge 改动）必须使用合成
+  `radxa-linkr-debugger-rp2350.uf2` 而**不是**应用产物
+  `build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.uf2`；
+  应用 UF2 没有 MCUboot，线刷会变砖。
+- nightly 渠道的 bleed 改动**不**覆盖正式 `v*` release 的下载链接；
+  HIL 验收仍以正式 `Release` workflow 的资产为权威来源。
+- 任何"nightly 已通过 HIL"的说法都不被允许。nightly 通道是滚动
+  测试产物，不构成 formal validation evidence；正式 HIL 证据必须独立
+  写到命名带日期和测试主题的 `doc/testing/results/<date>-<topic>-hil.md`。
+
 ## 最短 HIL smoke test
 
 时间紧张时，至少验证以下 6 项：

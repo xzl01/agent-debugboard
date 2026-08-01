@@ -39,3 +39,8 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 - `watchdog` 仍只暴露 `status`，不提供 host 侧 feed/控制
 - 板内 `vdd_5v`（VDD_5V）电源轨随 `switch usb` 路由联动：切 `pc` 开、切 `target` 关；路由不变时仍可手动 `power set vdd_5v`，下次路由切换会重新强制。开机默认路由 `target` 下保持关闭；关闭它会切断 CH347 1.8V VIN 的 VDD_1V8 子电源轨
 - VIN 切换需要 `--confirm`（TUI 中为 Space/Enter 确认），因为电压切换有副作用；RP2350 的 GPIO1 VDD_5V 和 GPIO6 VDD_1V8 由固件 Device Tree 建模为常开，可选 CH347 VIO 电平由固件标准 `regulator-gpio` 节点建模并通过 Zephyr regulator API 切换。执行 1.8V 切换前必须确认目标支持该电平、连接 VIO 物理测量设备，并明确接受硬件副作用；默认验证只读取或保持 3.3V
+
+## Released 与 nightly 通道
+
+- 正式 release 由 GitHub `Release` workflow 在推送 `v*` tag 后产出，资产、签名策略与现有 release 一致。
+- 一条独立的滚动 nightly workflow `.github/workflows/nightly.yml` 在 UTC 03:00 加 `workflow_dispatch` 时把可变 `nightly` Git tag 与标记为 `not latest` 的 prerelease 一同发布，覆盖同一组 9 个资产，并在每次 run 中清理先前多余资产。nightly 是滚动且仅用于测试，不会替换正式 `v*` release；正式 release 仍是生产交付的唯一权威来源。
