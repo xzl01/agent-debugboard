@@ -267,7 +267,7 @@ describe("createTestRunner", () => {
   });
 
   it("observes a capture published through a fresh board reference", async () => {
-    const boardRef: { current: ReturnType<typeof baseBoard> & { captures: any[] } } = {
+    const boardRef: { current: Omit<ReturnType<typeof baseBoard>, "captures"> & { captures: any[] } } = {
       current: { ...baseBoard(), captures: [] },
     };
     boardRef.current.triggerCapture = () => {
@@ -290,7 +290,15 @@ describe("createTestRunner", () => {
               triggered: true,
               sampleSequence: 1,
               deviceTimeUs: 1_000,
-              readings: [{ name: "5v_out", current_ua: 200_000 }],
+              readings: [{
+                name: "5v_out",
+                signal: "S_C_5V",
+                kind: "current",
+                unit: "uA",
+                value: 200_000,
+                power_enabled: true,
+                current_ua: 200_000,
+              }],
             }],
           }],
         };
