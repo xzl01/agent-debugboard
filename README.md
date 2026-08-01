@@ -22,10 +22,10 @@ definition and HIL validation before it can be declared supported.
 | Web UI | Dashboard at http://172.29.203.1/ |
 | Logic analyzer | PIO2+DMA, 100 kHz–125 MHz, WebSocket/raw-TCP Sigrok with a [common packed arena and current WIDE11 capture](doc/logic-analyzer.md) |
 | Power analyzer | Triggered capture with ring buffer, CSV/NDJSON export |
-| Power outputs | 12v_out, 5v_out, 20v_out, vdd_5v |
-| ADC monitor | Current readings for 5v_out, 12v_out, and 20v_out plus GP29/ADC3 voltage telemetry |
+| Power outputs | `12v_out`, `5v_out`, `20v_out`, `vdd_5v` |
+| ADC monitor | Current readings for `5v_out`, `12v_out`, and `20v_out` plus GP29/ADC3 voltage telemetry; see [doc/adc-telemetry.md](doc/adc-telemetry.md) |
 | Switch routes | Firmware-advertised TF/SD, USB hub mux, TF write-protect (`writable`/`protected`), VIN (1.8V/3.3V) |
-| GPIO | GP7–GP20, GP29 |
+| GPIO | `GP7`–`GP20`; `GP29` remains cataloged but is input-only while owned by `adc3` (see [GP29 ownership](doc/adc-telemetry.md#gp29-ownership)) |
 | OTA update | MCUboot unsigned OTA |
 | Watchdog | Autonomous recovery to BOOTSEL |
 | Captive portal | DHCP option 114/HTTP auto-open for Web UI |
