@@ -87,6 +87,21 @@ target_sources(app PRIVATE
   src/linkr_debugger_capture_arbiter.c
   src/linkr_debugger_capture_arena.c
   src/linkr_debugger_control.c
+  src/linkr_debugger_config_codec.c
+  src/linkr_debugger_config_store.c
+  src/linkr_debugger_config_apply.c
+  src/linkr_debugger_config_policy.c
+  src/linkr_debugger_config_service.c
+  src/linkr_debugger_config_service_adapters.c
+  src/linkr_debugger_config_service_state.c
+  src/linkr_debugger_config_http.c
+  src/linkr_debugger_config_http_encode.c
+  src/linkr_debugger_config_http_json.c
+  src/linkr_debugger_config_http_parse.c
+  src/linkr_debugger_config_http_result.c
+  src/linkr_debugger_config_summary.c
+  src/linkr_debugger_config_shell.c
+  src/linkr_debugger_flash_arbiter.c
   src/linkr_debugger_http_body.c
   src/linkr_debugger_http.c
   src/linkr_debugger_logic_analyzer.c

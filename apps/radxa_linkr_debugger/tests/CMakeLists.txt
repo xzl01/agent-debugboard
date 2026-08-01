@@ -20,6 +20,70 @@ linkr_debugger_add_host_test(linkr_debugger_model_rp2350_test
 )
 target_compile_definitions(linkr_debugger_model_rp2350_test PRIVATE CONFIG_SOC_SERIES_RP2350)
 
+linkr_debugger_add_host_test(linkr_debugger_config_http_codec_test
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_codec.c
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_parse.c
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_json.c
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_encode.c
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_result.c
+  model_host/test_linkr_debugger_config_http_codec.c
+)
+target_compile_definitions(linkr_debugger_config_http_codec_test PRIVATE
+  LINKR_DEBUGGER_CONFIG_HTTP_HOST_TEST=1
+)
+target_compile_options(linkr_debugger_config_http_codec_test PRIVATE
+  -fsanitize=address,undefined
+  -fno-omit-frame-pointer
+  -include ${CMAKE_CURRENT_LIST_DIR}/model_host/test_linkr_debugger_config_http_stubs.h
+)
+target_link_options(linkr_debugger_config_http_codec_test PRIVATE -fsanitize=address,undefined)
+
+linkr_debugger_add_host_test(linkr_debugger_config_http_test
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_codec.c
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_http_body.c
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_parse.c
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_json.c
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_encode.c
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_result.c
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http.c
+  model_host/test_linkr_debugger_config_http.c
+)
+target_compile_definitions(linkr_debugger_config_http_test PRIVATE
+  LINKR_DEBUGGER_CONFIG_HTTP_HOST_TEST=1
+)
+target_compile_options(linkr_debugger_config_http_test PRIVATE
+  -fsanitize=address,undefined
+  -fno-omit-frame-pointer
+  -include ${CMAKE_CURRENT_LIST_DIR}/model_host/test_linkr_debugger_config_http_stubs.h
+)
+target_link_options(linkr_debugger_config_http_test PRIVATE -fsanitize=address,undefined)
+
+linkr_debugger_add_host_test(linkr_debugger_config_summary_test
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_summary.c
+  model_host/test_linkr_debugger_config_summary.c
+)
+target_compile_options(linkr_debugger_config_summary_test PRIVATE
+  -fsanitize=address,undefined
+  -fno-omit-frame-pointer
+  -fno-sanitize-recover=all
+)
+target_link_options(linkr_debugger_config_summary_test PRIVATE -fsanitize=address,undefined)
+
+linkr_debugger_add_host_test(linkr_debugger_config_shell_test
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_summary.c
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_shell.c
+  model_host/test_linkr_debugger_config_shell.c
+)
+target_compile_options(linkr_debugger_config_shell_test PRIVATE
+  -fsanitize=address,undefined
+  -fno-omit-frame-pointer
+  -fno-sanitize-recover=all
+)
+target_link_options(linkr_debugger_config_shell_test PRIVATE -fsanitize=address,undefined)
+target_include_directories(linkr_debugger_config_shell_test BEFORE PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/model_host/stubs
+)
+
 linkr_debugger_add_host_test(linkr_debugger_ota_parser_test
   ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_ota.c
   model_host/test_linkr_debugger_ota.c

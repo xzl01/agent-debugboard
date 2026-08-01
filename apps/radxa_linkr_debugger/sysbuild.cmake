@@ -11,7 +11,9 @@
 # even though the MCUboot ExternalProject is not yet added when this file is
 # included.
 set(combined_out "${CMAKE_BINARY_DIR}/radxa-linkr-debugger-rp2350.uf2")
+set(ota_out      "${CMAKE_BINARY_DIR}/radxa-linkr-debugger-rp2350-ota.bin")
 set(app_hex     "${CMAKE_BINARY_DIR}/radxa_linkr_debugger/zephyr/zephyr.signed.hex")
+set(app_bin     "${CMAKE_BINARY_DIR}/radxa_linkr_debugger/zephyr/zephyr.signed.bin")
 set(mcuboot_hex "${CMAKE_BINARY_DIR}/mcuboot/zephyr/zephyr.hex")
 
 add_custom_command(
@@ -27,6 +29,13 @@ add_custom_command(
   COMMENT "Generating combined MCUboot+app UF2"
 )
 
+add_custom_command(
+  OUTPUT ${ota_out}
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${app_bin} ${ota_out}
+  DEPENDS ${app_bin}
+  COMMENT "Publishing MCUboot OTA payload"
+)
+
 add_custom_target(linkr_debugger_combined_uf2 ALL
-  DEPENDS ${combined_out}
+  DEPENDS ${combined_out} ${ota_out}
 )
