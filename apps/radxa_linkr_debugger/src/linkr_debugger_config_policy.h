@@ -1,0 +1,30 @@
+#ifndef RADXA_LINKR_DEBUGGER_CONFIG_POLICY_H_
+#define RADXA_LINKR_DEBUGGER_CONFIG_POLICY_H_
+
+#include "linkr_debugger_config_service.h"
+
+struct linkr_debugger_control_snapshot;
+
+struct linkr_debugger_config_resolved_selection {
+	size_t item_count;
+	const struct linkr_debugger_config_item_desc
+		*items[LINKR_DEBUGGER_CONFIG_MAX_ENTRIES];
+};
+
+enum linkr_debugger_config_service_result linkr_debugger_config_policy_resolve_request(
+	const struct linkr_debugger_config_save_request *request,
+	struct linkr_debugger_config_resolved_selection *selection);
+enum linkr_debugger_config_service_result
+linkr_debugger_config_policy_project_available_snapshot(
+	const struct linkr_debugger_control_snapshot *control_snapshot,
+	const struct linkr_debugger_config_resolved_selection *selection,
+	struct linkr_debugger_config_snapshot *snapshot);
+enum linkr_debugger_config_service_result
+linkr_debugger_config_policy_canonicalize_snapshot(
+	struct linkr_debugger_config_snapshot *snapshot);
+enum linkr_debugger_config_service_result
+linkr_debugger_config_policy_populate_confirmation_report(
+	const struct linkr_debugger_config_snapshot *snapshot, bool confirmed,
+	struct linkr_debugger_config_operation_report *report);
+
+#endif
