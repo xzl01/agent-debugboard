@@ -1,6 +1,6 @@
 import {
   useCallback,
-  useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -147,10 +147,12 @@ export default function App() {
     setSelectedWorkspaceTab(nextTab);
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const nextTab = pendingWorkspaceFocusRef.current;
     if (!nextTab) return;
-    workspaceTabRefs.current[nextTab]?.focus();
+    const button = workspaceTabRefs.current[nextTab];
+    button?.focus({ preventScroll: true });
+    button?.scrollIntoView({ block: "nearest", inline: "nearest" });
     pendingWorkspaceFocusRef.current = null;
   }, [selectedWorkspaceTab]);
 
@@ -177,7 +179,10 @@ export default function App() {
               tabIndex={selected ? 0 : -1}
               aria-selected={selected}
               aria-controls={getWorkspacePanelId(tab.id)}
-              onClick={() => setSelectedWorkspaceTab(tab.id)}
+              onClick={() => {
+                pendingWorkspaceFocusRef.current = tab.id;
+                setSelectedWorkspaceTab(tab.id);
+              }}
               onKeyDown={(event) => onWorkspaceTabKeyDown(event, index)}
               className={`flex min-h-9 items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium transition-colors sm:justify-start ${
                 selected
