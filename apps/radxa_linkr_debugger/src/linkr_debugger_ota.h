@@ -40,7 +40,7 @@ bool linkr_debugger_ota_path_is_handled(const char *path);
 
 void linkr_debugger_ota_init(void);
 void linkr_debugger_ota_auto_confirm_ready(void);
-#ifndef LINKR_DEBUGGER_OTA_HOST_TEST
+#if !defined(LINKR_DEBUGGER_OTA_HOST_TEST) || defined(LINKR_DEBUGGER_OTA_FULL_HOST_TEST)
 int linkr_debugger_ota_http_handle(struct http_client_ctx *client,
 				  enum http_transaction_status status,
 				  const struct http_request_ctx *request_ctx,

@@ -6,6 +6,7 @@
  */
 
 #include "linkr_debugger_ota.h"
+#include "linkr_debugger_flash_arbiter.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -14,7 +15,7 @@
 #include <string.h>
 #include <strings.h>
 
-#ifndef LINKR_DEBUGGER_OTA_HOST_TEST
+#if !defined(LINKR_DEBUGGER_OTA_HOST_TEST)
 
 #include "linkr_debugger_control.h"
 
@@ -26,6 +27,10 @@
 #include <zephyr/net/http/status.h>
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/sys/reboot.h>
+
+#endif
+
+#if !defined(LINKR_DEBUGGER_OTA_HOST_TEST) || defined(LINKR_DEBUGGER_OTA_FULL_HOST_TEST)
 
 LOG_MODULE_REGISTER(linkr_debugger_ota, CONFIG_LINKR_DEBUGGER_LOG_LEVEL);
 
@@ -80,7 +85,7 @@ static struct linkr_debugger_ota_status linkr_debugger_ota = {
 };
 static uint8_t linkr_debugger_ota_expected_sha[LINKR_DEBUGGER_OTA_SHA256_LEN];
 
-#endif /* !LINKR_DEBUGGER_OTA_HOST_TEST */
+#endif
 
 static bool linkr_debugger_ota_hex_digit(char ch, uint8_t *value)
 {
@@ -199,7 +204,7 @@ bool linkr_debugger_ota_path_is_handled(const char *path)
 	return linkr_debugger_ota_route_from_path(path) != LINKR_DEBUGGER_OTA_ROUTE_NONE;
 }
 
-#ifndef LINKR_DEBUGGER_OTA_HOST_TEST
+#if !defined(LINKR_DEBUGGER_OTA_HOST_TEST) || defined(LINKR_DEBUGGER_OTA_FULL_HOST_TEST)
 
 static const char *linkr_debugger_ota_state_name(enum linkr_debugger_ota_state state)
 {
@@ -336,12 +341,24 @@ static int linkr_debugger_ota_max_upload_size(size_t *max_size, uint8_t *area_id
 	return 0;
 }
 
+static int linkr_debugger_ota_flash_owner_acquire(void)
+{
+	return linkr_debugger_flash_arbiter_try_acquire(LINKR_DEBUGGER_FLASH_OWNER_OTA) ?
+		0 : -EBUSY;
+}
+
+static void linkr_debugger_ota_flash_owner_release(void)
+{
+	(void)linkr_debugger_flash_arbiter_release(LINKR_DEBUGGER_FLASH_OWNER_OTA);
+}
+
 static void linkr_debugger_ota_set_failed_locked(int error, const char *code)
 {
 	linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_FAILED;
 	linkr_debugger_ota.last_error = error;
 	(void)snprintk(linkr_debugger_ota.last_error_code,
 		       sizeof(linkr_debugger_ota.last_error_code), "%s", code);
+	linkr_debugger_ota_flash_owner_release();
 }
 
 static void linkr_debugger_ota_flash_ctx_cleanup(void)
@@ -387,6 +404,10 @@ static int linkr_debugger_ota_begin_locked(const struct http_request_ctx *reques
 	    linkr_debugger_ota.state == LINKR_DEBUGGER_OTA_STATE_PENDING_TEST ||
 	    linkr_debugger_ota.state == LINKR_DEBUGGER_OTA_STATE_REBOOTING) {
 		return -EBUSY;
+	}
+	ret = linkr_debugger_ota_flash_owner_acquire();
+	if (ret < 0) {
+		return ret;
 	}
 
 	if (request_ctx->headers_status == HTTP_HEADER_STATUS_DROPPED) {
@@ -495,6 +516,7 @@ static int linkr_debugger_ota_write_locked(const uint8_t *data, size_t len, bool
 	}
 
 	linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_VERIFIED;
+	linkr_debugger_ota_flash_owner_release();
 	return 0;
 }
 
@@ -542,11 +564,31 @@ static void linkr_debugger_ota_auto_confirm_work_handler(struct k_work *work);
 static void linkr_debugger_ota_reboot_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
+	k_mutex_lock(&linkr_debugger_ota_lock, K_FOREVER);
+	if (linkr_debugger_ota.state != LINKR_DEBUGGER_OTA_STATE_REBOOTING) {
+		k_mutex_unlock(&linkr_debugger_ota_lock);
+		return;
+	}
+	if (!linkr_debugger_flash_arbiter_release(LINKR_DEBUGGER_FLASH_OWNER_OTA)) {
+		k_mutex_unlock(&linkr_debugger_ota_lock);
+		LOG_ERR("OTA reboot skipped because flash ownership was lost");
+		return;
+	}
+	k_mutex_unlock(&linkr_debugger_ota_lock);
 	sys_reboot(SYS_REBOOT_COLD);
 }
 
 void linkr_debugger_ota_init(void)
 {
+#ifdef LINKR_DEBUGGER_OTA_FULL_HOST_TEST
+	linkr_debugger_ota_flash_ctx_cleanup();
+	memset(&linkr_debugger_ota, 0, sizeof(linkr_debugger_ota));
+	linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_IDLE;
+	linkr_debugger_ota.upload_area_id = 0xff;
+	linkr_debugger_ota_failed_client = NULL;
+	memset(linkr_debugger_ota_expected_sha, 0, sizeof(linkr_debugger_ota_expected_sha));
+#endif
+	linkr_debugger_ota_flash_owner_release();
 	k_mutex_init(&linkr_debugger_ota_lock);
 	k_work_init_delayable(&linkr_debugger_ota_reboot_work, linkr_debugger_ota_reboot_work_handler);
 	k_work_init_delayable(&linkr_debugger_ota_auto_confirm_work,
@@ -569,16 +611,12 @@ void linkr_debugger_ota_auto_confirm_ready(void)
 static void linkr_debugger_ota_auto_confirm_work_handler(struct k_work *work)
 {
 	struct linkr_debugger_watchdog_status watchdog;
+	bool retry = false;
 	int ret;
 
 	ARG_UNUSED(work);
 
 	if (!linkr_debugger_watchdog_ota_test_marker_present()) {
-		return;
-	}
-
-	if (boot_is_img_confirmed()) {
-		linkr_debugger_watchdog_ota_test_marker_clear();
 		return;
 	}
 
@@ -590,13 +628,40 @@ static void linkr_debugger_ota_auto_confirm_work_handler(struct k_work *work)
 		return;
 	}
 
+	k_mutex_lock(&linkr_debugger_ota_lock, K_FOREVER);
+	linkr_debugger_ota_refresh_persistent_state_locked();
+	if (!linkr_debugger_watchdog_ota_test_marker_present()) {
+		k_mutex_unlock(&linkr_debugger_ota_lock);
+		return;
+	}
+	if (linkr_debugger_ota.state != LINKR_DEBUGGER_OTA_STATE_PENDING_TEST) {
+		retry = true;
+	} else if (boot_is_img_confirmed()) {
+		linkr_debugger_watchdog_ota_test_marker_clear();
+		linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_IDLE;
+		k_mutex_unlock(&linkr_debugger_ota_lock);
+		return;
+	} else if (linkr_debugger_ota_flash_owner_acquire() < 0) {
+		retry = true;
+	}
+	if (retry) {
+		k_mutex_unlock(&linkr_debugger_ota_lock);
+		(void)k_work_reschedule(&linkr_debugger_ota_auto_confirm_work,
+					 K_MSEC(LINKR_DEBUGGER_OTA_AUTO_CONFIRM_DELAY_MS));
+		return;
+	}
+
 	ret = boot_write_img_confirmed();
+	linkr_debugger_ota_flash_owner_release();
 	if (ret < 0) {
+		k_mutex_unlock(&linkr_debugger_ota_lock);
 		LOG_WRN("MCUboot image auto-confirm failed: %d", ret);
 		return;
 	}
 
 	linkr_debugger_watchdog_ota_test_marker_clear();
+	linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_IDLE;
+	k_mutex_unlock(&linkr_debugger_ota_lock);
 	LOG_INF("MCUboot test image confirmed after watchdog health gate");
 }
 
@@ -642,11 +707,21 @@ static int linkr_debugger_ota_handle_test(struct http_response_ctx *response_ctx
 		return 0;
 	}
 
+	ret = linkr_debugger_ota_flash_owner_acquire();
+	if (ret < 0) {
+		k_mutex_unlock(&linkr_debugger_ota_lock);
+		linkr_debugger_ota_error(response_ctx, json_buf, json_buf_len,
+				       HTTP_409_CONFLICT, "ota", "flash_busy",
+				       "flash is busy with another operation");
+		return 0;
+	}
+
 	linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_REBOOTING;
 	if (linkr_debugger_ota_encode_status(&env) < 0 ||
 	    linkr_debugger_ota_append(&env, ",\"reboot_delay_ms\":%u}\n",
 				     LINKR_DEBUGGER_OTA_REBOOT_DELAY_MS) < 0) {
 		linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_VERIFIED;
+		linkr_debugger_ota_flash_owner_release();
 		k_mutex_unlock(&linkr_debugger_ota_lock);
 		linkr_debugger_ota_error(response_ctx, json_buf, json_buf_len,
 					       HTTP_500_INTERNAL_SERVER_ERROR, "ota", "response_too_large",
@@ -658,6 +733,7 @@ static int linkr_debugger_ota_handle_test(struct http_response_ctx *response_ctx
 				K_MSEC(LINKR_DEBUGGER_OTA_REBOOT_DELAY_MS));
 	if (ret < 0) {
 		linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_VERIFIED;
+		linkr_debugger_ota_flash_owner_release();
 		k_mutex_unlock(&linkr_debugger_ota_lock);
 		linkr_debugger_ota_error(response_ctx, json_buf, json_buf_len,
 				       HTTP_500_INTERNAL_SERVER_ERROR, "ota", "schedule_reboot_failed",
@@ -670,7 +746,8 @@ static int linkr_debugger_ota_handle_test(struct http_response_ctx *response_ctx
 	if (ret < 0) {
 		(void)k_work_cancel_delayable(&linkr_debugger_ota_reboot_work);
 		linkr_debugger_watchdog_ota_test_marker_clear();
-		linkr_debugger_ota_set_failed_locked(ret, "request_upgrade_failed");
+		linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_VERIFIED;
+		linkr_debugger_ota_flash_owner_release();
 		k_mutex_unlock(&linkr_debugger_ota_lock);
 		linkr_debugger_ota_error(response_ctx, json_buf, json_buf_len,
 					       HTTP_500_INTERNAL_SERVER_ERROR, "ota", "request_upgrade_failed",
@@ -695,9 +772,30 @@ static int linkr_debugger_ota_handle_confirm(struct http_response_ctx *response_
 		.buf = (char *)json_buf,
 		.cap = json_buf_len,
 	};
-	int ret = boot_write_img_confirmed();
+	int ret;
+
+	k_mutex_lock(&linkr_debugger_ota_lock, K_FOREVER);
+	if (linkr_debugger_ota.state == LINKR_DEBUGGER_OTA_STATE_UPLOADING) {
+		k_mutex_unlock(&linkr_debugger_ota_lock);
+		linkr_debugger_ota_error(response_ctx, json_buf, json_buf_len,
+				       HTTP_409_CONFLICT, "ota", "upload_in_progress",
+				       "another OTA operation is already active");
+		return 0;
+	}
+	ret = linkr_debugger_ota_flash_owner_acquire();
+	if (ret < 0) {
+		k_mutex_unlock(&linkr_debugger_ota_lock);
+		linkr_debugger_ota_error(response_ctx, json_buf, json_buf_len,
+				       HTTP_409_CONFLICT, "ota", "flash_busy",
+				       "flash is busy with another operation");
+		return 0;
+	}
+
+	ret = boot_write_img_confirmed();
 
 	if (ret < 0) {
+		linkr_debugger_ota_flash_owner_release();
+		k_mutex_unlock(&linkr_debugger_ota_lock);
 		linkr_debugger_ota_error(response_ctx, json_buf, json_buf_len,
 				       HTTP_500_INTERNAL_SERVER_ERROR, "ota", "confirm_failed",
 				       "failed to confirm running MCUboot image");
@@ -706,16 +804,17 @@ static int linkr_debugger_ota_handle_confirm(struct http_response_ctx *response_
 
 	linkr_debugger_watchdog_ota_test_marker_clear();
 
-	k_mutex_lock(&linkr_debugger_ota_lock, K_FOREVER);
 	linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_IDLE;
 	if (linkr_debugger_ota_encode_status(&env) < 0 ||
 	    linkr_debugger_ota_finish_status(&env) < 0) {
+		linkr_debugger_ota_flash_owner_release();
 		k_mutex_unlock(&linkr_debugger_ota_lock);
 		linkr_debugger_ota_error(response_ctx, json_buf, json_buf_len,
 				       HTTP_500_INTERNAL_SERVER_ERROR, "ota", "response_too_large",
 				       "failed to encode OTA confirm response");
 		return 0;
 	}
+	linkr_debugger_ota_flash_owner_release();
 	k_mutex_unlock(&linkr_debugger_ota_lock);
 
 	linkr_debugger_ota_set_json_response(response_ctx, json_buf, env.len, HTTP_200_OK);
@@ -747,6 +846,9 @@ static int linkr_debugger_ota_handle_upload(struct http_client_ctx *client,
 	}
 	if (status == HTTP_SERVER_TRANSACTION_COMPLETE) {
 		k_mutex_lock(&linkr_debugger_ota_lock, K_FOREVER);
+		if (client == linkr_debugger_ota_upload_client) {
+			linkr_debugger_ota_abort_locked();
+		}
 		if (client == linkr_debugger_ota_failed_client) {
 			linkr_debugger_ota_failed_client = NULL;
 		}
@@ -822,7 +924,7 @@ static int linkr_debugger_ota_handle_upload(struct http_client_ctx *client,
 	}
 	k_mutex_unlock(&linkr_debugger_ota_lock);
 
-	linkr_debugger_ota_set_json_response(response_ctx, json_buf, env.len, HTTP_201_CREATED);
+	linkr_debugger_ota_set_json_response(response_ctx, json_buf, env.len, HTTP_200_OK);
 	return 0;
 }
 
@@ -894,4 +996,4 @@ int linkr_debugger_ota_http_handle(struct http_client_ctx *client,
 void linkr_debugger_ota_init(void) {}
 void linkr_debugger_ota_auto_confirm_ready(void) {}
 
-#endif /* LINKR_DEBUGGER_OTA_HOST_TEST */
+#endif
