@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Activity, ChartLine, Clock3, List, Power, Zap } from "lucide-react";
 import { Badge, Card, Toggle } from "./ui";
 import type { AdcReading, PowerOutput } from "@/lib/types";
+import { isCurrentAdcReading, isVoltageAdcReading } from "@/lib/adc";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { formatUptime } from "@/lib/utils";
@@ -12,7 +13,7 @@ import {
   POWER_SWITCH_RAILS,
   type PowerMetric,
 } from "@/lib/power";
-import { PowerSparkline } from "./PowerSparkline";
+import { MeasurementSparkline } from "./PowerSparkline";
 
 const POWER_TRENDS_STORAGE_KEY = "linkr-power-trends-expanded";
 
@@ -27,7 +28,7 @@ export function PowerCard({
   onSet,
 }: {
   outputs: PowerOutput[];
-  readings: AdcReading[];
+  readings: readonly AdcReading[];
   onSet: (name: string, on: boolean) => void;
 }) {
   const { t } = useI18n();
@@ -36,10 +37,12 @@ export function PowerCard({
   const [clockMs, setClockMs] = useState(() => Date.now());
   const railTimersRef = useRef(new Map<string, { startedAtMs: number; approximate: boolean }>());
   const observedRailsRef = useRef(new Set<string>());
+  const currentReadings = readings.filter(isCurrentAdcReading);
+  const adc3 = readings.filter(isVoltageAdcReading).find((reading) => reading.name === "adc3");
   const rows = POWER_SWITCH_RAILS.map((name) => ({
     name,
     output: outputs.find((output) => output.name === name),
-    reading: readings.find((reading) => reading.name === name),
+    reading: currentReadings.find((reading) => reading.name === name),
   })).filter(({ output, reading }) => output || reading);
 
   useEffect(() => {
@@ -117,22 +120,21 @@ export function PowerCard({
       {rows.length === 0 ? (
         <p className="text-sm text-ink-dim">{t("power.combined.none")}</p>
       ) : (
-        <>
-          <ul className="divide-y divide-line/50">
-            {rows.map(({ name, output, reading }) => {
-              const on = output?.state === "on";
-              const locked = output ? !output.controllable || output.state === "locked" : false;
-              const currentValue = reading ? readingMetric(reading, "current") : null;
-              const powerValue = reading ? readingMetric(reading, "power") : null;
-              const onTiming = on ? railTimersRef.current.get(name) : undefined;
-              return (
-                <li
-                  key={name}
-                  className={cn(
-                    "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1",
-                    trendsExpanded ? "py-3" : "py-2.5"
-                  )}
-                >
+        <ul className="divide-y divide-line/50">
+          {rows.map(({ name, output, reading }) => {
+            const on = output?.state === "on";
+            const locked = output ? !output.controllable || output.state === "locked" : false;
+            const currentValue = reading ? readingMetric(reading, "current") : null;
+            const powerValue = reading ? readingMetric(reading, "power") : null;
+            const onTiming = on ? railTimersRef.current.get(name) : undefined;
+            return (
+              <li
+                key={name}
+                className={cn(
+                  "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1",
+                  trendsExpanded ? "py-3" : "py-2.5"
+                )}
+              >
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium text-ink">{powerRailLabel(name)}</span>
@@ -181,14 +183,34 @@ export function PowerCard({
                 )}
                 {reading && trendsExpanded && (
                   <div className="col-span-2 mt-1">
-                    <PowerSparkline reading={reading} metric={metric} />
+                    <MeasurementSparkline mode="power" reading={reading} metric={metric} />
                   </div>
                 )}
-                </li>
-              );
-            })}
-          </ul>
-        </>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {adc3 && (
+        <section className="mt-4 border-t border-line/50 pt-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-medium text-ink">{t("adc3.title")}</h3>
+                <Badge tone="neutral">{t("adc3.monitorOnly")}</Badge>
+              </div>
+              <p className="mt-1 text-xs text-ink-dim">{t("adc3.subtitle")}</p>
+            </div>
+            <div className="font-mono text-sm font-medium text-brand">
+              {(adc3.value / 1_000_000).toFixed(3)} V
+            </div>
+          </div>
+          {trendsExpanded && (
+            <div className="mt-2">
+              <MeasurementSparkline mode="voltage" reading={adc3} />
+            </div>
+          )}
+        </section>
       )}
     </Card>
   );
