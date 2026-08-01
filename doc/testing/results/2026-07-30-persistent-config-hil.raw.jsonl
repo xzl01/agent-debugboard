@@ -1,0 +1,85 @@
+timestamp=2026-07-30T04:14:29Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:29Z	request=PUT /switch/sd	http_status=200	code=ok	assertion=set switch route sd=usb-reader
+timestamp=2026-07-30T04:14:29Z	request=PUT /switch/tf_wp	http_status=200	code=ok	assertion=set switch route tf_wp=protected
+timestamp=2026-07-30T04:14:29Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:30Z	request=PUT /config	http_status=200	code=ok	assertion=save selected firmware item
+timestamp=2026-07-30T04:14:37Z	request=external reboot command	http_status=not_applicable	code=not_applicable	assertion=reboot command completed
+timestamp=2026-07-30T04:14:42Z	request=sleep 5	http_status=not_applicable	code=not_applicable	assertion=wait for reboot
+timestamp=2026-07-30T04:14:42Z	request=GET /config readiness	http_status=200	code=ok	assertion=confirm post-reboot config transport readiness
+timestamp=2026-07-30T04:14:43Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:43Z	request=DELETE /config	http_status=200	code=ok	assertion=clear test snapshot without changing hardware
+timestamp=2026-07-30T04:14:43Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:43Z	request=PUT /switch/sd	http_status=200	code=ok	assertion=set switch route sd=target
+timestamp=2026-07-30T04:14:43Z	request=PUT /switch/tf_wp	http_status=200	code=ok	assertion=set switch route tf_wp=writable
+timestamp=2026-07-30T04:14:43Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:43Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:43Z	request=PUT /config	http_status=409	code=confirmation_required	assertion=dangerous save is rejected without confirmation
+timestamp=2026-07-30T04:14:43Z	request=PUT /config	http_status=200	code=ok	assertion=save selected firmware item
+timestamp=2026-07-30T04:14:51Z	request=external reboot command	http_status=not_applicable	code=not_applicable	assertion=reboot command completed
+timestamp=2026-07-30T04:14:56Z	request=sleep 5	http_status=not_applicable	code=not_applicable	assertion=wait for reboot
+timestamp=2026-07-30T04:14:56Z	request=GET /config readiness	http_status=200	code=ok	assertion=confirm post-reboot config transport readiness
+timestamp=2026-07-30T04:14:56Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:56Z	request=POST /config/apply	http_status=409	code=confirmation_required	assertion=dangerous apply is rejected without confirmation
+timestamp=2026-07-30T04:14:56Z	request=POST /config/apply	http_status=200	code=ok	assertion=apply saved configuration
+timestamp=2026-07-30T04:14:56Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:56Z	request=DELETE /config	http_status=200	code=ok	assertion=clear test snapshot without changing hardware
+timestamp=2026-07-30T04:14:56Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:56Z	request=PUT /config	http_status=200	code=ok	assertion=save selected firmware item
+timestamp=2026-07-30T04:14:56Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:57Z	request=external capture start command	http_status=not_applicable	code=ok	assertion=capture ownership acquired
+timestamp=2026-07-30T04:14:57Z	request=PUT /config	http_status=409	code=busy	assertion=busy blocks config save while capture owns the arbiter
+timestamp=2026-07-30T04:14:57Z	request=DELETE /config	http_status=409	code=busy	assertion=busy blocks present snapshot clear while capture owns the arbiter
+timestamp=2026-07-30T04:14:57Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:57Z	request=external capture stop command	http_status=not_applicable	code=ok	assertion=capture ownership released
+timestamp=2026-07-30T04:14:57Z	request=DELETE /config	http_status=200	code=ok	assertion=clear test snapshot without changing hardware
+timestamp=2026-07-30T04:14:57Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:57Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:57Z	request=PUT /config	http_status=200	code=ok	assertion=save selected firmware item
+timestamp=2026-07-30T04:14:57Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:57Z	request=background POST /ota/upload	http_status=in_progress	code=in_progress	assertion=start canonical MCUboot OTA upload
+timestamp=2026-07-30T04:14:58Z	request=GET /ota	http_status=200	code=ok	assertion=observe bounded active OTA upload
+timestamp=2026-07-30T04:14:58Z	request=PUT /config	http_status=409	code=busy	assertion=busy blocks config save while OTA owns flash
+timestamp=2026-07-30T04:14:58Z	request=DELETE /config	http_status=409	code=busy	assertion=busy blocks present snapshot clear while OTA owns flash
+timestamp=2026-07-30T04:14:58Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:14:58Z	request=POST /config/apply	http_status=200	code=ok	assertion=safe no-op apply remains bounded while OTA owns flash
+timestamp=2026-07-30T04:15:09Z	request=await POST /ota/upload	http_status=200	code=ok	assertion=await and validate canonical MCUboot OTA upload
+timestamp=2026-07-30T04:15:09Z	request=POST /ota/test	http_status=202	code=ok	assertion=request OTA test boot
+timestamp=2026-07-30T04:15:14Z	request=sleep 5	http_status=not_applicable	code=not_applicable	assertion=wait for reboot
+timestamp=2026-07-30T04:15:32Z	request=GET /config readiness	http_status=200	code=ok	assertion=confirm post-reboot config transport readiness
+timestamp=2026-07-30T04:15:32Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:15:32Z	request=POST /ota/confirm	http_status=200	code=ok	assertion=confirm tested OTA image
+timestamp=2026-07-30T04:15:33Z	request=DELETE /config	http_status=200	code=ok	assertion=clear test snapshot without changing hardware
+timestamp=2026-07-30T04:15:33Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:15:33Z	request=PUT /config	http_status=200	code=ok	assertion=save selected firmware item
+timestamp=2026-07-30T04:15:33Z	request=POST /bootloader	http_status=200	code=ok	assertion=enter ROM BOOTSEL through HTTP
+timestamp=2026-07-30T04:15:38Z	request=sleep 5	http_status=not_applicable	code=not_applicable	assertion=wait for BOOTSEL enumeration
+timestamp=2026-07-30T04:15:38Z	request=lsblk RPI-RP2 discovery	http_status=not_applicable	code=ok	assertion=discover BOOTSEL partition
+timestamp=2026-07-30T04:15:39Z	request=mount -b /dev/sdc1	http_status=not_applicable	code=ok	assertion=mount BOOTSEL partition
+timestamp=2026-07-30T04:15:49Z	request=flash canonical combined UF2	http_status=not_applicable	code=ok	assertion=flash canonical combined UF2 only
+timestamp=2026-07-30T04:16:16Z	request=sleep 5	http_status=not_applicable	code=not_applicable	assertion=wait for reboot
+timestamp=2026-07-30T04:16:16Z	request=GET /config readiness	http_status=200	code=ok	assertion=confirm post-reboot config transport readiness
+timestamp=2026-07-30T04:16:16Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:16:16Z	request=DELETE /config	http_status=200	code=ok	assertion=clear test snapshot without changing hardware
+timestamp=2026-07-30T04:16:16Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:16:17Z	request=CDC config show	http_status=not_applicable	code=ok	assertion=CDC shell command completed
+timestamp=2026-07-30T04:16:17Z	request=CDC config save power/12v_out	http_status=not_applicable	code=ok	assertion=CDC shell command completed
+timestamp=2026-07-30T04:16:17Z	request=CDC config apply --confirm	http_status=not_applicable	code=ok	assertion=CDC shell command completed
+timestamp=2026-07-30T04:16:17Z	request=CDC config clear	http_status=not_applicable	code=ok	assertion=CDC shell command completed
+timestamp=2026-07-30T04:16:17Z	request=CDC bootloader	http_status=not_applicable	code=ok	assertion=CDC shell command completed
+timestamp=2026-07-30T04:16:22Z	request=sleep 5	http_status=not_applicable	code=not_applicable	assertion=wait for BOOTSEL enumeration
+timestamp=2026-07-30T04:16:22Z	request=lsblk RPI-RP2 discovery	http_status=not_applicable	code=ok	assertion=discover BOOTSEL partition
+timestamp=2026-07-30T04:16:23Z	request=mount -b /dev/sdc1	http_status=not_applicable	code=ok	assertion=mount BOOTSEL partition
+timestamp=2026-07-30T04:16:34Z	request=flash canonical combined UF2	http_status=not_applicable	code=ok	assertion=flash canonical combined UF2 only
+timestamp=2026-07-30T04:16:40Z	request=sleep 5	http_status=not_applicable	code=not_applicable	assertion=wait for reboot
+timestamp=2026-07-30T04:16:40Z	request=GET /config readiness	http_status=200	code=ok	assertion=confirm post-reboot config transport readiness
+timestamp=2026-07-30T04:16:40Z	request=DELETE /config	http_status=200	code=ok	assertion=clear test snapshot without changing hardware
+timestamp=2026-07-30T04:16:40Z	request=PUT /switch/usb	http_status=200	code=ok	assertion=set switch route usb=target
+timestamp=2026-07-30T04:16:40Z	request=PUT /switch/sd	http_status=200	code=ok	assertion=set switch route sd=target
+timestamp=2026-07-30T04:16:41Z	request=PUT /switch/tf_wp	http_status=200	code=ok	assertion=set switch route tf_wp=writable
+timestamp=2026-07-30T04:16:41Z	request=GET /switch/vin	http_status=200	code=ok	assertion=read switch route vin
+timestamp=2026-07-30T04:16:41Z	request=GET /power	http_status=200	code=ok	assertion=enumerate firmware power outputs before final cleanup
+timestamp=2026-07-30T04:16:41Z	request=GET /power	http_status=200	code=ok	assertion=reread firmware power outputs after final cleanup
+timestamp=2026-07-30T04:16:41Z	request=GET /gpio	http_status=200	code=ok	assertion=enumerate firmware GPIO directions before final cleanup
+timestamp=2026-07-30T04:16:41Z	request=GET /gpio	http_status=200	code=ok	assertion=reread firmware GPIO directions after final cleanup
+timestamp=2026-07-30T04:16:41Z	request=GET /config	http_status=200	code=ok	assertion=read firmware-owned config catalog
+timestamp=2026-07-30T04:16:41Z	request=CDC config show	http_status=not_applicable	code=ok	assertion=CDC shell command completed
