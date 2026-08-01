@@ -1,6 +1,8 @@
-// Types mirror the JSON shapes returned by the Radxa Linkr Debugger firmware
-// HTTP API (apps/radxa_linkr_debugger/src/linkr_debugger_http.c) and the
-// WebSocket "snapshot"/"telemetry" messages.
+// Types normalize the JSON shapes returned by the Radxa Linkr Debugger firmware
+// HTTP API and WebSocket snapshot/telemetry messages after boundary parsing.
+
+import type { PersistentConfigSummary } from "./persistentConfig.ts";
+export type { PersistentConfig, PersistentConfigApiError, PersistentConfigErrorDetail, PersistentConfigItem, PersistentConfigSummary, PersistentConfigValue } from "./persistentConfig.ts";
 
 export interface Availability {
   available: boolean;
@@ -198,6 +200,7 @@ export interface BoardSnapshot {
   watchdog: WatchdogStatus;
   monitoring: BoardMonitoring;
   adc: readonly AdcReading[];
+  config?: PersistentConfigSummary;
 }
 
 export type LogicAnalyzerTriggerType = "none" | "rising" | "falling" | "either";

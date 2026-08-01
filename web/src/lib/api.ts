@@ -1,3 +1,6 @@
+import { parsePersistentConfigError, parsePersistentConfigGet, parsePersistentConfigMutation } from "./persistentConfig.ts";
+import type { PersistentConfig } from "./persistentConfig.ts";
+
 // Thin client for the Radxa Linkr Debugger firmware REST API. Local development
 // uses Vite's same-origin proxy. The Pages build points this at the loopback
 // device gateway started by `npm run device-bridge`.
@@ -25,10 +28,12 @@ export interface TargetRecoveryResult {
 
 export class BoardApiError extends Error {
   code?: string;
-  constructor(message: string, code?: string) {
+  readonly response?: unknown;
+  constructor(message: string, code?: string, response?: unknown) {
     super(message);
     this.name = "BoardApiError";
     this.code = code;
+    this.response = response;
   }
 }
 
@@ -67,7 +72,7 @@ async function request<T = any>(path: string, init?: RequestInit): Promise<T> {
     const err = data?.error;
     throw new BoardApiError(
       err?.message || `HTTP ${res.status} ${res.statusText}`,
-      err?.code
+      err?.code, data
     );
   }
   return data as T;
@@ -125,3 +130,24 @@ export const enterTargetRecovery = (mode: TargetRecoveryMode, rail: string) =>
     method: "POST",
     body: JSON.stringify({ mode, rail }),
   });
+
+async function configRequest(path: string, action: string, init?: RequestInit): Promise<unknown> {
+  try {
+    return await request<unknown>(path, init);
+  } catch (error) {
+    if (error instanceof BoardApiError) throw parsePersistentConfigError(error.response, error.message, action);
+    throw error;
+  }
+}
+
+export const getPersistentConfig = async (): Promise<PersistentConfig> =>
+  parsePersistentConfigGet(await configRequest("/config", "get"));
+export const savePersistentConfig = async (items: readonly string[], confirm: boolean) => {
+  parsePersistentConfigMutation(await configRequest("/config", "save", { method: "PUT", body: JSON.stringify({ items, confirm }) }), "save");
+};
+export const applyPersistentConfig = async (confirm: boolean) => {
+  parsePersistentConfigMutation(await configRequest("/config/apply", "apply", { method: "POST", body: JSON.stringify({ confirm }) }), "apply");
+};
+export const clearPersistentConfig = async () => {
+  parsePersistentConfigMutation(await configRequest("/config", "clear", { method: "DELETE" }), "clear");
+};
