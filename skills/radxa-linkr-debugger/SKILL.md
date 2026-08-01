@@ -442,7 +442,7 @@ pairing or new buffer is used. Existing deep post behavior remains when pre=0.
 The dated evidence is [2026-07-28 pre-trigger and UART HIL](../../doc/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md).
 
 GP7-GP9 are not available in Sigrok modes. Web UI sigrok is limited to
-GP10-GP20 (GP29 excluded from LA, available as ordinary GPIO/ADC3). FAST8 mode
+GP10-GP20 (GP29 excluded from LA and input-only while used by ADC3). FAST8 mode
 captures on GP10-GP17; WIDE11 mode captures on GP10-GP20 (11 channels).
 
 **CONFIG_V2 deep burst**: HELLO server_flags bit 0 advertises CONFIG_V2 capability
@@ -470,7 +470,7 @@ The common packed arena applies to all modes: SINGLE (one 1-bit lane on FAST8 SM
 and WIDE11 (SM-A GP10-GP17 8-bit autopush32 100000 B + SM-B GP18-GP20 3-bit autopush30
 40000 B; two DMA channels; 144184 B shared burst slice (overlays the 149048 B total backing allocation)). SINGLE and FAST8 use one capture SM;
 WIDE11 uses two. A triggered deep burst adds one trigger-only SM running the 3-instruction
-trigger program. GP29 is excluded from WIDE11 LA (available as ordinary GPIO/ADC3). Post-capture: up to 98 DATA
+trigger program. GP29 is excluded from WIDE11 LA and remains input-only while used by ADC3. Post-capture: up to 98 DATA
 frames, max 1024 samples per frame, 140000 B total payload. Two-phase START prepares
 ownership and quiesce before the response. NONE sends START_RESP in RUNNING state with no
 ARMED event; triggered captures send START_RESP in ARMED state followed by the ARMED event.
@@ -750,8 +750,12 @@ curl -fsS -X PUT -H 'Content-Type: application/json' \
 
 GPIO list/status responses expose `name`, `pin`, and `note`, plus additive
 firmware-owned physical layout metadata: `layoutGroup`, `layoutLabel`,
-`layoutRow`, and `layoutColumn`. Safe allowlist: `GP7` (`CON_MAS`), `GP8`
-(`CON_REST`), `GP9` (`CON_USER`), `GP10`-`GP20` (J16), and `GP29` (ADC3).
+`layoutRow`, and `layoutColumn`. Output-capable safe allowlist:
+`GP7` (`CON_MAS`), `GP8` (`CON_REST`), `GP9` (`CON_USER`), and
+`GP10`-`GP20` (J16). `GP29` remains in the persisted/safe catalog but
+is owned by the `adc3` voltage monitor on this firmware and is
+**input-only**; output attempts fail at the firmware layer (see
+[GP29 ownership in adc-telemetry.md](../../doc/adc-telemetry.md#gp29-ownership)).
 Control targets may use canonical `GPxx`, raw numeric pins such as `4`, or
 board-specific exact notes such as `CON_MAS` or `J16_PIN1`.
 
@@ -1154,14 +1158,59 @@ Expect empty output (NOERROR/NODATA).
 
 ## ADC Notes
 
-- `GET /api/v1/adc/read` exposes both raw ADC diagnostics (`readings[].raw`,
-  `readings[].mv`) and the current-sense-amplifier result
-  (`readings[].current_ua`, `readings[].sensor_value`).
-- The host CLI no longer applies any host-side ADC calibration table or
-  zero-point correction. Treat the reported current values as the firmware's
-  direct readings.
+The four ADC descriptors in this firmware are `5v_out`, `12v_out`,
+`20v_out` (current, µA, with `power_enabled`) and `adc3` (voltage on
+GP29, µV). The HTTP rich read and the compact WebSocket single-sample
+and batch frames live in
+[doc/adc-telemetry.md](../../doc/adc-telemetry.md); that file is the
+authoritative contract. Highlights:
+
+- `GET /api/v1/adc/read` exposes both raw ADC diagnostics
+  (`readings[].raw`, `readings[].mv`) and the current-sense-amplifier
+  result (`readings[].current_ua`, `readings[].sensor_value`). For
+  `adc3` clients reconstruct signed integer µV from `sensor_value`;
+  HTTP does not emit `voltage_uv` or `value` on that channel, and
+  there is no `current_ua` or `power_enabled` on the voltage channel.
+- The live WebSocket path uses a compact shape on purpose. Each
+  reading carries only `name`, `signal`, `kind`, `unit`, `value`
+  (signed integer in `unit`), and (current only) `power_enabled`.
+  Wire shape changes are atomic: there is no dual-emission shim and
+  no `raw`/`mv`/`current_ua`/`sensor_value` ever on the WS line.
+  External clients that build on the previous verbose WebSocket shape
+  must update, or switch to `GET /api/v1/adc/read` for diagnostics.
+- The batch frame declares `channels[]` (`name`, `signal`, `kind`,
+  `unit`) once and then carries `values: i32[]` aligned with channels;
+  one scalar per channel per sample. `power_enabled_mask` is an
+  unsigned 8-bit field whose bits map to current channels only
+  (kind="current"); the voltage channel has no power state. `kind`/
+  `unit` must agree (`current` ↔ `uA`, `voltage` ↔ `uV`); mismatches
+  are rejected.
+- The host CLI / Web UI no longer apply host-side ADC calibration
+  tables or zero-point correction. Treat the reported values as the
+  firmware's direct readings. ADC3 has no probe scaling and reads
+  nominal 0..3,300,000 µV (0..3.3 V) on GP29.
 - Current-monitor hardware uses INA139 with a 10 mOhm shunt and a
-  50 kOhm output load.
+  50 kOhm output load; the ADC3 voltage monitor uses the GP29 ADC3
+  input directly, not INA139.
+- `GP29` stays in the persisted/safe catalog but is owned by `adc3`,
+  so it is **input-only**. `gpio set GP29 ...` (output) requests fail
+  at the firmware layer; the host must surface that failure rather
+  than retrying. Old v1 input snapshots remain applicable as
+  firmware-defaults auto-restore. Old v1 output snapshots remain
+  decodable so historical boards do not corrupt, but the apply step
+  hits GP29 first and stops. Earlier entries stay applied; GP29 and
+  later entries stay pending.
+
+Quick reference:
+
+```sh
+curl -fsS "$BOARD_URL/api/v1/adc/read"
+curl -fsS "$BOARD_URL/api/v1/adc/read?channel=5v_out"
+curl -fsS "$BOARD_URL/api/v1/adc/read?channel=adc3"
+```
+
+`adc read adc3` (CLI) and the ADC3 row in the Web Power card expose
+the same channel.
 
 ## Expert: VIN 1.8V Switching
 

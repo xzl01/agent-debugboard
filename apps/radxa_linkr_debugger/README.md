@@ -84,6 +84,65 @@ device timestamp, sample sequence, and telemetry dropped counter; the host
 persists the waveform from ADC telemetry. Only one trigger owner is allowed at
 a time. See
 [the power analyzer protocol](../../doc/power-analyzer.md).
+
+### ADC Telemetry
+
+The firmware exposes four ADC descriptors in a fixed order on both
+`GET /api/v1/adc/read` and the live WebSocket telemetry frames
+(`topic="adc"` for both single and batch frames):
+
+- `5v_out`, `12v_out`, `20v_out`: `kind="current"`, signed integer
+  microamps. `power_enabled` carries the live state of the matching
+  `power/<name>` output.
+- `adc3`: `kind="voltage"`, signed integer microvolts on GP29
+  (`ADC3`). Nominal range 0..3,300,000 µV (0..3.3 V) with no probe
+  scaling or host-side calibration.
+
+The HTTP read path stays rich and emits the diagnostic chain (`raw`,
+`mv`, `current_ua`, `sensor_value`); for `adc3`, clients reconstruct
+signed microvolts from `sensor_value`. HTTP does not emit `voltage_uv`
+or `value`. The live WebSocket emits a compact shape: per reading only
+`name`, `signal`, `kind`, `unit`, `value` (signed integer in `unit`),
+and (current only) `power_enabled`.
+There is no dual-emission shim on the WS path; clients that build on
+the previous verbose WebSocket shape must update. Host clients must
+not apply any ADC calibration table or zero-point correction on
+either path.
+
+The batch frame declares channels once (kind, unit per channel) and
+then carries `values: i32[]` positionally aligned with channels, one
+scalar per channel per sample. `power_enabled_mask` is an unsigned 8-bit
+field whose bits map to current channels only (kind="current"); the
+voltage channel does not carry a power state. See the authoritative
+contract in [doc/adc-telemetry.md](../../doc/adc-telemetry.md).
+
+`adc read adc3` is a thin convenience path used by the host CLI and
+Web UI to surface the new voltage reading. The `GET /api/v1/adc/read`
+HTTP path remains the rich read; the WebSocket path remains the
+compact telemetry.
+
+### GP29 ADC3 Ownership
+
+GP29 (`ADC3`) stays in the persisted/safe catalog but is owned by the
+`adc3` voltage monitor on this firmware, so it is **input-only**. Any
+`gpio set GP29 ...` output request fails at the firmware layer, and
+the host CLI / TUI / Web UI must surface that failure rather than
+retrying.
+
+Persistence behaviour for v1 snapshots:
+
+- A v1 snapshot that records GP29 as `direction="input"` continues
+  to decode and apply normally. The firmware treats an input
+  snapshot as the safe default and auto-applies it after firmware
+  defaults on the next boot.
+- A v1 snapshot that records GP29 as `direction="output"` remains
+  decodable so historical boards do not corrupt their snapshots, but
+  the apply step hits GP29 first and stops. Earlier entries stay
+  applied; GP29 and later entries stay pending. The host must report
+  `apply_state="failed"` for GP29 with no hidden rollback.
+
+Old wording that lists GP29 alongside `GP10`-`GP20` as a freely
+drivable safe GPIO is replaced by this contract.
 When HTTP/WS is unavailable but the CDC ACM shell still works, the local shell
 command below enters the current MCU's ROM BOOTSEL path used by the HTTP API:
 
@@ -276,9 +335,13 @@ All modes use the common packed arena. WIDE11 is the current dual-lane
 implementation: its 144184 B hardware burst slice overlays the 149048 B total
 backing allocation, which is also shared with the 30720 B WebSocket telemetry
 ring. The allocation is sized to `max(normal, burst)=149048 B`; WIDE11 does not
-extend it, and WIDE12 is historical only. See the
+extend it, and WIDE12 is historical only. GP29 is excluded from WIDE11 because
+it is owned by ADC3 and input-only; see [GP29 ADC3 ownership](#gp29-adc3-ownership).
+See the
 [authoritative logic-analyzer architecture and matrices](../../doc/logic-analyzer.md)
 and the [dated WIDE11 HIL evidence](../../doc/testing/results/2026-07-27-logic-analyzer-generic-packed-burst-hil.md).
+The dated 2026-07-27 report is historical `pre=0` evidence and does not validate
+the later pre-trigger implementation.
 CDC ACM shell BOOTSEL and combined-UF2 HTTP BOOTSEL recovery were both
 confirmed in final validation.
 
@@ -317,7 +380,8 @@ supervisor, not through a Zephyr `CONFIG_LED` or built-in heartbeat driver.
 
 - GPIO aliases: `CON_MAS` (GP7), `CON_REST` (GP8), `CON_USER` (GP9)
 - J16 GPIO: `GP10`-`GP20`
-- J16 ADC3/GPIO: `GP29` (ADC3)
+- J16 ADC3 / GPIO: `GP29` (ADC3, input-only while ADC3-owned; see
+  [GP29 ADC3 ownership](#gp29-adc3-ownership))
 - ADC current monitor inputs: `S_C_5V` (ADC0), `S_C_12V` (ADC1), `S_C_20V` (ADC2)
 
 VIN defaults to 3.3V at boot. GPIO1 VDD_5V is coupled to the USB mux route
