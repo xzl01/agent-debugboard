@@ -9,6 +9,8 @@
 
 #include "linkr_debugger_captive_portal.h"
 #include "linkr_debugger_control.h"
+#include "linkr_debugger_config_http.h"
+#include "linkr_debugger_config_summary.h"
 #include "linkr_debugger_http_body.h"
 #include "linkr_debugger_monitoring.h"
 #include "linkr_debugger_model.h"
@@ -865,6 +867,8 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 					 void *user_data)
 {
 	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ];
+	struct linkr_debugger_config_service_status config_status;
+	const struct linkr_debugger_config_service_status *config_status_ptr = NULL;
 	struct linkr_debugger_http_env env = {
 		.buf = (char *)json_buf,
 		.cap = sizeof(json_buf),
@@ -884,10 +888,15 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 		return 0;
 	}
 
+	if (linkr_debugger_config_service_status_get(&config_status) ==
+	    LINKR_DEBUGGER_CONFIG_SERVICE_OK) {
+		config_status_ptr = &config_status;
+	}
+
 	k_mutex_lock(&linkr_debugger_http_lock, K_FOREVER);
 	if (linkr_debugger_http_json_begin(&env, "status", true) < 0 ||
 	    linkr_debugger_http_append(&env,
-				 ",\"project\":\"radxa-linkr-debugger\",\"mcu\":") < 0 ||
+				     ",\"project\":\"radxa-linkr-debugger\",\"mcu\":") < 0 ||
 	    linkr_debugger_http_json_string(&env, linkr_debugger_mcu_name()) < 0 ||
 	    linkr_debugger_http_append(&env, ",\"usb\":") < 0 ||
 	    linkr_debugger_http_json_string(&env, linkr_debugger_usb_mode()) < 0 ||
@@ -906,8 +915,28 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 	    linkr_debugger_http_append(&env, ",\"board_monitoring\":{\"temperature\":") < 0 ||
 	    linkr_debugger_http_json_board_monitoring(&env) < 0 ||
 	    linkr_debugger_http_append(&env, ",\"gpios\":") < 0 ||
-	    linkr_debugger_http_json_safe_gpios(&env) < 0 ||
-	    linkr_debugger_http_append(&env, "}\n") < 0) {
+	    linkr_debugger_http_json_safe_gpios(&env) < 0) {
+		k_mutex_unlock(&linkr_debugger_http_lock);
+		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+				     HTTP_500_INTERNAL_SERVER_ERROR, "status",
+				     "response_too_large", "failed to encode status response");
+		return 0;
+	}
+
+	if (config_status_ptr != NULL) {
+		struct linkr_debugger_config_summary_buffer config_summary_buffer = {
+			.data = env.buf,
+			.capacity = env.cap,
+			.length = env.len,
+			.tail_reserve = 2U,
+		};
+
+		(void)linkr_debugger_config_summary_append(&config_summary_buffer,
+						   config_status_ptr);
+		env.len = config_summary_buffer.length;
+	}
+
+	if (linkr_debugger_http_append(&env, "}\n") < 0) {
 		k_mutex_unlock(&linkr_debugger_http_lock);
 		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
 				     HTTP_500_INTERNAL_SERVER_ERROR, "status",
@@ -1890,6 +1919,25 @@ LINKR_DEBUGGER_OTA_RESOURCE(linkr_debugger_ota_test_resource, "/api/v1/ota/test"
 LINKR_DEBUGGER_OTA_RESOURCE(linkr_debugger_ota_confirm_resource, "/api/v1/ota/confirm",
 			   BIT(HTTP_POST), LINKR_DEBUGGER_OTA_ROUTE_CONFIRM);
 #endif
+
+#define LINKR_DEBUGGER_CONFIG_HTTP_RESOURCE(name_, path_, methods_, route_)                       \
+	static const enum linkr_debugger_config_http_route name_##_route = route_;                    \
+	static struct http_resource_detail_dynamic name_##_detail = {                                 \
+		.common = {                                                                             \
+			.type = HTTP_RESOURCE_TYPE_DYNAMIC,                                               \
+			.bitmask_of_supported_http_methods = methods_,                                    \
+			.content_type = "application/json",                                             \
+		},                                                                                      \
+		.cb = linkr_debugger_config_http_handle,                                               \
+		.user_data = (void *)&name_##_route,                                                  \
+	};                                                                                          \
+	HTTP_RESOURCE_DEFINE(name_, linkr_debugger_http_service, path_, &name_##_detail)
+
+LINKR_DEBUGGER_CONFIG_HTTP_RESOURCE(linkr_debugger_config_resource, "/api/v1/config",
+					    BIT(HTTP_GET) | BIT(HTTP_PUT) | BIT(HTTP_DELETE),
+					    LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_CONFIG);
+LINKR_DEBUGGER_CONFIG_HTTP_RESOURCE(linkr_debugger_config_apply_resource, "/api/v1/config/apply",
+					    BIT(HTTP_POST), LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_APPLY);
 
 static uint8_t linkr_debugger_ws_resource_buffers[LINKR_DEBUGGER_WS_MAX_CLIENTS][LINKR_DEBUGGER_WS_RECV_BUFFER_SIZE];
 static uint8_t linkr_debugger_ws_resource_slots[LINKR_DEBUGGER_WS_MAX_CLIENTS] = { 0, 1, 2, 3 };
