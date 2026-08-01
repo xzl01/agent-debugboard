@@ -443,8 +443,23 @@ static int linkr_debugger_http_json_adc_channels(struct linkr_debugger_http_env 
 		return -ENOMEM;
 	}
 
-	for (size_t i = 0; i < linkr_debugger_current_count; i++) {
+	for (size_t i = 0; i < linkr_debugger_adc_count; i++) {
 		const struct linkr_debugger_current_desc *current = &linkr_debugger_currents[i];
+		const char *sensor_channel;
+		const char *unit;
+
+		switch (current->kind) {
+		case LINKR_DEBUGGER_ADC_KIND_CURRENT:
+			sensor_channel = "current";
+			unit = "A";
+			break;
+		case LINKR_DEBUGGER_ADC_KIND_VOLTAGE:
+			sensor_channel = "voltage";
+			unit = "V";
+			break;
+		default:
+			return -EINVAL;
+		}
 
 		if (i > 0U && linkr_debugger_http_append(env, ",") < 0) {
 			return -ENOMEM;
@@ -460,7 +475,8 @@ static int linkr_debugger_http_json_adc_channels(struct linkr_debugger_http_env 
 					 (unsigned int)current->adc_index) < 0 ||
 		    linkr_debugger_http_json_string(env, current->sensor) < 0 ||
 		    linkr_debugger_http_append(env,
-					 ",\"sensor_channel\":\"current\",\"unit\":\"A\"}") < 0) {
+					 ",\"sensor_channel\":\"%s\",\"unit\":\"%s\"}",
+					 sensor_channel, unit) < 0) {
 			return -ENOMEM;
 		}
 	}
@@ -565,6 +581,51 @@ static int linkr_debugger_http_json_current_reading(struct linkr_debugger_http_e
 	}
 
 	return 0;
+}
+
+static int linkr_debugger_http_json_voltage_reading(struct linkr_debugger_http_env *env,
+					       const struct linkr_debugger_current_desc *adc,
+					       const struct linkr_debugger_current_sample *sample)
+{
+	if (linkr_debugger_http_append(env, "{\"name\":") < 0 ||
+	    linkr_debugger_http_json_string(env, adc->name) < 0 ||
+	    linkr_debugger_http_append(env, ",\"signal\":") < 0 ||
+	    linkr_debugger_http_json_string(env, adc->signal) < 0) {
+		return -ENOMEM;
+	}
+
+	if (sample->raw_available) {
+		if (linkr_debugger_http_append(env, ",\"raw\":%d", sample->raw) < 0) {
+			return -ENOMEM;
+		}
+	} else if (linkr_debugger_http_append(env, ",\"raw\":null") < 0) {
+		return -ENOMEM;
+	}
+
+	if (linkr_debugger_http_append(env,
+					 ",\"mv\":%d,\"sensor_channel\":\"voltage\",\"unit\":\"V\""
+					 ",\"sensor_value\":{\"val1\":%d,\"val2\":%d}}",
+					 sample->mv,
+					 sample->value.val1,
+					 sample->value.val2) < 0) {
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+static int linkr_debugger_http_json_adc_reading(struct linkr_debugger_http_env *env,
+					 const struct linkr_debugger_current_desc *adc,
+					 const struct linkr_debugger_current_sample *sample)
+{
+	switch (adc->kind) {
+	case LINKR_DEBUGGER_ADC_KIND_CURRENT:
+		return linkr_debugger_http_json_current_reading(env, adc, sample);
+	case LINKR_DEBUGGER_ADC_KIND_VOLTAGE:
+		return linkr_debugger_http_json_voltage_reading(env, adc, sample);
+	default:
+		return -EINVAL;
+	}
 }
 
 static int linkr_debugger_http_json_watchdog_status(struct linkr_debugger_http_env *env)
@@ -1023,7 +1084,7 @@ static int linkr_debugger_http_handle_adc(struct http_client_ctx *client,
 
 	query = strstr((char *)client->url_buffer, "channel=");
 	if (query != NULL) {
-		single = linkr_debugger_find_current(query + strlen("channel="));
+		single = linkr_debugger_find_adc(query + strlen("channel="));
 		if (single == NULL) {
 			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_404_NOT_FOUND,
 					     "adc", "unknown_channel", "unknown adc channel");
@@ -1037,7 +1098,7 @@ static int linkr_debugger_http_handle_adc(struct http_client_ctx *client,
 		goto too_large;
 	}
 
-	for (size_t i = 0; i < linkr_debugger_current_count; i++) {
+	for (size_t i = 0; i < linkr_debugger_adc_count; i++) {
 		struct linkr_debugger_current_sample sample;
 		const struct linkr_debugger_current_desc *current = &linkr_debugger_currents[i];
 		int ret;
@@ -1060,7 +1121,7 @@ static int linkr_debugger_http_handle_adc(struct http_client_ctx *client,
 			goto too_large;
 		}
 
-		if (linkr_debugger_http_json_current_reading(&env, current, &sample) < 0) {
+		if (linkr_debugger_http_json_adc_reading(&env, current, &sample) < 0) {
 			goto too_large;
 		}
 	}
