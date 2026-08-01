@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   Upload,
   TriangleAlert,
+  Database,
 } from "lucide-react";
 import { Badge, Button, Toggle } from "./ui";
 import type { BoardSnapshot, MemoryPressureSnapshot } from "@/lib/types";
@@ -21,10 +22,8 @@ import { cn, formatBytes, formatUptime } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
 
-function formatPctX100(value?: number): string {
-  if (value == null) return "—";
-  return `${(value / 100).toFixed(2)} %`;
-}
+const formatPctX100 = (value?: number): string =>
+  value == null ? "—" : `${(value / 100).toFixed(2)} %`;
 
 function ramMetricTone(pressurePctX100?: number): string {
   if (pressurePctX100 == null) return "text-ink-dim";
@@ -33,10 +32,7 @@ function ramMetricTone(pressurePctX100?: number): string {
   return "text-ink-dim";
 }
 
-function formatSince(value: MemoryPressureSnapshot["since"]): string | null {
-  if (value == null) return null;
-  return value;
-}
+const formatSince = (value: MemoryPressureSnapshot["since"]): string | null => value ?? null;
 
 export function StatusBar({
   snapshot,
@@ -62,12 +58,8 @@ export function StatusBar({
   const { t, lang, setLang } = useI18n();
   const { theme, toggle: toggleTheme } = useTheme();
 
-  const m = snapshot.monitoring;
-  const temp = m.temperature;
-  const cpu = m.cpu;
-  const heap = m.heap;
-  const memory = m.memory;
-  const uptime = m.runtime.uptime_seconds;
+  const { temperature: temp, cpu, heap, memory, runtime } = snapshot.monitoring;
+  const uptime = runtime.uptime_seconds;
 
   const tempStr =
     temp.available && temp.celsius
@@ -79,6 +71,7 @@ export function StatusBar({
       : "—";
   const heapStr =
     heap.available && heap.free_bytes != null ? formatBytes(heap.free_bytes) : "—";
+  const config = snapshot.config;
 
   const componentLabel = (component?: string): string | null => {
     if (!component) return null;
@@ -207,23 +200,52 @@ export function StatusBar({
         </div>
       </div>
 
-      <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-x-5 gap-y-2 px-4 pb-3">
+      <div
+        data-testid="status-details"
+        className="mx-auto flex min-h-28 max-w-[1600px] flex-wrap items-center justify-between gap-x-5 gap-y-2 px-4 pb-3 sm:min-h-0"
+      >
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
           {connected ? (
-            <Badge tone="ok">
-              <EthernetPort size={12} /> {t("status.online")}
+            <Badge tone="ok" className="text-ink" data-testid="status-connection">
+              <EthernetPort size={12} className="text-ok" /> {t("status.online")}
             </Badge>
           ) : (
-            <Badge tone="danger">
-              <Unplug size={12} /> {t("status.offline")}
+            <Badge tone="danger" className="text-ink" data-testid="status-connection">
+              <Unplug size={12} className="text-danger" /> {t("status.offline")}
             </Badge>
           )}
           <Badge tone="neutral">
             <Cpu size={12} /> {snapshot.mcu?.toUpperCase() || "—"}
           </Badge>
-          {snapshot.usb && (
-            <Badge tone="brand">
-              <Radio size={12} /> {snapshot.usb}
+          <Badge
+            tone="brand"
+            className="min-w-24 justify-center text-ink"
+            data-testid="status-usb"
+          >
+            <Radio size={12} className="text-brand" /> {snapshot.usb || "—"}
+          </Badge>
+          {config?.available ? (
+            <Badge
+              tone={config.pendingCount > 0 ? "warn" : "ok"}
+              className="whitespace-nowrap"
+              data-testid="status-persistent-config"
+            >
+              <Database size={12} />
+              {t("config.saved")} {config.savedCount} · {t("config.pendingCount", {
+                count: config.pendingCount,
+              })}
+            </Badge>
+          ) : (
+            <Badge
+              tone="neutral"
+              className="whitespace-nowrap"
+              data-testid="status-persistent-config"
+              title={config?.reason || undefined}
+            >
+              <Database size={12} />
+              {t("config.title")} · {t(
+                config ? "config.status.unavailable" : "config.status.unsupported"
+              )}
             </Badge>
           )}
           {connected && ota && ota.state !== "idle" && (
