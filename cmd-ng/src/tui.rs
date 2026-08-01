@@ -23,8 +23,28 @@ use ratatui::widgets::{
 };
 use ratatui::Terminal;
 use reqwest::Method;
+use std::collections::BTreeMap;
 use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
+
+mod config_io;
+#[cfg(test)]
+mod config_io_tests;
+#[cfg(test)]
+mod config_key_tests;
+mod config_render;
+#[cfg(test)]
+mod config_render_tests;
+mod config_result;
+#[cfg(test)]
+mod config_result_tests;
+mod config_state;
+#[cfg(test)]
+mod config_state_tests;
+
+use config_io::ConfigWorker;
+use config_render::{append_saved_config_lines, render_confirmation};
+use config_state::{ConfigRequest, SavedConfigState};
 
 pub const TUI_HISTORY_LIMIT: usize = 240;
 pub const TUI_POLL_INTERVAL: Duration = Duration::from_nanos(16_666_667);
@@ -41,6 +61,17 @@ const TARGET_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const RECOVERY_MODES: &[&str] = &["rockchip-maskrom", "qualcomm-edl"];
 const RECOVERY_RAILS: &[&str] = &["5v_out", "12v_out", "20v_out"];
 
+#[derive(Debug, Clone, Default)]
+struct TuiSwitchState {
+    name: String,
+    desired_route: String,
+    actual_route: String,
+    routes: Vec<String>,
+    requires_confirm: bool,
+    pending_route: Option<String>,
+    pending_until: Option<Instant>,
+}
+
 pub struct TuiModel {
     pub base_url: String,
     pub timeout: Duration,
@@ -55,19 +86,7 @@ pub struct TuiModel {
     pub control_idx: usize,
     pub scroll_offset: usize,
     pub power_states: std::collections::HashMap<String, bool>,
-    pub sd_route: String,
-    pub usb_route: String,
-    pub actual_sd_route: String,
-    pub actual_usb_route: String,
-    pub vin_available: bool,
-    pub vin_route: String,
-    pub actual_vin_route: String,
-    pub pending_sd_route: Option<String>,
-    pub pending_sd_route_until: Option<Instant>,
-    pub pending_usb_route: Option<String>,
-    pub pending_usb_route_until: Option<Instant>,
-    pub pending_vin_route: Option<String>,
-    pub pending_vin_route_until: Option<Instant>,
+    switches: BTreeMap<String, TuiSwitchState>,
     pub switch_confirm_active: bool,
     pub switch_confirm_start: Option<Instant>,
     pub switch_confirm_kind: String,
@@ -81,6 +100,8 @@ pub struct TuiModel {
     pub gpio_levels: std::collections::HashMap<String, bool>,
     pub gpio_is_input: std::collections::HashMap<String, bool>,
     pub monitoring: BoardMonitoring,
+    saved_config: SavedConfigState,
+    config_worker: ConfigWorker,
     pub closed: bool,
     pub channel_ids: Vec<String>,
 }
@@ -101,19 +122,7 @@ impl TuiModel {
             control_idx: 0,
             scroll_offset: 0,
             power_states: std::collections::HashMap::new(),
-            sd_route: "target".to_string(),
-            usb_route: "pc".to_string(),
-            actual_sd_route: "target".to_string(),
-            actual_usb_route: "pc".to_string(),
-            vin_available: false,
-            vin_route: "3.3v".to_string(),
-            actual_vin_route: "3.3v".to_string(),
-            pending_sd_route: None,
-            pending_sd_route_until: None,
-            pending_usb_route: None,
-            pending_usb_route_until: None,
-            pending_vin_route: None,
-            pending_vin_route_until: None,
+            switches: BTreeMap::new(),
             switch_confirm_active: false,
             switch_confirm_start: None,
             switch_confirm_kind: String::new(),
@@ -127,6 +136,8 @@ impl TuiModel {
             gpio_levels: std::collections::HashMap::new(),
             gpio_is_input: std::collections::HashMap::new(),
             monitoring: BoardMonitoring::default(),
+            saved_config: SavedConfigState::default(),
+            config_worker: ConfigWorker::new(),
             closed: false,
             channel_ids: vec![
                 "5v_out".to_string(),
@@ -136,57 +147,45 @@ impl TuiModel {
         }
     }
 
-    fn apply_status_snapshot(&mut self, snapshot: WsStatusSnapshot) {
+    fn apply_status_snapshot(&mut self, snapshot: WsStatusSnapshot) -> bool {
+        let config_changed = self.saved_config.observe_summary(snapshot.config);
         for output in snapshot.power_outputs {
             self.power_states.insert(
                 output.name.clone(),
                 output.value != 0 || output.state == "on",
             );
         }
-        if !snapshot.switches.sd.route.is_empty() {
-            self.actual_sd_route = snapshot.switches.sd.route.clone();
-            self.sd_route = snapshot.switches.sd.route;
-            self.pending_sd_route = None;
-            self.pending_sd_route_until = None;
+        let now = Instant::now();
+        let mut switches = BTreeMap::new();
+        for (name, info) in snapshot.switches {
+            let previous = self.switches.remove(&name);
+            let (desired_route, pending_route, pending_until) = match previous {
+                Some(previous)
+                    if previous.pending_route.as_deref() == Some(info.route.as_str()) =>
+                {
+                    (info.route.clone(), None, None)
+                }
+                Some(previous) if previous.pending_until.is_some_and(|until| now < until) => (
+                    previous.desired_route,
+                    previous.pending_route,
+                    previous.pending_until,
+                ),
+                _ => (info.route.clone(), None, None),
+            };
+            switches.insert(
+                name.clone(),
+                TuiSwitchState {
+                    name,
+                    desired_route,
+                    actual_route: info.route,
+                    routes: info.routes,
+                    requires_confirm: info.requires_confirm,
+                    pending_route,
+                    pending_until,
+                },
+            );
         }
-        if !snapshot.switches.usb.route.is_empty() {
-            self.actual_usb_route = snapshot.switches.usb.route.clone();
-            let now = Instant::now();
-            match (&self.pending_usb_route, self.pending_usb_route_until) {
-                (Some(pending), Some(_until)) if snapshot.switches.usb.route == *pending => {
-                    self.usb_route = snapshot.switches.usb.route;
-                    self.pending_usb_route = None;
-                    self.pending_usb_route_until = None;
-                }
-                (Some(_), Some(until)) if now < until => {}
-                _ => {
-                    self.usb_route = snapshot.switches.usb.route;
-                    self.pending_usb_route = None;
-                    self.pending_usb_route_until = None;
-                }
-            }
-        }
-        self.vin_available = !snapshot.switches.vin.route.is_empty();
-        if self.vin_available {
-            self.actual_vin_route = snapshot.switches.vin.route.clone();
-            let now = Instant::now();
-            match (&self.pending_vin_route, self.pending_vin_route_until) {
-                (Some(pending), Some(_)) if snapshot.switches.vin.route == *pending => {
-                    self.vin_route = snapshot.switches.vin.route;
-                    self.pending_vin_route = None;
-                    self.pending_vin_route_until = None;
-                }
-                (Some(_), Some(until)) if now < until => {}
-                _ => {
-                    self.vin_route = snapshot.switches.vin.route;
-                    self.pending_vin_route = None;
-                    self.pending_vin_route_until = None;
-                }
-            }
-        } else {
-            self.pending_vin_route = None;
-            self.pending_vin_route_until = None;
-        }
+        self.switches = switches;
         self.gpio_names = snapshot
             .gpios
             .iter()
@@ -207,6 +206,7 @@ impl TuiModel {
                 .insert(gpio.name.clone(), gpio.direction == "input");
         }
         self.monitoring = snapshot.board_monitoring;
+        config_changed
     }
 
     fn apply_adc_response(&mut self, readings: Vec<AdcReading>) {
@@ -293,6 +293,63 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
         return Ok(false);
     }
 
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+            model.closed = true;
+            return Ok(true);
+        }
+        _ => {}
+    }
+
+    if model.saved_config.confirmation().is_some() {
+        match key.code {
+            KeyCode::Enter => {
+                if let Some(request) = model.saved_config.confirm() {
+                    start_config_request(model, request);
+                }
+            }
+            KeyCode::Esc => {
+                model.saved_config.cancel_confirmation();
+                model.status = "Saved Config cancelled".to_string();
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    if key.code == KeyCode::Esc && model.saved_config.error.is_some() {
+        model.saved_config.dismiss_error();
+        model.status = "Saved Config error dismissed".to_string();
+        return Ok(false);
+    }
+
+    if model.saved_config.focused {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('c') => {
+                model.saved_config.blur();
+                return Ok(false);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                model.saved_config.move_cursor(-1);
+                return Ok(false);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                model.saved_config.move_cursor(1);
+                return Ok(false);
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                model.saved_config.toggle_current();
+                return Ok(false);
+            }
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Char('h')
+            | KeyCode::Char('l')
+            | KeyCode::Tab => return Ok(false),
+            _ => {}
+        }
+    }
+
     if model.recovery_confirm_active {
         match key.code {
             KeyCode::Enter | KeyCode::Char(' ') => {}
@@ -318,10 +375,6 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
     }
 
     match (key.code, key.modifiers) {
-        (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-            model.closed = true;
-            return Ok(true);
-        }
         (KeyCode::Char('p'), _) => {
             model.paused = !model.paused;
             if model.paused {
@@ -333,6 +386,30 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
         (KeyCode::Char('r'), _) => {
             model.status = "Refreshing…".to_string();
             poll_http(model)?;
+            if let Some(request) = model.saved_config.request_refresh() {
+                start_config_request(model, request);
+            }
+        }
+        (KeyCode::Char('c'), _) => {
+            model.saved_config.focus();
+            if model.saved_config.focused {
+                model.status = "Saved Config focused".to_string();
+            }
+        }
+        (KeyCode::Char('s'), _) => {
+            if let Some(request) = model.saved_config.request_save() {
+                start_config_request(model, request);
+            }
+        }
+        (KeyCode::Char('a'), _) => {
+            if let Some(request) = model.saved_config.request_apply() {
+                start_config_request(model, request);
+            }
+        }
+        (KeyCode::Char('x'), _) => {
+            if let Some(request) = model.saved_config.request_clear() {
+                start_config_request(model, request);
+            }
         }
         (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
             model.control_idx = move_control_selection(model, -1, 0);
@@ -370,88 +447,54 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
                         model.gpio_is_input.insert(gpio, false);
                         model.apply_action_msg(action);
                     }
-                    ControlItem::SdSwitch => {
-                        if !model.switch_confirm_active {
-                            let next_route = if model.sd_route == "usb-reader" {
-                                "target"
-                            } else {
-                                "usb-reader"
-                            };
-                            model.switch_confirm_active = true;
-                            model.switch_confirm_start = Some(Instant::now());
-                            model.switch_confirm_kind = "sd".to_string();
-                            model.switch_confirm_target = next_route.to_string();
-                            model.status = format!(
-                                "Press Enter again within 3s to confirm SD switch to {}",
-                                model.switch_confirm_target
-                            );
-                        } else if model.switch_confirm_kind == "sd" {
-                            let route = model.switch_confirm_target.clone();
-                            let action =
-                                set_switch_route(&model.base_url, model.timeout, "sd", &route)?;
-                            model.sd_route = route.clone();
-                            model.pending_sd_route = Some(route);
-                            model.pending_sd_route_until =
-                                Some(Instant::now() + Duration::from_secs(2));
-                            model.apply_action_msg(action);
-                            model.switch_confirm_active = false;
-                            model.switch_confirm_start = None;
-                        }
-                    }
-                    ControlItem::UsbSwitch => {
-                        if !model.switch_confirm_active {
-                            let next_route = if model.usb_route == "target" {
-                                "pc"
-                            } else {
-                                "target"
-                            };
-                            model.switch_confirm_active = true;
-                            model.switch_confirm_start = Some(Instant::now());
-                            model.switch_confirm_kind = "usb".to_string();
-                            model.switch_confirm_target = next_route.to_string();
-                            model.status = format!(
-                                "Press Enter again within 3s to confirm USB switch to {}",
-                                model.switch_confirm_target
-                            );
-                        } else if model.switch_confirm_kind == "usb" {
-                            let route = model.switch_confirm_target.clone();
-                            let action =
-                                usb_switch_coordinated(&model.base_url, model.timeout, &route)?;
-                            model.usb_route = route.clone();
-                            model.pending_usb_route = Some(route);
-                            model.pending_usb_route_until =
-                                Some(Instant::now() + Duration::from_secs(2));
-                            model.apply_action_msg(action);
-                            model.switch_confirm_active = false;
-                            model.switch_confirm_start = None;
-                        }
-                    }
-                    ControlItem::VinSwitch => {
-                        if !model.switch_confirm_active {
-                            let next_route = if model.vin_route == "1.8v" {
-                                "3.3v"
-                            } else {
-                                "1.8v"
-                            };
-                            model.switch_confirm_active = true;
-                            model.switch_confirm_start = Some(Instant::now());
-                            model.switch_confirm_kind = "vin".to_string();
-                            model.switch_confirm_target = next_route.to_string();
-                            model.status = format!(
-                                "Press Enter again within 3s to confirm VIN switch to {}",
-                                model.switch_confirm_target
-                            );
-                        } else if model.switch_confirm_kind == "vin" {
-                            let route = model.switch_confirm_target.clone();
-                            let action =
-                                set_switch_route(&model.base_url, model.timeout, "vin", &route)?;
-                            model.vin_route = route.clone();
-                            model.pending_vin_route = Some(route);
-                            model.pending_vin_route_until =
-                                Some(Instant::now() + Duration::from_secs(2));
-                            model.apply_action_msg(action);
-                            model.switch_confirm_active = false;
-                            model.switch_confirm_start = None;
+                    ControlItem::Switch(name) => {
+                        let next_route = model.switches.get(&name).and_then(next_switch_route);
+                        let requires_confirm = model
+                            .switches
+                            .get(&name)
+                            .map(|state| state.requires_confirm)
+                            .unwrap_or(false);
+                        if let Some(next_route) = next_route {
+                            if requires_confirm
+                                && (!model.switch_confirm_active
+                                    || model.switch_confirm_kind != name)
+                            {
+                                model.switch_confirm_active = true;
+                                model.switch_confirm_start = Some(Instant::now());
+                                model.switch_confirm_kind = name.clone();
+                                model.switch_confirm_target = next_route;
+                                model.status = format!(
+                                    "Press Enter again within 3s to confirm switch {} to {}",
+                                    name, model.switch_confirm_target
+                                );
+                            } else if (!requires_confirm && !model.switch_confirm_active)
+                                || (requires_confirm
+                                    && model.switch_confirm_active
+                                    && model.switch_confirm_kind == name)
+                            {
+                                let route = if requires_confirm {
+                                    model.switch_confirm_target.clone()
+                                } else {
+                                    next_route
+                                };
+                                let action = set_switch_route(
+                                    &model.base_url,
+                                    model.timeout,
+                                    &name,
+                                    &route,
+                                )?;
+                                if let Some(state) = model.switches.get_mut(&name) {
+                                    state.desired_route = route.clone();
+                                    state.pending_route = Some(route);
+                                    state.pending_until =
+                                        Some(Instant::now() + Duration::from_secs(2));
+                                }
+                                model.apply_action_msg(action);
+                                model.switch_confirm_active = false;
+                                model.switch_confirm_start = None;
+                            }
+                        } else {
+                            model.status = format!("switch {name} has no advertised routes");
                         }
                     }
                     ControlItem::RecoveryMode => {
@@ -503,24 +546,10 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
                 model.apply_action_msg(action);
             }
         }
-        (KeyCode::Char('t'), _) => {
-            let action = set_switch_route(&model.base_url, model.timeout, "sd", "target")?;
-            model.sd_route = "target".to_string();
-            model.pending_sd_route = Some("target".to_string());
-            model.pending_sd_route_until = Some(Instant::now() + Duration::from_secs(2));
-            model.apply_action_msg(action);
-        }
         (KeyCode::Char('u'), KeyModifiers::CONTROL)
         | (KeyCode::PageUp, _)
         | (KeyCode::Char('['), _) => {
             model.scroll_offset = model.scroll_offset.saturating_sub(3);
-        }
-        (KeyCode::Char('u'), _) => {
-            let action = set_switch_route(&model.base_url, model.timeout, "sd", "usb-reader")?;
-            model.sd_route = "usb-reader".to_string();
-            model.pending_sd_route = Some("usb-reader".to_string());
-            model.pending_sd_route_until = Some(Instant::now() + Duration::from_secs(2));
-            model.apply_action_msg(action);
         }
         (KeyCode::PageDown, _)
         | (KeyCode::Char('d'), KeyModifiers::CONTROL)
@@ -533,6 +562,10 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
 }
 
 fn on_time_tick(model: &mut TuiModel) -> Result<()> {
+    if let Some(result) = model.config_worker.poll() {
+        let outcome = model.saved_config.finish(result);
+        model.status = outcome.status().to_string();
+    }
     if model.closed || model.paused {
         return Ok(());
     }
@@ -579,7 +612,7 @@ fn poll_http(model: &mut TuiModel) -> Result<()> {
         body: None,
     })?;
     let status_snapshot: WsStatusSnapshot = serde_json::from_str(&status_data)?;
-    model.apply_status_snapshot(status_snapshot);
+    let config_changed = model.apply_status_snapshot(status_snapshot);
 
     let adc_data = client.send_text(BoardRequest {
         method: Method::GET,
@@ -594,7 +627,23 @@ fn poll_http(model: &mut TuiModel) -> Result<()> {
         model.status = "HTTP mode".to_string();
     }
     model.err = None;
+    if config_changed {
+        if let Some(request) = model.saved_config.request_refresh() {
+            start_config_request(model, request);
+        }
+    }
     Ok(())
+}
+
+fn start_config_request(model: &mut TuiModel, request: ConfigRequest) {
+    let kind = request.kind();
+    if model
+        .config_worker
+        .start(model.base_url.clone(), model.timeout, request)
+    {
+        model.saved_config.start(kind);
+        model.status = format!("Saved Config {}…", kind.as_str());
+    }
 }
 
 fn perform_control_action(
@@ -632,22 +681,6 @@ fn set_switch_route(
     })?;
     Ok(TuiActionMsg {
         status: format!("switch {name}={route}"),
-        err: None,
-    })
-}
-
-fn usb_switch_coordinated(base_url: &str, timeout: Duration, route: &str) -> Result<TuiActionMsg> {
-    let client = crate::client::BoardClient::new(base_url, timeout)?;
-
-    client.send_text(BoardRequest {
-        method: Method::PUT,
-        path: "/api/v1/switch/usb".to_string(),
-        query: vec![],
-        body: Some(serde_json::json!({ "route": route })),
-    })?;
-
-    Ok(TuiActionMsg {
-        status: format!("switch usb={route}"),
         err: None,
     })
 }
@@ -784,12 +817,24 @@ fn control_targets() -> &'static [&'static str] {
     &["12v_out", "5v_out", "20v_out", "vdd_5v"]
 }
 
+fn next_switch_route(state: &TuiSwitchState) -> Option<String> {
+    if state.routes.is_empty() {
+        return None;
+    }
+    if let Some(index) = state
+        .routes
+        .iter()
+        .position(|route| route == &state.desired_route)
+    {
+        return state.routes.get((index + 1) % state.routes.len()).cloned();
+    }
+    state.routes.first().cloned()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ControlItem {
     Power(String),
-    SdSwitch,
-    UsbSwitch,
-    VinSwitch,
+    Switch(String),
     RecoveryMode,
     RecoveryRail,
     RecoveryEnter,
@@ -801,10 +846,8 @@ fn control_items(model: &TuiModel) -> Vec<ControlItem> {
     for output in control_targets() {
         items.push(ControlItem::Power((*output).to_string()));
     }
-    items.push(ControlItem::SdSwitch);
-    items.push(ControlItem::UsbSwitch);
-    if model.vin_available {
-        items.push(ControlItem::VinSwitch);
+    for name in model.switches.keys() {
+        items.push(ControlItem::Switch(name.clone()));
     }
     items.push(ControlItem::RecoveryMode);
     items.push(ControlItem::RecoveryRail);
@@ -816,7 +859,7 @@ fn control_items(model: &TuiModel) -> Vec<ControlItem> {
 }
 
 fn first_gpio_index(model: &TuiModel) -> Option<usize> {
-    let count = control_targets().len() + 5 + usize::from(model.vin_available);
+    let count = control_targets().len() + model.switches.len() + 3;
     if model.gpio_names.is_empty() {
         None
     } else {
@@ -889,9 +932,14 @@ fn build_control_chips(model: &TuiModel) -> Vec<String> {
                 };
                 format!("power {} [{}]", output, state)
             }
-            ControlItem::SdSwitch => format!("switch sd [{}]", model.sd_route),
-            ControlItem::UsbSwitch => format!("switch usb [{}]", model.usb_route),
-            ControlItem::VinSwitch => format!("switch vin [{}]", model.vin_route),
+            ControlItem::Switch(name) => {
+                let route = model
+                    .switches
+                    .get(&name)
+                    .map(|state| state.desired_route.as_str())
+                    .unwrap_or("");
+                format!("switch {name} [{route}]")
+            }
             ControlItem::RecoveryMode => {
                 format!("mode [{}]", recovery_mode_short_label(&model.recovery_mode))
             }
@@ -932,7 +980,7 @@ fn grouped_control_chips(
     let items = control_items(model);
     let labels = build_control_chips(model);
     let mut power = Vec::new();
-    let mut sd = Vec::new();
+    let mut switches = Vec::new();
     let mut recovery = Vec::new();
     let mut gpio = Vec::new();
 
@@ -943,9 +991,7 @@ fn grouped_control_chips(
         };
         match item {
             ControlItem::Power(_) => power.push(chip),
-            ControlItem::SdSwitch | ControlItem::UsbSwitch | ControlItem::VinSwitch => {
-                sd.push(chip)
-            }
+            ControlItem::Switch(_) => switches.push(chip),
             ControlItem::RecoveryMode | ControlItem::RecoveryRail | ControlItem::RecoveryEnter => {
                 recovery.push(chip)
             }
@@ -953,7 +999,7 @@ fn grouped_control_chips(
         }
     }
 
-    (power, sd, recovery, gpio)
+    (power, switches, recovery, gpio)
 }
 
 fn build_section_rows(chips: &[RenderedControlChip], content_width: usize) -> Vec<Vec<usize>> {
@@ -1071,6 +1117,7 @@ fn render_ui(frame: &mut ratatui::Frame, model: &TuiModel) {
     render_header(frame, chunks[0], model);
     render_sparklines(frame, chunks[1], model);
     render_body(frame, chunks[2], model);
+    render_confirmation(frame, &model.saved_config);
 }
 
 fn render_header(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
@@ -1149,14 +1196,14 @@ fn render_sparklines(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
 
 fn render_body(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
     let section_width = area.width.saturating_sub(4) as usize;
-    let (power, sd, recovery, gpio) = grouped_control_chips(model);
+    let (power, switches, recovery, gpio) = grouped_control_chips(model);
     let mut lines = vec![
         Line::from(Span::styled(
             "Controls",
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(
-            "  ↑/↓/←/→ select item   Enter/Space activate   i selected GPIO to input   g jump to first GPIO   t target route   u usb-reader route",
+            "  ↑/↓/←/→ select item   Enter/Space activate   i selected GPIO to input   g jump to first GPIO",
         ),
         Line::from(""),
     ];
@@ -1168,7 +1215,13 @@ fn render_body(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
         section_width,
         model.control_idx,
     );
-    append_section_lines(&mut lines, "Switch", &sd, section_width, model.control_idx);
+    append_section_lines(
+        &mut lines,
+        "Switch",
+        &switches,
+        section_width,
+        model.control_idx,
+    );
     append_section_lines(
         &mut lines,
         "Target recovery",
@@ -1177,50 +1230,26 @@ fn render_body(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
         model.control_idx,
     );
     append_section_lines(&mut lines, "GPIO", &gpio, section_width, model.control_idx);
+    append_saved_config_lines(&mut lines, &model.saved_config, section_width);
 
     lines.push(Line::from(Span::styled(
         "Status",
         Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
     )));
-    lines.push(Line::from(format!(
-        "  sd desired = {}{}",
-        model.sd_route,
-        if model.pending_sd_route.is_some() {
-            " (pending)"
-        } else {
-            ""
-        }
-    )));
-    lines.push(Line::from(format!(
-        "  sd actual  = {}",
-        model.actual_sd_route
-    )));
-    lines.push(Line::from(format!(
-        "  usb desired = {}{}",
-        model.usb_route,
-        if model.pending_usb_route.is_some() {
-            " (pending)"
-        } else {
-            ""
-        }
-    )));
-    lines.push(Line::from(format!(
-        "  usb actual  = {}",
-        model.actual_usb_route
-    )));
-    if model.vin_available {
+    for state in model.switches.values() {
         lines.push(Line::from(format!(
-            "  vin desired = {}{}",
-            model.vin_route,
-            if model.pending_vin_route.is_some() {
+            "  {} desired = {}{}",
+            state.name,
+            state.desired_route,
+            if state.pending_route.is_some() {
                 " (pending)"
             } else {
                 ""
             }
         )));
         lines.push(Line::from(format!(
-            "  vin actual  = {}",
-            model.actual_vin_route
+            "  {} actual  = {}",
+            state.name, state.actual_route
         )));
     }
     lines.push(Line::from(format!(
@@ -1255,8 +1284,15 @@ fn render_body(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
 mod tests {
     use super::*;
     use crate::client::DEFAULT_BASE_URL;
-    use crate::ws_client::TuiStatusGpio;
+    use crate::ws_client::{TuiStatusGpio, TuiStatusSwitchInfo};
     use crossterm::event::KeyEventState;
+
+    #[test]
+    fn saved_config_starts_unsupported_without_firmware_summary() {
+        let model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+
+        assert!(!model.saved_config.is_supported());
+    }
 
     #[test]
     fn apply_status_snapshot_updates_gpio_and_power_state() {
@@ -1434,6 +1470,16 @@ mod tests {
     fn move_control_selection_down_reaches_switch_section() {
         let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
         model.width = 120;
+        let mut snapshot = WsStatusSnapshot::default();
+        snapshot.switches.insert(
+            "example".to_string(),
+            TuiStatusSwitchInfo {
+                route: "one".to_string(),
+                routes: vec!["one".to_string(), "two".to_string()],
+                ..Default::default()
+            },
+        );
+        model.apply_status_snapshot(snapshot);
         model.control_idx = 0;
         assert_eq!(
             move_control_selection(&model, 1, 0),
@@ -1450,17 +1496,50 @@ mod tests {
             KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
         )
         .unwrap();
-        assert_eq!(model.control_idx, control_targets().len() + 5);
+        assert_eq!(
+            model.control_idx,
+            control_targets().len() + model.switches.len() + 3
+        );
     }
 
     #[test]
-    fn control_items_include_switches_between_power_and_gpio() {
+    fn control_items_include_switches_and_recovery_between_power_and_gpio() {
         let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
         model.gpio_names = vec!["GP13".to_string()];
+        let mut snapshot = WsStatusSnapshot::default();
+        snapshot.switches.insert(
+            "alpha".to_string(),
+            TuiStatusSwitchInfo {
+                route: "one".to_string(),
+                routes: vec!["one".to_string(), "two".to_string()],
+                ..Default::default()
+            },
+        );
+        snapshot.switches.insert(
+            "beta".to_string(),
+            TuiStatusSwitchInfo {
+                route: "left".to_string(),
+                routes: vec!["left".to_string(), "right".to_string()],
+                ..Default::default()
+            },
+        );
+        snapshot.gpios.push(TuiStatusGpio {
+            name: "GP13".to_string(),
+            pin: 13,
+            direction: "input".to_string(),
+            ..Default::default()
+        });
+        model.apply_status_snapshot(snapshot);
 
         let items = control_items(&model);
-        assert_eq!(items[control_targets().len()], ControlItem::SdSwitch);
-        assert_eq!(items[control_targets().len() + 1], ControlItem::UsbSwitch);
+        assert_eq!(
+            items[control_targets().len()],
+            ControlItem::Switch("alpha".to_string())
+        );
+        assert_eq!(
+            items[control_targets().len() + 1],
+            ControlItem::Switch("beta".to_string())
+        );
         assert_eq!(
             items[control_targets().len() + 2],
             ControlItem::RecoveryMode
@@ -1480,12 +1559,21 @@ mod tests {
     }
 
     #[test]
-    fn vin_control_is_visible_only_when_reported_by_firmware() {
+    fn switch_control_is_visible_only_when_reported_by_firmware() {
         let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
-        assert!(!control_items(&model).contains(&ControlItem::VinSwitch));
+        assert!(control_items(&model)
+            .iter()
+            .all(|item| !matches!(item, ControlItem::Switch(_))));
 
         let mut snapshot = WsStatusSnapshot::default();
-        snapshot.switches.vin.route = "3.3v".to_string();
+        snapshot.switches.insert(
+            "vin".to_string(),
+            TuiStatusSwitchInfo {
+                route: "3.3v".to_string(),
+                routes: vec!["1.8v".to_string(), "3.3v".to_string()],
+                ..Default::default()
+            },
+        );
         snapshot.gpios.push(TuiStatusGpio {
             name: "GP13".to_string(),
             pin: 13,
@@ -1495,10 +1583,11 @@ mod tests {
         model.apply_status_snapshot(snapshot);
 
         let items = control_items(&model);
-        assert!(model.vin_available);
-        assert_eq!(model.vin_route, "3.3v");
-        assert_eq!(items[control_targets().len() + 2], ControlItem::VinSwitch);
-        assert_eq!(first_gpio_index(&model), Some(control_targets().len() + 6));
+        assert_eq!(
+            items[control_targets().len()],
+            ControlItem::Switch("vin".to_string())
+        );
+        assert_eq!(first_gpio_index(&model), Some(control_targets().len() + 4));
         assert!(build_control_chips(&model)
             .iter()
             .any(|chip| chip == "switch vin [3.3v]"));
@@ -1507,9 +1596,17 @@ mod tests {
     #[test]
     fn vin_control_uses_existing_confirmation_state() {
         let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
-        model.vin_available = true;
-        model.vin_route = "3.3v".to_string();
-        model.control_idx = control_targets().len() + 2;
+        let mut snapshot = WsStatusSnapshot::default();
+        snapshot.switches.insert(
+            "vin".to_string(),
+            TuiStatusSwitchInfo {
+                route: "3.3v".to_string(),
+                routes: vec!["3.3v".to_string(), "1.8v".to_string()],
+                requires_confirm: true,
+            },
+        );
+        model.apply_status_snapshot(snapshot);
+        model.control_idx = control_targets().len();
 
         handle_key(
             &mut model,
@@ -1525,8 +1622,24 @@ mod tests {
     #[test]
     fn build_control_chips_show_current_switch_routes() {
         let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
-        model.sd_route = "usb-reader".to_string();
-        model.usb_route = "target".to_string();
+        let mut snapshot = WsStatusSnapshot::default();
+        snapshot.switches.insert(
+            "sd".to_string(),
+            TuiStatusSwitchInfo {
+                route: "usb-reader".to_string(),
+                routes: vec!["target".to_string(), "usb-reader".to_string()],
+                ..Default::default()
+            },
+        );
+        snapshot.switches.insert(
+            "usb".to_string(),
+            TuiStatusSwitchInfo {
+                route: "target".to_string(),
+                routes: vec!["pc".to_string(), "target".to_string()],
+                ..Default::default()
+            },
+        );
+        model.apply_status_snapshot(snapshot);
 
         let chips = build_control_chips(&model);
         assert!(chips.iter().any(|chip| chip == "switch sd [usb-reader]"));
@@ -1536,6 +1649,18 @@ mod tests {
     #[test]
     fn recovery_controls_cycle_mode_and_rail_then_require_confirmation() {
         let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+        let mut snapshot = WsStatusSnapshot::default();
+        for name in ["sd", "usb"] {
+            snapshot.switches.insert(
+                name.to_string(),
+                TuiStatusSwitchInfo {
+                    route: "one".to_string(),
+                    routes: vec!["one".to_string(), "two".to_string()],
+                    ..Default::default()
+                },
+            );
+        }
+        model.apply_status_snapshot(snapshot);
 
         model.control_idx = control_targets().len() + 2;
         handle_key(
@@ -1581,22 +1706,23 @@ mod tests {
     }
 
     #[test]
-    fn apply_status_snapshot_tracks_actual_switch_routes() {
+    fn apply_status_snapshot_tracks_actual_enumerated_switch_routes() {
         let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
         let mut snapshot = WsStatusSnapshot::default();
-        snapshot.switches.sd.route = "usb-reader".to_string();
-        snapshot.switches.usb.route = "target".to_string();
-        snapshot.switches.vin.route = "1.8v".to_string();
+        snapshot.switches.insert(
+            "example".to_string(),
+            TuiStatusSwitchInfo {
+                route: "alternate".to_string(),
+                routes: vec!["current".to_string(), "alternate".to_string()],
+                ..Default::default()
+            },
+        );
 
         model.apply_status_snapshot(snapshot);
 
-        assert_eq!(model.actual_sd_route, "usb-reader");
-        assert_eq!(model.actual_usb_route, "target");
-        assert_eq!(model.sd_route, "usb-reader");
-        assert_eq!(model.usb_route, "target");
-        assert!(model.vin_available);
-        assert_eq!(model.actual_vin_route, "1.8v");
-        assert_eq!(model.vin_route, "1.8v");
+        let state = model.switches.get("example").unwrap();
+        assert_eq!(state.actual_route, "alternate");
+        assert_eq!(state.desired_route, "alternate");
     }
 
     #[test]
@@ -1615,7 +1741,7 @@ mod tests {
         model.gpio_names = vec!["GP13".to_string()];
         model.gpio_levels.insert("GP13".to_string(), false);
         model.gpio_is_input.insert("GP13".to_string(), false);
-        model.control_idx = control_targets().len() + 5;
+        model.control_idx = control_targets().len() + 3;
 
         model.apply_action_msg(TuiActionMsg {
             status: "gpio GP13=1".to_string(),
@@ -1633,20 +1759,39 @@ mod tests {
     #[test]
     fn render_body_shows_unified_control_grid_and_hides_redundant_channel_lines() {
         let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
-        model.gpio_names = vec!["GP10".to_string()];
-        model
-            .gpio_notes
-            .insert("GP10".to_string(), "J16_PIN1".to_string());
-        model.gpio_levels.insert("GP10".to_string(), true);
-        model.gpio_is_input.insert("GP10".to_string(), false);
+        let mut snapshot = WsStatusSnapshot::default();
+        snapshot.switches.insert(
+            "sd".to_string(),
+            TuiStatusSwitchInfo {
+                route: "target".to_string(),
+                routes: vec!["target".to_string(), "usb-reader".to_string()],
+                ..Default::default()
+            },
+        );
+        snapshot.switches.insert(
+            "usb".to_string(),
+            TuiStatusSwitchInfo {
+                route: "pc".to_string(),
+                routes: vec!["pc".to_string(), "target".to_string()],
+                ..Default::default()
+            },
+        );
+        snapshot.gpios.push(TuiStatusGpio {
+            name: "GP10".to_string(),
+            pin: 10,
+            value: Some(1),
+            direction: "output".to_string(),
+            note: "J16_PIN1".to_string(),
+        });
+        model.apply_status_snapshot(snapshot);
         let mut lines = vec![
             Line::from("Controls"),
-            Line::from("  ↑/↓/←/→ select item   Enter/Space toggle   i selected GPIO to input   g jump to first GPIO   t target route   u usb-reader route"),
+            Line::from("  ↑/↓/←/→ select item   Enter/Space toggle   i selected GPIO to input   g jump to first GPIO"),
             Line::from(""),
         ];
-        let (power, sd, recovery, gpio) = grouped_control_chips(&model);
+        let (power, switches, recovery, gpio) = grouped_control_chips(&model);
         append_section_lines(&mut lines, "Power", &power, 80, model.control_idx);
-        append_section_lines(&mut lines, "Switch", &sd, 80, model.control_idx);
+        append_section_lines(&mut lines, "Switch", &switches, 80, model.control_idx);
         append_section_lines(
             &mut lines,
             "Target recovery",
@@ -1659,16 +1804,16 @@ mod tests {
             "Status",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )));
-        lines.push(Line::from(format!("  sd desired = {}", model.sd_route)));
-        lines.push(Line::from(format!(
-            "  sd actual  = {}",
-            model.actual_sd_route
-        )));
-        lines.push(Line::from(format!("  usb desired = {}", model.usb_route)));
-        lines.push(Line::from(format!(
-            "  usb actual  = {}",
-            model.actual_usb_route
-        )));
+        for state in model.switches.values() {
+            lines.push(Line::from(format!(
+                "  {} desired = {}",
+                state.name, state.desired_route
+            )));
+            lines.push(Line::from(format!(
+                "  {} actual  = {}",
+                state.name, state.actual_route
+            )));
+        }
         let rendered = Text::from(lines).to_string();
         assert!(rendered.contains("Power"));
         assert!(rendered.contains("Switch"));

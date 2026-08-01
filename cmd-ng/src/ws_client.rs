@@ -10,6 +10,7 @@ use crate::adc::{
 };
 use crate::json_contract::{JsonError, JSON_SCHEMA};
 use crate::monitoring::BoardMonitoring;
+use crate::persistent_config::PersistentConfigStatus;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -102,6 +103,8 @@ pub struct WsStatusSnapshot {
     pub gpios: Vec<TuiStatusGpio>,
     #[serde(default)]
     pub board_monitoring: BoardMonitoring,
+    #[serde(default)]
+    pub config: Option<PersistentConfigStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -249,11 +252,17 @@ impl WsClient {
     }
 
     pub fn is_connected(&self) -> bool {
-        self.conn.lock().expect("lock ws conn").is_some()
+        match self.conn.lock() {
+            Ok(guard) => guard.is_some(),
+            Err(_) => false,
+        }
     }
 
     pub fn connect(&self) -> Result<()> {
-        let mut guard = self.conn.lock().expect("lock ws conn");
+        let mut guard = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("websocket connection lock poisoned"))?;
         if guard.is_some() {
             return Ok(());
         }
@@ -268,7 +277,10 @@ impl WsClient {
     }
 
     pub fn close(&self) -> Result<()> {
-        let mut guard = self.conn.lock().expect("lock ws conn");
+        let mut guard = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("websocket connection lock poisoned"))?;
         if let Some(mut socket) = guard.take() {
             let _ = socket.close(None);
         }
@@ -277,7 +289,10 @@ impl WsClient {
     }
 
     pub fn send(&self, request: &WsCommandRequest) -> Result<()> {
-        let mut guard = self.conn.lock().expect("lock ws conn");
+        let mut guard = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("websocket connection lock poisoned"))?;
         let socket = guard
             .as_mut()
             .ok_or_else(|| anyhow!("websocket not connected"))?;
@@ -286,7 +301,10 @@ impl WsClient {
     }
 
     pub fn recv(&self) -> Result<WsMessage> {
-        let mut guard = self.conn.lock().expect("lock ws conn");
+        let mut guard = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("websocket connection lock poisoned"))?;
         let socket = guard
             .as_mut()
             .ok_or_else(|| anyhow!("websocket not connected"))?;
@@ -320,7 +338,10 @@ impl WsClient {
     }
 
     pub fn recv_text(&self) -> Result<String> {
-        let mut guard = self.conn.lock().expect("lock ws conn");
+        let mut guard = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow!("websocket connection lock poisoned"))?;
         let socket = guard
             .as_mut()
             .ok_or_else(|| anyhow!("websocket not connected"))?;
