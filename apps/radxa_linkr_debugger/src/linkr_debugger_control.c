@@ -21,6 +21,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/logging/log_ctrl.h>
+#include <zephyr/sys/printk.h>
 #include <zephyr/sys/util.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1595,6 +1596,112 @@ int linkr_debugger_gpio_set_input(const struct linkr_debugger_safe_gpio_desc *de
 	}
 	k_mutex_unlock(&linkr_debugger_control_lock);
 	return ret;
+}
+
+int linkr_debugger_control_snapshot_get(struct linkr_debugger_control_snapshot *snapshot)
+{
+	if (snapshot == NULL) {
+		return -EINVAL;
+	}
+	memset(snapshot, 0, sizeof(*snapshot));
+
+	if (linkr_debugger_config_item_count > LINKR_DEBUGGER_CONFIG_MAX_ENTRIES) {
+		return -ERANGE;
+	}
+
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	snapshot->item_count = linkr_debugger_config_item_count;
+	for (size_t i = 0; i < linkr_debugger_config_item_count; i++) {
+		const struct linkr_debugger_config_item_desc *item =
+			&linkr_debugger_config_items[i];
+		struct linkr_debugger_control_item_state *state = &snapshot->items[i];
+
+		state->domain = item->domain;
+		state->item_id = item->item_id;
+
+		switch (item->domain) {
+		case LINKR_DEBUGGER_CONFIG_DOMAIN_POWER: {
+			const char *separator = strchr(item->id, '/');
+			const struct linkr_debugger_rail_desc *rail = separator != NULL ?
+				linkr_debugger_find_rail(separator + 1) : NULL;
+			const struct device *regulator = linkr_debugger_regulator_device(rail);
+
+			if (regulator != NULL && device_is_ready(regulator)) {
+				state->available = true;
+				state->value = linkr_debugger_power_output_enabled(rail) ?
+					LINKR_DEBUGGER_CONFIG_POWER_ON :
+					LINKR_DEBUGGER_CONFIG_POWER_OFF;
+			}
+			break;
+		}
+		case LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH:
+			switch (item->item_id) {
+			case LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID:
+				if (device_is_ready(gpio0)) {
+					state->available = true;
+					state->value = linkr_debugger_sd_route ==
+						LINKR_DEBUGGER_SD_ROUTE_USB_READER ?
+						LINKR_DEBUGGER_CONFIG_SD_USB_READER :
+						LINKR_DEBUGGER_CONFIG_SD_TARGET;
+				}
+				break;
+			case LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID:
+				if (device_is_ready(gpio0)) {
+					state->available = true;
+					state->value = linkr_debugger_usb_route ==
+						LINKR_DEBUGGER_USB_ROUTE_PC ?
+						LINKR_DEBUGGER_CONFIG_USB_PC :
+						LINKR_DEBUGGER_CONFIG_USB_TARGET;
+				}
+				break;
+			case LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID:
+				if (device_is_ready(gpio0)) {
+					state->available = true;
+					state->value = linkr_debugger_tf_wp_route ==
+						LINKR_DEBUGGER_TF_WP_ROUTE_PROTECTED ?
+						LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED :
+						LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE;
+				}
+				break;
+			case LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID:
+#if HAS_VIN_SWITCH
+				if (vio_regulator != NULL && device_is_ready(vio_regulator)) {
+					state->available = true;
+					state->value = linkr_debugger_vin_route ==
+						LINKR_DEBUGGER_VIN_ROUTE_1V8 ?
+						LINKR_DEBUGGER_CONFIG_VIN_1V8 :
+						LINKR_DEBUGGER_CONFIG_VIN_3V3;
+				}
+#endif
+				break;
+			default:
+				break;
+			}
+			break;
+		case LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO: {
+			const struct linkr_debugger_safe_gpio_desc *gpio =
+				linkr_debugger_find_safe_gpio_by_pin(item->item_id);
+			size_t index;
+
+			if (device_is_ready(gpio0) && safe_gpio_index_valid(gpio, &index)) {
+				state->available = true;
+				if (linkr_debugger_gpio_directions[index] ==
+				    LINKR_DEBUGGER_GPIO_DIR_OUTPUT) {
+					state->value = LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT;
+					if (linkr_debugger_gpio_output_levels[index]) {
+						state->value |= LINKR_DEBUGGER_CONFIG_GPIO_LEVEL;
+					}
+				}
+			}
+			break;
+		}
+		default:
+			break;
+		}
+	}
+	k_mutex_unlock(&linkr_debugger_control_lock);
+
+	return 0;
 }
 
 void linkr_debugger_watchdog_status_get(struct linkr_debugger_watchdog_status *status)

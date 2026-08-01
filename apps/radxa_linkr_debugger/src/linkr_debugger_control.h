@@ -8,6 +8,7 @@
 #ifndef RADXA_LINKR_DEBUGGER_CONTROL_H_
 #define RADXA_LINKR_DEBUGGER_CONTROL_H_
 
+#include "linkr_debugger_config_codec.h"
 #include "linkr_debugger_model.h"
 
 #include <stddef.h>
@@ -35,6 +36,18 @@ struct linkr_debugger_current_sample {
 	struct sensor_value value;
 };
 
+struct linkr_debugger_control_item_state {
+	uint8_t domain;
+	uint8_t item_id;
+	uint8_t value;
+	bool available;
+};
+
+struct linkr_debugger_control_snapshot {
+	size_t item_count;
+	struct linkr_debugger_control_item_state items[LINKR_DEBUGGER_CONFIG_MAX_ENTRIES];
+};
+
 #define LINKR_DEBUGGER_CURRENT_BATCH_MAX 20U
 #define LINKR_DEBUGGER_TARGET_RECOVERY_OFF_MS 1000U
 #define LINKR_DEBUGGER_TARGET_RECOVERY_SETUP_MS 20U
@@ -52,6 +65,7 @@ struct linkr_debugger_watchdog_status {
 
 void linkr_debugger_watchdog_boot_check(void);
 int linkr_debugger_control_init(void);
+int linkr_debugger_control_snapshot_get(struct linkr_debugger_control_snapshot *snapshot);
 int linkr_debugger_watchdog_supervisor_start(void);
 
 const char *linkr_debugger_json_schema(void);
