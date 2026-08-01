@@ -64,24 +64,69 @@ static void test_current_table(void)
 	const struct linkr_debugger_current_desc *five_volt;
 
 	assert(linkr_debugger_current_count == 3);
+	assert(LINKR_DEBUGGER_CURRENT_SENSOR_COUNT == 3U);
 
 	five_volt = linkr_debugger_find_current("5v_out");
 	assert(five_volt != NULL);
 	assert_str_eq(five_volt->signal, "S_C_5V");
 	assert_str_eq(five_volt->sensor, "INA139");
+	assert(five_volt->kind == LINKR_DEBUGGER_ADC_KIND_CURRENT);
+	assert_str_eq(five_volt->unit, "uA");
 	assert(five_volt->adc_index == 0);
 
 	current = linkr_debugger_find_current("S_C_12V");
 	assert(current != NULL);
 	assert_str_eq(current->name, "12v_out");
 	assert_str_eq(current->sensor, "INA139");
+	assert(current->kind == LINKR_DEBUGGER_ADC_KIND_CURRENT);
+	assert_str_eq(current->unit, "uA");
 	assert(current->adc_index == 1);
 
 	for (size_t i = 0; i < linkr_debugger_current_count; i++) {
-		assert_str_eq(linkr_debugger_currents[i].sensor, "INA139");
+		current = &linkr_debugger_currents[i];
+		assert(current->kind == LINKR_DEBUGGER_ADC_KIND_CURRENT);
+		assert_str_eq(current->sensor, "INA139");
+		assert_str_eq(current->unit, "uA");
 	}
+	assert(linkr_debugger_find_current("adc3") == NULL);
 
 	assert(linkr_debugger_find_current("5V_FIN") == NULL);
+}
+
+static void test_adc_table(void)
+{
+	const struct linkr_debugger_current_desc *adc;
+	const struct linkr_debugger_current_desc *adc3;
+	size_t current_descriptor_count = 0U;
+
+	assert(linkr_debugger_adc_count == 4);
+	for (size_t i = 0; i < linkr_debugger_adc_count; i++) {
+		adc = &linkr_debugger_currents[i];
+		switch (adc->kind) {
+		case LINKR_DEBUGGER_ADC_KIND_CURRENT:
+			assert_str_eq(adc->sensor, "INA139");
+			assert_str_eq(adc->unit, "uA");
+			current_descriptor_count++;
+			break;
+		case LINKR_DEBUGGER_ADC_KIND_VOLTAGE:
+			assert_str_eq(adc->sensor, "ADC");
+			assert_str_eq(adc->unit, "uV");
+			break;
+		default:
+			assert(false);
+		}
+	}
+	assert(current_descriptor_count == LINKR_DEBUGGER_CURRENT_SENSOR_COUNT);
+
+	adc3 = linkr_debugger_find_adc("adc3");
+	assert(adc3 != NULL);
+	assert_str_eq(adc3->signal, "GPIO29_ADC3");
+	assert_str_eq(adc3->sensor, "ADC");
+	assert(adc3->kind == LINKR_DEBUGGER_ADC_KIND_VOLTAGE);
+	assert_str_eq(adc3->unit, "uV");
+	assert(adc3->adc_index == 3);
+
+	assert(linkr_debugger_find_adc("5V_FIN") == NULL);
 }
 
 static void test_safe_gpio_allowlist(void)
@@ -94,6 +139,8 @@ static void test_safe_gpio_allowlist(void)
 	assert(linkr_debugger_safe_gpio_count == 15);
 	for (size_t i = 0; i < linkr_debugger_safe_gpio_count; i++) {
 		assert(linkr_debugger_safe_gpios[i].pin == expected_order[i]);
+		assert(linkr_debugger_safe_gpios[i].output_capable ==
+		       (linkr_debugger_safe_gpios[i].pin != 29U));
 	}
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(7);
@@ -144,6 +191,7 @@ static void test_safe_gpio_allowlist(void)
 	assert_str_eq(gpio->layout_label, "ADC3");
 	assert(gpio->layout_row == 0);
 	assert(gpio->layout_column == 1);
+	assert(!gpio->output_capable);
 	assert(linkr_debugger_format_gpio_name(gpio->pin, name, sizeof(name)));
 	assert_str_eq(name, "GP29");
 
@@ -341,6 +389,7 @@ int main(void)
 	test_rail_table_matches_schematic();
 	test_vdd_5v_state_contract_matches_board_revision();
 	test_current_table();
+	test_adc_table();
 	test_safe_gpio_allowlist();
 	test_gpio_name_formatter();
 	test_bool_parser();

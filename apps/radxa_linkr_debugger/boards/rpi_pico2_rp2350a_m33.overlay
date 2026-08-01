@@ -20,7 +20,7 @@
 	};
 
 	zephyr,user {
-		io-channels = <&adc 0>, <&adc 1>, <&adc 2>;
+		io-channels = <&adc 0>, <&adc 1>, <&adc 2>, <&adc 3>;
 	};
 
 	reg_12v_out: regulator-12v-out {

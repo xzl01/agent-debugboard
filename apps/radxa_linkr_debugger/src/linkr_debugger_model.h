@@ -20,15 +20,23 @@ struct linkr_debugger_rail_desc {
 	bool always_on;
 };
 
+enum linkr_debugger_adc_kind {
+	LINKR_DEBUGGER_ADC_KIND_CURRENT = 0,
+	LINKR_DEBUGGER_ADC_KIND_VOLTAGE = 1,
+};
+
 struct linkr_debugger_current_desc {
 	const char *name;
 	const char *signal;
 	const char *sensor;
+	enum linkr_debugger_adc_kind kind;
+	const char *unit;
 	size_t adc_index;
 };
 
 struct linkr_debugger_safe_gpio_desc {
 	uint8_t pin;
+	bool output_capable;
 	const char *note;
 	const char *layout_group;
 	const char *layout_label;
@@ -59,11 +67,14 @@ enum linkr_debugger_tf_wp_route {
 #define LINKR_DEBUGGER_GPIO_NAME_BUFSZ 5
 #define LINKR_DEBUGGER_VIN_1V8_UV 1800000
 #define LINKR_DEBUGGER_VIN_3V3_UV 3300000
+#define LINKR_DEBUGGER_ADC_TELEMETRY_CHANNEL_COUNT 4U
+#define LINKR_DEBUGGER_CURRENT_SENSOR_COUNT 3U
 
 extern const struct linkr_debugger_rail_desc linkr_debugger_rails[];
 extern const size_t linkr_debugger_rail_count;
 
 extern const struct linkr_debugger_current_desc linkr_debugger_currents[];
+extern const size_t linkr_debugger_adc_count;
 extern const size_t linkr_debugger_current_count;
 
 extern const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[];
@@ -95,6 +106,7 @@ bool linkr_debugger_heartbeat_step(struct linkr_debugger_heartbeat_state *state,
 					 uint32_t ticks_per_toggle);
 
 const struct linkr_debugger_rail_desc *linkr_debugger_find_rail(const char *name);
+const struct linkr_debugger_current_desc *linkr_debugger_find_adc(const char *name);
 const struct linkr_debugger_current_desc *linkr_debugger_find_current(const char *name);
 const struct linkr_debugger_safe_gpio_desc *linkr_debugger_find_safe_gpio_by_pin(uint8_t pin);
 const struct linkr_debugger_safe_gpio_desc *linkr_debugger_find_safe_gpio_by_identifier(const char *identifier);

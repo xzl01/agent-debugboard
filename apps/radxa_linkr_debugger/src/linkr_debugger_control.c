@@ -167,6 +167,8 @@ static const struct current_sense_amplifier_dt_spec current_amplifiers[] = {
 	CURRENT_SENSE_AMPLIFIER_DT_SPEC_GET(CURRENT_12V_OUT_NODE),
 	CURRENT_SENSE_AMPLIFIER_DT_SPEC_GET(CURRENT_20V_OUT_NODE),
 };
+BUILD_ASSERT(ARRAY_SIZE(current_sensors) == LINKR_DEBUGGER_CURRENT_SENSOR_COUNT);
+BUILD_ASSERT(ARRAY_SIZE(current_amplifiers) == LINKR_DEBUGGER_CURRENT_SENSOR_COUNT);
 #else
 static const struct device *const current_sensors[] = {};
 static const struct current_sense_amplifier_dt_spec current_amplifiers[] = {};
@@ -263,11 +265,23 @@ static const struct device *linkr_debugger_regulator_device(const struct linkr_d
 
 static const struct device *linkr_debugger_current_sensor(const struct linkr_debugger_current_desc *current)
 {
-	if (current == NULL || current->adc_index >= ARRAY_SIZE(current_sensors)) {
+	if (current == NULL || current->kind != LINKR_DEBUGGER_ADC_KIND_CURRENT ||
+	    current->adc_index >= ARRAY_SIZE(current_sensors)) {
 		return NULL;
 	}
 
 	return current_sensors[current->adc_index];
+}
+
+static const struct current_sense_amplifier_dt_spec *
+linkr_debugger_current_amplifier(const struct linkr_debugger_current_desc *current)
+{
+	if (current == NULL || current->kind != LINKR_DEBUGGER_ADC_KIND_CURRENT ||
+	    current->adc_index >= ARRAY_SIZE(current_amplifiers)) {
+		return NULL;
+	}
+
+	return &current_amplifiers[current->adc_index];
 }
 
 static int32_t sensor_value_to_microamps(const struct sensor_value *value)
@@ -370,31 +384,49 @@ static void linkr_debugger_gpio_apply_safe_drive_strength(const struct linkr_deb
 	}
 }
 
-static int setup_current_sensors(void)
+static int setup_adc_channels(void)
 {
-	if (ARRAY_SIZE(current_sensors) == 0) {
+	if (ARRAY_SIZE(adc_channels) == 0) {
 		return 0;
 	}
 
-	if (linkr_debugger_current_count != ARRAY_SIZE(current_sensors)) {
+	if (linkr_debugger_adc_count != ARRAY_SIZE(adc_channels)) {
 		return -EINVAL;
 	}
 
-	if (linkr_debugger_current_count != ARRAY_SIZE(adc_channels)) {
-		return -EINVAL;
-	}
-
-	for (size_t i = 0; i < ARRAY_SIZE(current_sensors); i++) {
-		if (!device_is_ready(current_sensors[i])) {
-			return -ENODEV;
-		}
-
+	for (size_t i = 0; i < ARRAY_SIZE(adc_channels); i++) {
 		if (!adc_is_ready_dt(&adc_channels[i])) {
 			return -ENODEV;
 		}
 
 		if (adc_channel_setup_dt(&adc_channels[i]) < 0) {
 			return -ENODEV;
+		}
+	}
+
+	for (size_t i = 0; i < linkr_debugger_adc_count; i++) {
+		const struct linkr_debugger_current_desc *current = &linkr_debugger_currents[i];
+
+		if (current->adc_index != i) {
+			return -EINVAL;
+		}
+
+		switch (current->kind) {
+		case LINKR_DEBUGGER_ADC_KIND_CURRENT: {
+			const struct device *sensor = linkr_debugger_current_sensor(current);
+
+			if (sensor == NULL || linkr_debugger_current_amplifier(current) == NULL) {
+				return -EINVAL;
+			}
+			if (!device_is_ready(sensor)) {
+				return -ENODEV;
+			}
+			break;
+		}
+		case LINKR_DEBUGGER_ADC_KIND_VOLTAGE:
+			break;
+		default:
+			return -EINVAL;
 		}
 	}
 
@@ -786,8 +818,8 @@ static int linkr_debugger_watchdog_arm_locked(void)
 	return 0;
 }
 
-static int read_current_adc_debug(const struct linkr_debugger_current_desc *current,
-					 struct linkr_debugger_current_sample *sample)
+static int read_adc_debug(const struct linkr_debugger_current_desc *current,
+			  struct linkr_debugger_current_sample *sample)
 {
 	const struct adc_dt_spec *spec;
 	struct adc_sequence sequence = {
@@ -886,7 +918,7 @@ int linkr_debugger_control_init(void)
 		return ret;
 	}
 
-	ret = setup_current_sensors();
+	ret = setup_adc_channels();
 	if (ret < 0) {
 		return ret;
 	}
@@ -1257,7 +1289,7 @@ int linkr_debugger_current_read(const struct linkr_debugger_current_desc *curren
 	struct sensor_value value;
 	int ret;
 
-	if (sample == NULL) {
+	if (current == NULL || sample == NULL) {
 		return -EINVAL;
 	}
 
@@ -1268,42 +1300,62 @@ int linkr_debugger_current_read(const struct linkr_debugger_current_desc *curren
 	sample->value.val1 = 0;
 	sample->value.val2 = 0;
 
-	sensor = linkr_debugger_current_sensor(current);
-	if (sensor == NULL || !device_is_ready(sensor)) {
-		return -ENODEV;
-	}
+	switch (current->kind) {
+	case LINKR_DEBUGGER_ADC_KIND_CURRENT:
+		sensor = linkr_debugger_current_sensor(current);
+		if (sensor == NULL || !device_is_ready(sensor)) {
+			return -ENODEV;
+		}
 
-	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+		k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+		rail = linkr_debugger_find_rail(current->name);
+		sample->rail_enabled = true;
+		if (rail != NULL && rail->controllable) {
+			sample->rail_enabled = linkr_debugger_power_output_enabled(rail);
+		}
 
-	rail = linkr_debugger_find_rail(current->name);
-	sample->rail_enabled = true;
-	if (rail != NULL && rail->controllable) {
-		sample->rail_enabled = linkr_debugger_power_output_enabled(rail);
-	}
+		ret = read_adc_debug(current, sample);
+		if (ret < 0) {
+			k_mutex_unlock(&linkr_debugger_control_lock);
+			return ret;
+		}
 
-	ret = read_current_adc_debug(current, sample);
-	if (ret < 0) {
+		ret = sensor_sample_fetch_chan(sensor, SENSOR_CHAN_CURRENT);
+		if (ret < 0) {
+			k_mutex_unlock(&linkr_debugger_control_lock);
+			return ret;
+		}
+
+		ret = sensor_channel_get(sensor, SENSOR_CHAN_CURRENT, &value);
+		if (ret < 0) {
+			k_mutex_unlock(&linkr_debugger_control_lock);
+			return ret;
+		}
+
+		sample->value = value;
+		sample->current_ua = sensor_value_to_microamps(&value);
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		return 0;
+	case LINKR_DEBUGGER_ADC_KIND_VOLTAGE: {
+		int32_t microvolts;
+
+		k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+		sample->rail_enabled = true;
+		ret = read_adc_debug(current, sample);
+		if (ret == 0) {
+			microvolts = sample->raw;
+			if (adc_raw_to_microvolts_dt(&adc_channels[current->adc_index],
+					       &microvolts) < 0) {
+				microvolts = sample->mv * 1000;
+			}
+			(void)sensor_value_from_micro(&sample->value, microvolts);
+		}
 		k_mutex_unlock(&linkr_debugger_control_lock);
 		return ret;
 	}
-
-	ret = sensor_sample_fetch_chan(sensor, SENSOR_CHAN_CURRENT);
-	if (ret < 0) {
-		k_mutex_unlock(&linkr_debugger_control_lock);
-		return ret;
+	default:
+		return -EINVAL;
 	}
-
-	ret = sensor_channel_get(sensor, SENSOR_CHAN_CURRENT, &value);
-	if (ret < 0) {
-		k_mutex_unlock(&linkr_debugger_control_lock);
-		return ret;
-	}
-
-	sample->value = value;
-	sample->current_ua = sensor_value_to_microamps(&value);
-	k_mutex_unlock(&linkr_debugger_control_lock);
-
-	return 0;
 }
 
 struct linkr_debugger_current_batch_timing {
@@ -1333,7 +1385,7 @@ int linkr_debugger_current_read_batch(struct linkr_debugger_current_sample *samp
 					 int64_t *timestamps_us,
 					 uint32_t interval_us)
 {
-	int16_t raw[LINKR_DEBUGGER_CURRENT_BATCH_MAX][ARRAY_SIZE(adc_channels)];
+	int16_t raw[LINKR_DEBUGGER_CURRENT_BATCH_MAX * ARRAY_SIZE(adc_channels)];
 	struct linkr_debugger_current_batch_timing timing = {
 		.timestamps_us = timestamps_us,
 		.count = batch_count,
@@ -1348,9 +1400,8 @@ int linkr_debugger_current_read_batch(struct linkr_debugger_current_sample *samp
 
 	if (samples == NULL || timestamps_us == NULL || batch_count == 0U ||
 	    batch_count > LINKR_DEBUGGER_CURRENT_BATCH_MAX ||
-	    channel_count != ARRAY_SIZE(adc_channels) ||
-	    channel_count != ARRAY_SIZE(current_amplifiers) ||
-	    channel_count != linkr_debugger_current_count || channel_count == 0U) {
+	    (channel_count != linkr_debugger_adc_count &&
+	     channel_count != linkr_debugger_current_count)) {
 		return -EINVAL;
 	}
 
@@ -1358,14 +1409,24 @@ int linkr_debugger_current_read_batch(struct linkr_debugger_current_sample *samp
 	options.callback = linkr_debugger_current_batch_callback;
 	options.user_data = &timing;
 	options.extra_samplings = (uint16_t)(batch_count - 1U);
-	sequence.buffer_size = batch_count * channel_count * sizeof(raw[0][0]);
+	sequence.buffer_size = batch_count * channel_count * sizeof(raw[0]);
 	sequence.resolution = adc_channels[0].resolution;
 	sequence.oversampling = adc_channels[0].oversampling;
 	for (size_t i = 0; i < channel_count; i++) {
-		if (adc_channels[i].dev != adc_channels[0].dev ||
+		const struct linkr_debugger_current_desc *current = &linkr_debugger_currents[i];
+
+		if (current->adc_index != i || adc_channels[i].dev != adc_channels[0].dev ||
 		    adc_channels[i].resolution != sequence.resolution ||
 		    adc_channels[i].oversampling != sequence.oversampling ||
 		    (i > 0U && adc_channels[i].channel_id <= previous_channel)) {
+			return -EINVAL;
+		}
+		if (current->kind == LINKR_DEBUGGER_ADC_KIND_CURRENT &&
+		    linkr_debugger_current_amplifier(current) == NULL) {
+			return -EINVAL;
+		}
+		if (current->kind != LINKR_DEBUGGER_ADC_KIND_CURRENT &&
+		    current->kind != LINKR_DEBUGGER_ADC_KIND_VOLTAGE) {
 			return -EINVAL;
 		}
 		previous_channel = adc_channels[i].channel_id;
@@ -1387,36 +1448,57 @@ int linkr_debugger_current_read_batch(struct linkr_debugger_current_sample *samp
 				&linkr_debugger_currents[i];
 			const struct linkr_debugger_rail_desc *rail =
 				linkr_debugger_find_rail(current->name);
-			int32_t microvolts = raw[sample_index][i];
-			int32_t millivolts = raw[sample_index][i];
+			const struct current_sense_amplifier_dt_spec *amplifier;
+			int32_t raw_value = raw[sample_index * channel_count + i];
+			int32_t microvolts = raw_value;
+			int32_t millivolts = raw_value;
 
 			memset(sample, 0, sizeof(*sample));
 			sample->rail_enabled = rail == NULL || !rail->controllable ||
 				linkr_debugger_power_output_enabled(rail);
 			sample->raw_available = true;
-			sample->raw = raw[sample_index][i];
+			sample->raw = raw_value;
 
 			ret = adc_raw_to_millivolts_dt(&adc_channels[i], &millivolts);
 			if (ret < 0) {
 				uint8_t resolution = adc_channels[i].resolution != 0U ?
 					adc_channels[i].resolution : 12U;
 
-				millivolts = (raw[sample_index][i] * 3300) /
+				millivolts = (raw_value * 3300) /
 					((1 << resolution) - 1);
 			}
 			sample->mv = millivolts;
 
-			ret = adc_raw_to_microvolts_dt(&current_amplifiers[i].port,
-						  &microvolts);
-			if (ret < 0) {
+			switch (current->kind) {
+			case LINKR_DEBUGGER_ADC_KIND_CURRENT:
+				amplifier = linkr_debugger_current_amplifier(current);
+				if (amplifier == NULL) {
+					k_mutex_unlock(&linkr_debugger_control_lock);
+					return -EINVAL;
+				}
+				ret = adc_raw_to_microvolts_dt(&amplifier->port, &microvolts);
+				if (ret < 0) {
+					k_mutex_unlock(&linkr_debugger_control_lock);
+					return ret;
+				}
+				if (abs(raw_value) >= amplifier->noise_threshold) {
+					sample->current_ua = current_sense_amplifier_scale_ua_dt(
+						amplifier, microvolts);
+				}
+				(void)sensor_value_from_micro(&sample->value, sample->current_ua);
+				break;
+			case LINKR_DEBUGGER_ADC_KIND_VOLTAGE:
+				ret = adc_raw_to_microvolts_dt(&adc_channels[current->adc_index],
+							       &microvolts);
+				if (ret < 0) {
+					microvolts = millivolts * 1000;
+				}
+				(void)sensor_value_from_micro(&sample->value, microvolts);
+				break;
+			default:
 				k_mutex_unlock(&linkr_debugger_control_lock);
-				return ret;
+				return -EINVAL;
 			}
-			if (abs(raw[sample_index][i]) >= current_amplifiers[i].noise_threshold) {
-				sample->current_ua = current_sense_amplifier_scale_ua_dt(
-					&current_amplifiers[i], microvolts);
-			}
-			(void)sensor_value_from_micro(&sample->value, sample->current_ua);
 		}
 	}
 	k_mutex_unlock(&linkr_debugger_control_lock);
@@ -1471,6 +1553,9 @@ int linkr_debugger_gpio_set_output(const struct linkr_debugger_safe_gpio_desc *d
 	if (!safe_gpio_index_valid(desc, &index)) {
 		return -ERANGE;
 	}
+	if (!desc->output_capable) {
+		return -EPERM;
+	}
 	if (!device_is_ready(gpio0)) {
 		return -ENODEV;
 	}
@@ -1494,6 +1579,9 @@ int linkr_debugger_gpio_set_input(const struct linkr_debugger_safe_gpio_desc *de
 
 	if (!safe_gpio_index_valid(desc, &index)) {
 		return -ERANGE;
+	}
+	if (!desc->output_capable) {
+		return 0;
 	}
 	if (!device_is_ready(gpio0)) {
 		return -ENODEV;

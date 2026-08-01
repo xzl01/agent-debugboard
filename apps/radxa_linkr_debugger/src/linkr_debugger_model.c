@@ -16,6 +16,9 @@
 
 #define ARRAY_SIZE_LOCAL(array) (sizeof(array) / sizeof((array)[0]))
 #define INA139_SENSOR "INA139"
+#define ADC_SENSOR "ADC"
+#define CURRENT_UNIT "uA"
+#define VOLTAGE_UNIT "uV"
 
 const struct linkr_debugger_rail_desc linkr_debugger_rails[] = {
 	{
@@ -51,40 +54,62 @@ const struct linkr_debugger_current_desc linkr_debugger_currents[] = {
 		.name = "5v_out",
 		.signal = "S_C_5V",
 		.sensor = INA139_SENSOR,
+		.kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
+		.unit = CURRENT_UNIT,
 		.adc_index = 0,
 	},
 	{
 		.name = "12v_out",
 		.signal = "S_C_12V",
 		.sensor = INA139_SENSOR,
+		.kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
+		.unit = CURRENT_UNIT,
 		.adc_index = 1,
 	},
 	{
 		.name = "20v_out",
 		.signal = "S_C_20V",
 		.sensor = INA139_SENSOR,
+		.kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
+		.unit = CURRENT_UNIT,
 		.adc_index = 2,
+	},
+	{
+		.name = "adc3",
+		.signal = "GPIO29_ADC3",
+		.sensor = ADC_SENSOR,
+		.kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE,
+		.unit = VOLTAGE_UNIT,
+		.adc_index = 3,
 	},
 };
 
-const size_t linkr_debugger_current_count = ARRAY_SIZE_LOCAL(linkr_debugger_currents);
+const size_t linkr_debugger_adc_count = ARRAY_SIZE_LOCAL(linkr_debugger_currents);
+const size_t linkr_debugger_current_count = LINKR_DEBUGGER_CURRENT_SENSOR_COUNT;
+
+_Static_assert(ARRAY_SIZE_LOCAL(linkr_debugger_currents) ==
+	       LINKR_DEBUGGER_ADC_TELEMETRY_CHANNEL_COUNT,
+	       "ADC telemetry descriptor count changed");
+_Static_assert(ARRAY_SIZE_LOCAL(linkr_debugger_currents) ==
+	       LINKR_DEBUGGER_CURRENT_SENSOR_COUNT + 1U,
+	       "current sensor descriptor count changed");
 
 const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[] = {
-	{ .pin = 8,  .note = "CON_REST", .layout_group = "J13", .layout_label = "RSET",    .layout_row = 0, .layout_column = 0 },
-	{ .pin = 9,  .note = "CON_USER", .layout_group = "J13", .layout_label = "USER",    .layout_row = 0, .layout_column = 1 },
-	{ .pin = 7,  .note = "CON_MAS",  .layout_group = "J13", .layout_label = "MASKROM", .layout_row = 1, .layout_column = 1 },
-	{ .pin = 15, .note = "J16_PIN11", .layout_group = "J16", .layout_label = "GP15", .layout_row = 0, .layout_column = 0 },
-	{ .pin = 29, .note = "J16_PIN12", .layout_group = "J16", .layout_label = "ADC3", .layout_row = 0, .layout_column = 1 },
-	{ .pin = 14, .note = "J16_PIN9",  .layout_group = "J16", .layout_label = "GP14", .layout_row = 1, .layout_column = 0 },
-	{ .pin = 20, .note = "J16_PIN10", .layout_group = "J16", .layout_label = "GP20", .layout_row = 1, .layout_column = 1 },
-	{ .pin = 13, .note = "J16_PIN7",  .layout_group = "J16", .layout_label = "GP13", .layout_row = 2, .layout_column = 0 },
-	{ .pin = 19, .note = "J16_PIN8",  .layout_group = "J16", .layout_label = "GP19", .layout_row = 2, .layout_column = 1 },
-	{ .pin = 12, .note = "J16_PIN5",  .layout_group = "J16", .layout_label = "GP12", .layout_row = 3, .layout_column = 0 },
-	{ .pin = 18, .note = "J16_PIN6",  .layout_group = "J16", .layout_label = "GP18", .layout_row = 3, .layout_column = 1 },
-	{ .pin = 11, .note = "J16_PIN3",  .layout_group = "J16", .layout_label = "GP11", .layout_row = 4, .layout_column = 0 },
-	{ .pin = 17, .note = "J16_PIN4",  .layout_group = "J16", .layout_label = "GP17", .layout_row = 4, .layout_column = 1 },
-	{ .pin = 10, .note = "J16_PIN1",  .layout_group = "J16", .layout_label = "GP10", .layout_row = 5, .layout_column = 0 },
-	{ .pin = 16, .note = "J16_PIN2",  .layout_group = "J16", .layout_label = "GP16", .layout_row = 5, .layout_column = 1 },
+	{ .pin = 8,  .output_capable = true, .note = "CON_REST", .layout_group = "J13", .layout_label = "RSET",    .layout_row = 0, .layout_column = 0 },
+	{ .pin = 9,  .output_capable = true, .note = "CON_USER", .layout_group = "J13", .layout_label = "USER",    .layout_row = 0, .layout_column = 1 },
+	{ .pin = 7,  .output_capable = true, .note = "CON_MAS",  .layout_group = "J13", .layout_label = "MASKROM", .layout_row = 1, .layout_column = 1 },
+	{ .pin = 15, .output_capable = true, .note = "J16_PIN11", .layout_group = "J16", .layout_label = "GP15", .layout_row = 0, .layout_column = 0 },
+	{ .pin = 29, .output_capable = false, .note = "J16_PIN12", .layout_group = "J16", .layout_label = "ADC3", .layout_row = 0, .layout_column = 1 },
+	{ .pin = 14, .output_capable = true, .note = "J16_PIN9",  .layout_group = "J16", .layout_label = "GP14", .layout_row = 1, .layout_column = 0 },
+	{ .pin = 20, .output_capable = true, .note = "J16_PIN10", .layout_group = "J16", .layout_label = "GP20", .layout_row = 1, .layout_column = 1 },
+	{ .pin = 13, .output_capable = true, .note = "J16_PIN7",  .layout_group = "J16", .layout_label = "GP13", .layout_row = 2, .layout_column = 0 },
+	{ .pin = 19, .output_capable = true, .note = "J16_PIN8",  .layout_group = "J16", .layout_label = "GP19", .layout_row = 2, .layout_column = 1 },
+	{ .pin = 12, .output_capable = true, .note = "J16_PIN5",  .layout_group = "J16", .layout_label = "GP12", .layout_row = 3, .layout_column = 0 },
+	{ .pin = 18, .output_capable = true, .note = "J16_PIN6",  .layout_group = "J16", .layout_label = "GP18", .layout_row = 3, .layout_column = 1 },
+	{ .pin = 11, .output_capable = true, .note = "J16_PIN3",  .layout_group = "J16", .layout_label = "GP11", .layout_row = 4, .layout_column = 0 },
+	{ .pin = 17, .output_capable = true, .note = "J16_PIN4",  .layout_group = "J16", .layout_label = "GP17", .layout_row = 4, .layout_column = 1 },
+	{ .pin = 10, .output_capable = true, .note = "J16_PIN1",  .layout_group = "J16", .layout_label = "GP10", .layout_row = 5, .layout_column = 0 },
+	{ .pin = 16, .output_capable = true, .note = "J16_PIN2",  .layout_group = "J16", .layout_label = "GP16", .layout_row = 5, .layout_column = 1 },
 };
 
 const size_t linkr_debugger_safe_gpio_count = ARRAY_SIZE_LOCAL(linkr_debugger_safe_gpios);
@@ -337,6 +362,22 @@ const struct linkr_debugger_current_desc *linkr_debugger_find_current(const char
 	}
 
 	for (size_t i = 0; i < linkr_debugger_current_count; i++) {
+		if (streq(name, linkr_debugger_currents[i].name) ||
+		    streq(name, linkr_debugger_currents[i].signal)) {
+			return &linkr_debugger_currents[i];
+		}
+	}
+
+	return NULL;
+}
+
+const struct linkr_debugger_current_desc *linkr_debugger_find_adc(const char *name)
+{
+	if (name == NULL) {
+		return NULL;
+	}
+
+	for (size_t i = 0; i < linkr_debugger_adc_count; i++) {
 		if (streq(name, linkr_debugger_currents[i].name) ||
 		    streq(name, linkr_debugger_currents[i].signal)) {
 			return &linkr_debugger_currents[i];
