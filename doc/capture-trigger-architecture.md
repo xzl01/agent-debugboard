@@ -16,7 +16,7 @@ margin of 2048. Usable capacities are SINGLE 260096, FAST8 30720, and WIDE11 143
 The WIDE11 writer enforces minimum lane sequence and stops when greater than 20 sample skew
 is detected. On overrun, possible overrun, transport backpressure, or bounded-capture
 completion, the firmware emits a terminal event and stops rather than silently continuing
-(lossless-or-stop). The packed ring does not increase arena beyond 144184B.
+(lossless-or-stop). The packed ring reuses the 149048 B total backing allocation (sized to max(normal, burst)=149048 B); the WIDE11 144184 B hardware slice and the 30720 B WS telemetry ring share that backing allocation.
 DATA and EVENT sample indices wrap modulo 24 bits; wrap is not a terminal condition.
 
 After an overrun terminal is requested, sink retries yield CPU time so the
@@ -61,7 +61,7 @@ but it is not a sustained-throughput claim. Rows that observe an immediate
 `sample_index=0` OVERRUN or STOPPED with `data_frames=0` must keep this label.
 
 ```
-LA Pins: GP10-GP20; GP29 = ordinary GPIO/ADC3
+LA Pins: GP10-GP20; GP29 = ADC3 voltage monitor (ADC3-owned, input-only)
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -333,8 +333,7 @@ capture SMs. For WIDE11:
 
 - **SM-A** (capture): GP10-GP17, 8-bit autopush32, 100000 B source buffer
 - **SM-B** (capture): GP18-GP20, 3-bit autopush30, 40000 B source buffer
-- **Shared arena**: 144184 B; temporarily removes ADC telemetry, power capture, and
-  normal Sigrok pool resources for the lease lifetime; restores after drain
+- **Shared burst slice**: 144184 B; overlays the 149048 B total backing allocation (sized to max(normal, burst)=149048 B); temporarily removes ADC telemetry, power capture, and normal Sigrok pool resources for the lease lifetime; restores after drain
 - **Post-capture transport**: up to 98 DATA frames, maximum 1024 samples per frame,
   140000 B total payload
 - **Two-phase START**: ownership and quiesce are ready before the response. NONE
@@ -347,9 +346,9 @@ The three physical capture plans:
   12500 B source at 100 MHz (100000 samples × 1 bit). A FAST8 physical plan, not a separate Sigrok wire mode.
 - **FAST8**: one 8-bit lane (GP10-GP17), autopush32, 4 samples per 32-bit word,
   100000 B source at 100 MHz (100000 samples × 8 bits)
-- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B shared arena; triggered deep burst adds a third trigger-only SM
+- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 149048 B total backing allocation); triggered deep burst adds a third trigger-only SM
 
-GP29 is excluded from WIDE11 LA (available as ordinary GPIO/ADC3). WIDE11
+GP29 is excluded from WIDE11 LA (ADC3 voltage monitor; ADC3-owned and input-only). WIDE11
 verification is the freeze-final HIL evidence block below; it is **not** the same
 artifact as the historical WIDE12 baseline.
 
@@ -469,7 +468,7 @@ rejection (INVALID_CONFIG, error code 7). The matrix-eligibility rule uses the
 |----------|------|-----------|-------|
 | PIO SM | 2–3 | 8 | SM1 for finite/ring modes; WIDE11 deep burst: NONE uses 2 capture SMs (SM-A and SM-B), triggered adds a 3rd trigger-only SM |
 | Instructions | 4 max | 32 | 1 capture + 3 trigger instructions; EITHER uses the same 3-instruction path after firmware level-snapshot |
-| GPIO pins | 11 | 29 | GP10-GP20 (GP29 excluded from LA, available as ordinary GPIO/ADC3) |
+| GPIO pins | 11 | 29 | GP10-GP20 (GP29 excluded from LA; ADC3 voltage monitor; ADC3-owned and input-only) |
 
 ### DMA Resources
 
@@ -486,7 +485,7 @@ rejection (INVALID_CONFIG, error code 7). The matrix-eligibility rule uses the
 | Packed ring (WIDE11) | 32768 bytes | Lane A 16384B + lane B 8192B; common capacity 16384 samples; safety 2048; usable 14336 samples; min lane sequence; >20 skew stops |
 | Stream scratch | 2048 bytes | Shared synchronous compression output |
 | DMA config | 64 bytes | Runtime |
-| WIDE11 deep burst arena | 144184 bytes | Dual-SM packed arena; does not increase arena beyond 144184B; quiesces LA/Sigrok pool during lease; GP29 excluded from LA (ordinary GPIO/ADC3) |
+| WIDE11 deep burst slice | 144184 bytes | Dual-SM packed burst slice; overlays the 149048 B total backing allocation (sized to max(normal, burst)=149048 B); quiesces LA/Sigrok pool during lease; GP29 excluded from LA (ADC3 voltage monitor; ADC3-owned and input-only) |
 
 ## Stop Conditions
 
@@ -616,7 +615,9 @@ uint32_t calculate_clock_div(uint32_t requested_rate_khz) {
 The capture engine uses two engines: packed finite DMA and packed DMA ring.
 SINGLE/FAST8 uses one 32768B packed wrap ring; WIDE11 uses lane A 16384B plus lane B 8192B
 inside the same 32768B slice, common capacity 16384 samples, safety 2048, usable capacities
-SINGLE 260096 / FAST8 30720 / WIDE11 14336. The packed ring does not increase arena beyond
-144184B. The WIDE11 writer enforces minimum lane sequence and stops when greater than 20 sample
+SINGLE 260096 / FAST8 30720 / WIDE11 14336. The packed ring reuses the 149048 B total backing
+allocation (sized to max(normal, burst)=149048 B); the WIDE11 144184 B hardware slice and the
+30720 B WS telemetry ring share that backing allocation. The WIDE11 writer enforces minimum lane
+sequence and stops when greater than 20 sample
 skew is detected. See [ring-buffer-gap-analysis.md](ring-buffer-gap-analysis.md)
 for the historical gap analysis and final post-ring HIL envelope.

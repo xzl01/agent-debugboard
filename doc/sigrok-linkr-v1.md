@@ -311,21 +311,20 @@ SINGLE and FAST8 use one capture SM; WIDE11 uses two capture SMs. For WIDE11:
   trigger-only SM running the 3-instruction trigger program (peak 3 SMs)
 - **Post-capture transport**: up to 98 DATA frames, maximum 1024 samples per frame,
   140000 B total payload
-- **Shared arena**: 144184 bytes; quiesces ADC telemetry, power capture, and normal Sigrok
-  pool for the lease lifetime; restores after drain
+- **Shared burst slice**: 144184 bytes; overlays the 149048 B total backing allocation (sized to max(normal, burst)=149048 B); quiesces ADC telemetry, power capture, and normal Sigrok pool for the lease lifetime; restores after drain
 - **Two-phase START**: ownership and quiesce are ready before the response. NONE
   sends START_RESP in RUNNING state with no ARMED event; triggered captures send
   START_RESP in ARMED state followed by the ARMED event. GO then synchronously
   enables the capture SMs
 
-GP29 is excluded from WIDE11 LA (available as ordinary GPIO/ADC3).
+GP29 is excluded from WIDE11 LA (ADC3 voltage monitor; ADC3-owned and input-only).
 
 The three physical capture plans:
 - **SINGLE**: one 1-bit lane on FAST8 SM (GP10 default), autopush32, 32 samples per 32-bit word,
   12500 B source at 100 MHz (100000 samples × 1 bit). A FAST8 physical plan, not a separate Sigrok wire mode.
 - **FAST8**: one 8-bit lane (GP10-GP17), autopush32, 4 samples per 32-bit word,
   100000 B source at 100 MHz (100000 samples × 8 bits)
-- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B shared arena
+- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 149048 B total backing allocation)
 
 WIDE11 verification is the freeze-final HIL evidence block below; it is not the
 same artifact as the historical WIDE12 baseline.
@@ -468,8 +467,9 @@ All acquisitions capture at the requested sample rate until a stop condition:
 **Key insight**: Continuous protocol captures are bounded by the packed ring and
 USB/NCM transport. Higher rates fill the buffer faster; if continuity
 can no longer be proven, firmware emits a terminal OVERRUN/ERROR event and stops
-instead of silently continuing (lossless-or-stop). The packed ring does not increase
-arena beyond 144184B.
+instead of silently continuing (lossless-or-stop). The packed ring reuses the 149048 B
+total backing allocation (sized to max(normal, burst)=149048 B); the WIDE11 144184 B hardware
+slice and the 30720 B WS telemetry ring share that backing allocation.
 
 ## Session Flow
 
@@ -617,9 +617,11 @@ high-state mapping, or watchdog fault-injection or automatic recovery validation
 - Two capture engines: packed finite DMA and packed DMA ring; SINGLE/FAST8 uses one
   32768B packed wrap ring; WIDE11 uses lane A 16384B plus lane B 8192B inside the same
   32768B slice, with a common capacity of 16384 samples and safety margin of 2048;
-  usable capacities are SINGLE 260096, FAST8 30720, WIDE11 14336; WIDE11 writer enforces
-  minimum lane sequence and stops when greater than 20 sample skew is detected; the packed
-  ring does not increase arena beyond 144184B
+usable capacities are SINGLE 260096, FAST8 30720, WIDE11 14336; WIDE11 writer enforces
+minimum lane sequence and stops when greater than 20 sample skew is detected; the packed
+ring reuses the 149048 B total backing allocation (sized to max(normal, burst)=149048 B),
+and the WIDE11 144184 B hardware slice plus the 30720 B WS telemetry ring share that
+backing allocation
 - LA sink: protocol-neutral consumer with 8 DATA slots plus 1 terminal slot pool;
   WS SINGLE emits up to 2048 packed samples per fixed DATA slot (protocol frame
   remains standard 8-byte DATA meta plus RLE or BIT_PACK payload; this is an

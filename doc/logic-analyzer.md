@@ -24,10 +24,10 @@ PulseView GUI with the same connection string.
 | Mode | Pins | Description |
 |------|------|-------------|
 | FAST8 | GP10-GP17 | 8-channel capture |
-| WIDE11 | GP10-GP20 | 11-channel capture; GP29 excluded from LA (ordinary GPIO/ADC3) |
+| WIDE11 | GP10-GP20 | 11-channel capture; GP29 excluded from LA (ADC3 voltage monitor; ADC3-owned and input-only) |
 
 GP7-GP9 and GP29 are not available in Sigrok modes. The Web UI sigrok pin
-selection is limited to GP10-GP20; GP29 remains available as ordinary GPIO/ADC3.
+selection is limited to GP10-GP20; GP29 stays in the persisted/safe catalog but is ADC3-owned and input-only on this firmware (ADC3 voltage monitor).
 
 ### Capture Parameters
 
@@ -83,7 +83,13 @@ DATA metadata is 8 bytes. Sample indices are modulo 24 bits; wrap is not a termi
 
 On overrun, possible overrun, transport backpressure, or bounded-capture completion,
 the firmware emits a terminal event and stops rather than silently continuing (lossless-or-stop).
-The packed ring does not increase arena beyond 144184B.
+The packed ring reuses the 149048 B total backing allocation (sized to max(normal, burst)=149048 B); the WIDE11 144184 B hardware slice and the 30720 B WS telemetry ring share that allocation.
+
+Arena pause/resume is a lossless, generation-scoped handshake. The ADC sampler
+atomically consumes preposted CONFIG/RESUME events, and an old generation's
+RESUME cannot satisfy a newer pause request. Arena ownership also remains held
+until the resume callback completes. Clients must not need an artificial delay
+between a completed capture and an immediate restart.
 
 #### Terminal selection freezes the writer (freeze-before-drain)
 
@@ -136,12 +142,6 @@ proves the firmware stopped cleanly before the consumer saw any data, which is w
 the lossless-or-stop contract requires, but it does not show a measured throughput
 envelope. Tests or matrix cells that observe an immediate `sample_index=0` OVERRUN
 with `data_frames=0` must label the row this way.
-
-Arena pause/resume is a lossless, generation-scoped handshake. The ADC sampler
-atomically consumes preposted CONFIG/RESUME events, and an old generation's
-RESUME cannot satisfy a newer pause request. Arena ownership also remains held
-until the resume callback completes. Clients must not need an artificial delay
-between a completed capture and an immediate restart.
 
 ### Measured No-Gap Continuous Ceilings
 
@@ -203,9 +203,9 @@ The three physical capture plans:
   12500 B source at 100 MHz (100000 samples × 1 bit). A FAST8 physical plan, not a separate Sigrok wire mode.
 - **FAST8**: one 8-bit lane (GP10-GP17), autopush32, 4 samples per 32-bit word,
   100000 B source at 100 MHz (100000 samples × 8 bits)
-- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B shared arena; triggered deep burst adds a third trigger-only SM
+- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 149048 B total backing allocation); triggered deep burst adds a third trigger-only SM
 
-GP29 is excluded from WIDE11 LA (available as ordinary GPIO/ADC3). WIDE11 verification is
+GP29 is excluded from WIDE11 LA (ADC3 voltage monitor; ADC3-owned and input-only). WIDE11 verification is
 covered by the historical 2026-07-27 freeze-final HIL matrices below.
 
 **Historical WIDE12 baseline (not current WIDE11; retained for context only)**:
@@ -294,13 +294,14 @@ silently drop samples (lossless-or-stop). When the writer is frozen on a termina
 selection, the freeze policy (described under "Terminal selection freezes the
 writer" above) disables the trigger SM and the sampler SM(s) and aborts the ring
 DMA channel(s) without releasing the channels back to the pool, so the consumer
-can only drain already-committed ring data. The packed ring does not increase
-arena beyond 144184B.
+can only drain already-committed ring data. The packed ring reuses the 149048 B total backing
+allocation (sized to max(normal, burst)=149048 B); the WIDE11 144184 B hardware slice and the
+30720 B WS telemetry ring share that backing allocation.
 
 The generic packed burst path uses a dual-SM packed arena: SM-A captures
 GP10-GP17 (8-bit autopush32, 100000 B source) and SM-B captures GP18-GP20 (3-bit
 autopush30, 40000 B source), with 140000 B total from two DMA channels and a
-144184 B shared arena. This is the WIDE11 architecture; GP29 is excluded from
+144184 B burst slice (overlays the 149048 B total backing allocation). This is the WIDE11 architecture; GP29 is excluded from
 WIDE11 LA. NONE deep burst uses two capture SMs; triggered deep burst adds a third SM
 running the 3-instruction trigger program. The three physical plans: SINGLE (one 1-bit lane, autopush32,
 32 samples/word, 12500 B at 100 MHz), FAST8 (one 8-bit lane, autopush32, 4 samples/word,
