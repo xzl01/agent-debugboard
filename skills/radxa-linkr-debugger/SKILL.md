@@ -311,6 +311,276 @@ during runtime. When watchdog recovery enters ROM BOOTSEL, the boot message
 distinguishes between an explicit bootloader command and an unhealthy liveness
 stop.
 
+## Persistent Configuration
+
+Use the raw HTTP API first. The default remains the portless NCM URL
+`BOARD_URL="${BOARD_URL:-http://172.29.203.1}"`. Persistent configuration stores
+one explicit snapshot. Ordinary control setters remain volatile, so changing a
+power output, switch, or GPIO does not save that change. The full model and API
+contract are in [Persistent Configuration](../../doc/persistent-configuration.md).
+
+### Read Saved Configuration
+
+Always read before saving, applying, or clearing. `GET /api/v1/config` is the
+only source for item IDs and danger classification. Do not keep a board catalog
+or infer risk from an ID, kind, current value, or prior firmware release. Only
+firmware classifies danger through `requires_confirm`.
+
+<!-- persistent-config-example: skill-curl-config-read -->
+```sh
+BOARD_URL="${BOARD_URL:-http://172.29.203.1}"
+curl -fsS "$BOARD_URL/api/v1/config"
+```
+
+Require `schema: "radxa-linkr-debugger.v1"`, `command: "config"`,
+`action: "get"`, and `ok: true` before using the result. Inspect `backend`,
+`snapshot`, and `pending`, then review every `items` row. Each row reports `id`,
+`kind`, `current`, `saved`, `selected`, `requires_confirm`, and `apply_state`.
+An unavailable current value or unknown danger classification is not permission
+to save or apply that item.
+
+### Save Selected Current Values
+
+Save accepts firmware item IDs and captures their current values into one
+snapshot. A successful response reports `saved_items`, `confirmation_items`,
+`snapshot`, and `pending`. For a safe item, first verify that the current GET
+response contains the exact ID and `requires_confirm: false`, then send
+`confirm: false`. The `switch/sd` ID below is an executable contract example,
+not a catalog to reuse without that check.
+
+<!-- persistent-config-example: skill-curl-config-save-safe -->
+```sh
+BOARD_URL="${BOARD_URL:-http://172.29.203.1}"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"items":["switch/sd"],"confirm":false}' \
+  "$BOARD_URL/api/v1/config"
+```
+
+A danger-classified current value may be saved only after a person reviews the
+GET result and explicitly accepts that exact value. Check that the row has the
+exact ID and `requires_confirm: true`, then send the confirmed request. Never
+turn an earlier `confirmation_required` response into confirmation
+automatically.
+
+<!-- persistent-config-example: skill-curl-config-save-dangerous -->
+```sh
+BOARD_URL="${BOARD_URL:-http://172.29.203.1}"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"items":["switch/usb"],"confirm":true}' \
+  "$BOARD_URL/api/v1/config"
+```
+
+Saving a dangerous value does not make it a boot default. Safe saved values
+auto-restore after firmware defaults, while dangerous saved values remain
+pending after every boot until a separate confirmed apply.
+
+### Apply Pending Values
+
+Apply the saved snapshot only after a fresh GET shows retryable `pending` or
+`failed` items. Applying can change live hardware. Because the API applies in
+firmware order and stops at the first failure, obtain explicit operator
+confirmation before sending `confirm: true`. A confirmed full apply includes
+every saved dangerous row, including an already-applied dangerous sibling.
+
+<!-- persistent-config-example: skill-curl-config-apply-confirmed -->
+```sh
+BOARD_URL="${BOARD_URL:-http://172.29.203.1}"
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  --data '{"confirm":true}' \
+  "$BOARD_URL/api/v1/config/apply"
+```
+
+On success, read `noop`, `applied_items`, `failed_item`, and `pending_items`.
+For `error.code: "apply_failed"`, those same fields describe a partial apply:
+`applied_items` already changed, `failed_item` is the first failed item, and
+`pending_items` were not completed. There is no hidden config rollback. Stop,
+inspect live state with GET and the ordinary status endpoints, and do not replay
+the request blindly.
+
+### Clear Without Changing Hardware
+
+Clear deletes the saved snapshot only. It does not restore defaults, reverse an
+apply, or change any live output, route, or GPIO. The response summary contains
+`noop`, `snapshot.present: false`, `snapshot.version: null`, and `pending: 0`.
+
+<!-- persistent-config-example: skill-curl-config-clear -->
+```sh
+BOARD_URL="${BOARD_URL:-http://172.29.203.1}"
+curl -fsS -X DELETE "$BOARD_URL/api/v1/config"
+```
+
+After clearing, read the config again and check the normal hardware status
+separately. Status and WebSocket summaries expose `available`, `reason`,
+`saved_count`, and `pending_count`; these are summaries, not proof that hardware
+changed. The CLI clear summary says `current hardware unchanged`, and CDC
+prints `config clear hardware_changed=false`.
+
+### Handle Confirmation And Busy Errors
+
+Treat `ok` as authoritative. If it is false, stop success handling and parse
+`error.code` plus `error.message`, even when transport succeeded. Preserve the
+JSON body for non-2xx responses rather than relying only on curl's exit code.
+
+<!-- persistent-config-example: curl-config-save-dangerous-unconfirmed -->
+```sh
+set +e
+response="$(curl --fail-with-body -sS -X PUT http://172.29.203.1/api/v1/config -H 'Content-Type: application/json' --data '{"items":["switch/usb"],"confirm":false}')"
+curl_status=$?
+set -e
+[ "$curl_status" -eq 22 ]
+printf '%s\n' "$response"
+```
+
+The expected HTTP 409 body remains in `response`; parse its `error.code`,
+`error.message`, and `dangerous_items`, then compare those IDs with a fresh
+HTTP GET. Do not auto-confirm or replay the request from this error path.
+
+For `confirmation_required`, inspect `dangerous_items`. Do not add confirmation
+and resubmit automatically. A person must compare those IDs with a fresh GET,
+review the current values, and choose whether to issue a new confirmed request.
+For `busy`, inspect `activity`, which is `capture` or `ota`. Do not retry on a
+timer. Leave the config operation stopped; after an operator ends or completes
+the named activity, begin again with GET.
+
+Other errors such as `item_unavailable`, `no_snapshot`, `backend_unavailable`,
+`invalid_snapshot`, `unsupported_version`, `storage_error`,
+`storage_write_failed`, and `control_capture_failed` also stop the workflow.
+For `apply_failed`, preserve and report `applied_items`, `failed_item`, and
+`pending_items` because the result can be partial. Never infer full failure or
+full success from the HTTP status alone.
+
+### CLI And CDC Fallback
+
+Use the Rust CLI only when curl is unavailable or CLI-specific output is needed.
+Its grammar is `config show`, `config save [--confirm]
+<firmware-item-id>...`, `config apply --confirm`, and `config clear`. Keep
+`--json` enabled for automation and parse the same `ok` and `error.code`
+contract.
+
+<!-- persistent-config-example: skill-cli-config-show -->
+```sh
+radxa-linkr-debuggerctl --json config show
+```
+
+<!-- persistent-config-example: skill-cli-config-save-safe -->
+```sh
+radxa-linkr-debuggerctl --json config save switch/sd
+```
+
+<!-- persistent-config-example: skill-cli-config-save-dangerous -->
+```sh
+radxa-linkr-debuggerctl --json config save --confirm switch/usb
+```
+
+<!-- persistent-config-example: skill-cli-config-apply-confirmed -->
+```sh
+radxa-linkr-debuggerctl --json config apply --confirm
+```
+
+<!-- persistent-config-example: skill-cli-config-clear -->
+```sh
+radxa-linkr-debuggerctl --json config clear
+```
+
+The CLI and curl examples intentionally use unique marker IDs. First discover
+the real IDs and firmware risk flags with `config show`; never copy the sample
+IDs into an unrelated board workflow. The CLI does not auto-confirm a failed
+request.
+
+If NCM HTTP is unavailable but USB CDC ACM still responds, use the equivalent
+Zephyr shell grammar. CDC reports compact summaries and machine-readable error
+tokens, including confirmation IDs, busy activity, and partial apply IDs.
+
+<!-- persistent-config-example: skill-cdc-config-fallback -->
+```console
+linkr-debugger:~$ config show
+linkr-debugger:~$ config save <firmware-item-id>...
+linkr-debugger:~$ config save --confirm <firmware-item-id>...
+linkr-debugger:~$ config apply --confirm
+linkr-debugger:~$ config clear
+```
+
+### Automatic Current Synchronization
+
+The Web Saved Config panel keeps its `Current` column aligned with the
+board without a manual reload. Current is firmware-authoritative data from
+`/api/v1/config`; observed changes to power `state`, switch `route`, or
+allowlisted GPIO `direction/value` trigger an automatic refresh of
+Current. Names and identifiers are supplied by firmware, not a
+host-side catalog.
+
+Identical, reordered, or unrelated status or WebSocket frames do not cause
+additional config GETs; one actual relevant value transition produces one
+Current refresh, and high-rate status or WS polling does not flood the
+firmware. The automatic refresh does not write flash, change the saved
+snapshot, apply pending values, or auto-persist ordinary power, switch,
+or GPIO setters; `config save` stays the only persistence path; ordinary
+volatile setters stay volatile.
+
+Local unsaved item-selection checkbox drafts on the Saved Config panel
+survive ordinary Current synchronization, so the operator's selected set
+is preserved when the upstream value changes.
+
+`Refresh` is a manual recovery or retry action after a transient failed
+request or suspected stale UI. It is not a required normal step; ordinary
+live transitions already keep `Current` accurate through the automatic
+refresh described above.
+
+Local checker, mock, fixture, and Vitest results remain a focused proof of
+this contract. Local validation is not real-hardware HIL. Todo 6 post-fix
+real-board HIL remains required for this code change until executed under
+the dated combined-UF2 build.
+
+<!-- persistent-config-current-sync:
+current-source:Current-from-/api/v1/config
+current-trigger:live-power/switch/GPIO-transitions-auto-refresh
+current-scope:power-state|switch-route|GPIO-direction-value
+current-no-write:display-sync-no-auto-save-no-flash-no-apply
+current-no-flood:one-transition-one-refresh;identical-frames-zero-GETs
+current-draft-survives:local-checkbox-draft-survives-refresh
+current-refresh-recovery:Refresh-manual-recovery-not-required
+current-mutation-truthful:save-apply-clear-pending-until-authority
+current-hil-boundary:Todo-6-post-fix-HIL-still-required
+-->
+
+### Persistence Recovery Safety
+
+The snapshot uses the existing `storage_partition` through Settings+NVS at
+`linkr/config/snapshot`. Missing, corrupt, or unsupported storage falls back to
+safe firmware defaults without formatting storage. This feature provides one
+explicit snapshot, not named profiles, encrypted storage, authentication,
+authorization, or automatic config rollback.
+
+For ROM BOOTSEL installation or recovery, use only the combined MCUboot plus
+application `radxa-linkr-debugger-rp2350.uf2`. The app-only `zephyr.uf2` is
+invalid for ROM BOOTSEL and can brick the board. OTA accepts the MCUboot-format
+`radxa-linkr-debugger-rp2350-ota.bin` only, not either UF2 file. These artifact
+rules still apply when checking whether a saved snapshot survives recovery.
+
+### Dry-Run And HIL Boundaries
+
+Use `scripts/config-persistence-hil.sh` from this skill for an evidence-backed
+plan. Dry-run is the default and does not invoke curl, serial I/O, sleeps,
+BOOTSEL discovery, mounts, copies, flashing, or hardware operations. The runner
+discovers IDs from GET in execute mode and never owns the hardware catalog. Its
+current local contract selects exact `switch/usb` `target`, verifies capture and
+OTA-active save/clear busy responses, bounds no-op apply and GET, paces OTA
+upload with `--limit-rate 64K`, and enumerates controllable power outputs and
+output GPIOs for safe cleanup plus readback validation.
+
+<!-- persistent-config-example: skill-config-hil-dry-run -->
+```sh
+sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh --dry-run safe-reboot
+```
+
+Todo 14 checker, mock, and fixture results are local proof of the documented
+contracts only. Local validation is not real-hardware HIL. The 2026-07-30
+real-hardware HIL passed all six runner flows for persistence, confirmation,
+OTA retention, ROM BOOTSEL retention, and CDC fallback; see the
+[dated report](../../doc/testing/results/2026-07-30-persistent-config-hil.md).
+Future local checks remain distinct from board HIL and cannot replace another
+board run when hardware behavior changes.
+
 ## Common Commands
 
 Set the board URL once per shell/session.
@@ -835,7 +1105,7 @@ the combined-UF2 dual BOOTSEL recovery. The earlier 701900/847832 flash
 (82.79%) with 475896/532480 RAM (89.37%) and 1455616-byte combined UF2
 baseline is historical; the dated
 [pre-trigger and UART HIL report](../../doc/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md)
-records the exact build and recovery evidence. Earlier freeze-build sizes are
+remains the authority for that build. Earlier freeze-build sizes are
 historical and remain unchanged in their dated reports.
 
 If the HTTP control plane is unavailable but the CDC ACM shell is still

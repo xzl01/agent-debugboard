@@ -582,6 +582,190 @@ echo "Existing Internet route and DNS remain usable"
 操作系统可能不会向 NCM 接口发起强制门户检测请求，自动打开不保证发生。
 此时用户可直接打开 `http://172.29.203.1/` 或使用 `curl`、CLI/TUI。
 
+### 2d. 持久化配置
+
+本节覆盖两个独立验收阶段。Todo 14 本地文档验收只验证文档契约与 loopback
+mock，与真实硬件无关。Todo 16 实机 HIL 必须在 Todo 15 通过、固件构建链路与
+指定板子前置条件齐备之后，再使用本节列出的命令与产物执行。两种验收不能互相
+替代，缺少任一项都不能记为完成。
+
+本节只有 Todo 14 本地 checker/test 和 runner 的 `--dry-run` 可使用 `sh`
+代码块。未来真实硬件命令一律放在 `text` 块或 prose，防止本地文档检查意外
+触发真实硬件操作。
+
+参见 [持久化配置文档](../persistent-configuration.md)。本地验证不等于真实硬件
+HIL。2026-07-30 真实硬件 HIL 的六个 runner flow 全部通过，见
+[日期报告](results/2026-07-30-persistent-config-hil.md)。未来本地测试仍不能替代
+硬件行为变更后的新板卡 HIL。
+
+#### Todo 14 本地文档验收
+
+Todo 14 的目标是用本地工具证明六个文档面与契约摘要完全一致，不需要任何真实
+板子。在 repo 根目录运行：
+
+<!-- persistent-config-example: hil-todo14-checker -->
+```sh
+node scripts/check-persistent-configuration-docs.mjs --root .
+```
+
+期望输出无 `surface-missing`、`section-missing`、`heading-missing`、
+`summary-contract`、`forbidden-claim`、`link-required` 等错误。Node 单元
+测试覆盖 9 个禁用表述、shell 示例提取、curl/CLI 执行、port 8080 拒绝与
+loopback mock：
+
+<!-- persistent-config-example: hil-todo14-node-tests -->
+```sh
+node --test scripts/check-persistent-configuration-docs.test.mjs
+```
+
+`checkPersistentConfigurationDocs(repositoryRoot).ok === true` 通过即代表
+Todo 14 文档验收完成，与硬件状态无关。Todo 14 不接触任何电源轨、VIN
+1.8V 切换、输出 GPIO 或 BOOTSEL 入口。
+
+<!-- persistent-config-example: hil-todo16-runner-dry-run -->
+```sh
+sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh --dry-run safe-reboot
+```
+
+这个 dry-run 只打印计划，不会访问 URL、CDC、BOOTSEL、挂载、刷写或真实硬件。
+
+#### Todo 16 实机前置条件
+
+在执行任何真实硬件 HIL 之前，下列前置条件必须全部满足；缺失任一项的步骤
+在报告中记为 `[blocked]`，永不可记为 pass：
+
+- Todo 15 单元测试、`cargo test --manifest-path cmd-ng/Cargo.toml --all-targets`
+  与 `cargo clippy --manifest-path cmd-ng/Cargo.toml --all-targets -- -D warnings`
+  全绿，且 firmware sysbuild 通过。
+- 指定的目标板身份已记录，包括板子型号、RP2350 批次和固件版本；已从实际
+  枚举中识别用于 Zephyr cmdline 的 CDC device，并在所有 CDC 流程中显式传给
+  runner `--serial <identified-cdc-device>`。CH347 target UART 不是持久化
+  配置的前置条件。
+- 启动用的合成完整 UF2 文件 `radxa-linkr-debugger-rp2350.uf2` 已构建并
+  校验 SHA256，OTA 用 `.bin` 文件 `radxa-linkr-debugger-rp2350-ota.bin`
+  已生成。应用产物
+  `build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.uf2`
+  仅作为应用槽存在，对 ROM BOOTSEL 无效；不能用作线刷源。
+- 已识别的 CDC device 可用且未被 terminal 程序占用；其身份、权限和
+  `--serial` 实参必须写入 HIL 报告。没有已识别 CDC device 的流程记为
+  `[blocked]`，不得猜测固定设备路径。
+- `nix-shell` 提供的测试依赖（`python3Packages.websocket-client`、
+  `python3Packages.pyserial`）已就绪，runner 入口可启动。
+
+#### 安全恢复
+
+Todo 16 实机 HIL 的 safe-reboot 路径必须选用安全值
+`switch/sd=usb-reader` 和 `switch/tf_wp=protected`，保存后重启。HTTP GET 确认
+两项均由 boot-safe auto-restore 恢复；CDC `config show` 只证明摘要计数、可用性和
+命令 fallback，不证明逐项值。随后必须把两项恢复为
+`switch/sd=target` 和 `switch/tf_wp=writable`。任何缺少物理、网络或 CDC
+前置条件的步骤标记为 `[blocked]`，而不是 pass。
+
+每次重启或 BOOTSEL 刷写后，runner 必须在固定 5 秒等待之后，对
+`GET /api/v1/config` 执行最长 45 次、每次最长 2 秒的 transport-readiness
+探测。只有 curl transport 失败可以重试；一旦设备返回 HTTP 响应，runner 必须
+立即验证 HTTP 200、schema、`ok=true`、command 和 action，任何非法响应都立即
+失败，不得把业务断言失败误判为尚未 ready。readiness 成功后仍须执行该流程原有
+的完整 config 断言，不能用 probe 替代、跳过或放宽业务验证。
+
+实机 `all` 流程的完整 runner 表面如下，只作为不可执行参考；其中所有尖括号
+实参必须替换为本次已识别的设备或受控 helper：
+
+```text
+sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh --execute --url http://172.29.203.1 --serial <identified-cdc-device> --reboot-command <identified-reboot-command> --capture-start <logic-or-sigrok-capture-start-command> --capture-stop <logic-or-sigrok-capture-stop-command> --combined-uf2 build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 --ota-image build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-ota.bin --confirm-dangerous-save --confirm-dangerous-apply all
+```
+
+其核心 `config-persistence-hil.sh --execute --url http://172.29.203.1 all`
+形状不免除这些显式参数。ROM BOOTSEL 只能使用 combined
+`radxa-linkr-debugger-rp2350.uf2`；OTA 只能使用 MCUboot 格式
+`radxa-linkr-debugger-rp2350-ota.bin`，不得将 app-only `zephyr.uf2` 用于
+ROM BOOTSEL 或 OTA。
+
+#### 危险项 pending 与固件确认
+
+危险项必须精确选择 `switch/usb` 的 `target` 值，而不是给电源轨上电、选择 VIN 1.8V 或
+驱动输出 GPIO。HIL 必须先证明未确认 save 返回 HTTP 409、
+`error.code=confirmation_required` 和 `dangerous_items`；随后经人工确认的 save
+成功，再重启并确认该值仍为 pending。未确认 apply 也必须返回 HTTP 409，最后才
+允许经人工确认的 apply。host/client 不得自行推断危险性或跳过确认。
+
+成功 save 的断言字段只能是 `saved_items`、`confirmation_items`、`snapshot` 和
+数值 `pending`；它不使用 `pending_items`。`pending_items` 只属于 apply 成功或
+`apply_failed` 的部分执行结果。若未确认 save 的错误没有 `dangerous_items`，必须
+停止后续危险动作并记录 `[failed: no firmware confirmation]`。
+
+#### Clear 不改变硬件
+
+`config clear` 必须仅删除持久化快照，不修改 live hardware。HIL 必须在 clear
+前后用 HTTP GET 与普通状态端点对同一实时状态作对比，不允许为了验证 clear 而重新上下电。
+CDC 只证明快照摘要/删除结果和命令路径一致，不证明实时逐项状态：
+
+- clear 前记录 `snapshot.present=true`、数值 `pending` 和 save 的
+  `saved_items`。
+- clear 后记录 `snapshot.present=false`、`pending=0`，并确认实时读数不变。
+
+任何不一致记为 `[failed: clear altered live hardware]`，不通过。
+
+#### Capture/OTA busy 排斥
+
+Capture 测试必须占用逻辑分析仪或 sigrok capture arbiter；`adc record` 不是替代品。
+在 capture 活跃时，save 和 clear 都必须返回 HTTP 409、`error.code=busy` 与
+`activity=capture`。在 OTA upload 活跃时，config write（save 和 clear）都必须
+返回 HTTP 409、`error.code=busy` 与 `activity=ota`。
+
+无待处理项的 apply 和 GET 都必须在有界时间内完成，但不能把所有准备状态都错误地断言为 busy。GET 从不获取 owner。apply 请求先由 HTTP facade 判断：absent 或 non-ready 时直接返回，不进入 service；当 `pending_count==0` 且 `failed_count==0` 时，无论 confirm 值为何，facade 都在获取 owner 前返回 HTTP 200 和 `noop:true`。含 `pending` 或 `failed` 项的重试会先检查危险项确认；未确认的危险重试返回 HTTP 409，且不会获取 owner。安全重试或已确认的危险重试才依次获取 capture、flash owner，再执行完整 apply。capture 或 OTA 分别活跃时，save 与 clear 都必须返回 busy，`activity` 分别为 `capture` 与 `ota`。未来 HIL 必须为这些状态记录准确且有界的 HTTP 结果，绝不以超时、无限重试或 ADC record 代替 arbiter 验证。
+
+#### OTA 与 combined-UF2 保留
+
+配置持久化不应改变 OTA 或 combined-UF2 恢复契约。每次 HIL 必须使用上面的
+combined UF2 完成 ROM BOOTSEL 恢复，并只将上述 OTA bin 上传到 OTA 路径。任何
+缺失合成镜像、OTA 镜像、已识别 CDC device 或物理刷写条件的路径记为 `[blocked]`。
+Runner 的 OTA upload 使用 `--limit-rate 64K`，使状态与 busy 仲裁可在有界的活跃窗口中观测。
+
+#### CDC config 与 BOOTSEL fallback
+
+CDC ACM fallback 必须通过已识别的 `--serial <identified-cdc-device>` 访问，禁止
+直接写入假定的 tty 路径。CDC 命令集为 `config show`、
+`config save [--confirm] <firmware-item-id>...`、`config apply --confirm`、
+`config clear`。当 HTTP 不可用时，必须能用 CDC 触发同样的查询与 mutate，且
+HTTP/CDC 两条路径在 BOOTSEL 切换后都能恢复。
+
+#### 最终安全清理
+
+Todo 16 实机 HIL 在结束前必须由 HTTP 与普通端点逐项断言最终状态：没有 snapshot，
+`switch/usb=target`、`switch/sd=target`、`switch/tf_wp=writable`、
+`switch/vin=3.3v`，所有测试过的 GPIO 都为 input，所有测试过的 power output 都为
+off。还必须解除 NCM DHCP 占用、恢复开始前记录的默认路由/DNS，并释放 terminal、
+刷写工具和 CDC device 句柄。清理步骤缺失任意一项即视为本次 HIL `[blocked]`，
+不可被记录为 pass。
+
+CDC `config show` 只断言无快照摘要和 fallback 可用性，不作为最终逐项状态的证据。
+
+Runner 根据固件返回的列表枚举所有可控 power output 并逐个关闭，再把 direction 为
+output 的 GPIO 逐个切回 input；随后再次 GET 读取并验证两类状态。
+
+#### 证据与报告
+
+每次真实硬件 HIL 必须产出以下产物并归档到 `doc/testing/results/`：
+
+```text
+doc/testing/results/<YYYY-MM-DD>-persistent-config-hil.md
+doc/testing/results/<YYYY-MM-DD>-persistent-config-hil.raw.jsonl
+doc/testing/results/<YYYY-MM-DD>-persistent-config-hil.serial.log
+doc/testing/results/<YYYY-MM-DD>-persistent-config-hil.SHA256SUMS
+```
+
+报告正文必须列出：
+
+- 板子身份、固件版本、UF2 / OTA bin 的 SHA256 与本次 SHA256SUMS 摘要。
+- 每条 HIL 命令的入参、出参与耗时，标记为 pass / `[blocked]` / `[failed]`。
+- 所有 `[blocked]` 的原因；不得把 `[blocked]` 记为 pass。
+
+本节既定义 Todo 16 实机 HIL 的验收要求，也保留后续板卡回归的相同边界。
+2026-07-30 的实际执行结果为 PASS，权威证据见
+[日期报告](results/2026-07-30-persistent-config-hil.md)；Todo 14 本地证明及未来
+本地测试仍不构成或替代真实硬件 HIL。
+
 ### 3. 电源输出 get/set
 
 ```sh
@@ -1546,6 +1730,20 @@ linkr-debugger:~$ bootloader
 picotool load -v -x "$FLASH_UF2"
 ```
 
+**Combined-UF2 dual BOOTSEL guard (`required`, `[passed]` by 2026-07-31 HIL)**: 本节 BOOTSEL
+路径必须**同时**校验 HTTP `POST /api/v1/bootloader` 与 CDC ACM shell
+`bootloader` 命令都能进入 ROM BOOTSEL，且两个路径都通过同一份合成
+`radxa-linkr-debugger-rp2350.uf2` 恢复 HTTP。绝不允许把应用产物
+`build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.uf2`
+当作 ROM BOOTSEL 烧录源：那份 UF2 不含 MCUboot，会让板子变砖，必须
+用合成的 combined UF2 重新刷回。2026-07-31 真实板卡 HIL 已分别给出
+HTTP BOOTSEL 与 CDC BOOTSEL 两条路径的成功证据，恢复均仅使用合成
+`radxa-linkr-debugger-rp2350.uf2`（本次环境 `picotool` 缺权限，
+实际通过 `udisksctl` 挂载 RPI-RP2 分区并复制 combined UF2 恢复，
+未刷写应用 UF2），详见
+[日期报告](results/2026-07-31-adc3-telemetry-hil.md)。
+
+
 ### 10. USB CDC ACM fallback
 
 验证：
@@ -1553,6 +1751,10 @@ picotool load -v -x "$FLASH_UF2"
 - HTTP/WS 不可用时，CDC ACM 串口仍可访问
 - fallback shell 仍可执行基本命令
 - fallback 路径仍可进入 BOOTSEL
+- 当 HTTP 不可恢复时，CDC `bootloader` shell 命令走的是与 HTTP API 同一份
+  合成 `radxa-linkr-debugger-rp2350.uf2` 的刷写路径；永远不要用应用产物
+  `build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.uf2`
+  去试 ROM BOOTSEL 恢复（该文件不含 MCUboot，会让板子变砖）。
 
 CDC ACM shell 验证（G3 固件）：
 
@@ -1563,6 +1765,12 @@ linkr-debugger:~$ bootloader
 
 默认 CDC fallback 验证不切换 VIN。`vin set 1.8v` / `vin set 3.3v` 只允许在满足
 第 6 节的目标兼容性、物理测量和副作用确认条件后执行。
+
+**CDC + combined-UF2 dual BOOTSEL (`required`, `[passed]` by 2026-07-31 HIL)**: 与第 9 节配套，
+CDC ACM shell 的 `bootloader` 命令必须经过与 HTTP `POST /api/v1/bootloader`
+同一个测试矩阵，并通过同一份合成 `radxa-linkr-debugger-rp2350.uf2` 恢复。
+2026-07-31 真实板卡 HIL 已分别在报告里留下两条路径的成功证据，详见
+[日期报告](results/2026-07-31-adc3-telemetry-hil.md)。
 
 ### 11. MCUboot OTA
 
@@ -1705,9 +1913,11 @@ timeout 30s curl -sS -o /tmp/linkr-ota-error.json -w '%{http_code}\n' -X POST \
 #### 11h. OTA 路径拒绝非 bin 文件
 
 ```sh
-# 尝试上传 .uf2 文件（应被拒绝或写入后验证失败）
-timeout 90s radxa-linkr-debuggerctl --json ota upload radxa-linkr-debugger-rp2350.uf2
-# 验证返回 ok=false 或 state=failed
+# 仅使用空的临时 .uf2 验证客户端拒绝扩展名；绝不把 combined UF2 发送到 OTA。
+INVALID_UF2=$(mktemp --suffix=.uf2)
+trap 'rm -f "$INVALID_UF2"' EXIT
+timeout 5s radxa-linkr-debuggerctl --json ota upload "$INVALID_UF2"
+# 验证返回 ok=false；不应开始上传或改变设备 OTA state。
 ```
 
 #### 11i. 显式 HTTP BOOTSEL 与 CDC ACM BOOTSEL（已在第 9、10 节覆盖）
@@ -1880,8 +2090,8 @@ is BLOCKED and reported as such in the result object.
 #### 12g. Port and URL
 
 Both runners use `http://172.29.203.1` as the default board URL. The API runner
-default is port 80. The browser runner connects to the board-hosted Web UI on
-the same NCM-assigned address.
+default is port 80. The browser runner connects to the board-hosted Web UI on the
+same NCM-assigned address.
 
 ### 12h. Rolling Nightly Prerelease Isolation
 
