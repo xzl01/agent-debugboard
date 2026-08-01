@@ -189,6 +189,10 @@ where
         return run_target_recovery(client, &cli.command_args, cli.json, stdout, stderr);
     }
 
+    if cli.command_args.first().map(String::as_str) == Some("config") {
+        return crate::config_command::run(client, &cli.command_args, cli.json, stdout, stderr);
+    }
+
     let adc_read_command = is_adc_read_command(&cli.command_args);
     let adc_verbose = adc_read_command
         && (cli.verbose
@@ -1239,6 +1243,13 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
     writeln!(writer, "  radxa-linkr-debuggerctl power set 12v_out on")?;
     writeln!(writer, "  radxa-linkr-debuggerctl adc read")?;
     writeln!(writer, "  radxa-linkr-debuggerctl adc read -v 5v_out")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl config show")?;
+    writeln!(
+        writer,
+        "  radxa-linkr-debuggerctl config save power/12v_out"
+    )?;
+    writeln!(writer, "  radxa-linkr-debuggerctl config apply --confirm")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl config clear")?;
     writeln!(
         writer,
         "  radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 1000 --rate-hz 250"
