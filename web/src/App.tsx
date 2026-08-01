@@ -18,6 +18,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useBoard } from "@/hooks/useBoard";
+import { usePersistentConfig } from "@/hooks/usePersistentConfig";
 import { StatusBar } from "./components/StatusBar";
 import { PowerCard } from "./components/PowerCard";
 import { SwitchCard } from "./components/SwitchCard";
@@ -28,6 +29,7 @@ import { PowerAnalysisWorkspace } from "./components/PowerAnalysisWorkspace";
 import { TestAutomation } from "./components/TestAutomation";
 import { LogicAnalyzerCard } from "./components/LogicAnalyzerCard";
 import { OtaCard } from "./components/OtaCard";
+import { PersistentConfigCard } from "./components/PersistentConfigCard";
 import { Badge, Button } from "./components/ui";
 import { useI18n } from "@/lib/i18n";
 import { apiEndpoint } from "@/lib/api";
@@ -83,6 +85,11 @@ function ToolGroup({
 export default function App() {
   const board = useBoard();
   const [ota, setOta] = useState<OtaStatus | null>(null);
+  const persistentConfig = usePersistentConfig({
+    connected: board.connected,
+    summary: board.snapshot.config,
+    currentStateKey: board.persistentConfigCurrentStateKey,
+  });
   const { t } = useI18n();
   const serialAutomationRef = useRef<SerialAutomationHandle>(null);
   const automationTaskLockRef = useRef(createAutomationTaskLock());
@@ -254,6 +261,9 @@ export default function App() {
                   outputs={board.snapshot.powerOutputs}
                   onEnter={board.enterTargetRecovery}
                 />
+              </div>
+              <div className="min-w-0 sm:col-span-2 xl:col-span-1">
+                <PersistentConfigCard state={persistentConfig} connected={board.connected} />
               </div>
 
               <ToolGroup
