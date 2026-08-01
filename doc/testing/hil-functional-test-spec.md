@@ -627,6 +627,243 @@ timeout 5s radxa-linkr-debuggerctl --json adc read 20v_out
 - 返回字段合理
 - `raw / mv / current_ua / sensor_value` 可解析
 
+### 4b. ADC3 Compact Telemetry & GP29 Ownership
+
+本节与第 4 节组合形成 ADC 验收表面。完整合约以
+[doc/adc-telemetry.md](../adc-telemetry.md) 为准；这里只列出 HIL
+要确认的最小集合。4b.1、4b.2、4b.3、4b.4 中 ADC3 90-point /
+render / responsive 直接观测子集，以及 4b.5 的 GP29 直接所有权
+子项已经在 2026-07-31 真实板卡 HIL 中通过，证据见
+[日期报告](results/2026-07-31-adc3-telemetry-hil.md)；4b.4 中三路
+电流 row 的 90-point 视觉行为由 post-HIL 本地 production-build 视觉
+QA 验证（不属于板卡 HIL），任何依赖硬件电流通道响应性的电流 row 声明
+仍 `pending`，因为本会话未发生 post-token firmware reflash/HIL。
+4b.5 中历史 v1 snapshot 兼容子项仍为 `pending`，等待未来真实板卡
+HIL 验证。rolling nightly 检查（第 12h 节）独立于本节，不在本报告
+范围内。
+
+**4b.1 HTTP rich read shape (`required`, `[passed]` by 2026-07-31 HIL)**
+
+```text
+timeout 5s curl -fsS http://172.29.203.1/api/v1/adc/read
+timeout 5s curl -fsS 'http://172.29.203.1/api/v1/adc/read?channel=adc3'
+timeout 5s curl -fsS 'http://172.29.203.1/api/v1/adc/read?channel=5v_out'
+```
+
+验证（运行时断言）：
+
+- readings 数组恰好四个条目（顺序固定：`5v_out`、`12v_out`、
+  `20v_out`、`adc3`），且 name 与 schema 一致。
+- `5v_out` / `12v_out` / `20v_out` 的 `sensor_channel` 为 `current`，
+  `unit` 为 `A`，`current_ua` 是 signed integer µA，`power_enabled` 是
+  bool。
+- `adc3` 的 `sensor_channel` 为 `voltage`，`unit` 为 `V`，`sensor_value`
+  存在且客户端据此重建 signed integer µV；**没有** `value`、
+  `current_ua` 或 `power_enabled`。`raw` / `mv` / `sensor_value` 仍存在。
+- host 不做 ADC 校准或零点修正；值即为固件直读。
+
+**4b.2 WebSocket compact single-sample shape (`required`, `[passed]` by 2026-07-31 HIL)**
+
+```text
+timeout 5s node <<'NODE'
+const base = 'http://172.29.203.1';
+const session = await fetch(`${base}/api/v1/live-sessions`, { method: 'POST' })
+  .then((r) => {
+    if (!r.ok) throw new Error(`session create failed: HTTP ${r.status}`);
+    return r.json();
+  });
+const rawUrl = session.ws_url ?? session.session?.ws_url;
+if (!rawUrl) throw new Error('session response missing ws_url');
+const wsUrl = new URL(rawUrl, base);
+wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+
+await new Promise((resolve, reject) => {
+  const ws = new WebSocket(wsUrl);
+  const timer = setTimeout(() => reject(new Error('ADC3 single frame timeout')), 5000);
+  ws.addEventListener('open', () => {
+    ws.send(JSON.stringify({ type: 'subscribe', topic: 'live', rate_hz: 10, id: 'adc3-single' }));
+  });
+  ws.addEventListener('message', (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type !== 'telemetry') return;
+    if (!Array.isArray(data.readings) || data.readings.length !== 4) {
+      reject(new Error('single frame must carry four readings'));
+      return;
+    }
+    const names = data.readings.map((r) => r.name);
+    if (names.join(',') !== '5v_out,12v_out,20v_out,adc3') {
+      reject(new Error(`unexpected reading order: ${names.join(',')}`));
+      return;
+    }
+    for (const reading of data.readings) {
+      if (!['current', 'voltage'].includes(reading.kind)) {
+        reject(new Error(`bad kind on ${reading.name}: ${reading.kind}`));
+        return;
+      }
+      if (reading.kind === 'current' && reading.unit !== 'uA') {
+        reject(new Error(`current unit mismatch on ${reading.name}: ${reading.unit}`));
+        return;
+      }
+      if (reading.kind === 'voltage' && reading.unit !== 'uV') {
+        reject(new Error(`voltage unit mismatch on ${reading.name}: ${reading.unit}`));
+        return;
+      }
+      if (!Number.isInteger(reading.value)) {
+        reject(new Error(`value is not signed integer on ${reading.name}`));
+        return;
+      }
+      if (reading.kind === 'current' && typeof reading.power_enabled !== 'boolean') {
+        reject(new Error(`current reading missing power_enabled: ${reading.name}`));
+        return;
+      }
+      if (reading.kind === 'voltage' && 'power_enabled' in reading) {
+        reject(new Error('adc3 must not carry power_enabled'));
+        return;
+      }
+      for (const forbidden of ['raw', 'mv', 'current_ua', 'sensor_value']) {
+        if (forbidden in reading) {
+          reject(new Error(`compact frame must not carry ${forbidden} on ${reading.name}`));
+          return;
+        }
+      }
+    }
+    clearTimeout(timer);
+    ws.close();
+    resolve();
+  });
+  ws.addEventListener('error', () => reject(new Error('WebSocket error')));
+});
+console.log('ADC3 compact single-sample frame accepted');
+NODE
+```
+
+记号含义：紧凑单样本帧没有任何 `raw`/`mv`/`current_ua`/`sensor_value`。
+外部 WS 客户端以前如果按这些字段解析，必须迁移；没有 dual-emission shim。
+
+**4b.3 WebSocket compact batch shape (`required`, `[passed]` by 2026-07-31 HIL)**
+
+```text
+timeout 5s node <<'NODE'
+const base = 'http://172.29.203.1';
+const session = await fetch(`${base}/api/v1/live-sessions`, { method: 'POST' })
+  .then((r) => {
+    if (!r.ok) throw new Error(`session create failed: HTTP ${r.status}`);
+    return r.json();
+  });
+const rawUrl = session.ws_url ?? session.session?.ws_url;
+if (!rawUrl) throw new Error('session response missing ws_url');
+const wsUrl = new URL(rawUrl, base);
+wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+
+const seen = { adc3: 0 };
+await new Promise((resolve, reject) => {
+  const ws = new WebSocket(wsUrl);
+  const timer = setTimeout(() => reject(new Error('ADC3 batch timeout')), 5000);
+  ws.addEventListener('open', () => {
+    ws.send(JSON.stringify({
+      type: 'subscribe', topic: 'adc', rate_hz: 100, batch_size: 10, id: 'adc3-batch',
+    }));
+  });
+  ws.addEventListener('message', (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type !== 'telemetry-batch') return;
+    if (!Array.isArray(data.channels) || data.channels.length !== 4) {
+      reject(new Error('batch channels must be 4'));
+      return;
+    }
+    const adc3Idx = data.channels.findIndex((c) => c.name === 'adc3');
+    if (adc3Idx < 0 || data.channels[adc3Idx].kind !== 'voltage' || data.channels[adc3Idx].unit !== 'uV') {
+      reject(new Error('adc3 channel metadata wrong'));
+      return;
+    }
+    for (const sample of data.samples ?? []) {
+      if (!Array.isArray(sample.values) || sample.values.length !== 4) {
+        reject(new Error('sample values length mismatch'));
+        return;
+      }
+      const voltage = sample.values[adc3Idx];
+      if (!Number.isInteger(voltage)) {
+        reject(new Error(`adc3 sample value is not integer: ${voltage}`));
+        return;
+      }
+      seen.adc3 += 1;
+      break;
+    }
+    if (seen.adc3 > 0) {
+      clearTimeout(timer);
+      ws.close();
+      resolve();
+    }
+  });
+  ws.addEventListener('error', () => reject(new Error('WebSocket error')));
+});
+console.log('ADC3 compact batch frame accepted');
+NODE
+```
+
+**4b.4 Web sparkline 10 Hz / 90-sample (`required`, ADC3 90-point/render/responsive subcase `[passed]` by 2026-07-31 HIL; current-row 90-point visual subcase `[passed]` by post-HIL local production-build visual QA; board-HIL-specific current-row claim remains `pending` because no post-token firmware reflash/HIL occurred)**
+
+用 Playwright 打开板载页面 `http://172.29.203.1/`，在 Power & measurements 卡片内
+断言：每路电流 row 与可选 ADC3 区块的 SVG 历史长度都不超过 90 个采样点，且在
+稳定供电下两个方向各能保持 ~9 秒（`±1 秒`）的窗口宽度。ADC3 区段只在固件
+出现 `adc3` 读数时渲染，且使用固定 0..3,300,000 µV Y 轴；不得擅自 host-side
+重新标定。Web 自动化节点使用既有的 `web/` 项目脚手架。
+
+本次真实板卡 HIL 仅覆盖 ADC3 90-point / render / responsive 直接观测
+子集：live ADC3 在 1280 px 与 375 px 两个 viewport 下，rolling window
+充满后 SVG 历史恰好 90 点，零水平溢出，无浏览器 console error。三路
+电流 row 的视觉 90-point 行为由 post-HIL 本地 production-build 视觉
+QA 验证：mocked API/WS 环境下，三路电流 row 与 ADC3 row 共四路
+sparkline 在 375/768/1280 px 三个 viewport 下各自维持 90 点，endpoint
+与 footer 字体 11 px，无 overlap/clipping/overflow/console error，也无
+对板卡的请求。本地验证不属于板卡 HIL；任何依赖硬件电流通道响应性的
+电流 row 声明仍 `pending`，因为本会话未发生 post-token firmware
+reflash/HIL。不得用本次本地视觉 QA 替代板卡 HIL，也不得反过来用本次
+板卡 HIL 主张电流 row 的 90-point 视觉行为。
+
+**4b.5 GP29 ADC3 ownership (`required`, direct ownership subcase `[passed]` by 2026-07-31 HIL; v1 snapshot compatibility subcases `pending`)**
+
+```text
+timeout 5s curl -fsS http://172.29.203.1/api/v1/gpio
+timeout 5s curl -fsS http://172.29.203.1/api/v1/gpio/GP29
+timeout 5s curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"direction":"output","value":1}' \
+  http://172.29.203.1/api/v1/gpio/GP29   # must fail (firmware-owned input-only)
+```
+
+断言：
+
+- `/api/v1/gpio` 列表中允许保留 GP29（在持久化/安全目录里），但写入方向必须是
+  `output` 的请求被固件层拒绝（错误码与文本都要清楚说明输入唯一）。
+- v1 输入快照继续解码、应用并在 firmware-defaults 之后自动恢复。
+- v1 输出快照保留可解码，但 `config apply --confirm` 命中 GP29 之后，整段
+  apply 停在第一个硬件失败：GP29 `apply_state="failed"`，后续 GPIO output
+  仍 `pending`，绝不能伪装成完整成功。
+
+**4b.6 HIL 边界**
+
+2026-07-31 真实板卡 HIL 通过的子集为 4b.1、4b.2、4b.3、4b.4 中
+ADC3 90-point / render / responsive 直接观测子集，以及 4b.5 中
+GP29 直接所有权子项（HTTP GPIO 列表保留 GP29、`PUT direction=output`
+被固件层拒绝、`PUT direction=input` 幂等）。4b.4 中三路电流 row
+的 90-point 视觉行为由 post-HIL 本地 production-build 视觉 QA 验证
+（mocked API/WS、375/768/1280 px 四路 sparkline 各自 90 点、endpoint
+与 footer 字体 11 px、无 overlap/clipping/overflow/console error、无
+板卡请求），该 QA 不属于板卡 HIL。任何依赖硬件电流通道响应性的
+电流 row 声明仍 `pending`，因为本会话未发生 post-token firmware
+reflash/HIL；不得用本地视觉 QA 替代板卡 HIL，也不得反过来用本次
+板卡 HIL 主张电流 row 的视觉行为。4b.5 中 v1 输入快照继续
+解码并在 firmware-defaults 之后自动恢复、v1 输出快照在 `config apply
+--confirm` 命中 GP29 时停在第一个硬件失败、GP29 `apply_state="failed"`
+而后续 GPIO output 仍 `pending` 这两个历史 v1 snapshot 兼容子项仍
+`pending`，等待未来真实板卡 HIL。rolling nightly 检查（第 12h 节）
+与 4b 节无关，独立保持 `pending`；本规范不区分 scheduled nightly 与
+手工 `workflow_dispatch`，二者都仍 `pending`。宿端单测
+（`cmd-ng/src/adc.rs` 与 `web/src/lib/adc.test.ts`）只证明 wire-shape
+形状，不替代 4b 节真实硬件验收。actionlint 与仓库内本地结构校验不等价
+于 GitHub 实际跑过 `.github/workflows/nightly.yml`；任何把
+本地 lint 通过说成"nightly 已跑"的陈述仍属越权。
+
 ### 5. switch 路由控制
 
 ```sh
