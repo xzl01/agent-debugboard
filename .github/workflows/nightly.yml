@@ -1,0 +1,329 @@
+name: Nightly Release
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: false
+
+jobs:
+  rust-cli-release:
+    name: Build Rust host CLI nightly archives
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz
+          - os: macos-latest
+            asset_name: radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz
+          - os: windows-latest
+            asset_name: radxa-linkr-debuggerctl-rust_windows_amd64.zip
+    steps:
+      - name: Checkout source SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: app
+          persist-credentials: false
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: app/cmd-ng
+      - name: Build Rust nightly binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --manifest-path app/cmd-ng/Cargo.toml
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe --help
+            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe --version
+          else
+            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl --help
+            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl --version
+          fi
+      - name: Package Rust nightly archive
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p rust-release
+          tar -C app/cmd-ng/target/release -czf rust-release/${{ matrix.asset_name }} radxa-linkr-debuggerctl
+      - name: Package Rust nightly archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path rust-release | Out-Null
+          Compress-Archive -Path app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe -DestinationPath rust-release/${{ matrix.asset_name }}
+      - name: Upload Rust nightly archive
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4.6.2
+        with:
+          name: rust-release-${{ runner.os }}
+          path: rust-release/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  nightly-assets:
+    name: Build nightly release assets
+    needs: rust-cli-release
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          path: app
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: "3.12"
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/web/package-lock.json
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Set up Zephyr workspace
+        uses: zephyrproject-rtos/action-zephyr-setup@66a907961072acaa85313d2e064e9f071141265a # v1
+        with:
+          app-path: app
+          toolchains: arm-zephyr-eabi
+          sdk-version: "1.0.1"
+      - name: Install MCUboot image tool dependencies
+        run: python3 -m pip install -r bootloader/mcuboot/scripts/requirements.txt
+      - name: Verify nightly workflow contract
+        working-directory: app
+        run: |
+          set -euo pipefail
+          node --test scripts/check-nightly-workflow.test.mjs
+          node scripts/check-nightly-workflow.mjs --root .
+      - name: Run unit tests
+        working-directory: app
+        run: ./apps/radxa_linkr_debugger/tests/run_unit_tests.sh
+      - name: Build RP2350 firmware
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild app/apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+          python3 "$ZEPHYR_BASE/scripts/build/mergehex.py" \
+            -o build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-combined.hex \
+            build/radxa_linkr_debugger/mcuboot/zephyr/zephyr.hex \
+            build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.hex
+          python3 "$ZEPHYR_BASE/scripts/build/uf2conv.py" \
+            -c -f 0xe48bff57 \
+            -o release-assets/radxa-linkr-debugger-rp2350.uf2 \
+            build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-combined.hex
+          cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.bin release-assets/radxa-linkr-debugger-rp2350-ota.bin
+          cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.elf release-assets/radxa-linkr-debugger-rp2350.elf
+          cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.map release-assets/radxa-linkr-debugger-rp2350.map
+      - name: Download Rust nightly archives
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v5.0.0
+        with:
+          pattern: rust-release-*
+          path: rust-release-downloads
+          merge-multiple: true
+      - name: Package skill bundle
+        working-directory: app
+        run: |
+          set -euo pipefail
+          mkdir -p dist/skill-bundle
+          tar -C skills -czf dist/skill-bundle/skills-radxa-linkr-debugger.tar.gz radxa-linkr-debugger
+      - name: Prepare nightly release assets
+        working-directory: app
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          cp ../release-assets/radxa-linkr-debugger-rp2350.uf2 dist/release/
+          cp ../release-assets/radxa-linkr-debugger-rp2350-ota.bin dist/release/
+          cp ../release-assets/radxa-linkr-debugger-rp2350.elf dist/release/
+          cp ../release-assets/radxa-linkr-debugger-rp2350.map dist/release/
+          cp ../rust-release-downloads/radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz dist/release/
+          cp ../rust-release-downloads/radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz dist/release/
+          cp ../rust-release-downloads/radxa-linkr-debuggerctl-rust_windows_amd64.zip dist/release/
+          cp dist/skill-bundle/skills-radxa-linkr-debugger.tar.gz dist/release/
+          cd dist/release
+          sha256sum \
+            radxa-linkr-debugger-rp2350.uf2 \
+            radxa-linkr-debugger-rp2350-ota.bin \
+            radxa-linkr-debugger-rp2350.elf \
+            radxa-linkr-debugger-rp2350.map \
+            radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz \
+            radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz \
+            radxa-linkr-debuggerctl-rust_windows_amd64.zip \
+            skills-radxa-linkr-debugger.tar.gz > SHA256SUMS.txt
+      - name: Verify nightly release assets
+        working-directory: app/dist/release
+        run: |
+          set -euo pipefail
+          payloads=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz)
+          expected_assets=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz SHA256SUMS.txt)
+          actual_assets=(*)
+          test "${#actual_assets[@]}" -eq "${#expected_assets[@]}"
+          for expected in "${expected_assets[@]}"; do test -f "$expected"; done
+          for actual in "${actual_assets[@]}"; do case " ${expected_assets[*]} " in *" $actual "*) ;; *) printf 'unexpected release asset: %s\n' "$actual" >&2; exit 1 ;; esac; done
+          checksum_assets=()
+          while read -r digest asset; do test -n "$digest" && test -n "$asset"; checksum_assets+=("$asset"); done < SHA256SUMS.txt
+          test "${#checksum_assets[@]}" -eq "${#payloads[@]}"
+          for payload in "${payloads[@]}"; do case " ${checksum_assets[*]} " in *" $payload "*) ;; *) printf 'checksum missing payload: %s\n' "$payload" >&2; exit 1 ;; esac; done
+          sha256sum -c SHA256SUMS.txt
+      - name: Write nightly release notes
+        working-directory: app
+        run: |
+          set -euo pipefail
+          cat > dist/release-notes.md <<EOF
+          Radxa Linkr Debugger nightly
+
+          Source SHA: $GITHUB_SHA
+          Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          Included assets:
+          - RP2350 firmware: combined initial/recovery UF2, OTA BIN, ELF, and MAP
+          - Primary Rust host CLI/TUI archives: radxa-linkr-debuggerctl-rust_{os}_{arch}
+          - Agent skill bundle: skills-radxa-linkr-debugger.tar.gz
+          - SHA256SUMS.txt for release asset verification
+          EOF
+      - name: Upload nightly release bundle
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4.6.2
+        with:
+          name: nightly-release-bundle
+          path: app/dist
+          if-no-files-found: error
+
+  publish-nightly:
+    name: Publish rolling nightly release
+    needs: nightly-assets
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download nightly release bundle
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v5.0.0
+        with:
+          name: nightly-release-bundle
+          path: bundle
+      - name: Verify downloaded release bundle
+        run: |
+          set -euo pipefail
+          cd bundle/release
+          payloads=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz)
+          expected_assets=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz SHA256SUMS.txt)
+          actual_assets=(*)
+          test "${#actual_assets[@]}" -eq "${#expected_assets[@]}"
+          for expected in "${expected_assets[@]}"; do test -f "$expected"; done
+          for actual in "${actual_assets[@]}"; do case " ${expected_assets[*]} " in *" $actual "*) ;; *) printf 'unexpected release asset: %s\n' "$actual" >&2; exit 1 ;; esac; done
+          checksum_assets=()
+          while read -r digest asset; do test -n "$digest" && test -n "$asset"; checksum_assets+=("$asset"); done < SHA256SUMS.txt
+          test "${#checksum_assets[@]}" -eq "${#payloads[@]}"
+          for payload in "${payloads[@]}"; do case " ${checksum_assets[*]} " in *" $payload "*) ;; *) printf 'checksum missing payload: %s\n' "$payload" >&2; exit 1 ;; esac; done
+          sha256sum -c SHA256SUMS.txt
+      - name: Prepare hidden nightly draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # first-release, existing published release, and retry draft branches are handled below.
+          release_rows="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "nightly") | [.id, .draft] | @tsv')"
+          if [[ "$release_rows" == *$'\n'* ]]; then
+            printf 'duplicate nightly releases\n' >&2
+            exit 1
+          fi
+          if [ -z "$release_rows" ]; then
+            # first-release
+            NIGHTLY_RELEASE_ID="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name=nightly -f target_commitish="$GITHUB_SHA" -F draft=true -F prerelease=true -f name=nightly -f body='Nightly publishing in progress.' --jq .id)"
+          else
+            IFS=$'\t' read -r NIGHTLY_RELEASE_ID is_draft <<< "$release_rows"
+            if [ "$is_draft" = false ]; then
+              # existing published release
+              gh release edit nightly --repo "$GITHUB_REPOSITORY" --draft
+            else
+              # retry draft
+              :
+            fi
+          fi
+          printf 'NIGHTLY_RELEASE_ID=%s\n' "$NIGHTLY_RELEASE_ID" >> "$GITHUB_ENV"
+      - name: Replace and remotely verify nightly assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          expected_assets=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz SHA256SUMS.txt)
+          old_asset_ids="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$NIGHTLY_RELEASE_ID/assets?per_page=100" --jq '.[].id')"
+          if [ -n "$old_asset_ids" ]; then
+            while IFS= read -r asset_id; do gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"; done <<< "$old_asset_ids"
+          fi
+          gh release upload nightly \
+            bundle/release/radxa-linkr-debugger-rp2350.uf2 \
+            bundle/release/radxa-linkr-debugger-rp2350-ota.bin \
+            bundle/release/radxa-linkr-debugger-rp2350.elf \
+            bundle/release/radxa-linkr-debugger-rp2350.map \
+            bundle/release/radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz \
+            bundle/release/radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz \
+            bundle/release/radxa-linkr-debuggerctl-rust_windows_amd64.zip \
+            bundle/release/skills-radxa-linkr-debugger.tar.gz \
+            --repo "$GITHUB_REPOSITORY"
+          gh release upload nightly bundle/release/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY"
+          remote_asset_rows="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$NIGHTLY_RELEASE_ID/assets?per_page=100" --jq '.[] | [.id, .name, .size] | @tsv')"
+          test -n "$remote_asset_rows"
+          mapfile -t remote_assets <<< "$remote_asset_rows"
+          test "${#remote_assets[@]}" -eq "${#expected_assets[@]}"
+          declare -A asset_ids=()
+          for row in "${remote_assets[@]}"; do
+            IFS=$'\t' read -r asset_id asset_name asset_size <<< "$row"
+            test "$asset_size" -gt 0
+            [[ -z "${asset_ids[$asset_name]+present}" ]] || { printf 'duplicate remote asset: %s\n' "$asset_name" >&2; exit 1; }
+            asset_ids["$asset_name"]="$asset_id"
+          done
+          test "${#asset_ids[@]}" -eq "${#expected_assets[@]}"
+          for expected in "${expected_assets[@]}"; do test -n "${asset_ids[$expected]+present}"; done
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          for expected in "${expected_assets[@]}"; do gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/${asset_ids[$expected]}" > "$verify_dir/$expected"; done
+          (cd "$verify_dir" && sha256sum -c SHA256SUMS.txt)
+      - name: Move tag and publish nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" -f sha="$GITHUB_SHA" -F force=true
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/nightly" -f sha="$GITHUB_SHA"
+          fi
+          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha)"
+          test "$tag_sha" = "$GITHUB_SHA"
+          gh release edit nightly --repo "$GITHUB_REPOSITORY" --title nightly --notes-file bundle/release-notes.md --prerelease --latest=false --draft=false
+          expected_assets=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz SHA256SUMS.txt)
+          final_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/$NIGHTLY_RELEASE_ID")"
+          test "$(jq -r .tag_name <<< "$final_state")" = nightly
+          test "$(jq -r .draft <<< "$final_state")" = false
+          test "$(jq -r .prerelease <<< "$final_state")" = true
+          final_asset_rows="$(jq -r '.assets[] | [.name, .size] | @tsv' <<< "$final_state")"
+          test -n "$final_asset_rows"
+          mapfile -t final_assets <<< "$final_asset_rows"
+          test "${#final_assets[@]}" -eq "${#expected_assets[@]}"
+          declare -A final_names=()
+          for row in "${final_assets[@]}"; do
+            IFS=$'\t' read -r asset_name asset_size <<< "$row"
+            test "$asset_size" -gt 0
+            [[ -z "${final_names[$asset_name]+present}" ]] || { printf 'duplicate final asset: %s\n' "$asset_name" >&2; exit 1; }
+            final_names["$asset_name"]=1
+          done
+          for expected in "${expected_assets[@]}"; do test -n "${final_names[$expected]+present}"; done
