@@ -19,15 +19,17 @@ RP2354 硬件需要完成专用 board 定义和 HIL 验证后才能声明支持�
 | USB 控制 | 复合 USB：NCM HTTP/WS + CDC ACM fallback |
 | 主机自动化 | Rust CLI/TUI，支持 JSON 输出 |
 | Web UI | 仪表盘 http://172.29.203.1/ |
-| 逻辑分析仪 | PIO2+DMA，100 kHz–125 MHz，PulseView 兼容 |
+| 逻辑分析仪 | PIO2+DMA，100 kHz–125 MHz，WebSocket/raw-TCP Sigrok，[共用 packed arena 与当前 WIDE11 捕获](doc/logic-analyzer.md) |
 | 功率分析仪 | 触发式采集，环形缓冲，CSV/NDJSON 导出 |
 | 电源输出 | 12v_out、5v_out、20v_out、vdd_5v |
-| ADC 监测 | 所有电源输出的电流读数 |
+| ADC 监测 | 5v_out、12v_out、20v_out 电流读数及 GP29/ADC3 电压遥测 |
 | 路由切换 | 固件上报的 TF/SD、USB hub mux、TF 写保护（`writable`/`protected`）、VIN（1.8V/3.3V） |
 | GPIO | GP7–GP20、GP29 |
 | OTA 更新 | MCUboot 无签名 OTA |
 | 看门狗 | 自主恢复至 BOOTSEL |
 | 强制门户 | DHCP option 114/HTTP 自动打开 Web UI |
+
+WIDE11 使用 144184 B 硬件切片和 30720 B WS 遥测环，共享 149048 B 总后备分配。
 
 `5V_FIN` 会被当作独立的输入/来源电源处理，不作为可控输出暴露给主机。
 

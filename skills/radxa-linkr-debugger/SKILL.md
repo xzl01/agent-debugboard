@@ -468,7 +468,7 @@ delivered exactly 100000 samples in 98 DATA frames with zero sample-index gaps.
 The common packed arena applies to all modes: SINGLE (one 1-bit lane on FAST8 SM, autopush32, 32 samples/word,
 12500 B at 100 MHz), FAST8 (one 8-bit lane, autopush32, 4 samples/word, 100000 B at 100 MHz),
 and WIDE11 (SM-A GP10-GP17 8-bit autopush32 100000 B + SM-B GP18-GP20 3-bit autopush30
-40000 B; two DMA channels; 144184 B shared arena). SINGLE and FAST8 use one capture SM;
+40000 B; two DMA channels; 144184 B shared burst slice (overlays the 149048 B total backing allocation)). SINGLE and FAST8 use one capture SM;
 WIDE11 uses two. A triggered deep burst adds one trigger-only SM running the 3-instruction
 trigger program. GP29 is excluded from WIDE11 LA (available as ordinary GPIO/ADC3). Post-capture: up to 98 DATA
 frames, max 1024 samples per frame, 140000 B total payload. Two-phase START prepares

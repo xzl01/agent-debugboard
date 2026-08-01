@@ -881,7 +881,7 @@ The 2026-07-27 WIDE11 HIL verified the then-current target at 100 MHz with
 `pre=0` and both `post=100000` and high-rate `post=0`. Accepted deep bursts
 delivered exactly 100000 samples in 98 DATA frames with zero sample-index gaps.
 WIDE11 uses two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B
-(GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B shared arena.
+(GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B shared burst slice (overlays the 149048 B total backing allocation).
 GP29 is excluded from WIDE11 LA (available as ordinary GPIO/ADC3). NONE deep burst uses
 two capture SMs; triggered deep burst adds a third SM running the 3-instruction trigger
 program. Two-phase START prepares ownership and quiesce before the response. NONE sends
@@ -896,8 +896,8 @@ ARMED state followed by the ARMED event. GO then synchronously enables the sampl
 | WS | WIDE11 high-rate capacity burst | NONE | 100 MHz | PASS — post=0 produced exactly 100000 samples and auto-STOPPED |
 | TCP | WIDE11 high-rate capacity burst | NONE | 100 MHz | PASS — post=0 produced exactly 100000 samples and auto-STOPPED |
 
-After each deep burst run, verify HTTP health and restart capability. The 144184 B
-dual-SM packed arena restores ADC telemetry, power capture, and normal Sigrok pool after drain;
+After each deep burst run, verify HTTP health and restart capability. The 144184 B shared burst slice (overlaying the 149048 B total backing allocation)
+restores ADC telemetry, power capture, and normal Sigrok pool after drain;
 confirm these services are functional after the capture completes.
 
 The final authoritative TCP/WS matrix passed 54/54 cases and the high-rate
@@ -983,9 +983,9 @@ for GP11 or GP20. GP29 is excluded from WIDE11 LA (available as ordinary GPIO/AD
 The executable two-client regression is `--matrix wide11-telemetry-isolation` in
 `apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py`. It validates that a
 normal JSON WebSocket ADC telemetry client stays connected but pauses while a second
-client holds the WIDE11 shared-arena lease through raw-TCP sigrok deep burst.
+client holds the WIDE11 shared burst-slice lease through raw-TCP sigrok deep burst.
 WIDE11 uses two packed capture SMs and two DMA channels in the 144184-byte
-shared arena; triggered capture adds a third trigger-only SM.
+shared burst slice (overlays the 149048 B total backing allocation); triggered capture adds a third trigger-only SM.
 
 Run with 5-second bounded operations:
 
@@ -1003,7 +1003,7 @@ Required behavior:
 - Client B opens raw-TCP sigrok port 5556 and performs the exact WIDE11 deep burst:
   WIDE11, 100 MHz, `pre=0`, `post=100000`, CONFIG_V2.
 - START_RESP from client B is the evidence that the capture backend has entered the
-  trigger-safe prepared/running path and the shared-arena pause/lease interval has
+  trigger-safe prepared/running path and the shared burst-slice pause/lease interval has
   started. The runner records this monotonic timestamp.
 - During the overlap lease/pause interval, client A's WebSocket must remain connected
   and must not receive malformed JSON or binary sigrok contamination. A receive

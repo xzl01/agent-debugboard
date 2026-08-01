@@ -265,11 +265,22 @@ The released Rust CLI and direct `curl` HTTP requests both use the same endpoint
 transports are mutually exclusive. Bounded pre=0 and post=1..512 use exact finite
 PIO+DMA: trigger NONE is ungated immediate, rising/falling are hardware IRQ-gated,
 EITHER snapshots the current pin level in firmware then waits for the opposite edge
-(arm-time race exists). Post>512 bounded and continuous post=0 use ring streaming.
+(arm-time race exists). Web bounded pre-trigger for rising, falling, and either
+uses the prepared packed ring/sink lifecycle under the current per-mode limits.
+Post>512 bounded and lower-rate post=0 use ring streaming.
 After START_REQ the ordered state progression is: START_RESP with state 2 (ARMED)
 or 3 (RUNNING for NONE), then EVENT armed (rising/falling/either only), then EVENT
-triggered, then DATA, then EVENT stopped. CDC ACM shell BOOTSEL and combined-UF2
-HTTP BOOTSEL HIL recovery were both confirmed in final validation.
+triggered, then DATA, then EVENT stopped.
+
+All modes use the common packed arena. WIDE11 is the current dual-lane
+implementation: its 144184 B hardware burst slice overlays the 149048 B total
+backing allocation, which is also shared with the 30720 B WebSocket telemetry
+ring. The allocation is sized to `max(normal, burst)=149048 B`; WIDE11 does not
+extend it, and WIDE12 is historical only. See the
+[authoritative logic-analyzer architecture and matrices](../../doc/logic-analyzer.md)
+and the [dated WIDE11 HIL evidence](../../doc/testing/results/2026-07-27-logic-analyzer-generic-packed-burst-hil.md).
+CDC ACM shell BOOTSEL and combined-UF2 HTTP BOOTSEL recovery were both
+confirmed in final validation.
 
 OpenOCD:
 
