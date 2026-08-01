@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import {
   isCurrentAdcReading,
@@ -7,6 +7,8 @@ import {
   parseHttpAdcReadings,
 } from "@/lib/adc";
 import { parseSwitches } from "@/lib/switches";
+import { mergePersistentConfigSummary } from "@/lib/persistentConfig";
+import { persistentConfigCurrentStateKey } from "@/lib/persistentConfigCurrentStateKey";
 import type {
   AdcReading,
   Availability,
@@ -191,6 +193,7 @@ function mapStatus(status: unknown, adc: readonly AdcReading[]): BoardSnapshot {
 
   const switches = parseSwitches(record.switches);
 
+  const config = mergePersistentConfigSummary(undefined, record.config);
   return {
     mcu: typeof record.mcu === "string" ? record.mcu : undefined,
     usb: typeof record.usb === "string" ? record.usb : undefined,
@@ -204,12 +207,13 @@ function mapStatus(status: unknown, adc: readonly AdcReading[]): BoardSnapshot {
     watchdog: parseWatchdog(record.watchdog, EMPTY.watchdog),
     monitoring: parseMonitoring(record.board_monitoring, EMPTY.monitoring),
     adc,
+    ...(config ? { config } : {}),
   };
 }
 
 // Merge a WebSocket "snapshot" message into the previous snapshot, preserving
 // metadata (signal/gp/controllable) we only learned from the HTTP status poll.
-function mergeWsSnapshot(prev: BoardSnapshot, msg: any): BoardSnapshot {
+function mergeWsSnapshot(prev: BoardSnapshot, msg: unknown): BoardSnapshot {
   const meta = new Map(prev.powerOutputs.map((o) => [o.name, o]));
   const record = isRecord(msg) ? msg : {};
   const powerOutputs: PowerOutput[] = Array.isArray(record.power_outputs)
@@ -238,6 +242,7 @@ function mergeWsSnapshot(prev: BoardSnapshot, msg: any): BoardSnapshot {
       }))
     : prev.gpios;
 
+  const config = mergePersistentConfigSummary(prev.config, record.config);
   return {
     ...prev,
     powerCaptureProtocol:
@@ -249,11 +254,13 @@ function mergeWsSnapshot(prev: BoardSnapshot, msg: any): BoardSnapshot {
     gpios,
     watchdog: parseWatchdog(record.watchdog, prev.watchdog),
     monitoring: parseMonitoring(record.board_monitoring, prev.monitoring),
+    ...(config ? { config } : {}),
   };
 }
 
 export interface UseBoard {
   snapshot: BoardSnapshot;
+  persistentConfigCurrentStateKey: string;
   hasData: boolean;
   connected: boolean;
   error: string | null;
@@ -600,6 +607,14 @@ export function useBoard(): UseBoard {
     resolve: () => void;
     reject: (reason: Error) => void;
   } | null>(null);
+  const currentStateKey = useMemo(
+    () => persistentConfigCurrentStateKey({
+      powerOutputs: snapshot.powerOutputs,
+      switches: snapshot.switches,
+      gpios: snapshot.gpios,
+    }),
+    [snapshot.gpios, snapshot.powerOutputs, snapshot.switches]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1045,8 +1060,10 @@ export function useBoard(): UseBoard {
                 setError(stopError.message);
               }
             } else if (msg.type === "error" && msg.command === "capture") {
-              const detail = isRecord(msg.error) ? msg.error : {};
-              const message = String(detail.message ?? "Power capture failed");
+              const error = isRecord(msg.error) ? msg.error : null;
+              const message = typeof error?.message === "string"
+                ? error.message
+                : "Power capture failed";
               resetCapture(new Error(message));
               setError(message);
             }
@@ -1297,6 +1314,7 @@ export function useBoard(): UseBoard {
 
   return {
     snapshot,
+    persistentConfigCurrentStateKey: currentStateKey,
     hasData,
     connected,
     error,
