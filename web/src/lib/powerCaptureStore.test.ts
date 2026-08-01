@@ -36,12 +36,14 @@ function sample(offset: number): CaptureSample {
     readings: ["5v_out", "12v_out", "20v_out"].map((name, index) => ({
       name,
       signal: `${name}-signal`,
+      kind: "current",
       power_enabled: index !== 1,
       raw: index === 2 ? null : 123 + index,
       mv: 12 + index,
       sensor_channel: "current",
       unit: "uA",
       current_ua: offset * 1000 + index,
+      value: offset * 1000 + index,
     })),
   };
 }

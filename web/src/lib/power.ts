@@ -1,4 +1,4 @@
-import type { AdcReading } from "./types";
+import type { CurrentAdcReading } from "./types";
 
 export type PowerMetric = "current" | "power";
 
@@ -19,9 +19,9 @@ export function nominalVoltage(name: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-export function readingMetric(reading: AdcReading, metric: PowerMetric): number | null {
+export function readingMetric(reading: CurrentAdcReading, metric: PowerMetric): number | null {
   if (!reading.power_enabled) return 0;
-  const current = Math.max(0, reading.current_ua / 1_000_000);
+  const current = Math.max(0, reading.value / 1_000_000);
   if (metric === "current") return current;
   const voltage = nominalVoltage(reading.name);
   return voltage == null ? null : current * voltage;

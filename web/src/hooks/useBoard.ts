@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "@/lib/api";
+import {
+  isCurrentAdcReading,
+  parseCaptureCurrentReadings,
+  parseCompactAdcReadings,
+  parseHttpAdcReadings,
+} from "@/lib/adc";
 import { parseSwitches } from "@/lib/switches";
 import type {
   AdcReading,
@@ -156,7 +162,7 @@ function parseWatchdog(raw: unknown, prev: WatchdogStatus = EMPTY.watchdog): Wat
   };
 }
 
-function mapStatus(status: unknown, adc: AdcReading[]): BoardSnapshot {
+function mapStatus(status: unknown, adc: readonly AdcReading[]): BoardSnapshot {
   const record = isRecord(status) ? status : {};
   const rawOutputs = Array.isArray(record.power_outputs)
     ? record.power_outputs.filter(isRecord)
@@ -336,57 +342,60 @@ function createArchiveId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-function readingFromRecord(reading: Record<string, unknown>): AdcReading {
-  return {
-    name: String(reading.name ?? ""),
-    signal: String(reading.signal ?? ""),
-    power_enabled: reading.power_enabled === true,
-    raw: typeof reading.raw === "number" ? reading.raw : null,
-    mv: Number(reading.mv ?? 0),
-    sensor_channel: "current",
-    unit: "uA",
-    current_ua: Number(reading.current_ua ?? 0),
-  };
+function compactBatchReadings(
+  channels: readonly Record<string, unknown>[],
+  sample: Record<string, unknown>,
+): readonly AdcReading[] {
+  const values = Array.isArray(sample.values) ? sample.values : [];
+  const powerEnabledMask = Number(sample.power_enabled_mask ?? 0);
+  return parseCompactAdcReadings(channels.map((channel, index) => ({
+    ...channel,
+    value: values[index],
+    ...(channel.kind === "current"
+      ? { power_enabled: (powerEnabledMask & (1 << index)) !== 0 }
+      : {}),
+  })));
+}
+
+function telemetryReadings(message: Record<string, unknown>): readonly AdcReading[] {
+  if (message.type === "telemetry") {
+    return parseCompactAdcReadings(message.readings);
+  }
+  if (message.type !== "telemetry-batch" || !Array.isArray(message.samples)) return [];
+
+  const channels = Array.isArray(message.channels) ? message.channels.filter(isRecord) : [];
+  const latest = message.samples.filter(isRecord).at(-1);
+  return latest ? compactBatchReadings(channels, latest) : [];
 }
 
 function telemetrySamples(message: Record<string, unknown>): CaptureSample[] {
   if (message.type === "telemetry" && Array.isArray(message.readings)) {
+    const readings = parseCompactAdcReadings(message.readings);
     return [{
       offset: 0,
       triggered: false,
       sampleSequence: Number(message.sample_sequence ?? message.sequence ?? 0),
       deviceTimeUs: Number(message.device_t_mono_us ?? message.uptime_us ?? 0),
-      readings: message.readings.filter(isRecord).map(readingFromRecord),
+      readings: parseCaptureCurrentReadings(readings.filter(isCurrentAdcReading).map((reading) => ({
+        ...reading,
+        current_ua: reading.value,
+      }))),
     }];
   }
   if (message.type !== "telemetry-batch" || !Array.isArray(message.samples)) return [];
 
-  const channels = Array.isArray(message.channels)
-    ? message.channels.filter(isRecord).map((channel) => ({
-        name: String(channel.name ?? ""),
-        signal: String(channel.signal ?? ""),
-      }))
-    : [];
+  const channels = Array.isArray(message.channels) ? message.channels.filter(isRecord) : [];
   return message.samples.filter(isRecord).map((sample) => {
-    const values = Array.isArray(sample.values) ? sample.values : [];
+    const readings = compactBatchReadings(channels, sample);
     return {
       offset: 0,
       triggered: false,
       sampleSequence: Number(sample.sample_sequence ?? sample.sequence ?? 0),
       deviceTimeUs: Number(sample.device_t_mono_us ?? sample.uptime_us ?? 0),
-      readings: channels.map((channel, index) => {
-        const value = Array.isArray(values[index]) ? values[index] : [];
-        return {
-          name: channel.name,
-          signal: channel.signal,
-          power_enabled: Number(value[0] ?? 0) !== 0,
-          raw: Number(value[1] ?? 0),
-          mv: Number(value[2] ?? 0),
-          sensor_channel: "current",
-          unit: "uA",
-          current_ua: Number(value[3] ?? 0),
-        };
-      }),
+      readings: parseCaptureCurrentReadings(readings.filter(isCurrentAdcReading).map((reading) => ({
+        ...reading,
+        current_ua: reading.value,
+      }))),
     };
   });
 }
@@ -404,22 +413,12 @@ function subscribeMessage(rateHz: number, batchSize: number) {
 function appendCaptureSamples(builder: CaptureBuilder, frames: unknown[]) {
   for (const frame of frames) {
     if (!isRecord(frame)) continue;
-    const readings = Array.isArray(frame.readings) ? frame.readings : [];
     builder.samples.push({
       offset: Number(frame.offset ?? builder.samples.length),
       triggered: frame.triggered === true,
       sampleSequence: Number(frame.sample_sequence ?? 0),
       deviceTimeUs: Number(frame.device_t_mono_us ?? 0),
-      readings: readings.filter(isRecord).map((reading) => ({
-        name: String(reading.name ?? ""),
-        signal: "",
-        power_enabled: reading.power_enabled === true,
-        raw: null,
-        mv: 0,
-        sensor_channel: "current",
-        unit: "A",
-        current_ua: Number(reading.current_ua ?? 0),
-      })),
+      readings: parseCaptureCurrentReadings(frame.readings),
     });
   }
 }
@@ -791,8 +790,8 @@ export function useBoard(): UseBoard {
   const refresh = useCallback(async () => {
     try {
       const status = await api.getStatus();
-      const adcRes = await api.getAdc();
-      const readings: AdcReading[] = adcRes?.readings ?? [];
+      const adcResponse: unknown = await api.getAdc();
+      const readings = parseHttpAdcReadings(adcResponse);
       setSnapshot(mapStatus(status, readings));
       setHasData(true);
       setConnected(true);
@@ -828,9 +827,9 @@ export function useBoard(): UseBoard {
         // Seed metadata from an HTTP poll before switching to live stream.
         try {
           const status = await api.getStatus();
-          const adcRes = await api.getAdc();
+          const adcResponse: unknown = await api.getAdc();
           if (cancelled) return;
-          setSnapshot(mapStatus(status, adcRes?.readings ?? []));
+          setSnapshot(mapStatus(status, parseHttpAdcReadings(adcResponse)));
           setHasData(true);
           setConnected(true);
           setError(null);
@@ -875,16 +874,16 @@ export function useBoard(): UseBoard {
         };
         ws.onmessage = (ev) => {
           try {
-            const parsed: unknown = JSON.parse(ev.data);
+            const parsed: unknown = typeof ev.data === "string" ? JSON.parse(ev.data) : null;
             if (!isRecord(parsed)) return;
             const msg = parsed;
             if (msg.type === "snapshot") {
               setSnapshot((prev) => mergeWsSnapshot(prev, msg));
             } else if (msg.type === "telemetry" || msg.type === "telemetry-batch") {
               const samples = telemetrySamples(msg);
-              const latestReadings = samples.at(-1)?.readings;
+              const latestReadings = telemetryReadings(msg);
               const now = performance.now();
-              if (latestReadings && now - lastTelemetryPreviewAtRef.current >= 100) {
+              if (latestReadings.length > 0 && now - lastTelemetryPreviewAtRef.current >= 100) {
                 lastTelemetryPreviewAtRef.current = now;
                 setSnapshot((prev) => ({ ...prev, adc: latestReadings }));
               }
@@ -1124,14 +1123,19 @@ export function useBoard(): UseBoard {
     // small client pool and the live WebSocket already owns one slot; opening
     // two more requests at once can cause a transient connection refusal
     // exactly while a power-cycle task is verifying the shutdown edge.
-    const status = await api.getStatus();
-    const adcRes = await api.getAdc();
-    const output = (status?.power_outputs ?? []).find((item: any) => item.name === name);
-    const reading = (adcRes?.readings ?? []).find((item: any) => item.name === name);
+    const statusResponse: unknown = await api.getStatus();
+    const adcResponse: unknown = await api.getAdc();
+    const status = isRecord(statusResponse) ? statusResponse : {};
+    const output = Array.isArray(status.power_outputs)
+      ? status.power_outputs.filter(isRecord).find((item) => item.name === name)
+      : undefined;
+    const reading = parseHttpAdcReadings(adcResponse)
+      .filter(isCurrentAdcReading)
+      .find((item) => item.name === name);
     if (!output) throw new Error(`Power output ${name} was not reported by the device`);
     return {
-      state: String(output.state ?? ""),
-      currentUa: Math.max(0, Number(reading?.current_ua ?? 0)),
+      state: typeof output.state === "string" ? output.state : "",
+      currentUa: Math.max(0, reading?.value ?? 0),
     };
   }, []);
 

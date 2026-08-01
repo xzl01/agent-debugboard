@@ -215,7 +215,7 @@ function compactSamples(
   const channels = samples[0]?.readings.map((reading) => ({
     name: reading.name,
     signal: reading.signal,
-    sensorChannel: reading.sensor_channel,
+    sensorChannel: reading.sensor_channel ?? "current",
     unit: reading.unit,
   })) ?? [];
   const offsets = new Uint32Array(samples.length);
@@ -285,12 +285,14 @@ function expandChunk(chunk: CaptureChunkRecord): CaptureSample[] {
         return {
           name: channel.name,
           signal: channel.signal,
+          kind: "current",
           power_enabled: (chunk.enabled[valueIndex] ?? 0) !== 0,
           raw: (chunk.rawValid[valueIndex] ?? 0) !== 0 ? chunk.raw[valueIndex] ?? 0 : null,
           mv: chunk.millivolts[valueIndex] ?? 0,
-          sensor_channel: channel.sensorChannel,
-          unit: channel.unit,
+          sensor_channel: "current",
+          unit: "uA",
           current_ua: chunk.currentsUa[valueIndex] ?? 0,
+          value: chunk.currentsUa[valueIndex] ?? 0,
         };
       }),
     }));
@@ -304,6 +306,7 @@ function expandChunk(chunk: CaptureChunkRecord): CaptureSample[] {
       readings: chunk.channels.map((name, channelIndex) => ({
         name,
         signal: "",
+        kind: "current",
         power_enabled: channelIndex < 32 &&
           (((chunk.enabledMasks[sampleIndex] ?? 0) >>> channelIndex) & 1) === 1,
         raw: null,
@@ -311,6 +314,7 @@ function expandChunk(chunk: CaptureChunkRecord): CaptureSample[] {
         sensor_channel: "current",
         unit: "uA",
         current_ua: chunk.currentsUa[sampleIndex * chunk.channels.length + channelIndex] ?? 0,
+        value: chunk.currentsUa[sampleIndex * chunk.channels.length + channelIndex] ?? 0,
       })),
     }));
   }
@@ -322,12 +326,14 @@ function expandChunk(chunk: CaptureChunkRecord): CaptureSample[] {
     readings: chunk.channels.map((name, index) => ({
       name,
       signal: "",
+      kind: "current",
       power_enabled: values[index]?.[0] === 1,
       raw: null,
       mv: 0,
       sensor_channel: "current",
       unit: "uA",
       current_ua: values[index]?.[1] ?? 0,
+      value: values[index]?.[1] ?? 0,
     })),
   }));
 }

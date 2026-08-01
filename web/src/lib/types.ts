@@ -36,17 +36,38 @@ export interface SwitchInfo {
 
 export type SwitchState = Record<string, SwitchInfo>;
 
-export interface AdcReading {
-  name: string;
-  signal: string;
-  power_enabled: boolean;
-  raw: number | null;
-  mv: number;
-  sensor_channel: string;
-  unit: string;
-  sensor_value?: { val1: number; val2: number };
-  current_ua: number;
-}
+type AdcDiagnostics = {
+  readonly raw?: number | null;
+  readonly mv?: number;
+  readonly sensor_channel?: "current" | "voltage";
+  readonly sensor_value?: {
+    readonly val1: number;
+    readonly val2: number;
+  };
+};
+
+type AdcReadingBase = AdcDiagnostics & {
+  readonly name: string;
+  readonly signal: string;
+  readonly value: number;
+};
+
+export type CurrentAdcReading = AdcReadingBase & {
+  readonly kind: "current";
+  readonly unit: "uA";
+  readonly power_enabled: boolean;
+};
+
+export type VoltageAdcReading = AdcReadingBase & {
+  readonly kind: "voltage";
+  readonly unit: "uV";
+};
+
+export type AdcReading = CurrentAdcReading | VoltageAdcReading;
+
+export type CaptureCurrentReading = CurrentAdcReading & {
+  readonly current_ua: number;
+};
 
 export type CaptureTrigger = "manual" | "current" | "gpio" | "power_on";
 
@@ -69,7 +90,7 @@ export interface CaptureSample {
   triggered: boolean;
   sampleSequence: number;
   deviceTimeUs: number;
-  readings: AdcReading[];
+  readings: readonly CaptureCurrentReading[];
 }
 
 export interface PowerCapture {
@@ -176,7 +197,7 @@ export interface BoardSnapshot {
   gpios: SafeGpio[];
   watchdog: WatchdogStatus;
   monitoring: BoardMonitoring;
-  adc: AdcReading[];
+  adc: readonly AdcReading[];
 }
 
 export type LogicAnalyzerTriggerType = "none" | "rising" | "falling" | "either";
