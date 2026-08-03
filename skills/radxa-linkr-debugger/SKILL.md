@@ -1329,13 +1329,15 @@ also uses port 80 and the same default URL.
 ## Rolling Nightly Pre-release
 
 The repository publishes a separate rolling nightly channel through
-`.github/workflows/nightly.yml`. It runs daily at 03:00 UTC plus on
-`workflow_dispatch`, and it publishes (and overwrites) a mutable
-`nightly` Git tag together with a prerelease that is explicitly marked
-**not** the latest release. The channel uploads the same nine assets as
-the formal `Release` workflow (combined UF2, OTA bin, ELF, map, three
-Rust CLI archives, the skill bundle, and `SHA256SUMS.txt`) and prunes
-any other assets from previous runs.
+`.github/workflows/nightly.yml`. It runs only on every push to the
+`dev` branch, and it publishes (and overwrites) a mutable `nightly`
+Git tag together with a prerelease that is explicitly marked **not**
+the latest release. The channel uploads a fixed nine-asset subset (combined UF2, OTA
+bin, ELF, map, three Rust CLI archives, the skill bundle, and
+`SHA256SUMS.txt`) and prunes any other assets from previous runs.
+Unlike the formal `Release` workflow, which ships ten assets, the
+nightly channel intentionally omits the Linux ARM64 Rust CLI
+archive.
 
 The nightly channel is rolling and testing-only. Formal `v*` releases
 keep their own `Release` workflow, semantic tags, signing policy, and
