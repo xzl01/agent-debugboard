@@ -7,6 +7,11 @@ const ACTIONS = Object.freeze({ "actions/checkout": "d23441a48e516b6c34aea4fa415
 const JOBS = ["rust-cli-release", "nightly-assets", "publish-nightly"];
 const PAYLOADS = ["radxa-linkr-debugger-rp2350.uf2", "radxa-linkr-debugger-rp2350-ota.bin", "radxa-linkr-debugger-rp2350.elf", "radxa-linkr-debugger-rp2350.map", "radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz", "radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz", "radxa-linkr-debuggerctl-rust_windows_amd64.zip", "skills-radxa-linkr-debugger.tar.gz"];
 const ASSETS = [...PAYLOADS, "SHA256SUMS.txt"];
+const DEV_ONLY_TRIGGER = normalized(`on:
+  push:
+    branches:
+      - dev
+`);
 
 function normalized(text) { return text.replace(/\r\n?/g, "\n"); }
 function fail(failures, code, detail, surface = WORKFLOW) { failures.push({ code, surface, detail }); }
@@ -33,8 +38,17 @@ function sole(text, name, expected) { const values = arrays(text, name); return 
 function soleLine(text, expected) { return normalized(text).split("\n").map((line) => line.trim()).filter((line) => line === expected).length === 1; }
 function ordered(text, markers) { const positions = markers.map((marker) => text.indexOf(marker)); return positions.every((position, index) => position >= 0 && (!index || positions[index - 1] < position)); }
 
+function rootTrigger(workflow) {
+  const text = normalized(workflow);
+  const permissionsIndex = text.indexOf("\npermissions:\n");
+  if (permissionsIndex < 0) return "";
+  const matches = [...text.matchAll(/^on:\s*$/gm)];
+  if (matches.length !== 1 || matches[0].index === undefined || matches[0].index >= permissionsIndex) return "";
+  return text.slice(matches[0].index, permissionsIndex);
+}
+
 function checkRoot(workflow, failures) {
-  if (!/- cron:\s*["']?0 3 \* \* \*['"]?/.test(workflow) || !/^  workflow_dispatch:\s*$/m.test(workflow)) fail(failures, "W01", "requires cron 0 3 * * * and workflow_dispatch");
+  if (normalized(rootTrigger(workflow)) !== DEV_ONLY_TRIGGER) fail(failures, "W01", "requires exact push.branches: [dev] trigger");
   if (!/^permissions:\s*\n  contents:\s*read\s*$/m.test(workflow)) fail(failures, "W02", "workflow permissions must be contents: read");
   if (!/^  cancel-in-progress:\s*false\s*$/m.test(workflow)) fail(failures, "W03", "concurrency cancellation must be disabled");
 }
