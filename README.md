@@ -41,6 +41,35 @@ is the hardware-validation evidence for the GP29 direct-ownership subcase.
 `5V_FIN` is intentionally treated as a separate input/source power input. It is
 not exposed as a controllable output.
 
+## Persistent Configuration
+
+Persistent configuration is one explicit, firmware-owned snapshot; see the
+[canonical contract](doc/persistent-configuration.md). Ordinary setters remain
+volatile, safe values restore automatically at boot, and dangerous values stay
+pending until the firmware receives explicit confirmation. Clearing the
+snapshot does not change live hardware.
+
+Local validation is not real-hardware HIL. The 2026-07-30 real-hardware HIL
+passed all six runner flows; see the
+[dated report](doc/testing/results/2026-07-30-persistent-config-hil.md). Future
+local tests remain distinct from board HIL.
+
+### Frozen Contract Summary
+
+| Contract ID | Frozen literal |
+| --- | --- |
+| `storage` | `storage_partition+Settings+NVS` |
+| `snapshot` | `linkr/config/snapshot;v1;one` |
+| `explicit-save` | `ordinary-setters-volatile;explicit-save-only` |
+| `boot-safe` | `defaults-first;safe-auto-restore` |
+| `danger-pending` | `dangerous-pending-after-boot` |
+| `firmware-confirmation` | `firmware-owned-confirmation` |
+| `clear` | `settings_delete;hardware-unchanged` |
+| `busy` | `busy:capture\|ota` |
+| `recovery` | `BOOTSEL:radxa-linkr-debugger-rp2350.uf2;OTA:radxa-linkr-debugger-rp2350-ota.bin;zephyr.uf2-invalid` |
+| `security` | `no-profiles;no-encryption;no-authentication-or-authorization;no-config-rollback` |
+| `hil-boundary` | `local-distinct;real-HIL-2026-07-30-pass` |
+
 ## Quick Start
 
 1. [Install the CLI](docs/user/install.md)

@@ -38,6 +38,33 @@ ADC3 契约、wire shape 和 GP29 所有权规则见
 
 `5V_FIN` 会被当作独立的输入/来源电源处理，不作为可控输出暴露给主机。
 
+## 持久化配置
+
+持久化配置是一份由固件持有的显式快照，完整契约见
+[持久化配置规范](doc/persistent-configuration.md)。普通 setter 仍然只修改实时状态；
+安全值会在启动时自动恢复，危险值必须等待固件收到显式确认。清除快照不会
+改变当前硬件状态。
+
+本地验证不等于真实硬件 HIL。2026-07-30 真实硬件 HIL 的六个 runner flow
+全部通过，见[当日报告](doc/testing/results/2026-07-30-persistent-config-hil.md)。
+今后的本地测试仍不能替代调试板 HIL。
+
+### 固定契约摘要
+
+| Contract ID | Frozen literal |
+| --- | --- |
+| `storage` | `storage_partition+Settings+NVS` |
+| `snapshot` | `linkr/config/snapshot;v1;one` |
+| `explicit-save` | `ordinary-setters-volatile;explicit-save-only` |
+| `boot-safe` | `defaults-first;safe-auto-restore` |
+| `danger-pending` | `dangerous-pending-after-boot` |
+| `firmware-confirmation` | `firmware-owned-confirmation` |
+| `clear` | `settings_delete;hardware-unchanged` |
+| `busy` | `busy:capture\|ota` |
+| `recovery` | `BOOTSEL:radxa-linkr-debugger-rp2350.uf2;OTA:radxa-linkr-debugger-rp2350-ota.bin;zephyr.uf2-invalid` |
+| `security` | `no-profiles;no-encryption;no-authentication-or-authorization;no-config-rollback` |
+| `hil-boundary` | `local-distinct;real-HIL-2026-07-30-pass` |
+
 ## 快速开始
 
 1. [安装 CLI](docs/user/install.zh-CN.md)

@@ -257,15 +257,6 @@ test("persistent-configuration documentation contract", async (suite) => {
 
   await suite.test("repository documentation must satisfy the frozen contract", async () => {
     const result = await checkPersistentConfigurationDocs(repositoryRoot);
-    if (!result.ok && result.failures.every(({ code }) => code === "surface-missing" || code === "section-missing")) {
-      assert.deepEqual(result.failures.map(({ code, surface }) => [code, surface]), [
-        ["surface-missing", "doc/persistent-configuration.md"],
-        ["section-missing", "README.md"], ["section-missing", "README.zh-CN.md"],
-        ["section-missing", "apps/radxa_linkr_debugger/README.md"],
-        ["section-missing", "skills/radxa-linkr-debugger/SKILL.md"],
-        ["section-missing", "doc/testing/hil-functional-test-spec.md"],
-      ]);
-    }
     assert.equal(result.ok, true, formatFailures(result.failures));
   });
 });

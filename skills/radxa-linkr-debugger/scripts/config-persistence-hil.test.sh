@@ -68,6 +68,23 @@ assert_evidence_fields() {
 }
 
 reset_fixture() {
+  # POSIX shells may retain temporary assignments made before a shell function
+  # call. Clear every fault-injection knob here so one negative fixture cannot
+  # contaminate the fixtures that follow it.
+  unset CONFIG_HIL_CLEANUP_ENUMERATION
+  unset CONFIG_HIL_FLASH_FAIL
+  unset CONFIG_HIL_LSBLK_LAYOUT
+  unset CONFIG_HIL_OTA_ACTIVATE_AFTER
+  unset CONFIG_HIL_OTA_BAD_STATE
+  unset CONFIG_HIL_OTA_CONCURRENCY
+  unset CONFIG_HIL_OTA_REQUIRE_LIMIT_RATE
+  unset CONFIG_HIL_OTA_WRONG_ACTIVITY
+  unset CONFIG_HIL_PYTHON_SERIAL_LATE_ERROR
+  unset CONFIG_HIL_PYTHON_SERIAL_PROMPT_ONLY
+  unset CONFIG_HIL_REBOOT_READINESS_INVALID
+  unset CONFIG_HIL_REBOOT_TRANSPORT_FAILS
+  unset CONFIG_HIL_SERIAL_BAD_BOOTSEL
+  unset CONFIG_HIL_SERIAL_BAD_SHOW
   : > "$CALLS"
   : > "$TIMEOUTS"
   : > "$PARTITION_LOG"
@@ -607,11 +624,15 @@ fi
 [ "$(wc -l < "$CALLS" | tr -d ' ')" = 1 ] || fail "wrong config action made an additional request"
 
 reset_fixture
-CONFIG_PERSISTENCE_HIL_SHA256_BIN="$STUBS/missing-sha" run_fixture "$WORK/all-preflight.out" \
-  --execute --url http://fixture.invalid --serial "$SERIAL" --reboot-command "$STUBS/reboot" \
-  --capture-start "$STUBS/capture-start" --capture-stop "$STUBS/capture-stop" \
-  --confirm-dangerous-save --confirm-dangerous-apply --combined-uf2 "$CANONICAL_UF2" \
-  --ota-image "$CANONICAL_OTA" all && fail "all unexpectedly ignored missing sha256 dependency"
+if (
+  CONFIG_PERSISTENCE_HIL_SHA256_BIN="$STUBS/missing-sha" run_fixture "$WORK/all-preflight.out" \
+    --execute --url http://fixture.invalid --serial "$SERIAL" --reboot-command "$STUBS/reboot" \
+    --capture-start "$STUBS/capture-start" --capture-stop "$STUBS/capture-stop" \
+    --confirm-dangerous-save --confirm-dangerous-apply --combined-uf2 "$CANONICAL_UF2" \
+    --ota-image "$CANONICAL_OTA" all
+); then
+  fail "all unexpectedly ignored missing sha256 dependency"
+fi
 assert_empty "$CALLS"
 
 reset_fixture
