@@ -31,7 +31,10 @@ if ! git -C "$MANIFEST_DIR" diff --cached --quiet; then
 fi
 
 if [ -d "$WORKSPACE/.west" ]; then
-  configured_manifest="$(cd "$WORKSPACE" && west config manifest.path 2>/dev/null || true)"
+  configured_manifest="$(
+    cd "$WORKSPACE"
+    west config manifest.path 2>/dev/null || true
+  )"
   if [ "$configured_manifest" != "manifest" ]; then
     fail "$WORKSPACE is managed by a different west manifest: $configured_manifest"
   fi

@@ -203,7 +203,9 @@ require_serial() {
 
 require_canonical_uf2() {
   [ "$UF2" = "$CANONICAL_UF2" ] || fail "ROM BOOTSEL accepts only $CANONICAL_UF2; app-only zephyr.uf2 is forbidden"
-  [ -f "$UF2" ] && [ -s "$UF2" ] || fail "canonical combined UF2 is unavailable: $UF2"
+  if [ ! -f "$UF2" ] || [ ! -s "$UF2" ]; then
+    fail "canonical combined UF2 is unavailable: $UF2"
+  fi
 }
 
 require_canonical_ota() {
@@ -211,7 +213,9 @@ require_canonical_ota() {
     *.uf2|*.elf) fail "OTA rejects unsafe artifact type: $OTA_IMAGE" ;;
   esac
   [ "$OTA_IMAGE" = "$CANONICAL_OTA" ] || fail "OTA accepts only $CANONICAL_OTA"
-  [ -f "$OTA_IMAGE" ] && [ -s "$OTA_IMAGE" ] || fail "canonical MCUboot OTA image is unavailable: $OTA_IMAGE"
+  if [ ! -f "$OTA_IMAGE" ] || [ ! -s "$OTA_IMAGE" ]; then
+    fail "canonical MCUboot OTA image is unavailable: $OTA_IMAGE"
+  fi
 }
 
 require_dangerous_confirmations() {
@@ -817,8 +821,9 @@ wait_for_reboot_transport() {
       --request GET "$(api_url /config)"); then
       code=$(response_code "$body" "$status" config get - - GET /config "" -) || \
         fail "malformed response for post-reboot GET /config readiness"
-      [ "$status" = 200 ] && [ "$code" = ok ] || \
+      if [ "$status" != 200 ] || [ "$code" != ok ]; then
         fail "post-reboot GET /config readiness expected HTTP 200 ok, got HTTP $status $code"
+      fi
       HTTP_BODY="$body"
       evidence "GET /config readiness" "$status" "$code" "confirm post-reboot config transport readiness"
       return
@@ -884,7 +889,9 @@ wait_for_ota_uploading() {
       --write-out '%{http_code}' --request GET "$(api_url /ota)") || \
       fail "transport failed for GET /ota"
     if code=$(response_code "$body" "$status" ota - - - GET /ota "" uploading); then
-      [ "$status" = 200 ] && [ "$code" = ok ] || fail "GET /ota did not report uploading"
+      if [ "$status" != 200 ] || [ "$code" != ok ]; then
+        fail "GET /ota did not report uploading"
+      fi
       HTTP_BODY="$body"
       evidence "GET /ota" "$status" "$code" "observe bounded active OTA upload"
       return 0
@@ -900,8 +907,9 @@ require_ota_upload_active() {
 }
 
 await_ota_upload() {
-  [ "$OTA_UPLOAD_ACTIVE" -eq 1 ] && [ -n "$OTA_UPLOAD_PID" ] || \
+  if [ "$OTA_UPLOAD_ACTIVE" -ne 1 ] || [ -z "$OTA_UPLOAD_PID" ]; then
     fail "OTA upload is not owned by the runner"
+  fi
   if wait "$OTA_UPLOAD_PID"; then
     upload_result=0
   else
@@ -916,7 +924,9 @@ await_ota_upload() {
     "@$OTA_IMAGE" verified) || fail "malformed response for POST /ota/upload"
   evidence "await POST /ota/upload" "$status" "$code" \
     "await and validate canonical MCUboot OTA upload"
-  [ "$status" = 200 ] && [ "$code" = ok ] || fail "canonical OTA upload failed"
+  if [ "$status" != 200 ] || [ "$code" != ok ]; then
+    fail "canonical OTA upload failed"
+  fi
 }
 
 serial_request() {
@@ -1062,7 +1072,9 @@ flash_combined_uf2() {
   mount_output=$("$MOUNT_BIN" mount -b "$partition") || fail "failed to mount $partition"
   BOOTSEL_MOUNTED_PARTITION="$partition"
   mount_point=$(printf '%s\n' "$mount_output" | awk -F' at ' '{print $2}' | tr -d '\n')
-  [ -n "$mount_point" ] && [ -d "$mount_point" ] || fail "could not determine BOOTSEL mount point"
+  if [ -z "$mount_point" ] || [ ! -d "$mount_point" ]; then
+    fail "could not determine BOOTSEL mount point"
+  fi
   evidence "mount -b $partition" "not_applicable" "ok" "mount BOOTSEL partition"
   "$FLASH_BIN" "$UF2" "$mount_point/" || fail "failed to copy canonical combined UF2"
   evidence "flash canonical combined UF2" "not_applicable" "ok" "flash canonical combined UF2 only"
