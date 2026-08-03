@@ -1041,8 +1041,10 @@ reflash/HIL；不得用本地视觉 QA 替代板卡 HIL，也不得反过来用�
 --confirm` 命中 GP29 时停在第一个硬件失败、GP29 `apply_state="failed"`
 而后续 GPIO output 仍 `pending` 这两个历史 v1 snapshot 兼容子项仍
 `pending`，等待未来真实板卡 HIL。rolling nightly 检查（第 12h 节）
-与 4b 节无关，独立保持 `pending`；本规范不区分 scheduled nightly 与
-手工 `workflow_dispatch`，二者都仍 `pending`。宿端单测
+与 4b 节无关，独立保持 `pending`。nightly 现仅在推送到 `dev` 分支时
+触发，每次实际 dev-push run 都保持 `pending`，直到 GitHub 在新触发
+条件下产出真实 Actions 执行 evidence（命名带日期与主题的产物/日志），
+该 evidence 在本规范当前修订时仍不存在。宿端单测
 （`cmd-ng/src/adc.rs` 与 `web/src/lib/adc.test.ts`）只证明 wire-shape
 形状，不替代 4b 节真实硬件验收。actionlint 与仓库内本地结构校验不等价
 于 GitHub 实际跑过 `.github/workflows/nightly.yml`；任何把
@@ -2095,9 +2097,10 @@ same NCM-assigned address.
 
 ### 12h. Rolling Nightly Prerelease Isolation
 
-`.github/workflows/nightly.yml` 在 UTC 03:00 加 `workflow_dispatch` 时产出
-mutable `nightly` Git tag 与一个标记为 `not latest` 的 prerelease，覆盖与
-正式 release 相同的 9 个资产。本节描述 nightly 通道与正式 HIL 的隔离约定，
+`.github/workflows/nightly.yml` 仅在推送到 `dev` 分支时产出
+mutable `nightly` Git tag 与一个标记为 `not latest` 的 prerelease，发布一个
+固定的 9-asset 子集，并显式省略正式 Release 才包含的
+`radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` Linux ARM64 CLI 归档。本节描述 nightly 通道与正式 HIL 的隔离约定，
 本身不要求任何具体实物跑分；它属于发布链路约束，避免污染既有 artifact 与
 HIL 报告。
 

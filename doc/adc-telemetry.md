@@ -24,8 +24,12 @@ shape.
 > `web/src/components/PowerSparkline.tsx`) was not reflashed, so this
 > contract still reflects the pre-token firmware; its local production
 > build and visual QA pass is documented as a post-HIL addendum in the
-> dated report and is not hardware HIL. Do not claim any scheduled or
-> manual nightly has passed because of a contract edit here.
+> dated report and is not hardware HIL. Do not claim any nightly has
+> passed because of a contract edit here. Nightly now runs only on a
+> push to the `dev` branch, and each actual dev-push run stays
+> `pending` until fresh GitHub execution evidence (a real Actions run
+> on the new trigger) exists; that evidence does not exist yet at the
+> time of this contract edit.
 
 ## 1. Descriptors And Types
 
