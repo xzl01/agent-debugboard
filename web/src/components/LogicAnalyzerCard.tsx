@@ -288,7 +288,7 @@ export function LogicAnalyzerCard({
     createDefaultLogicDecoderConfigs(DEFAULT_CONFIG.selectedPins)
   );
   const [decoderState, setDecoderState] = useState<DecoderRunState>(INITIAL_DECODER_STATE);
-  const armInFlightRef = useRef(false);
+  const captureOperationRef = useRef<"bounded" | "stream" | null>(null);
   const currentDecodeSignatureRef = useRef<string | null>(null);
   const streamSamplesRef = useRef<number[]>([]);
   const streamSequenceRef = useRef(0);
@@ -315,6 +315,9 @@ export function LogicAnalyzerCard({
   } = useSigrokScope();
   const [streaming, setStreaming] = useState(false);
   const streamingRef = useRef(false);
+  const [streamStarting, setStreamStarting] = useState(false);
+  const [activeStreamConfig, setActiveStreamConfig] = useState<LogicAnalyzerConfig | null>(null);
+  const [activeStreamRate, setActiveStreamRate] = useState<number | null>(null);
 
   useEffect(() => {
     const flush = () => {
@@ -420,7 +423,8 @@ export function LogicAnalyzerCard({
     t,
   ]);
   const preTriggerAvailable = preTriggerReason == null;
-  const controlsDisabled = state === "armed" || state === "capturing" || isArming;
+  const controlsDisabled =
+    state === "armed" || state === "capturing" || isArming || streamStarting || streaming;
   const captureRequestedRate = capture ? getLogicAnalyzerRequestedSampleRate(capture.config) : null;
   const captureActualRate = capture ? getLogicAnalyzerActualSampleRate(capture.config) : null;
   const captureSamplePeriod = capture
@@ -506,13 +510,13 @@ export function LogicAnalyzerCard({
   );
 
   const handleArm = useCallback(async () => {
-    if (armInFlightRef.current) return;
+    if (captureOperationRef.current != null || streamingRef.current) return;
     setError(null);
     setStreamNotice(null);
     const nextConfig = normalizedConfig;
     setConfig(nextConfig);
     if (nextConfig.selectedPins.length === 0) { setError("Select at least one pin"); return; }
-    armInFlightRef.current = true;
+    captureOperationRef.current = "bounded";
     setIsArming(true);
     const hasTrigger = nextConfig.triggerType !== "none";
     try {
@@ -637,7 +641,10 @@ export function LogicAnalyzerCard({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error"); setState("idle");
       await stopAndCloseSigrok("capture error cleanup");
-    } finally { armInFlightRef.current = false; setIsArming(false); }
+    } finally {
+      if (captureOperationRef.current === "bounded") captureOperationRef.current = null;
+      setIsArming(false);
+    }
   }, [assembleBoundedSigrokCapture, normalizedConfig, sigrokConfigure, sigrokEnsureConnected, sigrokGetServerCapabilities, sigrokReadCaptureFrame, sigrokStart, stopAndCloseSigrok]);
 
   const handleCancel = useCallback(async () => {
@@ -655,16 +662,30 @@ export function LogicAnalyzerCard({
   }, [stopAndCloseSigrok]);
 
   const startStream = useCallback(async () => {
-    if (streamingRef.current) return;
+    if (
+      streamingRef.current ||
+      captureOperationRef.current != null ||
+      state === "armed" ||
+      state === "capturing"
+    ) return;
+    captureOperationRef.current = "stream";
+    setStreamStarting(true);
     setError(null);
     setStreamNotice(null);
     const cfg = normalizedConfig;
-    if (cfg.selectedPins.length === 0) { setError("Select at least one pin"); return; }
+    if (cfg.selectedPins.length === 0) {
+      setError("Select at least one pin");
+      captureOperationRef.current = null;
+      setStreamStarting(false);
+      return;
+    }
     try {
       await sigrokEnsureConnected();
       const sigrokRequest = buildSigrokCaptureRequest(cfg, { ...sigrokGetServerCapabilities(), stream: true });
-      await sigrokConfigure(sigrokRequest);
+      const ack = await sigrokConfigure(sigrokRequest);
       await sigrokStart();
+      setActiveStreamConfig({ ...cfg, selectedPins: [...cfg.selectedPins] });
+      setActiveStreamRate(ack.actualRateKhz * 1000);
       manualStreamStopRef.current = false;
       streamingRef.current = true;
       setStreaming(true);
@@ -736,12 +757,18 @@ export function LogicAnalyzerCard({
           streamingRef.current = false;
           setStreaming(false);
           await stopAndCloseSigrok("stream completion cleanup");
+          setActiveStreamConfig(null);
+          setActiveStreamRate(null);
         }
       })();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
       await stopAndCloseSigrok("stream setup cleanup");
-      return;
+      setActiveStreamConfig(null);
+      setActiveStreamRate(null);
+    } finally {
+      if (captureOperationRef.current === "stream") captureOperationRef.current = null;
+      setStreamStarting(false);
     }
   }, [
     normalizedConfig,
@@ -750,6 +777,7 @@ export function LogicAnalyzerCard({
     sigrokGetServerCapabilities,
     sigrokReadCaptureFrame,
     sigrokStart,
+    state,
     stopAndCloseSigrok,
     t,
   ]);
@@ -810,7 +838,7 @@ export function LogicAnalyzerCard({
 
   const streamWaveformData = useMemo(() => {
     if (!streaming) return [];
-    const pins = config.selectedPins;
+    const pins = activeStreamConfig?.selectedPins ?? [];
     if (pins.length === 0 || streamWindow.len === 0) return [];
     const { samples, start, span, stride, pointCount, plotWidth } = streamWindow;
     const xScale = pointCount > 1 ? plotWidth / (pointCount - 1) : 0;
@@ -827,7 +855,7 @@ export function LogicAnalyzerCard({
       }
       return channelPoints;
     });
-  }, [streaming, config.selectedPins, streamWindow]);
+  }, [streaming, activeStreamConfig, streamWindow]);
 
   const liveAnnotationLayout = useMemo(
     () => layoutLogicDecoderAnnotations(liveAnnotations),
@@ -839,9 +867,9 @@ export function LogicAnalyzerCard({
   const streamChannelTop = TOP_PADDING + liveAnnotationAreaHeight;
 
   const streamSvgHeight = useMemo(() => {
-    const pinCount = config.selectedPins.length || 1;
+    const pinCount = activeStreamConfig?.selectedPins.length || 1;
     return streamChannelTop + pinCount * CHANNEL_HEIGHT + Math.max(0, pinCount - 1) * CHANNEL_GAP + BOTTOM_PADDING;
-  }, [config.selectedPins.length, streamChannelTop]);
+  }, [activeStreamConfig, streamChannelTop]);
 
   const streamWindowRef = useRef(streamWindow);
   // FIXME: render-time ref assignment works for the latest-window pattern but
@@ -860,16 +888,17 @@ export function LogicAnalyzerCard({
       if (streamDecodeBusyRef.current) return;
       const { samples, start, end } = streamWindowRef.current;
       const decodeLen = Math.min(end - start, STREAM_DECODE_MAX_SAMPLES);
-      if (decodeLen <= 0 || config.selectedPins.length === 0) return;
+      const streamPins = activeStreamConfig?.selectedPins ?? [];
+      if (decodeLen <= 0 || streamPins.length === 0) return;
       streamDecodeBusyRef.current = true;
       try {
         const pseudoCapture: LogicAnalyzerCapture = {
           state: "done",
           config: {
-            pinCount: config.selectedPins.length,
-            pinBase: config.selectedPins[0] ?? 0,
-            selectedPins: [...config.selectedPins],
-            actualSampleRateHz: actualRate,
+            pinCount: streamPins.length,
+            pinBase: streamPins[0] ?? 0,
+            selectedPins: [...streamPins],
+            actualSampleRateHz: activeStreamRate ?? actualRate,
           },
           sampleCount: decodeLen,
           triggerIndex: 0,
@@ -891,7 +920,14 @@ export function LogicAnalyzerCard({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [streaming, decoderProtocol, decoderConfigs, config.selectedPins, actualRate]);
+  }, [
+    streaming,
+    decoderProtocol,
+    decoderConfigs,
+    activeStreamConfig,
+    activeStreamRate,
+    actualRate,
+  ]);
 
   const uartConfig: LogicDecoderProtocolConfigs["uart"] = decoderConfigs.uart;
   const i2cConfig: LogicDecoderProtocolConfigs["i2c"] = decoderConfigs.i2c;
@@ -1315,9 +1351,9 @@ export function LogicAnalyzerCard({
                     setStreamSampleCount(0);
                     void startStream();
                   }}
-                  disabled={config.selectedPins.length === 0 || streamRateExceeded}
+                  disabled={controlsDisabled || config.selectedPins.length === 0 || streamRateExceeded}
                 >
-                  <Zap size={15} />
+                  {streamStarting ? <Loader2 size={15} className="animate-spin" /> : <Zap size={15} />}
                   {t("logicAnalyzer.startStream")}
                 </Button>
                 {streamRateExceeded && (
@@ -1444,7 +1480,7 @@ export function LogicAnalyzerCard({
                     </g>
                   );
                 })}
-                {config.selectedPins.map((pin, channelIndex) => {
+                {(activeStreamConfig?.selectedPins ?? []).map((pin, channelIndex) => {
                   const yOffset = streamChannelTop + channelIndex * (CHANNEL_HEIGHT + CHANNEL_GAP);
                   return (
                     <g key={pin}>
@@ -1492,7 +1528,7 @@ export function LogicAnalyzerCard({
 
                   return (
                     <path
-                      key={config.selectedPins[channelIndex] ?? channelIndex}
+                      key={activeStreamConfig?.selectedPins[channelIndex] ?? channelIndex}
                       d={d}
                       fill="none"
                       stroke={WAVEFORM_COLORS[channelIndex % WAVEFORM_COLORS.length]}

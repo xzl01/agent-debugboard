@@ -24,7 +24,7 @@ static void test_backend_selection_and_capacity(void)
 	assert(layout.backend == LINKR_DEBUGGER_CAPTURE_ENGINE_BACKEND_FAST8);
 	assert(layout.bytes_per_sample == 1U);
 	assert(layout.storage_bytes_per_sample == 4U);
-	assert(layout.max_rate_hz == 50000000U);
+	assert(layout.max_rate_hz == 125000000U);
 	assert(layout.capacity_samples == 16384U);
 
 	assert(linkr_debugger_capture_engine_select_backend(wide, sizeof(wide), &layout) == 0);

@@ -68,7 +68,12 @@ export function useSigrokScope(options: UseSigrokScopeOptions = {}): UseSigrokSc
   const frameResolveRef = useRef<((frame: SigrokCaptureFrame | null) => void) | null>(null);
   const eventResolveRef = useRef<((triggered: boolean) => void) | null>(null);
   const sessionRef = useRef<LiveSession | null>(null);
-  const sessionReleasedRef = useRef(false);
+  const sessionCreationRef = useRef<{
+    generation: number;
+    promise: Promise<LiveSession>;
+  } | null>(null);
+  const connectionRef = useRef<Promise<void> | null>(null);
+  const connectionGenerationRef = useRef(0);
 
   const warnCleanup = useCallback((action: string, cleanupError: unknown) => {
     const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
@@ -89,11 +94,15 @@ export function useSigrokScope(options: UseSigrokScopeOptions = {}): UseSigrokSc
   }, [getClient]);
 
   const releaseSession = useCallback(async () => {
-    const session = sessionRef.current;
-    if (session == null || sessionReleasedRef.current || url) {
+    if (url) {
       return;
     }
-    sessionReleasedRef.current = true;
+
+    const session = sessionRef.current;
+    if (session == null) {
+      return;
+    }
+
     sessionRef.current = null;
     try {
       await deleteLiveSession(session.session_id);
@@ -102,7 +111,7 @@ export function useSigrokScope(options: UseSigrokScopeOptions = {}): UseSigrokSc
     }
   }, [url, warnCleanup]);
 
-  const createSession = useCallback(async (): Promise<string> => {
+  const createSession = useCallback(async (generation: number): Promise<string> => {
     if (url) {
       return url;
     }
@@ -110,11 +119,31 @@ export function useSigrokScope(options: UseSigrokScopeOptions = {}): UseSigrokSc
       return liveWebSocketUrl(sessionRef.current.ws_url);
     }
 
-    const session = await createLiveSession();
+    let creation = sessionCreationRef.current;
+    if (creation == null || creation.generation !== generation) {
+      creation = { generation, promise: createLiveSession() };
+      sessionCreationRef.current = creation;
+    }
+
+    let session: LiveSession;
+    try {
+      session = await creation.promise;
+    } finally {
+      if (sessionCreationRef.current === creation) {
+        sessionCreationRef.current = null;
+      }
+    }
+    if (connectionGenerationRef.current !== generation) {
+      try {
+        await deleteLiveSession(session.session_id);
+      } catch (cleanupError) {
+        warnCleanup(`deleting cancelled live session ${session.session_id}`, cleanupError);
+      }
+      throw new Error("Connection cancelled");
+    }
     sessionRef.current = session;
-    sessionReleasedRef.current = false;
     return liveWebSocketUrl(session.ws_url);
-  }, [url]);
+  }, [url, warnCleanup]);
 
   const ensureConnected = useCallback(async () => {
     const client = getClient();
@@ -127,14 +156,38 @@ export function useSigrokScope(options: UseSigrokScopeOptions = {}): UseSigrokSc
     ) {
       return;
     }
+    if (connectionRef.current != null) {
+      return connectionRef.current;
+    }
+
+    const generation = connectionGenerationRef.current;
+    const connection = (async () => {
+      try {
+        setError(null);
+        const wsUrl = await createSession(generation);
+        if (connectionGenerationRef.current !== generation) {
+          throw new Error("Connection cancelled");
+        }
+        await client.connect(wsUrl);
+        if (connectionGenerationRef.current !== generation) {
+          client.disconnect();
+          throw new Error("Connection cancelled");
+        }
+      } catch (err) {
+        if (connectionGenerationRef.current === generation) {
+          await releaseSession();
+          setError(err instanceof Error ? err.message : "Connection failed");
+        }
+        throw err;
+      }
+    })();
+    connectionRef.current = connection;
     try {
-      setError(null);
-      const wsUrl = await createSession();
-      await client.connect(wsUrl);
-    } catch (err) {
-      await releaseSession();
-      setError(err instanceof Error ? err.message : "Connection failed");
-      throw err;
+      await connection;
+    } finally {
+      if (connectionRef.current === connection) {
+        connectionRef.current = null;
+      }
     }
   }, [createSession, getClient, releaseSession]);
 
@@ -144,6 +197,8 @@ export function useSigrokScope(options: UseSigrokScopeOptions = {}): UseSigrokSc
   }, []);
 
   const close = useCallback(() => {
+    connectionGenerationRef.current += 1;
+    connectionRef.current = null;
     const client = getClient();
     client.disconnect();
     resetQueues();
@@ -270,6 +325,9 @@ export function useSigrokScope(options: UseSigrokScopeOptions = {}): UseSigrokSc
     const handleEvent = (event: SigrokClientEvent) => {
       if (event.type === "state") {
         setState(event.state);
+        if (event.state === "disconnected") {
+          void releaseSession();
+        }
       } else if (event.type === "error") {
         setError(event.message);
       } else if (event.type === "frame") {
@@ -297,6 +355,8 @@ export function useSigrokScope(options: UseSigrokScopeOptions = {}): UseSigrokSc
     client.addEventListener(handleEvent);
 
     return () => {
+      connectionGenerationRef.current += 1;
+      connectionRef.current = null;
       client.removeEventListener(handleEvent);
       client.disconnect();
       resetQueues();

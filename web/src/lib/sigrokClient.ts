@@ -3,6 +3,7 @@ export const SIGROK_PROTOCOL_VERSION = 1;
 export const SIGROK_HEADER_BYTES = 9;
 export const SIGROK_SAMPLE_INDEX_BITS = 24;
 export const SIGROK_SAMPLE_INDEX_MODULO = 1 << SIGROK_SAMPLE_INDEX_BITS;
+const SIGROK_CONNECT_TIMEOUT_MS = 10_000;
 
 export const SigrokFrameType = {
   HELLO_REQ: 0x01,
@@ -570,6 +571,9 @@ export function parseSigrokFrame(header: SigrokHeader, data: Uint8Array): Sigrok
 
 export class SigrokClient {
   private ws: WebSocket | null = null;
+  private connectionGeneration = 0;
+  private connectCancellation: ((error: Error) => void) | null = null;
+  private connectTimeout: ReturnType<typeof setTimeout> | null = null;
   private state: SigrokClientState = "disconnected";
   private nextId = 1;
   private listeners: SigrokClientEventListener[] = [];
@@ -620,77 +624,164 @@ export class SigrokClient {
   }
 
   async connect(url: string): Promise<void> {
-    if (this.ws) {
+    if (this.ws || this.connectCancellation) {
       this.disconnect();
     }
 
+    const generation = ++this.connectionGeneration;
     this.disconnecting = false;
+    this.buffer = new Uint8Array(0);
     this.clearCapabilities();
     this.setState("connecting");
 
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url);
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(url);
+      } catch (error) {
+        this.setState("disconnected");
+        reject(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+
       ws.binaryType = "arraybuffer";
+      this.ws = ws;
+
+      let settled = false;
+      let attemptTimeout: ReturnType<typeof setTimeout> | null = null;
+      const isCurrent = () => this.ws === ws && this.connectionGeneration === generation;
+      const clearAttempt = () => {
+        if (attemptTimeout != null) {
+          clearTimeout(attemptTimeout);
+          if (this.connectTimeout === attemptTimeout) {
+            this.connectTimeout = null;
+          }
+          attemptTimeout = null;
+        } else if (this.connectTimeout != null && this.connectCancellation === rejectConnect) {
+          clearTimeout(this.connectTimeout);
+          this.connectTimeout = null;
+        }
+        if (this.connectCancellation === rejectConnect) {
+          this.connectCancellation = null;
+        }
+      };
+      const rejectConnect = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        clearAttempt();
+        reject(error);
+      };
+      const failCurrentConnection = (error: Error, closeSocket = true) => {
+        if (!isCurrent()) {
+          rejectConnect(error);
+          return;
+        }
+        this.connectionGeneration += 1;
+        this.ws = null;
+        this.buffer = new Uint8Array(0);
+        if (
+          closeSocket &&
+          (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)
+        ) {
+          ws.close();
+        }
+        this.clearCapabilities();
+        this.setState("disconnected");
+        this.rejectAllPending(error);
+        rejectConnect(error);
+      };
+
+      this.connectCancellation = rejectConnect;
+      attemptTimeout = setTimeout(() => {
+        failCurrentConnection(new Error("WebSocket connection timeout"));
+      }, SIGROK_CONNECT_TIMEOUT_MS);
+      this.connectTimeout = attemptTimeout;
 
       ws.onopen = () => {
-        this.ws = ws;
+        if (!isCurrent()) {
+          if (ws.readyState === WebSocket.OPEN) ws.close();
+          rejectConnect(new Error("WebSocket connection cancelled"));
+          return;
+        }
         this.sendHello().then(() => {
           return this.getCaps();
         }).then(() => {
+          if (!isCurrent()) {
+            if (ws.readyState === WebSocket.OPEN) ws.close();
+            rejectConnect(new Error("WebSocket connection cancelled"));
+            return;
+          }
+          settled = true;
+          clearAttempt();
           this.setState("ready");
           resolve();
         }).catch((error) => {
-          this.ws = null;
-          this.clearCapabilities();
-          this.setState("disconnected");
-          reject(error);
+          failCurrentConnection(
+            error instanceof Error ? error : new Error(String(error))
+          );
         });
       };
 
       ws.onmessage = (event) => {
-        if (event.data instanceof ArrayBuffer) {
+        if (isCurrent() && event.data instanceof ArrayBuffer) {
           this.feedBinaryData(new Uint8Array(event.data));
         }
       };
 
       ws.onclose = () => {
+        if (!isCurrent()) return;
+        this.connectionGeneration += 1;
         this.ws = null;
+        this.buffer = new Uint8Array(0);
         this.clearCapabilities();
         this.setState("disconnected");
-        this.rejectAllPending(new Error("WebSocket closed"));
+        const error = new Error("WebSocket closed");
+        this.rejectAllPending(error);
+        rejectConnect(error);
       };
 
       ws.onerror = () => {
-        this.ws = null;
-        this.clearCapabilities();
-        this.setState("disconnected");
-        this.rejectAllPending(new Error("WebSocket connection failed"));
-        reject(new Error("WebSocket connection failed"));
+        failCurrentConnection(new Error("WebSocket connection failed"));
       };
     });
   }
 
   disconnect(): void {
     this.disconnecting = true;
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    this.connectionGeneration += 1;
+    const ws = this.ws;
+    this.ws = null;
+    const cancelConnect = this.connectCancellation;
+    this.connectCancellation = null;
+    if (this.connectTimeout != null) {
+      clearTimeout(this.connectTimeout);
+      this.connectTimeout = null;
     }
+    if (
+      ws &&
+      (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)
+    ) {
+      ws.close();
+    }
+    this.buffer = new Uint8Array(0);
     this.clearCapabilities();
     this.setState("disconnected");
-    this.rejectAllPending(new Error("Client disconnected"));
+    const error = new Error("Client disconnected");
+    this.rejectAllPending(error);
+    cancelConnect?.(error);
   }
 
   async disconnectGracefully(): Promise<void> {
     this.disconnecting = true;
-    if (this.ws) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      this.ws.close();
-      this.ws = null;
+    if (this.state === "connecting") {
+      this.disconnect();
+      return;
     }
-    this.clearCapabilities();
-    this.setState("disconnected");
-    this.rejectAllPending(new Error("Client disconnected"));
+    const ws = this.ws;
+    const generation = this.connectionGeneration;
+    if (ws) await new Promise(resolve => setTimeout(resolve, 100));
+    if (this.ws !== ws || this.connectionGeneration !== generation) return;
+    this.disconnect();
   }
 
   private rejectAllPending(error: Error): void {
@@ -805,7 +896,13 @@ export class SigrokClient {
         },
       });
 
-      this.sendFrame(frame);
+      try {
+        this.sendFrame(frame);
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingRequests.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 

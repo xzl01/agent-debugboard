@@ -40,7 +40,7 @@ static void test_release_by_owner_only(void)
 	assert(linkr_debugger_capture_arbiter_release(
 		LINKR_DEBUGGER_CAPTURE_OWNER_SIGROK_LINKR));
 	assert(linkr_debugger_capture_arbiter_owner() == LINKR_DEBUGGER_CAPTURE_OWNER_NONE);
-	
+
 	assert(linkr_debugger_capture_arbiter_try_acquire(
 		LINKR_DEBUGGER_CAPTURE_OWNER_SIGROK_LINKR));
 	assert(linkr_debugger_capture_arbiter_release(

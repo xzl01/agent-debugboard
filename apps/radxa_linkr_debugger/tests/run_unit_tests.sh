@@ -198,6 +198,24 @@ cc -std=c11 -Wall -Wextra -Werror \
 "${OUT}/linkr_debugger_capture_arena_test"
 
 cc -std=c11 -Wall -Wextra -Werror \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_engine.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_capture_engine.c" \
+	-o "${OUT}/linkr_debugger_capture_engine_test"
+
+"${OUT}/linkr_debugger_capture_engine_test"
+
+cc -std=c11 -Wall -Wextra -Werror \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_gpio_guard.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_capture_gpio_guard.c" \
+	-o "${OUT}/linkr_debugger_capture_gpio_guard_test"
+
+"${OUT}/linkr_debugger_capture_gpio_guard_test"
+
+cc -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_ws_sampler_sync.c" \
 	-o "${OUT}/linkr_debugger_ws_sampler_sync_test"
@@ -249,3 +267,5 @@ cc -std=c11 -Wall -Wextra -Werror \
 	-o "${OUT}/linkr_debugger_sigrok_linkr_test"
 
 "${OUT}/linkr_debugger_sigrok_linkr_test"
+
+python3 "${ROOT}/apps/radxa_linkr_debugger/tests/test_logic_analyzer_hil_perf.py"

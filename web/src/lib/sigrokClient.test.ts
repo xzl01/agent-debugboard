@@ -446,6 +446,73 @@ describe("sigrok frame helpers", () => {
   });
 });
 
+describe("SigrokClient connection lifecycle", () => {
+  class FakeWebSocket {
+    static readonly CONNECTING = 0;
+    static readonly OPEN = 1;
+    static readonly CLOSING = 2;
+    static readonly CLOSED = 3;
+    static instances: FakeWebSocket[] = [];
+
+    readyState = FakeWebSocket.CONNECTING;
+    binaryType = "";
+    closeCalls = 0;
+    sent: unknown[] = [];
+    onopen: ((event: Event) => void) | null = null;
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: ((event: CloseEvent) => void) | null = null;
+    onerror: ((event: Event) => void) | null = null;
+    readonly url: string;
+
+    constructor(url: string) {
+      this.url = url;
+      FakeWebSocket.instances.push(this);
+    }
+
+    send(data: unknown): void {
+      this.sent.push(data);
+    }
+
+    close(): void {
+      this.closeCalls += 1;
+      this.readyState = FakeWebSocket.CLOSED;
+      this.onclose?.(new Event("close") as CloseEvent);
+    }
+
+    forceLateOpen(): void {
+      this.readyState = FakeWebSocket.OPEN;
+      this.onopen?.(new Event("open"));
+    }
+  }
+
+  it("closes and rejects a socket that is disconnected while still connecting", async () => {
+    const originalWebSocket = globalThis.WebSocket;
+    FakeWebSocket.instances = [];
+    Object.assign(globalThis, { WebSocket: FakeWebSocket });
+
+    try {
+      const client = new SigrokClient();
+      const connection = client.connect("ws://fixture.invalid/live");
+      const socket = FakeWebSocket.instances[0];
+      assert.ok(socket);
+      assert.equal(client.getState(), "connecting");
+
+      client.disconnect();
+
+      await assert.rejects(connection, /Client disconnected/);
+      assert.equal(socket.closeCalls, 1);
+      assert.equal(client.getState(), "disconnected");
+
+      socket.forceLateOpen();
+      assert.equal(socket.sent.length, 0);
+      assert.equal(socket.closeCalls, 2);
+      assert.equal(client.getState(), "disconnected");
+    } finally {
+      Object.assign(globalThis, { WebSocket: originalWebSocket });
+    }
+  });
+});
+
 describe("SigrokClient", () => {
   it("starts disconnected", () => {
     const client = new SigrokClient();
