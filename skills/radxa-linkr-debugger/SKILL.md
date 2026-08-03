@@ -64,6 +64,10 @@ this skill aligned with user-facing docs.
   same change.
 - If firmware behavior or host CLI logic changes, update the
   related skill/docs and run the relevant tests before finishing.
+- For commit tasks changing `cmd-ng` Cargo dependency inputs (`Cargo.toml` or
+  `Cargo.lock`) or Nix packaging, follow `./AGENTS.md`: refresh `cargoHash` in
+  `nix/package.nix` from a native Nix build's reported hash when needed and run
+  `nix flake check -L` before finishing.
 - If firmware changes, verify and preserve the USB CDC ACM serial BOOTSEL
   fallback path before finishing.
 - If this skill or another repo skill changes, run a subagent validation/test

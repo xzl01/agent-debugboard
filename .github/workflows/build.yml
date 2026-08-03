@@ -74,6 +74,22 @@ jobs:
           test -f /tmp/decoder-out/logic-decoder.js
           test -f /tmp/decoder-out/logic-decoder_bg.wasm
 
+  nix:
+    name: Check Nix flake
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+
+      - name: Check Nix flake
+        run: nix flake check -L
+
   web:
     name: Build Web frontend
     needs: version-gate

@@ -103,6 +103,10 @@ Detailed checklist and procedures are maintained in `doc/testing/hil-functional-
 Do not declare CI-ready after validating only the firmware lane. For repository
 changes, reproduce every affected GitHub Actions lane locally when practical:
 
+- Before completing a commit task that changes `cmd-ng` Cargo dependency inputs
+  (`Cargo.toml` or `Cargo.lock`) or Nix packaging, refresh `cargoHash` in
+  `nix/package.nix` when needed using the hash reported by a native Nix build,
+  then run `nix flake check -L`.
 - Rust host CLI formatting: `cargo fmt --manifest-path cmd-ng/Cargo.toml --all --check`
 - Rust host CLI checks when touched: `cargo clippy --manifest-path cmd-ng/Cargo.toml --all-targets -- -D warnings` and `cargo test --manifest-path cmd-ng/Cargo.toml --all-targets`
 - PowerShell installer parsing/dry-run:

@@ -18,7 +18,7 @@ rustPlatform.buildRustPackage {
 
   cargoRoot = "cmd-ng";
 
-  cargoHash = "sha256-A4NXACQ3ztBufNtYLmdwGUdCuB8zn8T2l3zO7wYaBts=";
+  cargoHash = "sha256-g7DJvw4ohJwQcLCHKei0Frktccv1oOVWHHQyMd8Nq28=";
 
   buildAndTestSubdir = "cmd-ng";
 
