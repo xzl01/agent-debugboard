@@ -133,45 +133,29 @@ const ROOT_TRIGGER_REGRESSIONS = [
 ];
 
 const MUTATIONS = [
+  ["rejects bypassing the complete validation workflow", "W04", "    uses: ./.github/workflows/build.yml", "    uses: ./.github/workflows/other.yml"],
+  ["rejects an unlocked nightly CLI build", "W14", "cargo build --locked --release --manifest-path", "cargo build --release --manifest-path"],
   ["rejects the old multi-path artifact root", "W09", "          path: app/dist", "          path: |\n            app/dist/release\n            app/dist/release-notes.md"],
-  ["rejects inverted published-release handling", "W10", "if [ \"$is_draft\" = false ]; then", "if [ \"$is_draft\" = true ]; then"],
+  ["rejects a non-draft candidate release", "W10", "-F draft=true", "-F draft=false"],
+  ["rejects deleting the public nightly during candidate preparation", "W10", "          CANDIDATE_TAG=\"nightly-candidate-$GITHUB_RUN_ID\"\n          candidate_rows=", "          CANDIDATE_TAG=\"nightly-candidate-$GITHUB_RUN_ID\"\n          gh release delete nightly --repo \"$GITHUB_REPOSITORY\" --yes --cleanup-tag\n          candidate_rows="],
   ["rejects missing remote checksum verification", "W10", "          (cd \"$verify_dir\" && sha256sum -c SHA256SUMS.txt)\n", ""],
-  ["rejects missing remote manifest", "W08", `          ${MANIFEST}\n          old_asset_ids=`, "          old_asset_ids="],
+  ["rejects missing remote manifest", "W08", `          ${MANIFEST}\n          gh release upload \"$CANDIDATE_TAG\"`, "          gh release upload \"$CANDIDATE_TAG\""],
   ["rejects omitted first payload upload", "W10", `bundle/release/${PAYLOADS[0]}`, ""],
-  ["rejects incomplete final-readback manifest", "W10", `--draft=false\n          ${MANIFEST}\n          final_state=`, `--draft=false\n          expected_assets=(${ASSETS.slice(0, -1).join(" ")})\n          final_state=`],
+  ["rejects incomplete final-readback manifest", "W10", `test "$tag_sha" = "$GITHUB_SHA"\n          ${MANIFEST}\n          final_state=`, `test "$tag_sha" = "$GITHUB_SHA"\n          expected_assets=(${ASSETS.slice(0, -1).join(" ")})\n          final_state=`],
   ["rejects incomplete checksum generation", "W08", "skills-radxa-linkr-debugger.tar.gz > SHA256SUMS.txt", "> SHA256SUMS.txt"],
-  ["rejects gh api process substitutions", "W10", "release_rows=\"$(gh api --paginate", "mapfile -t release_rows < <(gh api --paginate"],
-  ["rejects hiding a published release after its branch", "W10", `if [ "$is_draft" = false ]; then
-              # existing published release
-              gh release edit nightly --repo "$GITHUB_REPOSITORY" --draft
-            else
-              # retry draft
-              :
-            fi`, `if [ "$is_draft" = false ]; then
-              # existing published release
-              :
-            else
-              # retry draft
-              :
-            fi
-            gh release edit nightly --repo "$GITHUB_REPOSITORY" --draft`],
-  ["rejects undrafting before tag readback", "W10", `tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha)"
-          test "$tag_sha" = "$GITHUB_SHA"
-          gh release edit nightly --repo "$GITHUB_REPOSITORY" --title nightly --notes-file bundle/release-notes.md --prerelease --latest=false --draft=false`, `gh release edit nightly --repo "$GITHUB_REPOSITORY" --title nightly --notes-file bundle/release-notes.md --prerelease --latest=false --draft=false
-          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha)"
-          test "$tag_sha" = "$GITHUB_SHA"`],
+  ["rejects gh api process substitutions", "W10", "candidate_rows=\"$(gh api --paginate \"repos/$GITHUB_REPOSITORY/releases?per_page=100\" --jq \".[] | select(.tag_name == \\\"$CANDIDATE_TAG\\\")", "mapfile -t candidate_rows < <(gh api --paginate \"repos/$GITHUB_REPOSITORY/releases?per_page=100\" --jq \".[] | select(.tag_name == \\\"$CANDIDATE_TAG\\\")"],
+  ["rejects deleting nightly before candidate verification", "W10", "          remote_asset_rows=", "          gh release delete nightly --repo \"$GITHUB_REPOSITORY\" --yes --cleanup-tag\n          remote_asset_rows="],
+  ["rejects promotion without cleaning the old tag", "W10", " --yes --cleanup-tag", " --yes"],
+  ["rejects promotion without renaming the verified candidate", "W10", " --tag nightly --target", " --target"],
+  ["rejects candidate cleanup that is not unconditional", "W10", "        if: ${{ always() }}", "        if: ${{ success() }}"],
+  ["rejects candidate cleanup without a draft guard", "W10", "          if [ \"$candidate_draft\" != true ]; then", "          if false; then"],
   ["rejects direct tag SHA assignment", "W10", `tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha)"`, "tag_sha=\"$GITHUB_SHA\""],
-  ["rejects git-ref final-state readback", "W10", `final_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/$NIGHTLY_RELEASE_ID")"`, `final_state="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly")"`],
+  ["rejects git-ref final-state readback", "W10", `final_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/$CANDIDATE_RELEASE_ID")"`, `final_state="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly")"`],
   ["rejects release-level asset download", "W10", "repos/$GITHUB_REPOSITORY/releases/assets/${asset_ids[$expected]}", "repos/$GITHUB_REPOSITORY/releases/$NIGHTLY_RELEASE_ID"],
-  ["rejects clobber on explicit payload upload", "W11", `            --repo "$GITHUB_REPOSITORY"
-          gh release upload nightly bundle/release/SHA256SUMS.txt`, `            --clobber --repo "$GITHUB_REPOSITORY"
-          gh release upload nightly bundle/release/SHA256SUMS.txt`],
-  ["rejects disabled duplicate-release rejection", "W12", "if [[ \"$release_rows\" == *$'\\n'* ]]; then", "if false; then"],
-  ["rejects comment-shadowed tag readback", "W10", `tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha)"`, `tag_sha="$GITHUB_SHA"
-          # tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha)"`],
-  ["rejects comment-shadowed final-state readback", "W10", `final_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/$NIGHTLY_RELEASE_ID")"`, `final_state="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly")"
-          # final_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/$NIGHTLY_RELEASE_ID")"`],
-  ["rejects comment-shadowed asset download", "W10", "for expected in \"${expected_assets[@]}\"; do gh api -H \"Accept: application/octet-stream\" \"repos/$GITHUB_REPOSITORY/releases/assets/${asset_ids[$expected]}\" > \"$verify_dir/$expected\"; done", "for expected in \"${expected_assets[@]}\"; do gh api -H \"Accept: application/octet-stream\" \"repos/$GITHUB_REPOSITORY/releases/$NIGHTLY_RELEASE_ID\" > \"$verify_dir/$expected\"; done\n          # for expected in \"${expected_assets[@]}\"; do gh api -H \"Accept: application/octet-stream\" \"repos/$GITHUB_REPOSITORY/releases/assets/${asset_ids[$expected]}\" > \"$verify_dir/$expected\"; done"],
+  ["rejects clobber on staged upload", "W11", `            --repo "$GITHUB_REPOSITORY"
+          gh release upload "$CANDIDATE_TAG" bundle/release/SHA256SUMS.txt`, `            --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "$CANDIDATE_TAG" bundle/release/SHA256SUMS.txt`],
+  ["rejects disabled candidate duplicate rejection", "W12", "if [[ \"$candidate_rows\" == *$'\\n'* ]]; then\n            printf 'duplicate nightly candidate releases", "if false; then\n            printf 'duplicate nightly candidate releases"],
 ];
 
 for (const [index, [name, workflow]] of TRIGGER_MUTATIONS.entries()) {

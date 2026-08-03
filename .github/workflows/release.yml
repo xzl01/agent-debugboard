@@ -15,6 +15,12 @@ permissions:
   contents: write
 
 jobs:
+  validation:
+    name: Run the complete repository validation workflow
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+
   version-gate:
     name: Check synchronized project version and tag
     runs-on: ubuntu-latest
@@ -55,7 +61,9 @@ jobs:
 
   rust-cli-release:
     name: Build Rust host CLI release archives
-    needs: version-gate
+    needs:
+      - validation
+      - version-gate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

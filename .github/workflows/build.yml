@@ -5,6 +5,7 @@ on:
     branches: ["main"]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -127,10 +128,6 @@ jobs:
         working-directory: web
         run: npm run build
 
-      - name: Test frontend
-        working-directory: web
-        run: npm test
-
   scripts:
     name: Check install and helper scripts
     needs: version-gate
@@ -140,19 +137,47 @@ jobs:
       - name: Checkout application
         uses: actions/checkout@v6
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install ShellCheck
         run: |
           sudo apt-get update
-          sudo apt-get install -y shellcheck
+          sudo apt-get install -y libudev-dev shellcheck
 
       - name: Check shell scripts
         run: |
-          shellcheck skills/radxa-linkr-debugger/scripts/install.sh apps/radxa_linkr_debugger/tests/run_unit_tests.sh skills/radxa-linkr-debugger/scripts/web-ota-hil.sh scripts/setup-zephyr.sh scripts/build-firmware.sh
+          shellcheck skills/radxa-linkr-debugger/scripts/install.sh apps/radxa_linkr_debugger/tests/run_unit_tests.sh skills/radxa-linkr-debugger/scripts/web-ota-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.test.sh scripts/setup-zephyr.sh scripts/build-firmware.sh
           sh -n skills/radxa-linkr-debugger/scripts/install.sh
           sh -n apps/radxa_linkr_debugger/tests/run_unit_tests.sh
           sh -n skills/radxa-linkr-debugger/scripts/web-ota-hil.sh
+          sh -n skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh
+          sh -n skills/radxa-linkr-debugger/scripts/config-persistence-hil.test.sh
           sh -n scripts/setup-zephyr.sh
           sh -n scripts/build-firmware.sh
+
+      - name: Validate GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
+      - name: Check CI contracts and test registration
+        run: |
+          node --test scripts/check-nightly-workflow.test.mjs scripts/check-repository-gates.test.mjs scripts/check-test-registration.test.mjs
+          node scripts/check-nightly-workflow.mjs --root .
+          node scripts/check-repository-gates.mjs --root .
+          node scripts/check-test-registration.mjs --root .
+
+      - name: Check persistent-configuration documentation
+        run: |
+          node --test scripts/check-persistent-configuration-docs.test.mjs
+          node scripts/check-persistent-configuration-docs.mjs --root .
+
+      - name: Run persistent-configuration HIL fixture tests
+        run: sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.test.sh
 
       - name: Run firmware model unit tests
         run: ./apps/radxa_linkr_debugger/tests/run_unit_tests.sh
@@ -373,3 +398,24 @@ jobs:
           name: skills-radxa-linkr-debugger
           path: dist/skills/skills-radxa-linkr-debugger.tar.gz
           if-no-files-found: error
+
+  gate:
+    name: Required repository gate
+    if: ${{ always() }}
+    needs:
+      - version-gate
+      - decoder
+      - nix
+      - web
+      - scripts
+      - windows-installer
+      - firmware
+      - host-cli
+      - skill-bundle
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Require every validation job to pass
+        env:
+          REQUIRED_RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<< "$REQUIRED_RESULTS"

@@ -13,8 +13,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validation:
+    name: Run the complete repository validation workflow
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+
   rust-cli-release:
     name: Build Rust host CLI nightly archives
+    needs: validation
     permissions:
       contents: read
     runs-on: ${{ matrix.os }}
@@ -24,10 +31,16 @@ jobs:
         include:
           - os: ubuntu-latest
             asset_name: radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz
+            target: x86_64-unknown-linux-musl
+            binary_path: app/cmd-ng/target/x86_64-unknown-linux-musl/release/radxa-linkr-debuggerctl
           - os: macos-latest
             asset_name: radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz
+            target: ""
+            binary_path: app/cmd-ng/target/release/radxa-linkr-debuggerctl
           - os: windows-latest
             asset_name: radxa-linkr-debuggerctl-rust_windows_amd64.zip
+            target: ""
+            binary_path: app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe
     steps:
       - name: Checkout source SHA
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
@@ -41,29 +54,48 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: app/cmd-ng
+      - name: Install Linux static-build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
+          rustup target add "${{ matrix.target }}"
+          python3 -m pip install cargo-zigbuild==0.23.0 ziglang==0.16.0
       - name: Build Rust nightly binary
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --manifest-path app/cmd-ng/Cargo.toml
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe --help
-            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe --version
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cargo zigbuild --locked --release --manifest-path app/cmd-ng/Cargo.toml --target "${{ matrix.target }}"
+            if readelf -l "${{ matrix.binary_path }}" | grep -q "Requesting program interpreter"; then
+              printf 'Linux nightly binary must not use a dynamic interpreter\n' >&2
+              exit 1
+            fi
+            if readelf -d "${{ matrix.binary_path }}" | grep -q '(NEEDED)'; then
+              printf 'Linux nightly binary must not have dynamic library dependencies\n' >&2
+              exit 1
+            fi
           else
-            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl --help
-            ./app/cmd-ng/target/release/radxa-linkr-debuggerctl --version
+            cargo build --locked --release --manifest-path app/cmd-ng/Cargo.toml
+          fi
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            "${{ matrix.binary_path }}" --help
+            "${{ matrix.binary_path }}" --version
+          else
+            "${{ matrix.binary_path }}" --help
+            "${{ matrix.binary_path }}" --version
           fi
       - name: Package Rust nightly archive
         if: runner.os != 'Windows'
         run: |
           mkdir -p rust-release
-          tar -C app/cmd-ng/target/release -czf rust-release/${{ matrix.asset_name }} radxa-linkr-debuggerctl
+          tar -C "$(dirname "${{ matrix.binary_path }}")" -czf rust-release/${{ matrix.asset_name }} "$(basename "${{ matrix.binary_path }}")"
       - name: Package Rust nightly archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path rust-release | Out-Null
-          Compress-Archive -Path app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe -DestinationPath rust-release/${{ matrix.asset_name }}
+          Compress-Archive -Path "${{ matrix.binary_path }}" -DestinationPath rust-release/${{ matrix.asset_name }}
       - name: Upload Rust nightly archive
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4.6.2
         with:
@@ -234,42 +266,36 @@ jobs:
           test "${#checksum_assets[@]}" -eq "${#payloads[@]}"
           for payload in "${payloads[@]}"; do case " ${checksum_assets[*]} " in *" $payload "*) ;; *) printf 'checksum missing payload: %s\n' "$payload" >&2; exit 1 ;; esac; done
           sha256sum -c SHA256SUMS.txt
-      - name: Prepare hidden nightly draft
+      - name: Prepare staged nightly draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # first-release, existing published release, and retry draft branches are handled below.
-          release_rows="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "nightly") | [.id, .draft] | @tsv')"
-          if [[ "$release_rows" == *$'\n'* ]]; then
-            printf 'duplicate nightly releases\n' >&2
+          CANDIDATE_TAG="nightly-candidate-$GITHUB_RUN_ID"
+          candidate_rows="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == \"$CANDIDATE_TAG\") | [.id, .draft] | @tsv")"
+          if [[ "$candidate_rows" == *$'\n'* ]]; then
+            printf 'duplicate nightly candidate releases\n' >&2
             exit 1
           fi
-          if [ -z "$release_rows" ]; then
-            # first-release
-            NIGHTLY_RELEASE_ID="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name=nightly -f target_commitish="$GITHUB_SHA" -F draft=true -F prerelease=true -f name=nightly -f body='Nightly publishing in progress.' --jq .id)"
+          if [ -z "$candidate_rows" ]; then
+            CANDIDATE_RELEASE_ID="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$CANDIDATE_TAG" -f target_commitish="$GITHUB_SHA" -F draft=true -F prerelease=true -f name="$CANDIDATE_TAG" -f body='Nightly candidate pending remote verification.' --jq .id)"
           else
-            IFS=$'\t' read -r NIGHTLY_RELEASE_ID is_draft <<< "$release_rows"
-            if [ "$is_draft" = false ]; then
-              # existing published release
-              gh release edit nightly --repo "$GITHUB_REPOSITORY" --draft
-            else
-              # retry draft
-              :
+            IFS=$'\t' read -r CANDIDATE_RELEASE_ID is_draft <<< "$candidate_rows"
+            test "$is_draft" = true
+            candidate_asset_ids="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$CANDIDATE_RELEASE_ID/assets?per_page=100" --jq '.[].id')"
+            if [ -n "$candidate_asset_ids" ]; then
+              while IFS= read -r asset_id; do gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"; done <<< "$candidate_asset_ids"
             fi
           fi
-          printf 'NIGHTLY_RELEASE_ID=%s\n' "$NIGHTLY_RELEASE_ID" >> "$GITHUB_ENV"
-      - name: Replace and remotely verify nightly assets
+          printf 'CANDIDATE_TAG=%s\n' "$CANDIDATE_TAG" >> "$GITHUB_ENV"
+          printf 'CANDIDATE_RELEASE_ID=%s\n' "$CANDIDATE_RELEASE_ID" >> "$GITHUB_ENV"
+      - name: Upload and verify staged nightly assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           expected_assets=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz SHA256SUMS.txt)
-          old_asset_ids="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$NIGHTLY_RELEASE_ID/assets?per_page=100" --jq '.[].id')"
-          if [ -n "$old_asset_ids" ]; then
-            while IFS= read -r asset_id; do gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"; done <<< "$old_asset_ids"
-          fi
-          gh release upload nightly \
+          gh release upload "$CANDIDATE_TAG" \
             bundle/release/radxa-linkr-debugger-rp2350.uf2 \
             bundle/release/radxa-linkr-debugger-rp2350-ota.bin \
             bundle/release/radxa-linkr-debugger-rp2350.elf \
@@ -279,8 +305,8 @@ jobs:
             bundle/release/radxa-linkr-debuggerctl-rust_windows_amd64.zip \
             bundle/release/skills-radxa-linkr-debugger.tar.gz \
             --repo "$GITHUB_REPOSITORY"
-          gh release upload nightly bundle/release/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY"
-          remote_asset_rows="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$NIGHTLY_RELEASE_ID/assets?per_page=100" --jq '.[] | [.id, .name, .size] | @tsv')"
+          gh release upload "$CANDIDATE_TAG" bundle/release/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY"
+          remote_asset_rows="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$CANDIDATE_RELEASE_ID/assets?per_page=100" --jq '.[] | [.id, .name, .size] | @tsv')"
           test -n "$remote_asset_rows"
           mapfile -t remote_assets <<< "$remote_asset_rows"
           test "${#remote_assets[@]}" -eq "${#expected_assets[@]}"
@@ -297,21 +323,26 @@ jobs:
           trap 'rm -rf "$verify_dir"' EXIT
           for expected in "${expected_assets[@]}"; do gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/${asset_ids[$expected]}" > "$verify_dir/$expected"; done
           (cd "$verify_dir" && sha256sum -c SHA256SUMS.txt)
-      - name: Move tag and publish nightly release
+      - name: Promote staged nightly release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" >/dev/null 2>&1; then
-            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" -f sha="$GITHUB_SHA" -F force=true
-          else
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/nightly" -f sha="$GITHUB_SHA"
+          existing_rows="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "nightly") | .id')"
+          if [[ "$existing_rows" == *$'\n'* ]]; then
+            printf 'duplicate nightly releases\n' >&2
+            exit 1
           fi
+          if [ -n "$existing_rows" ]; then
+            gh release delete nightly --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          elif gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" >/dev/null 2>&1; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly"
+          fi
+          gh release edit "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --tag nightly --target "$GITHUB_SHA" --title nightly --notes-file bundle/release-notes.md --prerelease --latest=false --draft=false
           tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha)"
           test "$tag_sha" = "$GITHUB_SHA"
-          gh release edit nightly --repo "$GITHUB_REPOSITORY" --title nightly --notes-file bundle/release-notes.md --prerelease --latest=false --draft=false
           expected_assets=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz SHA256SUMS.txt)
-          final_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/$NIGHTLY_RELEASE_ID")"
+          final_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/$CANDIDATE_RELEASE_ID")"
           test "$(jq -r .tag_name <<< "$final_state")" = nightly
           test "$(jq -r .draft <<< "$final_state")" = false
           test "$(jq -r .prerelease <<< "$final_state")" = true
@@ -327,3 +358,24 @@ jobs:
             final_names["$asset_name"]=1
           done
           for expected in "${expected_assets[@]}"; do test -n "${final_names[$expected]+present}"; done
+      - name: Clean up abandoned nightly candidate
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          candidate_tag="${CANDIDATE_TAG:-nightly-candidate-$GITHUB_RUN_ID}"
+          candidate_rows="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == \"$candidate_tag\") | [.id, .draft] | @tsv")"
+          if [[ "$candidate_rows" == *$'\n'* ]]; then
+            printf 'duplicate abandoned nightly candidate releases\n' >&2
+            exit 1
+          fi
+          [ -n "$candidate_rows" ] || exit 0
+          IFS=$'\t' read -r candidate_id candidate_draft <<< "$candidate_rows"
+          if [ "$candidate_draft" != true ]; then
+            exit 0
+          fi
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$candidate_id"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$candidate_tag" >/dev/null 2>&1; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$candidate_tag"
+          fi

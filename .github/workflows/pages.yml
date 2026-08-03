@@ -18,8 +18,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  validation:
+    name: Run the complete repository validation workflow
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+
   build:
     name: Build Pages artifact
+    needs: validation
     runs-on: ubuntu-latest
 
     steps:
