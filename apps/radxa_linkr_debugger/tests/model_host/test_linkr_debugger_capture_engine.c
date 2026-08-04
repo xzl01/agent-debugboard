@@ -12,6 +12,10 @@
 #include <stdint.h>
 #include <string.h>
 
+static uint32_t full_capacity_ring[LINKR_DEBUGGER_CAPTURE_ENGINE_LA_RING_SAMPLES];
+static uint8_t full_capacity_u16_export[
+	LINKR_DEBUGGER_CAPTURE_ENGINE_LA_RING_SAMPLES * sizeof(uint16_t)];
+
 static void test_backend_selection_and_capacity(void)
 {
 	struct linkr_debugger_capture_engine_layout layout;
@@ -25,19 +29,23 @@ static void test_backend_selection_and_capacity(void)
 	assert(layout.bytes_per_sample == 1U);
 	assert(layout.storage_bytes_per_sample == 4U);
 	assert(layout.max_rate_hz == 125000000U);
-	assert(layout.capacity_samples == 16384U);
+	assert(layout.capacity_samples == 20000U);
 
 	assert(linkr_debugger_capture_engine_select_backend(wide, sizeof(wide), &layout) == 0);
 	assert(layout.backend == LINKR_DEBUGGER_CAPTURE_ENGINE_BACKEND_WIDE16);
 	assert(layout.bytes_per_sample == 2U);
 	assert(layout.storage_bytes_per_sample == 4U);
 	assert(layout.max_rate_hz == 25000000U);
-	assert(layout.capacity_samples == 16384U);
+	assert(layout.capacity_samples == 20000U);
 
 	assert(linkr_debugger_capture_engine_select_backend(sparse, sizeof(sparse), &layout) == 0);
 	assert(layout.backend == LINKR_DEBUGGER_CAPTURE_ENGINE_BACKEND_SPARSE16);
 	assert(layout.bytes_per_sample == 2U);
 	assert(layout.max_rate_hz == 25000000U);
+	assert(layout.capacity_samples == 20000U);
+	assert(linkr_debugger_capture_engine_capacity_samples(0U) == 0U);
+	assert(linkr_debugger_capture_engine_capacity_samples(1U) == 20000U);
+	assert(linkr_debugger_capture_engine_capacity_samples(2U) == 20000U);
 }
 
 static void test_window_wrap_and_trigger_index_contract(void)
@@ -123,6 +131,67 @@ static void test_marked_window_export_off_by_one_and_u16(void)
 	assert(out[5] == 0x01U);
 	assert(out[6] == 0x07U);
 	assert(out[7] == 0x01U);
+}
+
+static void test_full_capacity_boundaries_and_wrapped_u16_export(void)
+{
+	const uint32_t capacity = LINKR_DEBUGGER_CAPTURE_ENGINE_LA_RING_SAMPLES;
+	struct linkr_debugger_capture_engine_window window;
+	uint32_t sample_bytes = UINT32_MAX;
+
+	assert(capacity == 20000U);
+	assert(linkr_debugger_capture_engine_plan_window(1U, capacity,
+		capacity - 2U, 2U, &window) == 0);
+	assert(window.start_index == 3U);
+	assert(window.sample_count == capacity);
+	assert(window.trigger_index == capacity - 2U);
+	assert(linkr_debugger_capture_engine_plan_window(1U, capacity,
+		capacity - 1U, 2U, &window) == -EINVAL);
+
+	for (uint32_t i = 0U; i < capacity; i++) {
+		full_capacity_ring[i] = 0x10000U | i;
+	}
+	memset(full_capacity_u16_export, 0, sizeof(full_capacity_u16_export));
+	assert(linkr_debugger_capture_engine_export_marked_window(
+		full_capacity_u16_export, sizeof(full_capacity_u16_export) - 1U,
+		full_capacity_ring, capacity, 1U, capacity - 2U, 2U, 2U,
+		0xffffU, &sample_bytes) == -ENOSPC);
+	assert(sample_bytes == 0U);
+	assert(linkr_debugger_capture_engine_export_marked_window(
+		full_capacity_u16_export, sizeof(full_capacity_u16_export),
+		full_capacity_ring, capacity, 1U, capacity - 2U, 2U, 2U,
+		0xffffU, &sample_bytes) == 0);
+	assert(sample_bytes == sizeof(full_capacity_u16_export));
+	assert(full_capacity_u16_export[0] == 0x03U);
+	assert(full_capacity_u16_export[1] == 0x00U);
+	assert(full_capacity_u16_export[(capacity - 2U) * 2U] == 0x01U);
+	assert(full_capacity_u16_export[((capacity - 2U) * 2U) + 1U] == 0x00U);
+	assert(full_capacity_u16_export[(capacity - 1U) * 2U] == 0x02U);
+	assert(full_capacity_u16_export[((capacity - 1U) * 2U) + 1U] == 0x00U);
+}
+
+static void test_logic_session_capacity_limits(void)
+{
+	struct linkr_debugger_logic_session_config config;
+
+	linkr_debugger_logic_session_init();
+	memset(&config, 0, sizeof(config));
+	config.owner = LINKR_DEBUGGER_LOGIC_SESSION_OWNER_WS;
+	config.trigger = LINKR_DEBUGGER_LOGIC_SESSION_TRIGGER_EDGE;
+	config.session_id = 9U;
+	config.pre_samples = LINKR_DEBUGGER_CAPTURE_ENGINE_LA_RING_SAMPLES - 1U;
+	config.ring_samples = LINKR_DEBUGGER_CAPTURE_ENGINE_LA_RING_SAMPLES;
+	config.bytes_per_sample = 2U;
+	config.backend = "host-wide16";
+	assert(linkr_debugger_logic_session_start(&config) == 0);
+
+	linkr_debugger_logic_session_init();
+	config.ring_samples = LINKR_DEBUGGER_CAPTURE_ENGINE_LA_RING_SAMPLES + 1U;
+	assert(linkr_debugger_logic_session_start(&config) == -EINVAL);
+
+	config.ring_samples = LINKR_DEBUGGER_CAPTURE_ENGINE_LA_RING_SAMPLES;
+	config.pre_samples = config.ring_samples;
+	assert(linkr_debugger_logic_session_start(&config) == -EINVAL);
 }
 
 static void test_logic_session_no_trigger_immediate_eligibility(void)
@@ -251,6 +320,8 @@ int main(void)
 	test_binary_contract_helpers();
 	test_marked_window_export_wrap_and_nonzero_pre();
 	test_marked_window_export_off_by_one_and_u16();
+	test_full_capacity_boundaries_and_wrapped_u16_export();
+	test_logic_session_capacity_limits();
 	test_logic_session_no_trigger_immediate_eligibility();
 	test_logic_session_triggered_prehistory_wrap_and_trigger_once();
 	test_logic_session_stop_disconnect_and_overrun();

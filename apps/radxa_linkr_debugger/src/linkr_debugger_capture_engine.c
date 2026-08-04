@@ -274,7 +274,7 @@ int linkr_debugger_logic_session_start(
 {
 	if (config == NULL || config->owner == LINKR_DEBUGGER_LOGIC_SESSION_OWNER_NONE ||
 	    config->ring_samples == 0U || config->ring_samples >
-	    LINKR_DEBUGGER_CAPTURE_ENGINE_ARENA_BYTES / sizeof(uint32_t) ||
+	    LINKR_DEBUGGER_CAPTURE_ENGINE_LA_RING_SAMPLES ||
 	    config->bytes_per_sample == 0U || config->bytes_per_sample > 2U ||
 	    config->pre_samples >= config->ring_samples) {
 		return -EINVAL;
