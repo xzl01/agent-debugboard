@@ -155,14 +155,7 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
           west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild app/apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
-          python3 "$ZEPHYR_BASE/scripts/build/mergehex.py" \
-            -o build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-combined.hex \
-            build/radxa_linkr_debugger/mcuboot/zephyr/zephyr.hex \
-            build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.hex
-          python3 "$ZEPHYR_BASE/scripts/build/uf2conv.py" \
-            -c -f 0xe48bff57 \
-            -o release-assets/radxa-linkr-debugger-rp2350.uf2 \
-            build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-combined.hex
+          cp build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 release-assets/radxa-linkr-debugger-rp2350.uf2
           cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.bin release-assets/radxa-linkr-debugger-rp2350-ota.bin
           cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.elf release-assets/radxa-linkr-debugger-rp2350.elf
           cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.map release-assets/radxa-linkr-debugger-rp2350.map
@@ -232,6 +225,7 @@ jobs:
           - Agent skill bundle: skills-radxa-linkr-debugger.tar.gz
           - SHA256SUMS.txt for release asset verification
           EOF
+          cmp ../build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 dist/release/radxa-linkr-debugger-rp2350.uf2
       - name: Upload nightly release bundle
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4.6.2
         with:
