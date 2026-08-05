@@ -260,7 +260,7 @@ fn mock_server(responses: Vec<(u16, String)>) -> (String, Receiver<String>) {
             let request = read_request(&mut stream);
             sender.send(request).unwrap();
             let response = format!(
-                "HTTP/1.1 {status} Response\r\nContent-Length: {}\r\n\r\n{body}",
+                "HTTP/1.1 {status} Response\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).unwrap();
