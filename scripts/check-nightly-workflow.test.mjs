@@ -48,6 +48,8 @@ const DEV_AND_MAIN_PUSH_TRIGGER = `on:
       - main
 `;
 const MANIFEST = `expected_assets=(${ASSETS.join(" ")})`;
+const CANONICAL_UF2_COPY = "cp build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 release-assets/radxa-linkr-debugger-rp2350.uf2";
+const UF2_PROVENANCE_CMP = "cmp ../build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 dist/release/radxa-linkr-debugger-rp2350.uf2";
 const BASELINE = await readFile(path.join(ROOT, WORKFLOW_PATH), "utf8");
 const CRLF_BASELINE = BASELINE.replace(/\n/g, "\r\n");
 
@@ -111,7 +113,7 @@ test("guard 3/4: exact dev-only trigger contract", async () => {
 });
 
 test("guard 4/4: CRLF baseline survives root-trigger replacement", async () => {
-  await withRepo(replaceRootTrigger(CRLF_BASELINE, DEV_PUSH_TRIGGER), async (root) => {
+  await withRepo(CRLF_BASELINE, async (root) => {
     const result = await checkNightlyWorkflow(root);
     assert.equal(result.ok, true, formatFailures(result.failures));
   });
@@ -135,6 +137,23 @@ const ROOT_TRIGGER_REGRESSIONS = [
 const MUTATIONS = [
   ["rejects bypassing the complete validation workflow", "W04", "    uses: ./.github/workflows/build.yml", "    uses: ./.github/workflows/other.yml"],
   ["rejects an unlocked nightly CLI build", "W14", "cargo build --locked --release --manifest-path", "cargo build --release --manifest-path"],
+  ["rejects packaging the application-only UF2", "W15", CANONICAL_UF2_COPY, `${CANONICAL_UF2_COPY}\n          cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.uf2 release-assets/radxa-linkr-debugger-rp2350.uf2`],
+  ["rejects a normalized application-only UF2 path", "W15", CANONICAL_UF2_COPY, `${CANONICAL_UF2_COPY}\n          cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/./zephyr.uf2 release-assets/radxa-linkr-debugger-rp2350.uf2`],
+  ["rejects a later step overwriting the complete UF2", "W15", "      - name: Download Rust nightly archives", `      - name: Overwrite nightly UF2\n        run: cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.uf2 release-assets/radxa-linkr-debugger-rp2350.uf2\n      - name: Download Rust nightly archives`],
+  ["rejects a glob source overwriting the complete UF2", "W15", "      - name: Download Rust nightly archives", `      - name: Glob overwrite nightly UF2\n        run: cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.?f2 release-assets/radxa-linkr-debugger-rp2350.uf2\n      - name: Download Rust nightly archives`],
+  ["rejects glob source and target overwrite", "W15", "      - name: Download Rust nightly archives", `      - name: Glob source and target overwrite\n        run: cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.?f2 release-assets/radxa-linkr-debugger-rp2350.?f2\n      - name: Download Rust nightly archives`],
+  ["rejects a normalized target overwriting the complete UF2", "W15", "      - name: Download Rust nightly archives", `      - name: Normalized target overwrite\n        run: cp /tmp/app.uf2 release-assets/./radxa-linkr-debugger-rp2350.uf2\n      - name: Download Rust nightly archives`],
+  ["rejects a parent-normalized target overwrite", "W15", "      - name: Download Rust nightly archives", `      - name: Parent-normalized target overwrite\n        run: cp /tmp/app.uf2 release-assets/temporary/../radxa-linkr-debugger-rp2350.uf2\n      - name: Download Rust nightly archives`],
+  ["rejects a relative write after entering release-assets", "W15", "      - name: Download Rust nightly archives", `      - name: Relative release-assets overwrite\n        run: cd release-assets && cp ../build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.?f2 radxa-linkr-debugger-rp2350.uf2\n      - name: Download Rust nightly archives`],
+  ["rejects an indirect release-assets target", "W15", "      - name: Download Rust nightly archives", `      - name: Indirect release-assets overwrite\n        run: |\n          target=release-assets/temporary/../radxa-linkr-debugger-rp2350.uf2\n          cp /tmp/app.uf2 "$target"\n      - name: Download Rust nightly archives`],
+  ["rejects a later step repeating the canonical UF2 copy", "W15", "      - name: Download Rust nightly archives", `      - name: Repeat canonical UF2 copy\n        run: ${CANONICAL_UF2_COPY}\n      - name: Download Rust nightly archives`],
+  ["rejects a braced ZEPHYR_BASE dependency", "W15", CANONICAL_UF2_COPY, `${CANONICAL_UF2_COPY}\n          test -n "\${ZEPHYR_BASE}"`],
+  ["rejects mergehex reconstruction", "W15", CANONICAL_UF2_COPY, `${CANONICAL_UF2_COPY}\n          python3 tools/mergehex.py -o combined.hex mcuboot.hex app.hex`],
+  ["rejects uf2conv reconstruction", "W15", CANONICAL_UF2_COPY, `${CANONICAL_UF2_COPY}\n          python3 tools/uf2conv.py -o release-assets/radxa-linkr-debugger-rp2350.uf2 combined.hex`],
+  ["rejects omitting the combined UF2 copy", "W15", `${CANONICAL_UF2_COPY}\n`, ""],
+  ["rejects omitting the final UF2 provenance comparison", "W15", `${UF2_PROVENANCE_CMP}\n`, ""],
+  ["rejects commands after the UF2 provenance comparison", "W15", `${UF2_PROVENANCE_CMP}\n      - name: Upload nightly release bundle`, `${UF2_PROVENANCE_CMP}\n          true\n      - name: Upload nightly release bundle`],
+  ["rejects a step between UF2 provenance and upload", "W15", `${UF2_PROVENANCE_CMP}\n      - name: Upload nightly release bundle`, `${UF2_PROVENANCE_CMP}\n      - name: Late overwrite window\n        run: true\n      - name: Upload nightly release bundle`],
   ["rejects the old multi-path artifact root", "W09", "          path: app/dist", "          path: |\n            app/dist/release\n            app/dist/release-notes.md"],
   ["rejects a non-draft candidate release", "W10", "-F draft=true", "-F draft=false"],
   ["rejects deleting the public nightly during candidate preparation", "W10", "          CANDIDATE_TAG=\"nightly-candidate-$GITHUB_RUN_ID\"\n          candidate_rows=", "          CANDIDATE_TAG=\"nightly-candidate-$GITHUB_RUN_ID\"\n          gh release delete nightly --repo \"$GITHUB_REPOSITORY\" --yes --cleanup-tag\n          candidate_rows="],

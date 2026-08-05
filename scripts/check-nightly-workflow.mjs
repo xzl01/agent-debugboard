@@ -66,8 +66,10 @@ function checkJobs(workflow, failures) {
   checkArtifacts(assets, publish, failures);
 }
 function checkArtifacts(assets, publish, failures) {
+  const firmware = step(assets, "Build RP2350 firmware");
   const prepare = step(assets, "Prepare nightly release assets");
   const verifyAssets = step(assets, "Verify nightly release assets");
+  const writeNotes = step(assets, "Write nightly release notes");
   const upload = step(assets, "Upload nightly release bundle");
   const download = step(publish, "Download nightly release bundle");
   const verifyBundle = step(publish, "Verify downloaded release bundle");
@@ -78,7 +80,21 @@ function checkArtifacts(assets, publish, failures) {
   const assetDownload = 'for expected in "${expected_assets[@]}"; do gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/${asset_ids[$expected]}" > "$verify_dir/$expected"; done';
   const tagReadback = 'tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha)"';
   const releaseReadback = 'final_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/$CANDIDATE_RELEASE_ID")"';
+  const canonicalUf2Copy = "cp build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 release-assets/radxa-linkr-debugger-rp2350.uf2";
+  const expectedReleaseAssetLines = ["mkdir -p release-assets", canonicalUf2Copy,
+    "cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.bin release-assets/radxa-linkr-debugger-rp2350-ota.bin",
+    "cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.elf release-assets/radxa-linkr-debugger-rp2350.elf",
+    "cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.map release-assets/radxa-linkr-debugger-rp2350.map",
+    "cp ../release-assets/radxa-linkr-debugger-rp2350.uf2 dist/release/",
+    "cp ../release-assets/radxa-linkr-debugger-rp2350-ota.bin dist/release/",
+    "cp ../release-assets/radxa-linkr-debugger-rp2350.elf dist/release/",
+    "cp ../release-assets/radxa-linkr-debugger-rp2350.map dist/release/"];
+  const releaseAssetLines = normalized(assets).split("\n").map((line) => line.trim()).filter((line) => line.includes("release-assets"));
+  const releaseAssetsOk = releaseAssetLines.length === expectedReleaseAssetLines.length && expectedReleaseAssetLines.every((command) => releaseAssetLines.includes(command));
+  const provenanceCmp = "cmp ../build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 dist/release/radxa-linkr-debugger-rp2350.uf2";
+  const provenanceOk = soleLine(writeNotes, provenanceCmp) && writeNotes.trim().endsWith(provenanceCmp) && assets.includes(`${provenanceCmp}\n      - name: Upload nightly release bundle`);
   const checksum = prepare.match(/sha256sum\s+([\s\S]*?)>\s*SHA256SUMS\.txt/)?.[1] ?? "";
+  if (!soleLine(firmware, canonicalUf2Copy) || !releaseAssetsOk || !provenanceOk || /\bZEPHYR_BASE\b|mergehex\.py|uf2conv\.py|\bzephyr\.uf2\b/.test(assets)) fail(failures, "W15", "firmware packaging must copy and preserve the canonical combined UF2");
   if (!exact(checksum, PAYLOADS) || !sole(verifyAssets, "payloads", PAYLOADS) || !sole(verifyAssets, "expected_assets", ASSETS) || !sole(verifyBundle, "payloads", PAYLOADS) || !sole(verifyBundle, "expected_assets", ASSETS) || !sole(remote, "expected_assets", ASSETS)) fail(failures, "W08", "requires exact checksum inputs and named-step manifests");
   if (!/name:\s*nightly-release-bundle/.test(upload) || !/^          path:\s*app\/dist\s*$/m.test(upload) || !/name:\s*nightly-release-bundle/.test(download) || !/^          path:\s*bundle\s*$/m.test(download) || !/cd bundle\/release/.test(verifyBundle) || !/bundle\/release-notes\.md/.test(final)) fail(failures, "W09", "requires app/dist artifact root and bundle/release layout");
   const uploaded = remote.match(/gh release upload "\$CANDIDATE_TAG"\s+([\s\S]*?)\s+--repo/)?.[1].replaceAll("bundle/release/", "") ?? "";
