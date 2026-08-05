@@ -49,6 +49,8 @@ pkgs.mkShell {
     pkgs.ninja
     pkgs.dtc
     pkgs.gperf
+    pkgs.pkg-config
+    pkgs.udev
     pythonWithZephyr
     pkgs.nodejs_22
     # Rust comes from rustup (see README): the wasm32-unknown-unknown target
