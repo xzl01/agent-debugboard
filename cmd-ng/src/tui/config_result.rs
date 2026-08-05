@@ -6,7 +6,6 @@ use crate::persistent_config_render::error_text;
 pub(super) enum ConfigJobKind {
     Refresh,
     Save,
-    Apply,
     Clear,
 }
 
@@ -15,7 +14,6 @@ impl ConfigJobKind {
         match self {
             Self::Refresh => "refresh",
             Self::Save => "save",
-            Self::Apply => "apply",
             Self::Clear => "clear",
         }
     }
@@ -25,7 +23,6 @@ impl ConfigJobKind {
 pub(super) enum ConfigOutcome {
     Refreshed,
     Saved,
-    Applied,
     Cleared,
     AwaitingConfirmation,
     Failed,
@@ -36,7 +33,6 @@ impl ConfigOutcome {
         match self {
             Self::Refreshed => "Saved Config refreshed",
             Self::Saved => "Saved Config saved",
-            Self::Applied => "Saved Config applied",
             Self::Cleared => "Saved Config cleared",
             Self::AwaitingConfirmation => "Saved Config confirmation required",
             Self::Failed => "Saved Config request failed",
@@ -84,7 +80,6 @@ impl ConfigRequest {
         match self {
             Self::Refresh => ConfigJobKind::Refresh,
             Self::Save { .. } => ConfigJobKind::Save,
-            Self::Apply { .. } => ConfigJobKind::Apply,
             Self::Clear => ConfigJobKind::Clear,
         }
     }
@@ -130,7 +125,6 @@ impl SavedConfigState {
                     match result.request.kind() {
                         ConfigJobKind::Refresh => ConfigOutcome::Refreshed,
                         ConfigJobKind::Save => ConfigOutcome::Saved,
-                        ConfigJobKind::Apply => ConfigOutcome::Applied,
                         ConfigJobKind::Clear => ConfigOutcome::Cleared,
                     }
                 }
@@ -154,7 +148,6 @@ impl SavedConfigState {
                 ConfigRequest::Save { items, .. } => {
                     Some(ConfigConfirmation::Save { items, dangerous })
                 }
-                ConfigRequest::Apply { .. } => Some(ConfigConfirmation::Apply { dangerous }),
                 ConfigRequest::Refresh | ConfigRequest::Clear => None,
             };
             if self.confirmation.is_some() {

@@ -1248,7 +1248,6 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
         writer,
         "  radxa-linkr-debuggerctl config save power/12v_out"
     )?;
-    writeln!(writer, "  radxa-linkr-debuggerctl config apply --confirm")?;
     writeln!(writer, "  radxa-linkr-debuggerctl config clear")?;
     writeln!(
         writer,

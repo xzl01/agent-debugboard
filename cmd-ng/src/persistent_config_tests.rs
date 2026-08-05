@@ -12,24 +12,21 @@ use std::thread;
 use std::time::Duration;
 
 const SHOW: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":true,"version":1},"pending":1,"items":[{"id":"power/12v_out","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":true,"requires_confirm":true,"apply_state":"pending"}]}"#;
-const SAVE: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"save","saved_items":["power/12v_out"],"confirmation_items":[],"snapshot":{"present":true,"version":1},"pending":0}"#;
-const APPLY: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"apply","noop":false,"applied_items":["power/12v_out"],"failed_item":null,"pending_items":[]}"#;
+const SAVE: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"save","saved_items":["power/12v_out"],"confirmation_items":[],"applied_items":["power/12v_out"],"snapshot":{"present":true,"version":1},"pending":0}"#;
 const CLEAR: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"clear","noop":false,"snapshot":{"present":false,"version":null},"pending":0}"#;
 
 #[test]
 fn config_client_exposes_each_firmware_operation() {
     let _show = BoardClient::config_show;
     let _save = BoardClient::config_save;
-    let _apply = BoardClient::config_apply;
     let _clear = BoardClient::config_clear;
 }
 
 #[test]
-fn config_client_forwards_all_four_todo7_requests() {
+fn config_client_forwards_all_three_requests() {
     let (url, requests) = mock_server(vec![
         (200, SHOW.to_string()),
         (200, SAVE.to_string()),
-        (200, APPLY.to_string()),
         (200, CLEAR.to_string()),
     ]);
     let client = BoardClient::new(&url, Duration::from_secs(2)).unwrap();
@@ -40,10 +37,9 @@ fn config_client_forwards_all_four_todo7_requests() {
 
     assert_eq!(client.config_show().unwrap().envelope.items.len(), 1);
     assert!(client.config_save(&items, true).unwrap().envelope.ok);
-    assert!(client.config_apply(true).unwrap().envelope.ok);
     assert!(client.config_clear().unwrap().envelope.ok);
 
-    let requests = (0..4).map(|_| requests.recv().unwrap()).collect::<Vec<_>>();
+    let requests = (0..3).map(|_| requests.recv().unwrap()).collect::<Vec<_>>();
     assert!(requests[0].starts_with("GET /api/v1/config HTTP/1.1"));
     assert!(requests[1].starts_with("PUT /api/v1/config HTTP/1.1"));
     assert!(
@@ -51,9 +47,7 @@ fn config_client_forwards_all_four_todo7_requests() {
         "{}",
         requests[1]
     );
-    assert!(requests[2].starts_with("POST /api/v1/config/apply HTTP/1.1"));
-    assert!(requests[2].contains(r#"{"confirm":true}"#));
-    assert!(requests[3].starts_with("DELETE /api/v1/config HTTP/1.1"));
+    assert!(requests[2].starts_with("DELETE /api/v1/config HTTP/1.1"));
 }
 
 #[test]
@@ -99,11 +93,6 @@ fn config_commands_render_human_and_exact_json_for_every_operation() {
             SAVE,
             "saved_items=power/12v_out",
         ),
-        (
-            vec!["config", "apply", "--confirm"],
-            APPLY,
-            "applied_items=power/12v_out",
-        ),
         (vec!["config", "clear"], CLEAR, "current hardware unchanged"),
     ] {
         let (code, stdout, stderr, _) = run_command(&args, false, 200, response);
@@ -119,7 +108,7 @@ fn config_commands_render_human_and_exact_json_for_every_operation() {
 }
 
 #[test]
-fn config_commands_reject_empty_selection_and_missing_apply_confirmation_before_io() {
+fn config_commands_reject_empty_selection_and_unknown_verbs_before_io() {
     let client = NoIoClient;
     for args in [vec!["config", "save"], vec!["config", "apply"]] {
         let mut stdout = Vec::new();
@@ -161,7 +150,7 @@ fn config_save_parser_preserves_item_order_and_explicit_confirmation() {
 fn config_commands_preserve_confirmation_busy_and_partial_failure_details() {
     let confirmation = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"confirmation_required","message":"confirmation is required"},"dangerous_items":["switch/usb"]}"#;
     let busy = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"clear","error":{"code":"busy","message":"blocked"},"activity":"capture"}"#;
-    let partial = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"apply","error":{"code":"apply_failed","message":"failed"},"applied_items":["power/12v_out"],"failed_item":"switch/sd","pending_items":["switch/sd"]}"#;
+    let partial = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"apply_failed","message":"failed"},"applied_items":["power/12v_out"],"failed_item":"switch/sd","pending_items":["switch/sd"]}"#;
 
     let (code, stdout, stderr, request) =
         run_command(&["config", "save", "switch/usb"], true, 409, confirmation);
@@ -177,11 +166,15 @@ fn config_commands_preserve_confirmation_busy_and_partial_failure_details() {
     assert_eq!(code, 1);
     assert!(stderr.contains("busy: blocked activity=capture"));
 
-    let (code, _, stderr, request) =
-        run_command(&["config", "apply", "--confirm"], false, 500, partial);
+    let (code, _, stderr, request) = run_command(
+        &["config", "save", "--confirm", "power/12v_out"],
+        false,
+        500,
+        partial,
+    );
     assert_eq!(code, 1);
     assert!(stderr.contains("apply_failed: failed applied_items=power/12v_out failed_item=switch/sd pending_items=switch/sd"));
-    assert!(request.contains(r#"{"confirm":true}"#));
+    assert!(request.contains(r#"{"confirm":true,"items":["power/12v_out"]}"#));
 }
 
 #[test]
@@ -200,10 +193,12 @@ fn board_client_rejects_malformed_success_and_error_envelopes() {
         .is_err());
     let _ = requests.recv().unwrap();
 
-    let apply = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"apply","error":{"code":"apply_failed","message":"failed"},"applied_items":[],"failed_item":null}"#;
-    let (url, requests) = mock_server(vec![(500, apply.to_string())]);
+    let partial = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"apply_failed","message":"failed"},"applied_items":[],"failed_item":null}"#;
+    let (url, requests) = mock_server(vec![(500, partial.to_string())]);
     let client = BoardClient::new(&url, Duration::from_secs(2)).unwrap();
-    assert!(client.config_apply(true).is_err());
+    assert!(client
+        .config_save(&[ConfigItemId("power/12v_out".to_string())], true)
+        .is_err());
     let _ = requests.recv().unwrap();
 }
 

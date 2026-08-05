@@ -58,21 +58,6 @@ pub(crate) fn write_save(
     Ok(())
 }
 
-pub(crate) fn write_apply(
-    envelope: &PersistentConfigEnvelope,
-    stdout: &mut dyn Write,
-) -> Result<()> {
-    writeln!(
-        stdout,
-        "config apply: noop={} applied_items={} failed_item={} pending_items={}",
-        envelope.noop.unwrap_or(false),
-        ids_text(&envelope.applied_items),
-        optional_id(&envelope.failed_item),
-        ids_text(&envelope.pending_items)
-    )?;
-    Ok(())
-}
-
 pub(crate) fn write_clear(
     envelope: &PersistentConfigEnvelope,
     stdout: &mut dyn Write,
@@ -164,7 +149,6 @@ fn action_text(action: &ConfigAction) -> &str {
     match action {
         ConfigAction::Get => "get",
         ConfigAction::Save => "save",
-        ConfigAction::Apply => "apply",
         ConfigAction::Clear => "clear",
         ConfigAction::Unknown(value) => value,
     }

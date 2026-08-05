@@ -8,7 +8,6 @@ pub use crate::persistent_config_value::*;
 pub enum ConfigAction {
     Get,
     Save,
-    Apply,
     Clear,
     Unknown(String),
 }
@@ -22,7 +21,6 @@ impl<'de> Deserialize<'de> for ConfigAction {
         Ok(match value.as_str() {
             "get" => Self::Get,
             "save" => Self::Save,
-            "apply" => Self::Apply,
             "clear" => Self::Clear,
             _ => Self::Unknown(value),
         })
@@ -152,10 +150,5 @@ impl PersistentConfigResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct ConfigSaveRequest<'a> {
     pub items: &'a [ConfigItemId],
-    pub confirm: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ConfigApplyRequest {
     pub confirm: bool,
 }

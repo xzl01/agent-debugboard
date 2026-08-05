@@ -121,14 +121,9 @@ impl PersistentConfigResponse {
             ConfigAction::Save => {
                 require(envelope.saved_items_present, "saved_items")?;
                 require(envelope.confirmation_items_present, "confirmation_items")?;
+                require(envelope.applied_items_present, "applied_items")?;
                 validate_snapshot(envelope.snapshot.as_ref())?;
                 require(envelope.pending.is_some(), "pending")?;
-            }
-            ConfigAction::Apply => {
-                require(envelope.noop.is_some(), "noop")?;
-                require(envelope.applied_items_present, "applied_items")?;
-                require(envelope.failed_item_present, "failed_item")?;
-                require(envelope.pending_items_present, "pending_items")?;
             }
             ConfigAction::Clear => {
                 require(envelope.noop.is_some(), "noop")?;
@@ -179,7 +174,12 @@ impl crate::persistent_config::PersistentConfigItem {
 fn validate_snapshot(snapshot: Option<&PersistentConfigSnapshot>) -> Result<()> {
     let snapshot =
         snapshot.ok_or_else(|| anyhow::anyhow!("config response is missing snapshot"))?;
-    require(snapshot.version_present, "snapshot.version")
+    require(snapshot.version_present, "snapshot.version")?;
+    if snapshot.present {
+        require(snapshot.version == Some(1), "snapshot.version==1")
+    } else {
+        require(snapshot.version.is_none(), "snapshot.version==null")
+    }
 }
 
 fn require(condition: bool, field: &str) -> Result<()> {

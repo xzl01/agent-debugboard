@@ -4,7 +4,7 @@
 // Copyright (c) Jiali Chen <chenjiali@radxa.com>
 
 use crate::persistent_config::{
-    ConfigAction, ConfigApplyRequest, ConfigItemId, ConfigSaveRequest, PersistentConfigResponse,
+    ConfigAction, ConfigItemId, ConfigSaveRequest, PersistentConfigResponse,
 };
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::{Body, Client};
@@ -44,13 +44,6 @@ pub trait BoardTransport {
         config_response(
             self.send_text(config_save_request(items, confirm)?)?,
             &ConfigAction::Save,
-        )
-    }
-
-    fn config_apply(&self, confirm: bool) -> Result<PersistentConfigResponse> {
-        config_response(
-            self.send_text(config_apply_request(confirm)?)?,
-            &ConfigAction::Apply,
         )
     }
 
@@ -133,10 +126,6 @@ impl BoardClient {
         confirm: bool,
     ) -> Result<PersistentConfigResponse> {
         self.send_config(config_save_request(items, confirm)?, ConfigAction::Save)
-    }
-
-    pub fn config_apply(&self, confirm: bool) -> Result<PersistentConfigResponse> {
-        self.send_config(config_apply_request(confirm)?, ConfigAction::Apply)
     }
 
     pub fn config_clear(&self) -> Result<PersistentConfigResponse> {
@@ -236,10 +225,6 @@ impl BoardTransport for BoardClient {
         Self::config_save(self, items, confirm)
     }
 
-    fn config_apply(&self, confirm: bool) -> Result<PersistentConfigResponse> {
-        Self::config_apply(self, confirm)
-    }
-
     fn config_clear(&self) -> Result<PersistentConfigResponse> {
         Self::config_clear(self)
     }
@@ -260,15 +245,6 @@ fn config_save_request(items: &[ConfigItemId], confirm: bool) -> Result<BoardReq
         path: "/api/v1/config".to_string(),
         query: vec![],
         body: Some(serde_json::to_value(ConfigSaveRequest { items, confirm })?),
-    })
-}
-
-fn config_apply_request(confirm: bool) -> Result<BoardRequest> {
-    Ok(BoardRequest {
-        method: Method::POST,
-        path: "/api/v1/config/apply".to_string(),
-        query: vec![],
-        body: Some(serde_json::to_value(ConfigApplyRequest { confirm })?),
     })
 }
 

@@ -16,7 +16,6 @@ where
             );
         }
         ConfigRequest::Save { items, confirm } => client.config_save(items, *confirm),
-        ConfigRequest::Apply { confirm } => client.config_apply(*confirm),
         ConfigRequest::Clear => client.config_clear(),
     }
     .map_err(|error| error.to_string());

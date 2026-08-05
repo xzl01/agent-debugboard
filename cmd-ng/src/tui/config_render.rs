@@ -1,6 +1,7 @@
 use super::config_state::{ConfigConfirmation, SavedConfigState};
 use crate::persistent_config::{
-    ConfigApplyState, ConfigItemKind, ConfigValue, GpioDirection, GpioLevel, PowerState,
+    ConfigApplyState, ConfigItemId, ConfigItemKind, ConfigValue, GpioDirection, GpioLevel,
+    PowerState,
 };
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -43,7 +44,7 @@ pub(super) fn append_saved_config_lines(
     }
     lines.push(Line::from(heading));
     lines.push(Line::from(
-        "  c focus · ↑/↓ item · Space select · s save · a apply · x clear · Esc dismiss",
+        "  c focus · ↑/↓ item · Space select · s save · x clear · Esc dismiss",
     ));
     if !state.loaded {
         append_error(lines, state);
@@ -112,18 +113,19 @@ fn append_items(lines: &mut Vec<Line<'static>>, state: &SavedConfigState, width:
 
 pub(super) fn confirmation_text(state: &SavedConfigState) -> Option<String> {
     let confirmation = state.confirmation()?;
-    let (action, dangerous) = match confirmation {
-        ConfigConfirmation::Save { dangerous, .. } => ("SAVE", dangerous),
-        ConfigConfirmation::Apply { dangerous } => ("APPLY", dangerous),
-    };
-    Some(format!(
-        "{action} dangerous={}",
+    let join_ids = |dangerous: &[ConfigItemId]| {
         dangerous
             .iter()
             .map(|id| id.as_str())
             .collect::<Vec<_>>()
             .join(",")
-    ))
+    };
+    Some(match confirmation {
+        ConfigConfirmation::Save { dangerous, .. } => format!(
+            "SAVE dangerous={} · auto-restores on every normal boot until replaced or cleared",
+            join_ids(dangerous)
+        ),
+    })
 }
 
 pub(super) fn render_confirmation(frame: &mut ratatui::Frame, state: &SavedConfigState) {

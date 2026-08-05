@@ -1,8 +1,6 @@
 use crate::client::BoardTransport;
 use crate::persistent_config::{ConfigItemId, PersistentConfigResponse};
-use crate::persistent_config_render::{
-    error_text, write_apply, write_clear, write_save, write_show,
-};
+use crate::persistent_config_render::{error_text, write_clear, write_save, write_show};
 use anyhow::Result;
 use std::io::Write;
 
@@ -12,7 +10,6 @@ pub(crate) enum ConfigCommand {
         items: Vec<ConfigItemId>,
         confirm: bool,
     },
-    Apply,
     Clear,
 }
 
@@ -24,7 +21,7 @@ pub(crate) fn parse(args: &[String]) -> Result<ConfigCommand, String> {
         })
         .collect();
     if cleaned.first().map(|arg| arg.as_str()) != Some("config") {
-        return Err("usage: radxa-linkr-debuggerctl config show|save|apply|clear".to_string());
+        return Err("usage: radxa-linkr-debuggerctl config show|save|clear".to_string());
     }
     match cleaned.get(1).map(|arg| arg.as_str()) {
         Some("show") if cleaned.len() == 2 => Ok(ConfigCommand::Show),
@@ -43,12 +40,8 @@ pub(crate) fn parse(args: &[String]) -> Result<ConfigCommand, String> {
             }
             Ok(ConfigCommand::Save { items, confirm })
         }
-        Some("apply") if cleaned.len() == 3 && cleaned[2].as_str() == "--confirm" => {
-            Ok(ConfigCommand::Apply)
-        }
-        Some("apply") => Err("usage: radxa-linkr-debuggerctl config apply --confirm".to_string()),
         Some("clear") if cleaned.len() == 2 => Ok(ConfigCommand::Clear),
-        _ => Err("usage: radxa-linkr-debuggerctl config show|save|apply|clear".to_string()),
+        _ => Err("usage: radxa-linkr-debuggerctl config show|save|clear".to_string()),
     }
 }
 
@@ -69,7 +62,6 @@ where
     let response = match &command {
         ConfigCommand::Show => client.config_show(),
         ConfigCommand::Save { items, confirm } => client.config_save(items, *confirm),
-        ConfigCommand::Apply => client.config_apply(true),
         ConfigCommand::Clear => client.config_clear(),
     };
     match response {
@@ -127,7 +119,6 @@ fn write_response(
     match command {
         ConfigCommand::Show => write_show(&response.envelope, stdout)?,
         ConfigCommand::Save { .. } => write_save(&response.envelope, stdout)?,
-        ConfigCommand::Apply => write_apply(&response.envelope, stdout)?,
         ConfigCommand::Clear => write_clear(&response.envelope, stdout)?,
     }
     Ok(0)

@@ -9,10 +9,10 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
 
-const SHOW: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":true,"version":2},"pending":0,"items":[{"id":"power/alpha","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":true,"requires_confirm":true,"apply_state":"applied"}]}"#;
-const SAVE: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"save","saved_items":["power/alpha"],"confirmation_items":["power/alpha"],"snapshot":{"present":true,"version":2},"pending":0}"#;
+const SHOW: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":true,"version":1},"pending":0,"items":[{"id":"power/alpha","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":true,"requires_confirm":true,"apply_state":"applied"}]}"#;
+const SAVE: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"save","saved_items":["power/alpha"],"confirmation_items":["power/alpha"],"applied_items":["power/alpha"],"snapshot":{"present":true,"version":1},"pending":0}"#;
 const CONFIRM: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"confirmation_required","message":"confirm"},"dangerous_items":["power/alpha"]}"#;
-const BUSY: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"apply","error":{"code":"busy","message":"blocked"},"activity":"capture"}"#;
+const BUSY: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"busy","message":"blocked"},"activity":"capture"}"#;
 const STORAGE: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"clear","error":{"code":"storage_error","message":"flash"}}"#;
 
 enum Reply {
@@ -61,10 +61,13 @@ fn disconnect_reports_both_attempts_without_repeating_mutation() {
 fn busy_response_is_preserved_after_authoritative_get() {
     let (url, requests) = mock_server(vec![Reply::Http(409, BUSY), Reply::Http(200, SHOW)]);
     let client = BoardClient::new(&url, Duration::from_secs(1)).unwrap();
-    let request = ConfigRequest::Apply { confirm: false };
+    let request = ConfigRequest::Save {
+        items: vec![ConfigItemId("power/alpha".to_string())],
+        confirm: true,
+    };
     let result = execute_request(&client, request.clone());
     let mut state = SavedConfigState::default();
-    state.start(ConfigJobKind::Apply);
+    state.start(ConfigJobKind::Save);
 
     let outcome = state.finish(result);
 
@@ -73,10 +76,7 @@ fn busy_response_is_preserved_after_authoritative_get() {
         .error
         .as_deref()
         .is_some_and(|error| error.contains("busy")));
-    assert!(requests
-        .recv()
-        .unwrap()
-        .starts_with("POST /api/v1/config/apply"));
+    assert!(requests.recv().unwrap().starts_with("PUT /api/v1/config"));
     assert!(requests.recv().unwrap().starts_with("GET /api/v1/config"));
 }
 

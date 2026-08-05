@@ -42,7 +42,7 @@ fn config_action_and_http_status_must_match_the_operation() {
     ] {
         let response = PersistentConfigResponse::from_raw(body.to_string()).unwrap();
         assert!(response
-            .validate(&ConfigAction::Apply, Some(status))
+            .validate(&ConfigAction::Save, Some(status))
             .is_err());
     }
 }
@@ -91,20 +91,12 @@ fn config_success_responses_require_every_action_field() {
             r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"save","saved_items":[],"confirmation_items":[],"snapshot":{"present":true,"version":1}}"#,
         ),
         (
-            ConfigAction::Apply,
-            r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"apply","applied_items":[],"failed_item":null,"pending_items":[]}"#,
+            ConfigAction::Save,
+            r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"save","saved_items":[],"confirmation_items":[],"applied_items":[],"snapshot":{"present":true,"version":2},"pending":0}"#,
         ),
         (
-            ConfigAction::Apply,
-            r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"apply","noop":true,"failed_item":null,"pending_items":[]}"#,
-        ),
-        (
-            ConfigAction::Apply,
-            r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"apply","noop":true,"applied_items":[],"pending_items":[]}"#,
-        ),
-        (
-            ConfigAction::Apply,
-            r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"apply","noop":true,"applied_items":[],"failed_item":null}"#,
+            ConfigAction::Save,
+            r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"save","saved_items":[],"confirmation_items":[],"applied_items":[],"snapshot":{"present":true},"pending":0}"#,
         ),
         (
             ConfigAction::Clear,
@@ -176,16 +168,16 @@ fn config_known_errors_require_their_typed_details() {
             r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"clear","error":{"code":"busy","message":"blocked"},"activity":"future"}"#,
         ),
         (
-            ConfigAction::Apply,
-            r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"apply","error":{"code":"apply_failed","message":"failed"},"failed_item":"switch/sd","pending_items":[]}"#,
+            ConfigAction::Save,
+            r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"apply_failed","message":"failed"},"failed_item":"switch/sd","pending_items":[]}"#,
         ),
         (
-            ConfigAction::Apply,
-            r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"apply","error":{"code":"apply_failed","message":"failed"},"applied_items":[],"pending_items":[]}"#,
+            ConfigAction::Save,
+            r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"apply_failed","message":"failed"},"applied_items":[],"pending_items":[]}"#,
         ),
         (
-            ConfigAction::Apply,
-            r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"apply","error":{"code":"apply_failed","message":"failed"},"applied_items":[],"failed_item":"switch/sd"}"#,
+            ConfigAction::Save,
+            r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"apply_failed","message":"failed"},"applied_items":[],"failed_item":"switch/sd"}"#,
         ),
     ];
 
@@ -208,8 +200,8 @@ fn config_known_errors_require_their_typed_details() {
             r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"clear","error":{"code":"busy","message":"blocked"},"activity":"capture"}"#,
         ),
         (
-            ConfigAction::Apply,
-            r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"apply","error":{"code":"apply_failed","message":"failed"},"applied_items":[],"failed_item":null,"pending_items":[]}"#,
+            ConfigAction::Save,
+            r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"apply_failed","message":"failed"},"applied_items":[],"failed_item":null,"pending_items":[]}"#,
         ),
     ] {
         let response = PersistentConfigResponse::from_raw(body.to_string()).unwrap();

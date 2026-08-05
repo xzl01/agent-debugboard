@@ -97,18 +97,11 @@ fn compact_terminal_clips_confirmation_without_panicking() {
 }
 
 #[test]
-fn save_and_apply_confirmations_name_their_dangerous_firmware_ids() {
+fn save_confirmation_names_the_dangerous_firmware_ids() {
     let mut save = ready_state();
     assert!(save.request_save().is_none());
     let save_text = super::config_render::confirmation_text(&save).unwrap();
 
-    let mut apply = ready_state();
-    assert!(apply.request_apply().is_none());
-    let apply_text = super::config_render::confirmation_text(&apply).unwrap();
-
     assert!(save_text.contains("SAVE"));
     assert!(save_text.contains("power/alpha"));
-    assert!(apply_text.contains("APPLY"));
-    assert!(apply_text.contains("power/alpha"));
-    assert_ne!(save_text, apply_text);
 }

@@ -401,11 +401,6 @@ fn handle_key(model: &mut TuiModel, key: KeyEvent) -> Result<bool> {
                 start_config_request(model, request);
             }
         }
-        (KeyCode::Char('a'), _) => {
-            if let Some(request) = model.saved_config.request_apply() {
-                start_config_request(model, request);
-            }
-        }
         (KeyCode::Char('x'), _) => {
             if let Some(request) = model.saved_config.request_clear() {
                 start_config_request(model, request);

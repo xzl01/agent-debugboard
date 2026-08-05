@@ -1,13 +1,8 @@
-use super::config_result::ConfigJobKind;
 use super::config_state::{ConfigConfirmation, ConfigRequest, SavedConfigState};
 use crate::persistent_config::{ConfigAction, PersistentConfigResponse, PersistentConfigStatus};
 
 const SHOW: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":true,"version":1},"pending":1,"items":[{"id":"power/alpha","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":false,"requires_confirm":true,"apply_state":"pending"},{"id":"switch/beta","kind":"switch","current":{"route":"pc"},"saved":{"route":"target"},"selected":true,"requires_confirm":false,"apply_state":"applied"}]}"#;
-const REFRESHED: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":true,"version":2},"pending":1,"items":[{"id":"power/alpha","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":false,"requires_confirm":true,"apply_state":"pending"},{"id":"switch/beta","kind":"switch","current":{"route":"pc"},"saved":{"route":"target"},"selected":false,"requires_confirm":false,"apply_state":"applied"}]}"#;
-const SAFE_FAILED_ONLY: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":true,"version":1},"pending":0,"items":[{"id":"switch/beta","kind":"switch","current":{"route":"pc"},"saved":{"route":"target"},"selected":false,"requires_confirm":false,"apply_state":"failed"}]}"#;
-const DANGEROUS_FAILED_ONLY: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":true,"version":1},"pending":0,"items":[{"id":"power/alpha","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":false,"requires_confirm":true,"apply_state":"failed"}]}"#;
-const DANGEROUS_REPLAY: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":true,"version":1},"pending":1,"items":[{"id":"power/alpha","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":false,"requires_confirm":true,"apply_state":"pending"},{"id":"power/bravo","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":false,"requires_confirm":true,"apply_state":"applied"}]}"#;
-const APPLIED_ONLY: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":true,"version":1},"pending":0,"items":[{"id":"power/alpha","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":false,"requires_confirm":true,"apply_state":"applied"}]}"#;
+const REFRESHED: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":true,"version":1},"pending":1,"items":[{"id":"power/alpha","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":false,"requires_confirm":true,"apply_state":"pending"},{"id":"switch/beta","kind":"switch","current":{"route":"pc"},"saved":{"route":"target"},"selected":false,"requires_confirm":false,"apply_state":"applied"}]}"#;
 
 fn show(raw: &str) -> PersistentConfigResponse {
     let response = PersistentConfigResponse::from_raw(raw.to_string()).unwrap();
@@ -60,87 +55,6 @@ fn dangerous_save_requires_modal_before_confirmed_request() {
         state.confirm(),
         Some(ConfigRequest::Save { confirm: true, .. })
     ));
-}
-
-#[test]
-fn dangerous_apply_uses_only_pending_firmware_risk() {
-    let mut state = ready_state();
-
-    let request = state.request_apply();
-
-    assert!(request.is_none());
-    assert!(matches!(
-        state.confirmation(),
-        Some(ConfigConfirmation::Apply { dangerous })
-            if dangerous.iter().map(|id| id.as_str()).collect::<Vec<_>>() == ["power/alpha"]
-    ));
-    assert!(matches!(
-        state.confirm(),
-        Some(ConfigRequest::Apply { confirm: true })
-    ));
-}
-
-#[test]
-fn safe_failed_only_snapshot_emits_unconfirmed_retry() {
-    let mut state = state(SAFE_FAILED_ONLY, 1, 0);
-
-    let request = state.request_apply();
-
-    assert!(matches!(
-        request,
-        Some(ConfigRequest::Apply { confirm: false })
-    ));
-}
-
-#[test]
-fn dangerous_failed_only_snapshot_opens_apply_confirmation() {
-    let mut state = state(DANGEROUS_FAILED_ONLY, 1, 0);
-
-    let request = state.request_apply();
-
-    assert!(request.is_none());
-    assert!(matches!(
-        state.confirmation(),
-        Some(ConfigConfirmation::Apply { dangerous })
-            if dangerous.iter().map(|id| id.as_str()).collect::<Vec<_>>() == ["power/alpha"]
-    ));
-}
-
-#[test]
-fn dangerous_apply_confirmation_lists_every_saved_dangerous_row() {
-    let mut state = state(DANGEROUS_REPLAY, 2, 1);
-
-    let request = state.request_apply();
-
-    assert!(request.is_none());
-    assert!(matches!(
-        state.confirmation(),
-        Some(ConfigConfirmation::Apply { dangerous })
-            if dangerous.iter().map(|id| id.as_str()).collect::<Vec<_>>()
-                == ["power/alpha", "power/bravo"]
-    ));
-}
-
-#[test]
-fn applied_only_snapshot_remains_non_retryable() {
-    let mut state = state(APPLIED_ONLY, 1, 0);
-
-    assert!(state.request_apply().is_none());
-}
-
-#[test]
-fn busy_state_remains_non_retryable() {
-    let mut state = ready_state();
-    state.busy = Some(ConfigJobKind::Apply);
-
-    assert!(state.request_apply().is_none());
-}
-
-#[test]
-fn unloaded_state_remains_non_retryable() {
-    let mut state = SavedConfigState::default();
-
-    assert!(state.request_apply().is_none());
 }
 
 #[test]
@@ -208,7 +122,6 @@ fn missing_summary_clears_authoritative_state_and_blocks_mutations() {
     assert!(!state.focused);
     assert!(state.confirmation().is_none());
     assert!(state.request_save().is_none());
-    assert!(state.request_apply().is_none());
     assert!(state.request_clear().is_none());
     assert!(state.confirm().is_none());
     assert!(state.confirmation().is_none());
@@ -231,7 +144,6 @@ fn restored_summary_requires_authoritative_get_before_mutations() {
     assert!(state.selected_ids().is_empty());
     assert!(!state.focused);
     assert!(state.request_save().is_none());
-    assert!(state.request_apply().is_none());
     assert!(state.request_clear().is_none());
     assert!(state.confirm().is_none());
 }

@@ -1,7 +1,6 @@
 use super::config_result::ConfigJobKind;
 use crate::persistent_config::{
-    ConfigApplyState, ConfigItemId, PersistentConfigItem, PersistentConfigResponse,
-    PersistentConfigStatus,
+    ConfigItemId, PersistentConfigItem, PersistentConfigResponse, PersistentConfigStatus,
 };
 use std::collections::HashSet;
 
@@ -12,9 +11,6 @@ pub(super) enum ConfigRequest {
         items: Vec<ConfigItemId>,
         confirm: bool,
     },
-    Apply {
-        confirm: bool,
-    },
     Clear,
 }
 
@@ -22,9 +18,6 @@ pub(super) enum ConfigRequest {
 pub(super) enum ConfigConfirmation {
     Save {
         items: Vec<ConfigItemId>,
-        dangerous: Vec<ConfigItemId>,
-    },
-    Apply {
         dangerous: Vec<ConfigItemId>,
     },
 }
@@ -184,34 +177,6 @@ impl SavedConfigState {
         }
     }
 
-    pub(super) fn request_apply(&mut self) -> Option<ConfigRequest> {
-        if !self.is_supported() || self.busy.is_some() {
-            return None;
-        }
-        let retryable = self.items.iter().any(|item| {
-            matches!(
-                item.apply_state,
-                Some(ConfigApplyState::Pending | ConfigApplyState::Failed)
-            )
-        });
-        if !self.loaded || !retryable {
-            self.error = Some("no saved-config items pending".to_string());
-            return None;
-        }
-        let dangerous = self
-            .items
-            .iter()
-            .filter(|item| item.saved.is_some() && item.requires_confirm == Some(true))
-            .map(|item| item.id.clone())
-            .collect::<Vec<_>>();
-        if dangerous.is_empty() {
-            Some(ConfigRequest::Apply { confirm: false })
-        } else {
-            self.confirmation = Some(ConfigConfirmation::Apply { dangerous });
-            None
-        }
-    }
-
     pub(super) fn request_clear(&mut self) -> Option<ConfigRequest> {
         (self.is_supported() && self.loaded && self.busy.is_none()).then_some(ConfigRequest::Clear)
     }
@@ -230,7 +195,6 @@ impl SavedConfigState {
                 items,
                 confirm: true,
             }),
-            ConfigConfirmation::Apply { .. } => Some(ConfigRequest::Apply { confirm: true }),
         }
     }
 

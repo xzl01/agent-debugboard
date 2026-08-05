@@ -89,21 +89,6 @@ fn ctrl_c_quits_while_save_confirmation_is_open() {
 }
 
 #[test]
-fn ctrl_c_quits_while_apply_confirmation_is_open() {
-    let mut model = model();
-    press(&mut model, KeyCode::Char('a'));
-
-    let quit = press_with_modifiers(&mut model, KeyCode::Char('c'), KeyModifiers::CONTROL);
-
-    assert!(quit);
-    assert!(model.closed);
-    assert!(matches!(
-        model.saved_config.confirmation(),
-        Some(ConfigConfirmation::Apply { .. })
-    ));
-}
-
-#[test]
 fn ctrl_c_quits_while_saved_config_error_is_visible() {
     let mut model = model();
     model.saved_config.error = Some("storage_error".to_string());
@@ -127,7 +112,7 @@ fn q_quits_while_saved_config_confirmation_is_open() {
 }
 
 #[test]
-fn save_and_apply_keys_open_separate_danger_confirmations() {
+fn save_key_opens_and_confirms_danger_confirmation_and_apply_key_is_unbound() {
     let mut model = model();
 
     press(&mut model, KeyCode::Char('s'));
@@ -139,13 +124,13 @@ fn save_and_apply_keys_open_separate_danger_confirmations() {
     assert!(model.saved_config.confirmation().is_none());
 
     press(&mut model, KeyCode::Char('a'));
-    assert!(matches!(
-        model.saved_config.confirmation(),
-        Some(ConfigConfirmation::Apply { .. })
-    ));
+    assert!(model.saved_config.confirmation().is_none());
+    assert_eq!(model.saved_config.busy, None);
+
+    press(&mut model, KeyCode::Char('s'));
     press(&mut model, KeyCode::Enter);
     assert!(model.saved_config.confirmation().is_none());
-    assert_eq!(model.saved_config.busy, Some(ConfigJobKind::Apply));
+    assert_eq!(model.saved_config.busy, Some(ConfigJobKind::Save));
 }
 
 #[test]
