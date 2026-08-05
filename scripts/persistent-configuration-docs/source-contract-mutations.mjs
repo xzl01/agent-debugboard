@@ -81,27 +81,6 @@ const MUTATIONS = Object.freeze([
     code: "skill-policy",
   },
   {
-    name: "rejects canonical pending-only apply no-op drift",
-    surface: "doc/persistent-configuration.md",
-    before: "A ready snapshot with `pending_count==0` and `failed_count==0` returns HTTP 200 `noop:true` from the facade before service owner acquisition regardless of confirm.",
-    after: "A ready snapshot with `pending_count==0` and `failed_count==0` returns HTTP 200 `noop:true` from the facade before service owner acquisition regardless of confirm. Apply `noop` is true when there are no pending entries.",
-    code: "source-contract",
-  },
-  {
-    name: "rejects app pending-only apply no-op drift",
-    surface: "apps/radxa_linkr_debugger/README.md",
-    before: "A ready snapshot with `pending_count==0` and `failed_count==0` returns HTTP 200 `noop:true` from the facade before service owner acquisition regardless of confirm.",
-    after: "A ready snapshot with `pending_count==0` and `failed_count==0` returns HTTP 200 `noop:true` from the facade before service owner acquisition regardless of confirm. An existing snapshot with zero pending entries is a no-op success.",
-    code: "action-fields",
-  },
-  {
-    name: "rejects zero-safe-subset corruption drift",
-    surface: "doc/persistent-configuration.md",
-    before: "boot restore is a successful no-op, leaves dangerous rows pending, and is not corruption",
-    after: "boot restore is corruption when its boot-safe subset is empty",
-    code: "source-contract",
-  },
-  {
     name: "requires storage replacement after corrupt or unsupported snapshots",
     surface: "doc/persistent-configuration.md",
     before: "Save does not gate on the service reason and can replace a corrupt or unsupported snapshot",

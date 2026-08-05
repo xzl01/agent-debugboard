@@ -43,7 +43,7 @@ function checkCanonical(surface, section, failures) {
   }
   for (const field of RESPONSE_FIELDS) if (!section.content.includes(field)) addFailure(failures, "response-field", surface.path, `missing ${field}`);
   for (const code of ERROR_CODES) if (!section.content.includes(code)) addFailure(failures, "error-code", surface.path, `missing ${code}`);
-  for (const grammar of ["config show", "config save [--confirm] <firmware-item-id>...", "config apply --confirm", "config clear"]) {
+  for (const grammar of ["config show", "config save [--confirm] <firmware-item-id>...", "config clear"]) {
     if (!section.content.includes(grammar)) addFailure(failures, "cdc-grammar", surface.path, `missing ${grammar}`);
   }
 }

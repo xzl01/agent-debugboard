@@ -15,12 +15,10 @@ function expectedRequest(id) {
     "curl-config-save-safe": { method: "PUT", path: "/api/v1/config", body: { items: ["switch/sd"], confirm: false } },
     "curl-config-save-dangerous": { method: "PUT", path: "/api/v1/config", body: { items: ["switch/usb"], confirm: true } },
     "curl-config-save-dangerous-unconfirmed": { method: "PUT", path: "/api/v1/config", body: { items: ["switch/usb"], confirm: false } },
-    "curl-config-apply-dangerous": { method: "POST", path: "/api/v1/config/apply", body: { confirm: true } },
     "curl-config-clear": { method: "DELETE", path: "/api/v1/config", body: null },
     "cli-config-show": { method: "GET", path: "/api/v1/config", body: null },
     "cli-config-save-safe": { method: "PUT", path: "/api/v1/config", body: { items: ["switch/sd"], confirm: false } },
     "cli-config-save-dangerous": { method: "PUT", path: "/api/v1/config", body: { items: ["switch/usb"], confirm: true } },
-    "cli-config-apply": { method: "POST", path: "/api/v1/config/apply", body: { confirm: true } },
     "cli-config-clear": { method: "DELETE", path: "/api/v1/config", body: null },
   }[id];
 }
@@ -41,10 +39,7 @@ function responseFor(request) {
     items: [{ id: "switch/sd", kind: "switch", current: { route: "target" }, saved: null, selected: false, requires_confirm: false, apply_state: "not_saved" }],
   } };
   if (request.method === "PUT") return { status: 200, payload: {
-    ...base, action: "save", saved_items: request.body.items, confirmation_items: [], snapshot: { present: true, version: 1 }, pending: 0,
-  } };
-  if (request.method === "POST") return { status: 200, payload: {
-    ...base, action: "apply", noop: false, applied_items: ["switch/usb"], failed_item: null, pending_items: [],
+    ...base, action: "save", saved_items: request.body.items, confirmation_items: [], applied_items: request.body.items, snapshot: { present: true, version: 1 }, pending: 0,
   } };
   return { status: 200, payload: { ...base, action: "clear", noop: false, snapshot: { present: false, version: null }, pending: 0 } };
 }
@@ -100,8 +95,8 @@ function assertUnconfirmedDangerousSaveResponse(example, stdout) {
 }
 
 function assertConfigRequest(request) {
-  assert.ok(["GET", "PUT", "POST", "DELETE"].includes(request.method), `unsupported method ${request.method}`);
-  assert.ok(["/api/v1/config", "/api/v1/config/apply"].includes(request.path), `unsupported path ${request.path}`);
+  assert.ok(["GET", "PUT", "DELETE"].includes(request.method), `unsupported method ${request.method}`);
+  assert.ok(request.path === "/api/v1/config", `unsupported path ${request.path}`);
   assert.ok(request.body === null || (typeof request.body === "object" && !Array.isArray(request.body)), "request body must be parseable JSON");
 }
 

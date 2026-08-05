@@ -20,16 +20,26 @@ test("persistent-configuration documentation contract", async (suite) => {
     }
   });
 
-  await suite.test("freezes exactly the six planned surfaces and eleven summary IDs", () => {
+  await suite.test("freezes exactly the six planned surfaces and twelve versioned summary IDs", () => {
     assert.deepEqual(DOC_SURFACES.map((surface) => surface.path), [
       "doc/persistent-configuration.md", "README.md", "README.zh-CN.md",
       "apps/radxa_linkr_debugger/README.md", "skills/radxa-linkr-debugger/SKILL.md",
       "doc/testing/hil-functional-test-spec.md",
     ]);
-    assert.deepEqual(FROZEN_SUMMARY.map(([id]) => id), [
-      "storage", "snapshot", "explicit-save", "boot-safe", "danger-pending", "firmware-confirmation",
-      "clear", "busy", "recovery", "security", "hil-boundary",
+    const summaryIds = FROZEN_SUMMARY.map(([id]) => id);
+    assert.deepEqual(summaryIds, [
+      "storage", "snapshot", "explicit-save", "boot-restore", "header",
+      "firmware-confirmation", "save", "clear", "busy", "recovery", "security", "hil-boundary",
     ]);
+    for (const staleId of ["apply", "boot-safe", "danger-pending"]) {
+      assert.ok(!summaryIds.includes(staleId), `${staleId} must not survive the v1 save consolidation`);
+    }
+    const literals = new Map(FROZEN_SUMMARY);
+    assert.equal(literals.get("snapshot"), "linkr/config/snapshot;v1;one");
+    assert.equal(literals.get("boot-restore"), "defaults-first;v1-full-restore");
+    assert.equal(literals.get("header"), "12B-header;byte4-version=1;byte7-zero;max-104B");
+    assert.equal(literals.get("firmware-confirmation"), "firmware-owned-confirmation;save-time-only");
+    assert.equal(literals.get("save"), "persists-and-applies;failed-retry-via-resave");
   });
 
   await suite.test("freezes the nine current-sync marker IDs and exact literals", () => {
@@ -169,16 +179,6 @@ test("persistent-configuration documentation contract", async (suite) => {
     await withFixture(async (root) => {
       const result = await checkPersistentConfigurationDocs(root);
       assert.ok(result.failures.some(({ code }) => code === "source-contract"), formatFailures(result.failures));
-    }, documents);
-  });
-
-  await suite.test("rejects the stale claim that a ready confirmed no-op always acquires owners", async () => {
-    const documents = fixtureDocuments();
-    documents["doc/testing/hil-functional-test-spec.md"] = documents["doc/testing/hil-functional-test-spec.md"]
-      .replace("#### OTA 与 combined-UF2 保留", "A ready confirmed no-op apply always acquires capture and flash owners.\n\n#### OTA 与 combined-UF2 保留");
-    await withFixture(async (root) => {
-      const result = await checkPersistentConfigurationDocs(root);
-      assert.ok(result.failures.some(({ code }) => code === "hil-policy"), formatFailures(result.failures));
     }, documents);
   });
 
