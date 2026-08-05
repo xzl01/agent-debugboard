@@ -131,15 +131,15 @@ GP29 (`ADC3`) stays in the persisted/safe catalog but is owned by the
 the host CLI / TUI / Web UI must surface that failure rather than
 retrying.
 
-Persistence behaviour for v1 snapshots:
+Persistence behaviour for saved snapshots:
 
-- A v1 snapshot that records GP29 as `direction="input"` continues
-  to decode and apply normally. The firmware treats an input
-  snapshot as the safe default and auto-applies it after firmware
+- A snapshot that records GP29 as `direction="input"` continues
+  to decode and replay normally. The firmware treats an input
+  snapshot as the safe default and replays it after firmware
   defaults on the next boot.
-- A v1 snapshot that records GP29 as `direction="output"` remains
+- A snapshot that records GP29 as `direction="output"` remains
   decodable so historical boards do not corrupt their snapshots, but
-  the apply step hits GP29 first and stops. Earlier entries stay
+  the replay hits GP29 and stops. Earlier entries stay
   applied; GP29 and later entries stay pending. The host must report
   `apply_state="failed"` for GP29 with no hidden rollback.
 
@@ -195,18 +195,24 @@ The snapshot lives in the existing `storage_partition` and is stored through
 Zephyr `Settings+NVS` at the key `linkr/config/snapshot`. The settings
 subsystem initializes only the `linkr/config/snapshot` key, validates the
 record through the bounded v1 codec, and reports its state through the
-config service. The config service runs after `linkr_debugger_control_init()`
-succeeds and before HTTP init, so the HTTP/WS status snapshot can include
-the `config` summary at first contact. Missing data means `absent`; mount,
-read, corrupt, or unsupported-version errors leave firmware defaults in
-place and surface through the `backend` and `reason` fields plus the
-`apply_state` of each affected item. No write path returns from `main`,
-delays watchdog startup, erases storage, or auto-formats. Save replaces the
-single key; clear calls `settings_delete()` and is idempotent.
+config service. The snapshot header is exactly 12 bytes; byte 4 version 1 is
+the only accepted version and byte 7 zero is the only accepted restore
+padding. The codec returns `unsupported_version` for any version byte other
+than 1; a v1 header with a nonzero byte 7 is rejected as `invalid_snapshot`.
+A version byte other than 1 is never replayed, migrated, or auto-cleared. The config service
+runs after `linkr_debugger_control_init()` succeeds and before HTTP init,
+so the HTTP/WS status snapshot can include the `config` summary at first
+contact. Missing data means `absent`; mount, read, corrupt, or
+unsupported-version errors leave firmware defaults in place and surface
+through the `backend` and
+`reason` fields plus the `apply_state` of each affected item. No write path
+returns from `main`, delays watchdog startup, erases storage, or
+auto-formats. Save replaces the single key; clear calls `settings_delete()`
+and is idempotent.
 
 ### HTTP Contract
 
-Four endpoints under `http://172.29.203.1` form the authoritative contract.
+Three endpoints under `http://172.29.203.1` form the authoritative contract.
 The full request and response shapes are defined by the firmware, and every
 client enumerates item identities from the firmware rather than embedding
 them locally.
@@ -214,30 +220,30 @@ them locally.
 | Verb | Path | Body | Purpose |
 |------|------|------|---------|
 | `GET` | `/api/v1/config` | (none) | Read current state, snapshot, pending count, and the firmware-enumerated item catalog |
-| `PUT` | `/api/v1/config` | `{"items":["power/12v_out",...],"confirm":false}` | Capture the live values of the selected IDs and persist them |
-| `POST` | `/api/v1/config/apply` | `{"confirm":true}` | Replay the saved snapshot in the confirmed-full order |
+| `PUT` | `/api/v1/config` | `{"items":["power/12v_out",...],"confirm":false}` | Capture the live values of the selected IDs, persist them as the v1 snapshot, and apply them |
 | `DELETE` | `/api/v1/config` | (none) | Idempotent; clears the stored snapshot without altering live hardware |
 
 The only common response fields are `schema`, `ok`, `command`, and `action`.
-Successful `get` adds `backend`, `snapshot`, `pending`, and `items`. Each item
-reports `id`, `kind` (`power|switch|gpio`), typed `current` (`{state}`,
-`{route}`, or `{direction,value}`) or `null` when live state is unavailable,
-nullable typed `saved`, `selected`, `requires_confirm` (boolean or `null` when
-no saved or live value exists), and `apply_state`
+Successful `get` adds `backend`, `snapshot`, `pending`, and `items`. The
+`get` snapshot object reports `version` `1` when a valid snapshot is present
+and `null` when no snapshot is present. Each item reports `id`,
+`kind` (`power|switch|gpio`), typed `current` (`{state}`, `{route}`, or
+`{direction,value}`) or `null` when live state is unavailable, nullable
+typed `saved`, `selected`, `requires_confirm` (boolean or `null` when no
+saved or live value exists), and `apply_state`
 (`not_saved|applied|pending|failed`). Successful `save` adds `saved_items`,
-`confirmation_items`, `snapshot`, and numeric `pending`; successful `apply`
-adds `noop`, `applied_items`, `failed_item`, and `pending_items`; successful
+`confirmation_items`, `applied_items`, `snapshot`, and numeric `pending`.
+The save `snapshot.version` is `1` for every successful new Save (safe or
+confirmed-dangerous). Successful
 `clear` adds `noop`, `snapshot`, and numeric `pending`.
 
 Dangerous classification is firmware-owned and applies to `power=on`, every
 USB route value, `VIN=1.8v`, and any GPIO entry with the output direction
-bit set. Save and apply that include any dangerous ID without `confirm:true`
-are rejected with `confirmation_required` and list the offending IDs in
-`dangerous_items`. `confirmation_items` belongs to a successful save response.
-A missing snapshot at apply time is a 409
-`no_snapshot`; an existing ready snapshot is a no-op success only when
-`pending_count==0` and `failed_count==0`; a partial apply includes the first
-failed item, the applied set, and the still-pending set. Stable error codes: `invalid_json`,
+bit set. A Save that includes any dangerous ID without `confirm:true`
+is rejected with `confirmation_required` and lists the offending IDs in
+`dangerous_items`. `confirmation_items` belongs to a successful save
+response. A partial save stops at the first failed item and reports the
+applied set and the still-pending set. Stable error codes: `invalid_json`,
 `empty_selection`, `unknown_item`, `duplicate_item`, `confirmation_required`,
 `item_unavailable`, `no_snapshot`, `busy`, `body_too_large`,
 `backend_unavailable`, `invalid_snapshot`, `unsupported_version`,
@@ -246,23 +252,23 @@ failed item, the applied set, and the still-pending set. Stable error codes: `in
 
 A `confirmation_required` error lists `dangerous_items`; a `busy` error carries
 `activity`; and an `apply_failed` error carries `applied_items`, `failed_item`,
-and `pending_items`. The HTTP facade returns absent or non-ready apply before
-service owners. A ready snapshot with `pending_count==0` and
-`failed_count==0` returns HTTP 200 `noop:true` from the facade before service
-owner acquisition regardless of confirm. For retryable work, the service checks
-confirmation before acquiring capture and then flash for the full apply.
+and `pending_items`. The service acquires the
+capture owner and then the flash owner once before persisting and replaying.
 
-### Boot Restore And Apply Order
+### Boot Restore And Replay Order
 
 Boot starts from the Device Tree and firmware defaults. After the config
-service initializes, low-risk saved entries are auto-applied; dangerous
-entries remain `pending` until an explicit confirmed apply. Ordinary
-control setters are volatile; only an explicit `config save` writes the
-snapshot, and there is no auto-persist path on top of normal control
-operations.
+service initializes, every structurally valid v1 snapshot replays every
+saved entry, including saved dangerous values, on every normal boot,
+because the firmware confirmation that authorized the Save also authorized
+future replay. Save persists and applies in the same shared order, so a
+confirmed Save takes effect immediately and on every future boot until a
+later Save or `config clear` replaces the snapshot. Ordinary control
+setters are volatile; only an explicit `config save` writes the snapshot,
+and there is no auto-persist path on top of normal control operations.
 
-Confirmed full apply replays the snapshot in this exact order so coupled
-final state is preserved:
+Save and boot restore share this exact replay order so coupled final state
+is preserved:
 
 1. saved GPIO inputs (direction `input`)
 2. `switch sd`
@@ -275,21 +281,23 @@ final state is preserved:
 9. `switch vin`
 10. saved GPIO outputs (direction `output`)
 
-Apply stops at the first hardware failure, leaves earlier effects reported
+Replay stops at the first hardware failure, leaves earlier effects reported
 as applied, and keeps the failed plus remaining entries pending. There is
 no rollback, no re-attempt, and no partial hardware write after the stop;
-the failed entry plus everything after it stays pending until the next
-confirmed apply. A USB route change is applied before any explicit
-`vdd_5v` override so the coupled rail matches the route; omitting `vdd_5v`
-from the snapshot preserves the route-driven side effect.
+retrying means repeating the confirmed Save, which re-captures live values
+and replays them through the same order. A failed Save still persists the
+snapshot, so the next boot replays it again. A USB route change is applied
+before any explicit `vdd_5v` override so the coupled rail matches the
+route; omitting `vdd_5v` from the snapshot preserves the route-driven side
+effect.
 
 ### CDC ACM Commands
 
 The CDC ACM shell exposes the same operations on its own command surface
 through the `config` subcommand. Shell mutations share the firmware-owned
-confirmation and busy checks and cannot bypass them. The four verbs are
-`config show`, `config save [--confirm] <firmware-item-id>...`,
-`config apply --confirm`, and `config clear`. The shell uses the same
+confirmation and busy checks and cannot bypass them. The three verbs are
+`config show`, `config save [--confirm] <firmware-item-id>...`, and
+`config clear`. The shell uses the same
 firmware-enumerated IDs that the HTTP layer exposes, with no host-side
 catalog.
 
@@ -305,12 +313,6 @@ linkr-debugger:~$ config save --confirm power/12v_out
 config save saved_count=1 pending_count=0
 ```
 
-<!-- persistent-config-example: app-cdc-config-apply -->
-```console
-linkr-debugger:~$ config apply --confirm
-config apply applied_count=1 pending_count=0
-```
-
 <!-- persistent-config-example: app-cdc-config-clear -->
 ```console
 linkr-debugger:~$ config clear
@@ -324,11 +326,10 @@ Stable shell facts:
 - Save without `--confirm` for any dangerous ID prints
   `config save error=confirmation_required` and one
   `confirmation_id=<id>` line per dangerous ID, then exits nonzero.
-- `config apply` with no pending entries prints
-  `config apply applied_count=0 pending_count=0`; a partial apply prints
-  one `applied_id=<id>` line per applied ID, then
-  `failed_id=<id> failed_errno=<n>` for the first failure and one
-   `pending_id=<id>` line per still-pending ID.
+- A partial save prints `config save error=apply_failed` with
+  `failed_id=<id> failed_errno=<n>` for the first failure, then one
+  `applied_id=<id>` line per applied ID and one
+  `pending_id=<id>` line per still-pending ID.
 - `config clear` always reports `hardware_changed=false`; live hardware
   state is unchanged.
 
@@ -344,13 +345,11 @@ HTTP/WS is unavailable.
 ### Capture And OTA Exclusion
 
 Service paths that reach owner arbitration exclude timing-critical logic/sigrok
-capture and the MCUboot OTA path. GET, absent/non-ready facade preflight,
-ready no-op apply, and unconfirmed-dangerous apply return before owner
-arbitration. The capture arbiter owns one global
+capture and the MCUboot OTA path. GET never acquires owners. The capture arbiter owns one global
 hardware buffer; the flash arbiter holds at most one owner between
 `CONFIG` and `OTA`. Concurrent capture or OTA activity returns
 `busy activity=capture` or `busy activity=ota` (HTTP 409 `busy`); the
-snapshot is not written, no apply runs, and the owner stays held by the
+snapshot is not written, no replay runs, and the owner stays held by the
 in-flight operation. There is no automatic retry, no host-side queue,
 and no silent partial save. The operator must wait for the in-flight
 operation to finish and re-issue the request.
@@ -370,24 +369,28 @@ already supports:
 - `DELETE /api/v1/config` and CDC `config clear` delete the stored
   snapshot but never change live hardware.
 
-Power-on, USB routes, `VIN=1.8v`, and GPIO `output` stay pending after
-boot until a confirmed apply clears them, even when the snapshot survives
-the recovery path intact.
+A stored v1 snapshot, including power-on, USB routes, `VIN=1.8v`, and GPIO
+`output` entries, is replayed in full on every normal boot once it survives
+the recovery path intact. A new Save after recovery writes a fresh v1
+header; a stored blob whose version byte is not 1 is never replayed,
+migrated, or auto-cleared.
 
 ### Local Versus HIL Validation
 
 The plain-C codec and policy host tests, the firmware service and HTTP
 host tests, the Rust client tests, and the Node documentation-contract
 checker run on a developer workstation or in CI. They prove the contract,
-the lock and busy behavior, the error codes, the apply order, and the
+the lock and busy behavior, the error codes, the replay order, and the
 documentation grammar; they do not prove real-board persistence across
 reboot, MCUboot OTA, or combined-UF2 recovery. Local validation is not
-real-hardware HIL. The 2026-07-30 real-hardware HIL passed all six runner
-flows; see the
-[dated report](../../doc/testing/results/2026-07-30-persistent-config-hil.md).
+real-hardware HIL. The 2026-08-05 real-hardware HIL passed the v1
+save-and-apply flow; see the
+[dated v1-save HIL report](../../doc/testing/results/2026-08-05-persistent-config-v1-save-hil.md).
+The historical 2026-07-30 real-hardware HIL passed all six runner flows;
+see the [historical six-flow report](../../doc/testing/results/2026-07-30-persistent-config-hil.md).
 The HIL procedure lives in `doc/testing/hil-functional-test-spec.md`. Future
-local tests remain distinct from board HIL and do not replace a new board run
-when hardware behavior changes.
+local tests remain distinct from board HIL and do not replace a new board
+run when hardware behavior changes.
 
 Raw MCUboot OTA API (RP2350 only; SHA256 only, no signature/authentication/secure boot/anti-rollback):
 

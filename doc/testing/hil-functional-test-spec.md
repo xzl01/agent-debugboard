@@ -594,9 +594,11 @@ mock，与真实硬件无关。Todo 16 实机 HIL 必须在 Todo 15 通过、固
 触发真实硬件操作。
 
 参见 [持久化配置文档](../persistent-configuration.md)。本地验证不等于真实硬件
-HIL。2026-07-30 真实硬件 HIL 的六个 runner flow 全部通过，见
-[日期报告](results/2026-07-30-persistent-config-hil.md)。未来本地测试仍不能替代
-硬件行为变更后的新板卡 HIL。
+HIL。2026-08-05 真实硬件 HIL 通过 v1 save-and-apply flow，见
+[日期 v1-save HIL 报告](results/2026-08-05-persistent-config-v1-save-hil.md)。历史 2026-07-30
+真实硬件 HIL 的六个 runner flow 全部通过，见
+[历史六 flow 报告](results/2026-07-30-persistent-config-hil.md)。未来本地测试仍不能
+替代硬件行为变更后的新板卡 HIL。
 
 #### Todo 14 本地文档验收
 
@@ -656,7 +658,7 @@ sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh --dry-run safe-
 
 Todo 16 实机 HIL 的 safe-reboot 路径必须选用安全值
 `switch/sd=usb-reader` 和 `switch/tf_wp=protected`，保存后重启。HTTP GET 确认
-两项均由 boot-safe auto-restore 恢复；CDC `config show` 只证明摘要计数、可用性和
+两项均由 v1 full restore 恢复；CDC `config show` 只证明摘要计数、可用性和
 命令 fallback，不证明逐项值。随后必须把两项恢复为
 `switch/sd=target` 和 `switch/tf_wp=writable`。任何缺少物理、网络或 CDC
 前置条件的步骤标记为 `[blocked]`，而不是 pass。
@@ -672,27 +674,55 @@ Todo 16 实机 HIL 的 safe-reboot 路径必须选用安全值
 实参必须替换为本次已识别的设备或受控 helper：
 
 ```text
-sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh --execute --url http://172.29.203.1 --serial <identified-cdc-device> --reboot-command <identified-reboot-command> --capture-start <logic-or-sigrok-capture-start-command> --capture-stop <logic-or-sigrok-capture-stop-command> --combined-uf2 build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 --ota-image build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-ota.bin --confirm-dangerous-save --confirm-dangerous-apply all
+sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh --execute --url http://172.29.203.1 --serial <identified-cdc-device> --reboot-command <identified-reboot-command> --capture-start <logic-or-sigrok-capture-start-command> --capture-stop <logic-or-sigrok-capture-stop-command> --combined-uf2 build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 --ota-image build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-ota.bin --confirm-dangerous-save all
 ```
 
 其核心 `config-persistence-hil.sh --execute --url http://172.29.203.1 all`
-形状不免除这些显式参数。ROM BOOTSEL 只能使用 combined
-`radxa-linkr-debugger-rp2350.uf2`；OTA 只能使用 MCUboot 格式
-`radxa-linkr-debugger-rp2350-ota.bin`，不得将 app-only `zephyr.uf2` 用于
-ROM BOOTSEL 或 OTA。
+形状不免除这些显式参数。该 `all` 流程包含 `safe-reboot`、
+`dangerous-auto-restore`、`capture-busy`、`ota-preserve`、`bootsel-preserve`
+和 `cdc-fallback` 六个真实 runner flow。Save 是唯一的持久化变更操作：
+保存即应用，没有独立的 Apply 操作；`apply_failed` 部分失败响应字段由
+firmware/HTTP host-model 测试与 offline shell fixture 覆盖。ROM BOOTSEL
+只能使用 combined `radxa-linkr-debugger-rp2350.uf2`；OTA 只能使用 MCUboot
+格式 `radxa-linkr-debugger-rp2350-ota.bin`，不得将 app-only `zephyr.uf2`
+用于 ROM BOOTSEL 或 OTA。
 
 #### 危险项 pending 与固件确认
 
-危险项必须精确选择 `switch/usb` 的 `target` 值，而不是给电源轨上电、选择 VIN 1.8V 或
-驱动输出 GPIO。HIL 必须先证明未确认 save 返回 HTTP 409、
-`error.code=confirmation_required` 和 `dangerous_items`；随后经人工确认的 save
-成功，再重启并确认该值仍为 pending。未确认 apply 也必须返回 HTTP 409，最后才
-允许经人工确认的 apply。host/client 不得自行推断危险性或跳过确认。
+危险项必须精确选择非启动默认值 `switch/usb=pc`，而不是给电源轨上电、
+选择 VIN 1.8V 或驱动输出 GPIO。host/client 不得自行推断危险性或跳过确认。
+危险提示与拦截只发生在 Save 请求时；写入存储的快照已经获得授权，启动时
+全量重放，不存在第二次确认门。
 
-成功 save 的断言字段只能是 `saved_items`、`confirmation_items`、`snapshot` 和
-数值 `pending`；它不使用 `pending_items`。`pending_items` 只属于 apply 成功或
+未确认 save 返回 HTTP 409、`error.code=confirmation_required` 必须包含
+`dangerous_items`，由真实 HIL 的 `dangerous-auto-restore` flow 验证。真实 HIL 的
+`dangerous-auto-restore` flow 只在下面的 `dangerous-auto-restore 与
+固件确认` 节中显式断言未确认 save 的 confirmation 错误。
+
+成功 save 的断言字段只能是 `saved_items`、`confirmation_items`、`applied_items`、`snapshot` 和
+数值 `pending`；它不使用 `pending_items`。`pending_items` 只属于
 `apply_failed` 的部分执行结果。若未确认 save 的错误没有 `dangerous_items`，必须
 停止后续危险动作并记录 `[failed: no firmware confirmation]`。
+
+#### dangerous-auto-restore 与固件确认
+
+`dangerous-auto-restore` 是当前固件上唯一在 `all` runner 中验证危险项的
+真实硬件 flow，consecutive 2 次重启的 v1 自动重放是它的核心契约。它必须
+包含以下断言：
+
+- 未确认的危险 Save 必须返回 HTTP 409、`error.code=confirmation_required`
+  并携带 `dangerous_items`，host 不得跳过确认。
+- 一次确认的危险 Save（非启动默认值 `switch/usb=pc`）后，`GET /api/v1/config`
+  必须返回 `snapshot.version == 1`、`snapshot.present == true` 且数值
+  `pending == 0`；`switch/usb` 行的 `current`、`saved`、`pc` 必须完全
+  一致，`requires_confirm == true`、`apply_state == applied`、
+  `selected == true`。
+- 连续两次重启之后再次 GET：上述 v1 字段、值和 `pending == 0` 必须保持
+  一致，`apply_state` 仍为 `applied`。v1 自动重放在两次普通启动之间
+  不依赖任何外部命令，也不存在独立的 Apply 操作。
+- 如果以上任何一次断言失败（例如 `pending != 0`、`apply_state != applied`、
+  `snapshot.version != 1`），记为
+  `[failed: dangerous auto restore]` 并立即停止后续危险动作。
 
 #### Clear 不改变硬件
 
@@ -713,7 +743,7 @@ Capture 测试必须占用逻辑分析仪或 sigrok capture arbiter；`adc recor
 `activity=capture`。在 OTA upload 活跃时，config write（save 和 clear）都必须
 返回 HTTP 409、`error.code=busy` 与 `activity=ota`。
 
-无待处理项的 apply 和 GET 都必须在有界时间内完成，但不能把所有准备状态都错误地断言为 busy。GET 从不获取 owner。apply 请求先由 HTTP facade 判断：absent 或 non-ready 时直接返回，不进入 service；当 `pending_count==0` 且 `failed_count==0` 时，无论 confirm 值为何，facade 都在获取 owner 前返回 HTTP 200 和 `noop:true`。含 `pending` 或 `failed` 项的重试会先检查危险项确认；未确认的危险重试返回 HTTP 409，且不会获取 owner。安全重试或已确认的危险重试才依次获取 capture、flash owner，再执行完整 apply。capture 或 OTA 分别活跃时，save 与 clear 都必须返回 busy，`activity` 分别为 `capture` 与 `ota`。未来 HIL 必须为这些状态记录准确且有界的 HTTP 结果，绝不以超时、无限重试或 ADC record 代替 arbiter 验证。
+GET 必须在有界时间内完成；GET 从不获取 owner，但不能把所有准备状态都错误地断言为 busy。capture 或 OTA 分别活跃时，save 与 clear 都必须返回 busy，`activity` 分别为 `capture` 与 `ota`。未来 HIL 必须为这些状态记录准确且有界的 HTTP 结果，绝不以超时、无限重试或 ADC record 代替 arbiter 验证。
 
 #### OTA 与 combined-UF2 保留
 
@@ -726,8 +756,7 @@ Runner 的 OTA upload 使用 `--limit-rate 64K`，使状态与 busy 仲裁可在
 
 CDC ACM fallback 必须通过已识别的 `--serial <identified-cdc-device>` 访问，禁止
 直接写入假定的 tty 路径。CDC 命令集为 `config show`、
-`config save [--confirm] <firmware-item-id>...`、`config apply --confirm`、
-`config clear`。当 HTTP 不可用时，必须能用 CDC 触发同样的查询与 mutate，且
+`config save [--confirm] <firmware-item-id>...`、`config clear`。当 HTTP 不可用时，必须能用 CDC 触发同样的查询与 mutate，且
 HTTP/CDC 两条路径在 BOOTSEL 切换后都能恢复。
 
 #### 最终安全清理
@@ -762,9 +791,11 @@ doc/testing/results/<YYYY-MM-DD>-persistent-config-hil.SHA256SUMS
 - 所有 `[blocked]` 的原因；不得把 `[blocked]` 记为 pass。
 
 本节既定义 Todo 16 实机 HIL 的验收要求，也保留后续板卡回归的相同边界。
-2026-07-30 的实际执行结果为 PASS，权威证据见
-[日期报告](results/2026-07-30-persistent-config-hil.md)；Todo 14 本地证明及未来
-本地测试仍不构成或替代真实硬件 HIL。
+2026-08-05 v1 save-and-apply 真实硬件 HIL 的实际执行结果为 PASS，权威证据见
+[日期 v1-save HIL 报告](results/2026-08-05-persistent-config-v1-save-hil.md)；2026-07-30 真实
+硬件 HIL 的六个 runner flow 实际执行结果同样为 PASS，权威证据见
+[历史六 flow 报告](results/2026-07-30-persistent-config-hil.md)；Todo 14 本地证明
+及未来本地测试仍不构成或替代真实硬件 HIL。
 
 ### 3. 电源输出 get/set
 
@@ -1019,9 +1050,9 @@ timeout 5s curl -fsS -X PUT -H 'Content-Type: application/json' \
 
 - `/api/v1/gpio` 列表中允许保留 GP29（在持久化/安全目录里），但写入方向必须是
   `output` 的请求被固件层拒绝（错误码与文本都要清楚说明输入唯一）。
-- v1 输入快照继续解码、应用并在 firmware-defaults 之后自动恢复。
-- v1 输出快照保留可解码，但 `config apply --confirm` 命中 GP29 之后，整段
-  apply 停在第一个硬件失败：GP29 `apply_state="failed"`，后续 GPIO output
+- v1 输入快照继续解码、重放并在 firmware-defaults 之后自动恢复。
+- v1 输出快照保留可解码，但重放命中 GP29 之后，整段
+  replay 停在第一个硬件失败：GP29 `apply_state="failed"`，后续 GPIO output
   仍 `pending`，绝不能伪装成完整成功。
 
 **4b.6 HIL 边界**
@@ -1037,8 +1068,8 @@ GP29 直接所有权子项（HTTP GPIO 列表保留 GP29、`PUT direction=output
 电流 row 声明仍 `pending`，因为本会话未发生 post-token firmware
 reflash/HIL；不得用本地视觉 QA 替代板卡 HIL，也不得反过来用本次
 板卡 HIL 主张电流 row 的视觉行为。4b.5 中 v1 输入快照继续
-解码并在 firmware-defaults 之后自动恢复、v1 输出快照在 `config apply
---confirm` 命中 GP29 时停在第一个硬件失败、GP29 `apply_state="failed"`
+解码并在 firmware-defaults 之后自动恢复、v1 输出快照在重放命中
+GP29 时停在第一个硬件失败、GP29 `apply_state="failed"`
 而后续 GPIO output 仍 `pending` 这两个历史 v1 snapshot 兼容子项仍
 `pending`，等待未来真实板卡 HIL。rolling nightly 检查（第 12h 节）
 与 4b 节无关，独立保持 `pending`。nightly 现仅在推送到 `dev` 分支时

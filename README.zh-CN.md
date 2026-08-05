@@ -40,14 +40,9 @@ ADC3 契约、wire shape 和 GP29 所有权规则见
 
 ## 持久化配置
 
-持久化配置是一份由固件持有的显式快照，完整契约见
-[持久化配置规范](doc/persistent-configuration.md)。普通 setter 仍然只修改实时状态；
-安全值会在启动时自动恢复，危险值必须等待固件收到显式确认。清除快照不会
-改变当前硬件状态。
+持久化配置是固件拥有的单一显式快照，使用唯一的 v1 线格式；见[权威契约](doc/persistent-configuration.md)。快照头部为 12 字节；byte 4 version 只接受 1，byte 7 zero 是唯一接受的恢复填充。Save 捕获实时值、持久化 v1 快照并立即应用这些值，一次确认的 Save 即完成持久化与应用（save persists and applies）。任何结构有效的 v1 快照在每次正常启动时全量重放所有已保存条目，包括危险值（v1 full restore）；Save 时的固件确认是唯一的危险门。version 字节不是 1 的快照永远不会被重放、迁移或自动清除（never replayed, migrated, or auto-cleared），只有显式的新 Save 才能覆盖。重放在第一个硬件失败处停止，并报告已应用、失败和待处理行；failed retry via repeated save 是唯一的重试路径。清除快照不会改变实时硬件。
 
-本地验证不等于真实硬件 HIL。2026-07-30 真实硬件 HIL 的六个 runner flow
-全部通过，见[当日报告](doc/testing/results/2026-07-30-persistent-config-hil.md)。
-今后的本地测试仍不能替代调试板 HIL。
+本地验证不等于真实硬件 HIL。2026-08-05 真实硬件 HIL 通过 v1 save-and-apply flow；见[日期 v1-save HIL 报告](doc/testing/results/2026-08-05-persistent-config-v1-save-hil.md)。历史 2026-07-30 真实硬件 HIL 六个 runner flow 全部通过；见[历史六 flow 报告](doc/testing/results/2026-07-30-persistent-config-hil.md)。未来本地测试仍不能替代板级 HIL。
 
 ### 固定契约摘要
 
@@ -56,14 +51,15 @@ ADC3 契约、wire shape 和 GP29 所有权规则见
 | `storage` | `storage_partition+Settings+NVS` |
 | `snapshot` | `linkr/config/snapshot;v1;one` |
 | `explicit-save` | `ordinary-setters-volatile;explicit-save-only` |
-| `boot-safe` | `defaults-first;safe-auto-restore` |
-| `danger-pending` | `dangerous-pending-after-boot` |
-| `firmware-confirmation` | `firmware-owned-confirmation` |
+| `boot-restore` | `defaults-first;v1-full-restore` |
+| `header` | `12B-header;byte4-version=1;byte7-zero;max-104B` |
+| `firmware-confirmation` | `firmware-owned-confirmation;save-time-only` |
+| `save` | `persists-and-applies;failed-retry-via-resave` |
 | `clear` | `settings_delete;hardware-unchanged` |
 | `busy` | `busy:capture\|ota` |
 | `recovery` | `BOOTSEL:radxa-linkr-debugger-rp2350.uf2;OTA:radxa-linkr-debugger-rp2350-ota.bin;zephyr.uf2-invalid` |
 | `security` | `no-profiles;no-encryption;no-authentication-or-authorization;no-config-rollback` |
-| `hil-boundary` | `local-distinct;real-HIL-2026-07-30-pass` |
+| `hil-boundary` | `local-distinct;real-HIL-2026-08-05-v1-save-pass` |
 
 ## 快速开始
 

@@ -3,8 +3,8 @@
 This document is the canonical reference for the persistent-configuration
 feature on `radxa-linkr-debugger`. The persistent-configuration service lets
 the firmware remember selected power, switch, and safe-GPIO values across
-boots, restore them on startup, and re-apply them on demand through the HTTP,
-WebSocket, CDC ACM, and embedded Web surfaces.
+boots, restore them on startup, and save plus apply them in one operation
+through the HTTP, WebSocket, CDC ACM, and embedded Web surfaces.
 
 The default device URL is `http://172.29.203.1`. The feature is owned by the
 firmware: the host CLI/TUI, Web UI, and CDC ACM shell only render and forward
@@ -21,11 +21,11 @@ The persistent-configuration feature is in scope:
   already carries `/api/v1/status` and `/api/v1/power`.
 - A compact status summary carried inside the existing WebSocket
   `snapshot/status` message.
-- A Rust CLI subcommand (`config show|save|apply|clear`) on the released
+- A Rust CLI subcommand (`config show|save|clear`) on the released
   `radxa-linkr-debuggerctl` and on the in-tree `cmd-ng/` source build.
 - A TUI control surface that mirrors the Rust CLI.
 - An embedded Web UI panel that mirrors the Rust CLI.
-- A CDC ACM shell fallback path with the same `config show|save|apply|clear`
+- A CDC ACM shell fallback path with the same `config show|save|clear`
   verbs.
 
 The persistent-configuration feature is intentionally out of scope:
@@ -39,7 +39,8 @@ The persistent-configuration feature is intentionally out of scope:
 - No authentication, authorization, signature, or anti-rollback is provided
   for the persistent-configuration service or any of its transports.
 - No automatic rollback of saved values is performed. Failure of one entry
-  during apply stops the apply; earlier entries are not undone.
+  during a save or boot replay stops the replay; earlier entries are not
+  undone.
 - No host-side persistence is performed. The Rust CLI, TUI, Web UI, and CDC
   shell do not remember the saved snapshot across their own restarts.
 
@@ -50,34 +51,35 @@ usb-reader`, or `gpio set GP13 1` command changes the live hardware state for
 the current boot only. Closing and reopening the connection, or rebooting the
 board, does not bring those values back.
 
-A persistent value is created by an explicit `config save` request. The
-firmware snapshots the live values of the items listed in the request into
-the on-board storage under `linkr/config/snapshot`. The save is atomic: every
-listed item is captured and written together or the request fails and the
-existing snapshot is left untouched.
+A persistent value is created by an explicit `config save` request. Save captures live values, persists the v1 snapshot, and then replays those
+values onto the live hardware in one operation, so save persists and
+applies at the same time. The capture is atomic: every listed item is
+captured and written together or the request fails and the existing
+snapshot is left untouched. Every successful Save writes the v1 header;
+there is no second protocol version and no separate Apply operation.
 
-A saved snapshot is restored in two phases. At boot, the firmware loads the
-snapshot and re-applies the values that do not require confirmation. Values
-that do require confirmation stay pending until the user runs `config apply`.
-After boot, `config save` always writes a fresh snapshot; it does not apply
-the saved values to live hardware. `config clear` deletes the snapshot; it
-does not alter live hardware.
+Every structurally valid v1 snapshot then replays every saved entry,
+including dangerous values, on every normal boot, giving v1 full restore
+semantics. The confirmation given at Save time is the only danger gate: a
+snapshot that made it into storage is already authorized, so boot never
+re-asks. `config clear` deletes the snapshot; it does not alter live
+hardware.
 
 The confirmation rule is firmware-owned. Firmware confirmation is required
 whenever the catalog marks an entry as `requires_confirm`. The CLI, TUI,
 Web UI, and CDC shell do not decide which items are dangerous. They only
 forward the firmware's `requires_confirm` flag and let the user pass
-`--confirm` when dangerous items are present.
+`--confirm` when dangerous items are present. The confirmation authorizes
+the immediate Save and, because the snapshot is stored, every future
+boot-time replay at once.
 
 The user-visible verbs are:
 
 - `config show`: read the catalog, the snapshot status, and the per-item
   state.
 - `config save [--confirm] <firmware-item-id>...`: capture the live values
-  of the listed items into the on-board snapshot. `--confirm` is required
-  when any listed item is dangerous.
-- `config apply --confirm`: apply the saved snapshot to live hardware. The
-  `--confirm` is mandatory.
+  of the listed items, persist them as the v1 snapshot, and apply them.
+  `--confirm` is required when any listed item is dangerous.
 - `config clear`: delete the saved snapshot. Live hardware is unchanged.
 
 ## Storage Model
@@ -95,23 +97,29 @@ loads the value at the Settings key `linkr/config/snapshot`, and stores a
 single binary snapshot blob under that key. There is no other key, no
 sharded record, and no per-item entry.
 
-The snapshot is a single bounded binary record. The header carries the magic
-`LRCF`, the version byte `1`, the entry size, the entry count, and the total
-encoded size. Each entry is four bytes: domain, item id, value, and a padding
-byte. The maximum encoded size is 104 bytes for a 12-byte header and 23
-entries. The catalog is exactly 23 items: 4 power outputs, 4 switches, and
-15 safe GPIOs (`gpio/GP7` through `gpio/GP20` plus `gpio/GP29`).
+The snapshot is a single bounded binary record. The header is fixed at 12
+bytes; byte 4 version 1 is the only accepted version and byte 7 zero is the
+only accepted restore padding. The header also carries the magic `LRCF`,
+the entry size, the entry count, and the total encoded size. Each entry is
+four bytes: domain, item id, value, and a padding byte. The maximum encoded
+size is 104 bytes for the 12-byte header and 23 entries of 4 bytes each.
+The catalog is exactly 23 items: 4 power outputs, 4 switches, and 15 safe
+GPIOs (`gpio/GP7` through `gpio/GP20` plus `gpio/GP29`). There is exactly
+one wire definition, so no version dispatch exists anywhere in the service.
 
-The snapshot is version-bounded. The codec rejects:
+The codec rejects non-conforming headers as follows:
 
-- A missing or wrong magic: returned as `invalid_snapshot` with the
-  `invalid_snapshot` reason.
-- A version that is not `1`: returned as `unsupported_version` with the
-  `unsupported_version` reason.
-- An entry count of zero: returned as `empty_selection` to the policy layer
-  and surfaced as a save validation error.
+- A version byte other than 1: returned as `unsupported_version` with the
+  `unsupported_version` reason; the stored blob is never replayed, migrated, or auto-cleared, and an explicit later Save is the only path that
+  overwrites it.
+- A v1 header whose byte 7 is non-zero: returned as `invalid_snapshot` with
+  the `invalid_snapshot` reason.
+- A missing or wrong magic, mismatched entry size, out-of-range entry count,
+  or non-zero padding bytes: returned as `invalid_snapshot`.
 - An entry whose domain or item id is not in the firmware catalog, or whose
   value is out of the per-domain range: returned as `invalid_snapshot`.
+- An encoded snapshot with `entry_count=0`: returned as `empty_selection`
+  to the policy layer and surfaced as a save validation error.
 
 CRC is enforced by `CONFIG_NVS_DATA_CRC` at the NVS layer; the persistent
 configuration service does not add a second CRC. Corrupt or unsupported storage
@@ -121,7 +129,7 @@ An encoded snapshot `entry_count=0` is rejected as `empty_selection`. Missing
 key means absent and defaults; corrupt or unsupported storage surfaces its
 reason and defaults. The firmware does not auto-format, erase, or delete the
 snapshot, and storage read and write failures remain errors.
-`apply` is unavailable until its status reason permits it. `save` does not gate
+`save` does not gate
 on `service_status.reason`: after ownership acquisition, control capture, and
 policy checks, it calls the backend store. A successful backend write can
 replace a corrupt or unsupported snapshot and sets the service reason to
@@ -153,35 +161,27 @@ The `requires_confirm` flag on each catalog row is computed by the firmware
 from the catalog row's current value or saved value. The host never overrides
 the flag.
 
-## Boot Restore And Apply
+A Save that includes any dangerous value demands explicit firmware
+confirmation at Save time. Without confirmation, the Save returns
+HTTP 409 `confirmation_required` and lists the offending IDs in
+`dangerous_items`; the snapshot is not written. The confirmed Save needs
+no second authorization later: the stored snapshot replays in full at
+boot.
 
-The boot flow has four phases: defaults first, then snapshot load, then
-safe auto-restore, then dangerous pending.
+## Boot Restore
 
-1. The firmware boots with the Device Tree defaults. Power outputs are
-   off, `switch sd` is `target`, `switch usb` is `target`, `switch tf_wp`
-   is `writable`, `switch vin` is `3.3v`, and the allowlisted GPIOs are in
-   input mode.
-2. The persistent-configuration service loads the snapshot from
-   `linkr/config/snapshot`. A corrupt, unsupported, missing, or
-   backend-unavailable snapshot does not block startup. The boot path
-   reports the reason and continues with the defaults.
-3. If the snapshot is valid, the service re-applies every entry whose
-   `requires_confirm` flag is false. These are the safe values, and the
-   safe values auto-restore after defaults on every boot.
-4. Entries whose `requires_confirm` flag is true remain pending after
-   boot, and the dangerous values remain pending until the user runs
-   `config apply`. `pending` is non-zero, `apply_state` is `pending`, and
-   `current` still reflects the Device Tree default.
+Boot restores defaults first. Power outputs are off, `switch sd` is
+`target`, `switch usb` is `target`, `switch tf_wp` is `writable`,
+`switch vin` is `3.3v`, and the allowlisted GPIOs are in input mode. The
+persistent-configuration service then loads the snapshot from
+`linkr/config/snapshot`. A corrupt, unsupported, missing, or
+backend-unavailable snapshot does not block startup; the boot path reports
+the reason and continues with the defaults. Every structurally valid v1 snapshot replays every saved entry, including dangerous values, on every normal boot through the shared ten-stage order; `pending` stays zero after
+a successful boot replay, `current` matches the saved value, and
+`apply_state` is `applied` for every replayed row.
 
-An all-dangerous snapshot may have a zero-entry boot-safe subset. That valid
-filtered boot restore is a successful no-op, leaves dangerous rows pending, and
-is not corruption.
-
-Boot restore and `config apply` share the same ten-stage order, enforced by
-`linkr_debugger_config_apply_order_snapshot`. Boot-safe restore skips dangerous
-entries, including GPIO outputs, while preserving this common order for the
-entries it does apply:
+Save and boot share the same replay engine and the same ten-stage order,
+enforced by `linkr_debugger_config_replay_order_snapshot`:
 
 1. Safe GPIO inputs (GPIOs in input mode).
 2. `switch sd`.
@@ -194,35 +194,32 @@ entries it does apply:
 9. `switch vin`.
 10. Saved GPIO outputs (GPIOs in output mode).
 
-The service mutex is held for the entire apply sequence. It acquires the
-capture owner and then the flash owner once before calling the full
-`linkr_debugger_config_apply_execute` sequence, then releases flash and capture
-once after that call returns. Owners are not reacquired per entry.
+A USB route change is applied before any explicit `vdd_5v` override so the
+coupled rail matches the route; omitting `vdd_5v` from the snapshot
+preserves the route-driven side effect.
 
-GET never acquires owners. The HTTP facade returns absent or non-ready apply
-before service owners. A ready snapshot with `pending_count==0` and
-`failed_count==0` returns HTTP 200 `noop:true` from the facade before service
-owner acquisition regardless of confirm. For a retryable pending or failed
-snapshot, the service checks dangerous confirmation before owner acquisition;
-an unconfirmed dangerous retry returns HTTP 409 owner-free. A safe retry or
-confirmed dangerous retry acquires capture, then flash, then runs the full
-apply.
+The service mutex is held for the entire save or boot sequence. It acquires the
+capture owner and then the flash owner once before persisting and replaying, then releases flash and capture
+once after that sequence returns. Owners are not reacquired per entry.
+GET never acquires owners.
 
-During the apply, the service uses stop-first-failure. The first setter that
-returns a non-zero errno stops the apply, sets `apply_state` to `failed`
-for the failing entry, and leaves every earlier entry applied. There is no
-rollback: the firmware does not undo earlier entries, does not retry, and
-does not fall back to a previous snapshot. The host sees `noop` as false,
+The replay stops at the first hardware failure without hidden rollback:
+the first setter that returns a non-zero errno stops the replay, sets
+`apply_state` to `failed` for the failing entry, leaves every earlier
+entry applied, and leaves every remaining saved entry pending. There is
+no rollback: the firmware does not undo earlier entries, does not retry,
+and does not fall back to a previous snapshot. The host sees
 `applied_items` listing every entry that succeeded, `failed_item` pointing
-to the entry that stopped the apply, and `pending_items` listing every
-remaining entry.
+to the entry that stopped the replay, and `pending_items` listing every
+remaining entry. A failed Save still persists the snapshot, so the next
+boot replays it again and a healthy boot can finish the work without host
+involvement.
 
-The boot apply skips any entry whose `requires_confirm` flag is true. The
-host can run `config apply --confirm` after boot to push the pending entries
-through the same ten-stage sequence with stop-first-failure.
-Failed-only snapshots remain retryable even when numeric `pending` excludes
-failed rows. A confirmed full apply confirms every saved dangerous row,
-including already-applied dangerous siblings.
+Retrying means repeating the confirmed Save. Because Save captures from
+live values, the retry re-captures the values the operator still sees and
+replays them through the same order; failed retry via repeated save is the
+only retry path, and there is no separate Apply verb anywhere in the API,
+the CLI/TUI, the Web UI, or the CDC shell.
 
 ## HTTP API
 
@@ -232,27 +229,26 @@ The HTTP API uses the same JSON envelope as the rest of the board:
 response includes `Cache-Control: no-store`. The default device URL is
 `http://172.29.203.1`.
 
-The four endpoints are:
+The three endpoints are:
 
 - `GET /api/v1/config` returns the catalog, the snapshot status, and the
   per-item state. The response carries `action` set to `get`, `backend` with
-  `available` and `reason`, `snapshot` with `present` and `version`,
-  `pending` as the count of items that still need to be applied, and `items`
-  with one row per catalog item. Each row carries `id`, `kind`, `current`,
-  `saved`, `selected`, `requires_confirm`, and `apply_state`. The `items`
-  array is required for a successful `get` response.
-- `PUT /api/v1/config` captures the live values of the listed items into
-  the snapshot. The body is a JSON object with `items` (an array of
-  firmware item ids) and `confirm` (a boolean). The response carries
-  `action` set to `save`, `saved_items`, `confirmation_items`,
-  `snapshot.present` set to `true`, `snapshot.version` set to `1`, and
-  `pending` set to `0`. The request body is capped at 1024 bytes; an
-  oversize body returns `body_too_large` with HTTP 413.
-- `POST /api/v1/config/apply` runs the saved snapshot through the ten-stage
-  apply. The body is `{"confirm": true}`. The response carries `action`
-  set to `apply`, `noop` (true only when `pending_count==0` and
-  `failed_count==0`),
-  `applied_items`, `failed_item`, and `pending_items`.
+  `available` and `reason`, `snapshot` with `present` and `version` (`1`
+  when a valid snapshot is stored, `null` when no snapshot is present),
+  `pending` as the count of saved items that are not currently applied, and
+  `items` with one row per catalog item. Each row carries `id`, `kind`,
+  `current`, `saved`, `selected`, `requires_confirm`, and `apply_state`.
+  The `items` array is required for a successful `get` response.
+- `PUT /api/v1/config` captures the live values of the listed items,
+  persists them as the v1 snapshot, and applies them. The body is a JSON
+  object with `items` (an array of firmware item ids) and `confirm` (a
+  boolean). The response carries `action` set to `save`, `saved_items`,
+  `confirmation_items`, `applied_items`, `snapshot.present` set to `true`,
+  `snapshot.version` set to `1`, and numeric `pending` (`0` when every
+  entry applied). A partially failed Save responds with HTTP 500
+  `apply_failed` and the same `applied_items`, `failed_item`, and
+  `pending_items` detail fields. The request body is capped at 1024 bytes;
+  an oversize body returns `body_too_large` with HTTP 413.
 - `DELETE /api/v1/config` deletes the snapshot. The body is empty. The
   response carries `action` set to `clear`, `noop`, `snapshot.present` set
   to `false`, and `pending` set to `0`.
@@ -261,9 +257,8 @@ The success and failure fields on each envelope are:
 
 - Success top-level: `schema`, `ok`, `command`, `action`.
 - Success `get`: `backend`, `snapshot`, `pending`, `items`.
-- Success `save`: `saved_items`, `confirmation_items`, `snapshot`,
-  `pending`.
-- Success `apply`: `noop`, `applied_items`, `failed_item`, `pending_items`.
+- Success `save`: `saved_items`, `confirmation_items`, `applied_items`,
+  `snapshot`, `pending`.
 - Success `clear`: `noop`, `snapshot`, `pending`.
 - Failure top-level: `schema`, `ok`, `command`, `action`, `error.code`,
   `error.message`.
@@ -306,11 +301,6 @@ curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["switch/s
 curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["switch/usb"],"confirm":true}' http://172.29.203.1/api/v1/config
 ```
 
-<!-- persistent-config-example: curl-config-apply-dangerous -->
-```sh
-curl -fsS -X POST -H 'Content-Type: application/json' --data '{"confirm":true}' http://172.29.203.1/api/v1/config/apply
-```
-
 <!-- persistent-config-example: curl-config-clear -->
 ```sh
 curl -fsS -X DELETE http://172.29.203.1/api/v1/config
@@ -342,7 +332,7 @@ endpoints above. They are not carried on the status WebSocket.
 
 ## Rust CLI
 
-The Rust host CLI lives under `cmd-ng/` and exposes the four verbs as a
+The Rust host CLI lives under `cmd-ng/` and exposes the three verbs as a
 single `config` subcommand. The CLI is a thin renderer: it does not decide
 which items are dangerous, does not retry, and does not keep its own copy
 of the saved snapshot.
@@ -351,12 +341,10 @@ The exact grammar is:
 
 - `radxa-linkr-debuggerctl config show`
 - `radxa-linkr-debuggerctl config save [--confirm] <firmware-item-id>...`
-- `radxa-linkr-debuggerctl config apply --confirm`
 - `radxa-linkr-debuggerctl config clear`
 
 A `config save` with no items is a usage error and does not reach the
-HTTP API. A `config apply` without `--confirm` is a usage error and does not
-reach the HTTP API. `--confirm` may appear before or after the items on
+HTTP API. `--confirm` may appear before or after the items on
 `config save`.
 
 The Rust parser preserves the user-supplied item order, sends the request
@@ -372,8 +360,9 @@ status does not agree with the `ok` envelope: 2xx requires `ok: true`, and a
 non-2xx response requires `ok: false`. Failure envelopes require
 `error.code` and `error.message`; `confirmation_required` requires
 `dangerous_items`, `busy` requires `activity` `capture` or `ota`, and
-`apply_failed` requires the partial-apply fields. The CLI therefore does not
-ignore HTTP status or invent a fallback rendering.
+`apply_failed` requires the partial replay fields. The CLI therefore does not
+ignore HTTP status or invent a fallback rendering. The CLI also binds the
+snapshot version: `1` when a snapshot is present and `null` when absent.
 
 ### Examples
 
@@ -392,11 +381,6 @@ radxa-linkr-debuggerctl config save switch/sd
 radxa-linkr-debuggerctl config save --confirm switch/usb
 ```
 
-<!-- persistent-config-example: cli-config-apply -->
-```sh
-radxa-linkr-debuggerctl config apply --confirm
-```
-
 <!-- persistent-config-example: cli-config-clear -->
 ```sh
 radxa-linkr-debuggerctl config clear
@@ -404,14 +388,14 @@ radxa-linkr-debuggerctl config clear
 
 ## Interactive TUI
 
-The TUI control surface in `cmd-ng/src/tui/` mirrors the four verbs. It keeps
+The TUI control surface in `cmd-ng/src/tui/` mirrors the three verbs. It keeps
 only the current firmware-derived view and runs `ConfigWorker` as a bounded
-background worker: one active refresh/save/apply/clear job at a time.
+background worker: one active refresh/save/clear job at a time.
 
 The TUI worker (`ConfigWorker` in `cmd-ng/src/tui/config_io.rs`) issues one
 mutation request and one authoritative refresh in the same job:
 
-- A `Save`, `Apply`, or `Clear` job sends the mutation first and then issues
+- A `Save` or `Clear` job sends the mutation first and then issues
   one authoritative `GET /api/v1/config`, including after a mutation failure.
 - The TUI never silently retries or injects confirmation. A
   `confirmation_required` response opens a separate saved-config confirmation
@@ -420,8 +404,8 @@ mutation request and one authoritative refresh in the same job:
 - `r` refreshes HTTP status and requests an authoritative config GET.
 - `c` focuses Saved Config when it is supported and loaded. While focused,
   `c` or `Esc` blurs it; Up/Down or `j`/`k` moves the item cursor, and
-  Enter/Space toggles the current selection. `s`, `a`, and `x` request save,
-  apply, and clear. `q` and Ctrl-C remain global quit keys even while focus or
+  Enter/Space toggles the current selection. `s` and `x` request save and
+  clear. `q` and Ctrl-C remain global quit keys even while focus or
   a confirmation modal is active.
 - A `busy` result retains its firmware activity and a storage failure remains
   an error; neither path falls back to client defaults or auto-issues another
@@ -430,9 +414,9 @@ mutation request and one authoritative refresh in the same job:
 The TUI does not own confirmation policy. The confirmation flag is read
 from the firmware's `requires_confirm` field on each catalog row and from
 the `dangerous_items` field on save errors.
-When a saved row is `pending` or `failed`, the TUI offers a retry; an apply
-confirmation lists every saved dangerous row, including an already-applied
-dangerous sibling.
+When a saved row is `pending` or `failed` after a partial save or boot
+replay, the operator retries by selecting the row and saving again with
+confirmation.
 
 ## Embedded Web UI
 
@@ -441,20 +425,19 @@ WebSocket summary. Its source is under repository `web/`. The Web UI is
 HTTP-driven and does not keep its own copy of the snapshot.
 
 The card/hook pair lists catalog rows from `GET /api/v1/config`, serializes
-save/apply/clear mutations, and only presents successful mutation state after
+save/clear mutations, and only presents successful mutation state after
 an authoritative follow-up GET. It has separate confirmation dialogs for
-dangerous save, dangerous apply, and clear. The card disables mutation while
+dangerous save and clear. The card disables mutation while
 loading, busy, or disconnected; it presents old firmware as unsupported and
 has distinct busy, storage, partial-apply, and disconnect states. The dialog
 starts on Cancel, traps Tab/Shift-Tab, cancels on Escape when idle, and restores
 focus to its opener on close.
 
-The Web UI localizes busy, confirmation, and partial-apply feedback from the
+The Web UI localizes busy, confirmation, and partial-save feedback from the
 structured error model. It preserves the firmware message for generic errors,
 but does not claim every displayed error string is verbatim or automatically
-retry a failed mutation. An operator can explicitly retry a failed-only saved
-snapshot; apply confirmation covers every saved dangerous row, including an
-already-applied dangerous sibling.
+retry a failed mutation. An operator retries pending or failed rows by
+selecting them and saving again with confirmation.
 
 ## Automatic Current Synchronization
 
@@ -474,14 +457,14 @@ refresh, and the bounded refresh does not flood the firmware even during
 high-rate status or WS polling.
 
 Display synchronization does not write flash, change the saved snapshot,
-apply pending values, or auto-persist ordinary power, switch, or GPIO
+replay saved values, or auto-persist ordinary power, switch, or GPIO
 setters. `config save` remains the only path that persists; ordinary
 volatile setters stay volatile, and no live transition by itself becomes a
 saved snapshot. Local unsaved item-selection drafts (checkbox state) on the
 Saved Config panel survive ordinary Current synchronization, so operator
 draft intent is preserved when the upstream value changes.
 
-Mutation truthfulness follows the same authority model. Save, apply, and
+Mutation truthfulness follows the same authority model. Save and
 clear mutations remain pending until the latest authoritative config
 response commits to the hook state. A lifecycle change (disconnect,
 unsupported firmware, unmount) rejects the pending mutation rather than
@@ -507,7 +490,7 @@ current-no-write:display-sync-no-auto-save-no-flash-no-apply
 current-no-flood:one-transition-one-refresh;identical-frames-zero-GETs
 current-draft-survives:local-checkbox-draft-survives-refresh
 current-refresh-recovery:Refresh-manual-recovery-not-required
-current-mutation-truthful:save-apply-clear-pending-until-authority
+current-mutation-truthful:save-clear-pending-until-authority
 current-hil-boundary:Todo-6-post-fix-HIL-still-required
 -->
 
@@ -523,12 +506,10 @@ The exact CDC ACM grammar is:
 
 - `config show`
 - `config save [--confirm] <firmware-item-id>...`
-- `config apply --confirm`
 - `config clear`
 
 A `config save` with no items is a syntax error and does not reach the
-service. A `config apply` without `--confirm` is a syntax error and does
-not reach the service. The CDC ACM shell prints the same error codes as
+service. The CDC ACM shell prints the same error codes as
 the HTTP API: `empty_selection`, `unknown_item`, `duplicate_item`,
 `confirmation_required`, `busy activity=capture`, `busy activity=ota`,
 `backend_unavailable`, `no_snapshot`, `invalid_snapshot`,
@@ -560,9 +541,9 @@ does not queue the request. A second busy request after the first release
 will succeed normally.
 
 For a successful save, those owners cover the complete control snapshot,
-projection, confirmation, and store operation. For clear, they cover the
-complete store deletion and status reset. Boot restoration and explicit apply
-each acquire once around their full `linkr_debugger_config_apply_execute` call;
+projection, confirmation, store operation, and replay. For clear, they cover
+the complete store deletion and status reset. Boot restoration acquires once
+around its full `linkr_debugger_config_replay_execute` call;
 the service releases flash first and capture second only after that operation.
 
 ## Clear, Recovery, And Firmware Update
@@ -610,10 +591,10 @@ following are explicit non-features:
 - No tamper resistance is provided. Any host with USB NCM access can read
   the snapshot, replace it, or delete it. Any host with USB CDC ACM access
   can issue the same verbs through the shell.
-- No automatic rollback of saved values is performed. A failed apply stops
-  at the first failing entry and leaves earlier entries applied; the
-  service does not undo the apply, does not restore a previous snapshot,
-  and does not auto-rollback.
+- No automatic rollback of saved values is performed. A failed save or
+  boot replay stops at the first failing entry and leaves earlier entries
+  applied; the service does not undo the replay, does not restore a
+  previous snapshot, and does not auto-rollback.
 - No config-rollback path exists. The OTA retained marker is not a config
   rollback path; the snapshot is independent of the firmware image.
 
@@ -637,18 +618,26 @@ service are exercised by:
 These tests run against a loopback mock or a host-side test binary and do
 not require the board. They are not real-hardware HIL.
 
-The 2026-07-30 real-hardware HIL passed all six runner flows. See the
-[dated persistent-configuration HIL report](testing/results/2026-07-30-persistent-config-hil.md).
+The 2026-08-05 real-hardware HIL passed the v1 save-and-apply flow.
+See the
+[dated v1-save persistent-configuration HIL report](testing/results/2026-08-05-persistent-config-v1-save-hil.md).
+The historical 2026-07-30 real-hardware HIL passed all six runner flows; see
+the [historical six-flow report](testing/results/2026-07-30-persistent-config-hil.md).
 The board-level procedure remains defined by
 [doc/testing/hil-functional-test-spec.md](testing/hil-functional-test-spec.md)
 and validated:
 
-- Boot defaults first, then safe auto-restore, then dangerous pending.
+- Boot defaults first, then v1 full restore replays every saved entry,
+  including dangerous values, on every normal boot.
+- A confirmed Save persists the v1 snapshot and applies it immediately.
 - Live hardware unchanged after `config clear`.
 - Capture and OTA busy exclusion with `activity` set to `capture` or `ota`.
 - OTA preservation of the snapshot across a swap and rollback.
 - Combined-UF2 ROM BOOTSEL recovery does not alter the saved snapshot.
-- CDC ACM `config show|save|apply|clear` parity with the HTTP API.
+- CDC ACM `config show|save|clear` parity with the HTTP API.
+- v1 dangerous Save plus two consecutive cold reboots: every saved entry
+  is replayed on each boot, and the saved snapshot is preserved across
+  recovery paths.
 
 This dated board evidence is separate from the local suites above. Future local
 tests remain distinct from real-hardware HIL and cannot replace a board run when
@@ -663,11 +652,11 @@ files and this document together.
 Firmware implementation:
 
 - [apps/radxa_linkr_debugger/src/linkr_debugger_config_service.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_service.c):
-  service mutex, capture/flash owner acquisition and reverse release, save,
-  apply, and clear entry points.
-- [apps/radxa_linkr_debugger/src/linkr_debugger_config_apply.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_apply.c):
-  ten-stage apply order, boot-safe mode that skips dangerous entries, and
-  stop-first-failure apply.
+  service mutex, capture/flash owner acquisition and reverse release, save
+  (persist plus replay), boot restore, and clear entry points.
+- [apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c):
+  ten-stage replay order shared by Save and boot restore, and
+  stop-first-failure replay.
 - [apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c):
   catalog, magic `LRCF`, version `1`, entry format, encode and decode
   validation, dangerous classification.
@@ -681,12 +670,12 @@ Firmware implementation:
   HTTP routing, body accumulation, response dispatch, `Cache-Control:
   no-store`.
 - [apps/radxa_linkr_debugger/src/linkr_debugger_config_http_encode.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_http_encode.c):
-  envelope serialization for `get`, `save`, `apply`, `clear`, and the error
+  envelope serialization for `get`, `save`, `clear`, and the error
   envelope with `dangerous_items` and `activity`.
 - [apps/radxa_linkr_debugger/src/linkr_debugger_config_http_result.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_http_result.c):
   HTTP status mapping and error code names.
 - [apps/radxa_linkr_debugger/src/linkr_debugger_config_shell.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_shell.c):
-  CDC ACM `config show|save|apply|clear` grammar and error text.
+  CDC ACM `config show|save|clear` grammar and error text.
 - [apps/radxa_linkr_debugger/src/linkr_debugger_config_summary.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_summary.c):
   compact status WebSocket summary fields `available`, `reason`,
   `saved_count`, `pending_count`.
@@ -705,17 +694,17 @@ Host CLI and TUI implementation:
 - [cmd-ng/src/persistent_config.rs](../cmd-ng/src/persistent_config.rs):
   envelope, item, snapshot, and busy types shared by CLI and TUI.
 - [cmd-ng/src/persistent_config_validate.rs](../cmd-ng/src/persistent_config_validate.rs):
-  envelope field validation rules for `get`, `save`, `apply`, `clear`, and
+  envelope field validation rules for `get`, `save`, `clear`, and
   the known error codes.
 - [cmd-ng/src/persistent_config_render.rs](../cmd-ng/src/persistent_config_render.rs):
-  human-readable renderer for the four verbs.
+  human-readable renderer for the three verbs.
 - [cmd-ng/src/persistent_config_value.rs](../cmd-ng/src/persistent_config_value.rs):
   per-kind value parsing and kind-mismatch rejection.
 - [cmd-ng/src/config_command.rs](../cmd-ng/src/config_command.rs):
-  `config show|save|apply|clear` grammar, item-order preservation, and
+  `config show|save|clear` grammar, item-order preservation, and
   `--confirm` handling.
 - [cmd-ng/src/client.rs](../cmd-ng/src/client.rs):
-  HTTP client for `GET`, `PUT /api/v1/config`, `POST /api/v1/config/apply`,
+  HTTP client for `GET`, `PUT /api/v1/config`,
   `DELETE /api/v1/config`, default base URL, and envelope validation.
 - [cmd-ng/src/tui/config_io.rs](../cmd-ng/src/tui/config_io.rs): TUI mutation
   plus authoritative refresh.
