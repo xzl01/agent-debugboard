@@ -7,7 +7,7 @@
 
 static const char *action_name(enum linkr_debugger_config_http_action action)
 {
-	static const char *const names[] = { "get", "save", "apply", "clear" };
+	static const char *const names[] = { "get", "save", "clear" };
 
 	return (unsigned int)action <= LINKR_DEBUGGER_CONFIG_HTTP_ACTION_CLEAR ? names[action] : NULL;
 }
@@ -53,6 +53,8 @@ static const char *value_json(const struct linkr_debugger_config_item_desc *item
 		return switch_json(item->item_id, value);
 	case LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO:
 		if (value == 0U) return "{\"direction\":\"input\",\"value\":0}";
+		if (value == LINKR_DEBUGGER_CONFIG_GPIO_LEVEL)
+			return "{\"direction\":\"input\",\"value\":1}";
 		if (value == LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT)
 			return "{\"direction\":\"output\",\"value\":0}";
 		if (value == LINKR_DEBUGGER_CONFIG_GPIO_VALUE_MASK)
@@ -66,6 +68,9 @@ static bool status_valid(const struct linkr_debugger_config_service_status *stat
 {
 	if (status == NULL || status->item_count != linkr_debugger_config_item_count ||
 	    status->item_count != LINKR_DEBUGGER_CONFIG_MAX_ENTRIES ||
+	    (status->snapshot_present &&
+	     status->snapshot_version != LINKR_DEBUGGER_CONFIG_VERSION) ||
+	    (!status->snapshot_present && status->snapshot_version != 0U) ||
 	    linkr_debugger_config_http_reason_name(status->reason) == NULL) return false;
 	for (size_t i = 0U; i < status->item_count; i++) {
 		const struct linkr_debugger_config_item_status *row = &status->items[i];
@@ -199,30 +204,16 @@ enum linkr_debugger_config_http_encode_result linkr_debugger_config_http_encode_
 	struct linkr_debugger_config_http_json json;
 
 	if (!prepare(&json, buffer, capacity, encoded_size) || request == NULL || report == NULL ||
+	    report->snapshot_version != LINKR_DEBUGGER_CONFIG_VERSION ||
 	    begin(&json, true, "save") != 0) goto failed;
 	if (append_name_list(&json, "saved_items", request->item_ids, request->item_count) != 0 ||
 	    append_desc_list(&json, "confirmation_items", report->confirmation_items,
 			     report->confirmation_count) != 0 ||
+	    append_desc_list(&json, "applied_items", report->applied_items,
+			     report->applied_count) != 0 ||
 	    linkr_debugger_config_http_json_append(&json,
-		",\"snapshot\":{\"present\":true,\"version\":1},\"pending\":0") != 0) goto failed;
-	return finish(&json, encoded_size);
-failed:
-	return json.failed ? LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_NO_SPACE : invalid(&json, encoded_size);
-}
-
-enum linkr_debugger_config_http_encode_result linkr_debugger_config_http_encode_apply(
-	const struct linkr_debugger_config_operation_report *report, bool noop,
-	char *buffer, size_t capacity, size_t *encoded_size)
-{
-	struct linkr_debugger_config_http_json json;
-
-	if (!prepare(&json, buffer, capacity, encoded_size) || report == NULL ||
-	    begin(&json, true, "apply") != 0 ||
-	    linkr_debugger_config_http_json_append(&json, ",\"noop\":%s", noop ? "true" : "false") != 0 ||
-	    append_desc_list(&json, "applied_items", report->applied_items, report->applied_count) != 0) goto failed;
-	if (append_item(&json, "failed_item", report->failed_item) != 0) goto failed;
-	if (append_desc_list(&json, "pending_items", report->pending_items,
-			     report->pending_count) != 0) goto failed;
+		",\"snapshot\":{\"present\":true,\"version\":%u},\"pending\":%zu",
+		(unsigned int)report->snapshot_version, report->pending_count) != 0) goto failed;
 	return finish(&json, encoded_size);
 failed:
 	return json.failed ? LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_NO_SPACE : invalid(&json, encoded_size);

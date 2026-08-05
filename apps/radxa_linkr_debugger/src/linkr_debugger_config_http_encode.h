@@ -6,7 +6,6 @@
 enum linkr_debugger_config_http_action {
 	LINKR_DEBUGGER_CONFIG_HTTP_ACTION_GET,
 	LINKR_DEBUGGER_CONFIG_HTTP_ACTION_SAVE,
-	LINKR_DEBUGGER_CONFIG_HTTP_ACTION_APPLY,
 	LINKR_DEBUGGER_CONFIG_HTTP_ACTION_CLEAR,
 };
 
@@ -28,11 +27,6 @@ linkr_debugger_config_http_encode_save(
 	const struct linkr_debugger_config_save_request *request,
 	const struct linkr_debugger_config_operation_report *report,
 	char *buffer, size_t capacity, size_t *encoded_size);
-
-enum linkr_debugger_config_http_encode_result
-linkr_debugger_config_http_encode_apply(
-	const struct linkr_debugger_config_operation_report *report,
-	bool noop, char *buffer, size_t capacity, size_t *encoded_size);
 
 enum linkr_debugger_config_http_encode_result
 linkr_debugger_config_http_encode_clear(

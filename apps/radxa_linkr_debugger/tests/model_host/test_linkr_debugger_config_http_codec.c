@@ -90,19 +90,6 @@ static void assert_save_parse_result(
 		       (const uint8_t *)json, strlen(json), &payload) == expected);
 }
 
-static void assert_apply_parse_result(const char *json,
-				      enum linkr_debugger_config_http_parse_result expected,
-				      bool expected_confirmed)
-{
-	bool confirmed = !expected_confirmed;
-
-	assert(linkr_debugger_config_http_parse_apply(
-		       (const uint8_t *)json, strlen(json), &confirmed) == expected);
-	if (expected == LINKR_DEBUGGER_CONFIG_HTTP_PARSE_OK) {
-		assert(confirmed == expected_confirmed);
-	}
-}
-
 static void test_save_parser_schema(void)
 {
 	static const char *const invalid[] = {
@@ -174,36 +161,6 @@ static void test_save_parser_schema(void)
 	json[LINKR_DEBUGGER_HTTP_BODY_CAP] = ' ';
 	assert(linkr_debugger_config_http_parse_save(
 		       (const uint8_t *)json, LINKR_DEBUGGER_HTTP_BODY_CAP + 1U, &payload) ==
-	       LINKR_DEBUGGER_CONFIG_HTTP_PARSE_INVALID_JSON);
-}
-
-static void test_apply_parser_schema(void)
-{
-	static const char *const invalid[] = {
-		"",
-		"{}",
-		"{\"confirm\":null}",
-		"{\"confirm\":\"true\"}",
-		"{\"confirm\":1}",
-		"{\"confirm\":true,\"extra\":0}",
-		"{\"confirm\":true,\"confirm\":true}",
-		"{\"confirm\":false,\"extra\":0}",
-		"{\"confirm\":true}x",
-	};
-
-	assert_apply_parse_result("{\"confirm\":true}",
-				  LINKR_DEBUGGER_CONFIG_HTTP_PARSE_OK, true);
-	assert_apply_parse_result("{\"confirm\":false}",
-				  LINKR_DEBUGGER_CONFIG_HTTP_PARSE_OK, false);
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(invalid); i++) {
-		assert_apply_parse_result(invalid[i],
-				  LINKR_DEBUGGER_CONFIG_HTTP_PARSE_INVALID_JSON, false);
-	}
-	assert(linkr_debugger_config_http_parse_apply(NULL, 0U, NULL) ==
-	       LINKR_DEBUGGER_CONFIG_HTTP_PARSE_INVALID_JSON);
-	assert(linkr_debugger_config_http_parse_apply(
-		       (const uint8_t *)"{\"confirm\":true}",
-		       strlen("{\"confirm\":true}"), NULL) ==
 	       LINKR_DEBUGGER_CONFIG_HTTP_PARSE_INVALID_JSON);
 }
 
@@ -309,6 +266,7 @@ static void fill_catalog_status(struct linkr_debugger_config_service_status *sta
 	status->available = true;
 	status->reason = LINKR_DEBUGGER_CONFIG_SERVICE_REASON_READY;
 	status->snapshot_present = true;
+	status->snapshot_version = LINKR_DEBUGGER_CONFIG_VERSION;
 	status->item_count = linkr_debugger_config_item_count;
 	for (size_t i = 0U; i < status->item_count; i++) {
 		struct linkr_debugger_config_item_status *row = &status->items[i];
@@ -423,6 +381,9 @@ static void test_typed_values(void)
 			   "\"current\":{\"route\":\"3.3v\"}");
 	assert_typed_value(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U, 0U,
 			   "\"current\":{\"direction\":\"input\",\"value\":0}");
+	assert_typed_value(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U,
+			   LINKR_DEBUGGER_CONFIG_GPIO_LEVEL,
+			   "\"current\":{\"direction\":\"input\",\"value\":1}");
 	assert_typed_value(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U,
 			   LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT,
 			   "\"current\":{\"direction\":\"output\",\"value\":0}");
@@ -570,6 +531,16 @@ static void test_complete_catalog_and_capacity(void)
 	       LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_NO_SPACE);
 	assert(short_size == 0U);
 	assert(short_buffer[0] == '\0');
+
+	{
+		size_t invalid_size = 99U;
+
+		status.snapshot_version = 2U;
+		assert(linkr_debugger_config_http_encode_get(
+			       &status, full, sizeof(full), &invalid_size) ==
+		       LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_INVALID_STATE);
+		assert(invalid_size == 0U);
+	}
 }
 
 static void assert_encode_get_invalid(
@@ -613,8 +584,7 @@ static void test_encoder_invalid_states(void)
 	assert_encode_get_invalid(&status);
 
 	fill_catalog_status(&status);
-	status.items[catalog_index(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U)].current_value =
-		LINKR_DEBUGGER_CONFIG_GPIO_LEVEL;
+	status.items[catalog_index(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U)].current_value = 4U;
 	assert_encode_get_invalid(&status);
 }
 
@@ -689,31 +659,6 @@ static const struct mapping_expectation mapping_expectations
 			  "saved config snapshot version is unsupported"),
 		MAP_ERROR(HTTP_500_INTERNAL_SERVER_ERROR, "storage_write_failed",
 			  "failed to update config storage"),
-		MAP_ERROR(HTTP_500_INTERNAL_SERVER_ERROR, "control_capture_failed",
-			  "failed to capture current control state"),
-		MAP_INTERNAL,
-	},
-	[LINKR_DEBUGGER_CONFIG_HTTP_ACTION_APPLY] = {
-		MAP_OK,
-		MAP_INTERNAL,
-		MAP_INTERNAL,
-		MAP_INTERNAL,
-		MAP_INTERNAL,
-		MAP_ERROR(HTTP_409_CONFLICT, "item_unavailable",
-			  "config item is unavailable"),
-		MAP_ERROR(HTTP_409_CONFLICT, "confirmation_required",
-			  "confirmation is required"),
-		MAP_BUSY("configuration is blocked by active capture", "capture"),
-		MAP_BUSY("configuration is blocked by active OTA", "ota"),
-		MAP_ERROR(HTTP_500_INTERNAL_SERVER_ERROR, "backend_unavailable",
-			  "config storage backend is unavailable"),
-		MAP_ERROR(HTTP_409_CONFLICT, "no_snapshot", "no saved config snapshot"),
-		MAP_ERROR(HTTP_500_INTERNAL_SERVER_ERROR, "invalid_snapshot",
-			  "saved config snapshot is invalid"),
-		MAP_ERROR(HTTP_500_INTERNAL_SERVER_ERROR, "unsupported_version",
-			  "saved config snapshot version is unsupported"),
-		MAP_ERROR(HTTP_500_INTERNAL_SERVER_ERROR, "storage_error",
-			  "failed to read config storage"),
 		MAP_ERROR(HTTP_500_INTERNAL_SERVER_ERROR, "control_capture_failed",
 			  "failed to capture current control state"),
 		MAP_ERROR(HTTP_500_INTERNAL_SERVER_ERROR, "apply_failed",
@@ -802,8 +747,6 @@ static void test_operation_encoders_and_error_details(void)
 		linkr_debugger_config_find_item(
 			LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 			LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID);
-	const struct linkr_debugger_config_item_desc *gpio =
-		linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U);
 	struct linkr_debugger_config_save_request request = {
 		.item_count = 2U,
 		.item_ids = { "switch/usb", "power/12v_out" },
@@ -814,7 +757,8 @@ static void test_operation_encoders_and_error_details(void)
 	char buffer[RESPONSE_STORAGE_SIZE];
 	size_t encoded_size;
 
-	assert(power != NULL && usb != NULL && gpio != NULL);
+	assert(power != NULL && usb != NULL);
+	report.snapshot_version = LINKR_DEBUGGER_CONFIG_VERSION;
 	report.confirmation_count = 1U;
 	report.confirmation_items[0] = usb;
 	assert(linkr_debugger_config_http_encode_save(
@@ -824,30 +768,8 @@ static void test_operation_encoders_and_error_details(void)
 	assert_contains(buffer,
 		"\"saved_items\":[\"switch/usb\",\"power/12v_out\"]");
 	assert_contains(buffer, "\"confirmation_items\":[\"switch/usb\"]");
+	assert_contains(buffer, "\"applied_items\":[]");
 	assert_contains(buffer, "\"snapshot\":{\"present\":true,\"version\":1}");
-
-	memset(&report, 0, sizeof(report));
-	report.applied_count = 1U;
-	report.applied_items[0] = power;
-	report.failed_item = usb;
-	report.pending_count = 2U;
-	report.pending_items[0] = usb;
-	report.pending_items[1] = gpio;
-	assert(linkr_debugger_config_http_encode_apply(
-		       &report, false, buffer, sizeof(buffer), &encoded_size) ==
-	       LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_OK);
-	assert_contains(buffer, "\"action\":\"apply\",\"noop\":false");
-	assert_contains(buffer, "\"applied_items\":[\"power/12v_out\"]");
-	assert_contains(buffer, "\"failed_item\":\"switch/usb\"");
-	assert_contains(buffer,
-		"\"pending_items\":[\"switch/usb\",\"gpio/GP7\"]");
-
-	memset(&report, 0, sizeof(report));
-	assert(linkr_debugger_config_http_encode_apply(
-		       &report, true, buffer, sizeof(buffer), &encoded_size) ==
-	       LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_OK);
-	assert_contains(buffer, "\"noop\":true,\"applied_items\":[]");
-	assert_contains(buffer, "\"failed_item\":null,\"pending_items\":[]");
 
 	assert(linkr_debugger_config_http_encode_clear(
 		       false, buffer, sizeof(buffer), &encoded_size) ==
@@ -874,10 +796,10 @@ static void test_operation_encoders_and_error_details(void)
 	assert_contains(buffer, "\"dangerous_items\":[\"switch/usb\"]");
 
 	assert(linkr_debugger_config_http_map_service_result(
-		       LINKR_DEBUGGER_CONFIG_HTTP_ACTION_APPLY,
+		       LINKR_DEBUGGER_CONFIG_HTTP_ACTION_SAVE,
 		       LINKR_DEBUGGER_CONFIG_SERVICE_BUSY_CAPTURE, &error));
 	assert(linkr_debugger_config_http_encode_error(
-		       LINKR_DEBUGGER_CONFIG_HTTP_ACTION_APPLY, &error, NULL,
+		       LINKR_DEBUGGER_CONFIG_HTTP_ACTION_SAVE, &error, NULL,
 		       buffer, sizeof(buffer), &encoded_size) ==
 	       LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_OK);
 	assert_contains(buffer, "\"code\":\"busy\"");
@@ -890,10 +812,10 @@ static void test_operation_encoders_and_error_details(void)
 	report.pending_count = 1U;
 	report.pending_items[0] = usb;
 	assert(linkr_debugger_config_http_map_service_result(
-		       LINKR_DEBUGGER_CONFIG_HTTP_ACTION_APPLY,
+		       LINKR_DEBUGGER_CONFIG_HTTP_ACTION_SAVE,
 		       LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED, &error));
 	assert(linkr_debugger_config_http_encode_error(
-		       LINKR_DEBUGGER_CONFIG_HTTP_ACTION_APPLY, &error, &report,
+		       LINKR_DEBUGGER_CONFIG_HTTP_ACTION_SAVE, &error, &report,
 		       buffer, sizeof(buffer), &encoded_size) ==
 	       LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_OK);
 	assert_contains(buffer, "\"code\":\"apply_failed\"");
@@ -934,7 +856,6 @@ static void test_confirmation_error_places_dangerous_items_outside_error(void)
 int main(void)
 {
 	test_save_parser_schema();
-	test_apply_parser_schema();
 	test_json_writer();
 	test_typed_values();
 	test_nullability_and_confirmation_precedence();

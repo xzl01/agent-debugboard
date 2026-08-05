@@ -112,51 +112,6 @@ bool linkr_debugger_config_http_map_service_result(
 			return map_error(error, HTTP_500_INTERNAL_SERVER_ERROR,
 					 "control_capture_failed", "failed to capture current control state", NULL);
 		case LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED:
-			return map_internal_error(error);
-		default:
-			return map_internal_error(error);
-		}
-
-	case LINKR_DEBUGGER_CONFIG_HTTP_ACTION_APPLY:
-		switch (result) {
-		case LINKR_DEBUGGER_CONFIG_SERVICE_OK:
-			clear_error(error);
-			return false;
-		case LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT:
-		case LINKR_DEBUGGER_CONFIG_SERVICE_EMPTY_SELECTION:
-		case LINKR_DEBUGGER_CONFIG_SERVICE_UNKNOWN_ITEM:
-		case LINKR_DEBUGGER_CONFIG_SERVICE_DUPLICATE_ITEM:
-			return map_internal_error(error);
-		case LINKR_DEBUGGER_CONFIG_SERVICE_ITEM_UNAVAILABLE:
-			return map_error(error, HTTP_409_CONFLICT, "item_unavailable",
-					 "config item is unavailable", NULL);
-		case LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED:
-			return map_error(error, HTTP_409_CONFLICT, "confirmation_required",
-					 "confirmation is required", NULL);
-		case LINKR_DEBUGGER_CONFIG_SERVICE_BUSY_CAPTURE:
-			return map_busy(error, "configuration is blocked by active capture",
-					"capture");
-		case LINKR_DEBUGGER_CONFIG_SERVICE_BUSY_FLASH:
-			return map_busy(error, "configuration is blocked by active OTA", "ota");
-		case LINKR_DEBUGGER_CONFIG_SERVICE_BACKEND_UNAVAILABLE:
-			return map_error(error, HTTP_500_INTERNAL_SERVER_ERROR,
-					 "backend_unavailable", "config storage backend is unavailable", NULL);
-		case LINKR_DEBUGGER_CONFIG_SERVICE_NO_SNAPSHOT:
-			return map_error(error, HTTP_409_CONFLICT, "no_snapshot",
-					 "no saved config snapshot", NULL);
-		case LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_SNAPSHOT:
-			return map_error(error, HTTP_500_INTERNAL_SERVER_ERROR, "invalid_snapshot",
-					 "saved config snapshot is invalid", NULL);
-		case LINKR_DEBUGGER_CONFIG_SERVICE_UNSUPPORTED_VERSION:
-			return map_error(error, HTTP_500_INTERNAL_SERVER_ERROR,
-					 "unsupported_version", "saved config snapshot version is unsupported", NULL);
-		case LINKR_DEBUGGER_CONFIG_SERVICE_STORAGE_ERROR:
-			return map_error(error, HTTP_500_INTERNAL_SERVER_ERROR, "storage_error",
-					 "failed to read config storage", NULL);
-		case LINKR_DEBUGGER_CONFIG_SERVICE_CONTROL_CAPTURE_FAILED:
-			return map_error(error, HTTP_500_INTERNAL_SERVER_ERROR,
-					 "control_capture_failed", "failed to capture current control state", NULL);
-		case LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED:
 			return map_error(error, HTTP_500_INTERNAL_SERVER_ERROR, "apply_failed",
 					 "failed to apply saved config", NULL);
 		default:

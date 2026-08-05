@@ -89,7 +89,7 @@ target_sources(app PRIVATE
   src/linkr_debugger_control.c
   src/linkr_debugger_config_codec.c
   src/linkr_debugger_config_store.c
-  src/linkr_debugger_config_apply.c
+  src/linkr_debugger_config_replay.c
   src/linkr_debugger_config_policy.c
   src/linkr_debugger_config_service.c
   src/linkr_debugger_config_service_adapters.c

@@ -69,17 +69,14 @@ static int gpio_entry_set(const struct linkr_debugger_config_item_desc *item,
 		return -ERANGE;
 	}
 	if ((entry->value & LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT) == 0U) {
-		if (entry->value != 0U) {
-			return -EINVAL;
-		}
 		return linkr_debugger_gpio_set_input(gpio);
 	}
 	return linkr_debugger_gpio_set_output(
 		gpio, (entry->value & LINKR_DEBUGGER_CONFIG_GPIO_LEVEL) != 0U);
 }
 
-static int control_apply_entry(void *context,
-			       const struct linkr_debugger_config_entry *entry)
+static int control_replay_entry(void *context,
+				const struct linkr_debugger_config_entry *entry)
 {
 	const struct linkr_debugger_config_item_desc *item;
 	bool requires_confirmation;
@@ -166,8 +163,8 @@ static bool flash_release(void *context)
 
 const struct linkr_debugger_config_service_ops
 	linkr_debugger_config_service_production_ops = {
-		.control_snapshot_get = control_snapshot_get,
-		.control_apply_entry = control_apply_entry,
+	.control_snapshot_get = control_snapshot_get,
+	.control_replay_entry = control_replay_entry,
 		.store_status_get = store_status_get,
 		.store_snapshot_get = store_snapshot_get,
 		.store_save = store_save,

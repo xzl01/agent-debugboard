@@ -34,7 +34,7 @@ static void linkr_debugger_config_shell_confirmation_ids(
 	}
 }
 
-static int linkr_debugger_config_shell_apply_failed(
+static int linkr_debugger_config_shell_replay_failed(
 	const struct shell *sh, const char *verb,
 	const struct linkr_debugger_config_operation_report *report)
 {
@@ -124,7 +124,7 @@ static int linkr_debugger_config_shell_service_error(
 		error = -EIO;
 		break;
 	case LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED:
-		return linkr_debugger_config_shell_apply_failed(sh, verb, report);
+		return linkr_debugger_config_shell_replay_failed(sh, verb, report);
 	default:
 		break;
 	}
@@ -192,25 +192,8 @@ int linkr_debugger_config_shell_save(const struct shell *sh, size_t argc, char *
 	if (result != LINKR_DEBUGGER_CONFIG_SERVICE_OK) {
 		return linkr_debugger_config_shell_service_error(sh, "save", result, &report);
 	}
-	shell_print(sh, "config save saved_count=%zu pending_count=0", request.item_count);
-	return 0;
-}
-
-int linkr_debugger_config_shell_apply(const struct shell *sh, size_t argc, char **argv)
-{
-	struct linkr_debugger_config_operation_report report = {0};
-	enum linkr_debugger_config_service_result result;
-
-	if (argc != 2U || strcmp(argv[1], "--confirm") != 0) {
-		return linkr_debugger_config_shell_syntax_error(sh, "apply",
-							       "invalid_arguments");
-	}
-	result = linkr_debugger_config_service_apply(true, &report);
-	if (result != LINKR_DEBUGGER_CONFIG_SERVICE_OK) {
-		return linkr_debugger_config_shell_service_error(sh, "apply", result, &report);
-	}
-	shell_print(sh, "config apply applied_count=%zu pending_count=%zu",
-		    report.applied_count, report.pending_count);
+	shell_print(sh, "config save saved_count=%zu pending_count=%zu",
+		    request.item_count, report.pending_count);
 	return 0;
 }
 

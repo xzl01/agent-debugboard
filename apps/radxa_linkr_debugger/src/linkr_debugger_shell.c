@@ -131,8 +131,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(tf_wp_cmds,
 
 SHELL_STATIC_SUBCMD_SET_CREATE(config_cmds,
 	SHELL_CMD(show, NULL, "Show configuration status.", linkr_debugger_config_shell_show),
-	SHELL_CMD(save, NULL, "Save configuration snapshot; optional --confirm.", linkr_debugger_config_shell_save),
-	SHELL_CMD(apply, NULL, "Apply saved configuration; required --confirm.", linkr_debugger_config_shell_apply),
+	SHELL_CMD(save, NULL, "Save configuration snapshot and apply it; optional --confirm.", linkr_debugger_config_shell_save),
 	SHELL_CMD(clear, NULL, "Clear saved configuration; does not change current hardware.", linkr_debugger_config_shell_clear),
 	SHELL_SUBCMD_SET_END);
 

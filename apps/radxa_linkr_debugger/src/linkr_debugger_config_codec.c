@@ -252,8 +252,8 @@ enum linkr_debugger_config_codec_result linkr_debugger_config_decode(
 		return LINKR_DEBUGGER_CONFIG_CODEC_NOT_APPLICABLE;
 	}
 	if (buffer[5] != LINKR_DEBUGGER_CONFIG_ENTRY_SIZE ||
-	    buffer[6] > LINKR_DEBUGGER_CONFIG_MAX_ENTRIES || buffer[7] != 0U ||
-	    buffer[10] != 0U || buffer[11] != 0U) {
+	    buffer[6] > LINKR_DEBUGGER_CONFIG_MAX_ENTRIES ||
+	    buffer[7] != 0U || buffer[10] != 0U || buffer[11] != 0U) {
 		return LINKR_DEBUGGER_CONFIG_CODEC_MALFORMED;
 	}
 	total_size = (size_t)buffer[8] | ((size_t)buffer[9] << 8U);

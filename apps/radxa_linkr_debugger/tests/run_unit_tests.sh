@@ -81,11 +81,11 @@ cc -std=c11 -Wall -Wextra -Werror \
 	-I"${HOST_STUB_DIR}" \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c" \
-	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_apply.c" \
-	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_config_apply.c" \
-	-o "${OUT}/linkr_debugger_config_apply_test"
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_config_replay.c" \
+	-o "${OUT}/linkr_debugger_config_replay_test"
 
-"${OUT}/linkr_debugger_config_apply_test"
+"${OUT}/linkr_debugger_config_replay_test"
 
 cc -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CONFIG_CODEC_HOST_TEST \
@@ -96,7 +96,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_policy.c" \
-	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_apply.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_service_state.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_service.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_config_service.c" \

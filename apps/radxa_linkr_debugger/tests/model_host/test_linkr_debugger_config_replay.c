@@ -1,4 +1,4 @@
-#include "../../src/linkr_debugger_config_apply.h"
+#include "../../src/linkr_debugger_config_replay.h"
 
 #include <assert.h>
 #include <stdbool.h>
@@ -230,14 +230,45 @@ static void test_orders_shuffled_23_entries(void)
 	build_full_ordered(&expected);
 	reverse_snapshot(&expected, &shuffled);
 	memset(&ordered, 0xa5, sizeof(ordered));
-	assert(linkr_debugger_config_apply_order_snapshot(&shuffled, &ordered) ==
+	assert(linkr_debugger_config_replay_order_snapshot(&shuffled, &ordered) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert_snapshots_equal(&ordered, &expected);
 
 	alias = shuffled;
-	assert(linkr_debugger_config_apply_order_snapshot(&alias, &alias) ==
+	assert(linkr_debugger_config_replay_order_snapshot(&alias, &alias) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert_snapshots_equal(&alias, &expected);
+}
+
+static void test_order_reorders_two_entry_snapshot(void)
+{
+	const struct linkr_debugger_config_snapshot snapshot = {
+		.entry_count = 2U,
+		.entries = {
+			{ LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+			  LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID,
+			  LINKR_DEBUGGER_CONFIG_POWER_OFF },
+			{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
+			  LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID,
+			  LINKR_DEBUGGER_CONFIG_SD_TARGET },
+		},
+	};
+	const struct linkr_debugger_config_snapshot expected = {
+		.entry_count = 2U,
+		.entries = {
+			{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
+			  LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID,
+			  LINKR_DEBUGGER_CONFIG_SD_TARGET },
+			{ LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+			  LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID,
+			  LINKR_DEBUGGER_CONFIG_POWER_OFF },
+		},
+	};
+	struct linkr_debugger_config_snapshot ordered;
+
+	assert(linkr_debugger_config_replay_order_snapshot(&snapshot, &ordered) ==
+	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
+	assert_snapshots_equal(&ordered, &expected);
 }
 
 static void assert_order_error(const struct linkr_debugger_config_snapshot *snapshot,
@@ -247,7 +278,7 @@ static void assert_order_error(const struct linkr_debugger_config_snapshot *snap
 	struct linkr_debugger_config_snapshot ordered;
 
 	memset(&ordered, 0xa5, sizeof(ordered));
-	assert(linkr_debugger_config_apply_order_snapshot(snapshot, &ordered) == expected);
+	assert(linkr_debugger_config_replay_order_snapshot(snapshot, &ordered) == expected);
 	assert(memcmp(&ordered, &empty, sizeof(empty)) == 0);
 }
 
@@ -257,10 +288,10 @@ static void test_order_rejects_malformed_without_partial_output(void)
 	struct linkr_debugger_config_snapshot ordered;
 
 	memset(&ordered, 0xa5, sizeof(ordered));
-	assert(linkr_debugger_config_apply_order_snapshot(NULL, &ordered) ==
+	assert(linkr_debugger_config_replay_order_snapshot(NULL, &ordered) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT);
 	assert(ordered.entry_count == 0U);
-	assert(linkr_debugger_config_apply_order_snapshot(&snapshot, NULL) ==
+	assert(linkr_debugger_config_replay_order_snapshot(&snapshot, NULL) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT);
 	assert_order_error(&snapshot, LINKR_DEBUGGER_CONFIG_SERVICE_EMPTY_SELECTION);
 
@@ -290,12 +321,12 @@ static void test_order_rejects_malformed_without_partial_output(void)
 	memset(&snapshot, 0, sizeof(snapshot));
 	append_entry(&snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U,
 		     LINKR_DEBUGGER_CONFIG_GPIO_LEVEL);
-	assert(linkr_debugger_config_apply_order_snapshot(&snapshot, &ordered) ==
+	assert(linkr_debugger_config_replay_order_snapshot(&snapshot, &ordered) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert_snapshots_equal(&ordered, &snapshot);
 }
 
-static void test_full_apply_replays_every_entry_and_usb_vdd_order(void)
+static void test_full_replay_replays_every_entry_and_usb_vdd_order(void)
 {
 	struct linkr_debugger_config_snapshot expected;
 	struct linkr_debugger_config_snapshot shuffled;
@@ -310,9 +341,8 @@ static void test_full_apply_replays_every_entry_and_usb_vdd_order(void)
 	before = status;
 	seed_report(&report);
 	reset_fake(&control);
-	assert(linkr_debugger_config_apply_execute(
-		       &shuffled, LINKR_DEBUGGER_CONFIG_APPLY_MODE_CONFIRMED_FULL,
-		       fake_setter, &control, &status, &report) ==
+	assert(linkr_debugger_config_replay_execute(
+		       &shuffled, fake_setter, &control, &status, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert(control.call_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
 	for (size_t i = 0U; i < expected.entry_count; i++) {
@@ -354,7 +384,7 @@ static void test_usb_without_explicit_vdd_has_no_synthetic_entry(void)
 	append_entry(&snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		     LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
 		     LINKR_DEBUGGER_CONFIG_USB_TARGET);
-	assert(linkr_debugger_config_apply_order_snapshot(&snapshot, &ordered) ==
+	assert(linkr_debugger_config_replay_order_snapshot(&snapshot, &ordered) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert(ordered.entry_count == 1U);
 	assert(ordered.entries[0].domain == LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH);
@@ -363,97 +393,13 @@ static void test_usb_without_explicit_vdd_has_no_synthetic_entry(void)
 	seed_status(&status);
 	seed_report(&report);
 	reset_fake(&control);
-	assert(linkr_debugger_config_apply_execute(
-		       &snapshot, LINKR_DEBUGGER_CONFIG_APPLY_MODE_CONFIRMED_FULL,
-		       fake_setter, &control, &status, &report) ==
+	assert(linkr_debugger_config_replay_execute(
+		       &snapshot, fake_setter, &control, &status, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert(control.call_count == 1U);
 	assert(control.vdd_value == LINKR_DEBUGGER_CONFIG_POWER_OFF);
 	assert(status.saved_count == 1U);
 	assert(status.applied_count == 1U);
-}
-
-static void build_risk_partition(
-	const struct linkr_debugger_config_snapshot *ordered,
-	struct linkr_debugger_config_snapshot *safe,
-	struct linkr_debugger_config_snapshot *dangerous)
-{
-	memset(safe, 0, sizeof(*safe));
-	memset(dangerous, 0, sizeof(*dangerous));
-	for (size_t i = 0U; i < ordered->entry_count; i++) {
-		bool requires_confirmation;
-
-		assert(linkr_debugger_config_classify_entry(
-			       &ordered->entries[i], &requires_confirmation) ==
-		       LINKR_DEBUGGER_CONFIG_CODEC_OK);
-		if (requires_confirmation) {
-			append_entry(dangerous, ordered->entries[i].domain,
-				     ordered->entries[i].item_id, ordered->entries[i].value);
-		} else {
-			append_entry(safe, ordered->entries[i].domain,
-				     ordered->entries[i].item_id, ordered->entries[i].value);
-		}
-	}
-}
-
-static void test_boot_applies_only_safe_entries_and_continues_after_skips(void)
-{
-	struct linkr_debugger_config_snapshot expected;
-	struct linkr_debugger_config_snapshot shuffled;
-	struct linkr_debugger_config_snapshot safe;
-	struct linkr_debugger_config_snapshot dangerous;
-	struct linkr_debugger_config_service_status status;
-	struct linkr_debugger_config_service_status before;
-	struct linkr_debugger_config_operation_report report;
-	struct fake_control control;
-
-	build_full_ordered(&expected);
-	reverse_snapshot(&expected, &shuffled);
-	build_risk_partition(&expected, &safe, &dangerous);
-	assert(safe.entry_count == 12U);
-	assert(dangerous.entry_count == 11U);
-	seed_status(&status);
-	before = status;
-	seed_report(&report);
-	reset_fake(&control);
-	assert(linkr_debugger_config_apply_execute(
-		       &shuffled, LINKR_DEBUGGER_CONFIG_APPLY_MODE_BOOT_SAFE,
-		       fake_setter, &control, &status, &report) ==
-	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
-	assert(control.call_count == safe.entry_count);
-	for (size_t i = 0U; i < safe.entry_count; i++) {
-		assert(entries_equal(&control.trace[i], &safe.entries[i]));
-		assert(report.applied_items[i] ==
-		       linkr_debugger_config_find_item(safe.entries[i].domain,
-					       safe.entries[i].item_id));
-	}
-	for (size_t i = 0U; i < dangerous.entry_count; i++) {
-		assert(report.pending_items[i] ==
-		       linkr_debugger_config_find_item(dangerous.entries[i].domain,
-					       dangerous.entries[i].item_id));
-	}
-	assert(status.saved_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
-	assert(status.applied_count == safe.entry_count);
-	assert(status.pending_count == dangerous.entry_count);
-	assert(status.failed_count == 0U);
-	assert(report.applied_count == safe.entry_count);
-	assert(report.pending_count == dangerous.entry_count);
-	assert_confirmation_preserved(&report);
-	assert_report_tail_is_clear(&report);
-	assert_current_fields_preserved(&status, &before);
-	for (size_t i = 0U; i < expected.entry_count; i++) {
-		bool requires_confirmation;
-		size_t item_index = catalog_index(&expected.entries[i]);
-
-		assert(linkr_debugger_config_classify_entry(
-			       &expected.entries[i], &requires_confirmation) ==
-		       LINKR_DEBUGGER_CONFIG_CODEC_OK);
-		assert(status.items[item_index].saved_requires_confirmation ==
-		       requires_confirmation);
-		assert(status.items[item_index].apply_state ==
-		       (requires_confirmation ? LINKR_DEBUGGER_CONFIG_APPLY_PENDING :
-					LINKR_DEBUGGER_CONFIG_APPLY_APPLIED));
-	}
 }
 
 static void test_full_failure_at_every_position(void)
@@ -473,9 +419,8 @@ static void test_full_failure_at_every_position(void)
 		reset_fake(&control);
 		control.fail_at = failure;
 		control.failure_errno = TEST_ERR_IO - (int)failure;
-		assert(linkr_debugger_config_apply_execute(
-			       &shuffled, LINKR_DEBUGGER_CONFIG_APPLY_MODE_CONFIRMED_FULL,
-			       fake_setter, &control, &status, &report) ==
+		assert(linkr_debugger_config_replay_execute(
+			       &shuffled, fake_setter, &control, &status, &report) ==
 		       LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED);
 		assert(control.call_count == failure + 1U);
 		for (size_t i = 0U; i <= failure; i++) {
@@ -520,53 +465,6 @@ static void test_full_failure_at_every_position(void)
 	}
 }
 
-static void test_boot_failure_stops_after_skipped_dangerous_entries(void)
-{
-	struct linkr_debugger_config_snapshot expected;
-	struct linkr_debugger_config_snapshot shuffled;
-	struct linkr_debugger_config_snapshot safe;
-	struct linkr_debugger_config_snapshot dangerous;
-	struct linkr_debugger_config_service_status status;
-	struct linkr_debugger_config_operation_report report;
-	struct fake_control control;
-	size_t pending_index = 0U;
-
-	build_full_ordered(&expected);
-	reverse_snapshot(&expected, &shuffled);
-	build_risk_partition(&expected, &safe, &dangerous);
-	seed_status(&status);
-	seed_report(&report);
-	reset_fake(&control);
-	control.fail_at = 10U;
-	control.failure_errno = TEST_ERR_REMOTE_IO;
-	assert(linkr_debugger_config_apply_execute(
-		       &shuffled, LINKR_DEBUGGER_CONFIG_APPLY_MODE_BOOT_SAFE,
-		       fake_setter, &control, &status, &report) ==
-	       LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED);
-	assert(control.call_count == 11U);
-	for (size_t i = 0U; i < control.call_count; i++) {
-		assert(entries_equal(&control.trace[i], &safe.entries[i]));
-	}
-	assert(status.applied_count == 10U);
-	assert(status.failed_count == 1U);
-	assert(status.pending_count == 12U);
-	assert(status.failed_item ==
-	       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
-				       LINKR_DEBUGGER_CONFIG_POWER_5V_OUT_ID));
-	assert(report.applied_count == 10U);
-	assert(report.pending_count == 13U);
-	for (size_t i = 0U; i < expected.entry_count; i++) {
-		size_t item_index = catalog_index(&expected.entries[i]);
-
-		if (status.items[item_index].apply_state != LINKR_DEBUGGER_CONFIG_APPLY_APPLIED) {
-			assert(report.pending_items[pending_index++] == status.items[item_index].item);
-		}
-	}
-	assert(pending_index == report.pending_count);
-	assert_confirmation_preserved(&report);
-	assert_report_tail_is_clear(&report);
-}
-
 static void test_later_full_success_clears_prior_failure(void)
 {
 	struct linkr_debugger_config_snapshot expected;
@@ -581,16 +479,14 @@ static void test_later_full_success_clears_prior_failure(void)
 	seed_report(&report);
 	reset_fake(&control);
 	control.fail_at = 7U;
-	assert(linkr_debugger_config_apply_execute(
-		       &shuffled, LINKR_DEBUGGER_CONFIG_APPLY_MODE_CONFIRMED_FULL,
-		       fake_setter, &control, &status, &report) ==
+	assert(linkr_debugger_config_replay_execute(
+		       &shuffled, fake_setter, &control, &status, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED);
 	assert(status.failed_count == 1U);
 
 	reset_fake(&control);
-	assert(linkr_debugger_config_apply_execute(
-		       &shuffled, LINKR_DEBUGGER_CONFIG_APPLY_MODE_CONFIRMED_FULL,
-		       fake_setter, &control, &status, &report) ==
+	assert(linkr_debugger_config_replay_execute(
+		       &shuffled, fake_setter, &control, &status, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert(control.call_count == expected.entry_count);
 	assert(status.applied_count == expected.entry_count);
@@ -625,9 +521,8 @@ static void test_status_merge_preserves_non_saved_entries(void)
 	before = status;
 	seed_report(&report);
 	reset_fake(&control);
-	assert(linkr_debugger_config_apply_execute(
-		       &snapshot, LINKR_DEBUGGER_CONFIG_APPLY_MODE_CONFIRMED_FULL,
-		       fake_setter, &control, &status, &report) ==
+	assert(linkr_debugger_config_replay_execute(
+		       &snapshot, fake_setter, &control, &status, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	for (size_t i = 0U; i < snapshot.entry_count; i++) {
 		selected[catalog_index(&snapshot.entries[i])] = true;
@@ -665,9 +560,8 @@ static void test_execute_rejects_null_and_malformed_inputs(void)
 	before = status;
 	seed_report(&report);
 	reset_fake(&control);
-	assert(linkr_debugger_config_apply_execute(
-		       &malformed, LINKR_DEBUGGER_CONFIG_APPLY_MODE_CONFIRMED_FULL,
-		       fake_setter, &control, &status, &report) ==
+	assert(linkr_debugger_config_replay_execute(
+		       &malformed, fake_setter, &control, &status, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_UNKNOWN_ITEM);
 	assert(control.call_count == 0U);
 	assert(memcmp(&status, &before, sizeof(status)) == 0);
@@ -680,27 +574,19 @@ static void test_execute_rejects_null_and_malformed_inputs(void)
 	assert_report_tail_is_clear(&report);
 
 	seed_report(&report);
-	assert(linkr_debugger_config_apply_execute(
-		       NULL, LINKR_DEBUGGER_CONFIG_APPLY_MODE_CONFIRMED_FULL,
-		       fake_setter, &control, &status, &report) ==
+	assert(linkr_debugger_config_replay_execute(
+		       NULL, fake_setter, &control, &status, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT);
 	assert(report.result == LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT);
 	assert_confirmation_preserved(&report);
-	assert(linkr_debugger_config_apply_execute(
-		       &valid, (enum linkr_debugger_config_apply_mode)99,
-		       fake_setter, &control, &status, &report) ==
+	assert(linkr_debugger_config_replay_execute(
+		       &valid, NULL, &control, &status, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT);
-	assert(linkr_debugger_config_apply_execute(
-		       &valid, LINKR_DEBUGGER_CONFIG_APPLY_MODE_CONFIRMED_FULL,
-		       NULL, &control, &status, &report) ==
+	assert(linkr_debugger_config_replay_execute(
+		       &valid, fake_setter, &control, NULL, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT);
-	assert(linkr_debugger_config_apply_execute(
-		       &valid, LINKR_DEBUGGER_CONFIG_APPLY_MODE_CONFIRMED_FULL,
-		       fake_setter, &control, NULL, &report) ==
-	       LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT);
-	assert(linkr_debugger_config_apply_execute(
-		       &valid, LINKR_DEBUGGER_CONFIG_APPLY_MODE_CONFIRMED_FULL,
-		       fake_setter, &control, &status, NULL) ==
+	assert(linkr_debugger_config_replay_execute(
+		       &valid, fake_setter, &control, &status, NULL) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT);
 	assert(control.call_count == 0U);
 }
@@ -708,15 +594,14 @@ static void test_execute_rejects_null_and_malformed_inputs(void)
 int main(void)
 {
 	test_orders_shuffled_23_entries();
+	test_order_reorders_two_entry_snapshot();
 	test_order_rejects_malformed_without_partial_output();
-	test_full_apply_replays_every_entry_and_usb_vdd_order();
+	test_full_replay_replays_every_entry_and_usb_vdd_order();
 	test_usb_without_explicit_vdd_has_no_synthetic_entry();
-	test_boot_applies_only_safe_entries_and_continues_after_skips();
 	test_full_failure_at_every_position();
-	test_boot_failure_stops_after_skipped_dangerous_entries();
 	test_later_full_success_clears_prior_failure();
 	test_status_merge_preserves_non_saved_entries();
 	test_execute_rejects_null_and_malformed_inputs();
-	printf("linkr_debugger_config_apply: order=23 boot=12/11 failures=23/23 passed\n");
+	printf("linkr_debugger_config_replay: order=23 failures=23/23 passed\n");
 	return 0;
 }

@@ -1,4 +1,4 @@
-#include "linkr_debugger_config_apply.h"
+#include "linkr_debugger_config_replay.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -74,7 +74,7 @@ static void append_named(const struct indexed_snapshot *indexed, uint8_t domain,
 	}
 }
 
-enum linkr_debugger_config_service_result linkr_debugger_config_apply_order_snapshot(
+enum linkr_debugger_config_service_result linkr_debugger_config_replay_order_snapshot(
 	const struct linkr_debugger_config_snapshot *snapshot,
 	struct linkr_debugger_config_snapshot *ordered_snapshot)
 {
@@ -200,9 +200,8 @@ static void populate_pending_report(
 	}
 }
 
-enum linkr_debugger_config_service_result linkr_debugger_config_apply_execute(
+enum linkr_debugger_config_service_result linkr_debugger_config_replay_execute(
 	const struct linkr_debugger_config_snapshot *snapshot,
-	enum linkr_debugger_config_apply_mode mode,
 	linkr_debugger_config_entry_setter_fn setter, void *context,
 	struct linkr_debugger_config_service_status *status,
 	struct linkr_debugger_config_operation_report *report)
@@ -214,13 +213,11 @@ enum linkr_debugger_config_service_result linkr_debugger_config_apply_execute(
 		return LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT;
 	}
 	reset_apply_report(report);
-	if (snapshot == NULL || setter == NULL || status == NULL ||
-	    (mode != LINKR_DEBUGGER_CONFIG_APPLY_MODE_BOOT_SAFE &&
-	     mode != LINKR_DEBUGGER_CONFIG_APPLY_MODE_CONFIRMED_FULL)) {
+	if (snapshot == NULL || setter == NULL || status == NULL) {
 		report->result = LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT;
 		return report->result;
 	}
-	result = linkr_debugger_config_apply_order_snapshot(snapshot, &ordered);
+	result = linkr_debugger_config_replay_order_snapshot(snapshot, &ordered);
 	if (result != LINKR_DEBUGGER_CONFIG_SERVICE_OK) {
 		report->result = result;
 		return result;
@@ -231,14 +228,8 @@ enum linkr_debugger_config_service_result linkr_debugger_config_apply_execute(
 		const struct linkr_debugger_config_entry *entry = &ordered.entries[i];
 		struct linkr_debugger_config_item_status *item_status =
 			status_for_entry(status, entry);
-		bool requires_confirmation;
 		int setter_result;
 
-		(void)linkr_debugger_config_classify_entry(entry, &requires_confirmation);
-		if (mode == LINKR_DEBUGGER_CONFIG_APPLY_MODE_BOOT_SAFE &&
-		    requires_confirmation) {
-			continue;
-		}
 		setter_result = setter(context, entry);
 		if (setter_result != 0) {
 			item_status->apply_state = LINKR_DEBUGGER_CONFIG_APPLY_FAILED;

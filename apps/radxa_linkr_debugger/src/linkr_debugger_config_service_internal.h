@@ -1,7 +1,7 @@
 #ifndef RADXA_LINKR_DEBUGGER_CONFIG_SERVICE_INTERNAL_H_
 #define RADXA_LINKR_DEBUGGER_CONFIG_SERVICE_INTERNAL_H_
 
-#include "linkr_debugger_config_apply.h"
+#include "linkr_debugger_config_replay.h"
 #include "linkr_debugger_config_store.h"
 
 #include <stdbool.h>
@@ -11,7 +11,7 @@ struct linkr_debugger_control_snapshot;
 struct linkr_debugger_config_service_ops {
 	int (*control_snapshot_get)(void *context,
 				    struct linkr_debugger_control_snapshot *snapshot);
-	linkr_debugger_config_entry_setter_fn control_apply_entry;
+	linkr_debugger_config_entry_setter_fn control_replay_entry;
 	enum linkr_debugger_config_store_result (*store_status_get)(
 		void *context, struct linkr_debugger_config_store_status *status);
 	enum linkr_debugger_config_store_result (*store_snapshot_get)(

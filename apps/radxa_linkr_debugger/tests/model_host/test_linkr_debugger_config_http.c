@@ -16,8 +16,6 @@
 
 _Static_assert(LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_CONFIG == 3,
 	       "config HTTP route ID changed");
-_Static_assert(LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_APPLY == 4,
-	       "config apply HTTP route ID changed");
 _Static_assert(LINKR_DEBUGGER_CONFIG_HTTP_RESPONSE_CAP == 4160U,
 	       "config HTTP response cap changed");
 _Static_assert(LINKR_DEBUGGER_HTTP_BODY_SLOTS == 4U,
@@ -35,8 +33,6 @@ _Static_assert(HTTP_DELETE == 0 && HTTP_GET == 1 && HTTP_POST == 3 && HTTP_PUT =
 
 static const enum linkr_debugger_config_http_route config_route =
 	LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_CONFIG;
-static const enum linkr_debugger_config_http_route apply_route =
-	LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_APPLY;
 static const struct http_header sentinel_headers[] = {
 	{ "X-Sentinel", "unchanged" },
 };
@@ -56,20 +52,16 @@ static void regression_assert_contains(const char *name, const char *text,
 struct fake_service {
 	enum linkr_debugger_config_service_result status_result;
 	enum linkr_debugger_config_service_result save_result;
-	enum linkr_debugger_config_service_result apply_result;
 	enum linkr_debugger_config_service_result clear_result;
 	struct linkr_debugger_config_service_status status;
 	struct linkr_debugger_config_operation_report save_report;
-	struct linkr_debugger_config_operation_report apply_report;
 	size_t init_calls;
 	size_t status_calls;
 	size_t save_calls;
-	size_t apply_calls;
 	size_t clear_calls;
 	size_t saved_item_count;
 	char saved_ids[LINKR_DEBUGGER_CONFIG_MAX_ENTRIES][SAVED_ID_CAP];
 	bool last_save_confirmed;
-	bool last_apply_confirmed;
 };
 
 static struct fake_service fake;
@@ -117,6 +109,7 @@ static void fill_live_catalog(struct linkr_debugger_config_service_status *statu
 	status->available = true;
 	status->reason = LINKR_DEBUGGER_CONFIG_SERVICE_REASON_READY;
 	status->snapshot_present = true;
+	status->snapshot_version = LINKR_DEBUGGER_CONFIG_VERSION;
 	status->item_count = linkr_debugger_config_item_count;
 	for (size_t i = 0U; i < status->item_count; i++) {
 		struct linkr_debugger_config_item_status *row = &status->items[i];
@@ -137,6 +130,8 @@ static void set_status_reason(enum linkr_debugger_config_service_reason reason)
 	fake.status.available = reason == LINKR_DEBUGGER_CONFIG_SERVICE_REASON_READY ||
 				reason == LINKR_DEBUGGER_CONFIG_SERVICE_REASON_ABSENT;
 	fake.status.snapshot_present = reason == LINKR_DEBUGGER_CONFIG_SERVICE_REASON_READY;
+	fake.status.snapshot_version = fake.status.snapshot_present ?
+		LINKR_DEBUGGER_CONFIG_VERSION : 0U;
 	if (reason != LINKR_DEBUGGER_CONFIG_SERVICE_REASON_READY) {
 		fake.status.saved_count = 0U;
 		fake.status.applied_count = 0U;
@@ -185,8 +180,8 @@ static void reset_fixture(void)
 	memset(&fake, 0, sizeof(fake));
 	fake.status_result = LINKR_DEBUGGER_CONFIG_SERVICE_OK;
 	fake.save_result = LINKR_DEBUGGER_CONFIG_SERVICE_OK;
-	fake.apply_result = LINKR_DEBUGGER_CONFIG_SERVICE_OK;
 	fake.clear_result = LINKR_DEBUGGER_CONFIG_SERVICE_OK;
+	fake.save_report.snapshot_version = LINKR_DEBUGGER_CONFIG_VERSION;
 	fill_live_catalog(&fake.status);
 	set_existing_snapshot(0U, 0U);
 	linkr_debugger_http_body_reset_all();
@@ -229,17 +224,6 @@ enum linkr_debugger_config_service_result linkr_debugger_config_service_save(
 	*report = fake.save_report;
 	report->result = fake.save_result;
 	return fake.save_result;
-}
-
-enum linkr_debugger_config_service_result linkr_debugger_config_service_apply(
-	bool confirmed, struct linkr_debugger_config_operation_report *report)
-{
-	fake.apply_calls++;
-	assert(report != NULL);
-	fake.last_apply_confirmed = confirmed;
-	*report = fake.apply_report;
-	report->result = fake.apply_result;
-	return fake.apply_result;
 }
 
 enum linkr_debugger_config_service_result linkr_debugger_config_service_clear(void)
@@ -362,7 +346,6 @@ static void test_get_all_status_reasons(void)
 		assert_terminal_response(&response, HTTP_200_OK, expected);
 		assert(fake.status_calls == 1U);
 		assert(fake.save_calls == 0U);
-		assert(fake.apply_calls == 0U);
 		assert(fake.clear_calls == 0U);
 	}
 
@@ -394,7 +377,7 @@ static void test_put_save_and_confirmation(void)
 	assert(fake.saved_item_count == 1U);
 	assert(strcmp(fake.saved_ids[0], "power/12v_out") == 0);
 	assert(!fake.last_save_confirmed);
-	assert(fake.status_calls == 0U && fake.apply_calls == 0U && fake.clear_calls == 0U);
+	assert(fake.status_calls == 0U && fake.clear_calls == 0U);
 
 	reset_fixture();
 	fake.save_result = LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED;
@@ -412,7 +395,7 @@ static void test_put_save_and_confirmation(void)
 	}
 	assert(fake.save_calls == 1U);
 	assert(!fake.last_save_confirmed);
-	assert(fake.apply_calls == 0U && fake.clear_calls == 0U);
+	assert(fake.clear_calls == 0U);
 
 	reset_fixture();
 	call_final(HTTP_PUT, &config_route, confirmed_body, &response);
@@ -470,7 +453,7 @@ static void test_put_error_mapping(void)
 		{ LINKR_DEBUGGER_CONFIG_SERVICE_NO_SNAPSHOT,
 		  HTTP_500_INTERNAL_SERVER_ERROR, "internal_error", NULL },
 		{ LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED,
-		  HTTP_500_INTERNAL_SERVER_ERROR, "internal_error", NULL },
+		  HTTP_500_INTERNAL_SERVER_ERROR, "apply_failed", NULL },
 	};
 	const char *body = "{\"items\":[],\"confirm\":false}";
 
@@ -484,12 +467,27 @@ static void test_put_error_mapping(void)
 			fake.save_report.confirmation_count = 1U;
 			fake.save_report.confirmation_items[0] = &linkr_debugger_config_items[0];
 		}
+		if (cases[i].result == LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED) {
+			fake.save_report.applied_count = 1U;
+			fake.save_report.applied_items[0] = &linkr_debugger_config_items[0];
+			fake.save_report.failed_item = &linkr_debugger_config_items[4];
+			fake.save_report.pending_count = 1U;
+			fake.save_report.pending_items[0] = &linkr_debugger_config_items[4];
+		}
 		assert(snprintf(code, sizeof(code), "\"code\":\"%s\"", cases[i].code) > 0);
 		call_final(HTTP_PUT, &config_route, body, &response);
 		assert_terminal_response(&response, cases[i].status, code);
 		assert_response_activity(&response, cases[i].activity);
 		assert(fake.save_calls == 1U);
-		assert(fake.apply_calls == 0U && fake.clear_calls == 0U);
+		assert(fake.clear_calls == 0U);
+		if (cases[i].result == LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED) {
+			char text[LINKR_DEBUGGER_CONFIG_HTTP_RESPONSE_CAP + 1U];
+
+			response_text(&response, text);
+			assert(strstr(text, "\"applied_items\":[\"power/12v_out\"]") != NULL);
+			assert(strstr(text, "\"failed_item\":\"switch/sd\"") != NULL);
+			assert(strstr(text, "\"pending_items\":[\"switch/sd\"]") != NULL);
+		}
 	}
 
 	reset_fixture();
@@ -512,192 +510,6 @@ static void test_put_error_mapping(void)
 	}
 }
 
-static void test_post_apply_preflight(void)
-{
-	static const char *const apply_confirm_bodies[] = {
-		"{\"confirm\":true}",
-		"{\"confirm\":false}",
-	};
-	static const char *const invalid_apply_bodies[] = {
-		"{\"confirm\":tru}",
-		"{\"confirm\":null}",
-		"{\"confirm\":\"true\"}",
-		"{\"confirm\":1}",
-		"{}",
-		"{\"confirm\":true,\"confirm\":false}",
-		"{\"confirm\":true,\"extra\":1}",
-	};
-	struct http_response_ctx response;
-
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(apply_confirm_bodies); i++) {
-		reset_fixture();
-		set_existing_snapshot(1U, 0U);
-		call_final(HTTP_POST, &apply_route, apply_confirm_bodies[i], &response);
-		assert_terminal_response(&response, HTTP_200_OK,
-					 "\"action\":\"apply\",\"noop\":false");
-		assert(fake.status_calls == 1U);
-		assert(fake.apply_calls == 1U);
-		assert(fake.last_apply_confirmed == (i == 0U));
-		assert(fake.save_calls == 0U && fake.clear_calls == 0U);
-	}
-
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(apply_confirm_bodies); i++) {
-		reset_fixture();
-		set_existing_snapshot(0U, 0U);
-		call_final(HTTP_POST, &apply_route, apply_confirm_bodies[i], &response);
-		assert_terminal_response(&response, HTTP_200_OK, "\"noop\":true");
-		assert(fake.status_calls == 1U);
-		assert(fake.apply_calls == 0U);
-		assert(fake.save_calls == 0U && fake.clear_calls == 0U);
-	}
-
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(apply_confirm_bodies); i++) {
-		reset_fixture();
-		set_status_reason(LINKR_DEBUGGER_CONFIG_SERVICE_REASON_ABSENT);
-		call_final(HTTP_POST, &apply_route, apply_confirm_bodies[i], &response);
-		assert_terminal_response(&response, HTTP_409_CONFLICT,
-					 "\"code\":\"no_snapshot\"");
-		assert(fake.status_calls == 1U);
-		assert(fake.apply_calls == 0U);
-		assert(fake.save_calls == 0U && fake.clear_calls == 0U);
-	}
-
-	reset_fixture();
-	set_existing_snapshot(1U, 0U);
-	fake.apply_result = LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED;
-	fake.apply_report.confirmation_count = 1U;
-	fake.apply_report.confirmation_items[0] = &linkr_debugger_config_items[0];
-	call_final(HTTP_POST, &apply_route, "{\"confirm\":false}", &response);
-	assert_terminal_response(&response, HTTP_409_CONFLICT,
-				 "\"code\":\"confirmation_required\"");
-	assert(fake.status_calls == 1U);
-	assert(fake.apply_calls == 1U);
-	assert(!fake.last_apply_confirmed);
-	assert(fake.save_calls == 0U && fake.clear_calls == 0U);
-
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(invalid_apply_bodies); i++) {
-		reset_fixture();
-		call_final(HTTP_POST, &apply_route, invalid_apply_bodies[i], &response);
-		assert_terminal_response(&response, HTTP_400_BAD_REQUEST,
-					 "\"code\":\"invalid_json\"");
-		assert(fake.status_calls == 0U && fake.apply_calls == 0U);
-		assert(fake.save_calls == 0U && fake.clear_calls == 0U);
-	}
-}
-
-static void test_post_status_failures(void)
-{
-	static const struct {
-		enum linkr_debugger_config_service_reason reason;
-		const char *code;
-	} cases[] = {
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_REASON_BACKEND_UNAVAILABLE,
-		  "backend_unavailable" },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_REASON_STORAGE_ERROR, "storage_error" },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_REASON_INVALID_SNAPSHOT,
-		  "invalid_snapshot" },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_REASON_UNSUPPORTED_VERSION,
-		  "unsupported_version" },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_REASON_UNINITIALIZED, "internal_error" },
-	};
-
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(cases); i++) {
-		struct http_response_ctx response;
-		char code[64];
-
-		reset_fixture();
-		set_status_reason(cases[i].reason);
-		assert(snprintf(code, sizeof(code), "\"code\":\"%s\"", cases[i].code) > 0);
-		call_final(HTTP_POST, &apply_route, "{\"confirm\":true}", &response);
-		assert_terminal_response(&response, HTTP_500_INTERNAL_SERVER_ERROR, code);
-		assert(fake.status_calls == 1U && fake.apply_calls == 0U);
-	}
-
-	reset_fixture();
-	fake.status_result = LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT;
-	{
-		struct http_response_ctx response;
-
-		call_final(HTTP_POST, &apply_route, "{\"confirm\":true}", &response);
-		assert_terminal_response(&response, HTTP_500_INTERNAL_SERVER_ERROR,
-					 "\"code\":\"internal_error\"");
-		assert(fake.apply_calls == 0U);
-	}
-
-	reset_fixture();
-	set_status_reason(LINKR_DEBUGGER_CONFIG_SERVICE_REASON_ABSENT);
-	fake.status.snapshot_present = true;
-	{
-		struct http_response_ctx response;
-
-		call_final(HTTP_POST, &apply_route, "{\"confirm\":true}", &response);
-		assert_terminal_response(&response, HTTP_500_INTERNAL_SERVER_ERROR,
-					 "\"code\":\"internal_error\"");
-	}
-}
-
-static void test_post_apply_error_mapping(void)
-{
-	static const struct mutation_result_case cases[] = {
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_ITEM_UNAVAILABLE, HTTP_409_CONFLICT,
-		  "item_unavailable", NULL },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED, HTTP_409_CONFLICT,
-		  "confirmation_required", NULL },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_BUSY_CAPTURE, HTTP_409_CONFLICT,
-		  "busy", "\"activity\":\"capture\"" },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_BUSY_FLASH, HTTP_409_CONFLICT,
-		  "busy", "\"activity\":\"ota\"" },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_BACKEND_UNAVAILABLE,
-		  HTTP_500_INTERNAL_SERVER_ERROR, "backend_unavailable", NULL },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_NO_SNAPSHOT, HTTP_409_CONFLICT,
-		  "no_snapshot", NULL },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_SNAPSHOT,
-		  HTTP_500_INTERNAL_SERVER_ERROR, "invalid_snapshot", NULL },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_UNSUPPORTED_VERSION,
-		  HTTP_500_INTERNAL_SERVER_ERROR, "unsupported_version", NULL },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_STORAGE_ERROR,
-		  HTTP_500_INTERNAL_SERVER_ERROR, "storage_error", NULL },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_CONTROL_CAPTURE_FAILED,
-		  HTTP_500_INTERNAL_SERVER_ERROR, "control_capture_failed", NULL },
-		{ LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED,
-		  HTTP_500_INTERNAL_SERVER_ERROR, "apply_failed", NULL },
-	};
-
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(cases); i++) {
-		struct http_response_ctx response;
-		char code[64];
-
-		reset_fixture();
-		set_existing_snapshot(1U, 0U);
-		fake.apply_result = cases[i].result;
-		if (cases[i].result == LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED) {
-			fake.apply_report.confirmation_count = 1U;
-			fake.apply_report.confirmation_items[0] = &linkr_debugger_config_items[0];
-		}
-		if (cases[i].result == LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED) {
-			fake.apply_report.applied_count = 1U;
-			fake.apply_report.applied_items[0] = &linkr_debugger_config_items[0];
-			fake.apply_report.failed_item = &linkr_debugger_config_items[4];
-			fake.apply_report.pending_count = 1U;
-			fake.apply_report.pending_items[0] = &linkr_debugger_config_items[4];
-		}
-		assert(snprintf(code, sizeof(code), "\"code\":\"%s\"", cases[i].code) > 0);
-		call_final(HTTP_POST, &apply_route, "{\"confirm\":true}", &response);
-		assert_terminal_response(&response, cases[i].status, code);
-		assert_response_activity(&response, cases[i].activity);
-		assert(fake.status_calls == 1U && fake.apply_calls == 1U);
-		assert(fake.save_calls == 0U && fake.clear_calls == 0U);
-		if (cases[i].result == LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED) {
-			char text[LINKR_DEBUGGER_CONFIG_HTTP_RESPONSE_CAP + 1U];
-
-			response_text(&response, text);
-			assert(strstr(text, "\"applied_items\":[\"power/12v_out\"]") != NULL);
-			assert(strstr(text, "\"failed_item\":\"switch/sd\"") != NULL);
-			assert(strstr(text, "\"pending_items\":[\"switch/sd\"]") != NULL);
-		}
-	}
-}
-
 static void test_operation_error_fallback_envelope(void)
 {
 	const struct linkr_debugger_config_item_desc foreign_failed_item = {
@@ -709,10 +521,10 @@ static void test_operation_error_fallback_envelope(void)
 	char text[LINKR_DEBUGGER_CONFIG_HTTP_RESPONSE_CAP + 1U];
 
 	reset_fixture();
-	set_existing_snapshot(1U, 0U);
-	fake.apply_result = LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED;
-	fake.apply_report.failed_item = &foreign_failed_item;
-	call_final(HTTP_POST, &apply_route, "{\"confirm\":true}", &response);
+	fake.save_result = LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED;
+	fake.save_report.failed_item = &foreign_failed_item;
+	call_final(HTTP_PUT, &config_route,
+		   "{\"items\":[\"power/12v_out\"],\"confirm\":true}", &response);
 
 	assert_terminal_response(&response, HTTP_500_INTERNAL_SERVER_ERROR,
 				 "\"code\":\"internal_error\"");
@@ -721,13 +533,13 @@ static void test_operation_error_fallback_envelope(void)
 	assert(strstr(text, "\"ok\":false") != NULL);
 	assert(strstr(text, "\"command\":\"config\"") != NULL);
 	regression_assert_contains("fallback_action", text,
-				   "\"action\":\"apply\"");
+				   "\"action\":\"save\"");
 	assert(strstr(text, "\"code\":\"internal_error\"") != NULL);
 	assert(strstr(text, "\"message\":\"internal config error\"") != NULL);
 	assert(response.body_len <= LINKR_DEBUGGER_CONFIG_HTTP_RESPONSE_CAP);
 	assert(text[response.body_len - 1U] == '\n');
-	assert(fake.status_calls == 1U && fake.apply_calls == 1U);
-	assert(fake.save_calls == 0U && fake.clear_calls == 0U);
+	assert(fake.save_calls == 1U);
+	assert(fake.clear_calls == 0U);
 }
 
 static void test_delete_preflight_and_errors(void)
@@ -744,7 +556,7 @@ static void test_delete_preflight_and_errors(void)
 	call_final(HTTP_DELETE, &config_route, NULL, &response);
 	assert_terminal_response(&response, HTTP_200_OK, "\"noop\":false");
 	assert(fake.clear_calls == 1U);
-	assert(fake.save_calls == 0U && fake.apply_calls == 0U);
+	assert(fake.save_calls == 0U);
 
 	for (enum linkr_debugger_config_service_reason reason =
 		     LINKR_DEBUGGER_CONFIG_SERVICE_REASON_INVALID_SNAPSHOT;
@@ -754,7 +566,7 @@ static void test_delete_preflight_and_errors(void)
 		call_final(HTTP_DELETE, &config_route, NULL, &response);
 		assert_terminal_response(&response, HTTP_200_OK, "\"noop\":false");
 		assert(fake.clear_calls == 1U);
-		assert(fake.save_calls == 0U && fake.apply_calls == 0U);
+		assert(fake.save_calls == 0U);
 	}
 
 	reset_fixture();
@@ -876,56 +688,38 @@ static void test_get_delete_wait_for_final(void)
 
 static void test_client_and_route_interleaving(void)
 {
-	struct http_client_ctx save_client;
-	struct http_client_ctx apply_client;
-	struct http_response_ctx save_response;
-	struct http_response_ctx apply_response;
+	struct http_client_ctx first_client;
+	struct http_client_ctx second_client;
+	struct http_response_ctx first_response;
+	struct http_response_ctx second_response;
 
 	reset_fixture();
-	set_existing_snapshot(1U, 0U);
-	init_client(&save_client, HTTP_PUT);
-	init_client(&apply_client, HTTP_POST);
-	set_response_sentinel(&save_response);
-	set_response_sentinel(&apply_response);
-	call_config(&save_client, HTTP_SERVER_REQUEST_DATA_MORE,
-		    "{\"items\":[]", strlen("{\"items\":[]"),
-		    &config_route, &save_response);
-	call_config(&apply_client, HTTP_SERVER_REQUEST_DATA_MORE,
-		    "{\"confirm\":", strlen("{\"confirm\":"),
-		    &apply_route, &apply_response);
-	assert_response_sentinel(&save_response);
-	assert_response_sentinel(&apply_response);
-	call_config(&apply_client, HTTP_SERVER_REQUEST_DATA_FINAL,
-		    "true}", strlen("true}"), &apply_route, &apply_response);
-	assert_terminal_response(&apply_response, HTTP_200_OK,
-				 "\"action\":\"apply\"");
-	call_config(&save_client, HTTP_SERVER_REQUEST_DATA_FINAL,
+	init_client(&first_client, HTTP_PUT);
+	init_client(&second_client, HTTP_PUT);
+	set_response_sentinel(&first_response);
+	set_response_sentinel(&second_response);
+	call_config(&first_client, HTTP_SERVER_REQUEST_DATA_MORE,
+		    "{\"items\":[\"power/12v_out\"]", strlen("{\"items\":[\"power/12v_out\"]"),
+		    &config_route, &first_response);
+	call_config(&second_client, HTTP_SERVER_REQUEST_DATA_MORE,
+		    "{\"items\":[\"switch/sd\"]", strlen("{\"items\":[\"switch/sd\"]"),
+		    &config_route, &second_response);
+	assert_response_sentinel(&first_response);
+	assert_response_sentinel(&second_response);
+	call_config(&second_client, HTTP_SERVER_REQUEST_DATA_FINAL,
 		    ",\"confirm\":false}", strlen(",\"confirm\":false}"),
-		    &config_route, &save_response);
-	assert_terminal_response(&save_response, HTTP_200_OK,
+		    &config_route, &second_response);
+	assert_terminal_response(&second_response, HTTP_200_OK,
 				 "\"action\":\"save\"");
-	assert_terminal_response(&apply_response, HTTP_200_OK,
-				 "\"action\":\"apply\"");
-	assert(fake.apply_calls == 1U && fake.save_calls == 1U);
-
-	reset_fixture();
-	init_client(&save_client, HTTP_PUT);
-	set_response_sentinel(&save_response);
-	call_config(&save_client, HTTP_SERVER_REQUEST_DATA_MORE,
-		    "{\"items\":[]", strlen("{\"items\":[]"),
-		    &config_route, &save_response);
-	save_client.method = HTTP_POST;
-	call_config(&save_client, HTTP_SERVER_REQUEST_DATA_MORE,
-		    "{\"confirm\":", strlen("{\"confirm\":"),
-		    &apply_route, &save_response);
-	assert_terminal_response(&save_response, HTTP_500_INTERNAL_SERVER_ERROR,
-				 "\"code\":\"internal_error\"");
-	set_response_sentinel(&save_response);
-	call_config(&save_client, HTTP_SERVER_REQUEST_DATA_FINAL,
-		    "{\"confirm\":true}", strlen("{\"confirm\":true}"),
-		    &apply_route, &save_response);
-	assert_terminal_response(&save_response, HTTP_200_OK,
-				 "\"action\":\"apply\"");
+	call_config(&first_client, HTTP_SERVER_REQUEST_DATA_FINAL,
+		    ",\"confirm\":true}", strlen(",\"confirm\":true}"),
+		    &config_route, &first_response);
+	assert_terminal_response(&first_response, HTTP_200_OK,
+				 "\"action\":\"save\"");
+	assert(fake.save_calls == 2U);
+	assert(fake.saved_item_count == 1U);
+	assert(strcmp(fake.saved_ids[0], "power/12v_out") == 0);
+	assert(fake.last_save_confirmed);
 }
 
 static void test_four_slots_and_fifth_client(void)
@@ -1007,7 +801,7 @@ static void test_invalid_route_and_method(void)
 	struct http_response_ctx response;
 
 	reset_fixture();
-	call_final(HTTP_GET, &apply_route, NULL, &response);
+	call_final(HTTP_POST, &config_route, "{\"confirm\":true}", &response);
 	assert_terminal_response(&response, HTTP_500_INTERNAL_SERVER_ERROR,
 				 "\"code\":\"internal_error\"");
 
@@ -1022,9 +816,6 @@ int main(void)
 	test_get_all_status_reasons();
 	test_put_save_and_confirmation();
 	test_put_error_mapping();
-	test_post_apply_preflight();
-	test_post_status_failures();
-	test_post_apply_error_mapping();
 	test_operation_error_fallback_envelope();
 	test_delete_preflight_and_errors();
 	test_fragment_boundaries();

@@ -201,8 +201,7 @@ static bool parse_items(struct json_cursor *cursor,
 }
 
 static bool parse_object(struct json_cursor *cursor,
-			 struct linkr_debugger_config_save_request *request, bool apply,
-			 bool *confirmed_out)
+			 struct linkr_debugger_config_save_request *request)
 {
 	bool confirmed = false;
 	unsigned int fields = 0U;
@@ -219,7 +218,7 @@ static bool parse_object(struct json_cursor *cursor,
 		if (!take(cursor, ':')) return false;
 		skip_space(cursor);
 		if (strcmp(name, "items") == 0) {
-			if (apply || (fields & 1U) != 0U || !parse_items(cursor, request))
+			if ((fields & 1U) != 0U || !parse_items(cursor, request))
 				return false;
 			fields |= 1U;
 		} else if (strcmp(name, "confirm") == 0) {
@@ -238,31 +237,22 @@ static bool parse_object(struct json_cursor *cursor,
 	skip_space(cursor);
 	if (cursor->offset != cursor->length)
 		return false;
-	if (apply) {
-		if (confirmed_out == NULL)
-			return false;
-		*confirmed_out = confirmed;
-		return fields == 2U;
-	}
 	request->confirmed = confirmed;
 	return fields == 3U;
 }
 
 static bool parse_body(const uint8_t *data, size_t len, char *storage,
-		       struct linkr_debugger_config_save_request *request, bool apply,
-		       bool *confirmed_out)
+		       struct linkr_debugger_config_save_request *request)
 {
 	struct json_cursor cursor;
 
 	if (data == NULL || len == 0U || len > LINKR_DEBUGGER_HTTP_BODY_CAP)
 		return false;
-	if (apply && confirmed_out == NULL)
-		return false;
 	memcpy(storage, data, len);
 	storage[len] = '\0';
 	cursor = (struct json_cursor){storage, len, 0U};
 	skip_space(&cursor);
-	return parse_object(&cursor, request, apply, confirmed_out);
+	return parse_object(&cursor, request);
 }
 
 enum linkr_debugger_config_http_parse_result
@@ -273,21 +263,8 @@ linkr_debugger_config_http_parse_save(
 	if (payload == NULL)
 		return LINKR_DEBUGGER_CONFIG_HTTP_PARSE_INVALID_JSON;
 	memset(payload, 0, sizeof(*payload));
-	if (parse_body(data, len, payload->storage, &payload->request, false, NULL))
+	if (parse_body(data, len, payload->storage, &payload->request))
 		return LINKR_DEBUGGER_CONFIG_HTTP_PARSE_OK;
 	memset(payload, 0, sizeof(*payload));
 	return LINKR_DEBUGGER_CONFIG_HTTP_PARSE_INVALID_JSON;
-}
-
-enum linkr_debugger_config_http_parse_result
-linkr_debugger_config_http_parse_apply(const uint8_t *data, size_t len,
-				       bool *confirmed)
-{
-	char storage[LINKR_DEBUGGER_HTTP_BODY_CAP + 1U];
-
-	if (confirmed == NULL)
-		return LINKR_DEBUGGER_CONFIG_HTTP_PARSE_INVALID_JSON;
-	if (!parse_body(data, len, storage, NULL, true, confirmed))
-		return LINKR_DEBUGGER_CONFIG_HTTP_PARSE_INVALID_JSON;
-	return LINKR_DEBUGGER_CONFIG_HTTP_PARSE_OK;
 }

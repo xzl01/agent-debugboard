@@ -12,7 +12,7 @@ struct config_http_context {
 	enum linkr_debugger_config_http_action action; char *buffer;
 	struct http_response_ctx *response; bool body_method; };
 
-static char config_response[RESPONSE_STORAGE_SIZE], apply_response[RESPONSE_STORAGE_SIZE];
+static char config_response[RESPONSE_STORAGE_SIZE];
 static const struct http_header no_store_header[] = { { "Cache-Control", "no-store" } };
 static const struct linkr_debugger_config_http_error internal_error = { HTTP_500_INTERNAL_SERVER_ERROR, "internal_error", "internal config error", NULL };
 static const struct linkr_debugger_config_http_error invalid_json = { HTTP_400_BAD_REQUEST, "invalid_json", "request body does not match the config schema", NULL };
@@ -22,10 +22,9 @@ static const struct linkr_debugger_config_http_error storage_read_error = { HTTP
 static bool select_operation(enum linkr_debugger_config_http_route route, enum http_method method, struct http_response_ctx *response, struct config_http_context *context)
 {
 	context->response = response;
-	context->buffer = route == LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_APPLY ? apply_response : config_response;
+	context->buffer = config_response;
 	context->body_method = false;
-	context->action = route == LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_APPLY ?
-		LINKR_DEBUGGER_CONFIG_HTTP_ACTION_APPLY : LINKR_DEBUGGER_CONFIG_HTTP_ACTION_GET;
+	context->action = LINKR_DEBUGGER_CONFIG_HTTP_ACTION_GET;
 	if (route == LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_CONFIG && method == HTTP_GET) return true;
 	if (route == LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_CONFIG && method == HTTP_PUT) {
 		context->action = LINKR_DEBUGGER_CONFIG_HTTP_ACTION_SAVE; context->body_method = true;
@@ -33,9 +32,6 @@ static bool select_operation(enum linkr_debugger_config_http_route route, enum h
 	}
 	if (route == LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_CONFIG && method == HTTP_DELETE) {
 		context->action = LINKR_DEBUGGER_CONFIG_HTTP_ACTION_CLEAR; return true;
-	}
-	if (route == LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_APPLY && method == HTTP_POST) {
-		context->body_method = true; return true;
 	}
 	return false;
 }
@@ -134,40 +130,6 @@ static void handle_save(const struct config_http_context *context,
 	send_encoded(context, encoded, size);
 }
 
-static void handle_apply(const struct config_http_context *context,
-			 const struct linkr_debugger_http_body_view *body)
-{
-	struct linkr_debugger_config_service_status status;
-	struct linkr_debugger_config_operation_report report = { 0 };
-	enum linkr_debugger_config_service_result result;
-	bool confirmed = false;
-	size_t size = 0U; enum linkr_debugger_config_http_encode_result encoded;
-
-	if (linkr_debugger_config_http_parse_apply(body->data, body->len, &confirmed) !=
-	    LINKR_DEBUGGER_CONFIG_HTTP_PARSE_OK) return send_error(context, &invalid_json, NULL);
-	if (!get_status(context, &status)) return;
-	if (status.reason == LINKR_DEBUGGER_CONFIG_SERVICE_REASON_ABSENT) {
-		if (!status.available || status.snapshot_present) send_error(context, &internal_error, NULL);
-		else send_result_error(context, LINKR_DEBUGGER_CONFIG_SERVICE_NO_SNAPSHOT, NULL);
-		return;
-	}
-	if (status.reason != LINKR_DEBUGGER_CONFIG_SERVICE_REASON_READY)
-		return send_result_error(context, result_from_reason(status.reason), NULL);
-	if (!status.available || !status.snapshot_present) return send_error(context, &internal_error, NULL);
-	if (status.pending_count == 0U && status.failed_count == 0U) {
-		encoded = linkr_debugger_config_http_encode_apply(
-			&report, true, context->buffer, RESPONSE_STORAGE_SIZE, &size);
-		send_encoded(context, encoded, size);
-		return;
-	}
-	result = linkr_debugger_config_service_apply(confirmed, &report);
-	if (result != LINKR_DEBUGGER_CONFIG_SERVICE_OK)
-		return send_result_error(context, result, &report);
-	encoded = linkr_debugger_config_http_encode_apply(
-		&report, false, context->buffer, RESPONSE_STORAGE_SIZE, &size);
-	send_encoded(context, encoded, size);
-}
-
 static void handle_clear(const struct config_http_context *context)
 {
 	struct linkr_debugger_config_service_status status;
@@ -201,7 +163,6 @@ static void handle_final(const struct config_http_context *context,
 	switch (context->action) {
 	case LINKR_DEBUGGER_CONFIG_HTTP_ACTION_GET: handle_get(context); break;
 	case LINKR_DEBUGGER_CONFIG_HTTP_ACTION_SAVE: handle_save(context, body); break;
-	case LINKR_DEBUGGER_CONFIG_HTTP_ACTION_APPLY: handle_apply(context, body); break;
 	case LINKR_DEBUGGER_CONFIG_HTTP_ACTION_CLEAR: handle_clear(context); break;
 	}
 }

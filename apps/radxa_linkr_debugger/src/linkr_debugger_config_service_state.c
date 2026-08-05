@@ -12,7 +12,7 @@ bool linkr_debugger_config_service_state_ops_valid(
 	const struct linkr_debugger_config_service_ops *ops)
 {
 	return ops != NULL && ops->control_snapshot_get != NULL &&
-	       ops->control_apply_entry != NULL && ops->store_status_get != NULL &&
+	       ops->control_replay_entry != NULL && ops->store_status_get != NULL &&
 	       ops->store_snapshot_get != NULL && ops->store_save != NULL &&
 	       ops->store_clear != NULL && ops->capture_try_acquire != NULL &&
 	       ops->capture_release != NULL && ops->flash_try_acquire != NULL &&

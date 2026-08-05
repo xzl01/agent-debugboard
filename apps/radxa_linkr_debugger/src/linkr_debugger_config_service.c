@@ -97,14 +97,14 @@ enum linkr_debugger_config_service_result linkr_debugger_config_service_init_wit
 		return linkr_debugger_config_service_state_result_from_store(outcome);
 	}
 	service_status.snapshot_present = true;
+	service_status.snapshot_version = LINKR_DEBUGGER_CONFIG_VERSION;
 	linkr_debugger_config_service_state_sync_saved(
 		&service_status, &saved_snapshot, LINKR_DEBUGGER_CONFIG_APPLY_PENDING);
 	result = owners_acquire();
 	if (result == LINKR_DEBUGGER_CONFIG_SERVICE_OK) {
-		(void)linkr_debugger_config_apply_execute(
-			&saved_snapshot, LINKR_DEBUGGER_CONFIG_APPLY_MODE_BOOT_SAFE,
-			service_ops->control_apply_entry, service_context,
-			&service_status, &boot_report);
+		(void)linkr_debugger_config_replay_execute(
+			&saved_snapshot, service_ops->control_replay_entry,
+			service_context, &service_status, &boot_report);
 		result = boot_report.result;
 		owners_release();
 	}
@@ -193,44 +193,16 @@ enum linkr_debugger_config_service_result linkr_debugger_config_service_save(
 			saved_snapshot = snapshot;
 			linkr_debugger_config_service_state_sync_saved(
 				&service_status, &snapshot,
-				LINKR_DEBUGGER_CONFIG_APPLY_APPLIED);
+				LINKR_DEBUGGER_CONFIG_APPLY_PENDING);
 			linkr_debugger_config_service_state_set_reason(
 				&service_status, LINKR_DEBUGGER_CONFIG_SERVICE_REASON_READY);
 			service_status.snapshot_present = true;
+			service_status.snapshot_version = LINKR_DEBUGGER_CONFIG_VERSION;
+			report->snapshot_version = LINKR_DEBUGGER_CONFIG_VERSION;
+			(void)linkr_debugger_config_replay_execute(
+				&snapshot, service_ops->control_replay_entry,
+				service_context, &service_status, report);
 		}
-		owners_release();
-	}
-	service_unlock();
-	return report->result;
-}
-
-enum linkr_debugger_config_service_result linkr_debugger_config_service_apply(
-	bool confirmed, struct linkr_debugger_config_operation_report *report)
-{
-	if (report == NULL) {
-		return LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT;
-	}
-	memset(report, 0, sizeof(*report));
-	report->result = LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT;
-	if (!service_initialized) {
-		return report->result;
-	}
-	service_lock();
-	report->result =
-		linkr_debugger_config_service_state_result_from_reason(
-			service_status.reason);
-	if (report->result == LINKR_DEBUGGER_CONFIG_SERVICE_OK) {
-		report->result = linkr_debugger_config_policy_populate_confirmation_report(
-			&saved_snapshot, confirmed, report);
-	}
-	if (report->result == LINKR_DEBUGGER_CONFIG_SERVICE_OK) {
-		report->result = owners_acquire();
-	}
-	if (report->result == LINKR_DEBUGGER_CONFIG_SERVICE_OK) {
-		report->result = linkr_debugger_config_apply_execute(
-			&saved_snapshot, LINKR_DEBUGGER_CONFIG_APPLY_MODE_CONFIRMED_FULL,
-			service_ops->control_apply_entry, service_context,
-			&service_status, report);
 		owners_release();
 	}
 	service_unlock();
@@ -257,6 +229,7 @@ enum linkr_debugger_config_service_result linkr_debugger_config_service_clear(vo
 			linkr_debugger_config_service_state_set_reason(
 				&service_status, LINKR_DEBUGGER_CONFIG_SERVICE_REASON_ABSENT);
 			service_status.snapshot_present = false;
+			service_status.snapshot_version = 0U;
 		}
 		owners_release();
 	}

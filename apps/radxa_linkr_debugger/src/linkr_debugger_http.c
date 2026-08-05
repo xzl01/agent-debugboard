@@ -1936,8 +1936,6 @@ LINKR_DEBUGGER_OTA_RESOURCE(linkr_debugger_ota_confirm_resource, "/api/v1/ota/co
 LINKR_DEBUGGER_CONFIG_HTTP_RESOURCE(linkr_debugger_config_resource, "/api/v1/config",
 					    BIT(HTTP_GET) | BIT(HTTP_PUT) | BIT(HTTP_DELETE),
 					    LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_CONFIG);
-LINKR_DEBUGGER_CONFIG_HTTP_RESOURCE(linkr_debugger_config_apply_resource, "/api/v1/config/apply",
-					    BIT(HTTP_POST), LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_APPLY);
 
 static uint8_t linkr_debugger_ws_resource_buffers[LINKR_DEBUGGER_WS_MAX_CLIENTS][LINKR_DEBUGGER_WS_RECV_BUFFER_SIZE];
 static uint8_t linkr_debugger_ws_resource_slots[LINKR_DEBUGGER_WS_MAX_CLIENTS] = { 0, 1, 2, 3 };

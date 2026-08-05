@@ -23,6 +23,9 @@
 extern size_t linkr_debugger_config_service_capture_release_failures;
 extern size_t linkr_debugger_config_service_flash_release_failures;
 
+static void make_save_request(struct linkr_debugger_config_save_request *request,
+			      bool reverse, bool confirmed);
+
 static const uint8_t gpio_ids[] = {
 	7U, 8U, 9U, 10U, 11U, 12U, 13U, 14U,
 	15U, 16U, 17U, 18U, 19U, 20U, 29U,
@@ -129,29 +132,6 @@ static void build_full_ordered(struct linkr_debugger_config_snapshot *snapshot)
 				LINKR_DEBUGGER_CONFIG_GPIO_LEVEL : 0U));
 	}
 	assert(snapshot->entry_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
-}
-
-static void build_risk_partition(
-	const struct linkr_debugger_config_snapshot *ordered,
-	struct linkr_debugger_config_snapshot *safe,
-	struct linkr_debugger_config_snapshot *dangerous)
-{
-	memset(safe, 0, sizeof(*safe));
-	memset(dangerous, 0, sizeof(*dangerous));
-	for (size_t i = 0U; i < ordered->entry_count; i++) {
-		bool requires_confirmation;
-
-		assert(linkr_debugger_config_classify_entry(
-			       &ordered->entries[i], &requires_confirmation) ==
-		       LINKR_DEBUGGER_CONFIG_CODEC_OK);
-		if (requires_confirmation) {
-			append_entry(dangerous, ordered->entries[i].domain,
-				     ordered->entries[i].item_id, ordered->entries[i].value);
-		} else {
-			append_entry(safe, ordered->entries[i].domain,
-				     ordered->entries[i].item_id, ordered->entries[i].value);
-		}
-	}
 }
 
 static bool entries_equal(const struct linkr_debugger_config_entry *left,
@@ -382,7 +362,7 @@ static void build_ops(struct fake_env *env,
 	(void)env;
 	memset(ops, 0, sizeof(*ops));
 	ops->control_snapshot_get = fake_control_snapshot_get;
-	ops->control_apply_entry = fake_setter;
+	ops->control_replay_entry = fake_setter;
 	ops->store_status_get = fake_store_status_get;
 	ops->store_snapshot_get = fake_store_snapshot_get;
 	ops->store_save = fake_store_save;
@@ -402,7 +382,7 @@ static int production_snapshot_get(void *context,
 	return fake_control_snapshot_get(production_env, snapshot);
 }
 
-static int production_apply_entry(void *context,
+static int production_replay_entry(void *context,
 				  const struct linkr_debugger_config_entry *entry)
 {
 	(void)context;
@@ -463,7 +443,7 @@ static bool production_flash_done(void *context)
 const struct linkr_debugger_config_service_ops
 	linkr_debugger_config_service_production_ops = {
 		.control_snapshot_get = production_snapshot_get,
-		.control_apply_entry = production_apply_entry,
+		.control_replay_entry = production_replay_entry,
 		.store_status_get = production_status_get,
 		.store_snapshot_get = production_snapshot_load,
 		.store_save = production_store_save,
@@ -500,6 +480,7 @@ static void assert_uninitialized_status(void)
 	assert(!status.available);
 	assert(status.reason == LINKR_DEBUGGER_CONFIG_SERVICE_REASON_UNINITIALIZED);
 	assert(!status.snapshot_present);
+	assert(status.snapshot_version == 0U);
 	assert(status.item_count == linkr_debugger_config_item_count);
 	assert(status.saved_count == 0U);
 	assert(status.applied_count == 0U);
@@ -520,7 +501,7 @@ static void test_ops_validation_and_pre_init_contract(void)
 {
 	static const size_t ops_offsets[] = {
 		offsetof(struct linkr_debugger_config_service_ops, control_snapshot_get),
-		offsetof(struct linkr_debugger_config_service_ops, control_apply_entry),
+		offsetof(struct linkr_debugger_config_service_ops, control_replay_entry),
 		offsetof(struct linkr_debugger_config_service_ops, store_status_get),
 		offsetof(struct linkr_debugger_config_service_ops, store_snapshot_get),
 		offsetof(struct linkr_debugger_config_service_ops, store_save),
@@ -556,8 +537,6 @@ static void test_ops_validation_and_pre_init_contract(void)
 	request.item_count = 1U;
 	request.item_ids[0] = linkr_debugger_config_items[0].id;
 	assert(linkr_debugger_config_service_save(&request, &report) ==
-	       LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT);
-	assert(linkr_debugger_config_service_apply(true, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT);
 	assert(linkr_debugger_config_service_clear() ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT);
@@ -634,26 +613,22 @@ static void test_init_maps_every_store_state(void)
 	}
 }
 
-static void test_init_ready_boot_safe_apply(void)
+static void test_init_replays_full_snapshot_including_dangerous(void)
 {
 	struct fake_env env;
 	struct linkr_debugger_config_snapshot full;
-	struct linkr_debugger_config_snapshot safe;
-	struct linkr_debugger_config_snapshot dangerous;
 	struct linkr_debugger_config_service_status status;
 
 	build_full_ordered(&full);
-	build_risk_partition(&full, &safe, &dangerous);
-	assert(safe.entry_count == 12U);
-	assert(dangerous.entry_count == 11U);
 	reset_env(&env);
 	script_store_ready(&env, &full);
 	assert(init_fresh(&env) == LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert(env.store_status_calls == 1U);
 	assert(env.store_snapshot_calls == 1U);
-	assert(env.setter_calls == safe.entry_count);
-	for (size_t i = 0U; i < safe.entry_count; i++) {
-		assert(entries_equal(&env.setter_trace[i], &safe.entries[i]));
+	assert(env.store_save_calls == 0U);
+	assert(env.setter_calls == full.entry_count);
+	for (size_t i = 0U; i < full.entry_count; i++) {
+		assert(entries_equal(&env.setter_trace[i], &full.entries[i]));
 	}
 	assert(env.capture_acquire_calls == 1U);
 	assert(env.capture_release_calls == 1U);
@@ -666,9 +641,10 @@ static void test_init_ready_boot_safe_apply(void)
 	assert(status.available);
 	assert(status.reason == LINKR_DEBUGGER_CONFIG_SERVICE_REASON_READY);
 	assert(status.snapshot_present);
+	assert(status.snapshot_version == LINKR_DEBUGGER_CONFIG_VERSION);
 	assert(status.saved_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
-	assert(status.applied_count == safe.entry_count);
-	assert(status.pending_count == dangerous.entry_count);
+	assert(status.applied_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
+	assert(status.pending_count == 0U);
 	assert(status.failed_count == 0U);
 	assert(status.failed_item == NULL);
 	for (size_t i = 0U; i < full.entry_count; i++) {
@@ -684,9 +660,36 @@ static void test_init_ready_boot_safe_apply(void)
 		assert(status.items[index].saved_requires_confirmation ==
 		       requires_confirmation);
 		assert(status.items[index].apply_state ==
-		       (requires_confirmation ? LINKR_DEBUGGER_CONFIG_APPLY_PENDING :
-						LINKR_DEBUGGER_CONFIG_APPLY_APPLIED));
+		       LINKR_DEBUGGER_CONFIG_APPLY_APPLIED);
 	}
+}
+
+static void test_init_replays_snapshot_on_every_boot(void)
+{
+	struct fake_env env;
+	struct linkr_debugger_config_snapshot full;
+	struct linkr_debugger_config_service_status status;
+
+	build_full_ordered(&full);
+	reset_env(&env);
+	script_store_ready(&env, &full);
+	assert(init_fresh(&env) == LINKR_DEBUGGER_CONFIG_SERVICE_OK);
+	assert(env.setter_calls == full.entry_count);
+	for (size_t i = 0U; i < full.entry_count; i++) {
+		assert(entries_equal(&env.setter_trace[i], &full.entries[i]));
+	}
+	assert(linkr_debugger_config_service_status_get(&status) ==
+	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
+	assert(status.snapshot_version == LINKR_DEBUGGER_CONFIG_VERSION);
+	assert(status.applied_count == full.entry_count);
+	assert(status.pending_count == 0U);
+
+	assert(init_fresh(&env) == LINKR_DEBUGGER_CONFIG_SERVICE_OK);
+	assert(env.setter_calls == full.entry_count * 2U);
+	for (size_t i = 0U; i < full.entry_count; i++) {
+		assert(entries_equal(&env.setter_trace[full.entry_count + i], &full.entries[i]));
+	}
+	assert_owners_idle(&env);
 }
 
 static void test_init_boot_failure_and_busy_remain_observable(void)
@@ -734,8 +737,13 @@ static void test_init_boot_failure_and_busy_remain_observable(void)
 	assert(status.applied_count == 0U);
 
 	env.capture_busy = false;
-	assert(linkr_debugger_config_service_apply(true, &report) ==
-	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
+	{
+		struct linkr_debugger_config_save_request request;
+
+		make_save_request(&request, false, true);
+		assert(linkr_debugger_config_service_save(&request, &report) ==
+		       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
+	}
 	assert(env.setter_calls == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
 	assert(report.applied_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
 	assert(linkr_debugger_config_service_status_get(&status) ==
@@ -808,17 +816,18 @@ static void test_save_happy_23_items(void)
 	assert(linkr_debugger_config_service_save(&request, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert(report.result == LINKR_DEBUGGER_CONFIG_SERVICE_OK);
+	assert(report.snapshot_version == LINKR_DEBUGGER_CONFIG_VERSION);
 	assert(report.confirmation_count == 1U);
 	assert(report.confirmation_items[0] ==
 	       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 				       LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID));
 	assert(report.confirmation_items[1] == NULL);
-	assert(report.applied_count == 0U);
+	assert(report.applied_count == linkr_debugger_config_item_count);
 	assert(report.pending_count == 0U);
 	assert(report.failed_item == NULL);
 	assert(env.store_save_calls == 1U);
 	assert(env.store_clear_calls == 0U);
-	assert(env.setter_calls == 0U);
+	assert(env.setter_calls == linkr_debugger_config_item_count);
 	assert(env.control_snapshot_calls == 1U);
 	assert(env.capture_acquire_calls == 1U);
 	assert(env.capture_release_calls == 1U);
@@ -843,6 +852,7 @@ static void test_save_happy_23_items(void)
 	assert(status.available);
 	assert(status.reason == LINKR_DEBUGGER_CONFIG_SERVICE_REASON_READY);
 	assert(status.snapshot_present);
+	assert(status.snapshot_version == LINKR_DEBUGGER_CONFIG_VERSION);
 	assert(status.saved_count == linkr_debugger_config_item_count);
 	assert(status.applied_count == linkr_debugger_config_item_count);
 	assert(status.pending_count == 0U);
@@ -947,6 +957,7 @@ static void test_save_unavailable_and_capture_failure(void)
 	assert(linkr_debugger_config_service_save(&request, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert(env.store_save_calls == 1U);
+	assert(env.setter_calls == 2U);
 }
 
 static void test_save_confirmation_flow_preserves_prior_state(void)
@@ -973,6 +984,7 @@ static void test_save_confirmation_flow_preserves_prior_state(void)
 	assert(linkr_debugger_config_service_save(&request, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED);
 	assert(report.result == LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED);
+	assert(report.snapshot_version == 0U);
 	assert(report.confirmation_count == 1U);
 	assert(report.confirmation_items[0] ==
 	       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
@@ -994,6 +1006,7 @@ static void test_save_confirmation_flow_preserves_prior_state(void)
 	       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 				       LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID));
 	assert(env.store_save_calls == 1U);
+	assert(env.setter_calls == 2U);
 	assert(env.store_last_saved.entry_count == 2U);
 	assert(env.store_last_saved.entries[0].domain ==
 	       LINKR_DEBUGGER_CONFIG_DOMAIN_POWER);
@@ -1059,165 +1072,54 @@ static void test_save_busy_aborts_before_control_and_store(void)
 	assert(linkr_debugger_config_service_save(&request, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert(env.store_save_calls == 1U);
+	assert(env.setter_calls == linkr_debugger_config_item_count);
 }
 
-static void assert_canonical_dangerous_items(
-	const struct linkr_debugger_config_operation_report *report, size_t count)
-{
-	static const uint8_t expected_ids[] = {
-		LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
-		LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID,
-		LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
-		LINKR_DEBUGGER_CONFIG_POWER_VDD_5V_ID,
-		LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
-		LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID,
-	};
-
-	assert(count == 11U);
-	assert(report->confirmation_count == count);
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(expected_ids) / 2U; i++) {
-		assert(report->confirmation_items[i] ==
-		       linkr_debugger_config_find_item(expected_ids[i * 2U],
-					       expected_ids[i * 2U + 1U]));
-	}
-	for (size_t i = 0U; i < 7U; i++) {
-		assert(report->confirmation_items[4U + i] ==
-		       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO,
-					       (uint8_t)(8U + i * 2U)));
-	}
-}
-
-static void test_apply_requires_snapshot_and_confirmation(void)
+static void test_save_partial_failure_reports_pending_and_retry(void)
 {
 	struct fake_env env;
-	struct linkr_debugger_config_snapshot full;
-	struct linkr_debugger_config_snapshot safe;
-	struct linkr_debugger_config_snapshot dangerous;
+	struct linkr_debugger_config_save_request request;
 	struct linkr_debugger_config_operation_report report;
-
-	build_full_ordered(&full);
-	build_risk_partition(&full, &safe, &dangerous);
+	struct linkr_debugger_config_service_status status;
 
 	reset_env(&env);
 	script_store_absent(&env);
 	assert(init_fresh(&env) == LINKR_DEBUGGER_CONFIG_SERVICE_OK);
-	assert(linkr_debugger_config_service_apply(true, &report) ==
-	       LINKR_DEBUGGER_CONFIG_SERVICE_NO_SNAPSHOT);
-	assert(linkr_debugger_config_service_apply(false, &report) ==
-	       LINKR_DEBUGGER_CONFIG_SERVICE_NO_SNAPSHOT);
-	assert(env.setter_calls == 0U);
+	make_save_request(&request, false, true);
 
-	reset_env(&env);
-	script_store_ready(&env, &full);
-	assert(init_fresh(&env) == LINKR_DEBUGGER_CONFIG_SERVICE_OK);
-	memset(&report, 0xa5, sizeof(report));
-	assert(linkr_debugger_config_service_apply(false, &report) ==
-	       LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED);
-	assert(report.result == LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED);
-	assert_canonical_dangerous_items(&report, dangerous.entry_count);
-	assert(env.setter_calls == safe.entry_count);
-	assert_owners_idle(&env);
-
-	assert(linkr_debugger_config_service_apply(true, &report) ==
-	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
-	assert_canonical_dangerous_items(&report, dangerous.entry_count);
-	assert(env.setter_calls == safe.entry_count + LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
-	for (size_t i = 0U; i < LINKR_DEBUGGER_CONFIG_MAX_ENTRIES; i++) {
-		assert(entries_equal(&env.setter_trace[safe.entry_count + i],
-				     &full.entries[i]));
-	}
-	assert(report.applied_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
-	assert(report.pending_count == 0U);
-	assert_owners_idle(&env);
-}
-
-static void test_apply_reason_mapping_and_busy(void)
-{
-	static const struct {
-		enum linkr_debugger_config_store_reason store_reason;
-		enum linkr_debugger_config_service_result result;
-	} cases[] = {
-		{ LINKR_DEBUGGER_CONFIG_STORE_REASON_ABSENT,
-		  LINKR_DEBUGGER_CONFIG_SERVICE_NO_SNAPSHOT },
-		{ LINKR_DEBUGGER_CONFIG_STORE_REASON_BACKEND_UNAVAILABLE,
-		  LINKR_DEBUGGER_CONFIG_SERVICE_BACKEND_UNAVAILABLE },
-		{ LINKR_DEBUGGER_CONFIG_STORE_REASON_STORAGE_ERROR,
-		  LINKR_DEBUGGER_CONFIG_SERVICE_STORAGE_ERROR },
-		{ LINKR_DEBUGGER_CONFIG_STORE_REASON_INVALID_SNAPSHOT,
-		  LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_SNAPSHOT },
-		{ LINKR_DEBUGGER_CONFIG_STORE_REASON_UNSUPPORTED_VERSION,
-		  LINKR_DEBUGGER_CONFIG_SERVICE_UNSUPPORTED_VERSION },
-	};
-	struct linkr_debugger_config_snapshot full;
-	struct linkr_debugger_config_operation_report report;
-	struct fake_env env;
-
-	build_full_ordered(&full);
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(cases); i++) {
-		reset_env(&env);
-		script_store_reason(&env, cases[i].store_reason);
-		assert(init_fresh(&env) != LINKR_DEBUGGER_CONFIG_SERVICE_OK ||
-		       cases[i].store_reason == LINKR_DEBUGGER_CONFIG_STORE_REASON_ABSENT);
-		assert(linkr_debugger_config_service_apply(true, &report) ==
-		       cases[i].result);
-		assert(env.setter_calls == 0U);
-		assert_owners_idle(&env);
-	}
-
-	reset_env(&env);
-	script_store_ready(&env, &full);
-	assert(init_fresh(&env) == LINKR_DEBUGGER_CONFIG_SERVICE_OK);
-	env.capture_busy = true;
-	assert(linkr_debugger_config_service_apply(true, &report) ==
-	       LINKR_DEBUGGER_CONFIG_SERVICE_BUSY_CAPTURE);
-	assert(env.flash_acquire_calls == 1U);
-	env.capture_busy = false;
-	env.flash_busy = true;
-	assert(linkr_debugger_config_service_apply(true, &report) ==
-	       LINKR_DEBUGGER_CONFIG_SERVICE_BUSY_FLASH);
-	assert(env.setter_calls == 12U);
-	assert_owners_idle(&env);
-}
-
-static void test_apply_failure_and_successful_retry(void)
-{
-	struct linkr_debugger_config_snapshot full;
-	struct fake_env env;
-	struct linkr_debugger_config_operation_report report;
-	struct linkr_debugger_config_service_status status;
-	size_t boot_safe_count = 12U;
-
-	build_full_ordered(&full);
-	reset_env(&env);
-	script_store_ready(&env, &full);
-	assert(init_fresh(&env) == LINKR_DEBUGGER_CONFIG_SERVICE_OK);
-
-	env.setter_fail_at = env.setter_calls + 5U;
+	/* All fifteen captured GPIOs are inputs and replay first in catalog
+	 * order (GP7..GP20, GP29), so replay position five is GP12. */
+	env.setter_fail_at = 5U;
 	env.setter_failure_errno = TEST_ERR_IO;
-	assert(linkr_debugger_config_service_apply(true, &report) ==
+	assert(linkr_debugger_config_service_save(&request, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED);
-	assert(env.setter_calls == boot_safe_count + 6U);
+	assert(env.store_save_calls == 1U);
+	assert(env.setter_calls == 6U);
 	assert(report.result == LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED);
 	assert(report.applied_count == 5U);
 	assert(report.pending_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES - 5U);
+	assert(report.pending_items[0] == report.failed_item);
 	assert(report.failed_item ==
-	       linkr_debugger_config_find_item(full.entries[5].domain,
-				       full.entries[5].item_id));
+	       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO,
+				       12U));
 	assert(report.failed_errno == TEST_ERR_IO);
 	assert_owners_idle(&env);
 	assert(linkr_debugger_config_service_status_get(&status) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
+	assert(status.snapshot_present);
+	assert(status.saved_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
 	assert(status.applied_count == 5U);
 	assert(status.failed_count == 1U);
 	assert(status.pending_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES - 6U);
 	assert(status.failed_errno == TEST_ERR_IO);
 
 	env.setter_fail_at = SETTER_NEVER;
-	assert(linkr_debugger_config_service_apply(true, &report) ==
+	assert(linkr_debugger_config_service_save(&request, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
+	assert(env.store_save_calls == 2U);
+	assert(report.result == LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert(report.applied_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
+	assert(report.pending_count == 0U);
 	assert(report.failed_item == NULL);
 	assert(report.failed_errno == 0);
 	assert(linkr_debugger_config_service_status_get(&status) ==
@@ -1236,6 +1138,7 @@ static void test_clear_lifecycle_and_failure_preservation(void)
 	struct linkr_debugger_config_save_request request;
 	struct linkr_debugger_config_operation_report report;
 	struct linkr_debugger_config_service_status status;
+	size_t setter_baseline;
 
 	reset_env(&env);
 	script_store_absent(&env);
@@ -1243,17 +1146,20 @@ static void test_clear_lifecycle_and_failure_preservation(void)
 	make_save_request(&request, false, true);
 	assert(linkr_debugger_config_service_save(&request, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
+	setter_baseline = env.setter_calls;
+	assert(setter_baseline == linkr_debugger_config_item_count);
 
 	assert(linkr_debugger_config_service_clear() ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert(env.store_clear_calls == 1U);
-	assert(env.setter_calls == 0U);
+	assert(env.setter_calls == setter_baseline);
 	assert_owners_idle(&env);
 	assert(linkr_debugger_config_service_status_get(&status) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert(status.available);
 	assert(status.reason == LINKR_DEBUGGER_CONFIG_SERVICE_REASON_ABSENT);
 	assert(!status.snapshot_present);
+	assert(status.snapshot_version == 0U);
 	assert(status.saved_count == 0U);
 	assert(status.applied_count == 0U);
 	assert(status.pending_count == 0U);
@@ -1289,7 +1195,7 @@ static void test_clear_lifecycle_and_failure_preservation(void)
 	env.flash_busy = true;
 	assert(linkr_debugger_config_service_clear() ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_BUSY_FLASH);
-	assert(env.setter_calls == 0U);
+	assert(env.setter_calls == linkr_debugger_config_item_count * 2U);
 	assert_owners_idle(&env);
 	env.flash_busy = false;
 	assert(linkr_debugger_config_service_clear() ==
@@ -1524,7 +1430,7 @@ static void test_blocked_store_save_holds_no_control_lock(void)
 	assert(env.store_save_calls == 1U);
 	assert(env.store_clear_calls == 1U);
 	assert(env.store_save_max_depth == 1U);
-	assert(env.setter_calls == 0U);
+	assert(env.setter_calls == 2U);
 	assert_owners_idle(&env);
 
 	assert(linkr_debugger_config_service_status_get(&final_status) ==
@@ -1715,7 +1621,8 @@ int main(void)
 {
 	test_ops_validation_and_pre_init_contract();
 	test_init_maps_every_store_state();
-	test_init_ready_boot_safe_apply();
+	test_init_replays_full_snapshot_including_dangerous();
+	test_init_replays_snapshot_on_every_boot();
 	test_init_boot_failure_and_busy_remain_observable();
 	test_failed_reinit_preserves_initialized_state();
 	test_save_happy_23_items();
@@ -1723,9 +1630,7 @@ int main(void)
 	test_save_unavailable_and_capture_failure();
 	test_save_confirmation_flow_preserves_prior_state();
 	test_save_busy_aborts_before_control_and_store();
-	test_apply_requires_snapshot_and_confirmation();
-	test_apply_reason_mapping_and_busy();
-	test_apply_failure_and_successful_retry();
+	test_save_partial_failure_reports_pending_and_retry();
 	test_clear_lifecycle_and_failure_preservation();
 	test_status_merges_current_without_side_effects();
 	test_status_merge_reordered_rows();
@@ -1735,7 +1640,7 @@ int main(void)
 	test_production_init_delegates_to_frozen_ops();
 	test_owner_release_failure_is_observable();
 	test_blocked_store_save_holds_no_control_lock();
-	printf("linkr_debugger_config_service: states=6 save=23/23 busy=8 "
+	printf("linkr_debugger_config_service: states=6 save-applies=23/23 busy=8 "
 	       "merge=keyed fallback=checked ops=copied blocking=verified passed\n");
 	return 0;
 }

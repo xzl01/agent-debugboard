@@ -338,6 +338,22 @@ static void test_valid_load(void)
 	assert(backend.key_matches);
 }
 
+static void test_v1_load_decodes_with_v1_header_bytes(void)
+{
+	struct fake_backend backend;
+	struct linkr_debugger_config_snapshot snapshot;
+	struct linkr_debugger_config_snapshot loaded;
+
+	make_snapshot(&snapshot, LINKR_DEBUGGER_CONFIG_POWER_ON);
+	install_backend(&backend);
+	store_snapshot(&backend, &snapshot);
+	assert(backend.stored_value[4] == LINKR_DEBUGGER_CONFIG_VERSION);
+	assert(backend.stored_value[7] == 0U);
+	assert(linkr_debugger_config_store_init() == LINKR_DEBUGGER_CONFIG_STORE_OK);
+	assert(linkr_debugger_config_store_snapshot_get(&loaded) == LINKR_DEBUGGER_CONFIG_STORE_OK);
+	assert(snapshots_equal(&loaded, &snapshot));
+}
+
 static void test_short_and_oversized_loads(void)
 {
 	struct fake_backend backend;
@@ -398,7 +414,7 @@ static void test_malformed_representatives(void)
 
 	assert(linkr_debugger_config_encode(&snapshot, payload, sizeof(payload), &length) ==
 	       LINKR_DEBUGGER_CONFIG_CODEC_OK);
-	payload[7] = 1U;
+	payload[7] = 2U;
 	assert_invalid_payload(payload, length);
 
 	make_two_entry_snapshot(&snapshot);
@@ -431,6 +447,11 @@ static void test_unsupported_load(void)
 	install_backend(&backend);
 	store_snapshot(&backend, &snapshot);
 	backend.stored_value[4] = LINKR_DEBUGGER_CONFIG_VERSION + 1U;
+	backend.stored_value[5] = 0xffU;
+	backend.stored_value[6] = 0xffU;
+	backend.stored_value[7] = 0xffU;
+	backend.stored_value[10] = 0xffU;
+	backend.stored_value[11] = 0xffU;
 	assert(linkr_debugger_config_store_init() == LINKR_DEBUGGER_CONFIG_STORE_UNSUPPORTED_VERSION);
 	assert_status(true, LINKR_DEBUGGER_CONFIG_STORE_PRESENCE_PRESENT, false,
 		      LINKR_DEBUGGER_CONFIG_STORE_REASON_UNSUPPORTED_VERSION, 0, NULL);
@@ -584,6 +605,7 @@ int main(void)
 	test_absent_and_idempotent_clear();
 	test_load_and_read_errors();
 	test_valid_load();
+	test_v1_load_decodes_with_v1_header_bytes();
 	test_short_and_oversized_loads();
 	test_malformed_representatives();
 	test_unsupported_load();

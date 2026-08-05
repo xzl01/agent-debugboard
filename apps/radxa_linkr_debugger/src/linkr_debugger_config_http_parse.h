@@ -19,8 +19,4 @@ linkr_debugger_config_http_parse_save(
 	const uint8_t *data, size_t len,
 	struct linkr_debugger_config_http_save_payload *payload);
 
-enum linkr_debugger_config_http_parse_result
-linkr_debugger_config_http_parse_apply(const uint8_t *data, size_t len,
-				       bool *confirmed);
-
 #endif

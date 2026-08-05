@@ -35,23 +35,19 @@ struct fake_shell_output {
 struct service_call_counts {
 	size_t status;
 	size_t save;
-	size_t apply;
 	size_t clear;
 };
 
 struct fake_service {
 	enum linkr_debugger_config_service_result status_result;
 	enum linkr_debugger_config_service_result save_result;
-	enum linkr_debugger_config_service_result apply_result;
 	enum linkr_debugger_config_service_result clear_result;
 	struct linkr_debugger_config_service_status status;
 	struct linkr_debugger_config_operation_report save_report;
-	struct linkr_debugger_config_operation_report apply_report;
 	struct service_call_counts calls;
 	size_t saved_item_count;
 	char saved_ids[LINKR_DEBUGGER_CONFIG_MAX_ENTRIES][SAVED_ID_CAP];
 	bool last_save_confirmed;
-	bool last_apply_confirmed;
 };
 
 static struct fake_shell_output shell_output;
@@ -127,7 +123,6 @@ static void reset_fixture(void)
 	memset(&service, 0, sizeof(service));
 	service.status_result = LINKR_DEBUGGER_CONFIG_SERVICE_OK;
 	service.save_result = LINKR_DEBUGGER_CONFIG_SERVICE_OK;
-	service.apply_result = LINKR_DEBUGGER_CONFIG_SERVICE_OK;
 	service.clear_result = LINKR_DEBUGGER_CONFIG_SERVICE_OK;
 	service.status.available = true;
 	service.status.reason = LINKR_DEBUGGER_CONFIG_SERVICE_REASON_READY;
@@ -168,17 +163,6 @@ enum linkr_debugger_config_service_result linkr_debugger_config_service_save(
 	return service.save_result;
 }
 
-enum linkr_debugger_config_service_result linkr_debugger_config_service_apply(
-	bool confirmed, struct linkr_debugger_config_operation_report *report)
-{
-	assert(report != NULL);
-	service.calls.apply++;
-	service.last_apply_confirmed = confirmed;
-	*report = service.apply_report;
-	report->result = service.apply_result;
-	return service.apply_result;
-}
-
 enum linkr_debugger_config_service_result linkr_debugger_config_service_clear(void)
 {
 	service.calls.clear++;
@@ -189,7 +173,6 @@ static void assert_service_calls(const struct service_call_counts expected)
 {
 	assert(service.calls.status == expected.status);
 	assert(service.calls.save == expected.save);
-	assert(service.calls.apply == expected.apply);
 	assert(service.calls.clear == expected.clear);
 }
 
@@ -426,7 +409,7 @@ struct service_error_case {
 	const char *error_line;
 };
 
-static void test_save_maps_every_non_apply_service_result(void)
+static void test_save_maps_non_failure_service_results(void)
 {
 	static const struct service_error_case cases[] = {
 		{ LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_ARGUMENT, -EINVAL,
@@ -494,105 +477,58 @@ static void test_save_maps_every_non_apply_service_result(void)
 	}
 }
 
-static void test_apply_prints_report_counts_when_service_succeeds(void)
+static void test_save_reports_partial_failure_in_report_order(void)
 {
-	char *argv[] = {"apply", "--confirm"};
-
-	/* Given */
-	reset_fixture();
-	service.apply_report.applied_count = 2U;
-	service.apply_report.pending_count = 1U;
-
-	/* When */
-	const int result = linkr_debugger_config_shell_apply(&test_shell,
-						      ARRAY_SIZE_LOCAL(argv), argv);
-
-	/* Then */
-	assert(result == 0);
-	assert_print_line("config apply applied_count=2 pending_count=1");
-	assert(service.last_apply_confirmed);
-	assert_service_calls((struct service_call_counts){.apply = 1U});
-}
-
-static void test_apply_rejects_invalid_grammar_before_service_io(void)
-{
-	static struct {
-		size_t argc;
-		char *argv[3];
-	} cases[] = {
-		{ 1U, { "apply", NULL, NULL } },
-		{ 2U, { "apply", "confirm", NULL } },
-		{ 3U, { "apply", "--confirm", "extra" } },
-		{ 3U, { "apply", "--confirm", "--confirm" } },
-	};
-
-	for (size_t index = 0U; index < ARRAY_SIZE_LOCAL(cases); index++) {
-		/* Given */
-		reset_fixture();
-
-		/* When */
-		const int result = linkr_debugger_config_shell_apply(
-			&test_shell, cases[index].argc, cases[index].argv);
-
-		/* Then */
-		assert(result == -EINVAL);
-		assert_error_line("config apply error=invalid_arguments");
-		assert_no_service_calls();
-	}
-}
-
-static void test_apply_reports_partial_failure_in_report_order(void)
-{
-	char *argv[] = {"apply", "--confirm"};
+	char *argv[] = {"save", "--confirm", "power/12v_out"};
 	const char *const expected_lines[] = {
-		"config apply error=apply_failed failed_id=switch/usb failed_errno=-17",
-		"config apply applied_id=power/12v_out",
-		"config apply applied_id=switch/sd",
-		"config apply pending_id=switch/usb",
-		"config apply pending_id=gpio/GP7",
+		"config save error=apply_failed failed_id=switch/usb failed_errno=-17",
+		"config save applied_id=power/12v_out",
+		"config save applied_id=switch/sd",
+		"config save pending_id=switch/usb",
+		"config save pending_id=gpio/GP7",
 	};
 
 	/* Given */
 	reset_fixture();
-	service.apply_result = LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED;
-	service.apply_report.failed_item = &item_switch_usb;
-	service.apply_report.failed_errno = -17;
-	service.apply_report.applied_count = 2U;
-	service.apply_report.applied_items[0] = &item_power_12v;
-	service.apply_report.applied_items[1] = &item_switch_sd;
-	service.apply_report.pending_count = 2U;
-	service.apply_report.pending_items[0] = &item_switch_usb;
-	service.apply_report.pending_items[1] = &item_gpio_7;
+	service.save_result = LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED;
+	service.save_report.failed_item = &item_switch_usb;
+	service.save_report.failed_errno = -17;
+	service.save_report.applied_count = 2U;
+	service.save_report.applied_items[0] = &item_power_12v;
+	service.save_report.applied_items[1] = &item_switch_sd;
+	service.save_report.pending_count = 2U;
+	service.save_report.pending_items[0] = &item_switch_usb;
+	service.save_report.pending_items[1] = &item_gpio_7;
 
 	/* When */
-	const int result = linkr_debugger_config_shell_apply(&test_shell,
-						      ARRAY_SIZE_LOCAL(argv), argv);
+	const int result = linkr_debugger_config_shell_save(&test_shell,
+						     ARRAY_SIZE_LOCAL(argv), argv);
 
 	/* Then */
 	assert(result == -17);
 	assert_shell_output(FAKE_SHELL_LINE_ERROR, expected_lines,
 			    ARRAY_SIZE_LOCAL(expected_lines));
-	assert(service.last_apply_confirmed);
-	assert_service_calls((struct service_call_counts){.apply = 1U});
+	assert(service.last_save_confirmed);
+	assert_service_calls((struct service_call_counts){.save = 1U});
 }
 
-static void test_apply_uses_io_error_for_nonnegative_failed_errno(void)
+static void test_save_uses_io_error_for_nonnegative_failed_errno(void)
 {
-	char *argv[] = {"apply", "--confirm"};
+	char *argv[] = {"save", "power/12v_out"};
 
 	/* Given */
 	reset_fixture();
-	service.apply_result = LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED;
-	service.apply_report.failed_errno = 0;
+	service.save_result = LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED;
+	service.save_report.failed_errno = 0;
 
 	/* When */
-	const int result = linkr_debugger_config_shell_apply(&test_shell,
-						      ARRAY_SIZE_LOCAL(argv), argv);
+	const int result = linkr_debugger_config_shell_save(&test_shell,
+						     ARRAY_SIZE_LOCAL(argv), argv);
 
 	/* Then */
 	assert(result == -EIO);
-	assert_error_line("config apply error=apply_failed failed_id=unknown failed_errno=0");
-	assert_service_calls((struct service_call_counts){.apply = 1U});
+	assert_error_line("config save error=apply_failed failed_id=unknown failed_errno=0");
+	assert_service_calls((struct service_call_counts){.save = 1U});
 }
 
 static void test_clear_only_calls_clear_and_reports_hardware_unchanged(void)
@@ -665,11 +601,9 @@ int main(void)
 	test_save_accepts_confirmation_after_maximum_selection();
 	test_save_rejects_syntax_before_service_io();
 	test_save_rejects_too_many_ids_before_service_io();
-	test_save_maps_every_non_apply_service_result();
-	test_apply_prints_report_counts_when_service_succeeds();
-	test_apply_rejects_invalid_grammar_before_service_io();
-	test_apply_reports_partial_failure_in_report_order();
-	test_apply_uses_io_error_for_nonnegative_failed_errno();
+	test_save_maps_non_failure_service_results();
+	test_save_reports_partial_failure_in_report_order();
+	test_save_uses_io_error_for_nonnegative_failed_errno();
 	test_clear_only_calls_clear_and_reports_hardware_unchanged();
 	test_clear_rejects_invalid_grammar_before_service_io();
 	test_clear_maps_service_failure();

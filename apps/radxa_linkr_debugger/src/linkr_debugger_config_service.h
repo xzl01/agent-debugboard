@@ -57,6 +57,7 @@ struct linkr_debugger_config_service_status {
 	bool available;
 	enum linkr_debugger_config_service_reason reason;
 	bool snapshot_present;
+	uint8_t snapshot_version;
 	size_t item_count;
 	size_t saved_count;
 	size_t applied_count;
@@ -75,6 +76,7 @@ struct linkr_debugger_config_save_request {
 
 struct linkr_debugger_config_operation_report {
 	enum linkr_debugger_config_service_result result;
+	uint8_t snapshot_version;
 	size_t confirmation_count;
 	const struct linkr_debugger_config_item_desc
 		*confirmation_items[LINKR_DEBUGGER_CONFIG_MAX_ENTRIES];
@@ -94,8 +96,6 @@ enum linkr_debugger_config_service_result linkr_debugger_config_service_status_g
 enum linkr_debugger_config_service_result linkr_debugger_config_service_save(
 	const struct linkr_debugger_config_save_request *request,
 	struct linkr_debugger_config_operation_report *report);
-enum linkr_debugger_config_service_result linkr_debugger_config_service_apply(
-	bool confirmed, struct linkr_debugger_config_operation_report *report);
 enum linkr_debugger_config_service_result linkr_debugger_config_service_clear(void);
 
 #endif

@@ -33,6 +33,12 @@ static const uint8_t legacy_gp29_output_vector[] = {
 	0x03, 0x1d, 0x03, 0x00,
 };
 
+static const uint8_t v2_gp29_output_vector[] = {
+	0x4c, 0x52, 0x43, 0x46, 0x02, 0x04, 0x01, 0x01,
+	0x10, 0x00, 0x00, 0x00,
+	0x03, 0x1d, 0x03, 0x00,
+};
+
 static const struct linkr_debugger_config_snapshot known_snapshot = {
 	.entry_count = 7U,
 	.entries = {
@@ -394,6 +400,7 @@ static void test_encode_rejections(void)
 static void test_header_rejections(void)
 {
 	uint8_t mutated[sizeof(known_vector)];
+	uint8_t v2_mutated[sizeof(v2_gp29_output_vector)];
 	uint8_t empty[] = {
 		0x4c, 0x52, 0x43, 0x46, 0x01, 0x04, 0x00, 0x00,
 		0x0c, 0x00, 0x00, 0x00,
@@ -408,7 +415,17 @@ static void test_header_rejections(void)
 	assert_decode_result(mutated, sizeof(mutated), LINKR_DEBUGGER_CONFIG_CODEC_MALFORMED);
 
 	memcpy(mutated, known_vector, sizeof(mutated));
-	mutated[4] = 2U;
+	mutated[4] = 3U;
+	assert_decode_result(mutated, sizeof(mutated),
+			     LINKR_DEBUGGER_CONFIG_CODEC_NOT_APPLICABLE);
+
+	memcpy(mutated, known_vector, sizeof(mutated));
+	mutated[4] = 3U;
+	mutated[5] = 0xffU;
+	mutated[6] = 0xffU;
+	mutated[7] = 0xffU;
+	mutated[10] = 0xffU;
+	mutated[11] = 0xffU;
 	assert_decode_result(mutated, sizeof(mutated),
 			     LINKR_DEBUGGER_CONFIG_CODEC_NOT_APPLICABLE);
 
@@ -433,6 +450,13 @@ static void test_header_rejections(void)
 		assert_decode_result(mutated, sizeof(mutated),
 				     LINKR_DEBUGGER_CONFIG_CODEC_MALFORMED);
 	}
+
+	memcpy(v2_mutated, v2_gp29_output_vector, sizeof(v2_mutated));
+	assert_decode_result(v2_mutated, sizeof(v2_mutated),
+			     LINKR_DEBUGGER_CONFIG_CODEC_NOT_APPLICABLE);
+	v2_mutated[7] = 2U;
+	assert_decode_result(v2_mutated, sizeof(v2_mutated),
+			     LINKR_DEBUGGER_CONFIG_CODEC_NOT_APPLICABLE);
 }
 
 static void test_entry_rejections(void)
@@ -514,6 +538,45 @@ static void test_all_boundary_lengths_and_trailing_data(void)
 	       LINKR_DEBUGGER_CONFIG_CODEC_INVALID_ARGUMENT);
 }
 
+static void test_v2_vector_is_unsupported(void)
+{
+	struct linkr_debugger_config_snapshot decoded;
+
+	memset(&decoded, 0xa5, sizeof(decoded));
+	assert(linkr_debugger_config_decode(v2_gp29_output_vector,
+					   sizeof(v2_gp29_output_vector), &decoded) ==
+	       LINKR_DEBUGGER_CONFIG_CODEC_NOT_APPLICABLE);
+	assert_snapshot_empty(&decoded);
+}
+
+static void test_v2_header_any_policy_is_unsupported(void)
+{
+	uint8_t mutated[sizeof(v2_gp29_output_vector)];
+
+	memcpy(mutated, v2_gp29_output_vector, sizeof(mutated));
+	mutated[7] = 0U;
+	assert_decode_result(mutated, sizeof(mutated),
+			     LINKR_DEBUGGER_CONFIG_CODEC_NOT_APPLICABLE);
+
+	memcpy(mutated, v2_gp29_output_vector, sizeof(mutated));
+	mutated[7] = 2U;
+	assert_decode_result(mutated, sizeof(mutated),
+			     LINKR_DEBUGGER_CONFIG_CODEC_NOT_APPLICABLE);
+}
+
+static void test_encode_always_writes_v1_header(void)
+{
+	struct linkr_debugger_config_snapshot source;
+	uint8_t encoded[LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE];
+	size_t encoded_len = 0U;
+
+	build_max_snapshot(&source);
+	assert(linkr_debugger_config_encode(&source, encoded, sizeof(encoded), &encoded_len) ==
+	       LINKR_DEBUGGER_CONFIG_CODEC_OK);
+	assert(encoded[4] == 1U);
+	assert(encoded[7] == 0U);
+}
+
 int main(void)
 {
 	test_constants_and_catalog();
@@ -526,6 +589,9 @@ int main(void)
 	test_entry_rejections();
 	test_switch_value_rejections();
 	test_all_boundary_lengths_and_trailing_data();
+	test_v2_vector_is_unsupported();
+	test_v2_header_any_policy_is_unsupported();
+	test_encode_always_writes_v1_header();
 
 	puts("linkr_debugger_config_codec: all tests passed");
 	return 0;

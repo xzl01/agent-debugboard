@@ -9,8 +9,6 @@ int linkr_debugger_config_shell_show(const struct shell *sh, size_t argc,
 				     char **argv);
 int linkr_debugger_config_shell_save(const struct shell *sh, size_t argc,
 				     char **argv);
-int linkr_debugger_config_shell_apply(const struct shell *sh, size_t argc,
-				      char **argv);
 int linkr_debugger_config_shell_clear(const struct shell *sh, size_t argc,
 				      char **argv);
 

@@ -9,7 +9,6 @@
 
 enum linkr_debugger_config_http_route {
 	LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_CONFIG = 3,
-	LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_APPLY = 4,
 };
 
 int linkr_debugger_config_http_handle(
