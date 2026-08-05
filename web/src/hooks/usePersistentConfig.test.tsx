@@ -11,7 +11,7 @@ import {
 } from "./usePersistentConfig";
 
 vi.mock("@/lib/api", () => ({
-  getPersistentConfig: vi.fn(), savePersistentConfig: vi.fn(), applyPersistentConfig: vi.fn(), clearPersistentConfig: vi.fn(),
+  getPersistentConfig: vi.fn(), savePersistentConfig: vi.fn(), clearPersistentConfig: vi.fn(),
 }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -51,14 +51,12 @@ async function flush() { await act(async () => { await Promise.resolve(); }); }
 function runMutation(state: UsePersistentConfig, activity: PersistentConfigMutation): Promise<void> {
   switch (activity) {
     case "save": return state.save(["item"], false);
-    case "apply": return state.apply(false);
     case "clear": return state.clear();
   }
 }
 function mockSuccessfulMutation(activity: PersistentConfigMutation): void {
   switch (activity) {
     case "save": vi.mocked(api.savePersistentConfig).mockResolvedValueOnce(undefined); return;
-    case "apply": vi.mocked(api.applyPersistentConfig).mockResolvedValueOnce(undefined); return;
     case "clear": vi.mocked(api.clearPersistentConfig).mockResolvedValueOnce(undefined); return;
   }
 }
@@ -83,7 +81,7 @@ describe("usePersistentConfig", () => {
     view.close();
   });
 
-  it.each<PersistentConfigMutation>(["save", "apply", "clear"])(
+  it.each<PersistentConfigMutation>(["save", "clear"])(
     "keeps %s pending until a current-key superseding response commits",
     async (activity) => {
       const mutationGet = deferred<PersistentConfig>(); const winningGet = deferred<PersistentConfig>();
@@ -160,7 +158,7 @@ describe("usePersistentConfig", () => {
     view.close();
   });
 
-  it.each<PersistentConfigMutation>(["save", "apply", "clear"])(
+  it.each<PersistentConfigMutation>(["save", "clear"])(
     "rejects a successful %s when its authoritative GET fails",
     async (activity) => {
       const failure = new PersistentConfigApiError({ kind: "other", code: "storage_error" }, "storage");

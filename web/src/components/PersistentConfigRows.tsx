@@ -112,7 +112,7 @@ function ConfigRow({
         onClick={() => {
           if (!disabled) onToggle(item.id);
         }}
-        className={`grid min-h-11 w-full min-w-0 cursor-pointer rounded-lg px-3 py-2 text-left transition-colors hover:bg-panel2/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 ${checked ? "bg-brand/10" : ""} ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
+        className={`grid min-h-11 w-full min-w-0 cursor-pointer rounded-lg px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 ${checked ? "bg-brand/15 ring-1 ring-inset ring-brand/30 hover:bg-brand/20" : "hover:bg-panel2/50"} ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
       >
         <span className="min-w-0">
           <span className="flex min-w-0 flex-wrap items-center gap-2">

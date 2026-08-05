@@ -13,7 +13,7 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(", ");
 
-export type PersistentConfigConfirmationKind = "save" | "apply" | "clear";
+export type PersistentConfigConfirmationKind = "save" | "clear";
 
 export function PersistentConfigDialog({
   kind,

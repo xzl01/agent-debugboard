@@ -73,15 +73,14 @@ function root(value: unknown, action: string): RecordValue {
 export function parsePersistentConfigGet(value: unknown): PersistentConfig {
   const data = root(value, "get"); const backend = isRecord(data.backend) ? data.backend : null; const snapshot = isRecord(data.snapshot) ? data.snapshot : null;
   const pending = number(data.pending);
-  if (!backend || typeof backend.available !== "boolean" || typeof backend.reason !== "string" || !snapshot || typeof snapshot.present !== "boolean" || (snapshot.version !== null && number(snapshot.version) === null) || pending === null || !isArray(data.items)) throw new PersistentConfigApiError({ kind: "other", code: "invalid_response" }, "Invalid config response");
+  if (!backend || typeof backend.available !== "boolean" || typeof backend.reason !== "string" || !snapshot || typeof snapshot.present !== "boolean" || (snapshot.present ? snapshot.version !== 1 : snapshot.version !== null) || pending === null || !isArray(data.items)) throw new PersistentConfigApiError({ kind: "other", code: "invalid_response" }, "Invalid config response");
   return { backend: { available: backend.available, reason: backend.reason }, snapshot: { present: snapshot.present, version: number(snapshot.version) }, pending, items: data.items.map(item) };
 }
-export function parsePersistentConfigMutation(value: unknown, action: "save" | "apply" | "clear"): void {
+export function parsePersistentConfigMutation(value: unknown, action: "save" | "clear"): void {
   const data = root(value, action);
   const snapshot = isRecord(data.snapshot) ? data.snapshot : null;
-  const validSnapshot = snapshot !== null && typeof snapshot.present === "boolean" && (snapshot.version === null || number(snapshot.version) !== null);
-  if (action === "save" && isArray(data.saved_items) && strings(data.saved_items).length === data.saved_items.length && isArray(data.confirmation_items) && strings(data.confirmation_items).length === data.confirmation_items.length && validSnapshot && number(data.pending) !== null) return;
-  if (action === "apply" && typeof data.noop === "boolean" && isArray(data.applied_items) && strings(data.applied_items).length === data.applied_items.length && (data.failed_item === null || typeof data.failed_item === "string") && isArray(data.pending_items) && strings(data.pending_items).length === data.pending_items.length) return;
+  const validSnapshot = snapshot !== null && typeof snapshot.present === "boolean" && (snapshot.present ? snapshot.version === 1 : snapshot.version === null);
+  if (action === "save" && isArray(data.saved_items) && strings(data.saved_items).length === data.saved_items.length && isArray(data.confirmation_items) && strings(data.confirmation_items).length === data.confirmation_items.length && isArray(data.applied_items) && strings(data.applied_items).length === data.applied_items.length && validSnapshot && number(data.pending) !== null) return;
   if (action === "clear" && typeof data.noop === "boolean" && validSnapshot && number(data.pending) !== null) return;
   throw new PersistentConfigApiError({ kind: "other", code: "invalid_response" }, "Invalid config response");
 }

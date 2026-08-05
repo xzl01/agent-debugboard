@@ -145,9 +145,6 @@ export const getPersistentConfig = async (): Promise<PersistentConfig> =>
 export const savePersistentConfig = async (items: readonly string[], confirm: boolean) => {
   parsePersistentConfigMutation(await configRequest("/config", "save", { method: "PUT", body: JSON.stringify({ items, confirm }) }), "save");
 };
-export const applyPersistentConfig = async (confirm: boolean) => {
-  parsePersistentConfigMutation(await configRequest("/config/apply", "apply", { method: "POST", body: JSON.stringify({ confirm }) }), "apply");
-};
 export const clearPersistentConfig = async () => {
   parsePersistentConfigMutation(await configRequest("/config", "clear", { method: "DELETE" }), "clear");
 };

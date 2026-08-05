@@ -5,7 +5,6 @@ import {
   Clock3,
   Database,
   Loader2,
-  Play,
   RefreshCw,
   Save,
   Trash2,
@@ -78,7 +77,6 @@ export function PersistentConfigCard({
 
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <Button type="button" variant="primary" className={`min-h-11 whitespace-nowrap ${FOCUSABLE_DISABLED_CLASS}`} aria-disabled={model.saveDisabled} onClick={model.save}>{state.busy === "save" ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} {t(state.busy === "save" ? "config.saving" : "config.save")}</Button>
-            <Button type="button" className={`min-h-11 whitespace-nowrap ${FOCUSABLE_DISABLED_CLASS}`} aria-disabled={model.applyDisabled} onClick={model.apply}>{state.busy === "apply" ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />} {t(state.busy === "apply" ? "config.applying" : "config.apply")}</Button>
             <Button type="button" className="min-h-11 whitespace-nowrap" onClick={() => void model.refresh()} disabled={model.disabled}><RefreshCw size={15} className={state.loading ? "animate-spin" : ""} /> {t("config.refresh")}</Button>
             <Button type="button" variant="danger" className={`min-h-11 whitespace-nowrap ${FOCUSABLE_DISABLED_CLASS}`} aria-disabled={model.clearDisabled} onClick={model.clear}>{state.busy === "clear" ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />} {t(state.busy === "clear" ? "config.clearing" : "config.clear")}</Button>
           </div>

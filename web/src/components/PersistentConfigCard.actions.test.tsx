@@ -35,6 +35,56 @@ describe("PersistentConfigCard actions", () => {
     expect(save).toHaveBeenCalledWith(["firmware.safe.two"], false);
   });
 
+  it("clears saved rows after a successful unconfirmed save even when authority still reports them selected", async () => {
+    const savedConfig = config([
+      powerItem("firmware.saved.one", { selected: true }),
+      powerItem("firmware.saved.two", { selected: true }),
+      powerItem("firmware.unrelated", { selected: true }),
+    ]);
+    const save = vi.fn(async () => {
+      view?.update(state({ config: savedConfig, save }));
+    });
+    view = mount(state({
+      config: config([
+        powerItem("firmware.saved.one"),
+        powerItem("firmware.saved.two"),
+        powerItem("firmware.unrelated", { selected: true }),
+      ]),
+      save,
+    }));
+    click(configRow(view.host, "firmware.saved.one"));
+    click(configRow(view.host, "firmware.saved.two"));
+    click(configRow(view.host, "firmware.unrelated"));
+    click(button(view.host, "Save selected"));
+    await flush();
+    expect(save).toHaveBeenCalledOnce();
+    expect(save).toHaveBeenCalledWith(["firmware.saved.one", "firmware.saved.two"], false);
+    expect(view.host.textContent).toContain("Configuration saved and verified");
+    for (const id of ["firmware.saved.one", "firmware.saved.two"]) {
+      expect(configRow(view.host, id).getAttribute("aria-checked")).toBe("false");
+      expect(configRow(view.host, id).classList.contains("bg-brand/15")).toBe(false);
+    }
+    expect(configRow(view.host, "firmware.unrelated").getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("preserves row selection when save rejects with a known API error", async () => {
+    const error = new PersistentConfigApiError({ kind: "other", code: "save_failed" }, "save failed");
+    const save = vi.fn().mockRejectedValue(error);
+    view = mount(state({
+      config: config([powerItem("firmware.rejected")]),
+      save,
+    }));
+    click(configRow(view.host, "firmware.rejected"));
+    click(button(view.host, "Save selected"));
+    await flush();
+    expect(save).toHaveBeenCalledOnce();
+    expect(save).toHaveBeenCalledWith(["firmware.rejected"], false);
+    expect(view.host.textContent).not.toContain("Configuration saved and verified");
+    const row = configRow(view.host, "firmware.rejected");
+    expect(row.getAttribute("aria-checked")).toBe("true");
+    expect(row.classList.contains("bg-brand/15")).toBe(true);
+  });
+
   it("does not show save success until the hook mutation and authoritative GET resolve", async () => {
     const result = deferred<void>();
     const save = vi.fn().mockReturnValue(result.promise);
@@ -64,95 +114,56 @@ describe("PersistentConfigCard actions", () => {
     expect(view.host.textContent).toContain("Configuration saved and verified");
   });
 
-  it("keeps firmware and draft selections until safe apply resolves, then clears both", async () => {
+  it("keeps firmware and draft selections until save resolves, then clears both", async () => {
     const result = deferred<void>();
-    const apply = vi.fn().mockReturnValue(result.promise);
+    const save = vi.fn().mockReturnValue(result.promise);
     view = mount(state({
       config: config([
-        powerItem("firmware.selected", { selected: true, applyState: "pending" }),
-        powerItem("draft.selected", { applyState: "pending" }),
-      ], { pending: 2 }),
-      apply,
+        powerItem("firmware.selected", { selected: true }),
+        powerItem("draft.selected"),
+      ]),
+      save,
     }));
     click(configRow(view.host, "draft.selected"));
-    click(button(view.host, "Apply pending"));
-    expect(apply).toHaveBeenCalledOnce();
-    expect(apply).toHaveBeenCalledWith(false);
+    click(button(view.host, "Save selected"));
+    expect(save).toHaveBeenCalledOnce();
+    expect(save).toHaveBeenCalledWith(["firmware.selected", "draft.selected"], false);
     for (const id of ["firmware.selected", "draft.selected"]) {
       expect(configRow(view.host, id).getAttribute("aria-checked")).toBe("true");
-      expect(configRow(view.host, id).classList.contains("bg-brand/10")).toBe(true);
+      expect(configRow(view.host, id).classList.contains("bg-brand/15")).toBe(true);
     }
 
     await actResolve(result.resolve);
 
     for (const id of ["firmware.selected", "draft.selected"]) {
       expect(configRow(view.host, id).getAttribute("aria-checked")).toBe("false");
-      expect(configRow(view.host, id).classList.contains("bg-brand/10")).toBe(false);
+      expect(configRow(view.host, id).classList.contains("bg-brand/15")).toBe(false);
     }
   });
 
-  it("preserves a selected failed-only row when safe apply rejects with a known API error", async () => {
+  it("preserves a selected failed-only row when save rejects with a known API error", async () => {
     const error = new PersistentConfigApiError({
       kind: "apply_failed",
       appliedIds: [],
       failedId: "firmware.failed.safe",
       pendingIds: ["firmware.failed.safe"],
-    }, "apply failed");
-    const apply = vi.fn().mockRejectedValue(error);
+    }, "save failed");
+    const save = vi.fn().mockRejectedValue(error);
     view = mount(state({
       config: config([
         powerItem("firmware.failed.safe", { selected: true, applyState: "failed" }),
       ], { pending: 0 }),
-      apply,
+      save,
     }));
-    const applyButton = button(view.host, "Apply pending");
-    expect(applyButton.getAttribute("aria-disabled")).toBe("false");
-    click(applyButton);
+    const saveButton = button(view.host, "Save selected");
+    expect(saveButton.getAttribute("aria-disabled")).toBe("false");
+    click(saveButton);
     await flush();
-    expect(apply).toHaveBeenCalledOnce();
-    expect(apply).toHaveBeenCalledWith(false);
+    expect(save).toHaveBeenCalledOnce();
+    expect(save).toHaveBeenCalledWith(["firmware.failed.safe"], false);
     const row = configRow(view.host, "firmware.failed.safe");
     expect(row.getAttribute("aria-checked")).toBe("true");
-    expect(row.classList.contains("bg-brand/10")).toBe(true);
-  });
-
-  it.each([
-    {
-      name: "an applied-only snapshot",
-      fixture: state({
-        config: config([powerItem("firmware.applied", { applyState: "applied" })], { pending: 0 }),
-      }),
-      connected: true,
-    },
-    {
-      name: "a disconnected failed-only snapshot",
-      fixture: state({
-        config: config([powerItem("firmware.failed.disconnected", { applyState: "failed" })], { pending: 0 }),
-      }),
-      connected: false,
-    },
-    {
-      name: "a loading failed-only snapshot",
-      fixture: state({
-        config: config([powerItem("firmware.failed.loading", { applyState: "failed" })], { pending: 0 }),
-        loading: true,
-      }),
-      connected: true,
-    },
-    {
-      name: "a busy failed-only snapshot",
-      fixture: state({
-        config: config([powerItem("firmware.failed.busy", { applyState: "failed" })], { pending: 0 }),
-        busy: "save",
-      }),
-      connected: true,
-    },
-  ])("keeps Apply disabled for $name", ({ fixture, connected }) => {
-    view = mount(fixture, { connected });
-    const applyButton = button(view.host, "Apply pending");
-    expect(applyButton.getAttribute("aria-disabled")).toBe("true");
-    click(applyButton);
-    expect(fixture.apply).not.toHaveBeenCalled();
+    expect(row.classList.contains("bg-brand/15")).toBe(true);
   });
 
   it("refreshes through the strict hook and reports completion only afterward", async () => {
@@ -176,7 +187,7 @@ describe("PersistentConfigCard actions", () => {
     expect(busyRow.getAttribute("aria-disabled")).toBe("true");
     click(busyRow);
     expect(busyRow.getAttribute("aria-checked")).toBe("true");
-    for (const name of ["Saving…", "Apply pending", "Clear saved"]) {
+    for (const name of ["Saving…", "Clear saved"]) {
       expect(button(view.host, name).getAttribute("aria-disabled")).toBe("true");
     }
     expect(button(view.host, "Refresh").disabled).toBe(true);

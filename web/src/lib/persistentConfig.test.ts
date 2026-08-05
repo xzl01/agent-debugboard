@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  applyPersistentConfig,
   clearPersistentConfig,
   getPersistentConfig,
   savePersistentConfig,
@@ -77,23 +76,20 @@ describe("persistent configuration contracts", () => {
   it("sends all mutation bodies and preserves typed dangerous and partial errors", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response(getResponse([])))
-      .mockResolvedValueOnce(response({ schema: "radxa-linkr-debugger.v1", ok: true, command: "config", action: "save", saved_items: ["rail"], confirmation_items: [], snapshot: { present: true, version: 1 }, pending: 0 }))
-      .mockResolvedValueOnce(response({ schema: "radxa-linkr-debugger.v1", ok: true, command: "config", action: "apply", noop: false, applied_items: ["rail"], failed_item: null, pending_items: [] }))
+      .mockResolvedValueOnce(response({ schema: "radxa-linkr-debugger.v1", ok: true, command: "config", action: "save", saved_items: ["rail"], confirmation_items: [], applied_items: ["rail"], snapshot: { present: true, version: 1 }, pending: 0 }))
       .mockResolvedValueOnce(response({ schema: "radxa-linkr-debugger.v1", ok: true, command: "config", action: "clear", noop: false, snapshot: { present: false, version: null }, pending: 0 }))
-      .mockResolvedValueOnce(response({ schema: "radxa-linkr-debugger.v1", ok: false, command: "config", action: "apply", error: { code: "confirmation_required", message: "confirm" }, dangerous_items: ["rail"] }, 409))
-      .mockResolvedValueOnce(response({ schema: "radxa-linkr-debugger.v1", ok: false, command: "config", action: "apply", error: { code: "apply_failed", message: "partial" }, applied_items: ["rail"], failed_item: "mux", pending_items: ["mux"] }, 500));
+      .mockResolvedValueOnce(response({ schema: "radxa-linkr-debugger.v1", ok: false, command: "config", action: "save", error: { code: "confirmation_required", message: "confirm" }, dangerous_items: ["rail"] }, 409))
+      .mockResolvedValueOnce(response({ schema: "radxa-linkr-debugger.v1", ok: false, command: "config", action: "save", error: { code: "apply_failed", message: "partial" }, applied_items: ["rail"], failed_item: "mux", pending_items: ["mux"] }, 500));
     vi.stubGlobal("fetch", fetchMock);
 
     await getPersistentConfig();
     await savePersistentConfig(["rail"], true);
-    await applyPersistentConfig(true);
     await clearPersistentConfig();
-    await expect(applyPersistentConfig(false)).rejects.toMatchObject({ detail: { kind: "confirmation_required", dangerousIds: ["rail"] } });
-    await expect(applyPersistentConfig(true)).rejects.toMatchObject({ detail: { kind: "apply_failed", appliedIds: ["rail"], failedId: "mux", pendingIds: ["mux"] } });
+    await expect(savePersistentConfig(["rail"], false)).rejects.toMatchObject({ detail: { kind: "confirmation_required", dangerousIds: ["rail"] } });
+    await expect(savePersistentConfig(["rail"], true)).rejects.toMatchObject({ detail: { kind: "apply_failed", appliedIds: ["rail"], failedId: "mux", pendingIds: ["mux"] } });
 
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "PUT", body: JSON.stringify({ items: ["rail"], confirm: true }) });
-    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ method: "POST", body: JSON.stringify({ confirm: true }) });
-    expect(fetchMock.mock.calls[3]?.[1]).toMatchObject({ method: "DELETE" });
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ method: "DELETE" });
   });
 
   it("rejects malformed successful mutation envelopes", async () => {

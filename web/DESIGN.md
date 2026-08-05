@@ -38,8 +38,11 @@ class on `<html>` swaps the ramp; `color-scheme` follows the active theme.
 
 Opacity modifiers are part of the language: surfaces and borders commonly use
 `/70` or `/60` (cards `border-line/70`, header `border-line/60`, backdrop
-`bg-terminal/70`), tint fills use `/10`-`/15` (`bg-brand/10` icon chips,
-`bg-ok/15` badges), and the selection highlight is `rgb(var(--c-brand) / 0.25)`.
+`bg-terminal/70`), tint fills use `/10`-`/20` (`bg-brand/10` icon chips,
+`bg-ok/15` badges, `bg-brand/15` selected-row fill with `bg-brand/20` hover),
+and the `::selection` text highlight in `index.css` is
+`rgb(var(--c-brand) / 0.25)` (text selection only; row selection uses the
+Section 10 fill/stroke treatment, not a separate `/25` fill).
 
 Semantic text tone helper: metrics escalate `text-ink-dim` -> `text-warn` at
 75% -> `text-danger` at 90% (see `ramMetricTone` in `StatusBar.tsx`).
@@ -245,11 +248,14 @@ and interaction behavior only; implementation lands with the card itself.
   provides click, Space, and Enter behavior. During loading or another busy
   state, the row remains focusable and keeps focus: use `aria-disabled` plus an
   activation guard, never native `disabled`. The row uses `min-h-11` (44px),
-  `rounded-lg px-3 py-2`, `hover:bg-panel2/50`, and the standard brand focus
-  ring. Item id remains `font-mono text-sm`; current/saved inset columns and
-  trailing badges retain their established type and spacing. Selected rows use
-  `bg-brand/10` fill while `aria-checked` exposes the same state without relying
-  on color. Rows group under domain headers styled like stat labels
+  `rounded-lg px-3 py-2`, and the standard brand focus ring. Item id remains
+  `font-mono text-sm`; current/saved inset columns and trailing badges retain
+  their established type and spacing. Unselected rows hover with
+  `hover:bg-panel2/50`. Selected rows use a `bg-brand/15` fill with an inset
+  `ring-1 ring-inset ring-brand/30` stroke, and hover deepens the fill to
+  `hover:bg-brand/20` so the selection identity survives pointer hover and
+  stays distinct from both the panel surface and the unselected hover state in
+  either theme; `aria-checked` exposes the same state without relying on color. Rows group under domain headers styled like stat labels
   (`text-[11px] uppercase tracking-wide text-ink-dim`).
 - Risk badge: `Badge` tone `warn` when `requires_confirm` is true and the
   value is non-energizing (e.g. USB route), tone `danger` when the value

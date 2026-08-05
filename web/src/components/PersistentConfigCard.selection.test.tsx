@@ -18,7 +18,6 @@ import {
 vi.mock("@/lib/api", () => ({
   getPersistentConfig: vi.fn(),
   savePersistentConfig: vi.fn(),
-  applyPersistentConfig: vi.fn(),
   clearPersistentConfig: vi.fn(),
 }));
 
@@ -56,6 +55,30 @@ describe("PersistentConfigCard selection", () => {
     expect(view.host.querySelector('input[type="checkbox"]')).toBeNull();
   });
 
+  it("marks selected rows with a token-only treatment distinct from panel and hover states", () => {
+    view = mount(state({
+      config: config([
+        powerItem("firmware.selected", { selected: true }),
+        powerItem("firmware.unselected"),
+      ]),
+    }));
+
+    const selectedRow = configRow(view.host, "firmware.selected");
+    expect(selectedRow.getAttribute("aria-checked")).toBe("true");
+    expect(selectedRow.classList.contains("bg-brand/15")).toBe(true);
+    expect(selectedRow.classList.contains("ring-1")).toBe(true);
+    expect(selectedRow.classList.contains("ring-inset")).toBe(true);
+    expect(selectedRow.classList.contains("ring-brand/30")).toBe(true);
+    expect(selectedRow.classList.contains("hover:bg-brand/20")).toBe(true);
+    expect(selectedRow.classList.contains("hover:bg-panel2/50")).toBe(false);
+
+    const unselectedRow = configRow(view.host, "firmware.unselected");
+    expect(unselectedRow.getAttribute("aria-checked")).toBe("false");
+    expect(unselectedRow.classList.contains("bg-brand/15")).toBe(false);
+    expect(unselectedRow.classList.contains("ring-1")).toBe(false);
+    expect(unselectedRow.classList.contains("hover:bg-panel2/50")).toBe(true);
+  });
+
   it("toggles an enabled row with a mouse click and retains the selection tint", () => {
     view = mount(state({ config: config([powerItem("firmware.mouse")]) }));
 
@@ -63,7 +86,7 @@ describe("PersistentConfigCard selection", () => {
     click(row);
 
     expect(row.getAttribute("aria-checked")).toBe("true");
-    expect(row.classList.contains("bg-brand/10")).toBe(true);
+    expect(row.classList.contains("bg-brand/15")).toBe(true);
   });
 
   it.each([

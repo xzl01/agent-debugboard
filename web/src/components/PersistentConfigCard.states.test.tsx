@@ -91,7 +91,7 @@ describe("PersistentConfigCard states", () => {
       ], { pending: 3 }),
       error: partial,
     }));
-    expect(view.host.textContent).toContain("Partial apply stopped at firmware.failed");
+    expect(view.host.textContent).toContain("Partial save stopped at firmware.failed");
     expect(view.host.textContent).toContain("Applied: firmware.applied");
     expect(view.host.textContent).toContain("Still pending: firmware.failed, firmware.pending");
     expect(view.host.textContent).toContain("Failed");
@@ -103,8 +103,8 @@ describe("PersistentConfigCard states", () => {
     }));
     expect(view.host.textContent).toContain("Select at least one item to save");
     expect(button(view.host, "Save selected").getAttribute("aria-disabled")).toBe("true");
-    expect(button(view.host, "Apply pending").disabled).toBe(false);
-    expect(view.host.textContent).toContain("1 pending item will be applied");
+    expect(button(view.host, "Clear saved").getAttribute("aria-disabled")).toBe("false");
+    expect(view.host.textContent).toContain("1 pending item is not applied");
   });
 
   it("renders Chinese controls and updates the document language", () => {

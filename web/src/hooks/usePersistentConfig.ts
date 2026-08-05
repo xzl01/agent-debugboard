@@ -7,7 +7,7 @@ import type {
 } from "@/lib/persistentConfig";
 import { PersistentConfigApiError as ConfigError } from "@/lib/persistentConfig";
 
-export type PersistentConfigMutation = "save" | "apply" | "clear";
+export type PersistentConfigMutation = "save" | "clear";
 export type UsePersistentConfigOptions = {
   readonly connected: boolean;
   readonly summary?: PersistentConfigSummary;
@@ -21,7 +21,6 @@ export type UsePersistentConfig = {
   readonly supported: boolean;
   readonly refresh: () => Promise<void>;
   readonly save: (items: readonly string[], confirm: boolean) => Promise<void>;
-  readonly apply: (confirm: boolean) => Promise<void>;
   readonly clear: () => Promise<void>;
 };
 
@@ -206,7 +205,6 @@ export function usePersistentConfig(options: UsePersistentConfigOptions): UsePer
     supported: summary !== undefined,
     refresh,
     save: (items, confirm) => mutate("save", () => api.savePersistentConfig(items, confirm)),
-    apply: (confirm) => mutate("apply", () => api.applyPersistentConfig(confirm)),
     clear: () => mutate("clear", api.clearPersistentConfig),
   };
 }

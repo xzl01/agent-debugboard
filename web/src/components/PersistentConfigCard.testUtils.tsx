@@ -87,7 +87,6 @@ export function state(overrides: Partial<UsePersistentConfig> = {}): UsePersiste
     supported: true,
     refresh: vi.fn().mockResolvedValue(undefined),
     save: vi.fn().mockResolvedValue(undefined),
-    apply: vi.fn().mockResolvedValue(undefined),
     clear: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };

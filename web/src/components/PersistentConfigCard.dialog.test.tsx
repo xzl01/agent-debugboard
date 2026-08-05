@@ -69,6 +69,30 @@ describe("PersistentConfigCard confirmations", () => {
     expect(document.activeElement).toBe(trigger);
   });
 
+  it("clears confirmed saved rows after a successful confirmed save even when authority still reports them selected", async () => {
+    const savedConfig = config([
+      powerItem("firmware.danger.saved", { selected: true, risk: "confirmation_required" }),
+    ]);
+    const save = vi.fn(async () => {
+      view?.update(state({ config: savedConfig, save }));
+    });
+    view = mount(state({
+      config: config([powerItem("firmware.danger.saved", { risk: "confirmation_required" })]),
+      save,
+    }));
+    click(configRow(view.host, "firmware.danger.saved"));
+    click(button(view.host, "Save selected"));
+    expect(document.body.querySelector("dialog")?.textContent).toContain("firmware.danger.saved");
+    click(button(document.body, "Save with confirmation"));
+    await flush();
+    expect(save).toHaveBeenCalledOnce();
+    expect(save).toHaveBeenCalledWith(["firmware.danger.saved"], true);
+    expect(view.host.textContent).toContain("Configuration saved and verified");
+    const row = configRow(view.host, "firmware.danger.saved");
+    expect(row.getAttribute("aria-checked")).toBe("false");
+    expect(row.classList.contains("bg-brand/15")).toBe(false);
+  });
+
   it("restores focus immediately but withholds success until confirmed GET authority resolves", async () => {
     const result = deferred<void>();
     const save = vi.fn().mockReturnValue(result.promise);
@@ -90,76 +114,6 @@ describe("PersistentConfigCard confirmations", () => {
     await actResolve(result.resolve);
     expect(document.body.querySelector("dialog")).toBeNull();
     expect(view.host.textContent).toContain("Configuration saved and verified");
-  });
-
-  it("opens apply confirmation for a dangerous failed-only snapshot when numeric pending is zero", () => {
-    const apply = vi.fn().mockResolvedValue(undefined);
-    view = mount(state({
-      config: config([
-        switchItem("firmware.failed.danger", "confirmation_required", "failed"),
-      ], { pending: 0 }),
-      apply,
-    }));
-    const trigger = button(view.host, "Apply pending");
-    expect(trigger.getAttribute("aria-disabled")).toBe("false");
-    click(trigger);
-    expect(document.body.querySelector("dialog")?.textContent).toContain("firmware.failed.danger");
-    expect(apply).not.toHaveBeenCalled();
-  });
-
-  it("clears selection only after confirmed full apply resolves", async () => {
-    const result = deferred<void>();
-    const apply = vi.fn().mockReturnValue(result.promise);
-    view = mount(state({
-      config: config([
-        powerItem("firmware.pending.danger", {
-          selected: true,
-          risk: "confirmation_required",
-          applyState: "pending",
-        }),
-        switchItem("firmware.applied.danger", "confirmation_required", "applied"),
-      ], { pending: 1 }),
-      apply,
-    }));
-    const row = configRow(view.host, "firmware.pending.danger");
-    click(button(view.host, "Apply pending"));
-    const dialog = document.body.querySelector("dialog");
-    expect(dialog?.textContent).toContain("firmware.pending.danger");
-    expect(dialog?.textContent).toContain("firmware.applied.danger");
-    expect(apply).not.toHaveBeenCalled();
-    expect(row.getAttribute("aria-checked")).toBe("true");
-    expect(row.classList.contains("bg-brand/10")).toBe(true);
-    click(button(document.body, "Apply with confirmation"));
-    expect(apply).toHaveBeenCalledWith(true);
-    expect(row.getAttribute("aria-checked")).toBe("true");
-    expect(row.classList.contains("bg-brand/10")).toBe(true);
-
-    await actResolve(result.resolve);
-
-    expect(row.getAttribute("aria-checked")).toBe("false");
-    expect(row.classList.contains("bg-brand/10")).toBe(false);
-  });
-
-  it("keeps selection when dangerous apply confirmation is canceled", () => {
-    const apply = vi.fn().mockResolvedValue(undefined);
-    view = mount(state({
-      config: config([powerItem("firmware.cancel.danger", {
-        selected: true,
-        risk: "confirmation_required",
-        applyState: "pending",
-      })], { pending: 1 }),
-      apply,
-    }));
-    const trigger = button(view.host, "Apply pending");
-    const row = configRow(view.host, "firmware.cancel.danger");
-    click(trigger);
-    expect(row.getAttribute("aria-checked")).toBe("true");
-    click(button(document.body, "Cancel"));
-    expect(document.body.querySelector("dialog")).toBeNull();
-    expect(row.getAttribute("aria-checked")).toBe("true");
-    expect(row.classList.contains("bg-brand/10")).toBe(true);
-    expect(apply).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(trigger);
   });
 
   it("requires a separate clear confirmation that states current hardware is unchanged", async () => {
