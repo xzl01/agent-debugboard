@@ -16,7 +16,6 @@ CAPTURE_STOP=""
 UF2="$CANONICAL_UF2"
 OTA_IMAGE="$CANONICAL_OTA"
 CONFIRM_SAVE=0
-CONFIRM_APPLY=0
 CLEANUP_REQUIRED=0
 CAPTURE_ACTIVE=0
 SAFE_RESTORE_REQUIRED=0
@@ -49,8 +48,8 @@ usage() {
 Usage: config-persistence-hil.sh [options] FLOW
 
 Flows:
-  safe-reboot       Save a firmware-enumerated safe value, reboot, verify, clear.
-  dangerous-pending Prove USB route target needs separate save/apply confirmations.
+  safe-reboot       Save a firmware-enumerated safe value, verify across two reboots, clear.
+  dangerous-auto-restore Confirm and save USB pc route, then prove automatic restore across two reboots.
   capture-busy      Hold a supplied capture and require config save to return busy.
   ota-preserve      Preserve a safe snapshot through a canonical MCUboot OTA test boot.
   bootsel-preserve  Preserve a safe snapshot through HTTP BOOTSEL combined-UF2 recovery.
@@ -62,13 +61,12 @@ Options:
   --execute                    Permit real operations; requires --url and FLOW.
   --url URL                    Explicit board URL for --execute.
   --serial PATH                CDC device for cdc-fallback and all.
-  --reboot-command PATH        Explicit host command for safe-reboot/dangerous-pending.
+  --reboot-command PATH        Explicit host command for safe-reboot/dangerous-auto-restore.
   --capture-start PATH         Explicit command that starts a capture for capture-busy.
   --capture-stop PATH          Explicit command that stops that capture.
   --combined-uf2 PATH          Must be the canonical combined recovery UF2 path.
   --ota-image PATH             Must be the canonical MCUboot OTA .bin path.
   --confirm-dangerous-save     Explicit confirmation for the dangerous save step.
-  --confirm-dangerous-apply    Explicit confirmation for the dangerous apply step.
   --help                       Show this help.
 
 The runner never owns a rail, GPIO, or route catalog. Execute mode discovers
@@ -128,7 +126,6 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --confirm-dangerous-save) CONFIRM_SAVE=1; shift ;;
-    --confirm-dangerous-apply) CONFIRM_APPLY=1; shift ;;
     --help|-h) usage; exit 0 ;;
     --*) fail "unknown option: $1" ;;
     *)
@@ -140,7 +137,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$FLOW" in
-  safe-reboot|dangerous-pending|capture-busy|ota-preserve|bootsel-preserve|cdc-fallback|all) ;;
+  safe-reboot|dangerous-auto-restore|capture-busy|ota-preserve|bootsel-preserve|cdc-fallback|all) ;;
   "") usage >&2; exit 2 ;;
   *) fail "unknown flow: $FLOW" ;;
 esac
@@ -218,9 +215,8 @@ require_canonical_ota() {
   fi
 }
 
-require_dangerous_confirmations() {
-  [ "$CONFIRM_SAVE" -eq 1 ] || fail "dangerous-pending requires --confirm-dangerous-save"
-  [ "$CONFIRM_APPLY" -eq 1 ] || fail "dangerous-pending requires --confirm-dangerous-apply"
+require_dangerous_save_confirmation() {
+  [ "$CONFIRM_SAVE" -eq 1 ] || fail "dangerous-auto-restore requires --confirm-dangerous-save"
 }
 
 prepare_execute() {
@@ -231,10 +227,10 @@ prepare_execute() {
   require_command mktemp
   require_command rm
   case "$FLOW" in
-    safe-reboot|dangerous-pending|all) require_reboot_command ;;
+    safe-reboot|dangerous-auto-restore|all) require_reboot_command ;;
   esac
   case "$FLOW" in
-    dangerous-pending|all) require_dangerous_confirmations ;;
+    dangerous-auto-restore|all) require_dangerous_save_confirmation ;;
   esac
   case "$FLOW" in
     capture-busy|all) require_capture_commands ;;
@@ -262,7 +258,7 @@ prepare_execute() {
     cdc-fallback|all) require_serial ;;
   esac
   case "$FLOW" in
-    safe-reboot|dangerous-pending|ota-preserve|bootsel-preserve|cdc-fallback|all)
+    safe-reboot|dangerous-auto-restore|ota-preserve|bootsel-preserve|cdc-fallback|all)
       require_command "$SLEEP_BIN"
       ;;
   esac
@@ -352,18 +348,9 @@ def config_success_shape():
     elif expected_action == "save":
         string_list("saved_items")
         string_list("confirmation_items")
+        string_list("applied_items")
         snapshot()
         pending()
-    elif expected_action == "apply":
-        if not isinstance(value.get("noop"), bool):
-            raise SystemExit("noop is missing or invalid")
-        string_list("applied_items")
-        if "failed_item" not in value:
-            raise SystemExit("failed_item is missing or invalid")
-        failed_item = value["failed_item"]
-        if failed_item is not None and (not isinstance(failed_item, str) or not failed_item):
-            raise SystemExit("failed_item is missing or invalid")
-        string_list("pending_items")
     elif expected_action == "clear":
         if not isinstance(value.get("noop"), bool):
             raise SystemExit("noop is missing or invalid")
@@ -670,6 +657,8 @@ with open(path, encoding="utf-8") as source:
 snapshot = document.get("snapshot")
 if not isinstance(snapshot, dict) or snapshot.get("present") is not (snapshot_present == "true"):
     raise SystemExit("snapshot state does not match the expected safe-reboot phase")
+if snapshot_present == "true" and snapshot.get("version") != 1:
+    raise SystemExit("safe-reboot snapshot version is not v1")
 items = document.get("items")
 if not isinstance(items, list):
     raise SystemExit("config items is missing")
@@ -708,6 +697,21 @@ if document.get("pending") != 0:
 PY
 }
 
+assert_saved_snapshot_version_1() {
+  python3 - "$HTTP_BODY" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    document = json.load(source)
+snapshot = document.get("snapshot")
+if not isinstance(snapshot, dict) or snapshot.get("present") is not True or snapshot.get("version") != 1:
+    raise SystemExit("saved snapshot is not v1")
+if document.get("pending") != 0:
+    raise SystemExit("saved snapshot reports pending configuration")
+PY
+}
+
 assert_config_item() {
   item_id="$1"
   apply_state="$2"
@@ -719,8 +723,10 @@ path, item_id, apply_state = sys.argv[1:]
 with open(path, encoding="utf-8") as source:
     document = json.load(source)
 snapshot = document.get("snapshot")
-if not isinstance(snapshot, dict) or snapshot.get("present") is not True:
-    raise SystemExit("saved snapshot is missing")
+if not isinstance(snapshot, dict) or snapshot.get("present") is not True or snapshot.get("version") != 1:
+    raise SystemExit("saved snapshot is missing or not v1")
+if document.get("pending") != 0:
+    raise SystemExit("saved snapshot reports pending configuration")
 items = document.get("items")
 if not isinstance(items, list):
     raise SystemExit("config items is missing")
@@ -732,6 +738,40 @@ if item.get("selected") is not True or item.get("saved") is None:
     raise SystemExit("saved item was not retained")
 if item.get("apply_state") != apply_state:
     raise SystemExit(f"expected apply_state={apply_state}, got {item.get('apply_state')}")
+PY
+}
+
+assert_dangerous_auto_restore_state() {
+  python3 - "$HTTP_BODY" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    document = json.load(source)
+snapshot = document.get("snapshot")
+if not isinstance(snapshot, dict) or snapshot.get("present") is not True or snapshot.get("version") != 1:
+    raise SystemExit("dangerous snapshot is missing or not v1")
+if document.get("pending") != 0:
+    raise SystemExit("dangerous auto-restore still reports pending configuration")
+items = document.get("items")
+if not isinstance(items, list):
+    raise SystemExit("config items is missing")
+matching = [item for item in items if isinstance(item, dict) and item.get("id") == "switch/usb"]
+if len(matching) != 1:
+    raise SystemExit("dangerous switch/usb item is missing")
+item = matching[0]
+current = item.get("current")
+saved = item.get("saved")
+if (
+    item.get("selected") is not True
+    or item.get("requires_confirm") is not True
+    or item.get("apply_state") != "applied"
+    or not isinstance(current, dict)
+    or current.get("route") != "pc"
+    or not isinstance(saved, dict)
+    or saved.get("route") != "pc"
+):
+    raise SystemExit("dangerous switch/usb auto-restore state is invalid")
 PY
 }
 
@@ -772,6 +812,7 @@ save_items() {
   payload="${payload}],\"confirm\":${confirmed}}"
   CLEANUP_REQUIRED=1
   http_request PUT /config "$payload" 200 ok config save "save selected firmware item"
+  assert_saved_snapshot_version_1 || fail "saved snapshot version is not v1"
 }
 
 save_item() {
@@ -783,12 +824,6 @@ save_item() {
 clear_snapshot() {
   http_request DELETE /config "" 200 ok config clear "clear test snapshot without changing hardware"
   CLEANUP_REQUIRED=0
-}
-
-apply_snapshot() {
-  confirmed="$1"
-  payload=$(printf '{"confirm":%s}' "$confirmed")
-  http_request POST /config/apply "$payload" 200 ok config apply "apply saved configuration"
 }
 
 sleep_for_reboot() {
@@ -936,28 +971,56 @@ serial_request() {
     output=$("$SERIAL_BIN" "$SERIAL" "$command_text") || fail "CDC command failed: $command_text"
   else
     output=$(python3 - "$SERIAL" "$command_text" <<'PY'
+import re
 import sys
 import time
 
 import serial
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+LOG_BOUNDARY_RE = re.compile(r"(?=\[\d{2}:\d{2}:\d{2}\.\d{3},\d{3}\])")
+LOG_LINE_RE = re.compile(r"^\[\d{2}:\d{2}:\d{2}\.\d{3},\d{3}\]")
+
 device, command = sys.argv[1:]
-with serial.Serial(device, 115200, timeout=1) as port:
-    port.reset_input_buffer()
-    port.write((command + "\n").encode("utf-8"))
-    port.flush()
-    deadline = time.monotonic() + 3
-    lines = []
-    while time.monotonic() < deadline:
-        line = port.readline().decode("utf-8", "replace").strip()
-        if not line:
+
+def extract(buffer):
+    segments = []
+    for piece in LOG_BOUNDARY_RE.split(ANSI_RE.sub("", buffer)):
+        piece = piece.strip()
+        if not piece or LOG_LINE_RE.match(piece):
             continue
-        if line.startswith("linkr-debugger:~$"):
+        for line in piece.splitlines():
+            line = line.strip()
+            if not line or line == command or line.startswith("linkr-debugger:~$"):
+                continue
+            if line.startswith("---") and line.endswith("messages dropped ---"):
+                continue
+            if "<inf>" in line or "<err>" in line or "<wrn>" in line:
+                continue
+            segments.append(line)
+    return segments
+
+with serial.Serial(device, 115200, timeout=0.2) as port:
+    segments = []
+    for _ in range(3):
+        port.reset_input_buffer()
+        port.write((command + "\n").encode("utf-8"))
+        port.flush()
+        deadline = time.monotonic() + 2
+        buffer = ""
+        while time.monotonic() < deadline:
+            chunk = port.read(256).decode("utf-8", "replace")
+            if not chunk:
+                continue
+            buffer += chunk
+            segments = extract(buffer)
+            if segments and ANSI_RE.sub("", buffer).rstrip().endswith("linkr-debugger:~$"):
+                break
+        if segments:
             break
-        lines.append(line)
-if not lines:
+if not segments:
     raise SystemExit("CDC command produced no response")
-print("\n".join(lines))
+print("\n".join(segments))
 PY
     ) || fail "CDC command failed: $command_text"
   fi
@@ -979,7 +1042,6 @@ if not lines:
 prefixes = {
     "show": "config available=",
     "save": "config save saved_count=",
-    "apply": "config apply applied_count=",
     "clear": "config clear hardware_changed=false",
     "bootloader": "Entering ",
 }
@@ -1018,6 +1080,7 @@ list_rpi_partitions() {
       vendor = field($0, "VENDOR")
       type = field($0, "TYPE")
       parent = field($0, "PKNAME")
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", vendor)
       if (type == "disk" && vendor == "RPI") disks[name] = 1
       if (type == "part" && parent != "") {
         part_names[++part_count] = name
@@ -1066,7 +1129,15 @@ unmount_bootsel_partition() {
 }
 
 flash_combined_uf2() {
-  partition=$(find_new_rpi_partition) || \
+  discovery_attempts=0
+  partition=""
+  while [ "$discovery_attempts" -lt 45 ] && [ -z "$partition" ]; do
+    partition=$(find_new_rpi_partition) || partition=""
+    [ -n "$partition" ] && break
+    discovery_attempts=$((discovery_attempts + 1))
+    "$SLEEP_BIN" 2
+  done
+  [ -n "$partition" ] || \
     fail "expected exactly one new RPI-RP2 partition after BOOTSEL entry"
   evidence "lsblk RPI-RP2 discovery" "not_applicable" "ok" "discover BOOTSEL partition"
   mount_output=$("$MOUNT_BIN" mount -b "$partition") || fail "failed to mount $partition"
@@ -1172,7 +1243,10 @@ safe_reboot() {
     plan "PUT /config" "save both discovered safe items"
     plan "external reboot command" "reboot without a client-owned hardware catalog"
     plan "sleep 5" "wait for planned reboot"
-    plan "GET /config" "assert both saved safe routes are applied after reboot"
+    plan "GET /config" "assert both saved safe routes are applied after first reboot"
+    plan "external reboot command" "repeat reboot without a client-owned hardware catalog"
+    plan "sleep 5" "wait for planned reboot"
+    plan "GET /config" "assert both saved safe routes are applied after second reboot"
     plan "DELETE /config" "clear test snapshot without changing hardware"
     plan "GET /config" "assert clear retained both live safe routes"
     plan "PUT /switch/sd" "restore SD target route"
@@ -1193,7 +1267,11 @@ safe_reboot() {
   reboot_board
   config_get
   assert_safe_reboot_state true usb-reader protected true applied || \
-    fail "safe routes were not restored after reboot"
+    fail "safe routes were not restored after first reboot"
+  reboot_board
+  config_get
+  assert_safe_reboot_state true usb-reader protected true applied || \
+    fail "safe routes were not restored after second reboot"
   clear_snapshot
   config_get
   assert_safe_reboot_state false usb-reader protected false not_saved || \
@@ -1206,22 +1284,24 @@ safe_reboot() {
   SAFE_RESTORE_REQUIRED=0
 }
 
-dangerous_pending() {
+dangerous_auto_restore() {
   if [ "$MODE" = "dry-run" ]; then
     plan "GET /config" "discover the confirmation-required switch route target"
+    plan "PUT /switch/usb" "set USB route to pc before dangerous save"
     plan "PUT /config" "assert confirmation_required before dangerous save"
     plan "PUT /config" "requires --confirm-dangerous-save"
-    plan "external reboot command" "reboot without applying dangerous pending state"
+    plan "external reboot command" "reboot after confirmed dangerous save"
     plan "sleep 5" "wait for planned reboot"
-    plan "GET /config" "assert dangerous item remains pending"
-    plan "POST /config/apply" "assert confirmation_required before apply"
-    plan "POST /config/apply" "requires --confirm-dangerous-apply"
-    plan "GET /config" "assert dangerous item is applied after confirmation"
+    plan "GET /config" "assert dangerous item automatically restores after first reboot"
+    plan "external reboot command" "repeat reboot after confirmed dangerous save"
+    plan "sleep 5" "wait for planned reboot"
+    plan "GET /config" "assert dangerous item automatically restores after second reboot"
     plan "DELETE /config" "clear test snapshot without changing hardware"
     return
   fi
   config_get
   dangerous_id=$(select_config_item dangerous) || fail "missing or malformed dangerous USB target item"
+  switch_route "${dangerous_id#switch/}" pc
   payload=$(printf '{"items":["%s"],"confirm":false}' "$dangerous_id")
   CLEANUP_REQUIRED=1
   http_request PUT /config "$payload" 409 confirmation_required config save \
@@ -1230,12 +1310,12 @@ dangerous_pending() {
   save_item "$dangerous_id" true
   reboot_board
   config_get
-  assert_config_item "$dangerous_id" pending || fail "dangerous item was not pending after reboot"
-  http_request POST /config/apply '{"confirm":false}' 409 confirmation_required config apply \
-    "dangerous apply is rejected without confirmation" - "$dangerous_id"
-  apply_snapshot true
+  assert_dangerous_auto_restore_state || \
+    fail "dangerous item was not automatically restored after first reboot"
+  reboot_board
   config_get
-  assert_config_item "$dangerous_id" applied || fail "dangerous item was not applied after confirmation"
+  assert_dangerous_auto_restore_state || \
+    fail "dangerous item was not automatically restored after second reboot"
   clear_snapshot
 }
 
@@ -1286,7 +1366,6 @@ ota_preserve() {
     plan "PUT /config" "assert HTTP 409 busy activity=ota for existing-snapshot save"
     plan "DELETE /config" "assert HTTP 409 busy activity=ota for present snapshot clear"
     plan "GET /config" "assert bounded read remains available with the snapshot present"
-    plan "POST /config/apply" "assert confirm=false is a bounded noop while upload is active"
     plan "await POST /ota/upload" "validate HTTP 200 state=verified before continuing"
     plan "POST /ota/test" "request OTA test boot"
     plan "sleep 5" "wait for planned reboot"
@@ -1312,18 +1391,6 @@ ota_preserve() {
   require_ota_upload_active
   config_get
   assert_config_item "$safe_id" applied || fail "OTA-active GET did not retain the prepared snapshot"
-  require_ota_upload_active
-  http_request POST /config/apply '{"confirm":false}' 200 ok config apply \
-    "safe no-op apply remains bounded while OTA owns flash"
-  python3 - "$HTTP_BODY" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as source:
-    document = json.load(source)
-if document.get("noop") is not True:
-    raise SystemExit("OTA-active config apply was not a no-op")
-PY
   await_ota_upload
   http_request POST /ota/test "" 202 ok ota - "request OTA test boot" - - rebooting
   sleep_for_reboot
@@ -1361,7 +1428,6 @@ cdc_fallback() {
     plan "GET /config" "discover one safe firmware item"
     plan "CDC config show" "verify CDC fallback is available"
     plan "CDC config save <firmware-item-id>" "save a firmware-enumerated safe item"
-    plan "CDC config apply --confirm" "exercise confirmed apply grammar"
     plan "CDC config clear" "clear without changing hardware"
     plan "CDC bootloader" "enter ROM BOOTSEL through CDC fallback"
     plan "sleep 5" "wait for reboot"
@@ -1376,7 +1442,6 @@ cdc_fallback() {
   serial_request "config show" show
   CLEANUP_REQUIRED=1
   serial_request "config save $safe_id" save
-  serial_request "config apply --confirm" apply
   serial_request "config clear" clear
   CLEANUP_REQUIRED=0
   cdc_bootloader_recovery
@@ -1515,14 +1580,14 @@ final_cleanup() {
 run_flow() {
   case "$1" in
     safe-reboot) safe_reboot ;;
-    dangerous-pending) dangerous_pending ;;
+    dangerous-auto-restore) dangerous_auto_restore ;;
     capture-busy) capture_busy ;;
     ota-preserve) ota_preserve ;;
     bootsel-preserve) bootsel_preserve ;;
     cdc-fallback) cdc_fallback ;;
     all)
       safe_reboot
-      dangerous_pending
+      dangerous_auto_restore
       capture_busy
       ota_preserve
       bootsel_preserve
