@@ -99,17 +99,17 @@ WebSocket APIs over HTTP on the USB-NCM network. Start the loopback device
 gateway before using hardware controls from the hosted page:
 
 ```sh
-cd web
-npm ci
-npm run device-bridge
+npm --prefix web ci
+npm --prefix web run build
+npm --prefix web run host
 ```
 
 The Pages build connects to `http://127.0.0.1:8787/api/v1`. By default, the
 gateway forwards HTTP and WebSocket traffic directly to the firmware service at
 `http://172.29.203.1:8080` and supplies the CORS and Private Network Access
 headers needed by the browser. Override the upstream with `LINKR_BOARD_URL`.
-On macOS the gateway automatically inserts the loopback NCM forwarder described
-above, so Node never opens the USB-NCM socket directly.
+The Rust Host talks directly to the USB-NCM address on macOS and does not need
+the Node/Ruby loopback workaround used by the legacy gateway.
 The gateway listens on loopback only and does not expose board controls to the
 LAN. Browser requests are limited to the official Pages origin and local
 development origins. Additional trusted origins can be supplied as a
@@ -258,12 +258,40 @@ If you do not enable the override, keep the board page open and use the host-sid
 bridge instead:
 
 ```sh
-npm run device-bridge
+npm run build
+npm run host
 ```
 
 Then use the **Bridge** button in either serial terminal. The bridge prefers the
 CH347F `D1` device for UART0 and `D3` for UART1, with sorted device order as the
-fallback when those suffixes are unavailable.
+fallback when those suffixes are unavailable. Bridge mode uses the versioned
+`linkr-serial-broker.v1` protocol: one host-owned connection per UART is shared
+by Web, automation, and MCP clients; receive data is broadcast, writes
+are ordered and acknowledged, and an automation client can claim exclusive
+write access. The old unversioned/raw-text WebSocket protocol is intentionally
+unsupported. See [the Serial Broker protocol](../doc/serial-broker.md).
+
+## Local MCP server
+
+Agents can use the same gateway and Serial Broker through a local stdio MCP
+server:
+
+```sh
+npm run build
+npm run --silent mcp
+```
+
+The npm command invokes the Rust `linkr-host mcp` adapter. It exposes bounded
+status, ADC, confirmed power/route controls, and cursor-based UART tools without
+opening a second CH347F handle. MCP automatically starts the loopback Host when
+needed; tool listing does not touch the board. Configuration, tool contracts
+and safety exclusions are documented in
+[the local MCP server guide](../doc/mcp-server.md).
+
+The gateway exposes a host-only `/healthz` readiness endpoint, so MCP does not
+issue an extra firmware status request before every operation. Board status is
+compact by default; dedicated serial status and login tools avoid repeated
+full-log reads and hand-written prompt sequences.
 
 ## Startup power analysis
 
@@ -328,8 +356,8 @@ path is still blocked; keep ROM BOOTSEL recovery available.
 
 **Same-origin vs GitHub Pages**: when the UI is served from the board at
 `http://172.29.203.1/` it talks to the OTA endpoints directly (same-origin).
-When the UI is served from GitHub Pages over HTTPS, the device-bridge gateway
-(`npm run device-bridge`) is required to reach the board at
+When the UI is served from GitHub Pages over HTTPS, Linkr Host
+(`npm run host`) is required to reach the board at
 `http://172.29.203.1`. The gateway now permits the OTA-specific headers
 (`X-Linkr-Ota-Size`, `X-Linkr-Ota-Sha256`) in CORS responses, so upload
 progress and SHA-256 verification work end-to-end from Pages. Start the bridge

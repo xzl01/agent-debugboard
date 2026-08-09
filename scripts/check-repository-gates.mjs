@@ -13,7 +13,7 @@ export const POLICY_FILES = Object.freeze([
 
 const REQUIRED_GATE_NEEDS = Object.freeze([
   "version-gate", "decoder", "nix", "web", "scripts", "windows-installer",
-  "firmware", "host-cli", "skill-bundle",
+  "firmware", "host-cli", "host-tools", "skill-bundle",
 ]);
 
 function job(workflow, name) {

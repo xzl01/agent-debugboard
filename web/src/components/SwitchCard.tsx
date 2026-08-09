@@ -27,7 +27,7 @@ function Segmented({
             "min-h-9 rounded-md px-3 py-1 text-xs font-medium transition-colors",
             "disabled:cursor-not-allowed disabled:opacity-50",
             value === opt.value
-              ? "bg-brand text-white"
+              ? "bg-brand text-on-brand"
               : "text-ink-dim hover:text-ink"
           )}
         >

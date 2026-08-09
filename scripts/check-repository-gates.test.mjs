@@ -30,6 +30,7 @@ test("rejects every publication and branch-policy bypass", async (t) => {
   const baseline = await repositoryContents();
   const cases = [
     ["build dependency", ".github/workflows/build.yml", "      - host-cli\n", "", "G03"],
+    ["Host Tools dependency", ".github/workflows/build.yml", "      - host-tools\n", "", "G03"],
     ["Pages validation", ".github/workflows/pages.yml", "    needs: validation\n", "", "G04"],
     ["release validation", ".github/workflows/release.yml", "      - validation\n", "", "G05"],
     ["nightly validation", ".github/workflows/nightly.yml", "    needs: validation\n", "", "G06"],

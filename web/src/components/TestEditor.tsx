@@ -296,7 +296,7 @@ export function StepAssertions({
               role="checkbox"
               aria-checked={active}
               onClick={() => toggleField(f.key, f.default)}
-              className={`h-4 w-4 rounded border text-[10px] leading-none ${active ? "border-brand bg-brand text-white" : "border-line bg-panel2 text-transparent"}`}
+              className={`h-4 w-4 rounded border text-[10px] leading-none ${active ? "border-brand bg-brand text-on-brand" : "border-line bg-panel2 text-transparent"}`}
             >
               {active ? "✓" : ""}
             </button>
@@ -371,7 +371,7 @@ const StepCard = memo(function StepCard({
             onClick={onSelect}
             className={`grid h-5 w-5 shrink-0 place-items-center rounded border text-[10px] transition-colors ${
               selected
-                ? "border-brand bg-brand text-white"
+                ? "border-brand bg-brand text-on-brand"
                 : "border-line bg-panel text-transparent hover:border-brand/60"
             }`}
           >
@@ -563,7 +563,7 @@ const LoopCard = memo(function LoopCard({
             onClick={onSelect}
             className={`grid h-5 w-5 shrink-0 place-items-center rounded border text-[10px] transition-colors ${
               selected
-                ? "border-brand bg-brand text-white"
+                ? "border-brand bg-brand text-on-brand"
                 : "border-line bg-panel text-transparent hover:border-brand/60"
             }`}
           >

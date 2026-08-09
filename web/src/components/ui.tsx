@@ -77,9 +77,9 @@ export const Button = forwardRef<
     default:
       "bg-panel2 text-ink hover:bg-line/50 border border-line/70 hover:border-line",
     primary:
-      "bg-brand text-white hover:bg-brand/85 border border-brand/40 shadow-sm shadow-brand/20",
+      "bg-brand text-on-brand hover:bg-brand/85 border border-brand/40 shadow-sm shadow-brand/20",
     danger:
-      "bg-danger text-white hover:bg-danger/90 border border-danger/40 shadow-sm shadow-danger/20",
+      "bg-danger text-on-danger hover:bg-danger/90 border border-danger/40 shadow-sm shadow-danger/20",
     ghost:
       "bg-transparent text-ink-dim hover:bg-panel2 hover:text-ink border border-transparent",
   };

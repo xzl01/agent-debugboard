@@ -1,0 +1,37 @@
+[package]
+name = "radxa-linkr-host"
+version = "0.2.1"
+edition = "2021"
+license = "LGPL-3.0-or-later"
+description = "Local Web, device gateway, serial broker and MCP host for Radxa Linkr Debugger"
+
+[[bin]]
+name = "linkr-host"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+futures-util = "0.3"
+http = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+regex = "1"
+rmcp = { version = "3.1", features = ["server", "transport-io"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-serial = "5"
+tokio-tungstenite = "0.29"
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+rmcp = { version = "3.1", features = ["client", "transport-child-process"] }

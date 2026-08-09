@@ -121,7 +121,7 @@ function StepHeading({
 }) {
   return (
     <div className="mb-3 flex items-start gap-2.5">
-      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-brand text-[11px] font-semibold text-white">
+      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-brand text-[11px] font-semibold text-on-brand">
         {number}
       </span>
       <div className="min-w-0">
@@ -369,7 +369,7 @@ export function PowerAnalyzer({
                     : "border-line/70 bg-panel/60 text-ink hover:border-brand/30 hover:bg-panel"
                 }`}
               >
-                <span className={`mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg ${selected ? "bg-brand text-white" : "bg-panel2 text-ink-dim"}`}>
+                <span className={`mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg ${selected ? "bg-brand text-on-brand" : "bg-panel2 text-ink-dim"}`}>
                   <Icon size={14} />
                 </span>
                 <span className="min-w-0">

@@ -18,7 +18,7 @@ definition and HIL validation before it can be declared supported.
 | Area | Supported |
 | --- | --- |
 | USB control | Composite USB: NCM HTTP/WS + CDC ACM fallback |
-| Host automation | Rust CLI/TUI with JSON output |
+| Host automation | Rust `linkr-host` for Web/gateway/Broker/MCP plus Rust CLI/TUI with JSON output |
 | Web UI | Dashboard at http://172.29.203.1/ |
 | Logic analyzer | PIO2+DMA, 100 kHz–125 MHz, WebSocket/raw-TCP Sigrok with a [common packed arena and current WIDE11 capture](doc/logic-analyzer.md) |
 | Power analyzer | Triggered capture with ring buffer, CSV/NDJSON export |
@@ -95,10 +95,23 @@ radxa-linkr-debuggerctl doctor
 radxa-linkr-debuggerctl status
 ```
 
+For the host-served Web UI, shared serial sessions and MCP, build and run the
+single Rust Host process:
+
+```sh
+npm --prefix web ci
+npm --prefix web run build
+cargo run --manifest-path host-tools/Cargo.toml -- serve
+```
+
+Then open <http://127.0.0.1:8787/>. See
+[Host Tools](host-tools/README.md) and the [MCP server](doc/mcp-server.md).
+
 If the released host CLI is not downloaded or installed yet, see
 [Install the CLI](docs/user/install.md) for the stable release channel and the
-separate rolling nightly channel. When following the Agent skill itself, keep
-using the skill's curl-first workflow. For automation through the CLI, prefer
+separate rolling nightly channel. Agents can use the bounded local
+[MCP server](doc/mcp-server.md) for shared UART and common board operations;
+curl remains the cross-platform fallback. For automation through the CLI, prefer
 `--json`; parse `schema`, `ok`, `command`, and `error.code` instead of
 human-readable text.
 
@@ -112,9 +125,8 @@ human-readable text.
 
 AI agents should read [skills/radxa-linkr-debugger/SKILL.md](skills/radxa-linkr-debugger/SKILL.md)
 before operating hardware through this project. The skill is the canonical,
-curl-first Agent-facing procedure for diagnosing the board connection,
-building/running the primary host CLI when needed, and using JSON commands
-safely.
+MCP-first Agent-facing procedure when the local server is available, with curl
+and the primary host CLI retained as explicit fallbacks.
 
 Before making repository changes, AI agents should also read
 [AGENTS.md](AGENTS.md). Repository-local rules:
@@ -132,14 +144,18 @@ Before making repository changes, AI agents should also read
 Recommended agent flow:
 
 ```sh
+# Preferred local Agent integration; see doc/mcp-server.md for client config.
+cargo run --manifest-path host-tools/Cargo.toml -- mcp
+
+# CLI fallback and diagnostics.
 radxa-linkr-debuggerctl --version
 radxa-linkr-debuggerctl --json doctor
 radxa-linkr-debuggerctl --json status
 ```
 
 If the released host CLI is not downloaded or installed yet, use the release
-installation path below. When following the Agent skill itself, keep using the
-skill's curl-first workflow. For automation through the CLI, prefer `--json`;
+installation path below. When MCP is unavailable, follow the skill's curl
+fallback workflow. For automation through the CLI, prefer `--json`;
 parse `schema`, `ok`, `command`, and `error.code` instead of human-readable
 text.
 
@@ -150,7 +166,8 @@ apps/radxa_linkr_debugger/        Zephyr application
 apps/radxa_linkr_debugger/src/    Firmware source and shared board model
 apps/radxa_linkr_debugger/tests/  Unit tests
 cmd-ng/                          Primary Rust host CLI/TUI
-web/                             Web UI and device bridge
+host-tools/                      Rust Web host, device gateway, Serial Broker, and MCP
+web/                             React UI and migration-only Node host adapters
 doc/                          Hardware documents, schematics, and marketing assets
 skills/radxa-linkr-debugger/      Agent-facing skill and operating guide
 west.yml                      Zephyr workspace manifest

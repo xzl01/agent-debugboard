@@ -70,6 +70,8 @@ jobs:
             VERSION \
             cmd-ng/Cargo.toml \
             cmd-ng/Cargo.lock \
+            host-tools/Cargo.toml \
+            host-tools/Cargo.lock \
             web/package.json \
             web/package-lock.json \
             web/decoder/Cargo.toml \

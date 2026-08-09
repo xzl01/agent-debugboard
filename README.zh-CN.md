@@ -17,7 +17,7 @@ RP2354 硬件需要完成专用 board 定义和 HIL 验证后才能声明支持�
 | 模块 | 当前支持 |
 | --- | --- |
 | USB 控制 | 复合 USB：NCM HTTP/WS + CDC ACM fallback |
-| 主机自动化 | Rust CLI/TUI，支持 JSON 输出 |
+| 主机自动化 | Rust `linkr-host` 统一承载 Web/网关/Broker/MCP，另提供支持 JSON 输出的 Rust CLI/TUI |
 | Web UI | 仪表盘 http://172.29.203.1/ |
 | 逻辑分析仪 | PIO2+DMA，100 kHz–125 MHz，WebSocket/raw-TCP Sigrok，[共用 packed arena 与当前 WIDE11 捕获](doc/logic-analyzer.md) |
 | 功率分析仪 | 触发式采集，环形缓冲，CSV/NDJSON 导出 |
@@ -74,9 +74,21 @@ radxa-linkr-debuggerctl doctor
 radxa-linkr-debuggerctl status
 ```
 
+如需主机托管的 Web UI、共享串口会话和 MCP，先构建 Web，再启动单一 Rust Host 进程：
+
+```sh
+npm --prefix web ci
+npm --prefix web run build
+cargo run --manifest-path host-tools/Cargo.toml -- serve
+```
+
+然后打开 <http://127.0.0.1:8787/>。详见
+[Host Tools](host-tools/README.md) 和 [MCP 服务](doc/mcp-server.md)。
+
 如果 release CLI 尚未下载或安装，请先看 [安装 CLI](docs/user/install.zh-CN.md)；
-该指南同时覆盖稳定 release 通道和独立的滚动 nightly 通道。只有在执行
-Agent skill 本身时，才继续遵循 skill 的 curl-first 工作流。通过 CLI 做自动化时，
+该指南同时覆盖稳定 release 通道和独立的滚动 nightly 通道。Agent 可优先使用
+[本地 MCP 服务](doc/mcp-server.md)访问共享串口和常用调试板能力；curl 保留为
+跨平台兜底。通过 CLI 做自动化时，
 优先使用 `--json`，解析 `schema`、`ok`、`command` 和 `error.code`，不要解析面向
 人看的文本输出。
 
@@ -90,8 +102,9 @@ Agent skill 本身时，才继续遵循 skill 的 curl-first 工作流。通过 
 
 AI Agent 在操作硬件前，应先读取
 [skills/radxa-linkr-debugger/SKILL.md](skills/radxa-linkr-debugger/SKILL.md)。这份 skill
-是仓库内面向 Agent 的权威操作规程，并且有意保持 curl-first；它同时覆盖连接诊
-断、需要时构建/运行主力 CLI、JSON 命令使用和有副作用操作的安全规则。
+是仓库内面向 Agent 的权威操作规程。若本地 MCP 可用，skill 会优先使用强类型
+MCP 工具，再回退到 curl 或 CLI；它同时覆盖连接诊断、JSON 命令使用和有副作用
+操作的安全规则。
 
 在修改仓库文件之前，AI Agent 还应先读取 [AGENTS.md](AGENTS.md)。仓库内的
 默认规则如下：
@@ -109,13 +122,17 @@ AI Agent 在操作硬件前，应先读取
 推荐 Agent 最小流程：
 
 ```sh
+# 推荐的本地 Agent 接入；客户端配置见 doc/mcp-server.md。
+cargo run --manifest-path host-tools/Cargo.toml -- mcp
+
+# CLI 兜底与诊断。
 radxa-linkr-debuggerctl --version
 radxa-linkr-debuggerctl --json doctor
 radxa-linkr-debuggerctl --json status
 ```
 
 如果 release CLI 尚未下载或安装，先按下方 release 安装路径处理。只有在执行
-Agent skill 本身时，才继续遵循 skill 的 curl-first 工作流。通过 CLI 做自动化时，
+MCP 不可用时才回退到 skill 的 curl 工作流。通过 CLI 做自动化时，
 优先使用 `--json`，解析 `schema`、`ok`、`command` 和 `error.code`，不要解析面向
 人看的文本输出。
 
@@ -126,7 +143,8 @@ apps/radxa_linkr_debugger/        Zephyr 应用
 apps/radxa_linkr_debugger/src/    固件源码和共享板级模型
 apps/radxa_linkr_debugger/tests/  单元测试
 cmd-ng/                          面向高级用户和 Agent 的 Rust CLI/TUI
-web/                             Web UI 和本地设备桥接
+host-tools/                      Rust Web 托管、设备网关、串口 Broker 与 MCP
+web/                             React UI 和迁移期 Node 兼容实现
 doc/                          硬件文档、原理图和宣传素材
 skills/radxa-linkr-debugger/      面向 Agent 的 skill 和操作规程
 west.yml                      Zephyr workspace manifest

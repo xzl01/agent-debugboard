@@ -10,6 +10,12 @@ import http from "node:http";
 import WebSocket, { WebSocketServer } from "ws";
 import { SerialPort } from "serialport";
 import { startNcmLoopback } from "./scripts/ncm-loopback.mjs";
+import { SerialBroker } from "./scripts/serial-broker.mjs";
+import {
+  parseSerialBrokerClientFrame,
+  SERIAL_BROKER_CAPABILITIES,
+  serialBrokerFrame,
+} from "./scripts/serial-broker-protocol.mjs";
 
 const BRIDGE_HOST = "127.0.0.1";
 const BRIDGE_PORT = Number(process.env.LINKR_BRIDGE_PORT || 8787);
@@ -31,6 +37,7 @@ const BOARD_HTTP_AGENT = new http.Agent({
   maxFreeSockets: 1,
 });
 const CH347_VID = "1a86";
+const SERIAL_IDLE_TIMEOUT_MS = durationFromEnv("LINKR_SERIAL_IDLE_MS", 30_000);
 const TRUSTED_ORIGINS = new Set(
   (process.env.LINKR_TRUSTED_ORIGINS || "https://xzl01.github.io")
     .split(",")
@@ -70,6 +77,21 @@ const server = http.createServer((req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, corsHeaders(req));
     res.end();
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/healthz") {
+    res.writeHead(200, {
+      ...corsHeaders(req),
+      "cache-control": "no-store",
+      "content-type": "application/json; charset=utf-8",
+    });
+    res.end(JSON.stringify({
+      schema: "radxa-linkr-debugger-gateway.v1",
+      ok: true,
+      service: "device-gateway",
+      serial_protocol: "linkr-serial-broker.v1",
+    }));
     return;
   }
 
@@ -223,94 +245,80 @@ function send(ws, obj) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
-function selectSerialPort(ports, channel) {
-  const sorted = [...ports].sort((left, right) => left.path.localeCompare(right.path));
-  const suffix = channel === "uart1" ? /D3$/i : /D1$/i;
-  return sorted.find((port) => suffix.test(port.path)) ??
-    sorted[channel === "uart1" ? 1 : 0];
-}
+const serialBroker = new SerialBroker({
+  listPorts: () => SerialPort.list(),
+  createPort: (options) => new SerialPort(options),
+  send,
+  vendorId: CH347_VID,
+  idleTimeoutMs: SERIAL_IDLE_TIMEOUT_MS,
+});
+let serialClientSequence = 0;
 
-async function openSerial(ws, baud, channel) {
-  const ports = await SerialPort.list();
-  const candidates = ports.filter((port) =>
-    (port.vendorId || "").toLowerCase() === CH347_VID
-  );
-  const target = selectSerialPort(candidates, channel);
-  if (!target) {
-    throw new Error(`No CH347F ${channel.toUpperCase()} serial port found`);
+async function dispatchSerialBrokerRequest(ws, message) {
+  switch (message.type) {
+    case "open":
+      await serialBroker.subscribe(ws, message);
+      break;
+    case "write":
+      await serialBroker.write(ws, message);
+      break;
+    case "claim":
+      serialBroker.claim(ws, message);
+      break;
+    case "release":
+      serialBroker.release(ws, message);
+      break;
+    case "status":
+      serialBroker.sendStatus(ws, message.channel, message.request_id);
+      break;
+    case "close":
+      await serialBroker.unsubscribe(ws, message.channel, {
+        requestId: message.request_id,
+        immediate: true,
+      });
+      break;
   }
-
-  const serial = new SerialPort({ path: target.path, baudRate: baud, autoOpen: false });
-  ws.__serial = serial;
-  serial.on("data", (chunk) => send(ws, { type: "data", text: chunk.toString("utf8") }));
-  serial.on("error", (error) => send(ws, { type: "error", message: error.message }));
-  serial.on("close", () => send(ws, { type: "closed" }));
-
-  try {
-    await new Promise((resolve, reject) => {
-      serial.open((error) => error ? reject(error) : resolve());
-    });
-  } catch (error) {
-    if (ws.__serial === serial) ws.__serial = undefined;
-    throw error;
-  }
-
-  if (ws.readyState !== WebSocket.OPEN) {
-    serial.close(() => {});
-    if (ws.__serial === serial) ws.__serial = undefined;
-    throw new Error("Serial client disconnected while opening the port");
-  }
-
-  send(ws, { type: "opened", channel, path: target.path, baud });
-  return serial;
 }
 
 serialWss.on("connection", (ws) => {
-  let opening = false;
-  let opened = false;
-
+  serialClientSequence += 1;
+  ws.__brokerClientId = `bridge-${process.pid}-${serialClientSequence}`;
+  ws.__brokerClosed = false;
+  ws.__brokerQueue = Promise.resolve();
   trackHeartbeat(ws);
+  send(ws, serialBrokerFrame("hello", {
+    server: "radxa-linkr-debugger-serial-broker",
+    client_id: ws.__brokerClientId,
+    capabilities: SERIAL_BROKER_CAPABILITIES,
+  }));
 
-  ws.on("message", (data) => {
-    if (!opened && !opening) {
-      let msg;
-      try {
-        msg = JSON.parse(data.toString());
-      } catch {
-        return;
-      }
-      if (msg.type === "open") {
-        opening = true;
-        const channel = msg.channel === "uart1" ? "uart1" : "uart0";
-        void openSerial(ws, msg.baud || 115200, channel)
-          .then((serial) => {
-            opened = true;
-            serial.once("close", () => {
-              if (ws.__serial === serial) ws.__serial = undefined;
-              opened = false;
-            });
-          })
-          .catch((error) => {
-            send(ws, {
-              type: "error",
-              message: `serial open failed: ${error instanceof Error ? error.message : String(error)}`,
-            });
-          })
-          .finally(() => {
-            opening = false;
-          });
-      }
+  ws.on("message", (data, isBinary) => {
+    const parsed = parseSerialBrokerClientFrame(isBinary ? data : data.toString());
+    if (!parsed.ok) {
+      send(ws, serialBrokerFrame("error", {
+        ...parsed.error,
+        retryable: false,
+      }));
       return;
     }
-    if (ws.__serial?.writable) ws.__serial.write(data.toString());
+    const operation = ws.__brokerQueue.then(() => {
+      if (ws.__brokerClosed) return;
+      return dispatchSerialBrokerRequest(ws, parsed.message);
+    });
+    ws.__brokerQueue = operation.catch((error) => {
+      send(ws, serialBrokerFrame("error", {
+        request_id: parsed.message.request_id,
+        channel: parsed.message.channel,
+        code: "broker_internal_error",
+        message: error instanceof Error ? error.message : String(error),
+        retryable: true,
+      }));
+    });
   });
 
   ws.on("close", () => {
-    try {
-      ws.__serial?.close();
-    } catch {
-      // Ignore a port that was already closed by the OS.
-    }
+    ws.__brokerClosed = true;
+    void serialBroker.disconnectPeer(ws);
   });
 });
 
@@ -320,7 +328,17 @@ server.on("upgrade", (request, socket, head) => {
     socket.destroy();
     return;
   }
-  const target = request.url?.startsWith("/api/") ? apiWss : serialWss;
+  const path = new URL(request.url || "/", "http://localhost").pathname;
+  const target = path.startsWith("/api/")
+    ? apiWss
+    : path === "/serial"
+      ? serialWss
+      : null;
+  if (!target) {
+    socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+    return;
+  }
   target.handleUpgrade(request, socket, head, (ws) => {
     target.emit("connection", ws, request);
   });
@@ -352,7 +370,10 @@ function shutdown(exitCode = 0) {
   for (const client of serialWss.clients) client.terminate();
   for (const upstream of upstreamSockets) upstream.terminate();
   server.close(() => {
-    void boardForwarder.close().finally(() => process.exit(exitCode));
+    void Promise.all([
+      serialBroker.shutdown(),
+      boardForwarder.close(),
+    ]).finally(() => process.exit(exitCode));
   });
   setTimeout(() => process.exit(exitCode || 1), 2_000).unref();
 }

@@ -207,6 +207,16 @@ def managed_versions(root: Path) -> list[tuple[str, str]]:
                 root / "cmd-ng/Cargo.lock", "radxa-linkr-debuggerctl-ng"
             ),
         ),
+        (
+            "host-tools/Cargo.toml:[package].version",
+            cargo_manifest_version(root / "host-tools/Cargo.toml"),
+        ),
+        (
+            "host-tools/Cargo.lock:radxa-linkr-host",
+            cargo_lock_version(
+                root / "host-tools/Cargo.lock", "radxa-linkr-host"
+            ),
+        ),
         ("web/package.json:version", json_version(root / "web/package.json")),
     ]
     versions.extend(package_lock_versions(root / "web/package-lock.json"))
@@ -265,6 +275,12 @@ def version_updates(root: Path, version: str) -> dict[Path, str]:
         ),
         root / "cmd-ng/Cargo.lock": update_cargo_lock(
             root / "cmd-ng/Cargo.lock", "radxa-linkr-debuggerctl-ng", version
+        ),
+        root / "host-tools/Cargo.toml": update_cargo_manifest(
+            root / "host-tools/Cargo.toml", version
+        ),
+        root / "host-tools/Cargo.lock": update_cargo_lock(
+            root / "host-tools/Cargo.lock", "radxa-linkr-host", version
         ),
         package_json_path: update_json_version(package_json_path, version),
         package_lock_path: update_package_lock(package_lock_path, version),

@@ -17,6 +17,8 @@ export default {
         "ink-dim": "rgb(var(--c-ink-dim) / <alpha-value>)",
         terminal: "rgb(var(--c-terminal) / <alpha-value>)",
         "terminal-ink": "rgb(var(--c-terminal-ink) / <alpha-value>)",
+        "on-brand": "rgb(var(--c-on-brand) / <alpha-value>)",
+        "on-danger": "rgb(var(--c-on-danger) / <alpha-value>)",
       },
       borderRadius: {
         xl: "0.9rem",

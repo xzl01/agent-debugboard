@@ -96,7 +96,7 @@ export function PowerCard({
                   onClick={() => setMetric(item)}
                   className={cn(
                     "inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40",
-                    metric === item ? "bg-brand text-white" : "text-ink-dim hover:text-ink"
+                    metric === item ? "bg-brand text-on-brand" : "text-ink-dim hover:text-ink"
                   )}
                 >
                   {item === "current" ? <Activity size={12} /> : <Zap size={12} />}

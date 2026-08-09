@@ -6,8 +6,6 @@ import {
   useState,
 } from "react";
 import type {
-  ClipboardEvent as ReactClipboardEvent,
-  KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
 } from "react";
 import {
@@ -23,6 +21,15 @@ import {
 import type { Terminal as XTerm } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import {
+  parseSerialBrokerServerFrame,
+  serialBrokerClaimRequest,
+  serialBrokerCloseRequest,
+  serialBrokerOpenRequest,
+  serialBrokerReleaseRequest,
+  serialBrokerWriteRequest,
+  type SerialBrokerFrame,
+} from "../../scripts/serial-broker-protocol.mjs";
 import { Button } from "./ui";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -37,6 +44,13 @@ import {
   LINUX_SERIAL_PERMISSION_COMMAND,
   shouldShowLinuxSerialPermissionHelp,
 } from "@/lib/serialPermissions";
+import {
+  DEFAULT_SERIAL_LINE_ENDING,
+  normalizeSerialTerminalInput,
+  type SerialLineEnding,
+} from "@/lib/serialInput";
+import { terminalFontFamilyFromRoot } from "@/lib/terminalFont";
+import { resolveTerminalTheme } from "@/lib/terminalTheme";
 import { downloadBlob, formatBytes } from "@/lib/utils";
 
 const BAUD_RATES = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1500000];
@@ -48,12 +62,20 @@ const LOG_FLUSH_CHARS = 64 * 1024;
 const LOG_CACHE_RETRY_BASE_MS = 1000;
 const LOG_CACHE_RETRY_MAX_MS = 60_000;
 const RX_COUNTER_INTERVAL_MS = 250;
+const ACTIVITY_PULSE_INTERVAL_MS = 620;
 const TERMINAL_RENDER_CHUNK_CHARS = 64 * 1024;
 const TERMINAL_RENDER_BUFFER_CHARS = 1024 * 1024;
+const BROKER_WRITE_TIMEOUT_MS = 5_000;
+const BROKER_CLOSE_TIMEOUT_MS = 750;
 
 export type SerialChannelId = "uart0" | "uart1";
 type Source = "webserial" | "bridge" | null;
-type LineEnding = "crlf" | "cr" | "lf";
+type LineEnding = SerialLineEnding;
+type BrokerPendingRequest = {
+  resolve: (frame: SerialBrokerFrame) => void;
+  reject: (error: Error) => void;
+  timer: number;
+};
 
 export interface SerialChannelStatus {
   connected: boolean;
@@ -72,68 +94,6 @@ export interface SerialChannelHandle {
   write: (data: string) => Promise<void>;
   setAutomationActive: (active: boolean) => void;
   subscribe: (listener: (text: string, receivedAtMs: number) => void) => () => void;
-}
-
-const TERMINAL_KEYS: Record<string, string> = {
-  Backspace: "\u007f",
-  Tab: "\t",
-  Escape: "\u001b",
-  ArrowUp: "\u001b[A",
-  ArrowDown: "\u001b[B",
-  ArrowRight: "\u001b[C",
-  ArrowLeft: "\u001b[D",
-  Home: "\u001b[H",
-  End: "\u001b[F",
-  Insert: "\u001b[2~",
-  Delete: "\u001b[3~",
-  PageUp: "\u001b[5~",
-  PageDown: "\u001b[6~",
-};
-
-const LINE_ENDINGS: Record<LineEnding, string> = {
-  crlf: "\r\n",
-  cr: "\r",
-  lf: "\n",
-};
-
-function terminalKeyData(event: ReactKeyboardEvent<HTMLDivElement>, lineEnding: LineEnding) {
-  if (event.metaKey) return null;
-  if (event.key === "Enter") return LINE_ENDINGS[lineEnding];
-  if (event.ctrlKey && event.key.length === 1) {
-    const code = event.key.toUpperCase().charCodeAt(0);
-    if (code >= 64 && code <= 95) return String.fromCharCode(code - 64);
-  }
-  const mapped = TERMINAL_KEYS[event.key];
-  if (mapped) return mapped;
-  if (!event.ctrlKey && event.key.length === 1) {
-    return event.altKey ? `\u001b${event.key}` : event.key;
-  }
-  return null;
-}
-
-function terminalTheme() {
-  if (document.documentElement.dataset.theme === "light") {
-    return {
-      background: "#ffffff",
-      foreground: "#0f172a",
-      cursor: "#356df3",
-      selectionBackground: "#356df333",
-      black: "#172033",
-      brightBlack: "#64748b",
-      white: "#e2e8f0",
-      brightWhite: "#0f172a",
-    };
-  }
-  return {
-    background: "#07090c",
-    foreground: "#d7e1ef",
-    cursor: "#72a2ff",
-    selectionBackground: "#72a2ff40",
-    black: "#07090c",
-    brightBlack: "#64748b",
-    white: "#d7e1ef",
-    brightWhite: "#ffffff",
-  };
 }
 
 export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
@@ -160,12 +120,14 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   const [connecting, setConnecting] = useState(false);
   const [baud, setBaud] = useState(115200);
   const [fontSize, setFontSize] = useState(13);
-  const [lineEnding, setLineEnding] = useState<LineEnding>("crlf");
+  const [lineEnding, setLineEnding] = useState<LineEnding>(DEFAULT_SERIAL_LINE_ENDING);
   const [portInfo, setPortInfo] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [rxBytes, setRxBytes] = useState(0);
   const [txBytes, setTxBytes] = useState(0);
+  const [activityPulse, setActivityPulse] = useState(0);
   const [automationActive, setAutomationActive] = useState(false);
+  const [brokerWriteLocked, setBrokerWriteLocked] = useState(false);
   const [cachedLogBytes, setCachedLogBytes] = useState(0);
   const [logCacheError, setLogCacheError] = useState<string | null>(null);
   const [showLinuxSerialHelp, setShowLinuxSerialHelp] = useState(false);
@@ -190,6 +152,12 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const writeGenerationRef = useRef(0);
   const automationActiveRef = useRef(false);
+  const brokerWriteLockedRef = useRef(false);
+  const brokerClientIdRef = useRef<string | null>(null);
+  const brokerPendingRequestsRef = useRef(new Map<string, BrokerPendingRequest>());
+  const lineEndingRef = useRef<LineEnding>(lineEnding);
+  const activityCountersRef = useRef({ rxBytes: 0, txBytes: 0 });
+  const lastActivityPulseAtRef = useRef(0);
   const pendingLogRef = useRef("");
   const logFlushTimerRef = useRef<number | null>(null);
   const logWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -379,21 +347,99 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   const updateAutomationActive = (active: boolean) => {
     automationActiveRef.current = active;
     setAutomationActive(active);
+    const ws = wsRef.current;
+    if (sourceRef.current === "bridge" && ws?.readyState === WebSocket.OPEN) {
+      const request = active
+        ? serialBrokerClaimRequest(channel, `Web automation ${channel.toUpperCase()}`)
+        : serialBrokerReleaseRequest(channel);
+      ws.send(JSON.stringify(request));
+    }
   };
 
-  async function disconnect(physicalDisconnect = false) {
+  function updateBrokerWriteLocked(locked: boolean) {
+    brokerWriteLockedRef.current = locked;
+    setBrokerWriteLocked(locked);
+  }
+
+  function rejectBrokerRequests(reason: unknown) {
+    const error = reason instanceof Error ? reason : new Error(String(reason));
+    for (const pending of brokerPendingRequestsRef.current.values()) {
+      window.clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    brokerPendingRequestsRef.current.clear();
+  }
+
+  function settleBrokerRequest(
+    requestId: string | undefined,
+    frame: SerialBrokerFrame,
+    error?: Error,
+  ): boolean {
+    if (!requestId) return false;
+    const pending = brokerPendingRequestsRef.current.get(requestId);
+    if (!pending) return false;
+    brokerPendingRequestsRef.current.delete(requestId);
+    window.clearTimeout(pending.timer);
+    if (error) pending.reject(error);
+    else pending.resolve(frame);
+    return true;
+  }
+
+  function sendBrokerRequest(
+    ws: WebSocket,
+    request: Record<string, unknown>,
+    timeoutMs: number,
+  ): Promise<SerialBrokerFrame> {
+    const requestId = typeof request.request_id === "string" ? request.request_id : "";
+    if (!requestId) return Promise.reject(new Error("broker request is missing request_id"));
+    if (ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error(t("serial.disconnectedWrite")));
+    }
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        brokerPendingRequestsRef.current.delete(requestId);
+        reject(new Error(`serial broker request timed out: ${request.type}`));
+      }, timeoutMs);
+      brokerPendingRequestsRef.current.set(requestId, { resolve, reject, timer });
+      try {
+        ws.send(JSON.stringify(request));
+      } catch (reason) {
+        window.clearTimeout(timer);
+        brokerPendingRequestsRef.current.delete(requestId);
+        reject(reason instanceof Error ? reason : new Error(String(reason)));
+      }
+    });
+  }
+
+  async function disconnect(physicalDisconnect = false, notifyBroker = true) {
     const reader = readerRef.current;
     const readTask = readTaskRef.current;
     const port = portRef.current;
     const ws = wsRef.current;
+    const activeSource = sourceRef.current;
+
+    sourceRef.current = null;
+    writeGenerationRef.current += 1;
+    if (notifyBroker && activeSource === "bridge" && ws?.readyState === WebSocket.OPEN) {
+      try {
+        await sendBrokerRequest(
+          ws,
+          serialBrokerCloseRequest(channel),
+          BROKER_CLOSE_TIMEOUT_MS,
+        );
+      } catch {
+        // Closing the WebSocket still makes the broker release this subscription.
+      }
+    }
 
     readerRef.current = null;
     readTaskRef.current = null;
     portRef.current = null;
     wsRef.current = null;
-    sourceRef.current = null;
-    writeGenerationRef.current += 1;
     setConnecting(false);
+    brokerClientIdRef.current = null;
+    updateBrokerWriteLocked(false);
+    rejectBrokerRequests(new Error("serial broker disconnected"));
 
     try { await reader?.cancel(); } catch { /* The OS may already have removed the device. */ }
     try { await readTask; } catch { /* Read errors are reported by the read task. */ }
@@ -417,16 +463,34 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   }, [automationActive]);
 
   useEffect(() => {
+    lineEndingRef.current = lineEnding;
+  }, [lineEnding]);
+
+  useEffect(() => {
+    const previous = activityCountersRef.current;
+    activityCountersRef.current = { rxBytes, txBytes };
+    const now = performance.now();
+    if (
+      source
+      && (rxBytes > previous.rxBytes || txBytes > previous.txBytes)
+      && now - lastActivityPulseAtRef.current >= ACTIVITY_PULSE_INTERVAL_MS
+    ) {
+      lastActivityPulseAtRef.current = now;
+      setActivityPulse((pulse) => pulse + 1);
+    }
+  }, [rxBytes, source, txBytes]);
+
+  useEffect(() => {
     onStatus(channel, {
       connected: !!source,
       connecting,
-      automationActive,
+      automationActive: automationActive || brokerWriteLocked,
       source,
       portInfo,
       rxBytes,
       txBytes,
     });
-  }, [automationActive, channel, connecting, onStatus, portInfo, rxBytes, source, txBytes]);
+  }, [automationActive, brokerWriteLocked, channel, connecting, onStatus, portInfo, rxBytes, source, txBytes]);
 
   useEffect(() => {
     const host = terminalHostRef.current;
@@ -434,6 +498,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     let disposed = false;
     let term: XTerm | null = null;
     let fitAddon: FitAddon | null = null;
+    let inputDisposable: { dispose(): void } | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let themeObserver: MutationObserver | null = null;
     const fit = () => {
@@ -458,15 +523,20 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       else setCachedLogBytes(cachedLog.snapshot.totalBytes);
       term = new Terminal({
         cursorBlink: !!sourceRef.current,
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        fontFamily: terminalFontFamilyFromRoot(),
         fontSize,
         lineHeight: 1.15,
         scrollback: 10000,
-        theme: terminalTheme(),
+        theme: resolveTerminalTheme(),
       });
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.open(host);
+      inputDisposable = term.onData((data) => {
+        if (automationActiveRef.current || brokerWriteLockedRef.current || !sourceRef.current) return;
+        const normalized = normalizeSerialTerminalInput(data, lineEndingRef.current);
+        if (normalized) void enqueueSerial(normalized);
+      });
       termRef.current = term;
       fitAddonRef.current = fitAddon;
       prependTerminalOutput(cachedLog.snapshot.text);
@@ -474,11 +544,17 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       resizeObserver = new ResizeObserver(fit);
       resizeObserver.observe(host);
       themeObserver = new MutationObserver(() => {
-        if (term) term.options.theme = terminalTheme();
+        if (!term) return;
+        const nextFontFamily = terminalFontFamilyFromRoot();
+        const fontChanged = term.options.fontFamily !== nextFontFamily;
+        term.options.theme = resolveTerminalTheme();
+        if (fontChanged) term.options.fontFamily = nextFontFamily;
+        term.refresh(0, Math.max(0, term.rows - 1));
+        if (fontChanged) requestAnimationFrame(fit);
       });
       themeObserver.observe(document.documentElement, {
         attributes: true,
-        attributeFilter: ["data-theme"],
+        attributeFilter: ["data-theme", "data-terminal-theme", "data-terminal-font-family"],
       });
       requestAnimationFrame(fit);
     })();
@@ -489,6 +565,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       void disconnect();
       resizeObserver?.disconnect();
       themeObserver?.disconnect();
+      inputDisposable?.dispose();
       document.removeEventListener("fullscreenchange", fit);
       if (terminalRenderFrameRef.current != null) {
         window.cancelAnimationFrame(terminalRenderFrameRef.current);
@@ -601,6 +678,9 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     setError(null);
     setShowLinuxSerialHelp(false);
     setSerialFixCopyState("idle");
+    brokerClientIdRef.current = null;
+    updateBrokerWriteLocked(false);
+    rejectBrokerRequests(new Error("serial broker reconnecting"));
     if (wsRef.current) {
       try { wsRef.current.close(); } catch { /* Ignore a stale bridge socket. */ }
       wsRef.current = null;
@@ -608,36 +688,50 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     setConnecting(true);
     const ws = new WebSocket(`ws://127.0.0.1:${BRIDGE_PORT}/serial`);
     wsRef.current = ws;
-    ws.onopen = () => ws.send(JSON.stringify({ type: "open", channel, baud }));
+    ws.onopen = () => ws.send(JSON.stringify(serialBrokerOpenRequest(channel, baud)));
     ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "data") {
-          const text = String(msg.text ?? "");
-          recordRxBytes(new TextEncoder().encode(text).byteLength);
-          appendReceived(text);
-        } else if (msg.type === "opened") {
-          if (wsRef.current !== ws) return;
-          sourceRef.current = "bridge";
-          setConnecting(false);
-          setSource("bridge");
-          setShowLinuxSerialHelp(false);
-          setPortInfo(`${msg.path} · bridge`);
-        } else if (msg.type === "error") {
-          setConnecting(false);
-          const message = String(msg.message ?? "");
-          setError(message);
-          setShowLinuxSerialHelp(shouldShowLinuxSerialPermissionHelp({
-            isLinux: isLinuxSerialHost(navigator),
-            stage: "bridge",
-            error: message,
-          }));
-        } else if (msg.type === "closed") {
-          append("\r\n[bridge closed]\r\n");
-          void disconnect();
-        }
-      } catch {
-        /* Ignore malformed bridge frames. */
+      const msg = parseSerialBrokerServerFrame(event.data);
+      if (!msg || (msg.channel && msg.channel !== channel)) return;
+      if (msg.type === "hello") {
+        brokerClientIdRef.current = typeof msg.client_id === "string" ? msg.client_id : null;
+      } else if (msg.type === "data") {
+        const text = String(msg.text ?? "");
+        const byteCount = typeof msg.byte_count === "number"
+          ? msg.byte_count
+          : new TextEncoder().encode(text).byteLength;
+        recordRxBytes(byteCount);
+        appendReceived(text);
+      } else if (msg.type === "opened") {
+        if (wsRef.current !== ws) return;
+        sourceRef.current = "bridge";
+        setConnecting(false);
+        setSource("bridge");
+        setShowLinuxSerialHelp(false);
+        setPortInfo(`${String(msg.path ?? "CH347F")} · Host Broker`);
+      } else if (msg.type === "write_ack") {
+        settleBrokerRequest(msg.request_id, msg);
+      } else if (msg.type === "claimed" || msg.type === "released") {
+        settleBrokerRequest(msg.request_id, msg);
+      } else if (msg.type === "status") {
+        const ownerClientId = msg.owner?.client_id;
+        updateBrokerWriteLocked(Boolean(
+          ownerClientId && ownerClientId !== brokerClientIdRef.current
+        ));
+      } else if (msg.type === "error") {
+        setConnecting(false);
+        const message = String(msg.message ?? msg.code ?? "serial broker error");
+        settleBrokerRequest(msg.request_id, msg, new Error(message));
+        if (msg.code === "serial_busy") updateBrokerWriteLocked(true);
+        setError(message);
+        setShowLinuxSerialHelp(shouldShowLinuxSerialPermissionHelp({
+          isLinux: isLinuxSerialHost(navigator),
+          stage: "bridge",
+          error: message,
+        }));
+      } else if (msg.type === "closed") {
+        if (settleBrokerRequest(msg.request_id, msg)) return;
+        append("\r\n[Host Broker closed]\r\n");
+        void disconnect(false, false);
       }
     };
     ws.onerror = () => {
@@ -648,8 +742,11 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     };
     ws.onclose = () => {
       if (wsRef.current !== ws) return;
+      rejectBrokerRequests(new Error("serial broker connection closed"));
       wsRef.current = null;
       sourceRef.current = null;
+      brokerClientIdRef.current = null;
+      updateBrokerWriteLocked(false);
       setConnecting(false);
       setSource(null);
       setPortInfo("");
@@ -666,7 +763,13 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
         const writer = portRef.current.writable.getWriter();
         try { await writer.write(bytes); } finally { writer.releaseLock(); }
       } else if (activeSource === "bridge" && wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(data);
+        if (brokerWriteLockedRef.current) throw new Error(t("serial.brokerInputLocked"));
+        const response = await sendBrokerRequest(
+          wsRef.current,
+          serialBrokerWriteRequest(channel, data),
+          BROKER_WRITE_TIMEOUT_MS,
+        );
+        if (response.type !== "write_ack") throw new Error("serial broker did not acknowledge write");
       } else {
         throw new Error(t("serial.disconnectedWrite"));
       }
@@ -740,33 +843,6 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     else await panel.requestFullscreen();
   }
 
-  function handleTerminalKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (automationActiveRef.current) {
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
-    const data = terminalKeyData(event, lineEnding);
-    if (!data || !sourceRef.current) return;
-    event.preventDefault();
-    event.stopPropagation();
-    enqueueSerial(data);
-  }
-
-  function handleTerminalPaste(event: ReactClipboardEvent<HTMLDivElement>) {
-    if (automationActiveRef.current) {
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
-    const data = event.clipboardData.getData("text");
-    if (!data || !sourceRef.current) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const normalized = data.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
-    enqueueSerial(normalized.replaceAll("\n", LINE_ENDINGS[lineEnding]));
-  }
-
   function handleWebSerialClick(event: ReactMouseEvent<HTMLButtonElement>) {
     if (webSerialSupported) {
       void connectWebSerial();
@@ -776,6 +852,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   }
 
   const channelLabel = channel.toUpperCase();
+  const inputLocked = automationActive || brokerWriteLocked;
 
   return (
     <section
@@ -784,7 +861,15 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     >
       <div className="flex min-h-11 flex-wrap items-center justify-between gap-2 border-b border-line/70 bg-terminal px-3 py-2 text-terminal-ink transition-colors">
         <div className="flex min-w-0 items-center gap-2">
-          <span className={`h-2 w-2 shrink-0 rounded-full ${source ? "bg-ok shadow-[0_0_8px_rgb(var(--c-ok))]" : connecting ? "animate-pulse bg-warn" : "bg-ink-dim/50"}`} />
+          <span className="relative flex h-2 w-2 shrink-0 items-center justify-center" aria-hidden="true">
+            {source && activityPulse > 0 && (
+              <span
+                key={activityPulse}
+                className="serial-activity-ripple absolute inset-0 rounded-full border border-ok/55"
+              />
+            )}
+            <span className={`relative h-2 w-2 rounded-full ${source ? "bg-ok shadow-[0_0_8px_rgb(var(--c-ok))]" : connecting ? "animate-pulse bg-warn" : "bg-ink-dim/50"}`} />
+          </span>
           <span className="text-[11px] font-bold uppercase tracking-[0.12em]">{channelLabel}</span>
           <span className="text-[10px] text-ink-dim">
             {connecting ? t("serial.connecting") : source ? t("serial.connected") : t("serial.disconnected")}
@@ -826,8 +911,8 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
             aria-label={`${channelLabel} ${t("serial.lineEnding")}`}
             className="h-7 rounded-md border border-line/80 bg-panel px-1.5 text-[10px] font-medium text-ink outline-none transition-colors hover:bg-panel2"
           >
-            <option value="crlf">CRLF</option>
             <option value="cr">CR</option>
+            <option value="crlf">CRLF</option>
             <option value="lf">LF</option>
           </select>
           <button type="button" onClick={() => setFontSize((size) => Math.max(MIN_FONT_SIZE, size - 1))} className="grid h-7 w-7 place-items-center rounded-md text-ink-dim transition-colors hover:bg-panel2 hover:text-ink" aria-label={`${channelLabel} ${t("serial.fontDown")}`}><Minus size={13} /></button>
@@ -885,18 +970,24 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
           role="application"
           aria-label={`${channelLabel} ${t("serial.terminalAria")}`}
           tabIndex={0}
-          onClick={() => terminalHostRef.current?.focus()}
-          onKeyDownCapture={handleTerminalKeyDown}
-          onPasteCapture={handleTerminalPaste}
+          onClick={() => termRef.current?.focus()}
           className={`${compact ? "h-[clamp(400px,52vh,620px)]" : "h-[clamp(480px,62vh,760px)]"} terminal-host min-h-0 min-w-0 shrink-0 overflow-hidden bg-terminal p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand/40 fullscreen:h-auto fullscreen:flex-1 [&_.xterm]:h-full [&_.xterm]:max-w-full`}
         />
 
         <div className="flex min-h-9 flex-wrap items-center gap-x-4 gap-y-1 border-t border-line/70 bg-terminal px-3 py-1.5 text-[10px] text-ink-dim transition-colors">
-          <span>{automationActive ? t("serial.automationInputLocked") : source ? t("serial.directInput") : t("serial.connectToInput")}</span>
+          <span>{
+            automationActive
+              ? t("serial.automationInputLocked")
+              : brokerWriteLocked
+                ? t("serial.brokerInputLocked")
+                : source
+                  ? t("serial.directInput")
+                  : t("serial.connectToInput")
+          }</span>
           <span className="font-mono" title={t("serial.logCacheHint")}>{t("serial.logCached")} {formatBytes(cachedLogBytes)}</span>
           <span className="ml-auto font-mono">RX {rxBytes.toLocaleString()}</span>
           <span className="font-mono">TX {txBytes.toLocaleString()}</span>
-          <button type="button" disabled={!source || automationActive} onClick={() => void enqueueSerial("\u0003")} className="rounded border border-line/80 px-1.5 py-0.5 font-mono text-ink-dim transition-colors hover:bg-panel2 hover:text-ink disabled:opacity-30">Ctrl-C</button>
+          <button type="button" disabled={!source || inputLocked} onClick={() => void enqueueSerial("\u0003")} className="rounded border border-line/80 px-1.5 py-0.5 font-mono text-ink-dim transition-colors hover:bg-panel2 hover:text-ink disabled:opacity-30">Ctrl-C</button>
         </div>
       </div>
     </section>

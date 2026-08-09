@@ -1773,7 +1773,7 @@ export function LogicAnalyzerCard({
                       aria-selected={selected}
                       onClick={() => setDecoderProtocol(protocolOption.id)}
                       className={`flex min-h-9 flex-1 items-center justify-center rounded-md px-3 text-xs font-medium transition-colors ${
-                        selected ? "bg-brand text-white" : "text-ink-dim hover:text-ink"
+                        selected ? "bg-brand text-on-brand" : "text-ink-dim hover:text-ink"
                       }`}
                     >
                       {protocolOption.label}

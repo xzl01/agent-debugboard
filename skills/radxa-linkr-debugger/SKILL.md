@@ -1,6 +1,6 @@
 ---
 name: radxa-linkr-debugger
-description: Use curl or the optional Radxa Linkr Debugger CLI to diagnose and operate target-board power outputs, ADC current monitors, safe GPIOs, TF/SD routing, firmware-owned watchdog recovery, and RP2350 BOOTSEL mode over USB NCM HTTP while keeping USB CDC ACM available for fallback cmdline access.
+description: Use the local Radxa Linkr Debugger MCP server, curl, or the optional CLI to inspect and operate target power, ADC, routing and shared UART sessions, with explicit fallback workflows for watchdog recovery and RP2350 BOOTSEL over USB NCM/CDC.
 ---
 
 # Radxa Linkr Debugger
@@ -9,15 +9,22 @@ The active hardware target is G3 with RP2350A. G2/RP2040 is retired and must
 not be built, flashed, or treated as a supported fallback. RP2354 requires a
 dedicated board definition and HIL validation before use with this skill.
 
-Prefer direct HTTP requests with `curl` for Agent-side automation. The board
-enumerates as a USB NCM network interface and exposes its control API at the
-default device URL `http://172.29.203.1`.
+Prefer the repository's local stdio MCP server for Agent-side status, ADC,
+confirmed power/route control, and target UART work when its tools are
+available. MCP shares the host Serial Broker with the Web UI and provides
+cursor-based reads, bounded waits, and short exclusive writes. See
+`./doc/mcp-server.md` from the repository root.
+
+Use direct HTTP requests with `curl` as the lowest-common-denominator fallback.
+The board enumerates as a USB NCM network interface and exposes its control API
+at the default device URL `http://172.29.203.1`.
 
 Production firmware also serves its embedded Web control panel from the root of
-that URL. The page talks to the same-origin `/api/v1` HTTP and WebSocket paths;
-Agent automation should continue to use curl because it is deterministic and
-machine-readable. The HTTP listener is bound to the NCM-local `172.29.203.1`
-address rather than every network interface.
+that URL. The page talks to the same-origin `/api/v1` HTTP and WebSocket paths.
+MCP is the preferred Agent adapter when available; curl remains deterministic
+and machine-readable when the adapter is not installed. The HTTP listener is
+bound to the NCM-local `172.29.203.1` address rather than every network
+interface.
 
 The board also runs a DHCPv4 server on the NCM link so the host can acquire a
 compatible IPv4 address automatically. mDNS is not required for the normal
@@ -38,11 +45,57 @@ dedicated slot URLs under `/api/v1/ws/<slot>`. If you rebuild the CLI after
 websocket lifecycle fixes, verify repeated open/close cycles and concurrent
 subscriber behavior with the freshly built skill-local binary.
 
-> **Agent automation rule**: always try `curl` HTTP requests first. Only
-> download or build the CLI binary when `curl` is unavailable (not installed)
-> or when the task specifically needs the interactive TUI or `doctor`
-> diagnostic. The HTTP REST API at `http://172.29.203.1` is the canonical
-> automation path.
+> **Agent automation rule**: use the `linkr_*` MCP tools first when they are
+> installed. Reuse serial `next_cursor` values and prefer
+> `linkr_serial_command` over repeated full-log reads. Use the default compact
+> `linkr_board_status` result unless GPIO or complete monitoring diagnostics are
+> needed, then pass `detail: "full"`. Fall back to `curl` when
+> MCP is unavailable, and use the CLI for the interactive TUI, `doctor`, or
+> advanced batch workflows. OTA, BOOTSEL, EDL/MASKROM and arbitrary GPIO
+> mutation are intentionally outside MCP v1 and must use the explicit
+> workflows below.
+
+## MCP Fast Path
+
+The primary local MCP entry is
+`./host-tools/target/release/linkr-host mcp`. Build it once with
+`cargo build --release --manifest-path ./host-tools/Cargo.toml`; the command
+completes the MCP handshake immediately, then starts and supervises the
+loopback Web UI, device gateway and shared Serial Broker in the background.
+Temporary Host startup failures use bounded exponential retry and must not be
+treated as a permanently disabled MCP server. Client configuration and the
+complete tool contract are in `./doc/mcp-server.md`. The Node adapter is
+migration-only and must not be preferred for new installations.
+
+- Read-only: `linkr_board_status`, `linkr_adc_read`, `linkr_serial_status`,
+  `linkr_serial_read`, `linkr_serial_expect`.
+- Confirmed hardware state: `linkr_power_set`, `linkr_switch_route`; always pass
+  `confirm: true` only after checking the requested rail/route and target.
+- Shared UART: call `linkr_serial_connect`, then use cursors returned by
+  `linkr_serial_read`/`linkr_serial_expect`. Use `linkr_serial_login` for target
+  login without returning the password. Prefer `linkr_serial_shell_command`
+  when a POSIX shell exit code is needed; keep `linkr_serial_command` for
+  bootloaders and non-shell consoles. Commands and login claim the channel only
+  for their operation and release it automatically. Shell-command exit probes
+  are private Broker bookkeeping: the MCP owner receives them for parsing, but
+  shared Web terminals and logs receive only the target command/output.
+- Cleanup: call `linkr_serial_disconnect` when the Agent no longer needs the
+  subscription. Other Web/Agent subscribers remain connected.
+- Recovery: when a read-only tool returns `host_temporarily_unavailable`, honor
+  `error.details.retry_after_ms` and retry only when
+  `error.details.retryable` is true. Never automatically replay power, route or
+  serial-write operations. A closed cached Serial Broker connection is replaced
+  on the next tool call while preserving monotonic channel cursor checkpoints.
+  Treat `serial_cursor_expired` and `serial_cursor_ahead` as reset boundaries;
+  resume only from the returned earliest/latest cursor after checking context.
+- Visibility: provide an MCP progress token for serial expect, login and command
+  calls. The server emits start, one-second heartbeat and completion events
+  without exposing passwords or full commands. If a client does not display MCP
+  progress, use the final structured result and stderr diagnostics.
+
+MCP results use `radxa-linkr-debugger.mcp.v1`; embedded board responses retain
+`radxa-linkr-debugger.v1`. Treat `isError`, `error.code`, and invalid serial
+cursors as structured control flow, not as text to scrape.
 
 The examples below assume this skill is checked into the current repository at
 `./skills/radxa-linkr-debugger` and commands are run from the repository root. If
@@ -54,6 +107,7 @@ skill at that path.
 - Default device URL: `http://172.29.203.1`
 - Optional CLI binary (macOS/Linux): `./skills/radxa-linkr-debugger/scripts/bin/radxa-linkr-debuggerctl`
 - Optional CLI binary (Windows): `./skills/radxa-linkr-debugger/scripts/bin/radxa-linkr-debuggerctl.exe`
+- Primary Host/MCP binary from a source checkout: `./host-tools/target/release/linkr-host`
 
 ## Repository Change Rules
 
@@ -166,8 +220,8 @@ the canonical full build.
        security for that page; it does not remove the user gesture or chooser
        requirement.
    - **Bridge fallback**: when the override is not enabled or not available,
-       keep the board page open, run `npm run device-bridge` in a separate
-       terminal, and use the page's **Bridge** button.
+       keep the board page open, run `npm run build && npm run host` from
+       `web/` in a separate terminal, and use the page's **Bridge** button.
 
    When testing the board-hosted UI with Playwright, distinguish between two
    failure modes. A `page.goto` failure or resource-load timeout points to a
@@ -1172,7 +1226,7 @@ SHA-256 locally in the browser (Web Crypto API with pure-JS fallback), uploads
 via the same `/api/v1/ota/*` endpoints, and shows raw firmware OTA state through
 polling. The UI never auto-confirms; the firmware ~16-second watchdog gate is
 the only auto-confirm path. When running the UI from GitHub Pages, start the
-device-bridge gateway first (`npm run device-bridge`) so the browser can reach
+Rust Host gateway first (`npm run build && npm run host`) so the browser can reach
 the board OTA endpoints over the HTTPS-to-HTTP bridge. The gateway permits the
 OTA-specific headers (`X-Linkr-Ota-Size`, `X-Linkr-Ota-Sha256`) in CORS
 responses.

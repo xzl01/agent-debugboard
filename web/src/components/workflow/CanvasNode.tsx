@@ -452,7 +452,7 @@ export const WorkflowNode = memo(function WorkflowNode({
             onClick={() => onToggleGroup(index)}
             className={`grid h-5 w-5 shrink-0 place-items-center rounded border text-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 ${
               groupSelected
-                ? "border-brand bg-brand text-white"
+                ? "border-brand bg-brand text-on-brand"
                 : "border-line bg-panel2 text-transparent hover:border-brand/60"
             }`}
           >

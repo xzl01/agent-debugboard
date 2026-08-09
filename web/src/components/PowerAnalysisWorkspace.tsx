@@ -118,7 +118,7 @@ export function PowerAnalysisWorkspace({
                   aria-selected={metric === value}
                   onClick={() => setMetric(value)}
                   className={`inline-flex min-h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium transition-colors ${
-                    metric === value ? "bg-brand text-white" : "text-ink-dim hover:text-ink"
+                    metric === value ? "bg-brand text-on-brand" : "text-ink-dim hover:text-ink"
                   }`}
                 >
                   {value === "current" ? <Activity size={12} /> : <Zap size={12} />}

@@ -44,6 +44,14 @@ class VersionSyncTest(unittest.TestCase):
             f'[[package]]\nname = "dependency"\nversion = "1.0.0"\n\n[[package]]\nname = "radxa-linkr-debuggerctl-ng"\nversion = "{version}"\n',
         )
         self.write(
+            "host-tools/Cargo.toml",
+            f'[package]\nname = "radxa-linkr-host"\nversion = "{version}"\n\n[dependencies]\n',
+        )
+        self.write(
+            "host-tools/Cargo.lock",
+            f'[[package]]\nname = "dependency"\nversion = "1.0.0"\n\n[[package]]\nname = "radxa-linkr-host"\nversion = "{version}"\n',
+        )
+        self.write(
             "web/package.json",
             json.dumps({"name": "web", "version": version}, indent=2) + "\n",
         )
@@ -107,7 +115,7 @@ class VersionSyncTest(unittest.TestCase):
             "check", "--tag", "v0.3.0-rc.1"
         )
         self.assertEqual(result, 0)
-        self.assertIn("across 8 fields", stdout)
+        self.assertIn("across 10 fields", stdout)
         self.assertEqual(stderr, "")
 
     def test_set_rejects_leading_v_without_writing(self) -> None:

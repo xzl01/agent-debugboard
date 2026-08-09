@@ -16,6 +16,8 @@
   --c-scroll: 148 163 184;
   --c-terminal: 255 255 255;
   --c-terminal-ink: 15 23 42;
+  --c-on-brand: 255 255 255;
+  --c-on-danger: 255 255 255;
   color-scheme: light;
 }
 
@@ -33,6 +35,46 @@
   --c-scroll: 71 85 105;
   --c-terminal: 7 9 12;
   --c-terminal-ink: 226 232 240;
+  --c-on-brand: 15 23 42;
+  --c-on-danger: 15 23 42;
+  color-scheme: dark;
+}
+
+[data-theme="ocean"] {
+  --c-bg: 3 16 28;
+  --c-panel: 7 24 39;
+  --c-panel2: 11 33 52;
+  --c-line: 42 76 101;
+  --c-brand: 56 189 248;
+  --c-ok: 52 211 153;
+  --c-warn: 250 204 21;
+  --c-danger: 251 113 133;
+  --c-ink: 230 245 255;
+  --c-ink-dim: 151 181 204;
+  --c-scroll: 65 101 127;
+  --c-terminal: 2 12 22;
+  --c-terminal-ink: 208 237 250;
+  --c-on-brand: 3 16 28;
+  --c-on-danger: 3 16 28;
+  color-scheme: dark;
+}
+
+[data-theme="contrast"] {
+  --c-bg: 0 0 0;
+  --c-panel: 9 9 9;
+  --c-panel2: 20 20 20;
+  --c-line: 150 150 150;
+  --c-brand: 0 112 240;
+  --c-ok: 96 255 136;
+  --c-warn: 255 209 102;
+  --c-danger: 255 100 100;
+  --c-ink: 255 255 255;
+  --c-ink-dim: 220 220 220;
+  --c-scroll: 190 190 190;
+  --c-terminal: 0 0 0;
+  --c-terminal-ink: 255 255 255;
+  --c-on-brand: 255 255 255;
+  --c-on-danger: 0 0 0;
   color-scheme: dark;
 }
 
@@ -93,6 +135,26 @@ button {
 }
 .animate-fade-up {
   animation: fade-up 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes serial-activity-ripple {
+  0% {
+    opacity: 0.52;
+    transform: scale(0.82);
+  }
+  38% {
+    opacity: 0.28;
+    transform: scale(1.8);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.8);
+  }
+}
+
+.serial-activity-ripple {
+  animation: serial-activity-ripple 720ms cubic-bezier(0.25, 1, 0.5, 1) both;
+  will-change: opacity, transform;
 }
 
 @media (prefers-reduced-motion: reduce) {

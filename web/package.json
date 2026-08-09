@@ -9,10 +9,14 @@
     "build": "tsc -b && vite build --config vite.config.ts && node scripts/build-decoder-wasm.mjs",
     "build:firmware": "tsc -b && vite build --config vite.config.ts --mode firmware --base=/ && node scripts/build-decoder-wasm.mjs && node scripts/verify-firmware-build.mjs",
     "preview": "vite preview --config vite.config.ts --host",
+    "host": "cargo run --quiet --manifest-path ../host-tools/Cargo.toml -- serve --web-root dist",
     "device-bridge": "node serial-bridge.mjs",
-    "serial-bridge": "node serial-bridge.mjs"
+    "serial-bridge": "node serial-bridge.mjs",
+    "mcp": "cargo run --quiet --manifest-path ../host-tools/Cargo.toml -- mcp --web-root dist",
+    "mcp:node": "node scripts/linkr-mcp-server.mjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
     "@types/jszip": "^3.4.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
@@ -23,9 +27,11 @@
     "react-dom": "^18.3.1",
     "serialport": "^12.0.0",
     "tailwind-merge": "^2.5.2",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
     "@types/node": "^20.19.43",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.0",

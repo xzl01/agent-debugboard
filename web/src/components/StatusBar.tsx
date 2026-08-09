@@ -7,8 +7,6 @@ import {
   Thermometer,
   MemoryStick,
   Clock,
-  Sun,
-  Moon,
   Languages,
   ShieldCheck,
   Upload,
@@ -20,7 +18,7 @@ import type { BoardSnapshot, MemoryPressureSnapshot } from "@/lib/types";
 import type { OtaStatus } from "@/lib/ota";
 import { cn, formatBytes, formatUptime } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
-import { useTheme } from "@/lib/theme";
+import { ThemeMenu } from "./ThemeMenu";
 
 const formatPctX100 = (value?: number): string =>
   value == null ? "—" : `${(value / 100).toFixed(2)} %`;
@@ -56,7 +54,6 @@ export function StatusBar({
   ota?: OtaStatus | null;
 }) {
   const { t, lang, setLang } = useI18n();
-  const { theme, toggle: toggleTheme } = useTheme();
 
   const { temperature: temp, cpu, heap, memory, runtime } = snapshot.monitoring;
   const uptime = runtime.uptime_seconds;
@@ -174,18 +171,7 @@ export function StatusBar({
           >
             <Languages size={16} /> <span className="hidden sm:inline">{t("lang.toggle")}</span>
           </Button>
-          <Button
-            variant="ghost"
-            className="px-2.5"
-            onClick={toggleTheme}
-            title={t("theme.toggle")}
-            aria-label={`${t("theme.toggle")}: ${theme === "dark" ? t("theme.light") : t("theme.dark")}`}
-          >
-            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-            <span className="hidden sm:inline">
-              {theme === "dark" ? t("theme.light") : t("theme.dark")}
-            </span>
-          </Button>
+          <ThemeMenu />
 
           <Button
             variant="ghost"
