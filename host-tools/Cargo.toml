@@ -9,21 +9,29 @@ description = "Local Web, device gateway, serial broker and MCP host for Radxa L
 name = "linkr-host"
 path = "src/main.rs"
 
+[[bin]]
+name = "linkr-tray"
+path = "src/bin/linkr-tray.rs"
+
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
+ctrlc = { version = "3", features = ["termination"] }
 futures-util = "0.3"
+fs2 = "0.4"
 http = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 regex = "1"
-rmcp = { version = "3.1", features = ["server", "transport-io"] }
+rmcp = { version = "3.1", features = ["server", "transport-io", "transport-streamable-http-server"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+time = { version = "0.3", features = ["formatting", "macros"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 tokio-serial = "5"
 tokio-tungstenite = "0.29"
 tower-http = { version = "0.6", features = ["fs", "trace"] }
@@ -31,7 +39,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+dirs = "6"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tao = "0.34"
+tray-icon = { version = "0.24", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tao = "0.34"
+tray-icon = { version = "0.24", default-features = false, features = ["gtk"] }
 
 [dev-dependencies]
 tempfile = "3"
-rmcp = { version = "3.1", features = ["client", "transport-child-process"] }
+rmcp = { version = "3.1", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }

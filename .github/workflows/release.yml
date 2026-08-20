@@ -196,12 +196,119 @@ jobs:
           path: rust-release/${{ matrix.asset_name }}
           if-no-files-found: error
 
+  host-desktop-release:
+    name: Build unified desktop Host archives
+    needs:
+      - validation
+      - version-gate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_id: Linux-amd64
+            asset_name: radxa-linkr-desktop_linux_amd64.tar.gz
+          - os: macos-latest
+            artifact_id: macOS-arm64
+            asset_name: radxa-linkr-desktop_darwin_arm64.tar.gz
+          - os: windows-latest
+            artifact_id: Windows-amd64
+            asset_name: radxa-linkr-desktop_windows_amd64.zip
+
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            release_tag="$REQUESTED_TAG"
+          else
+            release_tag="$GITHUB_REF_NAME"
+          fi
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout application
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          path: app
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/web/package-lock.json
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev libgtk-3-dev libayatana-appindicator3-dev
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            app/host-tools
+            app/cmd-ng
+
+      - name: Build Web, Host, tray and CLI
+        shell: bash
+        run: |
+          suffix=""
+          if [ "${{ runner.os }}" = "Windows" ]; then suffix=".exe"; fi
+          npm --prefix app/web ci
+          npm --prefix app/web run build
+          cargo build --locked --release --manifest-path app/host-tools/Cargo.toml
+          cargo build --locked --release --manifest-path app/cmd-ng/Cargo.toml
+          "app/host-tools/target/release/linkr-host$suffix" --version
+          "app/host-tools/target/release/linkr-tray$suffix" --version
+          "app/cmd-ng/target/release/radxa-linkr-debuggerctl$suffix" --version
+
+      - name: Assemble desktop bundle
+        shell: bash
+        run: |
+          suffix=""
+          if [ "${{ runner.os }}" = "Windows" ]; then suffix=".exe"; fi
+          root="desktop-release/radxa-linkr-desktop"
+          mkdir -p "$root/bin" "$root/share/radxa-linkr-debugger/web"
+          cp "app/host-tools/target/release/linkr-host$suffix" "$root/bin/"
+          cp "app/host-tools/target/release/linkr-tray$suffix" "$root/bin/"
+          cp "app/cmd-ng/target/release/radxa-linkr-debuggerctl$suffix" "$root/bin/"
+          cp -R app/web/dist/. "$root/share/radxa-linkr-debugger/web/"
+          cp app/scripts/install-host.sh "$root/install.sh"
+          cp app/scripts/install-host.ps1 "$root/install.ps1"
+
+      - name: Package desktop archive
+        if: runner.os != 'Windows'
+        run: tar -C desktop-release -czf desktop-release/${{ matrix.asset_name }} radxa-linkr-desktop
+
+      - name: Package desktop archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path desktop-release\radxa-linkr-desktop -DestinationPath desktop-release\${{ matrix.asset_name }}
+
+      - name: Upload desktop archive
+        uses: actions/upload-artifact@v6
+        with:
+          name: desktop-release-${{ matrix.artifact_id }}
+          path: desktop-release/${{ matrix.asset_name }}
+          if-no-files-found: error
+
   release:
     name: Build and publish release assets
     runs-on: ubuntu-latest
     needs:
       - version-gate
       - rust-cli-release
+      - host-desktop-release
 
     steps:
       - name: Resolve release tag
@@ -279,6 +386,13 @@ jobs:
           path: rust-release-downloads
           merge-multiple: true
 
+      - name: Download desktop release archives
+        uses: actions/download-artifact@v6
+        with:
+          pattern: desktop-release-*
+          path: desktop-release-downloads
+          merge-multiple: true
+
       - name: Package skill bundle
         working-directory: app
         run: |
@@ -293,6 +407,8 @@ jobs:
           cp ../release-assets/radxa-linkr-debugger-rp2350-ota.bin dist/release/
           cp ../rust-release-downloads/radxa-linkr-debuggerctl-rust_* \
             dist/release/
+          cp ../desktop-release-downloads/radxa-linkr-desktop_* \
+            dist/release/
           cp dist/skill-bundle/skills-radxa-linkr-debugger.tar.gz dist/release/
           cd dist/release
           sha256sum \
@@ -300,6 +416,7 @@ jobs:
             radxa-linkr-debugger-rp2350.map \
             radxa-linkr-debugger-rp2350-ota.bin \
             radxa-linkr-debugger-rp2350.uf2 \
+            radxa-linkr-desktop_* \
             radxa-linkr-debuggerctl-rust_* \
             skills-radxa-linkr-debugger.tar.gz > SHA256SUMS.txt
 
@@ -312,6 +429,8 @@ jobs:
           Included assets:
           - RP2350 firmware: combined initial/recovery UF2, OTA BIN, ELF, and MAP
           - Primary Rust host CLI/TUI archives: radxa-linkr-debuggerctl-rust_{os}_{arch}
+          - Unified desktop archives: Web UI, Serial Broker, resident HTTP MCP, CLI, tray supervisor, and per-user installer
+          - Linux desktop packages require GTK 3 and Ayatana AppIndicator 3 runtime libraries
           - Linux amd64 and arm64 archives are statically linked with musl
           - Agent skill bundle: skills-radxa-linkr-debugger.tar.gz
           - SHA256SUMS.txt for release asset verification

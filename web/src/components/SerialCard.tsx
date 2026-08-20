@@ -25,6 +25,7 @@ import {
   type SerialChannelStatus,
 } from "./SerialTerminalPane";
 import { useI18n } from "@/lib/i18n";
+import { HostSerialLogs } from "./HostSerialLogs";
 
 const CH347_VID = 0x1a86;
 const CHANNELS: SerialChannelId[] = ["uart0", "uart1"];
@@ -484,6 +485,8 @@ export const SerialCard = forwardRef<
             </div>
           ))}
         </div>
+
+        <HostSerialLogs />
 
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-ink-dim">
           <span>

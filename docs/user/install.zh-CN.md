@@ -1,6 +1,55 @@
-# 安装主机侧 CLI
+# 安装主机侧工具
 
 [English](install.md)
+
+## 推荐：统一桌面安装
+
+桌面 release 包一次安装 Web UI、Serial Broker、常驻 HTTP MCP、CLI/TUI 和
+托盘监督器：
+
+| 系统 / CPU | 统一桌面包 |
+| --- | --- |
+| Windows x64 | `radxa-linkr-desktop_windows_amd64.zip` |
+| Linux x64 / AMD64 | `radxa-linkr-desktop_linux_amd64.tar.gz` |
+| macOS Apple Silicon | `radxa-linkr-desktop_darwin_arm64.tar.gz` |
+
+从 GitHub Release 下载后先用 `SHA256SUMS.txt` 校验，解压并运行包内安装器：
+
+```sh
+./install.sh
+```
+
+Windows PowerShell：
+
+```powershell
+.\install.ps1
+```
+
+安装器不使用 sudo、不修改 PATH，只写入当前用户的应用数据目录，并注册登录
+自启动。启动后托盘图标用绿色、黄色、红色显示 Web/Broker/MCP 的运行、启动中、
+不可用状态。菜单可打开 Web 控制台、查看 Host JSON 状态和 UART 归档、重启托管
+服务或退出。通过 Bridge 打开的 UART 默认会把原始 RX 归档到本机；直接 Web Serial
+仍只保存在浏览器内。默认按 64 MiB 分段，未固定日志总配额 2 GiB，保留 30 天。
+
+常驻入口：
+
+- Web：<http://127.0.0.1:8787/>
+- MCP（Streamable HTTP）：<http://127.0.0.1:8787/mcp>
+- 状态：<http://127.0.0.1:8787/host/api/v1/status>
+- UART 归档状态：<http://127.0.0.1:8787/host/api/v1/serial-logging/status>
+
+Linux 桌面包需要系统提供 GTK 3 和 Ayatana AppIndicator 3 运行库。无桌面托盘的
+服务器环境可直接运行安装目录中的 `linkr-host serve`。
+
+从源码 checkout 安装同一套内容：
+
+```sh
+./scripts/install-host.sh
+```
+
+PowerShell 使用 `./scripts/install-host.ps1`。可加 `--no-start`、
+`--no-autostart` 或 `--prefix DIR`；PowerShell 对应 `-NoStart`、
+`-NoAutostart` 和 `-Prefix`。
 
 ## 从 GitHub Releases 下载
 
@@ -93,6 +142,50 @@ Windows 上请把 `radxa-linkr-debuggerctl.exe` 复制到 `$env:PATH` 已包含�
 cargo build --manifest-path cmd-ng/Cargo.toml
 ./cmd-ng/target/debug/radxa-linkr-debuggerctl --help
 ```
+
+## 手动运行 Web UI、共享 Serial Broker 与 MCP
+
+开发者也可以从 checkout 手动构建：
+
+```sh
+npm --prefix web ci
+npm --prefix web run build
+cargo build --release --manifest-path host-tools/Cargo.toml
+```
+
+启动组合的 Web Host、板端网关和共享 Serial Broker：
+
+```sh
+host-tools/target/release/linkr-host serve
+```
+
+然后打开 <http://127.0.0.1:8787/>。如需同时检查 Web 资产、本地 Host、
+板端 API 和 CH347F 串口发现，运行：
+
+```sh
+host-tools/target/release/linkr-host doctor
+```
+
+`serve` 同时提供常驻 MCP 地址 <http://127.0.0.1:8787/mcp>。只支持 stdio
+的 Agent 客户端可以继续用 `mcp` 参数启动兼容适配器：
+
+```sh
+host-tools/target/release/linkr-host mcp
+```
+
+Codex/OpenCode 的 HTTP 和 stdio 配置参见 [MCP 配置指南](../../doc/mcp-server.md)。
+当前打包和首次启动路径见
+[安装流程图](../../doc/current-installation-flow.png)。
+
+## 安装或更新调试器固件
+
+全新 ROM BOOTSEL 线刷只能使用包含 MCUboot 和应用的合成完整文件
+`radxa-linkr-debugger-rp2350.uf2`。不得用仅应用的 `zephyr.uf2`
+执行 ROM BOOTSEL 线刷。已安装 MCUboot 的设备可使用
+`radxa-linkr-debugger-rp2350-ota.bin` 更新，然后执行 OTA test 和 confirm。
+
+完整恢复和 OTA 边界参见
+[固件刷写流程](../../AGENTS.md#flashing-procedures)。
 
 ## 首次使用
 
