@@ -106,7 +106,7 @@ npm --prefix web run host
 
 The Pages build connects to `http://127.0.0.1:8787/api/v1`. By default, the
 gateway forwards HTTP and WebSocket traffic directly to the firmware service at
-`http://172.29.203.1:8080` and supplies the CORS and Private Network Access
+`http://172.29.203.1` and supplies the CORS and Private Network Access
 headers needed by the browser. Override the upstream with `LINKR_BOARD_URL`.
 The Rust Host talks directly to the USB-NCM address on macOS and does not need
 the Node/Ruby loopback workaround used by the legacy gateway.

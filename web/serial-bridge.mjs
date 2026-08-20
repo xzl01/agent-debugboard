@@ -19,7 +19,7 @@ import {
 
 const BRIDGE_HOST = "127.0.0.1";
 const BRIDGE_PORT = Number(process.env.LINKR_BRIDGE_PORT || 8787);
-const configuredBoardHttp = process.env.LINKR_BOARD_URL || "http://172.29.203.1:8080";
+const configuredBoardHttp = process.env.LINKR_BOARD_URL || "http://172.29.203.1";
 const boardForwarder = await startNcmLoopback(configuredBoardHttp);
 const BOARD_HTTP = boardForwarder.target;
 const BOARD_WS = BOARD_HTTP.replace(/^http/, "ws");
