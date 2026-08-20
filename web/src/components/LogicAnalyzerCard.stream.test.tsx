@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LogicAnalyzerCard } from "./LogicAnalyzerCard";
+import { SigrokFrameType } from "@/lib/sigrokClient";
 
 const sigrokMocks = vi.hoisted(() => ({
   ensureConnected: vi.fn(),
@@ -40,7 +41,10 @@ function deferred<T>() {
 }
 
 describe("LogicAnalyzerCard stream startup", () => {
-  afterEach(() => vi.clearAllMocks());
+  afterEach(() => {
+    vi.clearAllMocks();
+    document.body.replaceChildren();
+  });
 
   it("locks the stream action before awaiting the live-session connection", () => {
     const connection = deferred<void>();
@@ -67,6 +71,124 @@ describe("LogicAnalyzerCard stream startup", () => {
     );
     expect((armButton as HTMLButtonElement).disabled).toBe(true);
     expect(Array.from(host.querySelectorAll("select")).every((select) => select.disabled)).toBe(true);
+    act(() => root.unmount());
+  });
+
+  it("starts in capture mode and explains why decode is unavailable", () => {
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    act(() => root.render(<LogicAnalyzerCard />));
+
+    const tabs = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    expect(tabs).toHaveLength(2);
+    expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+    expect(tabs[1]?.disabled).toBe(true);
+    expect(tabs[1]?.title).toBe("logicAnalyzer.mode.decodeUnavailable");
+    const capabilityDetails = Array.from(host.querySelectorAll("details")).find((item) =>
+      item.textContent?.includes("logicAnalyzer.capabilityDetails")
+    );
+    expect(capabilityDetails).toBeDefined();
+    expect(capabilityDetails?.open).toBe(false);
+    act(() => root.unmount());
+    expect(sigrokMocks.stop).not.toHaveBeenCalled();
+    expect(sigrokMocks.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens protocol decode after a bounded capture and can return without clearing it", async () => {
+    sigrokMocks.ensureConnected.mockResolvedValue(undefined);
+    sigrokMocks.configure.mockResolvedValue({ actualRateKhz: 1000 });
+    sigrokMocks.start.mockResolvedValue(undefined);
+    sigrokMocks.stop.mockResolvedValue(undefined);
+    sigrokMocks.readCaptureFrame.mockResolvedValueOnce({
+      type: SigrokFrameType.DATA,
+      id: 1,
+      meta: { sampleIndex: 0, sampleCount: 4, compression: 0, channelMask: 0x0008 },
+      samples: new Uint8Array([0, 8, 0, 8]),
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    act(() => root.render(<LogicAnalyzerCard />));
+
+    const postSamplesLabel = Array.from(host.querySelectorAll("label")).find((label) =>
+      label.textContent?.includes("logicAnalyzer.postSamples")
+    );
+    const postSamplesInput = postSamplesLabel?.querySelector("input");
+    await act(async () => {
+      if (postSamplesInput) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+        setter?.call(postSamplesInput, "4");
+        postSamplesInput.dispatchEvent(new Event("input", { bubbles: true }));
+        postSamplesInput.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await Promise.resolve();
+    });
+
+    const armButton = Array.from(host.querySelectorAll("button")).find((candidate) =>
+      candidate.textContent?.includes("logicAnalyzer.arm")
+    );
+    await act(async () => {
+      armButton?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const tabs = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    expect(tabs[1]?.disabled).toBe(false);
+    expect(tabs[1]?.getAttribute("aria-selected")).toBe("true");
+    expect(host.textContent).toContain("logicAnalyzer.decoder.title");
+
+    const newCaptureButton = Array.from(host.querySelectorAll("button")).find((candidate) =>
+      candidate.textContent?.includes("logicAnalyzer.returnCapture")
+    );
+    act(() => newCaptureButton?.click());
+    expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+    expect(tabs[1]?.disabled).toBe(false);
+    act(() => root.unmount());
+  });
+
+  it("treats bounded capture cancellation as intentional and locks post-sample edits", async () => {
+    const frame = deferred<null>();
+    sigrokMocks.ensureConnected.mockResolvedValue(undefined);
+    sigrokMocks.configure.mockResolvedValue({ actualRateKhz: 1000 });
+    sigrokMocks.start.mockResolvedValue(undefined);
+    sigrokMocks.stop.mockResolvedValue(undefined);
+    sigrokMocks.readCaptureFrame.mockReturnValue(frame.promise);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    act(() => root.render(<LogicAnalyzerCard />));
+
+    const armButton = Array.from(host.querySelectorAll("button")).find((candidate) =>
+      candidate.textContent?.includes("logicAnalyzer.arm")
+    );
+    await act(async () => {
+      armButton?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const postSamplesLabel = Array.from(host.querySelectorAll("label")).find((label) =>
+      label.textContent?.includes("logicAnalyzer.postSamples")
+    );
+    expect(postSamplesLabel?.querySelector("input")?.disabled).toBe(true);
+    const cancelButton = Array.from(host.querySelectorAll("button")).find((candidate) =>
+      candidate.textContent?.includes("logicAnalyzer.cancel")
+    );
+    expect(cancelButton).toBeDefined();
+
+    await act(async () => {
+      cancelButton?.click();
+      await Promise.resolve();
+      frame.resolve(null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(host.textContent).not.toContain("Timed out waiting for capture completion");
+    expect(host.textContent).not.toContain("Trigger timeout");
+    expect(sigrokMocks.stop).toHaveBeenCalled();
     act(() => root.unmount());
   });
 });

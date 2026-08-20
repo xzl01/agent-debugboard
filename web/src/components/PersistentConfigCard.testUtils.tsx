@@ -7,6 +7,7 @@ import {
   type UsePersistentConfigOptions,
 } from "@/hooks/usePersistentConfig";
 import { LanguageProvider, type Lang } from "@/lib/i18n";
+import type { AutomationTaskControl } from "@/lib/automationTask";
 import type {
   PersistentConfig,
   PersistentConfigItem,
@@ -104,11 +105,16 @@ export type HookedCardView = {
   readonly close: () => void;
 };
 
-function render(root: Root, next: UsePersistentConfig, connected: boolean): void {
+function render(
+  root: Root,
+  next: UsePersistentConfig,
+  connected: boolean,
+  taskControl?: AutomationTaskControl,
+): void {
   act(() => {
     root.render(
       <LanguageProvider>
-        <PersistentConfigCard state={next} connected={connected} />
+        <PersistentConfigCard state={next} connected={connected} taskControl={taskControl} />
       </LanguageProvider>
     );
   });
@@ -116,16 +122,22 @@ function render(root: Root, next: UsePersistentConfig, connected: boolean): void
 
 export function mount(
   initial: UsePersistentConfig,
-  options: { readonly connected?: boolean; readonly lang?: Lang } = {}
+  options: {
+    readonly connected?: boolean;
+    readonly lang?: Lang;
+    readonly taskControl?: AutomationTaskControl;
+  } = {}
 ): CardView {
   localStorage.setItem("lang", options.lang ?? "en");
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
-  render(root, initial, options.connected ?? true);
+  render(root, initial, options.connected ?? true, options.taskControl);
   return {
     host,
-    update: (next, connected = options.connected ?? true) => render(root, next, connected),
+    update: (next, connected = options.connected ?? true) => (
+      render(root, next, connected, options.taskControl)
+    ),
     close: () => act(() => {
       root.unmount();
       host.remove();

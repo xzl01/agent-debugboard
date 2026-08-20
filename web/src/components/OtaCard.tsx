@@ -21,6 +21,7 @@ import {
 import { Badge, Button, Card, Stat } from "./ui";
 import { useI18n } from "@/lib/i18n";
 import { formatBytes } from "@/lib/utils";
+import type { AutomationTaskControl } from "@/lib/automationTask";
 import {
   OTA_AUTO_CONFIRM_MS,
   canConfirmOta,
@@ -73,12 +74,26 @@ function statusTone(status: OtaStatus | null): "neutral" | "warn" | "brand" | "d
   }
 }
 
+function lifecycleIndex(status: OtaStatus | null): number {
+  if (status?.state === "idle" && status.currentImageConfirmed === true) return 4;
+  switch (status?.state) {
+    case "pending_test": return 3;
+    case "rebooting": return 2;
+    case "verified": return 1;
+    default: return 0;
+  }
+}
+
 export function OtaCard({
   status,
   setStatus,
+  disabled = false,
+  taskControl,
 }: {
   status: OtaStatus | null;
   setStatus: Dispatch<SetStateAction<OtaStatus | null>>;
+  disabled?: boolean;
+  taskControl?: AutomationTaskControl;
 }) {
   const { t } = useI18n();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -136,6 +151,12 @@ export function OtaCard({
 
   const busy = busyAction !== null;
   const waitingForReboot = rebootGraceUntilRef.current > Date.now();
+
+  const acquireOtaTask = () => {
+    if (!taskControl || taskControl.acquire("ota")) return true;
+    setActionError(t("task.error.busy"));
+    return false;
+  };
 
   useEffect(() => {
     const handleVisibility = () => {
@@ -340,9 +361,10 @@ export function OtaCard({
   };
 
   const handleUpload = async () => {
-    if (!selectedFile || !selectedSha) {
+    if (disabled || !selectedFile || !selectedSha) {
       return;
     }
+    if (!acquireOtaTask()) return;
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -374,6 +396,7 @@ export function OtaCard({
         abortRef.current = null;
       }
       setBusyAction(null);
+      taskControl?.release("ota");
     }
   };
 
@@ -382,9 +405,11 @@ export function OtaCard({
   }, []);
 
   const handleTestBoot = async () => {
+    if (disabled) return;
     if (!window.confirm(t("ota.test.confirm"))) {
       return;
     }
+    if (!acquireOtaTask()) return;
 
     setActionError(null);
     setNote(t("ota.test.accepted"));
@@ -398,10 +423,13 @@ export function OtaCard({
       setNote(null);
     } finally {
       setBusyAction(null);
+      taskControl?.release("ota");
     }
   };
 
   const handleConfirm = async () => {
+    if (disabled) return;
+    if (!acquireOtaTask()) return;
     setActionError(null);
     setNote(null);
     setBusyAction("confirming");
@@ -414,6 +442,7 @@ export function OtaCard({
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusyAction(null);
+      taskControl?.release("ota");
     }
   };
 
@@ -423,6 +452,14 @@ export function OtaCard({
       : status.currentImageConfirmed
         ? t("ota.currentImage.confirmed")
         : t("ota.currentImage.unconfirmed");
+  const currentLifecycleIndex = lifecycleIndex(status);
+  const lifecycleSteps = [
+    "ota.lifecycle.upload",
+    "ota.lifecycle.verify",
+    "ota.lifecycle.test",
+    "ota.lifecycle.confirm",
+    "ota.lifecycle.complete",
+  ] as const;
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -501,7 +538,12 @@ export function OtaCard({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <Card title={t("ota.title")} subtitle={t("ota.subtitle")} icon={ShieldCheck}>
+      <Card
+        title={t("ota.title")}
+        subtitle={t("ota.subtitle")}
+        icon={ShieldCheck}
+        right={disabled ? <Badge tone="neutral">{t("ota.actionsLocked")}</Badge> : undefined}
+      >
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone={statusTone(status)}>
             {loading ? <Loader2 size={12} className="animate-spin" /> : <Clock3 size={12} />}
@@ -519,6 +561,28 @@ export function OtaCard({
             <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
             {t("ota.refresh")}
           </Button>
+        </div>
+
+        <ol className="mt-3 grid grid-cols-5 overflow-hidden rounded-xl border border-line/70 bg-panel2/30" aria-label={t("ota.lifecycle.label")}>
+          {lifecycleSteps.map((key, index) => {
+            const current = index === currentLifecycleIndex;
+            const complete = index < currentLifecycleIndex || (currentLifecycleIndex === 4 && index === 4);
+            return (
+              <li
+                key={key}
+                aria-current={current ? "step" : undefined}
+                className={`min-w-0 border-l border-line/60 px-1.5 py-2 text-center first:border-l-0 ${current ? "bg-brand/10" : ""}`}
+              >
+                <span className={`mx-auto block h-1.5 w-1.5 rounded-full ${complete ? "bg-ok" : current ? "bg-brand" : "bg-line"}`} />
+                <span className={`mt-1 block truncate text-[10px] font-medium ${current || complete ? "text-ink" : "text-ink-dim"}`}>{t(key)}</span>
+              </li>
+            );
+          })}
+        </ol>
+
+        <div className="mt-3 rounded-lg border border-warn/30 bg-warn/5 px-3 py-2 text-xs leading-5 text-ink-dim">
+          <TriangleAlert size={13} className="mr-1 inline text-warn" />
+          {t("ota.safety")}
         </div>
 
         <div className="mt-3 grid gap-3">
@@ -553,7 +617,7 @@ export function OtaCard({
                 variant="primary"
                 className="min-w-[9rem]"
                 onClick={() => void handleUpload()}
-                disabled={!selectedFile || !selectedSha || !canUploadOta(status, busy)}
+                disabled={disabled || !selectedFile || !selectedSha || !canUploadOta(status, busy)}
               >
                 {busyAction === "uploading" ? (
                   <Loader2 size={15} className="animate-spin" />
@@ -627,7 +691,7 @@ export function OtaCard({
                 type="button"
                 className="min-w-[9rem]"
                 onClick={() => void handleTestBoot()}
-                disabled={!canStartOtaTest(status, busy)}
+                disabled={disabled || !canStartOtaTest(status, busy)}
               >
                 {busyAction === "testing" ? (
                   <Loader2 size={15} className="animate-spin" />
@@ -641,7 +705,7 @@ export function OtaCard({
                 variant="default"
                 className="min-w-[9rem]"
                 onClick={() => void handleConfirm()}
-                disabled={!canConfirmOta(status, busy)}
+                disabled={disabled || !canConfirmOta(status, busy)}
               >
                 {busyAction === "confirming" ? (
                   <Loader2 size={15} className="animate-spin" />

@@ -15,6 +15,7 @@ export function Card({
   headerLeading,
   children,
   className,
+  headerClassName,
   contentClassName,
 }: {
   title?: string;
@@ -25,17 +26,21 @@ export function Card({
   headerLeading?: ReactNode;
   children?: ReactNode;
   className?: string;
+  headerClassName?: string;
   contentClassName?: string;
 }) {
   return (
     <section
       className={cn(
-        "flex min-h-0 flex-col rounded-2xl border border-line/70 bg-panel shadow-sm transition-colors duration-200",
+        "flex min-h-0 flex-col rounded-2xl border border-line/80 bg-panel transition-colors duration-200",
         className
       )}
     >
       {(title || right || headerLeading) && (
-        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line/60 px-4 py-3">
+        <header className={cn(
+          "flex flex-wrap items-center justify-between gap-3 border-b border-line/60 px-4 py-3",
+          headerClassName
+        )}>
           {headerLeading ? (
             <div className="min-w-0 max-w-full">{headerLeading}</div>
           ) : (
@@ -47,7 +52,7 @@ export function Card({
               )}
               <div className="min-w-0">
                 {title && (
-                  <h2 className="truncate text-sm font-semibold tracking-wide text-ink">
+                  <h2 className="truncate text-sm font-semibold text-ink">
                     {title}
                   </h2>
                 )}
@@ -63,6 +68,79 @@ export function Card({
   );
 }
 
+export function WorkspaceModeHeader({
+  icon: Icon,
+  title,
+  subtitle,
+  status,
+  children,
+}: {
+  readonly icon: LucideIcon;
+  readonly title: string;
+  readonly subtitle: string;
+  readonly status?: ReactNode;
+  readonly children: ReactNode;
+}) {
+  return (
+    <header className="grid gap-3 border-b border-line/60 px-3 py-3 sm:px-4 lg:grid-cols-[minmax(220px,280px)_minmax(0,760px)] lg:items-center">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand/10 text-brand">
+          <Icon size={17} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <h2 className="truncate text-sm font-semibold tracking-[-0.01em] text-ink">{title}</h2>
+            {status && <span className="shrink-0">{status}</span>}
+          </div>
+          <p className="mt-0.5 truncate text-[11px] leading-4 text-ink-dim">{subtitle}</p>
+        </div>
+      </div>
+      {children}
+    </header>
+  );
+}
+
+export function WorkspaceModeTab({
+  selected,
+  icon: Icon,
+  label,
+  summary,
+  className,
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  readonly selected: boolean;
+  readonly icon: LucideIcon;
+  readonly label: string;
+  readonly summary: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        "flex min-h-12 min-w-0 items-center gap-2 rounded-lg border px-3 text-left transition-[color,background-color,border-color,box-shadow] duration-150 disabled:cursor-not-allowed disabled:opacity-50",
+        selected
+          ? "border-brand/25 bg-panel text-ink ring-1 ring-inset ring-brand/10"
+          : "border-transparent text-ink-dim hover:border-line/70 hover:bg-panel/70 hover:text-ink",
+        className,
+      )}
+      {...props}
+    >
+      <span
+        className={cn(
+          "grid h-7 w-7 shrink-0 place-items-center rounded-md transition-colors duration-150",
+          selected ? "bg-brand text-on-brand" : "bg-panel text-ink-dim",
+        )}
+      >
+        <Icon size={14} />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-xs font-semibold">{label}</span>
+        <span className="hidden truncate text-[10px] font-normal text-ink-dim sm:block">{summary}</span>
+      </span>
+    </button>
+  );
+}
+
 type ButtonVariant = "default" | "primary" | "danger" | "ghost";
 
 export const Button = forwardRef<
@@ -75,11 +153,11 @@ export const Button = forwardRef<
 }, ref) {
   const variants: Record<ButtonVariant, string> = {
     default:
-      "bg-panel2 text-ink hover:bg-line/50 border border-line/70 hover:border-line",
+      "border border-line/80 bg-panel2/80 text-ink hover:border-line hover:bg-panel2",
     primary:
-      "bg-brand text-on-brand hover:bg-brand/85 border border-brand/40 shadow-sm shadow-brand/20",
+      "border border-transparent bg-brand text-on-brand hover:bg-brand/90",
     danger:
-      "bg-danger text-on-danger hover:bg-danger/90 border border-danger/40 shadow-sm shadow-danger/20",
+      "border border-transparent bg-danger text-on-danger hover:bg-danger/90",
     ghost:
       "bg-transparent text-ink-dim hover:bg-panel2 hover:text-ink border border-transparent",
   };
@@ -87,7 +165,7 @@ export const Button = forwardRef<
     <button
       ref={ref}
       className={cn(
-        "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100",
+        "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-[color,background-color,border-color,transform] duration-150 active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100",
         variants[variant],
         className
       )}
@@ -170,7 +248,7 @@ export function Stat({
   hint?: string;
 }) {
   return (
-    <div className="rounded-xl border border-line/60 bg-panel2/50 px-3 py-2.5 transition-colors">
+    <div className="rounded-xl bg-panel2/70 px-3 py-2.5 transition-colors">
       <div className="text-[11px] uppercase tracking-wide text-ink-dim">{label}</div>
       <div className="mt-1 text-lg font-semibold text-ink">{value}</div>
       {hint && <div className="text-[11px] text-ink-dim">{hint}</div>}

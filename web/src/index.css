@@ -3,10 +3,10 @@
 @tailwind utilities;
 
 :root {
-  --c-bg: 248 250 252;
+  --c-bg: 246 248 251;
   --c-panel: 255 255 255;
-  --c-panel2: 241 245 249;
-  --c-line: 203 213 225;
+  --c-panel2: 244 247 250;
+  --c-line: 214 222 232;
   --c-brand: 37 99 235;
   --c-ok: 5 150 105;
   --c-warn: 180 83 9;
@@ -18,6 +18,7 @@
   --c-terminal-ink: 15 23 42;
   --c-on-brand: 255 255 255;
   --c-on-danger: 255 255 255;
+  --c-overlay: 15 23 42;
   color-scheme: light;
 }
 
@@ -37,6 +38,7 @@
   --c-terminal-ink: 226 232 240;
   --c-on-brand: 15 23 42;
   --c-on-danger: 15 23 42;
+  --c-overlay: 0 0 0;
   color-scheme: dark;
 }
 
@@ -56,6 +58,7 @@
   --c-terminal-ink: 208 237 250;
   --c-on-brand: 3 16 28;
   --c-on-danger: 3 16 28;
+  --c-overlay: 0 0 0;
   color-scheme: dark;
 }
 
@@ -75,6 +78,7 @@
   --c-terminal-ink: 255 255 255;
   --c-on-brand: 255 255 255;
   --c-on-danger: 0 0 0;
+  --c-overlay: 0 0 0;
   color-scheme: dark;
 }
 
@@ -89,7 +93,8 @@ body {
   background: rgb(var(--c-bg));
   color: rgb(var(--c-ink));
   -webkit-font-smoothing: antialiased;
-  transition: background-color 160ms ease, color 160ms ease;
+  text-rendering: optimizeLegibility;
+  transition: background-color 180ms ease, color 180ms ease;
 }
 
 /* thin scrollbar to match the dashboard look */
@@ -103,7 +108,9 @@ body {
 }
 *::-webkit-scrollbar-thumb {
   background: rgb(var(--c-scroll));
-  border-radius: 8px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
 }
 
 /* polish */
@@ -114,6 +121,40 @@ button {
 summary::-webkit-details-marker {
   display: none;
 }
+
+/* Automation workspace: a quiet, persistent shell around the task-specific views. */
+.automation-workspace-shell {
+  isolation: isolate;
+}
+
+.automation-taskbar {
+  min-height: 48px;
+}
+
+.automation-view-tabs > [role="tab"] {
+  min-width: 92px;
+}
+
+.automation-view-region {
+  background: rgb(var(--c-bg) / 0.45);
+}
+
+@media (max-width: 639px) {
+  .automation-taskbar {
+    align-items: stretch;
+  }
+
+  .automation-view-tabs {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .automation-view-tabs > [role="tab"] {
+    min-width: 0;
+  }
+}
+
 ::selection {
   background: rgb(var(--c-brand) / 0.25);
 }
@@ -134,7 +175,20 @@ button {
   }
 }
 .animate-fade-up {
-  animation: fade-up 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: fade-up 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes drawer-enter {
+  from {
+    transform: translateX(20px);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-drawer-enter {
+  animation: drawer-enter 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 @keyframes serial-activity-ripple {

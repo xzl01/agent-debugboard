@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, ChevronDown, Copy, Package, Plus, Settings2, Trash2, Ungroup } from "lucide-react";
+import { CheckCircle2, ChevronDown, Copy, Minus, Package, Plus, Settings2, Trash2, Ungroup } from "lucide-react";
 import { Badge, Button } from "../ui";
 import { TestStepInspector } from "../TestEditor";
 import type {
@@ -101,26 +101,53 @@ function GroupInspector({
           />
         </label>
       ) : (
-        <label className="block space-y-1.5">
+        <div className="space-y-1.5">
           <span className="text-xs font-medium text-ink-dim">{t("test.loop.rounds")}</span>
-          <input
-            type="number"
-            min={MIN_LOOP_COUNT}
-            max={MAX_LOOP_COUNT}
-            className={inputClass}
-            value={group.params.count}
-            onChange={(event) => onChange({
-              ...group,
-              params: {
-                ...group.params,
-                count: Math.min(
-                  MAX_LOOP_COUNT,
-                  Math.max(MIN_LOOP_COUNT, Math.trunc(Number(event.target.value) || MIN_LOOP_COUNT)),
-                ),
-              },
-            })}
-          />
-        </label>
+          <div className="grid grid-cols-[44px_minmax(0,1fr)_44px] overflow-hidden rounded-xl border border-line/70 bg-panel">
+            <button
+              type="button"
+              onClick={() => onChange({
+                ...group,
+                params: { ...group.params, count: Math.max(MIN_LOOP_COUNT, group.params.count - 1) },
+              })}
+              disabled={group.params.count <= MIN_LOOP_COUNT}
+              className="grid min-h-11 place-items-center text-ink-dim transition-colors hover:bg-panel2 hover:text-ink disabled:opacity-30"
+              aria-label={`${t("test.loop.rounds")} -1`}
+            >
+              <Minus size={15} />
+            </button>
+            <input
+              type="number"
+              min={MIN_LOOP_COUNT}
+              max={MAX_LOOP_COUNT}
+              className="min-w-0 border-x border-line/60 bg-panel px-2 text-center font-mono text-sm tabular-nums text-ink outline-none focus-visible:bg-brand/[0.04]"
+              value={group.params.count}
+              onChange={(event) => onChange({
+                ...group,
+                params: {
+                  ...group.params,
+                  count: Math.min(
+                    MAX_LOOP_COUNT,
+                    Math.max(MIN_LOOP_COUNT, Math.trunc(Number(event.target.value) || MIN_LOOP_COUNT)),
+                  ),
+                },
+              })}
+              aria-label={t("test.loop.rounds")}
+            />
+            <button
+              type="button"
+              onClick={() => onChange({
+                ...group,
+                params: { ...group.params, count: Math.min(MAX_LOOP_COUNT, group.params.count + 1) },
+              })}
+              disabled={group.params.count >= MAX_LOOP_COUNT}
+              className="grid min-h-11 place-items-center text-brand transition-colors hover:bg-brand/[0.06] disabled:opacity-30"
+              aria-label={`${t("test.loop.rounds")} +1`}
+            >
+              <Plus size={15} />
+            </button>
+          </div>
+        </div>
       )}
 
       <div>
@@ -421,7 +448,7 @@ export function InspectorPanel({
   const { t } = useI18n();
 
   return (
-    <aside className="border-t border-line/60 bg-panel p-4 xl:min-h-0 xl:overflow-x-hidden xl:overflow-y-auto xl:overscroll-contain xl:border-l xl:border-t-0" aria-label={t("test.workflow.inspector")}>
+    <aside className="rounded-2xl border border-line/70 bg-panel p-4 xl:min-h-0 xl:overflow-x-hidden xl:overflow-y-auto xl:overscroll-contain" aria-label={t("test.workflow.inspector")}>
       <div className="mb-4 flex items-center gap-2">
         <span className="grid h-8 w-8 place-items-center rounded-lg bg-panel2 text-ink-dim">
           <Settings2 size={15} />
@@ -435,7 +462,7 @@ export function InspectorPanel({
       {selectedItem ? (
         <div className="space-y-4">
           <div className="rounded-xl border border-line/60 bg-panel2/35 px-3 py-2.5">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
+            <div className="text-[10px] font-semibold text-ink-dim">
               {isTestCondition(selectedItem)
                 ? t("test.condition.title")
                 : isTestLoop(selectedItem)

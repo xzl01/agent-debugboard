@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Activity, ChartLine, Clock3, List, Power, Zap } from "lucide-react";
-import { Badge, Card, Toggle } from "./ui";
+import { Badge, Button, Card, Toggle } from "./ui";
 import type { AdcReading, PowerOutput } from "@/lib/types";
 import { isCurrentAdcReading, isVoltageAdcReading } from "@/lib/adc";
 import { useI18n } from "@/lib/i18n";
@@ -26,14 +26,23 @@ export function PowerCard({
   outputs,
   readings,
   onSet,
+  disabled = false,
+  stale = false,
+  compact = false,
+  onOpenDetails,
 }: {
   outputs: PowerOutput[];
   readings: readonly AdcReading[];
   onSet: (name: string, on: boolean) => void;
+  disabled?: boolean;
+  stale?: boolean;
+  compact?: boolean;
+  onOpenDetails?: () => void;
 }) {
   const { t } = useI18n();
   const [metric, setMetric] = useState<PowerMetric>("current");
   const [trendsExpanded, setTrendsExpanded] = useState(initialTrendsExpanded);
+  const showTrends = !compact && trendsExpanded;
   const [clockMs, setClockMs] = useState(() => Date.now());
   const railTimersRef = useRef(new Map<string, { startedAtMs: number; approximate: boolean }>());
   const observedRailsRef = useRef(new Set<string>());
@@ -77,11 +86,15 @@ export function PowerCard({
   return (
     <Card
       title={t("power.combined.title")}
-      subtitle={t("power.combined.subtitle")}
-      icon={Power}
+      subtitle={compact ? undefined : t("power.combined.subtitle")}
+      icon={compact ? undefined : Power}
+      className={compact ? "rounded-none border-0 shadow-none" : undefined}
+      headerClassName={compact ? "min-h-11 px-3 py-2" : undefined}
+      contentClassName={compact ? "p-3" : undefined}
       right={
         <div className="flex max-w-full flex-wrap items-center justify-end gap-1.5">
-          {trendsExpanded && (
+          {stale && <Badge tone="neutral">{t("snapshot.readOnly")}</Badge>}
+          {showTrends && (
             <div
               role="tablist"
               aria-label={t("power.chart.metric")}
@@ -105,7 +118,7 @@ export function PowerCard({
               ))}
             </div>
           )}
-          <button
+          {!compact && <button
             type="button"
             aria-pressed={trendsExpanded}
             onClick={() => setTrendsExpanded((expanded) => !expanded)}
@@ -113,7 +126,7 @@ export function PowerCard({
           >
             {trendsExpanded ? <List size={13} /> : <ChartLine size={13} />}
             {t(trendsExpanded ? "power.chart.compact" : "power.chart.expand")}
-          </button>
+          </button>}
         </div>
       }
     >
@@ -132,7 +145,7 @@ export function PowerCard({
                 key={name}
                 className={cn(
                   "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1",
-                  trendsExpanded ? "py-3" : "py-2.5"
+                  showTrends ? "py-3" : "py-2.5"
                 )}
               >
                 <div className="min-w-0">
@@ -145,11 +158,11 @@ export function PowerCard({
                     {output?.signal ?? reading?.signal ?? `GP${output?.gp ?? "?"}`}
                     {output?.value != null && !locked && (
                       <span className="ml-2 text-ink-dim">
-                        {on ? t("power.on") : t("power.off")} · {output.value}
+                        {stale ? t("snapshot.lastPrefix") : ""}{on ? t("power.on") : t("power.off")} · {output.value}
                       </span>
                     )}
                   </div>
-                  {onTiming && (
+                  {!compact && onTiming && (
                     <div
                       className="mt-1 inline-flex items-center gap-1 text-[10px] text-ink-dim"
                       title={t("power.onDurationHint")}
@@ -173,7 +186,7 @@ export function PowerCard({
                   {output && (
                     <Toggle
                       checked={on}
-                      disabled={locked}
+                      disabled={disabled || locked}
                       onChange={(value) => onSet(output.name, value)}
                     />
                   )}
@@ -181,7 +194,7 @@ export function PowerCard({
                 {reading && !reading.power_enabled && (
                   <div className="col-span-2 text-[11px] text-warn">{t("adc.disabled")}</div>
                 )}
-                {reading && trendsExpanded && (
+                {reading && showTrends && (
                   <div className="col-span-2 mt-1">
                     <MeasurementSparkline mode="power" reading={reading} metric={metric} />
                   </div>
@@ -205,12 +218,22 @@ export function PowerCard({
               {(adc3.value / 1_000_000).toFixed(3)} V
             </div>
           </div>
-          {trendsExpanded && (
+          {showTrends && (
             <div className="mt-2">
               <MeasurementSparkline mode="voltage" reading={adc3} />
             </div>
           )}
         </section>
+      )}
+      {compact && onOpenDetails && (
+        <Button
+          type="button"
+          variant="ghost"
+          className="mt-3 min-h-8 px-0 py-1 text-xs text-brand hover:bg-transparent"
+          onClick={onOpenDetails}
+        >
+          {t("quick.power.details")}
+        </Button>
       )}
     </Card>
   );

@@ -6,11 +6,16 @@ import {
   useState,
 } from "react";
 import {
+  Check,
   CheckCircle2,
+  CircleAlert,
   CircleDot,
   Download,
+  FilePlus2,
   FileUp,
   Package,
+  PanelLeft,
+  PanelRight,
   Play,
   Plus,
   Redo2,
@@ -67,7 +72,10 @@ export function WorkflowComposer({
   script,
   onChange,
   onRun,
+  onNew,
+  draftState,
   runDisabled = false,
+  runDisabledReason,
 }: WorkflowComposerProps) {
   const { t } = useI18n();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -77,6 +85,9 @@ export function WorkflowComposer({
   const [importError, setImportError] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [showGroupHint, setShowGroupHint] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(true);
+  const [showInspector, setShowInspector] = useState(true);
+  const [mobileView, setMobileView] = useState<"canvas" | "library" | "inspector">("canvas");
   const { customUnits, addCustomUnitTemplate, removeCustomUnit } = useCustomUnits();
   const { push: pushHistory, undo, redo, canUndo, canRedo } = useWorkflowHistory();
 
@@ -111,6 +122,13 @@ export function WorkflowComposer({
       const item = script.steps[index];
       return (!isTestLoop(item) && !isTestCondition(item)) || isTestUnit(item);
     });
+  const workspaceColumns = showLibrary && showInspector
+    ? "xl:grid-cols-[236px_minmax(480px,1fr)_310px] 2xl:grid-cols-[282px_minmax(598px,1fr)_344px]"
+    : showLibrary
+      ? "xl:grid-cols-[236px_minmax(480px,1fr)] 2xl:grid-cols-[282px_minmax(598px,1fr)]"
+      : showInspector
+        ? "xl:grid-cols-[minmax(480px,1fr)_310px] 2xl:grid-cols-[minmax(598px,1fr)_344px]"
+        : "xl:grid-cols-1";
 
   // ─── Core mutation helper (pushes undo history) ─────────────────────────────
 
@@ -259,6 +277,7 @@ export function WorkflowComposer({
 
   const handleSelect = useCallback((index: number) => {
     setSelectedId(scriptRef.current.steps[index]?.id ?? null);
+    setMobileView("inspector");
   }, []);
 
   const selectItem = useCallback((id: string) => setSelectedId(id), []);
@@ -381,55 +400,156 @@ export function WorkflowComposer({
   return (
     <div className="flex min-h-0 flex-col xl:h-full xl:overflow-hidden">
       {/* Toolbar */}
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line/60 bg-panel px-4 py-3">
-        <input
-          className={`${inputClass} min-w-[180px] flex-1 font-semibold sm:max-w-md`}
-          value={script.name}
-          onFocus={() => {
-            nameHistoryPushedRef.current = false;
-          }}
-          onChange={(event) => {
-            if (!nameHistoryPushedRef.current) {
-              pushHistory(scriptRef.current);
-              nameHistoryPushedRef.current = true;
-            }
-            onChange({ ...script, name: event.target.value });
-          }}
-          placeholder={t("test.name")}
-          aria-label={t("test.name")}
-        />
-        <Badge tone="neutral">
-          {t("test.stepCountExpanded", { commands: commandCount, executions: executionCount })}
-        </Badge>
-        <Button variant="ghost" onClick={handleUndo} disabled={!canUndo} title="Ctrl+Z">
-          <Undo2 size={15} />
-        </Button>
-        <Button variant="ghost" onClick={handleRedo} disabled={!canRedo} title="Ctrl+Shift+Z">
-          <Redo2 size={15} />
-        </Button>
-        <Button variant="ghost" onClick={() => fileRef.current?.click()}>
-          <FileUp size={15} />
-          {t("test.import")}
-        </Button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".ndjson,.jsonl,.json"
-          className="hidden"
-          onChange={handleImport}
-        />
-        <Button variant="ghost" onClick={handleExport} disabled={script.steps.length === 0}>
-          <Download size={15} />
-          {t("test.export")}
-        </Button>
-        <Button
-          variant="primary"
-          onClick={onRun}
-          disabled={executionCount === 0 || runDisabled}
-        >
-          <Play size={15} />
-          {t("test.run")}
-        </Button>
+      <div className="shrink-0 space-y-2 border-b border-line/60 bg-panel px-4 py-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            className={`${inputClass} min-w-[180px] flex-1 font-semibold sm:max-w-md`}
+            value={script.name}
+            onFocus={() => {
+              nameHistoryPushedRef.current = false;
+            }}
+            onChange={(event) => {
+              if (!nameHistoryPushedRef.current) {
+                pushHistory(scriptRef.current);
+                nameHistoryPushedRef.current = true;
+              }
+              onChange({ ...script, name: event.target.value });
+            }}
+            placeholder={t("test.name")}
+            aria-label={t("test.name")}
+          />
+          <Badge tone="neutral">
+            {t("test.stepCountExpanded", { commands: commandCount, executions: executionCount })}
+          </Badge>
+          {draftState && (
+            <Badge tone={draftState === "error" ? "danger" : draftState === "saved" ? "ok" : "neutral"}>
+              {draftState === "error" ? <CircleAlert size={12} /> : <Check size={12} />}
+              {t(`test.draft.${draftState}`)}
+            </Badge>
+          )}
+          <Button
+            variant="primary"
+            className="ml-auto"
+            onClick={onRun}
+            disabled={executionCount === 0 || runDisabled}
+            aria-describedby={runDisabledReason ? "workflow-run-disabled-reason" : undefined}
+          >
+            <Play size={15} />
+            {t("test.run")}
+          </Button>
+        </div>
+
+        {runDisabledReason && (
+          <p
+            id="workflow-run-disabled-reason"
+            role="status"
+            className="flex items-center gap-1.5 text-xs text-warn"
+          >
+            <CircleAlert size={13} />
+            {runDisabledReason}
+          </p>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div
+            role="group"
+            aria-label={t("test.workflow.layoutControls")}
+            className="hidden rounded-xl border border-line/70 bg-panel2/55 p-1 xl:inline-flex"
+          >
+            <Button
+              variant="ghost"
+              className={showLibrary ? "min-h-8 bg-brand/10 py-1 text-xs text-brand ring-1 ring-inset ring-brand/15" : "min-h-8 py-1 text-xs"}
+              aria-pressed={showLibrary}
+              onClick={() => setShowLibrary((visible) => !visible)}
+            >
+              <PanelLeft size={14} />
+              {t("test.workflow.library")}
+            </Button>
+            <Button
+              variant="ghost"
+              className={showInspector ? "min-h-8 bg-brand/10 py-1 text-xs text-brand ring-1 ring-inset ring-brand/15" : "min-h-8 py-1 text-xs"}
+              aria-pressed={showInspector}
+              onClick={() => setShowInspector((visible) => !visible)}
+            >
+              <PanelRight size={14} />
+              {t("test.workflow.inspector")}
+            </Button>
+          </div>
+
+          <div
+            role="group"
+            aria-label={t("test.workflow.mobilePanels")}
+            className="grid w-full grid-cols-3 rounded-xl border border-line/70 bg-panel2/55 p-1 xl:hidden"
+          >
+            {([
+              ["library", PanelLeft, t("test.workflow.library")],
+              ["canvas", CircleDot, t("test.workflow.canvasShort")],
+              ["inspector", PanelRight, t("test.workflow.inspector")],
+            ] as const).map(([view, Icon, label]) => (
+              <Button
+                key={view}
+                variant="ghost"
+                className={mobileView === view ? "min-h-11 bg-brand/10 px-2 py-1.5 text-xs text-brand ring-1 ring-inset ring-brand/15" : "min-h-11 px-2 py-1.5 text-xs"}
+                aria-pressed={mobileView === view}
+                onClick={() => setMobileView(view)}
+              >
+                <Icon size={14} />
+                <span className="truncate">{label}</span>
+              </Button>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1">
+            <div className="inline-flex rounded-xl border border-line/70 bg-panel2/55 p-1">
+              <Button
+                variant="ghost"
+                className="min-h-8 min-w-8 px-2 py-1"
+                onClick={handleUndo}
+                disabled={!canUndo}
+                title="Ctrl+Z"
+                aria-label={t("test.undo")}
+              >
+                <Undo2 size={15} />
+              </Button>
+              <Button
+                variant="ghost"
+                className="min-h-8 min-w-8 px-2 py-1"
+                onClick={handleRedo}
+                disabled={!canRedo}
+                title="Ctrl+Shift+Z"
+                aria-label={t("test.redo")}
+              >
+                <Redo2 size={15} />
+              </Button>
+            </div>
+            {onNew && (
+              <Button variant="ghost" className="min-h-8 py-1 text-xs" onClick={onNew}>
+                <FilePlus2 size={15} />
+                {t("test.new")}
+              </Button>
+            )}
+            <Button variant="ghost" className="min-h-8 py-1 text-xs" onClick={() => fileRef.current?.click()}>
+              <FileUp size={15} />
+              {t("test.import")}
+            </Button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".ndjson,.jsonl,.json"
+              className="hidden"
+              onChange={handleImport}
+            />
+            <Button
+              variant="ghost"
+              className="min-h-8 py-1 text-xs"
+              onClick={handleExport}
+              disabled={script.steps.length === 0}
+            >
+              <Download size={15} />
+              {t("test.export")}
+            </Button>
+          </div>
+        </div>
       </div>
 
       {script.steps.length === 0 && (
@@ -486,28 +606,55 @@ export function WorkflowComposer({
       )}
 
       {/* Three-column layout */}
-      <div className="grid min-h-[680px] flex-1 grid-cols-1 xl:min-h-0 xl:overflow-hidden xl:grid-cols-[210px_minmax(360px,1fr)_290px]">
-        <Palette
-          executionCount={executionCount}
-          customUnits={customUnits}
-          dragDispatch={dragDispatch}
-          onAddStep={(type) => addStep(type)}
-          onAddLoop={() => addLoop()}
-          onAddCondition={() => addCondition()}
-          onAddCustomUnit={(unit) => addCustomUnit(unit)}
-          onDeleteCustomUnit={removeCustomUnit}
-          onShowGroupHint={() => setShowGroupHint(true)}
-        />
+      <div className={`grid min-h-[680px] flex-1 grid-cols-1 gap-3 bg-bg/45 p-3 xl:min-h-0 xl:overflow-hidden ${workspaceColumns}`}>
+        <div
+          data-testid="workflow-library-panel"
+          className={`${mobileView === "library" ? "block" : "hidden"} ${showLibrary ? "xl:contents" : "xl:hidden"}`}
+        >
+          <Palette
+            executionCount={executionCount}
+            customUnits={customUnits}
+            dragDispatch={dragDispatch}
+            onAddStep={(type) => {
+              addStep(type);
+              setMobileView("inspector");
+            }}
+            onAddLoop={() => {
+              addLoop();
+              setMobileView("inspector");
+            }}
+            onAddCondition={() => {
+              addCondition();
+              setMobileView("inspector");
+            }}
+            onAddCustomUnit={(unit) => {
+              addCustomUnit(unit);
+              setMobileView("inspector");
+            }}
+            onDeleteCustomUnit={removeCustomUnit}
+            onShowGroupHint={() => setShowGroupHint(true)}
+          />
+        </div>
 
         {/* Canvas */}
         <main
-          className="min-w-0 bg-bg/45 px-3 py-5 sm:px-6 xl:min-h-0 xl:overflow-x-hidden xl:overflow-y-auto xl:overscroll-contain"
+          data-testid="workflow-canvas-panel"
+          className={`${mobileView === "canvas" ? "block" : "hidden"} min-w-0 rounded-2xl border border-line/70 bg-panel px-3 py-4 sm:px-5 xl:block xl:min-h-0 xl:overflow-x-hidden xl:overflow-y-auto xl:overscroll-contain`}
           aria-label={t("test.workflow.canvas")}
           onDragEnter={handleCanvasDragEnter}
           onDragLeave={handleCanvasDragLeave}
         >
-          <div className="mx-auto flex max-w-2xl items-center gap-3 rounded-2xl border border-ok/30 bg-ok/[0.06] px-4 py-3">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-ok/15 text-ok">
+          <header className="mx-auto mb-3 flex w-full max-w-[598px] items-end justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold text-ink">{t("test.workflow.canvas")}</h2>
+              <p className="mt-0.5 truncate text-[10px] text-ink-dim">
+                {t("test.stepCountExpanded", { commands: commandCount, executions: executionCount })}
+              </p>
+            </div>
+          </header>
+
+          <div className="mx-auto flex max-w-[506px] items-center gap-3 rounded-[14px] border border-line/70 bg-panel px-3 py-2.5">
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-panel2 text-ok">
               <CircleDot size={17} />
             </span>
             <span className="min-w-0 flex-1">
@@ -574,7 +721,7 @@ export function WorkflowComposer({
             </button>
           )}
 
-          <div className="mx-auto flex max-w-2xl items-center gap-3 rounded-2xl border border-line/70 bg-panel px-4 py-3">
+          <div className="mx-auto flex max-w-[506px] items-center gap-3 rounded-[14px] border border-line/70 bg-panel px-3 py-2.5">
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-panel2 text-ink-dim">
               <CheckCircle2 size={17} />
             </span>
@@ -586,15 +733,20 @@ export function WorkflowComposer({
           </div>
         </main>
 
-        <InspectorPanel
-          selectedItem={selectedItem}
-          selectedIndex={selectedIndex}
-          customUnits={customUnits}
-          onUpdateItem={updateItem}
-          onDuplicate={duplicateItem}
-          onDelete={deleteItem}
-          onUngroup={ungroupSelected}
-        />
+        <div
+          data-testid="workflow-inspector-panel"
+          className={`${mobileView === "inspector" ? "block" : "hidden"} ${showInspector ? "xl:contents" : "xl:hidden"}`}
+        >
+          <InspectorPanel
+            selectedItem={selectedItem}
+            selectedIndex={selectedIndex}
+            customUnits={customUnits}
+            onUpdateItem={updateItem}
+            onDuplicate={duplicateItem}
+            onDelete={deleteItem}
+            onUngroup={ungroupSelected}
+          />
+        </div>
       </div>
     </div>
   );

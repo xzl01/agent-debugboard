@@ -5,6 +5,7 @@ import {
   PersistentConfigApiError,
 } from "@/lib/persistentConfig";
 import type { PersistentConfigConfirmationKind } from "./PersistentConfigDialog";
+import type { AutomationTaskControl } from "@/lib/automationTask";
 
 type Confirmation = {
   readonly kind: PersistentConfigConfirmationKind;
@@ -20,13 +21,15 @@ function assertNever(value: never): never {
 
 export function usePersistentConfigCardModel(
   state: UsePersistentConfig,
-  connected: boolean
+  connected: boolean,
+  taskControl?: AutomationTaskControl,
 ) {
   const [selectionOverrides, setSelectionOverrides] = useState<ReadonlyMap<string, boolean>>(
     () => new Map()
   );
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
+  const [taskBlocked, setTaskBlocked] = useState(false);
   const requestPendingRef = useRef(false);
   const groups = useMemo(
     () => groupPersistentConfigItems(state.config?.items ?? []),
@@ -50,9 +53,10 @@ export function usePersistentConfigCardModel(
     }
     return { selectedIds, selectedItems, dangerousSelectedIds };
   }, [selectionOverrides, visibleItems]);
+  const taskOwnedByOther = taskControl?.owner != null && taskControl.owner !== "persistent";
   const disabled = !connected || state.busy !== null || state.loading;
-  const saveDisabled = disabled || selection.selectedIds.size === 0;
-  const clearDisabled = disabled || state.config?.snapshot.present !== true;
+  const saveDisabled = disabled || taskOwnedByOther || selection.selectedIds.size === 0;
+  const clearDisabled = disabled || taskOwnedByOther || state.config?.snapshot.present !== true;
 
   const toggle = (id: string) => {
     setSelectionOverrides((previous) => {
@@ -61,12 +65,18 @@ export function usePersistentConfigCardModel(
       return next;
     });
     setNotice(null);
+    setTaskBlocked(false);
   };
 
   const runSave = async (ids: readonly string[], confirm: boolean, opener: HTMLElement) => {
     if (requestPendingRef.current) return;
+    if (taskControl && !taskControl.acquire("persistent")) {
+      setTaskBlocked(true);
+      return;
+    }
     requestPendingRef.current = true;
     setNotice(null);
+    setTaskBlocked(false);
     try {
       await state.save(ids, confirm);
       setSelectionOverrides((previous) => {
@@ -85,13 +95,19 @@ export function usePersistentConfigCardModel(
       }
     } finally {
       requestPendingRef.current = false;
+      taskControl?.release("persistent");
     }
   };
 
   const runClear = async () => {
     if (requestPendingRef.current) return;
+    if (taskControl && !taskControl.acquire("persistent")) {
+      setTaskBlocked(true);
+      return;
+    }
     requestPendingRef.current = true;
     setNotice(null);
+    setTaskBlocked(false);
     try {
       await state.clear();
       setSelectionOverrides(new Map());
@@ -102,6 +118,7 @@ export function usePersistentConfigCardModel(
       setConfirmation(null);
     } finally {
       requestPendingRef.current = false;
+      taskControl?.release("persistent");
     }
   };
 
@@ -109,6 +126,7 @@ export function usePersistentConfigCardModel(
     if (requestPendingRef.current) return;
     requestPendingRef.current = true;
     setNotice(null);
+    setTaskBlocked(false);
     try {
       await state.refresh();
       setNotice("refreshed");
@@ -157,6 +175,7 @@ export function usePersistentConfigCardModel(
     selectedIds: selection.selectedIds,
     confirmation,
     notice,
+    taskBlocked,
     disabled,
     saveDisabled,
     clearDisabled,

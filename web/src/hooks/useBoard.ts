@@ -263,6 +263,7 @@ export interface UseBoard {
   persistentConfigCurrentStateKey: string;
   hasData: boolean;
   connected: boolean;
+  lastVerifiedAt: number | null;
   error: string | null;
   loading: boolean;
   auto: boolean;
@@ -587,6 +588,7 @@ export function useBoard(): UseBoard {
   const [snapshot, setSnapshot] = useState<BoardSnapshot>(EMPTY);
   const [hasData, setHasData] = useState(false);
   const [connected, setConnected] = useState(true);
+  const [lastVerifiedAt, setLastVerifiedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [auto, setAuto] = useState(true);
@@ -603,6 +605,7 @@ export function useBoard(): UseBoard {
   const streamingCaptureRef = useRef<StreamingCaptureBuilder | null>(null);
   const captureOwnerRef = useRef(createArchiveId());
   const lastTelemetryPreviewAtRef = useRef(0);
+  const lastVerifiedAtRef = useRef<number | null>(null);
   const captureArmPromiseRef = useRef<{
     resolve: () => void;
     reject: (reason: Error) => void;
@@ -810,6 +813,9 @@ export function useBoard(): UseBoard {
       setSnapshot(mapStatus(status, readings));
       setHasData(true);
       setConnected(true);
+      const verifiedAt = Date.now();
+      lastVerifiedAtRef.current = verifiedAt;
+      setLastVerifiedAt(verifiedAt);
       setError(null);
     } catch (e) {
       setConnected(false);
@@ -847,6 +853,9 @@ export function useBoard(): UseBoard {
           setSnapshot(mapStatus(status, parseHttpAdcReadings(adcResponse)));
           setHasData(true);
           setConnected(true);
+          const verifiedAt = Date.now();
+          lastVerifiedAtRef.current = verifiedAt;
+          setLastVerifiedAt(verifiedAt);
           setError(null);
           setLoading(false);
         } catch (e) {
@@ -893,8 +902,12 @@ export function useBoard(): UseBoard {
             if (!isRecord(parsed)) return;
             const msg = parsed;
             if (msg.type === "snapshot") {
+              const verifiedAt = Date.now();
+              lastVerifiedAtRef.current = verifiedAt;
+              setLastVerifiedAt(verifiedAt);
               setSnapshot((prev) => mergeWsSnapshot(prev, msg));
             } else if (msg.type === "telemetry" || msg.type === "telemetry-batch") {
+              lastVerifiedAtRef.current = Date.now();
               const samples = telemetrySamples(msg);
               const latestReadings = telemetryReadings(msg);
               const now = performance.now();
@@ -1078,6 +1091,8 @@ export function useBoard(): UseBoard {
             } else {
               resetCapture(new Error("Live WebSocket error"));
             }
+            setConnected(false);
+            setLastVerifiedAt(lastVerifiedAtRef.current);
             setError("Live WebSocket error");
           }
         };
@@ -1090,6 +1105,8 @@ export function useBoard(): UseBoard {
             } else {
               resetCapture(new Error("Live WebSocket disconnected"));
             }
+            setConnected(false);
+            setLastVerifiedAt(lastVerifiedAtRef.current);
             setLive(false);
             setError("Live WebSocket disconnected");
           }
@@ -1317,6 +1334,7 @@ export function useBoard(): UseBoard {
     persistentConfigCurrentStateKey: currentStateKey,
     hasData,
     connected,
+    lastVerifiedAt,
     error,
     loading,
     auto,

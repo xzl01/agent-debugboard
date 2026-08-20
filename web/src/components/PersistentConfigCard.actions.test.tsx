@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createAutomationTaskLock, type AutomationTaskControl } from "@/lib/automationTask";
 import { PersistentConfigApiError } from "@/lib/persistentConfig";
 import {
   button,
@@ -22,6 +23,55 @@ afterEach(() => {
 });
 
 describe("PersistentConfigCard actions", () => {
+  it("owns the global mutation lock until an authoritative save finishes", async () => {
+    const result = deferred<void>();
+    const save = vi.fn().mockReturnValue(result.promise);
+    const lock = createAutomationTaskLock();
+    const taskControl: AutomationTaskControl = {
+      get owner() {
+        return lock.owner();
+      },
+      acquire: lock.acquire,
+      release: lock.release,
+    };
+    view = mount(state({
+      config: config([powerItem("firmware.locked", { selected: true })]),
+      save,
+    }), { taskControl });
+
+    click(button(view.host, "Save selected"));
+    expect(save).toHaveBeenCalledOnce();
+    expect(lock.acquire("test")).toBe(false);
+
+    await actResolve(result.resolve);
+    expect(lock.acquire("test")).toBe(true);
+  });
+
+  it("blocks persistent writes owned by another task without blocking refresh", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const lock = createAutomationTaskLock();
+    lock.acquire("test");
+    const taskControl: AutomationTaskControl = {
+      owner: lock.owner(),
+      acquire: lock.acquire,
+      release: lock.release,
+    };
+    view = mount(state({
+      config: config([powerItem("firmware.blocked", { selected: true })]),
+      save,
+      refresh,
+    }), { taskControl });
+
+    expect(button(view.host, "Save selected").getAttribute("aria-disabled")).toBe("true");
+    click(button(view.host, "Save selected"));
+    expect(save).not.toHaveBeenCalled();
+    expect(button(view.host, "Refresh").disabled).toBe(false);
+    click(button(view.host, "Refresh"));
+    await flush();
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
   it("saves exactly the row-selected safe firmware IDs without confirmation", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
     view = mount(state({

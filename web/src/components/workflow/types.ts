@@ -86,7 +86,7 @@ export const CUSTOM_UNITS_KEY = "linkr-test-custom-units.v1";
 export const inputClass =
   "min-h-10 w-full rounded-xl border border-line/70 bg-panel px-3 py-2 text-sm text-ink outline-none transition-colors focus-visible:border-brand/60 focus-visible:ring-2 focus-visible:ring-brand/20";
 
-export const MAX_NESTED_PREVIEW_STEPS = 4;
+export const MAX_NESTED_PREVIEW_STEPS = 8;
 
 // ─── Component prop types ──────────────────────────────────────────────────────
 
@@ -94,7 +94,10 @@ export interface WorkflowComposerProps {
   script: TestScript;
   onChange: (script: TestScript) => void;
   onRun: () => void;
+  onNew?: () => void;
+  draftState?: "saving" | "saved" | "error";
   runDisabled?: boolean;
+  runDisabledReason?: string;
 }
 
 // Re-export for convenience

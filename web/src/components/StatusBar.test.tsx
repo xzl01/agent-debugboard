@@ -70,12 +70,15 @@ describe("StatusBar Lighthouse regressions", () => {
     localStorage.clear();
   });
 
-  it("reserves the loaded mobile status height before board data arrives", () => {
+  it("keeps the Figma header compact while moving status into a responsive row", () => {
     const view = render(emptySnapshot);
     const details = view.host.querySelector('[data-testid="status-details"]');
+    const shell = view.host.querySelector("header > div");
 
-    expect(details?.classList.contains("min-h-28")).toBe(true);
-    expect(details?.classList.contains("sm:min-h-0")).toBe(true);
+    expect(shell?.classList.contains("min-h-14")).toBe(true);
+    expect(shell?.classList.contains("max-w-[1440px]")).toBe(true);
+    expect(details?.classList.contains("order-3")).toBe(true);
+    expect(details?.classList.contains("md:order-2")).toBe(true);
     view.close();
   });
 
@@ -84,7 +87,7 @@ describe("StatusBar Lighthouse regressions", () => {
     const placeholder = initial.host.querySelector('[data-testid="status-usb"]');
 
     expect(placeholder?.textContent?.trim()).toBe("—");
-    expect(placeholder?.classList.contains("min-w-24")).toBe(true);
+    expect(placeholder?.classList.contains("min-w-20")).toBe(true);
     initial.close();
 
     const loaded = render({ ...emptySnapshot, usb: "mock-ncm" });
@@ -92,15 +95,15 @@ describe("StatusBar Lighthouse regressions", () => {
     loaded.close();
   });
 
-  it("uses strong token foregrounds for the online and USB badges", () => {
+  it("uses restrained status text instead of large semantic badges", () => {
     const view = render({ ...emptySnapshot, usb: "mock-ncm" });
     const online = view.host.querySelector('[data-testid="status-connection"]');
     const usb = view.host.querySelector('[data-testid="status-usb"]');
 
-    expect(online?.classList.contains("text-ink")).toBe(true);
-    expect(online?.querySelector("svg")?.classList.contains("text-ok")).toBe(true);
-    expect(usb?.classList.contains("text-ink")).toBe(true);
-    expect(usb?.querySelector("svg")?.classList.contains("text-brand")).toBe(true);
+    expect(online?.classList.contains("text-ok")).toBe(true);
+    expect(online?.querySelector("svg")).toBeNull();
+    expect(usb?.textContent).toContain("mock-ncm");
+    expect(usb?.querySelector("svg")).toBeNull();
     view.close();
   });
 

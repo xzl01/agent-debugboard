@@ -69,7 +69,8 @@ const BROKER_WRITE_TIMEOUT_MS = 5_000;
 const BROKER_CLOSE_TIMEOUT_MS = 750;
 
 export type SerialChannelId = "uart0" | "uart1";
-type Source = "webserial" | "bridge" | null;
+export type SerialConnectionSource = "webserial" | "bridge" | null;
+type Source = SerialConnectionSource;
 type LineEnding = SerialLineEnding;
 type BrokerPendingRequest = {
   resolve: (frame: SerialBrokerFrame) => void;
@@ -81,14 +82,26 @@ export interface SerialChannelStatus {
   connected: boolean;
   connecting: boolean;
   automationActive: boolean;
+  brokerWriteLocked: boolean;
   source: Source;
   portInfo: string;
+  baud: number;
+  lineEnding: SerialLineEnding;
   rxBytes: number;
   txBytes: number;
 }
 
+export function isSerialDisconnectBlocked(
+  status: Pick<SerialChannelStatus, "automationActive" | "connecting">
+): boolean {
+  return status.automationActive || status.connecting;
+}
+
 export interface SerialChannelHandle {
   isConnected: () => boolean;
+  isAutomationActive: () => boolean;
+  connectWebSerial: () => Promise<void>;
+  connectBridge: () => void;
   disconnect: () => Promise<void>;
   clear: () => void;
   write: (data: string) => Promise<void>;
@@ -100,6 +113,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   channel: SerialChannelId;
   visible: boolean;
   compact: boolean;
+  fillHeight?: boolean;
   webSerialSupported: boolean;
   requestPort: (channel: SerialChannelId) => Promise<SerialPort>;
   releasePort: (channel: SerialChannelId, port: SerialPort, physicalDisconnect: boolean) => void;
@@ -109,6 +123,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
   channel,
   visible,
   compact,
+  fillHeight = false,
   webSerialSupported,
   requestPort,
   releasePort,
@@ -484,13 +499,16 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
     onStatus(channel, {
       connected: !!source,
       connecting,
-      automationActive: automationActive || brokerWriteLocked,
+      automationActive,
+      brokerWriteLocked,
       source,
       portInfo,
+      baud,
+      lineEnding,
       rxBytes,
       txBytes,
     });
-  }, [automationActive, brokerWriteLocked, channel, connecting, onStatus, portInfo, rxBytes, source, txBytes]);
+  }, [automationActive, baud, brokerWriteLocked, channel, connecting, lineEnding, onStatus, portInfo, rxBytes, source, txBytes]);
 
   useEffect(() => {
     const host = terminalHostRef.current;
@@ -794,6 +812,9 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
 
   useImperativeHandle(ref, () => ({
     isConnected: () => !!sourceRef.current,
+    isAutomationActive: () => automationActiveRef.current,
+    connectWebSerial,
+    connectBridge,
     disconnect: () => disconnect(),
     clear,
     write: enqueueSerial,
@@ -802,7 +823,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
       receiveListenersRef.current.add(listener);
       return () => receiveListenersRef.current.delete(listener);
     },
-  }), []); // eslint-disable-line react-hooks/exhaustive-deps
+  }));
 
   async function copySelection() {
     const selection = termRef.current?.getSelection();
@@ -856,6 +877,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
 
   return (
     <section
+      data-testid={`serial-terminal-${channel}`}
       aria-label={`${channelLabel} ${t("serial.console")}`}
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-line/80 bg-terminal shadow-inner transition-colors"
     >
@@ -880,19 +902,25 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
           {!source && !connecting && (
             <>
               <Button
-                variant={webSerialSupported ? "primary" : "danger"}
+                variant={webSerialSupported ? "primary" : "default"}
                 className="min-h-7 rounded-md px-2 py-1 text-[10px]"
+                disabled={automationActive}
                 onClick={handleWebSerialClick}
               >
                 <Usb size={12} /> {t("serial.webSerial")}
               </Button>
-              <Button variant="default" className="min-h-7 rounded-md px-2 py-1 text-[10px]" onClick={connectBridge}>
+              <Button variant="default" disabled={automationActive} className="min-h-7 rounded-md px-2 py-1 text-[10px]" onClick={connectBridge}>
                 <Plug size={12} /> {t("serial.bridge")}
               </Button>
             </>
           )}
           {(source || connecting) && (
-            <Button variant="ghost" disabled={automationActive} className="min-h-7 rounded-md px-2 py-1 text-[10px]" onClick={() => void disconnect()}>
+            <Button
+              variant="ghost"
+              disabled={isSerialDisconnectBlocked({ automationActive, connecting })}
+              className="min-h-7 rounded-md px-2 py-1 text-[10px]"
+              onClick={() => void disconnect()}
+            >
               {t("serial.disconnect")}
             </Button>
           )}
@@ -971,7 +999,7 @@ export const SerialTerminalPane = forwardRef<SerialChannelHandle, {
           aria-label={`${channelLabel} ${t("serial.terminalAria")}`}
           tabIndex={0}
           onClick={() => termRef.current?.focus()}
-          className={`${compact ? "h-[clamp(400px,52vh,620px)]" : "h-[clamp(480px,62vh,760px)]"} terminal-host min-h-0 min-w-0 shrink-0 overflow-hidden bg-terminal p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand/40 fullscreen:h-auto fullscreen:flex-1 [&_.xterm]:h-full [&_.xterm]:max-w-full`}
+          className={`${fillHeight ? "min-h-[360px] flex-1" : compact ? "h-[clamp(400px,52vh,620px)] shrink-0" : "h-[clamp(480px,62vh,760px)] shrink-0"} terminal-host min-w-0 overflow-hidden bg-terminal p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand/40 fullscreen:h-auto fullscreen:flex-1 [&_.xterm]:h-full [&_.xterm]:max-w-full`}
         />
 
         <div className="flex min-h-9 flex-wrap items-center gap-x-4 gap-y-1 border-t border-line/70 bg-terminal px-3 py-1.5 text-[10px] text-ink-dim transition-colors">

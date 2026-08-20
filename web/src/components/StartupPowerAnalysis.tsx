@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
-import { Activity, Download, Eye, EyeOff, Play, Square, TerminalSquare, TimerReset, Zap } from "lucide-react";
-import { Badge, Button, Card, Toggle } from "./ui";
+import { Activity, Download, Eye, EyeOff, Play, Square, TerminalSquare, TimerReset } from "lucide-react";
+import { Badge, Button, Toggle } from "./ui";
 import type { CaptureConfig, PowerCapture, PowerOutput } from "@/lib/types";
 import type { SerialAutomationHandle, SerialChannelId } from "./SerialCard";
 import { nominalVoltage, powerRailLabel, USER_POWER_RAILS } from "@/lib/power";
@@ -53,6 +53,7 @@ interface StartupRun {
   finishedAt: number | null;
   milestones: Partial<Record<MilestoneKey, number>>;
   serial: string[];
+  serialEntryCount: number;
   serialBuffer: string;
   bootloaderMode: BootloaderMode;
   detectedBootloader?: DetectedBootloader;
@@ -85,19 +86,19 @@ interface StartupStage {
 }
 
 const MILESTONE_COLORS: Record<MilestoneKey, string> = {
-  bootrom: "#64748b",
-  firmware: "#f59e0b",
-  kernel: "#4f7cff",
-  login: "#22c55e",
+  bootrom: "rgb(var(--c-ink-dim))",
+  firmware: "rgb(var(--c-warn))",
+  kernel: "rgb(var(--c-brand))",
+  login: "rgb(var(--c-ok))",
 };
 
 const STAGE_COLORS: Record<StartupStageKey, string> = {
-  power_on: "#94a3b8",
-  boot: "#06b6d4",
-  u_boot: "#f59e0b",
-  uefi: "#f59e0b",
-  kernel: "#4f7cff",
-  userspace: "#22c55e",
+  power_on: "rgb(var(--c-ink-dim))",
+  boot: "rgb(var(--c-ink-dim))",
+  u_boot: "rgb(var(--c-warn))",
+  uefi: "rgb(var(--c-warn))",
+  kernel: "rgb(var(--c-brand))",
+  userspace: "rgb(var(--c-ok))",
 };
 
 function sleep(ms: number) {
@@ -373,6 +374,9 @@ export function StartupPowerAnalysis({
   const publishTimerRef = useRef<number | null>(null);
   const operationRef = useRef(0);
   const onSetPowerRef = useRef(onSetPower);
+  const onReadPowerRef = useRef(onReadPower);
+  const onCancelCaptureRef = useRef(onCancelCapture);
+  const captureStateRef = useRef(captureState);
   const automationPasswordRef = useRef("");
 
   useEffect(() => {
@@ -387,14 +391,26 @@ export function StartupPowerAnalysis({
     onSetPowerRef.current = onSetPower;
   }, [onSetPower]);
 
+  useEffect(() => {
+    onReadPowerRef.current = onReadPower;
+  }, [onReadPower]);
+
+  useEffect(() => {
+    onCancelCaptureRef.current = onCancelCapture;
+  }, [onCancelCapture]);
+
+  useEffect(() => {
+    captureStateRef.current = captureState;
+  }, [captureState]);
+
   const publishRun = (run: StartupRun) => {
     activeRunRef.current = run;
     setActiveRun({
       ...run,
       milestones: { ...run.milestones },
-      // The complete log remains in activeRunRef. Copying an ever-growing log
-      // into React state for every UART chunk can stall the read loop.
-      serial: [],
+      // Keep the complete log in activeRunRef, while publishing a bounded tail
+      // so live evidence stays current without copying an ever-growing buffer.
+      serial: run.serial.slice(-8),
       initialCaptureIds: new Set(run.initialCaptureIds),
     });
   };
@@ -417,6 +433,24 @@ export function StartupPowerAnalysis({
     publishTimerRef.current = null;
   };
 
+  const restoreTargetPower = async (targetRail: string) => {
+    await onSetPowerRef.current(targetRail, true);
+    const deadline = performance.now() + POWER_STATE_SETTLE_TIMEOUT_MS;
+    let lastError: unknown = null;
+    do {
+      try {
+        const reading = await onReadPowerRef.current(targetRail);
+        lastError = null;
+        if (reading.state === "on") return;
+      } catch (reason) {
+        lastError = reason;
+      }
+      await sleep(100);
+    } while (performance.now() < deadline);
+    if (lastError != null) throw lastError;
+    throw new Error(t("startup.error.notPowered").replaceAll("{rail}", powerRailLabel(targetRail)));
+  };
+
   const completeRun = async (run: StartupRun, timedOut = false) => {
     if (run.completionStarted) return;
     run.completionStarted = true;
@@ -426,8 +460,9 @@ export function StartupPowerAnalysis({
     try {
       // Completion is not safe until the target rail is confirmed on. This is
       // deliberately idempotent and also heals an interrupted power-on call.
-      await onSetPowerRef.current(run.rail, true);
+      await restoreTargetPower(run.rail);
     } catch (reason) {
+      if (activeRunRef.current !== run) return;
       serialRef.current?.setAutomationActive(false, run.serialChannel);
       automationPasswordRef.current = "";
       taskControl.release("startup");
@@ -439,6 +474,7 @@ export function StartupPowerAnalysis({
         ` ${reason instanceof Error ? reason.message : String(reason)}`);
       return;
     }
+    if (activeRunRef.current !== run) return;
     run.finishedAt = Date.now();
     run.timedOut = timedOut;
     serialRef.current?.setAutomationActive(false, run.serialChannel);
@@ -481,29 +517,42 @@ export function StartupPowerAnalysis({
     operationRef.current += 1;
     clearRuntime();
     const run = activeRunRef.current;
+    setPhase("finalizing");
+    setError(message);
+    if (captureStateRef.current !== "idle") onCancelCaptureRef.current();
+    let restoreError: unknown = null;
+    if (restorePower && run) {
+      try { await restoreTargetPower(run.rail); } catch (reason) { restoreError = reason; }
+    }
     if (run) serialRef.current?.setAutomationActive(false, run.serialChannel);
     automationPasswordRef.current = "";
     taskControl.release("startup");
     activeRunRef.current = null;
     setActiveRun(null);
     setPhase("error");
-    setError(message);
-    if (captureState !== "idle") onCancelCapture();
-    if (restorePower && run) {
-      try { await onSetPower(run.rail, true); } catch { /* Preserve the primary workflow error. */ }
+    if (restoreError != null) {
+      setError(`${message} · ${t("startup.error.restorePower").replaceAll("{rail}", powerRailLabel(run?.rail ?? rail))} ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
     }
   };
 
   useEffect(() => () => {
     operationRef.current += 1;
     const run = activeRunRef.current;
+    activeRunRef.current = null;
     clearRuntime();
-    if (run) {
-      serialRef.current?.setAutomationActive(false, run.serialChannel);
-      void onSetPowerRef.current(run.rail, true);
+    if (!run) {
+      automationPasswordRef.current = "";
+      taskControl.release("startup");
+      return;
     }
-    automationPasswordRef.current = "";
-    taskControl.release("startup");
+    if (captureStateRef.current !== "idle") onCancelCaptureRef.current();
+    void restoreTargetPower(run.rail)
+      .catch(() => { /* Unmount cleanup cannot surface UI; retain the task lock until this settles. */ })
+      .finally(() => {
+        serialRef.current?.setAutomationActive(false, run.serialChannel);
+        automationPasswordRef.current = "";
+        taskControl.release("startup");
+      });
   }, [taskControl.release]);
 
   useEffect(() => {
@@ -547,8 +596,6 @@ export function StartupPowerAnalysis({
     operationRef.current = operation;
     setError(null);
     automationPasswordRef.current = password;
-    serial.setAutomationActive(automationEnabled, serialChannel);
-    serial.clear(serialChannel);
     const runId = Date.now();
     const run: StartupRun = {
       id: runId,
@@ -561,6 +608,7 @@ export function StartupPowerAnalysis({
       finishedAt: null,
       milestones: {},
       serial: [],
+      serialEntryCount: 0,
       serialBuffer: "",
       bootloaderMode,
       prePowerBytes: 0,
@@ -587,7 +635,10 @@ export function StartupPowerAnalysis({
       },
     };
     publishRun(run);
-    unsubscribeRef.current = serial.subscribe((text, receivedAtMs) => {
+    try {
+      serial.setAutomationActive(true, serialChannel);
+      serial.clear(serialChannel);
+      unsubscribeRef.current = serial.subscribe((text, receivedAtMs) => {
       const current = activeRunRef.current;
       if (!current) return;
       const byteLength = new TextEncoder().encode(text).byteLength;
@@ -604,6 +655,7 @@ export function StartupPowerAnalysis({
         return;
       }
       current.serial.push(meaningfulText);
+      current.serialEntryCount += 1;
       current.postPowerMeaningfulBytes += meaningfulByteLength;
       current.serialBuffer = (current.serialBuffer + meaningfulText).slice(-16384);
       const detected = detectStartupMilestones(current.serialBuffer, current.bootloaderMode);
@@ -677,7 +729,11 @@ export function StartupPowerAnalysis({
       }
       schedulePublishRun(current);
       maybeCompleteRun(current);
-    }, serialChannel);
+      }, serialChannel);
+    } catch (reason) {
+      await failRun(reason instanceof Error ? reason.message : String(reason), true);
+      return;
+    }
 
     const readPowerUntil = async (
       predicate: (reading: { state: string; currentUa: number }) => boolean,
@@ -752,6 +808,7 @@ export function StartupPowerAnalysis({
       // the same awaited transaction. A React state/effect transition is not a
       // reliable control edge for hardware.
       run.serial = [];
+      run.serialEntryCount = 0;
       run.serialBuffer = "";
       run.postPowerBytes = 0;
       run.postPowerMeaningfulBytes = 0;
@@ -828,6 +885,7 @@ export function StartupPowerAnalysis({
         maybeCompleteRun(current);
       }, remainingTimeoutMs);
     } catch (reason) {
+      if (operationRef.current !== operation) return;
       await failRun(reason instanceof Error ? reason.message : String(reason), true);
     }
   };
@@ -836,18 +894,23 @@ export function StartupPowerAnalysis({
     const run = activeRunRef.current;
     operationRef.current += 1;
     clearRuntime();
-    if (captureState !== "idle") onCancelCapture();
+    setPhase("finalizing");
+    if (captureStateRef.current !== "idle") onCancelCaptureRef.current();
+    let restoreError: unknown = null;
+    if (run) {
+      try { await restoreTargetPower(run.rail); } catch (reason) { restoreError = reason; }
+      serialRef.current?.setAutomationActive(false, run.serialChannel);
+    }
+    automationPasswordRef.current = "";
+    taskControl.release("startup");
     activeRunRef.current = null;
     setActiveRun(null);
-    setPhase("cancelled");
-    taskControl.release("startup");
-    if (run) {
-      serialRef.current?.setAutomationActive(false, run.serialChannel);
-      automationPasswordRef.current = "";
-      try { await onSetPower(run.rail, true); } catch (reason) {
-        setError(reason instanceof Error ? reason.message : String(reason));
-        setPhase("error");
-      }
+    if (restoreError != null) {
+      setError(restoreError instanceof Error ? restoreError.message : String(restoreError));
+      setPhase("error");
+    } else {
+      setError(null);
+      setPhase("cancelled");
     }
   };
 
@@ -898,9 +961,47 @@ export function StartupPowerAnalysis({
     { key: "kernel" as const, label: "Kernel", xMs: current.milestones.kernel },
     { key: "login" as const, label: "Login", xMs: current.milestones.login },
   ]).flatMap((marker) => marker.xMs != null ? [{ ...marker, xMs: marker.xMs }] : []) : [];
+  const displayMilestoneMarkers = displayRun ? ([
+    { key: "bootrom" as const, label: "Boot", xMs: displayRun.milestones.bootrom },
+    { key: "firmware" as const, label: firmwareLabel === "UEFI" ? "UEFI" : "U-Boot", xMs: displayRun.milestones.firmware },
+    { key: "kernel" as const, label: "Kernel", xMs: displayRun.milestones.kernel },
+    { key: "login" as const, label: "Login", xMs: displayRun.milestones.login },
+  ]).flatMap((marker) => marker.xMs != null ? [{ ...marker, xMs: marker.xMs }] : []) : [];
+  const executionPhases = [
+    "powering_off",
+    "waiting",
+    "arming",
+    "capturing",
+    "logging_in",
+    "executing",
+    "finalizing",
+  ] as const;
+  const activePhaseIndex = executionPhases.indexOf(phase as (typeof executionPhases)[number]);
 
   return (
-    <Card title={t("startup.title")} subtitle={t("startup.subtitle")} icon={TimerReset}>
+    <section className="overflow-hidden rounded-xl border border-line/60 bg-panel">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line/60 px-3 py-2.5 sm:px-4">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand/10 text-brand"><TimerReset size={15} /></span>
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-ink">{t("startup.title")}</h3>
+            <p className="truncate text-[10px] text-ink-dim">{t("startup.subtitle")}</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {displayRun && <span className="font-mono text-[10px] text-ink-dim">RX {displayRun.postPowerMeaningfulBytes.toLocaleString()} B</span>}
+          <Badge tone={phase === "error" ? "danger" : phase === "partial" ? "warn" : busy ? "brand" : phase === "complete" ? "ok" : "neutral"}>
+            {t(`startup.phase.${phase}`)}
+          </Badge>
+        </div>
+      </header>
+
+      <div className="grid items-start gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_320px] lg:p-4">
+      <aside className={`${busy ? "order-2" : "order-1"} min-w-0 rounded-xl border border-line/60 bg-panel2/20 p-3 lg:order-2`}>
+        <div className="mb-3 flex items-center gap-2 border-b border-line/50 pb-2.5">
+          <Activity size={14} className="text-brand" />
+          <span className="text-xs font-semibold text-ink">{t("startup.rail")} / {t("startup.window")}</span>
+        </div>
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="text-[11px] text-ink-dim">{t("startup.rail")}
           <select value={rail} onChange={(event) => setRail(event.target.value)} disabled={busy}
@@ -990,7 +1091,9 @@ export function StartupPowerAnalysis({
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {!busy ? (
-          <Button variant="primary" disabled={blockedByOtherTask} onClick={() => void start()}><Play size={15} />{t("startup.start")}</Button>
+          <Button className="lg:hidden" variant="primary" disabled={blockedByOtherTask} onClick={() => void start()}><Play size={15} />{t("startup.start")}</Button>
+        ) : phase === "finalizing" ? (
+          <Button disabled><Square size={15} />{t("startup.phase.finalizing")}</Button>
         ) : (
           <Button onClick={() => void cancel()}><Square size={15} />{t("startup.cancel")}</Button>
         )}
@@ -1006,6 +1109,57 @@ export function StartupPowerAnalysis({
       </div>
 
       {error && <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${phase === "partial" ? "border border-warn/30 bg-warn/10 text-warn" : "border border-danger/30 bg-danger/10 text-danger"}`}>{error}</div>}
+
+      <p className="mt-3 border-t border-line/50 pt-2.5 text-[9px] leading-relaxed text-ink-dim">{t("startup.note")}</p>
+      </aside>
+
+      <main className={`${busy ? "order-1" : "order-2"} min-w-0 space-y-3 lg:order-1`}>
+      {busy ? <section className="rounded-xl border border-line/60 bg-panel p-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="text-xs font-semibold text-ink">{t("startup.phase.capturing")}</span>
+          <span className="font-mono text-[10px] text-ink-dim">{powerRailLabel(rail)} · {rateHz} Hz</span>
+        </div>
+        <div className="grid gap-1.5 sm:grid-cols-4 xl:grid-cols-7">
+          {executionPhases.map((step, index) => {
+            const complete = phase === "complete" || (activePhaseIndex >= 0 && index < activePhaseIndex);
+            const currentStep = activePhaseIndex === index;
+            return (
+              <div key={step} className={`rounded-lg border px-2 py-2 ${currentStep ? "border-brand/40 bg-brand/5" : "border-line/50 bg-panel2/25"}`}>
+                <div className={`h-1 w-5 rounded-full ${complete ? "bg-ok" : currentStep ? "bg-brand" : "bg-line"}`} />
+                <div className="mt-1.5 truncate text-[9px] font-medium text-ink">{t(`startup.phase.${step}`)}</div>
+              </div>
+            );
+          })}
+        </div>
+      </section> : current ? (
+        <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line/60 bg-panel px-4 py-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-ink">{t("startup.latest.title")}</span>
+              <Badge tone={phase === "error" ? "danger" : phase === "partial" ? "warn" : phase === "complete" ? "ok" : "neutral"}>
+                {t(`startup.phase.${phase}`)}
+              </Badge>
+            </div>
+            <p className="mt-1 text-[11px] text-ink-dim">{t("startup.latest.description")}</p>
+          </div>
+          <Button className="hidden shrink-0 lg:inline-flex" variant="primary" disabled={blockedByOtherTask} onClick={() => void start()}>
+            <Play size={15} />{t("startup.start")}
+          </Button>
+        </section>
+      ) : (
+        <section className="grid min-h-56 place-items-center rounded-xl border border-line/60 bg-panel px-5 py-8 text-center">
+          <div className="max-w-md">
+            <span className="mx-auto grid h-10 w-10 place-items-center rounded-xl bg-brand/10 text-brand">
+              <TimerReset size={18} />
+            </span>
+            <h4 className="mt-3 text-sm font-semibold text-ink">{t("startup.empty.title")}</h4>
+            <p className="mx-auto mt-1 max-w-[56ch] text-[11px] leading-relaxed text-ink-dim">{t("startup.empty.description")}</p>
+            <Button className="mt-4 hidden lg:inline-flex" variant="primary" disabled={blockedByOtherTask} onClick={() => void start()}>
+              <Play size={15} />{t("startup.start")}
+            </Button>
+          </div>
+        </section>
+      )}
 
       {(activeRun || current) && <div className="mt-4 border-t border-line/60 pt-3">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -1085,13 +1239,32 @@ export function StartupPowerAnalysis({
         </div>}
       </div>}
 
+      {displayRun && <section className="rounded-xl border border-line/60 bg-panel p-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="inline-flex items-center gap-2 text-xs font-semibold text-ink"><TerminalSquare size={14} className="text-brand" />{t("startup.download")}</span>
+          <span className="font-mono text-[9px] text-ink-dim">{displayRun.serialEntryCount} entries</span>
+        </div>
+        <div className="mt-2 grid gap-3 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+          <div className="divide-y divide-line/40 text-[10px]">
+            {displayMilestoneMarkers.map((marker) => (
+              <div key={marker.key} className="flex items-center justify-between gap-3 py-1.5 first:pt-0 last:pb-0">
+                <span className="text-ink-dim">{marker.label}</span>
+                <span className="font-mono text-ink">+ {(marker.xMs / 1000).toFixed(3)} s</span>
+              </div>
+            ))}
+          </div>
+          <pre className="max-h-36 overflow-auto rounded-lg border border-line/60 bg-terminal px-3 py-2 font-mono text-[10px] leading-relaxed text-terminal-ink">{displayRun.serial.slice(-8).join("") || t("startup.automation.waitingOutput")}</pre>
+        </div>
+      </section>}
+
       {current && <div className="mt-3 flex flex-wrap justify-end gap-1.5">
         <Button variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => downloadTaskReport(current)}><Download size={13} />{t("startup.downloadResult")}</Button>
         <Button variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => downloadSerial(current)}><Download size={13} />{t("startup.download")}</Button>
         {current.capture && <Button variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => void downloadPowerData(current, "csv").catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))}><Download size={13} />{t("startup.downloadPowerCsv")}</Button>}
         {current.capture && <Button variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => void downloadPowerData(current, "ndjson").catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))}><Download size={13} />{t("startup.downloadPowerNdjson")}</Button>}
       </div>}
-      <p className="mt-3 text-[10px] leading-relaxed text-ink-dim"><Activity size={11} className="mr-1 inline" /><Zap size={11} className="mr-1 inline" />{t("startup.note")}</p>
-    </Card>
+      </main>
+      </div>
+    </section>
   );
 }

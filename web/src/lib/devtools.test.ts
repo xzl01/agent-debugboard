@@ -2,20 +2,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { shouldEnableReactDiagnostics } from "./devtools.ts";
 
-test("enables diagnostics only in development with the disable flag unset", () => {
-  assert.equal(shouldEnableReactDiagnostics(true, undefined), true);
+test("keeps diagnostics disabled by default in development", () => {
+  assert.equal(shouldEnableReactDiagnostics(true, undefined), false);
 });
 
-test("treats an empty disable flag as enabled", () => {
-  assert.equal(shouldEnableReactDiagnostics(true, ""), true);
+test("keeps diagnostics disabled for an empty flag", () => {
+  assert.equal(shouldEnableReactDiagnostics(true, ""), false);
 });
 
-test("treats an explicit 0 disable flag as enabled", () => {
+test("enables diagnostics only for an explicit 0 flag", () => {
   assert.equal(shouldEnableReactDiagnostics(true, "0"), true);
 });
 
-test("treats any non-1 disable flag value as enabled", () => {
-  assert.equal(shouldEnableReactDiagnostics(true, "false"), true);
+test("keeps diagnostics disabled for other values", () => {
+  assert.equal(shouldEnableReactDiagnostics(true, "false"), false);
 });
 
 test("disables diagnostics when the disable flag is exactly 1", () => {

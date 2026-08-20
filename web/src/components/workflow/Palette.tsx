@@ -32,7 +32,7 @@ export function Palette({
   const atLimit = executionCount >= MAX_EXECUTION_STEPS;
 
   return (
-    <aside className="border-b border-line/60 bg-panel2/25 p-3 xl:min-h-0 xl:overflow-x-hidden xl:overflow-y-auto xl:overscroll-contain xl:border-b-0 xl:border-r" aria-label={t("test.workflow.library")}>
+    <aside className="rounded-2xl border border-line/70 bg-panel p-3 xl:min-h-0 xl:overflow-x-hidden xl:overflow-y-auto xl:overscroll-contain" aria-label={t("test.workflow.library")}>
       <div className="mb-3 flex items-center gap-2">
         <span className="grid h-8 w-8 place-items-center rounded-lg bg-brand/10 text-brand">
           <Sparkles size={15} />
@@ -45,7 +45,7 @@ export function Palette({
       <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-1">
         {PALETTE_GROUPS.map((group) => (
           <section key={group.key}>
-            <h4 className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
+            <h4 className="mb-1.5 px-1 text-[10px] font-semibold text-ink-dim">
               {t(`test.workflow.group.${group.key}`)}
             </h4>
             <div className="space-y-1">
@@ -64,7 +64,7 @@ export function Palette({
                     onDragEnd={() => dragDispatch({ type: "end" })}
                     onClick={() => onAddStep(type)}
                     disabled={atLimit}
-                    className="flex min-h-11 w-full cursor-grab items-center gap-2 rounded-xl border border-transparent px-2.5 py-2 text-left text-xs font-medium text-ink transition-colors hover:border-line/70 hover:bg-panel active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex min-h-10 w-full cursor-grab items-center gap-2 rounded-xl border border-transparent px-2 py-1.5 text-left text-xs font-medium text-ink transition-colors hover:border-line/70 hover:bg-panel2/55 active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-brand/10 text-brand">
                       <Icon size={14} />
@@ -80,7 +80,7 @@ export function Palette({
 
         {/* Flow control section */}
         <section>
-          <h4 className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
+          <h4 className="mb-1.5 px-1 text-[10px] font-semibold text-ink-dim">
             {t("test.workflow.group.flow")}
           </h4>
           <div className="space-y-1">
@@ -88,7 +88,7 @@ export function Palette({
               type="button"
               onClick={onAddLoop}
               disabled={atLimit}
-              className="flex min-h-11 w-full items-center gap-2 rounded-xl border border-transparent px-2.5 py-2 text-left text-xs font-medium text-ink transition-colors hover:border-line/70 hover:bg-panel disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex min-h-10 w-full items-center gap-2 rounded-xl border border-transparent px-2 py-1.5 text-left text-xs font-medium text-ink transition-colors hover:border-line/70 hover:bg-panel2/55 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <span className="grid h-7 w-7 place-items-center rounded-lg bg-violet-500/10 text-violet-500">
                 <Repeat2 size={14} />
@@ -100,7 +100,7 @@ export function Palette({
               type="button"
               onClick={onAddCondition}
               disabled={atLimit}
-              className="flex min-h-11 w-full items-center gap-2 rounded-xl border border-transparent px-2.5 py-2 text-left text-xs font-medium text-ink transition-colors hover:border-line/70 hover:bg-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex min-h-10 w-full items-center gap-2 rounded-xl border border-transparent px-2 py-1.5 text-left text-xs font-medium text-ink transition-colors hover:border-line/70 hover:bg-panel2/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <span className="grid h-7 w-7 place-items-center rounded-lg bg-violet-500/10 text-violet-500">
                 <GitFork size={14} />
@@ -111,7 +111,7 @@ export function Palette({
             <button
               type="button"
               onClick={onShowGroupHint}
-              className="flex min-h-11 w-full items-center gap-2 rounded-xl border border-transparent px-2.5 py-2 text-left text-xs font-medium text-ink transition-colors hover:border-line/70 hover:bg-panel"
+              className="flex min-h-10 w-full items-center gap-2 rounded-xl border border-transparent px-2 py-1.5 text-left text-xs font-medium text-ink transition-colors hover:border-line/70 hover:bg-panel2/55"
             >
               <span className="grid h-7 w-7 place-items-center rounded-lg bg-violet-500/10 text-violet-500">
                 <Package size={14} />
@@ -124,12 +124,12 @@ export function Palette({
         {/* Custom units section */}
         {customUnits.length > 0 && (
           <section>
-            <h4 className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
+            <h4 className="mb-1.5 px-1 text-[10px] font-semibold text-ink-dim">
               {t("test.workflow.customUnits")}
             </h4>
             <div className="space-y-1">
               {customUnits.map((unit) => (
-                <div key={unit.id} className="group/unit flex items-center rounded-xl hover:bg-panel">
+                <div key={unit.id} className="group/unit flex items-center rounded-xl hover:bg-panel2/55">
                   <button
                     type="button"
                     draggable={!atLimit}

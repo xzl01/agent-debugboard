@@ -1,11 +1,14 @@
 import {
+  Check,
   CheckCircle2,
+  ChevronRight,
   Circle,
   Clock3,
   HelpCircle,
   ShieldAlert,
   XCircle,
 } from "lucide-react";
+import { useState } from "react";
 import { Badge } from "./ui";
 import { useI18n } from "@/lib/i18n";
 import type {
@@ -63,6 +66,9 @@ function effectiveApplyState(
 
 function ApplyBadge({ state }: { readonly state: ApplyState }) {
   const { t } = useI18n();
+  if (state === "not_saved") {
+    return <span className="text-[11px] font-medium text-ink-dim">{t("config.applyState.not_saved")}</span>;
+  }
   const presentation = APPLY_PRESENTATIONS[state];
   const Icon = presentation.icon;
   return (
@@ -80,7 +86,7 @@ function RiskBadge({ risk }: { readonly risk: PersistentConfigItem["risk"] }) {
     case "unknown":
       return <Badge tone="neutral"><HelpCircle size={12} /> {t("config.risk.unknown")}</Badge>;
     case "safe":
-      return <Badge tone="ok"><CheckCircle2 size={12} /> {t("config.risk.safe")}</Badge>;
+      return <span className="sr-only">{t("config.risk.safe")}</span>;
     default:
       return assertNever(risk);
   }
@@ -112,22 +118,31 @@ function ConfigRow({
         onClick={() => {
           if (!disabled) onToggle(item.id);
         }}
-        className={`grid min-h-11 w-full min-w-0 cursor-pointer rounded-lg px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 ${checked ? "bg-brand/15 ring-1 ring-inset ring-brand/30 hover:bg-brand/20" : "hover:bg-panel2/50"} ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
+        className={`flex min-h-14 w-full min-w-0 cursor-pointer items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40 ${checked ? "bg-brand/15 ring-1 ring-inset ring-brand/30 hover:bg-brand/20" : "hover:bg-panel2/60"} ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
       >
-        <span className="min-w-0">
-          <span className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="min-w-0 break-all font-mono text-sm font-medium text-ink">{item.id}</span>
-            <RiskBadge risk={item.risk} />
-            <ApplyBadge state={effectiveApplyState(item, error)} />
-          </span>
-          <span className="mt-2 grid min-w-0 grid-cols-2 gap-2">
-            <span className="min-w-0 rounded-lg bg-panel2/50 px-2 py-1.5">
-              <span className="block text-[11px] uppercase tracking-wide text-ink-dim">{t("config.current")}</span>
-              <span className="block break-all font-mono text-xs text-ink">{valueText(item.current, t)}</span>
+        <span
+          aria-hidden="true"
+          className={`mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-md border transition-colors ${checked ? "border-brand bg-brand text-on-brand" : "border-line bg-panel"}`}
+        >
+          {checked && <Check size={13} strokeWidth={3} />}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-start justify-between gap-2">
+            <span className="min-w-0 break-all font-mono text-xs font-semibold leading-5 text-ink">{item.id}</span>
+            <span className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+              <RiskBadge risk={item.risk} />
+              <ApplyBadge state={effectiveApplyState(item, error)} />
             </span>
-            <span className="min-w-0 rounded-lg bg-panel2/50 px-2 py-1.5">
-              <span className="block text-[11px] uppercase tracking-wide text-ink-dim">{t("config.saved")}</span>
-              <span className="block break-all font-mono text-xs text-ink">{valueText(item.saved, t)}</span>
+          </span>
+          <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+            <span className="min-w-0">
+              <span className="text-ink-dim">{t("config.current")}</span>{" "}
+              <span className="break-all font-mono font-medium text-ink">{valueText(item.current, t)}</span>
+            </span>
+            <span aria-hidden="true" className="text-line">→</span>
+            <span className="min-w-0">
+              <span className="text-ink-dim">{t("config.saved")}</span>{" "}
+              <span className="break-all font-mono font-medium text-ink">{valueText(item.saved, t)}</span>
             </span>
           </span>
         </span>
@@ -152,14 +167,25 @@ function ConfigGroup({
   readonly onToggle: (id: string) => void;
 }) {
   const { t } = useI18n();
+  const [expanded, setExpanded] = useState(kind !== "gpio");
   if (items.length === 0) return null;
   const headingId = `persistent-config-group-${kind}`;
+  const selectedCount = items.filter((item) => selectedIds.has(item.id)).length;
   return (
-    <section aria-labelledby={headingId}>
-      <h3 id={headingId} className="px-3 text-[11px] font-medium uppercase tracking-wide text-ink-dim">
-        {t(`config.group.${kind}`)}
-      </h3>
-      <ul className="mt-1 space-y-1">
+    <details
+      className="group border-t border-line/60 first:border-t-0"
+      open={expanded}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+    >
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-panel2/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand/40">
+        <ChevronRight size={15} className="shrink-0 text-ink-dim transition-transform duration-150 group-open:rotate-90" />
+        <h3 id={headingId} className="min-w-0 flex-1 text-sm font-medium text-ink">
+          {t(`config.group.${kind}`)}
+        </h3>
+        {selectedCount > 0 && <span className="text-[11px] font-medium text-brand">{t("config.group.selected", { count: selectedCount })}</span>}
+        <span className="rounded-full bg-panel2 px-2 py-0.5 text-[11px] tabular-nums text-ink-dim">{t("config.group.items", { count: items.length })}</span>
+      </summary>
+      <ul aria-labelledby={headingId} className="space-y-1 border-t border-line/50 p-2">
         {items.map((item) => (
           <ConfigRow
             key={item.id}
@@ -171,7 +197,7 @@ function ConfigGroup({
           />
         ))}
       </ul>
-    </section>
+    </details>
   );
 }
 
@@ -189,7 +215,7 @@ export function PersistentConfigRows({
   readonly onToggle: (id: string) => void;
 }) {
   return (
-    <div className="space-y-4">
+    <div className="overflow-hidden rounded-xl border border-line/70">
       <ConfigGroup kind="power" items={groups.power} selectedIds={selectedIds} disabled={disabled} error={error} onToggle={onToggle} />
       <ConfigGroup kind="switch" items={groups.switch} selectedIds={selectedIds} disabled={disabled} error={error} onToggle={onToggle} />
       <ConfigGroup kind="gpio" items={groups.gpio} selectedIds={selectedIds} disabled={disabled} error={error} onToggle={onToggle} />

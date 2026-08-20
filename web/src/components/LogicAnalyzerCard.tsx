@@ -18,7 +18,7 @@ import {
   TriangleAlert,
   Zap,
 } from "lucide-react";
-import { Badge, Button, Card, Toggle } from "./ui";
+import { Badge, Button, Card, Toggle, WorkspaceModeHeader, WorkspaceModeTab } from "./ui";
 import { GpioPinoutSvg } from "./GpioPinoutSvg";
 import { useSigrokScope } from "@/hooks/useSigrokScope";
 import type {
@@ -93,23 +93,25 @@ import {
 import { useI18n } from "@/lib/i18n";
 
 const WAVEFORM_COLORS = [
-  "#4f7cff",
-  "#f59e0b",
-  "#22c55e",
-  "#ef4444",
-  "#8b5cf6",
-  "#ec4899",
-  "#06b6d4",
-  "#84cc16",
-  "#f97316",
-  "#6366f1",
-  "#14b8a6",
-  "#e11d48",
-  "#0ea5e9",
-  "#a855f7",
-  "#10b981",
-  "#f43f5e",
+  "rgb(var(--c-brand))",
+  "rgb(var(--c-ok))",
+  "rgb(var(--c-warn))",
+  "rgb(var(--c-ink-dim))",
+  "rgb(var(--c-brand) / 0.65)",
+  "rgb(var(--c-ok) / 0.65)",
+  "rgb(var(--c-warn) / 0.7)",
+  "rgb(var(--c-ink) / 0.65)",
+  "rgb(var(--c-brand) / 0.45)",
+  "rgb(var(--c-ok) / 0.45)",
+  "rgb(var(--c-warn) / 0.5)",
+  "rgb(var(--c-ink-dim) / 0.55)",
+  "rgb(var(--c-brand) / 0.8)",
+  "rgb(var(--c-ok) / 0.8)",
+  "rgb(var(--c-warn) / 0.85)",
+  "rgb(var(--c-ink) / 0.8)",
 ];
+
+type LogicAnalyzerMode = "capture" | "decode";
 
 const WIDTH = 800;
 const PLOT_LEFT = 48;
@@ -278,6 +280,7 @@ export function LogicAnalyzerCard({
   workspaceTabs?: ReactNode;
 }) {
   const { t } = useI18n();
+  const [workspaceMode, setWorkspaceMode] = useState<LogicAnalyzerMode>("capture");
   const [config, setConfig] = useState<LogicAnalyzerConfig>(DEFAULT_CONFIG);
   const [state, setState] = useState<LogicAnalyzerState>("idle");
   const [capture, setCapture] = useState<LogicAnalyzerCapture | null>(null);
@@ -289,6 +292,7 @@ export function LogicAnalyzerCard({
   );
   const [decoderState, setDecoderState] = useState<DecoderRunState>(INITIAL_DECODER_STATE);
   const captureOperationRef = useRef<"bounded" | "stream" | null>(null);
+  const boundedCancelRef = useRef(false);
   const currentDecodeSignatureRef = useRef<string | null>(null);
   const streamSamplesRef = useRef<number[]>([]);
   const streamSequenceRef = useRef(0);
@@ -425,6 +429,7 @@ export function LogicAnalyzerCard({
   const preTriggerAvailable = preTriggerReason == null;
   const controlsDisabled =
     state === "armed" || state === "capturing" || isArming || streamStarting || streaming;
+  const decodeAvailable = state === "done" && capture != null && capture.sampleCount > 0;
   const captureRequestedRate = capture ? getLogicAnalyzerRequestedSampleRate(capture.config) : null;
   const captureActualRate = capture ? getLogicAnalyzerActualSampleRate(capture.config) : null;
   const captureSamplePeriod = capture
@@ -511,6 +516,7 @@ export function LogicAnalyzerCard({
 
   const handleArm = useCallback(async () => {
     if (captureOperationRef.current != null || streamingRef.current) return;
+    boundedCancelRef.current = false;
     setError(null);
     setStreamNotice(null);
     const nextConfig = normalizedConfig;
@@ -537,6 +543,7 @@ export function LogicAnalyzerCard({
 
       while (!stopped) {
         const frame = await sigrokReadCaptureFrame(triggerObserved ? 5000 : 15000);
+        if (boundedCancelRef.current) return;
         if (!frame) {
           throw new Error(triggerObserved ? "Timed out waiting for capture completion" : "Trigger timeout");
         }
@@ -605,6 +612,8 @@ export function LogicAnalyzerCard({
         await stopAndCloseSigrok("capture completion cleanup");
       }
 
+      if (boundedCancelRef.current) return;
+
       if (hasTrigger && triggerSampleIndex == null) {
         throw new Error("Capture completed without TRIGGERED event");
       }
@@ -638,16 +647,22 @@ export function LogicAnalyzerCard({
         })),
       }));
       setState("done");
+      setWorkspaceMode("decode");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error"); setState("idle");
+      if (!boundedCancelRef.current) {
+        setError(err instanceof Error ? err.message : "Network error");
+      }
+      setState("idle");
       await stopAndCloseSigrok("capture error cleanup");
     } finally {
       if (captureOperationRef.current === "bounded") captureOperationRef.current = null;
+      boundedCancelRef.current = false;
       setIsArming(false);
     }
   }, [assembleBoundedSigrokCapture, normalizedConfig, sigrokConfigure, sigrokEnsureConnected, sigrokGetServerCapabilities, sigrokReadCaptureFrame, sigrokStart, stopAndCloseSigrok]);
 
   const handleCancel = useCallback(async () => {
+    boundedCancelRef.current = true;
     setError(null);
     setStreamNotice(null);
     await stopAndCloseSigrok("manual cancel");
@@ -788,15 +803,25 @@ export function LogicAnalyzerCard({
 
   useEffect(() => {
     return () => {
+      boundedCancelRef.current = true;
       streamingRef.current = false;
-      void stopAndCloseSigrok("component cleanup");
+      if (captureOperationRef.current != null) {
+        void stopAndCloseSigrok("component cleanup");
+        return;
+      }
+      try {
+        sigrokClose();
+      } catch (cleanupError) {
+        warnSigrokCleanup("component cleanup close", cleanupError);
+      }
     };
-  }, [stopAndCloseSigrok]);
+  }, [sigrokClose, stopAndCloseSigrok]);
 
   const handleClear = useCallback(() => {
     setCapture(null);
     setState("idle");
     setDecoderState(INITIAL_DECODER_STATE);
+    setWorkspaceMode("capture");
   }, []);
 
   const waveformData = useMemo(() => {
@@ -1113,23 +1138,74 @@ export function LogicAnalyzerCard({
 
   return (
     <Card
-      title={workspaceTabs ? undefined : t("logicAnalyzer.title")}
-      subtitle={workspaceTabs ? undefined : t("logicAnalyzer.subtitle")}
-      icon={Activity}
       headerLeading={workspaceTabs}
-      right={
-        <Badge tone={state === "idle" ? "neutral" : state === "armed" ? "warn" : "brand"}>
-          {t(`logicAnalyzer.state.${state}`)}
-        </Badge>
-      }
+      contentClassName="p-0"
     >
+      <WorkspaceModeHeader
+        icon={Activity}
+        title={t("logicAnalyzer.title")}
+        subtitle={t("logicAnalyzer.subtitle")}
+        status={
+          <Badge tone={state === "idle" ? "neutral" : state === "armed" ? "warn" : "brand"}>
+            {t(`logicAnalyzer.state.${state}`)}
+          </Badge>
+        }
+      >
+        <div
+          role="tablist"
+          aria-label={t("logicAnalyzer.modes")}
+          data-testid="logic-analyzer-mode-switch"
+          className="grid min-w-0 grid-cols-2 gap-1 rounded-xl border border-line/70 bg-panel2/70 p-1"
+        >
+          <WorkspaceModeTab
+            role="tab"
+            id="logic-analyzer-mode-capture"
+            aria-controls="logic-analyzer-panel-capture"
+            aria-selected={workspaceMode === "capture"}
+            disabled={controlsDisabled && workspaceMode !== "capture"}
+            onClick={() => setWorkspaceMode("capture")}
+            selected={workspaceMode === "capture"}
+            icon={Activity}
+            label={t("logicAnalyzer.mode.capture")}
+            summary={t("logicAnalyzer.mode.captureSummary")}
+          />
+          <WorkspaceModeTab
+            role="tab"
+            id="logic-analyzer-mode-decode"
+            aria-controls="logic-analyzer-panel-decode"
+            aria-selected={workspaceMode === "decode"}
+            aria-describedby={!decodeAvailable ? "logic-analyzer-decode-requirement" : undefined}
+            disabled={!decodeAvailable || controlsDisabled}
+            title={!decodeAvailable ? t("logicAnalyzer.mode.decodeUnavailable") : undefined}
+            onClick={() => setWorkspaceMode("decode")}
+            selected={workspaceMode === "decode"}
+            icon={Binary}
+            label={t("logicAnalyzer.mode.decode")}
+            summary={t("logicAnalyzer.mode.decodeSummary")}
+          />
+        </div>
+        {!decodeAvailable && (
+          <span id="logic-analyzer-decode-requirement" className="sr-only">
+            {t("logicAnalyzer.mode.decodeUnavailable")}
+          </span>
+        )}
+      </WorkspaceModeHeader>
+
+      <div className="p-3 sm:p-4">
+
       {error && (
         <div className="mb-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
           {error}
         </div>
       )}
 
-      <div className="grid items-start gap-3 lg:grid-cols-[300px_minmax(0,1fr)]">
+      <div
+        id={workspaceMode === "capture" ? "logic-analyzer-panel-capture" : "logic-analyzer-panel-decode"}
+        role="tabpanel"
+        aria-labelledby={workspaceMode === "capture" ? "logic-analyzer-mode-capture" : "logic-analyzer-mode-decode"}
+        className={`grid items-start gap-3 ${workspaceMode === "capture" ? "lg:grid-cols-[300px_minmax(0,1fr)]" : "grid-cols-1"}`}
+      >
+        {workspaceMode === "capture" && (
         <section className="min-w-0 rounded-xl border border-line/60 bg-panel2/35 p-3">
           <div className="flex items-center justify-between gap-3">
             <div className="text-xs font-semibold text-ink">{t("logicAnalyzer.selectPins")}</div>
@@ -1226,8 +1302,11 @@ export function LogicAnalyzerCard({
             </div>
           )}
         </section>
+        )}
 
         <section className="min-w-0 rounded-xl border border-line/60 bg-panel2/20 p-3">
+          {workspaceMode === "capture" && (
+          <>
           <div className="grid grid-cols-2 gap-x-3 gap-y-2">
             <label className="text-[11px] text-ink-dim">
               {t("logicAnalyzer.sampleRate")}
@@ -1289,6 +1368,7 @@ export function LogicAnalyzerCard({
                 step="1"
                 value={config.postSamples}
                 onChange={(e) => updateConfig((c) => ({ ...c, postSamples: Number(e.target.value) }))}
+                disabled={controlsDisabled}
                 className="mt-1 w-full rounded-lg border border-line bg-panel px-2 py-1.5 text-xs text-ink"
               />
             </label>
@@ -1297,10 +1377,6 @@ export function LogicAnalyzerCard({
                 {preTriggerHelperText}
               </span>
             )}
-            <span className="col-span-2 -mt-1 block text-[9px] text-ink-dim/60">
-              {t("logicAnalyzer.captureSemantics")}
-            </span>
-
             {config.triggerType !== "none" && (
               <label className="col-span-2 text-[11px] text-ink-dim">
                 {t("logicAnalyzer.triggerPin")}
@@ -1362,10 +1438,22 @@ export function LogicAnalyzerCard({
                   </span>
                 )}
               </>
-            ) : (
+            ) : state === "armed" || state === "capturing" || isArming ? (
               <Button type="button" onClick={handleCancel}>
                 <Square size={15} />
                 {t("logicAnalyzer.cancel")}
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                variant="primary"
+                onClick={() => {
+                  handleClear();
+                  void handleArm();
+                }}
+              >
+                <Radio size={15} />
+                {t("logicAnalyzer.reCapture")}
               </Button>
             )}
 
@@ -1385,8 +1473,36 @@ export function LogicAnalyzerCard({
               </div>
             )}
           </div>
+          </>
+          )}
 
-          {streaming && streamWaveformData.length > 0 && (
+          {workspaceMode === "decode" && capture && (
+            <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-line/50 pb-3">
+              <div className="mr-auto min-w-0">
+                <div className="text-xs font-semibold text-ink">{t("logicAnalyzer.mode.decode")}</div>
+                <div className="text-[10px] text-ink-dim">
+                  {formatSampleCount(capture.sampleCount)} {t("logicAnalyzer.samples")} · {capturePins.map((pin) => pinLabel(pin)).join(" · ")}
+                </div>
+              </div>
+              <Button type="button" onClick={() => setWorkspaceMode("capture")}>
+                <Radio size={13} />
+                {t("logicAnalyzer.returnCapture")}
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => exportToCsv(capture)}>
+                <Download size={13} />
+                CSV
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => exportToSr(capture)}>
+                <Download size={13} />
+                PulseView (.sr)
+              </Button>
+              <Button type="button" variant="ghost" onClick={handleClear} aria-label={t("logicAnalyzer.clear")}>
+                <Trash2 size={13} />
+              </Button>
+            </div>
+          )}
+
+          {workspaceMode === "capture" && streaming && streamWaveformData.length > 0 && (
             // FIXME: the step-path lane rendering below duplicates the capture
             // waveform svg almost verbatim; extract a shared StepWaveform
             // component when the live view gains more features.
@@ -1540,7 +1656,7 @@ export function LogicAnalyzerCard({
               </svg>
             </div>
           )}
-          {!streaming && capture && capture.sampleCount > 0 && (
+          {workspaceMode === "decode" && !streaming && capture && capture.sampleCount > 0 && (
             <div className="mt-3">
               <svg
                 viewBox={`0 0 ${WIDTH} ${svgHeight}`}
@@ -1670,6 +1786,7 @@ export function LogicAnalyzerCard({
         </section>
       </div>
 
+      {workspaceMode === "capture" && (
       <div className="mt-2 flex flex-wrap gap-4 text-[10px] text-ink-dim">
         <span>
           {t("logicAnalyzer.actualRate")}: {formatSampleRate(actualRate)}
@@ -1687,16 +1804,28 @@ export function LogicAnalyzerCard({
           </span>
         </span>
       </div>
-      <div className="mt-1 flex flex-wrap gap-3 text-[9px] text-ink-dim/70">
-        <span>{t("logicAnalyzer.captureDurationByRate")}:</span>
-        {SAMPLE_RATES.map((rate) => (
-          <span key={rate.value}>
-            {rate.label}={formatDuration(maxSamples, rate.value)}
-          </span>
-        ))}
-      </div>
+      )}
+      {workspaceMode === "capture" && (
+      <details className="mt-2 rounded-xl border border-line/60 bg-panel2/25 px-3 py-2">
+        <summary className="cursor-pointer text-[10px] font-medium text-ink-dim outline-none focus-visible:ring-2 focus-visible:ring-brand/30">
+          {t("logicAnalyzer.capabilityDetails")}
+        </summary>
+        <div className="mt-2 space-y-2 border-t border-line/50 pt-2 text-[9px] leading-relaxed text-ink-dim/80">
+          <p>{t("logicAnalyzer.captureSemantics")}</p>
+          <p>{t("logicAnalyzer.highRateRange")}</p>
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            <span>{t("logicAnalyzer.captureDurationByRate")}:</span>
+            {SAMPLE_RATES.map((rate) => (
+              <span key={rate.value}>
+                {rate.label}={formatDuration(maxSamples, rate.value)}
+              </span>
+            ))}
+          </div>
+        </div>
+      </details>
+      )}
 
-      {streaming && (
+      {workspaceMode === "capture" && streaming && (
         <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-brand/30 bg-brand/5 px-3 py-2 text-xs text-ink">
           <Badge tone="brand">{t("logicAnalyzer.streaming")}</Badge>
           <span>{formatSampleRate(actualRate)}</span>
@@ -1707,7 +1836,7 @@ export function LogicAnalyzerCard({
         </div>
       )}
 
-      {capture && capture.sampleCount > 0 && (
+      {workspaceMode === "decode" && capture && capture.sampleCount > 0 && (
         <div className="mt-4">
           <div className="mb-2 flex items-center gap-2 text-xs text-ink-dim">
             <Zap size={12} />
@@ -1749,7 +1878,7 @@ export function LogicAnalyzerCard({
           </div>
 
           {state === "done" && (
-            <section className="mb-4 border-t border-line/60 pt-4">
+            <section className="mb-4 rounded-xl border border-line/60 bg-panel p-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-xs font-medium text-ink">
                   <Binary size={14} className="text-brand" />
@@ -1758,10 +1887,11 @@ export function LogicAnalyzerCard({
                 <Badge tone={decodeStatusTone}>{t(decodeStatusKey)}</Badge>
               </div>
 
+              <div className="mt-3 grid items-start gap-3 xl:grid-cols-[170px_minmax(0,1fr)]">
               <div
                 role="tablist"
                 aria-label={t("logicAnalyzer.decoder.protocol")}
-                className="mt-3 inline-flex min-w-full rounded-lg border border-line/70 p-1 sm:min-w-0"
+                className="inline-flex min-w-full rounded-lg border border-line/70 bg-panel2/30 p-1 xl:flex-col"
               >
                 {PROTOCOL_OPTIONS.map((protocolOption) => {
                   const selected = decoderProtocol === protocolOption.id;
@@ -1773,7 +1903,9 @@ export function LogicAnalyzerCard({
                       aria-selected={selected}
                       onClick={() => setDecoderProtocol(protocolOption.id)}
                       className={`flex min-h-9 flex-1 items-center justify-center rounded-md px-3 text-xs font-medium transition-colors ${
-                        selected ? "bg-brand text-on-brand" : "text-ink-dim hover:text-ink"
+                        selected
+                          ? "bg-brand/10 text-brand ring-1 ring-inset ring-brand/15"
+                          : "text-ink-dim hover:text-ink"
                       }`}
                     >
                       {protocolOption.label}
@@ -1782,7 +1914,8 @@ export function LogicAnalyzerCard({
                 })}
               </div>
 
-              <div className="mt-3 grid gap-3 border-t border-line/50 pt-3 md:grid-cols-2 xl:grid-cols-3">
+              <div className="min-w-0">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {decoderProtocol === "uart" && (
                   <>
                     {renderChannelSelect("RX", "rx", uartConfig.rxPin, capturePins, false)}
@@ -2023,34 +2156,38 @@ export function LogicAnalyzerCard({
                   </div>
                 )}
               </div>
+              </div>
+              </div>
             </section>
           )}
 
           {decodeResult && (
             <div className="mt-3 grid gap-4 border-t border-line/50 pt-3 lg:grid-cols-[minmax(0,1fr)_320px]">
-              <section className="min-w-0">
-                <div className="mb-2 text-[11px] font-medium text-ink">{t("logicAnalyzer.decoder.annotations")}</div>
+              <section className="min-w-0 overflow-hidden rounded-xl border border-line/60 bg-panel">
                 {decodeResult.annotations.length === 0 ? (
-                  <div className="text-xs text-ink-dim">{t("logicAnalyzer.decoder.noAnnotations")}</div>
+                  <div className="p-3 text-xs text-ink-dim">{t("logicAnalyzer.decoder.noAnnotations")}</div>
                 ) : (
-                  <ul className="divide-y divide-line/40 text-xs text-ink-dim">
-                    {decodeResult.annotations.map((annotation, index) => (
-                      <li key={`${annotation.row}-${annotation.startSample}-${index}`} className="py-2 first:pt-0 last:pb-0">
-                        <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                          <Badge tone="neutral">{annotation.row}</Badge>
-                          <span className="font-medium text-ink">{annotation.shortText}</span>
-                          <span className="font-mono text-ink-dim">
-                            {formatAnnotationRange(annotation, sampleRateForAnnotations)}
-                          </span>
-                        </div>
-                        <div className="mt-1 text-[11px] text-ink-dim">{annotation.longText}</div>
-                      </li>
-                    ))}
-                  </ul>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[520px] border-collapse text-left text-[11px]">
+                      <caption className="border-b border-line/50 bg-panel2/25 px-3 py-2 text-left font-medium text-ink">
+                        {t("logicAnalyzer.decoder.annotations")}
+                      </caption>
+                      <tbody className="divide-y divide-line/40">
+                        {decodeResult.annotations.map((annotation, index) => (
+                          <tr key={`${annotation.row}-${annotation.startSample}-${index}`} className="align-top hover:bg-panel2/25">
+                            <td className="whitespace-nowrap px-3 py-2 font-mono text-ink-dim">{formatAnnotationRange(annotation, sampleRateForAnnotations)}</td>
+                            <td className="px-3 py-2"><Badge tone="neutral">{annotation.row}</Badge></td>
+                            <td className="px-3 py-2 font-medium text-ink">{annotation.shortText}</td>
+                            <td className="px-3 py-2 text-ink-dim">{annotation.longText}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </section>
 
-              <section className="min-w-0 lg:border-l lg:border-line/40 lg:pl-4">
+              <section className="min-w-0 rounded-xl border border-line/60 bg-panel p-3">
                 <div className="mb-2 flex items-center gap-2 text-[11px] font-medium text-ink">
                   <TriangleAlert size={13} className="text-warn" />
                   {t("logicAnalyzer.decoder.diagnostics")}
@@ -2075,6 +2212,7 @@ export function LogicAnalyzerCard({
           )}
         </div>
       )}
+      </div>
     </Card>
   );
 }

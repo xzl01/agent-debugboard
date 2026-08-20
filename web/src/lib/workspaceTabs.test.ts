@@ -7,12 +7,12 @@ import {
 } from "./workspaceTabs.ts";
 
 test("moves workspace tab focus with arrow keys and home/end", () => {
-  assert.equal(getNextWorkspaceTabIndex(0, "ArrowRight", 4), 1);
-  assert.equal(getNextWorkspaceTabIndex(3, "ArrowRight", 4), 0);
-  assert.equal(getNextWorkspaceTabIndex(0, "ArrowLeft", 4), 3);
-  assert.equal(getNextWorkspaceTabIndex(1, "ArrowLeft", 4), 0);
-  assert.equal(getNextWorkspaceTabIndex(3, "Home", 4), 0);
-  assert.equal(getNextWorkspaceTabIndex(0, "End", 4), 3);
+  assert.equal(getNextWorkspaceTabIndex(0, "ArrowRight", 5), 1);
+  assert.equal(getNextWorkspaceTabIndex(4, "ArrowRight", 5), 0);
+  assert.equal(getNextWorkspaceTabIndex(0, "ArrowLeft", 5), 4);
+  assert.equal(getNextWorkspaceTabIndex(1, "ArrowLeft", 5), 0);
+  assert.equal(getNextWorkspaceTabIndex(4, "Home", 5), 0);
+  assert.equal(getNextWorkspaceTabIndex(0, "End", 5), 4);
 });
 
 test("ignores unsupported keys and keeps stable ids", () => {
@@ -21,4 +21,5 @@ test("ignores unsupported keys and keeps stable ids", () => {
   assert.equal(getWorkspacePanelId("logicAnalyzer"), "workspace-panel-logicAnalyzer");
   assert.equal(getWorkspacePanelId("powerAnalysis"), "workspace-panel-powerAnalysis");
   assert.equal(getWorkspacePanelId("automation"), "workspace-panel-automation");
+  assert.equal(getWorkspacePanelId("configuration"), "workspace-panel-configuration");
 });
