@@ -593,6 +593,61 @@ static void call_confirm_route(struct http_response_ctx *response)
 		 HTTP_HEADER_STATUS_OK, NULL, 0U, response);
 }
 
+static void call_status_route(struct http_client_ctx *client,
+			      struct http_response_ctx *response)
+{
+	init_client(client, "/api/v1/ota", HTTP_GET);
+	call_ota(client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, 0U,
+		 HTTP_HEADER_STATUS_OK, NULL, 0U, response);
+}
+
+static void assert_response_contains(const struct http_response_ctx *response,
+				     const char *expected)
+{
+	size_t expected_len = strlen(expected);
+	bool found = false;
+
+	for (size_t i = 0U; i + expected_len <= response->body_len; i++) {
+		if (memcmp(response->body + i, expected, expected_len) == 0) {
+			found = true;
+			break;
+		}
+	}
+	if (!found) {
+		fprintf(stderr, "expected OTA response to contain %s, got: %.*s\n",
+			expected, (int)response->body_len, response->body);
+	}
+	assert(found);
+}
+
+static void test_status_exposes_ota_test_marker(void)
+{
+	struct http_client_ctx client;
+	struct http_response_ctx response;
+
+	reset_fixture();
+	call_status_route(&client, &response);
+	assert(response.status == HTTP_200_OK);
+	assert_response_contains(&response, "\"test_marker_present\":false");
+
+	fake_marker_present = true;
+	fake_image_confirmed = false;
+	call_status_route(&client, &response);
+	assert(response.status == HTTP_200_OK);
+	assert_response_contains(&response, "\"state\":\"pending_test\"");
+	assert_response_contains(&response, "\"current_image_confirmed\":false");
+	assert_response_contains(&response, "\"test_marker_present\":true");
+
+	fake_marker_present = true;
+	fake_image_confirmed = true;
+	linkr_debugger_ota_init();
+	call_status_route(&client, &response);
+	assert(response.status == HTTP_200_OK);
+	assert_response_contains(&response, "\"state\":\"idle\"");
+	assert_response_contains(&response, "\"current_image_confirmed\":true");
+	assert_response_contains(&response, "\"test_marker_present\":true");
+}
+
 static void run_reboot_work(void)
 {
 	assert(fake_reboot_work != NULL);
@@ -842,5 +897,6 @@ int main(void)
 	test_test_and_reboot_handoff_do_not_leak();
 	test_manual_confirm_ownership();
 	test_auto_confirm_ownership_and_retry();
+	test_status_exposes_ota_test_marker();
 	return 0;
 }

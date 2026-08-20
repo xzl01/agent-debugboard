@@ -676,6 +676,9 @@ static int linkr_debugger_ota_handle_status(struct http_response_ctx *response_c
 	k_mutex_lock(&linkr_debugger_ota_lock, K_FOREVER);
 	linkr_debugger_ota_refresh_persistent_state_locked();
 	if (linkr_debugger_ota_encode_status(&env) < 0 ||
+	    linkr_debugger_ota_append(&env, ",\"test_marker_present\":%s",
+				       linkr_debugger_watchdog_ota_test_marker_present() ?
+				       "true" : "false") < 0 ||
 	    linkr_debugger_ota_finish_status(&env) < 0) {
 		k_mutex_unlock(&linkr_debugger_ota_lock);
 		linkr_debugger_ota_error(response_ctx, json_buf, json_buf_len,

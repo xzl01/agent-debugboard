@@ -19,6 +19,7 @@ ALLOW_FLASH=0
 SHORT_TIMEOUT="5s"
 UPLOAD_TIMEOUT="90s"
 POLL_TIMEOUT=45
+OTA_WAIT_RESULT=""
 
 usage() {
   cat <<'USAGE'
@@ -268,41 +269,89 @@ post_ota_confirm() {
 }
 
 wait_for_ota() {
-  expected="$1"
+  target="$1"
   deadline=$((POLL_TIMEOUT * 2))
   count=0
-  note "polling OTA state for $expected"
+  OTA_WAIT_RESULT=""
+  note "polling OTA state for $target"
   while [ "$count" -lt "$deadline" ]; do
     body=$(run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /ota)" 2>/dev/null || true)
     printf '%s\n' "$body"
-    printf '%s\n' "$body" | grep -q "$expected" && return 0
+    case "$target" in
+      pending-or-terminal)
+        if printf '%s\n' "$body" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"pending_test"'; then
+          OTA_WAIT_RESULT="pending_test"
+          return 0
+        fi
+        if printf '%s\n' "$body" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"idle"' &&
+           printf '%s\n' "$body" | grep -Eq '"current_image_confirmed"[[:space:]]*:[[:space:]]*true'; then
+          if printf '%s\n' "$body" | grep -Eq '"test_marker_present"[[:space:]]*:[[:space:]]*false'; then
+            OTA_WAIT_RESULT="auto_confirmed"
+          elif printf '%s\n' "$body" | grep -Eq '"test_marker_present"[[:space:]]*:[[:space:]]*true'; then
+            OTA_WAIT_RESULT="rollback_detected"
+          else
+            OTA_WAIT_RESULT="confirmed_without_marker"
+          fi
+          return 0
+        fi
+        ;;
+      confirmed-idle)
+        if printf '%s\n' "$body" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"idle"' &&
+           printf '%s\n' "$body" | grep -Eq '"current_image_confirmed"[[:space:]]*:[[:space:]]*true' &&
+           printf '%s\n' "$body" | grep -Eq '"test_marker_present"[[:space:]]*:[[:space:]]*false'; then
+          OTA_WAIT_RESULT="confirmed"
+          return 0
+        fi
+        ;;
+      *)
+        fail "unknown OTA wait target: $target"
+        ;;
+    esac
     sleep 0.5
     count=$((count + 1))
   done
-  fail "timed out waiting for OTA state containing: $expected"
+  fail "timed out waiting for OTA state: $target"
 }
 
 api_auto_confirm() {
   upload_valid_image
   post_ota_test
   if [ "$DRY_RUN" -eq 1 ]; then
-    plan run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /ota)" "# repeat until pending_test, then idle/current_image_confirmed=true"
+    plan run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /ota)" "# repeat until pending_test or marker-qualified terminal state"
     return
   fi
-  wait_for_ota 'pending_test'
-  wait_for_ota 'current_image_confirmed.*true\|"current_image_confirmed":true'
+  wait_for_ota pending-or-terminal
+  if [ "$OTA_WAIT_RESULT" = "pending_test" ]; then
+    wait_for_ota confirmed-idle
+  elif [ "$OTA_WAIT_RESULT" = "auto_confirmed" ]; then
+    note "firmware auto-confirmed the test image before the host observed pending_test"
+  elif [ "$OTA_WAIT_RESULT" = "rollback_detected" ]; then
+    fail "OTA test image rolled back: idle/confirmed returned with test_marker_present=true"
+  else
+    fail "inconclusive OTA result: firmware does not expose test_marker_present"
+  fi
 }
 
 api_manual_confirm() {
   upload_valid_image
   post_ota_test
   if [ "$DRY_RUN" -eq 1 ]; then
-    plan run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /ota)" "# repeat until pending_test"
+    plan run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /ota)" "# repeat until pending_test or marker-qualified terminal state"
   else
-    wait_for_ota 'pending_test'
+    wait_for_ota pending-or-terminal
+    if [ "$OTA_WAIT_RESULT" = "auto_confirmed" ]; then
+      note "firmware auto-confirmed the test image before the host observed pending_test; manual confirm was not required"
+      return
+    fi
+    if [ "$OTA_WAIT_RESULT" = "rollback_detected" ]; then
+      fail "OTA test image rolled back: idle/confirmed returned with test_marker_present=true"
+    fi
+    if [ "$OTA_WAIT_RESULT" = "confirmed_without_marker" ]; then
+      fail "inconclusive OTA result: firmware does not expose test_marker_present"
+    fi
   fi
   post_ota_confirm
-  [ "$DRY_RUN" -eq 1 ] || wait_for_ota 'current_image_confirmed.*true\|"current_image_confirmed":true'
+  [ "$DRY_RUN" -eq 1 ] || wait_for_ota confirmed-idle
 }
 
 negative_upload() {

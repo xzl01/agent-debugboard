@@ -21,6 +21,10 @@ device order as a fallback. Each channel has:
 
 Web Serial remains a separate direct-browser mode. Web Serial and the Host
 Broker cannot open the same operating-system serial device at the same time.
+On Unix, the Host explicitly requests exclusive mode on the serial builder so
+the TTY is reserved atomically during open. It must not reapply exclusivity after opening: real
+CH347 drivers on macOS reject a repeated `TIOCEXCL` with `EBUSY` even when the
+same process already owns the port.
 
 ## Host raw RX archive
 

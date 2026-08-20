@@ -1981,6 +1981,15 @@ OTA delivery mechanisms.
 board OTA endpoints. Operates at the API layer without a browser. Useful for
 rapid headless validation of the OTA state machine, error codes, and gate logic.
 
+USB NCM re-enumeration can outlast the firmware's watchdog auto-confirm window.
+The API runner uses `test_marker_present` to distinguish a missed auto-confirm
+from rollback: `idle` plus `current_image_confirmed:true` plus a cleared marker
+is success, while the same state with the marker still present is rollback.
+Missing marker evidence is inconclusive. In the manual flow, `/confirm` is sent
+only after `pending_test` is observable, and the terminal state must also show
+the marker cleared. This classification assumes no external power-cycle or
+BOOTSEL action interrupts the controlled HIL run.
+
 **Browser runner** (`ota-hil.mjs`): Drives a real Chromium/Chromium-browser
 instance via Playwright against the board-hosted Web UI at `http://172.29.203.1/`.
 Exercises the full front-end OTA card including local SHA-256 computation,

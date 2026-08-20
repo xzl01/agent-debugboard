@@ -80,6 +80,22 @@ export function useSigrokScope(options: UseSigrokScopeOptions = {}): UseSigrokSc
     console.warn(`[useSigrokScope] ${action} failed: ${message}`);
   }, []);
 
+  const deleteSessionBestEffort = useCallback(async (sessionId: number, action: string) => {
+    try {
+      await deleteLiveSession(sessionId);
+    } catch (cleanupError) {
+      // Firmware releases a live-session slot when its WebSocket closes. A
+      // subsequent DELETE is therefore an idempotent cleanup boundary, not a
+      // user-visible failure.
+      const code = typeof cleanupError === "object" && cleanupError != null && "code" in cleanupError
+        ? String(cleanupError.code)
+        : "";
+      if (code !== "unknown_session_id") {
+        warnCleanup(action, cleanupError);
+      }
+    }
+  }, [warnCleanup]);
+
   const clearError = useCallback(() => setError(null), []);
 
   const getClient = useCallback(() => {
@@ -104,12 +120,11 @@ export function useSigrokScope(options: UseSigrokScopeOptions = {}): UseSigrokSc
     }
 
     sessionRef.current = null;
-    try {
-      await deleteLiveSession(session.session_id);
-    } catch (cleanupError) {
-      warnCleanup(`deleting live session ${session.session_id}`, cleanupError);
-    }
-  }, [url, warnCleanup]);
+    await deleteSessionBestEffort(
+      session.session_id,
+      `deleting live session ${session.session_id}`,
+    );
+  }, [deleteSessionBestEffort, url]);
 
   const createSession = useCallback(async (generation: number): Promise<string> => {
     if (url) {
@@ -134,16 +149,15 @@ export function useSigrokScope(options: UseSigrokScopeOptions = {}): UseSigrokSc
       }
     }
     if (connectionGenerationRef.current !== generation) {
-      try {
-        await deleteLiveSession(session.session_id);
-      } catch (cleanupError) {
-        warnCleanup(`deleting cancelled live session ${session.session_id}`, cleanupError);
-      }
+      await deleteSessionBestEffort(
+        session.session_id,
+        `deleting cancelled live session ${session.session_id}`,
+      );
       throw new Error("Connection cancelled");
     }
     sessionRef.current = session;
     return liveWebSocketUrl(session.ws_url);
-  }, [url, warnCleanup]);
+  }, [deleteSessionBestEffort, url]);
 
   const ensureConnected = useCallback(async () => {
     const client = getClient();

@@ -164,7 +164,7 @@ Watchdog 状态。字段：`supported`、`automatic`、`healthy`、`armed`、`ti
 
 ### `GET /api/v1/ota`
 
-OTA 状态。字段：`state`（`idle`/`uploading`/`verified`/`pending_test`/`rebooting`/`failed`）、`expected_size`、`written_size`、`max_size`、`swap_type`、`current_image_confirmed`。
+OTA 状态。字段：`state`（`idle`/`uploading`/`verified`/`pending_test`/`rebooting`/`failed`）、`expected_size`、`written_size`、`max_size`、`swap_type`、`current_image_confirmed`、`test_marker_present`。在受控测试中，手动确认或看门狗门控自动确认后标记会清除；若 MCUboot 回滚测试镜像，标记会保留。
 
 ### `POST /api/v1/ota/upload`
 

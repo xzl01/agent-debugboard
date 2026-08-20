@@ -25,6 +25,12 @@ direct Web Serial is not included. The canonical artifact is `rx-*.bin`, while
 decoded terminal view is a byte-exact archive. TX is intentionally not stored
 because login credentials or other secrets may be present.
 
+On Unix, Host explicitly requests exclusive mode on the serial builder so the
+TTY is reserved atomically during open. Do not call `set_exclusive(true)` again
+after the open succeeds:
+the macOS CH347 driver returns `EBUSY` for a repeated `TIOCEXCL` even when the
+same process already owns the port.
+
 Use direct HTTP requests with `curl` as the lowest-common-denominator fallback.
 The board enumerates as a USB NCM network interface and exposes its control API
 at the default device URL `http://172.29.203.1`.
@@ -1315,6 +1321,13 @@ perform side-effectful operations.
 **API runner** (`scripts/web-ota-hil.sh`): Issues raw HTTP requests against the
 board OTA endpoints. Headless and fast. Exercises the OTA state machine, error
 codes, and gate logic.
+
+After test reboot, USB NCM may re-enumerate after the firmware's watchdog gate.
+The API runner uses `test_marker_present` to distinguish a missed auto-confirm
+from rollback: `idle` + confirmed + marker cleared is success, while the same
+state with the marker still present is rollback. Missing marker evidence is
+inconclusive. The manual flow posts `/confirm` only after observing
+`pending_test`, and then requires confirmed idle with the marker cleared.
 
 **Browser runner** (`web/scripts/ota-hil.mjs`): Drives a real Chromium/Chromium
 instance via Playwright against the board-hosted Web UI at

@@ -412,7 +412,14 @@ impl SerialBroker {
                     return;
                 }
             };
-            let mut serial = match tokio_serial::new(&port.port_name, baud).open_native_async() {
+            let serial_builder = tokio_serial::new(&port.port_name, baud);
+            // Request exclusivity on the builder so it is applied atomically
+            // during open. Do not call `set_exclusive(true)` again afterwards:
+            // the macOS CH347 driver rejects a repeated TIOCEXCL with EBUSY
+            // even when this process already owns the port.
+            #[cfg(unix)]
+            let serial_builder = serial_builder.exclusive(true);
+            let serial = match serial_builder.open_native_async() {
                 Ok(serial) => serial,
                 Err(error) => {
                     send_error(
@@ -426,18 +433,6 @@ impl SerialBroker {
                     return;
                 }
             };
-            #[cfg(unix)]
-            if let Err(error) = require_exclusive_serial(&mut serial) {
-                send_error(
-                    sender,
-                    "serial_open_failed",
-                    &format!("cannot reserve {} exclusively: {error}", port.port_name),
-                    request.request_id.as_deref(),
-                    Some(channel),
-                    true,
-                );
-                return;
-            }
             let (reader, writer) = tokio::io::split(serial);
             state.path = Some(port.port_name.clone());
             state.baud = Some(baud);
@@ -1111,11 +1106,6 @@ fn is_valid_redaction_token(value: &str) -> bool {
     (8..=64).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
-#[cfg(unix)]
-fn require_exclusive_serial(serial: &mut SerialStream) -> tokio_serial::Result<()> {
-    serial.set_exclusive(true)
-}
-
 fn data_frame(
     channel: Channel,
     sequence: u64,
@@ -1313,9 +1303,8 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn serial_handles_remain_os_exclusive() {
-        let (mut serial, _peer) = SerialStream::pair().unwrap();
-        require_exclusive_serial(&mut serial).unwrap();
+    async fn serial_stream_reports_os_exclusive_state() {
+        let (serial, _peer) = SerialStream::pair().unwrap();
         assert!(serial.exclusive());
     }
 }
