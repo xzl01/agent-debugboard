@@ -7,6 +7,7 @@ test("allows only one automation owner at a time", () => {
 
   assert.equal(lock.acquire("startup"), true);
   assert.equal(lock.owner(), "startup");
+  assert.equal(lock.acquire("startup"), false);
   assert.equal(lock.acquire("test"), false);
   assert.equal(lock.owner(), "startup");
 

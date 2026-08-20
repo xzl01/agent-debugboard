@@ -124,7 +124,7 @@ Watchdog status. Fields: `supported`, `automatic`, `healthy`, `armed`, `timeout_
 
 ### `GET /api/v1/ota`
 
-OTA status. Fields: `state` (`idle`/`uploading`/`verified`/`pending_test`/`rebooting`/`failed`), `expected_size`, `written_size`, `max_size`, `swap_type`, `current_image_confirmed`.
+OTA status. Fields: `state` (`idle`/`uploading`/`verified`/`pending_test`/`rebooting`/`failed`), `expected_size`, `written_size`, `max_size`, `swap_type`, `current_image_confirmed`, and `test_marker_present`. The marker is cleared after manual or watchdog-gated confirmation and remains set when MCUboot rolls back a test image during a controlled run.
 
 ### `POST /api/v1/ota/upload`
 

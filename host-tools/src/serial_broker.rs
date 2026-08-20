@@ -9,7 +9,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
     sync::{mpsc, Mutex},
     task::JoinHandle,
 };
@@ -17,15 +17,82 @@ use tokio_serial::{SerialPortBuilderExt, SerialPortInfo, SerialPortType, SerialS
 use tracing::debug;
 use uuid::Uuid;
 
+use crate::serial_log::SerialLogService;
+
 pub const PROTOCOL: &str = "linkr-serial-broker.v1";
 const CH347_VENDOR_ID: u16 = 0x1a86;
 const MIN_BAUD: u64 = 300;
 const MAX_BAUD: u64 = 4_000_000;
 const MAX_REDACTION_BUFFER_BYTES: usize = 65_536;
 const REDACTION_SUFFIX_BYTES: usize = 512;
+const SERIAL_READ_BUFFER_BYTES: usize = 16 * 1024;
+const SERIAL_FORWARD_MAX_BYTES: usize = 16 * 1024;
+const SERIAL_FORWARD_FLUSH_INTERVAL: Duration = Duration::from_millis(2);
 
 type PeerId = String;
-type PeerSender = mpsc::UnboundedSender<Value>;
+type PeerSender = mpsc::UnboundedSender<Message>;
+
+struct SerialReadBatch {
+    bytes: Vec<u8>,
+    eof: bool,
+    error: Option<std::io::Error>,
+}
+
+async fn read_serial_batch<R>(
+    reader: &mut R,
+    scratch: &mut [u8],
+    flush_interval: Duration,
+    max_bytes: usize,
+) -> SerialReadBatch
+where
+    R: AsyncRead + Unpin,
+{
+    assert!(!scratch.is_empty());
+    assert!(max_bytes > 0);
+
+    let first_limit = scratch.len().min(max_bytes);
+    let first_count = match reader.read(&mut scratch[..first_limit]).await {
+        Ok(0) => {
+            return SerialReadBatch {
+                bytes: Vec::new(),
+                eof: true,
+                error: None,
+            };
+        }
+        Ok(count) => count,
+        Err(error) => {
+            return SerialReadBatch {
+                bytes: Vec::new(),
+                eof: false,
+                error: Some(error),
+            };
+        }
+    };
+
+    let mut bytes = Vec::with_capacity(max_bytes.min(first_count.saturating_mul(4)));
+    bytes.extend_from_slice(&scratch[..first_count]);
+    let deadline = tokio::time::Instant::now() + flush_interval;
+    let mut eof = false;
+    let mut error = None;
+
+    while bytes.len() < max_bytes {
+        let read_limit = scratch.len().min(max_bytes - bytes.len());
+        match tokio::time::timeout_at(deadline, reader.read(&mut scratch[..read_limit])).await {
+            Ok(Ok(0)) => {
+                eof = true;
+                break;
+            }
+            Ok(Ok(count)) => bytes.extend_from_slice(&scratch[..count]),
+            Ok(Err(read_error)) => {
+                error = Some(read_error);
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+
+    SerialReadBatch { bytes, eof, error }
+}
 
 #[derive(Debug)]
 struct ObserverRedaction {
@@ -144,6 +211,7 @@ struct ChannelState {
     owner: Option<(PeerId, String)>,
     observer_redaction: Option<ObserverRedaction>,
     sequence: u64,
+    log_session: Option<Uuid>,
 }
 
 impl ChannelState {
@@ -159,6 +227,7 @@ impl ChannelState {
             owner: None,
             observer_redaction: None,
             sequence: 0,
+            log_session: None,
         }
     }
 
@@ -172,7 +241,7 @@ impl ChannelState {
         }
     }
 
-    fn close_port(&mut self) {
+    fn close_port(&mut self) -> Option<Uuid> {
         self.writer = None;
         self.path = None;
         self.baud = None;
@@ -181,6 +250,7 @@ impl ChannelState {
         if let Some(task) = self.reader_task.take() {
             task.abort();
         }
+        self.log_session.take()
     }
 }
 
@@ -190,10 +260,11 @@ pub struct SerialBroker {
     peer_subscriptions: Arc<Mutex<HashMap<PeerId, HashSet<Channel>>>>,
     idle_timeout: Duration,
     started: Instant,
+    serial_log: SerialLogService,
 }
 
 impl SerialBroker {
-    pub fn new(idle_timeout: Duration) -> Self {
+    pub fn new(idle_timeout: Duration, serial_log: SerialLogService) -> Self {
         let channels = HashMap::from([
             (
                 Channel::Uart0,
@@ -209,20 +280,17 @@ impl SerialBroker {
             peer_subscriptions: Arc::new(Mutex::new(HashMap::new())),
             idle_timeout,
             started: Instant::now(),
+            serial_log,
         }
     }
 
     pub async fn serve_socket(&self, socket: WebSocket) {
         let peer_id = format!("host-{}", Uuid::new_v4());
         let (mut ws_sink, mut ws_stream) = socket.split();
-        let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
         let writer = tokio::spawn(async move {
             while let Some(frame) = rx.recv().await {
-                if ws_sink
-                    .send(Message::Text(frame.to_string().into()))
-                    .await
-                    .is_err()
-                {
+                if ws_sink.send(frame).await.is_err() {
                     break;
                 }
             }
@@ -344,7 +412,14 @@ impl SerialBroker {
                     return;
                 }
             };
-            let mut serial = match tokio_serial::new(&port.port_name, baud).open_native_async() {
+            let serial_builder = tokio_serial::new(&port.port_name, baud);
+            // Request exclusivity on the builder so it is applied atomically
+            // during open. Do not call `set_exclusive(true)` again afterwards:
+            // the macOS CH347 driver rejects a repeated TIOCEXCL with EBUSY
+            // even when this process already owns the port.
+            #[cfg(unix)]
+            let serial_builder = serial_builder.exclusive(true);
+            let serial = match serial_builder.open_native_async() {
                 Ok(serial) => serial,
                 Err(error) => {
                     send_error(
@@ -358,25 +433,17 @@ impl SerialBroker {
                     return;
                 }
             };
-            #[cfg(unix)]
-            if let Err(error) = require_exclusive_serial(&mut serial) {
-                send_error(
-                    sender,
-                    "serial_open_failed",
-                    &format!("cannot reserve {} exclusively: {error}", port.port_name),
-                    request.request_id.as_deref(),
-                    Some(channel),
-                    true,
-                );
-                return;
-            }
             let (reader, writer) = tokio::io::split(serial);
             state.path = Some(port.port_name.clone());
             state.baud = Some(baud);
             state.writer = Some(writer);
+            state.log_session =
+                self.serial_log
+                    .start_session(channel.as_str(), &port.port_name, baud);
             let broker = self.clone();
+            let log_session = state.log_session;
             state.reader_task = Some(tokio::spawn(async move {
-                broker.read_serial(channel, reader).await;
+                broker.read_serial(channel, reader, log_session).await;
             }));
         }
 
@@ -598,7 +665,11 @@ impl SerialBroker {
         publish_status(&state, None);
         if state.subscribers.is_empty() {
             if immediate {
-                state.close_port();
+                if let Some(session) = state.close_port() {
+                    self.serial_log
+                        .finish_session(session, "client closed channel")
+                        .await;
+                }
             } else {
                 drop(state);
                 self.schedule_idle_close(channel).await;
@@ -646,6 +717,7 @@ impl SerialBroker {
         }
         let timeout = self.idle_timeout;
         let next_state = state_ref.clone();
+        let serial_log = self.serial_log.clone();
         state.idle_task = Some(tokio::spawn(async move {
             tokio::time::sleep(timeout).await;
             let mut state = next_state.lock().await;
@@ -654,33 +726,50 @@ impl SerialBroker {
                     channel = state.channel.as_str(),
                     "closing idle serial channel"
                 );
-                state.close_port();
+                if let Some(session) = state.close_port() {
+                    serial_log.finish_session(session, "idle timeout").await;
+                }
             }
             state.idle_task = None;
         }));
     }
 
-    async fn read_serial(&self, channel: Channel, mut reader: ReadHalf<SerialStream>) {
-        let mut buffer = vec![0_u8; 4096];
+    async fn read_serial(
+        &self,
+        channel: Channel,
+        mut reader: ReadHalf<SerialStream>,
+        log_session: Option<Uuid>,
+    ) {
+        let mut buffer = vec![0_u8; SERIAL_READ_BUFFER_BYTES];
         let mut pending = Vec::new();
         loop {
-            match reader.read(&mut buffer).await {
-                Ok(0) => break,
-                Ok(count) => {
-                    pending.extend_from_slice(&buffer[..count]);
-                    let (text, consumed) = decode_utf8_stream(&pending);
-                    if consumed > 0 {
-                        pending.drain(..consumed);
-                    }
-                    if !text.is_empty() {
-                        self.broadcast_data(channel, text, consumed).await;
-                    }
+            let batch = read_serial_batch(
+                &mut reader,
+                &mut buffer,
+                SERIAL_FORWARD_FLUSH_INTERVAL,
+                SERIAL_FORWARD_MAX_BYTES,
+            )
+            .await;
+            if !batch.bytes.is_empty() {
+                if let Some(session) = log_session {
+                    self.serial_log.record_rx(session, batch.bytes.clone());
                 }
-                Err(error) => {
-                    self.broadcast_error(channel, "serial_io_error", &error.to_string())
-                        .await;
-                    break;
-                }
+            }
+            pending.extend_from_slice(&batch.bytes);
+            let (text, consumed) = decode_utf8_stream(&pending);
+            if consumed > 0 {
+                pending.drain(..consumed);
+            }
+            if !text.is_empty() {
+                self.broadcast_data(channel, text, consumed).await;
+            }
+            if let Some(error) = batch.error {
+                self.broadcast_error(channel, "serial_io_error", &error.to_string())
+                    .await;
+                break;
+            }
+            if batch.eof {
+                break;
             }
         }
         if !pending.is_empty() {
@@ -689,6 +778,11 @@ impl SerialBroker {
         }
         let state_ref = self.channel(channel);
         let mut state = state_ref.lock().await;
+        if let Some(session) = state.log_session.take() {
+            self.serial_log
+                .finish_session(session, "serial port closed")
+                .await;
+        }
         self.finish_observer_redaction(&mut state);
         state.writer = None;
         state.path = None;
@@ -783,8 +877,13 @@ impl SerialBroker {
         for state_ref in self.channels.values() {
             let mut state = state_ref.lock().await;
             state.cancel_idle_close();
-            state.close_port();
+            if let Some(session) = state.close_port() {
+                self.serial_log
+                    .finish_session(session, "host shutdown")
+                    .await;
+            }
         }
+        self.serial_log.shutdown().await;
     }
 }
 
@@ -1007,18 +1106,13 @@ fn is_valid_redaction_token(value: &str) -> bool {
     (8..=64).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
-#[cfg(unix)]
-fn require_exclusive_serial(serial: &mut SerialStream) -> tokio_serial::Result<()> {
-    serial.set_exclusive(true)
-}
-
 fn data_frame(
     channel: Channel,
     sequence: u64,
     host_t_mono_us: u64,
     text: &str,
     byte_count: usize,
-) -> Value {
+) -> Message {
     frame(
         "data",
         json!({
@@ -1031,7 +1125,7 @@ fn data_frame(
     )
 }
 
-fn frame(kind: &str, fields: Value) -> Value {
+fn frame(kind: &str, fields: Value) -> Message {
     let mut object = serde_json::Map::from_iter([
         ("protocol".to_owned(), Value::String(PROTOCOL.to_owned())),
         ("type".to_owned(), Value::String(kind.to_owned())),
@@ -1039,10 +1133,10 @@ fn frame(kind: &str, fields: Value) -> Value {
     if let Value::Object(fields) = fields {
         object.extend(fields);
     }
-    Value::Object(object)
+    Message::Text(Value::Object(object).to_string().into())
 }
 
-fn status_frame(state: &ChannelState, request_id: Option<&str>) -> Value {
+fn status_frame(state: &ChannelState, request_id: Option<&str>) -> Message {
     frame(
         "status",
         json!({
@@ -1088,6 +1182,45 @@ fn send_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::duplex;
+
+    #[tokio::test]
+    async fn coalesces_small_serial_reads_within_the_flush_window() {
+        let (mut writer, mut reader) = duplex(128);
+        let writer_task = tokio::spawn(async move {
+            writer.write_all(b"first").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            writer.write_all(b"-second").await.unwrap();
+        });
+        let mut scratch = [0_u8; 8];
+
+        let batch =
+            read_serial_batch(&mut reader, &mut scratch, Duration::from_millis(50), 128).await;
+        writer_task.await.unwrap();
+
+        assert_eq!(batch.bytes, b"first-second");
+        assert!(batch.eof);
+        assert!(batch.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn caps_serial_forward_batches_without_losing_remaining_bytes() {
+        let (mut writer, mut reader) = duplex(128);
+        writer.write_all(b"abcdefghijkl").await.unwrap();
+        let mut scratch = [0_u8; 16];
+
+        let first =
+            read_serial_batch(&mut reader, &mut scratch, Duration::from_millis(50), 5).await;
+        let second =
+            read_serial_batch(&mut reader, &mut scratch, Duration::from_millis(1), 16).await;
+
+        assert_eq!(first.bytes, b"abcde");
+        assert_eq!(second.bytes, b"fghijkl");
+        assert!(!first.eof);
+        assert!(!second.eof);
+        assert!(first.error.is_none());
+        assert!(second.error.is_none());
+    }
 
     #[test]
     fn parses_versioned_open_and_rejects_unversioned_frames() {
@@ -1170,9 +1303,8 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn serial_handles_remain_os_exclusive() {
-        let (mut serial, _peer) = SerialStream::pair().unwrap();
-        require_exclusive_serial(&mut serial).unwrap();
+    async fn serial_stream_reports_os_exclusive_state() {
+        let (serial, _peer) = SerialStream::pair().unwrap();
         assert!(serial.exclusive());
     }
 }

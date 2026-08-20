@@ -48,6 +48,11 @@ describe("PersistentConfigCard states", () => {
     expect(view.host.textContent).toContain("Confirmation required");
     expect(view.host.textContent).toContain("Pending");
     expect(view.host.textContent).not.toContain("future.item");
+
+    const groups = [...view.host.querySelectorAll("details")];
+    expect(groups).toHaveLength(3);
+    expect(groups.map((group) => group.open)).toEqual([true, true, false]);
+    expect(view.host.textContent).toContain("1 items");
   });
 
   it.each([
@@ -101,7 +106,8 @@ describe("PersistentConfigCard states", () => {
     view = mount(state({
       config: config([powerItem("firmware.pending", { applyState: "pending" })], { pending: 1 }),
     }));
-    expect(view.host.textContent).toContain("Select at least one item to save");
+    expect(view.host.textContent).toContain("No items selected");
+    expect(view.host.textContent).toContain("1 saved · 1 pending");
     expect(button(view.host, "Save selected").getAttribute("aria-disabled")).toBe("true");
     expect(button(view.host, "Clear saved").getAttribute("aria-disabled")).toBe("false");
     expect(view.host.textContent).toContain("1 pending item is not applied");

@@ -1,19 +1,5 @@
-import {
-  RefreshCw,
-  EthernetPort,
-  Unplug,
-  Radio,
-  Cpu,
-  Thermometer,
-  MemoryStick,
-  Clock,
-  Languages,
-  ShieldCheck,
-  Upload,
-  TriangleAlert,
-  Database,
-} from "lucide-react";
-import { Badge, Button, Toggle } from "./ui";
+import { Languages, RefreshCw } from "lucide-react";
+import { Button } from "./ui";
 import type { BoardSnapshot, MemoryPressureSnapshot } from "@/lib/types";
 import type { OtaStatus } from "@/lib/ota";
 import { cn, formatBytes, formatUptime } from "@/lib/utils";
@@ -35,6 +21,7 @@ const formatSince = (value: MemoryPressureSnapshot["since"]): string | null => v
 export function StatusBar({
   snapshot,
   connected,
+  lastVerifiedAt,
   loading,
   auto,
   setAuto,
@@ -45,6 +32,7 @@ export function StatusBar({
 }: {
   snapshot: BoardSnapshot;
   connected: boolean;
+  lastVerifiedAt?: number | null;
   loading: boolean;
   auto: boolean;
   setAuto: (v: boolean) => void;
@@ -147,140 +135,120 @@ export function StatusBar({
     : undefined;
 
   return (
-    <header className="sticky top-0 z-20 border-b border-line/70 bg-bg/90 shadow-sm backdrop-blur-md">
-      <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-3 px-4 py-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand/15 text-brand">
-            <Cpu size={20} />
-          </div>
-          <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold leading-tight text-ink">
-              {t("app.title")}
-            </h1>
-            <p className="truncate text-xs text-ink-dim">{t("app.subtitle")}</p>
+    <header className="sticky top-0 z-30 border-b border-line/80 bg-panel/95">
+      <div className="mx-auto flex min-h-14 max-w-[1440px] flex-wrap items-center gap-x-5 px-6 md:flex-nowrap">
+        <div className="order-1 flex min-w-0 shrink-0 items-baseline gap-3 md:w-[360px]">
+          <h1 className="truncate text-[17px] font-semibold tracking-[-0.02em] text-ink">{t("app.title")}</h1>
+          <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-panel2/70 px-2 py-1 text-[11px] text-ink-dim">
+            <span data-testid="status-mcu">{snapshot.mcu?.toUpperCase() || "—"}</span>
+            <span aria-hidden="true">·</span>
+            <span data-testid="status-usb" className="min-w-20">{snapshot.usb || "—"}</span>
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1">
+        <div
+          data-testid="status-details"
+          className="order-3 flex w-full min-w-0 items-center gap-2 overflow-x-auto whitespace-nowrap py-2 text-[11px] text-ink-dim md:order-2 md:w-auto md:flex-1 md:justify-center md:py-0"
+        >
+          <span
+            data-testid="status-connection"
+            className={cn(
+              "inline-flex min-h-7 items-center gap-1.5 rounded-lg border border-line/60 bg-panel2/45 px-2 font-medium",
+              connected ? "text-ok" : "text-danger",
+            )}
+          >
+            <span aria-hidden="true" className={cn("h-1.5 w-1.5 rounded-full", connected ? "bg-ok" : "bg-danger")} />
+            {t(connected ? "status.online" : "status.offline")}
+          </span>
+          {!connected && lastVerifiedAt != null && (
+            <span>
+              {t("snapshot.lastVerified", {
+                time: new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                  hour12: false,
+                }).format(lastVerifiedAt),
+              })}
+            </span>
+          )}
+          <div className="inline-flex min-h-7 items-center divide-x divide-line/70 rounded-lg border border-line/60 bg-panel2/35">
+            <span className="px-2">{tempStr}</span>
+            <span className="px-2">CPU {cpuStr}</span>
+            <span
+              className={cn("hidden px-2 lg:inline", ramMetricTone(primaryPressurePct))}
+              title={ramTitle || heapTitle}
+              aria-label={ramTitle || heapTitle}
+            >
+              RAM {primaryPressureStr || heapStr}
+            </span>
+            <span className="hidden px-2 xl:inline">{uptime != null ? formatUptime(uptime) : "—"}</span>
+          </div>
+          <div className="inline-flex items-center gap-0.5 rounded-lg border border-line/60 bg-panel2/55 p-0.5">
+            <button
+              type="button"
+              aria-pressed={auto}
+              disabled={live}
+              className={cn(
+                "min-h-6 rounded-md px-2 transition-colors duration-150 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50",
+                auto ? "bg-panel font-medium text-ink ring-1 ring-inset ring-line/60" : "text-ink-dim",
+              )}
+              onClick={() => setAuto(!auto)}
+            >
+              {t("status.auto")}
+            </button>
+            <button
+              type="button"
+              aria-pressed={live}
+              className={cn(
+                "min-h-6 rounded-md px-2 transition-colors duration-150 hover:text-ink",
+                live ? "bg-panel font-medium text-ink ring-1 ring-inset ring-line/60" : "text-ink-dim",
+              )}
+              onClick={() => setLive(!live)}
+            >
+              {t("status.live")}
+            </button>
+          </div>
+          <span
+            data-testid="status-persistent-config"
+            className={cn(
+              "rounded-md px-1.5 py-1",
+              config?.pendingCount ? "text-warn" : "text-ink-dim",
+            )}
+            title={config?.reason || undefined}
+          >
+            {config?.available
+              ? `${t("config.saved")} ${config.savedCount} · ${t("config.pendingCount", { count: config.pendingCount })}`
+              : `${t("config.title")} · ${t(config ? "config.status.unavailable" : "config.status.unsupported")}`}
+          </span>
+          {connected && ota && ota.state !== "idle" && (
+            <span className={ota.state === "failed" ? "text-danger" : ota.state === "verified" ? "text-ok" : "text-warn"}>
+              {t(`ota.state.${ota.state}`)}
+            </span>
+          )}
+        </div>
+
+        <div className="order-2 ml-auto flex shrink-0 items-center gap-1 border-l border-line/70 pl-2 md:order-3 md:ml-0">
           <Button
             variant="ghost"
-            className="px-2.5"
+            className="min-h-8 rounded-lg px-2 py-1 text-xs"
             onClick={() => setLang(lang === "en" ? "zh" : "en")}
             title={t("lang.toggle")}
             aria-label={t("lang.toggle")}
           >
-            <Languages size={16} /> <span className="hidden sm:inline">{t("lang.toggle")}</span>
+            <Languages size={14} /> <span className="hidden sm:inline">{t("lang.toggle")}</span>
           </Button>
           <ThemeMenu />
-
           <Button
             variant="ghost"
-            className="h-10 w-10 rounded-xl p-0"
+            className="h-8 min-h-8 w-8 rounded-lg p-0"
             onClick={onRefresh}
             disabled={loading}
             title={t("status.refresh")}
             aria-label={t("status.refresh")}
           >
-            <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
+            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
           </Button>
-        </div>
-      </div>
-
-      <div
-        data-testid="status-details"
-        className="mx-auto flex min-h-28 max-w-[1600px] flex-wrap items-center justify-between gap-x-5 gap-y-2 px-4 pb-3 sm:min-h-0"
-      >
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-          {connected ? (
-            <Badge tone="ok" className="text-ink" data-testid="status-connection">
-              <EthernetPort size={12} className="text-ok" /> {t("status.online")}
-            </Badge>
-          ) : (
-            <Badge tone="danger" className="text-ink" data-testid="status-connection">
-              <Unplug size={12} className="text-danger" /> {t("status.offline")}
-            </Badge>
-          )}
-          <Badge tone="neutral">
-            <Cpu size={12} /> {snapshot.mcu?.toUpperCase() || "—"}
-          </Badge>
-          <Badge
-            tone="brand"
-            className="min-w-24 justify-center text-ink"
-            data-testid="status-usb"
-          >
-            <Radio size={12} className="text-brand" /> {snapshot.usb || "—"}
-          </Badge>
-          {config?.available ? (
-            <Badge
-              tone={config.pendingCount > 0 ? "warn" : "ok"}
-              className="whitespace-nowrap"
-              data-testid="status-persistent-config"
-            >
-              <Database size={12} />
-              {t("config.saved")} {config.savedCount} · {t("config.pendingCount", {
-                count: config.pendingCount,
-              })}
-            </Badge>
-          ) : (
-            <Badge
-              tone="neutral"
-              className="whitespace-nowrap"
-              data-testid="status-persistent-config"
-              title={config?.reason || undefined}
-            >
-              <Database size={12} />
-              {t("config.title")} · {t(
-                config ? "config.status.unavailable" : "config.status.unsupported"
-              )}
-            </Badge>
-          )}
-          {connected && ota && ota.state !== "idle" && (
-            <Badge tone={ota.state === "failed" ? "danger" : ota.state === "verified" ? "ok" : "warn"}>
-              {ota.state === "uploading" ? <Upload size={12} /> : ota.state === "failed" ? <TriangleAlert size={12} /> : <ShieldCheck size={12} />}
-              {" "}{t(`ota.state.${ota.state}`)}
-            </Badge>
-          )}
-          <span className="inline-flex items-center gap-1.5 text-xs text-ink-dim">
-            <Thermometer size={13} /> {tempStr}
-          </span>
-          <span className="inline-flex items-center gap-1.5 text-xs text-ink-dim">
-            <Cpu size={13} /> {cpuStr}
-          </span>
-          {primaryPressureStr ? (
-            <span
-              className={cn(
-                "inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs",
-                ramMetricTone(primaryPressurePct)
-              )}
-              title={ramTitle}
-              aria-label={ramTitle}
-            >
-              <MemoryStick size={13} className="shrink-0" />
-              <span className="truncate">{primaryPressureStr}</span>
-            </span>
-          ) : (
-            <span
-              className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs text-ink-dim"
-              title={heapTitle}
-              aria-label={heapTitle}
-            >
-              <MemoryStick size={13} className="shrink-0" />
-              <span className="truncate">{heapStr}</span>
-            </span>
-          )}
-          <span className="inline-flex items-center gap-1.5 text-xs text-ink-dim">
-            <Clock size={13} /> {uptime != null ? formatUptime(uptime) : "—"}
-          </span>
-        </div>
-        <div className="flex items-center gap-4 rounded-xl border border-line/60 bg-panel/70 px-3 py-1.5">
-          <label className="flex items-center gap-2 text-xs text-ink-dim">
-            {t("status.auto")}
-            <Toggle checked={auto} onChange={setAuto} disabled={live} />
-          </label>
-          <label className="flex items-center gap-2 text-xs text-ink-dim">
-            {t("status.live")}
-            <Toggle checked={live} onChange={setLive} />
-          </label>
         </div>
       </div>
     </header>

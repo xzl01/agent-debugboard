@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="drawio" version="31.1.5">
+  <diagram name="Installation and First Run">
+    <mxGraphModel dx="1550" dy="1080" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1654" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="2" value="Unified Installation and First-Run Flow" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;fontSize=18;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="1440" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="3" value="GitHub Releases + SHA256SUMS&#xa;unified desktop bundle + CLI archives&#xa;combined UF2 + OTA bin + skill bundle" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="120" y="110" width="440" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="4" value="Repository Checkout&#xa;cmd-ng + host-tools + web + install scripts" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="960" y="110" width="440" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="5" value="What needs to be installed?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="640" y="120" width="240" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="6" value="A. CLI / TUI" style="swimlane;startSize=32;rounded=1;whiteSpace=wrap;html=1;container=1;pointerEvents=0;fillColor=#f3f8ff;strokeColor=#6c8ebf;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="40" y="300" width="440" height="390" as="geometry" />
+        </mxCell>
+        <mxCell id="7" value="Run skill-local installer&#xa;install.sh / install.ps1&#xa;or manually extract archive" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="6">
+          <mxGeometry x="45" y="60" width="350" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="8" value="Verify SHA256SUMS&#xa;macOS: clear quarantine after verification" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="6">
+          <mxGeometry x="45" y="170" width="350" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="9" value="radxa-linkr-debuggerctl&#xa;skill-local bin or PATH" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="6">
+          <mxGeometry x="45" y="280" width="350" height="75" as="geometry" />
+        </mxCell>
+
+        <mxCell id="10" value="B. Web + Shared Broker + MCP" style="swimlane;startSize=32;rounded=1;whiteSpace=wrap;html=1;container=1;pointerEvents=0;fillColor=#fffaf2;strokeColor=#d79b00;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="540" y="300" width="440" height="390" as="geometry" />
+        </mxCell>
+        <mxCell id="11" value="Run the unified installer&#xa;verify/extract desktop release bundle&#xa;or build from the repository checkout" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=12;" vertex="1" parent="10">
+          <mxGeometry x="45" y="50" width="350" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="12" value="Per-user installation&#xa;linkr-tray + linkr-host + CLI/TUI&#xa;built Web assets + MCP metadata + UART archive" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="10">
+          <mxGeometry x="45" y="165" width="350" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="13" value="Login autostart launches linkr-tray&#xa;tray supervises Web + Broker + /mcp + raw RX archive&#xa;loopback-only 127.0.0.1:8787" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;" vertex="1" parent="10">
+          <mxGeometry x="45" y="290" width="350" height="75" as="geometry" />
+        </mxCell>
+
+        <mxCell id="14" value="C. Debugger Firmware" style="swimlane;startSize=32;rounded=1;whiteSpace=wrap;html=1;container=1;pointerEvents=0;fillColor=#f5fff5;strokeColor=#82b366;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="300" width="440" height="390" as="geometry" />
+        </mxCell>
+        <mxCell id="15" value="Fresh install / ROM BOOTSEL?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="14">
+          <mxGeometry x="110" y="50" width="220" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="16" value="Yes: flash complete image only&#xa;radxa-linkr-debugger-rp2350.uf2&#xa;Never use zephyr.uf2" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="14">
+          <mxGeometry x="25" y="180" width="185" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="17" value="No: MCUboot OTA&#xa;radxa-linkr-debugger-rp2350-ota.bin&#xa;test then confirm" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="14">
+          <mxGeometry x="230" y="180" width="185" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="18" value="Normal firmware boot&#xa;USB-NCM + CDC ACM available" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="14">
+          <mxGeometry x="70" y="305" width="300" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="19" value="Connect the debugger&#xa;USB-NCM control + CH347F interfaces" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="180" y="760" width="320" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="20" value="Run diagnostics&#xa;CLI: radxa-linkr-debuggerctl doctor&#xa;Host stack: linkr-host doctor" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="600" y="760" width="320" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="21" value="Open the interface&#xa;CLI/TUI, Web :8787, or MCP :8787/mcp" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="760" width="320" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="22" value="Ready" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=15;" vertex="1" parent="1">
+          <mxGeometry x="660" y="920" width="200" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="23" value="Implemented desktop path: verify release → install CLI + Host + Web → register login autostart → tray supervises Web/Broker/MCP + raw RX archive → doctor → open interface." style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#f5f5f5;strokeColor=#999999;fontColor=#555555;fontSize=12;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="180" y="1040" width="1160" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="30" value="CLI" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#6c8ebf;exitX=0.25;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="5" target="7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="31" value="Host stack" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#d79b00;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="5" target="11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="32" value="Firmware" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#82b366;exitX=0.75;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="5" target="15">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="33" value="published assets" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#d79b00;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="3" target="5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="34" value="source tree" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#6c8ebf;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="4" target="5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="37" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#6c8ebf;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="6" source="7" target="8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="38" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#6c8ebf;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="6" source="8" target="9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="39" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#d79b00;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="10" source="11" target="12">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="40" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#d79b00;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="10" source="12" target="13">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="41" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#b85450;exitX=0.25;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="14" source="15" target="16">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="42" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#82b366;exitX=0.75;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="14" source="15" target="17">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="43" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#b85450;exitX=0.5;exitY=1;entryX=0.25;entryY=0;" edge="1" parent="14" source="16" target="18">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="44" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.75;entryY=0;" edge="1" parent="14" source="17" target="18">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="45" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#6c8ebf;exitX=0.5;exitY=1;entryX=0.3;entryY=0;" edge="1" parent="1" source="9" target="19">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="46" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#9673a6;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="13" target="20">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="47" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.7;entryY=0;" edge="1" parent="1" source="18" target="19">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1260" y="720" />
+              <mxPoint x="400" y="720" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="48" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#9673a6;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="19" target="20">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="49" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#d79b00;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="20" target="21">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="50" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="21" target="22">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1180" y="880" />
+              <mxPoint x="760" y="880" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

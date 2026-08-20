@@ -21,6 +21,47 @@ device order as a fallback. Each channel has:
 
 Web Serial remains a separate direct-browser mode. Web Serial and the Host
 Broker cannot open the same operating-system serial device at the same time.
+On Unix, the Host explicitly requests exclusive mode on the serial builder so
+the TTY is reserved atomically during open. It must not reapply exclusivity after opening: real
+CH347 drivers on macOS reject a repeated `TIOCEXCL` with `EBUSY` even when the
+same process already owns the port.
+
+## Host raw RX archive
+
+The desktop tray starts Host with `--serial-log-mode rx`. The Broker submits
+each raw read to a bounded writer queue before UTF-8 decoding and broadcast, so
+invalid UTF-8, NUL bytes, and original byte order are retained. Direct Web
+Serial bypasses Host and is not included. Manual `linkr-host serve` defaults to
+archive mode `off`; enable it explicitly when required.
+
+The `linkr-serial-log.v1` layout is:
+
+```text
+serial-logs/YYYY-MM-DD/<session-uuid>-uart0/
+  manifest.json
+  rx-000001.bin
+  rx-000001.ndjson
+```
+
+The binary file is canonical. NDJSON records contain segment, sequence,
+offset, length, wall-clock time, and Host monotonic time. A manifest records
+the serial path, baud, byte/record counts, segment count, end reason, dropped
+bytes and one of `recording`, `complete`, `incomplete`, or `interrupted`.
+Startup recovers leftover `recording` manifests as `interrupted`.
+
+The default policy rotates at 64 MiB, retains up to 2 GiB of unpinned sessions,
+and expires unpinned sessions after 30 days. If the bounded writer queue fills
+or disk I/O fails, serial forwarding continues; Host status becomes degraded
+and the affected manifest is never reported as complete. RX is enabled by
+default through the tray. TX is intentionally excluded because it can contain
+passwords and other secrets.
+
+Local-only management endpoints are under `/host/api/v1`: status at
+`/serial-logging/status`, list/detail/download under `/serial-logs`, pin via
+`PUT /serial-logs/{id}/pin`, and confirmed delete via
+`DELETE /serial-logs/{id}?confirm=true`. Downloads support `raw`, lossy `text`,
+and `ndjson`. Browser requests from non-loopback origins are denied even when
+that origin is trusted for hardware gateway access.
 
 ## Envelope
 
@@ -58,7 +99,11 @@ The client then opens a subscription:
 `opened` confirms the physical path and baud. If another subscriber already
 uses that channel, the baud must match. Incoming serial bytes are decoded as a
 stream and broadcast as `data` frames with `sequence`, `host_t_mono_us`,
-`byte_count`, and `text` fields.
+`byte_count`, and `text` fields. To avoid turning USB packet boundaries into a
+large number of tiny WebSocket messages, the Host combines reads for at most 2
+milliseconds or 16 KiB before publishing a frame. A frame is serialized once
+and reused for all subscribers; byte order and streaming UTF-8 boundaries are
+preserved.
 
 Writes use an explicit encoding and complete only after the host serial driver
 has drained the data:

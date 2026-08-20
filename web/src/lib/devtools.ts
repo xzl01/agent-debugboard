@@ -3,14 +3,14 @@
  *
  * `react-grab` and `react-scan` are devDependencies loaded through dynamic
  * imports behind `import.meta.env.DEV`, so the production build statically
- * eliminates them. Set `VITE_DISABLE_REACT_DEVTOOLS=1` to suppress loading in
- * development; any other value (unset, empty, `0`) keeps diagnostics enabled.
+ * eliminates them. The normal product preview stays clean; set
+ * `VITE_DISABLE_REACT_DEVTOOLS=0` explicitly when React diagnostics are needed.
  */
 export function shouldEnableReactDiagnostics(
   isDev: boolean,
   disableFlag: string | undefined
 ): boolean {
-  return isDev && disableFlag !== "1";
+  return isDev && disableFlag === "0";
 }
 
 export async function loadReactDiagnostics(): Promise<void> {

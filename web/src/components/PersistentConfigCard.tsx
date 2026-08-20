@@ -18,18 +18,22 @@ import { PersistentConfigRows } from "./PersistentConfigRows";
 import { usePersistentConfigCardModel } from "./usePersistentConfigCardModel";
 import type { UsePersistentConfig } from "@/hooks/usePersistentConfig";
 import { useI18n } from "@/lib/i18n";
+import type { AutomationTaskControl } from "@/lib/automationTask";
 
 const FOCUSABLE_DISABLED_CLASS = "aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:active:scale-100";
 
 export function PersistentConfigCard({
   state,
   connected,
+  taskControl,
 }: {
   readonly state: UsePersistentConfig;
   readonly connected: boolean;
+  readonly taskControl?: AutomationTaskControl;
 }) {
   const { t } = useI18n();
-  const model = usePersistentConfigCardModel(state, connected);
+  const model = usePersistentConfigCardModel(state, connected, taskControl);
+  const savedCount = state.config?.items.filter((item) => item.kind !== "unknown" && item.saved !== null).length ?? 0;
 
   const headerStatus = !connected ? (
     <Badge tone="danger"><Unplug size={12} /> {t("config.status.disconnected")}</Badge>
@@ -68,17 +72,29 @@ export function PersistentConfigCard({
         <div className="space-y-4">
           <div className="space-y-2" aria-live="polite">
             <PersistentConfigFeedback connected={connected} loading={state.loading} hasConfig error={state.error} />
+            {model.taskBlocked && (
+              <div role="alert" className="flex gap-2 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
+                <CircleAlert size={14} className="mt-0.5 shrink-0" />
+                {t("task.error.busy")}
+              </div>
+            )}
             {model.notice && <div className="flex gap-2 rounded-lg border border-ok/30 bg-ok/15 px-3 py-2 text-xs text-ok"><CheckCircle2 size={14} className="shrink-0" /> {t(`config.success.${model.notice}`)}</div>}
-            {model.selectedIds.size === 0 && <div className="flex gap-2 rounded-lg border border-line/60 bg-panel2/50 px-3 py-2 text-xs text-ink-dim"><CircleAlert size={14} className="shrink-0" /> {t("config.emptySelection")}</div>}
             {state.config.pending > 0 && <div className="flex gap-2 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn"><Clock3 size={14} className="shrink-0" /> {t(state.config.pending === 1 ? "config.pendingNote.one" : "config.pendingNote.many", { count: state.config.pending })}</div>}
+          </div>
+
+          <div className="flex min-h-9 flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg bg-panel2/55 px-3 py-2 text-xs">
+            <span className={model.selectedIds.size > 0 ? "font-medium text-brand" : "text-ink-dim"}>
+              {t(model.selectedIds.size > 0 ? "config.selection.count" : "config.selection.none", { count: model.selectedIds.size })}
+            </span>
+            <span className="text-ink-dim">{t("config.snapshot.summary", { saved: savedCount, pending: state.config.pending })}</span>
           </div>
 
           {model.visibleItems.length === 0 ? <p className="text-sm text-ink-dim">{t("config.emptyCatalog")}</p> : <PersistentConfigRows groups={model.groups} selectedIds={model.selectedIds} disabled={model.disabled} error={state.error} onToggle={model.toggle} />}
 
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-2">
             <Button type="button" variant="primary" className={`min-h-11 whitespace-nowrap ${FOCUSABLE_DISABLED_CLASS}`} aria-disabled={model.saveDisabled} onClick={model.save}>{state.busy === "save" ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} {t(state.busy === "save" ? "config.saving" : "config.save")}</Button>
-            <Button type="button" className="min-h-11 whitespace-nowrap" onClick={() => void model.refresh()} disabled={model.disabled}><RefreshCw size={15} className={state.loading ? "animate-spin" : ""} /> {t("config.refresh")}</Button>
-            <Button type="button" variant="danger" className={`min-h-11 whitespace-nowrap ${FOCUSABLE_DISABLED_CLASS}`} aria-disabled={model.clearDisabled} onClick={model.clear}>{state.busy === "clear" ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />} {t(state.busy === "clear" ? "config.clearing" : "config.clear")}</Button>
+            <Button type="button" variant="ghost" className="min-h-11 whitespace-nowrap" onClick={() => void model.refresh()} disabled={model.disabled}><RefreshCw size={15} className={state.loading ? "animate-spin" : ""} /> {t("config.refresh")}</Button>
+            <Button type="button" variant="ghost" className={`min-h-11 whitespace-nowrap text-danger hover:bg-danger/10 hover:text-danger ${FOCUSABLE_DISABLED_CLASS}`} aria-disabled={model.clearDisabled} onClick={model.clear}>{state.busy === "clear" ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />} {t(state.busy === "clear" ? "config.clearing" : "config.clear")}</Button>
           </div>
         </div>
       )}

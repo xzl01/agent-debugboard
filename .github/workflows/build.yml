@@ -142,10 +142,10 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Install serial dependencies
+      - name: Install serial and tray dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libudev-dev
+          sudo apt-get install -y libudev-dev libgtk-3-dev libayatana-appindicator3-dev
 
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
@@ -166,6 +166,7 @@ jobs:
           cargo build --locked --manifest-path host-tools/Cargo.toml
           host-tools/target/debug/linkr-host --help
           host-tools/target/debug/linkr-host mcp --help
+          host-tools/target/debug/linkr-tray --help
 
   scripts:
     name: Check install and helper scripts
@@ -191,8 +192,10 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          shellcheck skills/radxa-linkr-debugger/scripts/install.sh apps/radxa_linkr_debugger/tests/run_unit_tests.sh skills/radxa-linkr-debugger/scripts/web-ota-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.test.sh scripts/setup-zephyr.sh scripts/build-firmware.sh
+          shellcheck skills/radxa-linkr-debugger/scripts/install.sh scripts/install-host.sh apps/radxa_linkr_debugger/tests/run_unit_tests.sh skills/radxa-linkr-debugger/scripts/web-ota-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.test.sh scripts/setup-zephyr.sh scripts/build-firmware.sh
           sh -n skills/radxa-linkr-debugger/scripts/install.sh
+          sh -n scripts/install-host.sh
+          scripts/install-host.sh --dry-run
           sh -n apps/radxa_linkr_debugger/tests/run_unit_tests.sh
           sh -n skills/radxa-linkr-debugger/scripts/web-ota-hil.sh
           sh -n skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh
@@ -235,6 +238,8 @@ jobs:
         run: |
           $null = [scriptblock]::Create((Get-Content .\skills\radxa-linkr-debugger\scripts\install.ps1 -Raw))
           .\skills\radxa-linkr-debugger\scripts\install.ps1 -DryRun
+          $null = [scriptblock]::Create((Get-Content .\scripts\install-host.ps1 -Raw))
+          .\scripts\install-host.ps1 -DryRun
 
   firmware:
     name: Build RP2350 UF2 firmware

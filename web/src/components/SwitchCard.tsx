@@ -41,9 +41,15 @@ function Segmented({
 export function SwitchCard({
   switches,
   onSet,
+  disabled = false,
+  stale = false,
+  compact = false,
 }: {
   switches: SwitchState;
   onSet: (name: string, route: string) => void;
+  disabled?: boolean;
+  stale?: boolean;
+  compact?: boolean;
 }) {
   const { t } = useI18n();
   const names = Object.keys(switches).sort();
@@ -54,8 +60,16 @@ export function SwitchCard({
   };
 
   return (
-    <Card title={t("switch.title")} subtitle={t("switch.subtitle")} icon={ArrowLeftRight}>
-      <div className="space-y-4">
+    <Card
+      title={t("switch.title")}
+      subtitle={compact ? undefined : t("switch.subtitle")}
+      icon={compact ? undefined : ArrowLeftRight}
+      className={compact ? "rounded-none border-0 shadow-none" : undefined}
+      headerClassName={compact ? "min-h-11 px-3 py-2" : undefined}
+      contentClassName={compact ? "p-3" : undefined}
+      right={stale ? <Badge tone="neutral">{t("snapshot.readOnly")}</Badge> : undefined}
+    >
+      <div className={compact ? "space-y-2.5" : "space-y-4"}>
         {names.map((name) => {
           const sw = switches[name];
           const routes = sw.routes ?? (sw.route ? [sw.route] : []);
@@ -76,19 +90,19 @@ export function SwitchCard({
                   label: switchRouteLabel(t, route),
                 }))}
                 onChange={(v) => handleSet(name, v, sw.requires_confirm)}
-                disabled={!sw.routes || sw.routes.length === 0}
+                disabled={disabled || !sw.routes || sw.routes.length === 0}
               />
             </div>
           );
         })}
 
-        <div className="flex flex-wrap gap-2 pt-1">
+        {!compact && <div className="flex flex-wrap gap-2 pt-1">
           {names.map((name) => (
             <Badge key={name} tone="brand">
               {name}: {switches[name].route || "—"}
             </Badge>
           ))}
-        </div>
+        </div>}
       </div>
     </Card>
   );

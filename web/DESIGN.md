@@ -22,10 +22,10 @@ class on `<html>` swaps the ramp; `color-scheme` follows the active theme.
 
 | Token | Light | Dark | Role |
 | --- | --- | --- | --- |
-| `--c-bg` | `248 250 252` | `9 12 18` | App background |
+| `--c-bg` | `246 248 251` | `9 12 18` | App background |
 | `--c-panel` | `255 255 255` | `15 23 42` | Card/dialog surface |
-| `--c-panel2` | `241 245 249` | `30 41 59` | Inset surface (stats, segmented controls, hover) |
-| `--c-line` | `203 213 225` | `51 65 85` | Borders, dividers, toggle-off track |
+| `--c-panel2` | `244 247 250` | `30 41 59` | Inset surface (stats, segmented controls, hover) |
+| `--c-line` | `214 222 232` | `51 65 85` | Borders, dividers, toggle-off track |
 | `--c-brand` | `37 99 235` | `96 165 250` | Primary accent, focus rings, active tabs |
 | `--c-ok` | `5 150 105` | `52 211 153` | Success, toggle-on track, online state |
 | `--c-warn` | `180 83 9` | `251 191 36` | Warning accents (VIO control, pending risk) |
@@ -35,6 +35,7 @@ class on `<html>` swaps the ramp; `color-scheme` follows the active theme.
 | `--c-terminal` | `255 255 255` | `7 9 12` | Terminal surface and modal backdrop tint |
 | `--c-terminal-ink` | `15 23 42` | `226 232 240` | Terminal foreground |
 | `--c-scroll` | `148 163 184` | `71 85 105` | Scrollbar thumb (CSS only, no Tailwind alias) |
+| `--c-overlay` | `15 23 42` | `0 0 0` | Drawer and modal backdrop |
 
 Opacity modifiers are part of the language: surfaces and borders commonly use
 `/70` or `/60` (cards `border-line/70`, header `border-line/60`, backdrop
@@ -84,39 +85,42 @@ Radius (config overrides `xl` to `0.9rem`):
 | `rounded-2xl` | 16px | Cards, Advanced section shell |
 | `rounded-full` | full | Badges, toggle track/thumb, step counters |
 
-Shadows: `shadow-sm` on cards and the sticky header; `shadow-2xl` reserved for
-modal dialogs; `shadow-brand/20`/`shadow-danger/20` tint primary/danger
-buttons.
+Shadows are reserved for overlays: cards and controls use a border or tonal
+surface, never a border plus a decorative shadow. `shadow-2xl` is reserved for
+modal dialogs and the hardware drawer; toggle thumbs keep their functional
+`shadow` so they remain legible over the track.
 
 Layout skeleton:
 
-- Sticky header `sticky top-0 z-20` with `bg-bg/90 backdrop-blur-md`.
-- Page container `mx-auto max-w-[1400px] px-4`; main adds `py-5`.
-- Dashboard grid: `grid items-start gap-4 xl:grid-cols-[minmax(340px,400px)_minmax(0,1fr)]`.
-- Left rail: `grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-1`; full-width
-  items opt out with `sm:col-span-2 xl:col-span-1`.
-- Advanced & recovery is a `<details>` disclosure (`group`, summary `min-h-16`,
-  chevron rotates via `group-open:rotate-180`), content grid
-  `lg:grid-cols-2 xl:grid-cols-1` with `border-t border-line/60 p-3`.
-- Right workspace column is `xl:sticky xl:top-[116px]` and owns the tablist.
-- Responsive rule: columns collapse to a single stack below `xl` (1280px);
-  cards pair two-across between `sm` and `xl`. The 375/768/1280px widths are
-  the QA breakpoints.
+- Sticky system header `sticky top-0 z-30`; the workspace navigation is a
+  separate 44px horizontal scan line and becomes sticky below the header on
+  desktop.
+- Page container `mx-auto max-w-[1440px] px-6`; main adds `pt-5` and bottom
+  room for the fixed status strip.
+- The selected workspace occupies the full content width. Frequent power,
+  routing, recovery, GPIO, and watchdog controls live in the right-side
+  hardware drawer rather than competing with the current task.
+- Power and logic workspaces use an F-pattern mode header: a 220-280px identity
+  block followed by a mode switch capped at 760px. Together they occupy roughly
+  the first 75% of a desktop content row and preserve a strong shared left edge.
+- Responsive rule: the mode header stacks before `lg`; drawer card grids and
+  result grids collapse without moving the primary workspace behind hardware
+  controls. The 375/768/1280px widths are the QA breakpoints.
 
 ## 4. Primitives (`src/components/ui.tsx`)
 
 Composition pattern: small prop-driven components merged with `cn()`
 (`clsx` + `tailwind-merge`); callers extend via `className`/`contentClassName`.
 
-- `Card`: `<section>` shell `rounded-2xl border border-line/70 bg-panel
-  shadow-sm transition-colors duration-200`, optional header (icon chip
+- `Card`: `<section>` shell `rounded-2xl border border-line/80 bg-panel
+  transition-colors duration-200`, optional header (icon chip
   `h-8 w-8 rounded-lg bg-brand/10 text-brand`, title, subtitle, `right`
   actions slot), content `p-4`.
-- `Button`: variants `default` (panel2 neutral), `primary` (brand fill, white
-  text), `danger` (danger fill, white text), `ghost` (transparent, dim text,
+- `Button`: variants `default` (panel2 neutral), `primary` (brand fill, on-brand
+  text), `danger` (danger fill, on-danger text), `ghost` (transparent, dim text,
   hover panel2). Shared chrome: `inline-flex min-h-10 items-center
   justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-all
-  duration-150 active:scale-[0.97]`, focus ring, disabled
+  duration-150 active:scale-[0.99]`, focus ring, disabled
   `opacity-50 cursor-not-allowed` with `active:scale-100`. Icon-only buttons
   use `h-10 w-10 rounded-xl p-0`.
 - `Toggle`: native `<button role="switch" aria-checked>`, track `h-6 w-11
@@ -125,9 +129,13 @@ Composition pattern: small prop-driven components merged with `cn()`
 - `Badge`: tones `neutral | ok | warn | danger | brand` as 15%-tint fill, 30%
   border, full-tone text; pill `rounded-full border px-2 py-0.5 text-[11px]
   font-medium leading-none`, leading 12-16px icon allowed.
-- `Stat`: labeled value block `rounded-xl border border-line/60 bg-panel2/50
+- `Stat`: labeled value block `rounded-xl bg-panel2/70
   px-3 py-2.5`, uppercase 11px label, `text-lg font-semibold` value, optional
   hint.
+- `WorkspaceModeHeader` + `WorkspaceModeTab`: shared identity and sub-function
+  switch for analysis workspaces. The header follows the 280px + 760px scan
+  grid; the tab keeps icon, title, and one-line purpose together. Selected
+  state uses a restrained brand icon fill and inset ring, not elevation.
 
 Composite patterns outside `ui.tsx` that are part of the language:
 
@@ -144,10 +152,11 @@ Composite patterns outside `ui.tsx` that are part of the language:
 - Segmented control (switch routes, layout pickers): container `grid
   grid-cols-2 rounded-lg border border-line/70 bg-panel2/60 p-0.5`, segments
   `min-h-9 rounded-md px-3 py-1 text-xs font-medium transition-colors`, active
-  segment `bg-panel text-ink shadow-sm`, inactive `text-ink-dim hover:text-ink`.
-- Workspace tablist: `role="tablist"` pill `rounded-xl border border-line/70
-  bg-panel p-1 shadow-sm`, tabs `min-h-10 rounded-lg px-3 text-sm font-medium`,
-  selected `bg-brand/12 text-brand shadow-sm`, roving `tabIndex` with
+  segment `bg-panel text-ink ring-1 ring-inset ring-line/60`, inactive
+  `text-ink-dim hover:text-ink`.
+- Workspace tablist: full-width horizontal scan line below the system header;
+  tabs are `min-h-9 rounded-lg px-3 text-[13px] font-medium`. The selected tab
+  uses a light brand tint, inset ring, and 2px bottom marker, plus roving `tabIndex` with
   Arrow/Home/End keyboard navigation (`getNextWorkspaceTabIndex`), panels
   `role="tabpanel"` with `hidden` toggling and `aria-labelledby`.
 - Unreachable banner: `rounded-xl border border-danger/30 bg-danger/10 px-4
@@ -182,10 +191,11 @@ Composite patterns outside `ui.tsx` that are part of the language:
   `cursor-not-allowed`.
 - Busy/loading: `Loader2`/`RefreshCw` with `animate-spin text-brand`; skeleton
   is not used - the first load shows a centered spinner + `text-sm` label.
-- Entry motion: `animate-fade-up` (opacity + `translateY(8px)`, 0.32s
-  `cubic-bezier(0.22, 1, 0.36, 1)`) on the dashboard grid only. All animation
-  is GPU-composited (`transform`, `opacity`); theme swap is a 160ms
-  background/color transition on `body`.
+- Entry motion: `animate-fade-up` (opacity + `translateY(8px)`, 200ms
+  `cubic-bezier(0.22, 1, 0.36, 1)`) on the workspace grid only. The hardware
+  drawer enters in 200ms and theme swaps take 180ms. All animation is
+  GPU-composited (`transform`, `opacity`) and operational feedback stays within
+  the 150-200ms enterprise-tool range.
 
 ## 6. Accessibility contract
 
@@ -221,9 +231,9 @@ packages; `scripts/check-dev-diagnostics.mjs` (wired into `npm test`) fails if
 the wiring tokens disappear, a static import appears, or either package name
 lands in `dist/`.
 
-- `VITE_DISABLE_REACT_DEVTOOLS=1` suppresses loading in development; unset,
-  empty, `0`, or any other value keeps diagnostics enabled
-  (`shouldEnableReactDiagnostics`).
+- Product previews keep diagnostics hidden by default. Set
+  `VITE_DISABLE_REACT_DEVTOOLS=0` explicitly when the React diagnostics overlay
+  is needed (`shouldEnableReactDiagnostics`).
 - Loader failure is non-fatal: it logs one `console.warn` and the app boots
   normally. Diagnostics initialize before the first `createRoot().render()`.
 

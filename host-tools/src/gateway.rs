@@ -1,23 +1,34 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    fs::File,
+    io::{self, Read},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use axum::{
     body::{to_bytes, Body},
     extract::{
         ws::{CloseFrame, Message as AxumMessage, WebSocket, WebSocketUpgrade},
-        OriginalUri, Request, State,
+        OriginalUri, Path, Query, Request, State,
     },
-    http::{header, HeaderName, HeaderValue, Method, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{any, get},
+    routing::{any, get, post, put},
     Json, Router,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use reqwest::Client;
+use rmcp::transport::streamable_http_server::{
+    session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+};
+use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::Notify};
 use tokio_tungstenite::{connect_async, tungstenite::Message as TungsteniteMessage};
+use tokio_util::io::ReaderStream;
 use tower_http::{
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
@@ -27,7 +38,9 @@ use url::Url;
 
 use crate::{
     config::{is_allowed_origin, HostConfig},
+    mcp::LinkrMcpServer,
     serial_broker::{SerialBroker, PROTOCOL as SERIAL_PROTOCOL},
+    serial_log::SerialLogService,
 };
 
 const GATEWAY_SCHEMA: &str = "radxa-linkr-debugger-gateway.v1";
@@ -38,6 +51,8 @@ struct AppState {
     config: Arc<HostConfig>,
     client: Client,
     serial: SerialBroker,
+    serial_log: SerialLogService,
+    shutdown: Arc<Notify>,
 }
 
 pub async fn serve(config: HostConfig) -> Result<()> {
@@ -47,20 +62,55 @@ pub async fn serve(config: HostConfig) -> Result<()> {
         .connect_timeout(Duration::from_secs(5))
         .build()
         .context("build board HTTP client")?;
-    let serial = SerialBroker::new(config.serial_idle_timeout);
+    let serial_log = SerialLogService::new(config.serial_log.clone()).await?;
+    let serial = SerialBroker::new(config.serial_idle_timeout, serial_log.clone());
+    let shutdown = Arc::new(Notify::new());
     let state = AppState {
         config: Arc::new(config),
         client,
         serial,
+        serial_log,
+        shutdown: shutdown.clone(),
     };
     let index = state.config.web_root.join("index.html");
     let static_files = ServeDir::new(&state.config.web_root)
         .append_index_html_on_directories(true)
         .not_found_service(ServeFile::new(index));
+    let api_base = Url::parse(&format!("{}api/v1/", state.config.public_url()))
+        .context("build resident MCP API URL")?;
+    let serial_url = Url::parse(&format!(
+        "ws://{}:{}/serial",
+        state.config.bind.ip(),
+        state.config.bind.port()
+    ))
+    .context("build resident MCP Serial Broker URL")?;
+    let mcp_service = StreamableHttpService::new(
+        move || {
+            LinkrMcpServer::new(api_base.clone(), serial_url.clone()).map_err(std::io::Error::other)
+        },
+        LocalSessionManager::default().into(),
+        StreamableHttpServerConfig::default(),
+    );
 
     let app = Router::new()
         .route("/healthz", get(health))
         .route("/host/api/v1/status", get(host_status))
+        .route("/host/api/v1/shutdown", post(shutdown_host))
+        .route("/host/api/v1/serial-logging/status", get(serial_log_status))
+        .route("/host/api/v1/serial-logs", get(list_serial_logs))
+        .route(
+            "/host/api/v1/serial-logs/{session_id}",
+            get(get_serial_log).delete(delete_serial_log),
+        )
+        .route(
+            "/host/api/v1/serial-logs/{session_id}/pin",
+            put(pin_serial_log),
+        )
+        .route(
+            "/host/api/v1/serial-logs/{session_id}/download",
+            get(download_serial_log),
+        )
+        .nest_service("/mcp", mcp_service)
         .route("/serial", get(serial_socket))
         .route("/api/v1/ws/{slot}", get(proxy_websocket_request))
         .route("/api/{*path}", any(proxy_http_request))
@@ -77,20 +127,25 @@ pub async fn serve(config: HostConfig) -> Result<()> {
     let shutdown_serial = state.serial.clone();
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = shutdown.notified() => {}
+            }
             shutdown_serial.shutdown().await;
         })
         .await
         .context("run Linkr Host server")
 }
 
-async fn health() -> Json<Value> {
+async fn health(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "schema": GATEWAY_SCHEMA,
         "ok": true,
         "service": "linkr-host",
+        "mcp_endpoint": "/mcp",
         "serial_protocol": SERIAL_PROTOCOL,
-        "version": env!("CARGO_PKG_VERSION")
+        "version": env!("CARGO_PKG_VERSION"),
+        "serial_logging": state.serial_log.status()
     }))
 }
 
@@ -101,10 +156,347 @@ async fn host_status(State(state): State<AppState>) -> Json<Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "pid": std::process::id(),
         "listen": state.config.public_url(),
+        "mcp_endpoint": format!("{}mcp", state.config.public_url()),
         "board_url": state.config.board_url.as_str(),
         "web_root": state.config.web_root.display().to_string(),
-        "serial_protocol": SERIAL_PROTOCOL
+        "serial_protocol": SERIAL_PROTOCOL,
+        "serial_logging": state.serial_log.status()
     }))
+}
+
+async fn shutdown_host(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(expected) = state.config.shutdown_token.as_deref() else {
+        return log_error(
+            StatusCode::NOT_FOUND,
+            "managed_shutdown_unavailable",
+            "this Host is not managed by the tray",
+        );
+    };
+    let supplied = headers
+        .get("x-linkr-shutdown-token")
+        .and_then(|value| value.to_str().ok());
+    if supplied != Some(expected) {
+        return log_error(
+            StatusCode::FORBIDDEN,
+            "invalid_shutdown_token",
+            "managed shutdown token is invalid",
+        );
+    }
+    state.shutdown.notify_one();
+    StatusCode::ACCEPTED.into_response()
+}
+
+async fn serial_log_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(response) = reject_nonlocal_log_request(&headers) {
+        return response;
+    }
+    Json(state.serial_log.status()).into_response()
+}
+
+async fn list_serial_logs(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(response) = reject_nonlocal_log_request(&headers) {
+        return response;
+    }
+    match state.serial_log.list() {
+        Ok(logs) => {
+            Json(json!({"schema": "linkr-serial-log-list.v1", "logs": logs})).into_response()
+        }
+        Err(error) => internal_log_error(error),
+    }
+}
+
+async fn get_serial_log(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Response {
+    if let Some(response) = reject_nonlocal_log_request(&headers) {
+        return response;
+    }
+    let Some(session_id) = parse_session_id(&session_id) else {
+        return log_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_session_id",
+            "invalid serial log session id",
+        );
+    };
+    match state.serial_log.find(session_id) {
+        Ok(Some(log)) => Json(log).into_response(),
+        Ok(None) => log_error(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "serial log session not found",
+        ),
+        Err(error) => internal_log_error(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PinRequest {
+    pinned: bool,
+}
+
+async fn pin_serial_log(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<PinRequest>,
+) -> Response {
+    if let Some(response) = reject_nonlocal_log_request(&headers) {
+        return response;
+    }
+    let Some(session_id) = parse_session_id(&session_id) else {
+        return log_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_session_id",
+            "invalid serial log session id",
+        );
+    };
+    match state.serial_log.set_pinned(session_id, request.pinned) {
+        Ok(log) => Json(log).into_response(),
+        Err(error) => log_operation_error(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteQuery {
+    confirm: Option<bool>,
+}
+
+async fn delete_serial_log(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<DeleteQuery>,
+) -> Response {
+    if let Some(response) = reject_nonlocal_log_request(&headers) {
+        return response;
+    }
+    if query.confirm != Some(true) {
+        return log_error(
+            StatusCode::BAD_REQUEST,
+            "confirmation_required",
+            "delete requires confirm=true",
+        );
+    }
+    let Some(session_id) = parse_session_id(&session_id) else {
+        return log_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_session_id",
+            "invalid serial log session id",
+        );
+    };
+    match state.serial_log.delete(session_id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => log_operation_error(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DownloadQuery {
+    format: Option<String>,
+}
+
+async fn download_serial_log(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<DownloadQuery>,
+) -> Response {
+    if let Some(response) = reject_nonlocal_log_request(&headers) {
+        return response;
+    }
+    let Some(session_id) = parse_session_id(&session_id) else {
+        return log_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_session_id",
+            "invalid serial log session id",
+        );
+    };
+    let format = query.format.as_deref().unwrap_or("raw");
+    let paths = match state.serial_log.artifact_paths(session_id, format) {
+        Ok(paths) => paths,
+        Err(error) => return log_operation_error(error),
+    };
+    let (body, content_type, extension) = match format {
+        "raw" => (file_stream_body(paths), "application/octet-stream", "raw"),
+        "ndjson" => (file_stream_body(paths), "application/x-ndjson", "ndjson"),
+        "text" => (
+            lossy_text_stream_body(paths),
+            "text/plain; charset=utf-8",
+            "txt",
+        ),
+        _ => unreachable!("artifact_paths accepts only supported formats"),
+    };
+    let mut response = body.into_response();
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    let disposition = format!("attachment; filename=\"{session_id}.{extension}\"");
+    if let Ok(value) = HeaderValue::from_str(&disposition) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_DISPOSITION, value);
+    }
+    response
+}
+
+fn file_stream_body(paths: Vec<PathBuf>) -> Body {
+    let stream = futures_util::stream::iter(paths)
+        .map(Ok::<_, io::Error>)
+        .and_then(tokio::fs::File::open)
+        .map_ok(ReaderStream::new)
+        .try_flatten();
+    Body::from_stream(stream)
+}
+
+fn lossy_text_stream_body(paths: Vec<PathBuf>) -> Body {
+    let (sender, receiver) = tokio::sync::mpsc::channel::<io::Result<Vec<u8>>>(4);
+    tokio::task::spawn_blocking(move || {
+        let mut scratch = vec![0_u8; 64 * 1024];
+        let mut pending = Vec::with_capacity(scratch.len() + 4);
+        for path in paths {
+            let mut file = match File::open(&path) {
+                Ok(file) => file,
+                Err(error) => {
+                    let _ = sender.blocking_send(Err(error));
+                    return;
+                }
+            };
+            loop {
+                let count = match file.read(&mut scratch) {
+                    Ok(0) => break,
+                    Ok(count) => count,
+                    Err(error) => {
+                        let _ = sender.blocking_send(Err(error));
+                        return;
+                    }
+                };
+                pending.extend_from_slice(&scratch[..count]);
+                let output = drain_lossy_utf8(&mut pending, false);
+                if !output.is_empty() && sender.blocking_send(Ok(output)).is_err() {
+                    return;
+                }
+            }
+        }
+        let output = drain_lossy_utf8(&mut pending, true);
+        if !output.is_empty() {
+            let _ = sender.blocking_send(Ok(output));
+        }
+    });
+    let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|item| (item, receiver))
+    });
+    Body::from_stream(stream)
+}
+
+fn drain_lossy_utf8(pending: &mut Vec<u8>, eof: bool) -> Vec<u8> {
+    let mut output = String::new();
+    let mut consumed = 0;
+    while consumed < pending.len() {
+        match std::str::from_utf8(&pending[consumed..]) {
+            Ok(text) => {
+                output.push_str(text);
+                consumed = pending.len();
+            }
+            Err(error) => {
+                let valid = error.valid_up_to();
+                if valid > 0 {
+                    output.push_str(
+                        std::str::from_utf8(&pending[consumed..consumed + valid])
+                            .expect("valid_up_to ends on a UTF-8 boundary"),
+                    );
+                    consumed += valid;
+                }
+                if let Some(length) = error.error_len() {
+                    output.push('\u{fffd}');
+                    consumed += length;
+                } else if eof {
+                    output.push('\u{fffd}');
+                    consumed = pending.len();
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    pending.drain(..consumed);
+    output.into_bytes()
+}
+
+fn parse_session_id(value: &str) -> Option<uuid::Uuid> {
+    uuid::Uuid::parse_str(value).ok()
+}
+
+fn reject_nonlocal_log_request(headers: &HeaderMap) -> Option<Response> {
+    if headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("cross-site"))
+    {
+        return Some(log_error(
+            StatusCode::FORBIDDEN,
+            "local_origin_required",
+            "serial logs are available only to the local Web UI",
+        ));
+    }
+    let origin = headers.get(header::ORIGIN)?;
+    let Ok(origin) = origin.to_str() else {
+        return Some(log_error(
+            StatusCode::FORBIDDEN,
+            "local_origin_required",
+            "serial logs are available only to the local Web UI",
+        ));
+    };
+    let local = Url::parse(origin).is_ok_and(|url| {
+        url.scheme() == "http"
+            && url.host().is_some_and(|host| match host {
+                url::Host::Domain(name) => name.eq_ignore_ascii_case("localhost"),
+                url::Host::Ipv4(address) => address.is_loopback(),
+                url::Host::Ipv6(address) => address.is_loopback(),
+            })
+    });
+    if local {
+        None
+    } else {
+        Some(log_error(
+            StatusCode::FORBIDDEN,
+            "local_origin_required",
+            "serial logs are available only to the local Web UI",
+        ))
+    }
+}
+
+fn log_operation_error(error: anyhow::Error) -> Response {
+    let message = error.to_string();
+    let status = if message.contains("not found") {
+        StatusCode::NOT_FOUND
+    } else if message.contains("active")
+        || message.contains("unpin")
+        || message.contains("unsupported")
+    {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    log_error(status, "serial_log_error", &message)
+}
+
+fn internal_log_error(error: anyhow::Error) -> Response {
+    warn!(error = %error, "serial log API failed");
+    log_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "serial_log_error",
+        "serial log operation failed",
+    )
+}
+
+fn log_error(status: StatusCode, code: &str, message: &str) -> Response {
+    (
+        status,
+        Json(json!({"error": {"code": code, "message": message}})),
+    )
+        .into_response()
 }
 
 async fn serial_socket(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
@@ -385,5 +777,28 @@ mod tests {
         assert!(is_hop_by_hop(&header::CONNECTION));
         assert!(is_hop_by_hop(&header::UPGRADE));
         assert!(!is_hop_by_hop(&header::CONTENT_TYPE));
+    }
+
+    #[test]
+    fn lossy_utf8_stream_preserves_characters_split_across_chunks() {
+        let mut pending = vec![b'A', 0xe4, 0xb8];
+        assert_eq!(drain_lossy_utf8(&mut pending, false), b"A");
+        assert_eq!(pending, vec![0xe4, 0xb8]);
+
+        pending.extend_from_slice(&[0xad, b'B']);
+        assert_eq!(drain_lossy_utf8(&mut pending, false), "中B".as_bytes());
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn lossy_utf8_stream_replaces_invalid_and_incomplete_sequences() {
+        let mut pending = vec![b'A', 0xff, b'B', 0xe4];
+        assert_eq!(
+            drain_lossy_utf8(&mut pending, false),
+            "A\u{fffd}B".as_bytes()
+        );
+        assert_eq!(pending, vec![0xe4]);
+        assert_eq!(drain_lossy_utf8(&mut pending, true), "\u{fffd}".as_bytes());
+        assert!(pending.is_empty());
     }
 }

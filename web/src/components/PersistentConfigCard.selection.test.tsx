@@ -70,13 +70,13 @@ describe("PersistentConfigCard selection", () => {
     expect(selectedRow.classList.contains("ring-inset")).toBe(true);
     expect(selectedRow.classList.contains("ring-brand/30")).toBe(true);
     expect(selectedRow.classList.contains("hover:bg-brand/20")).toBe(true);
-    expect(selectedRow.classList.contains("hover:bg-panel2/50")).toBe(false);
+    expect(selectedRow.classList.contains("hover:bg-panel2/60")).toBe(false);
 
     const unselectedRow = configRow(view.host, "firmware.unselected");
     expect(unselectedRow.getAttribute("aria-checked")).toBe("false");
     expect(unselectedRow.classList.contains("bg-brand/15")).toBe(false);
     expect(unselectedRow.classList.contains("ring-1")).toBe(false);
-    expect(unselectedRow.classList.contains("hover:bg-panel2/50")).toBe(true);
+    expect(unselectedRow.classList.contains("hover:bg-panel2/60")).toBe(true);
   });
 
   it("toggles an enabled row with a mouse click and retains the selection tint", () => {
@@ -117,8 +117,11 @@ describe("PersistentConfigCard selection", () => {
       await flush();
       expect(api.getPersistentConfig).toHaveBeenCalledTimes(2);
       await act(async () => { updated.resolve(config([updatedItem])); });
-      expect(configRow(hookedView.host, "firmware.live").textContent)
-        .toContain("CurrentonSavedoff");
+      const updatedRowText = configRow(hookedView.host, "firmware.live").textContent;
+      expect(updatedRowText).toContain("Current");
+      expect(updatedRowText).toContain("on");
+      expect(updatedRowText).toContain("Saved");
+      expect(updatedRowText).toContain("off");
       expect(configRow(hookedView.host, "firmware.live").getAttribute("aria-checked")).toBe("true");
       expect(api.getPersistentConfig).toHaveBeenCalledTimes(2);
     } finally {

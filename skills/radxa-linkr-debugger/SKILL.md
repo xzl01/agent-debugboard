@@ -9,11 +9,27 @@ The active hardware target is G3 with RP2350A. G2/RP2040 is retired and must
 not be built, flashed, or treated as a supported fallback. RP2354 requires a
 dedicated board definition and HIL validation before use with this skill.
 
-Prefer the repository's local stdio MCP server for Agent-side status, ADC,
-confirmed power/route control, and target UART work when its tools are
-available. MCP shares the host Serial Broker with the Web UI and provides
+Prefer the installed Host's resident Streamable HTTP MCP endpoint at
+`http://127.0.0.1:8787/mcp` for Agent-side status, ADC, confirmed power/route
+control, and target UART work when its tools are available. The unified
+installer runs it under `linkr-tray`; `linkr-host mcp` remains the stdio
+compatibility path. MCP shares the host Serial Broker with the Web UI and provides
 cursor-based reads, bounded waits, and short exclusive writes. See
 `./doc/mcp-server.md` from the repository root.
+
+The tray enables Host-managed raw UART RX archiving. Bridge/MCP UART sessions
+are stored as `linkr-serial-log.v1` under the user's application-data directory;
+direct Web Serial is not included. The canonical artifact is `rx-*.bin`, while
+`rx-*.ndjson` is only its timestamp/offset index. Treat any manifest with
+`complete: false` or non-zero `dropped_bytes` as incomplete. Never infer that a
+decoded terminal view is a byte-exact archive. TX is intentionally not stored
+because login credentials or other secrets may be present.
+
+On Unix, Host explicitly requests exclusive mode on the serial builder so the
+TTY is reserved atomically during open. Do not call `set_exclusive(true)` again
+after the open succeeds:
+the macOS CH347 driver returns `EBUSY` for a repeated `TIOCEXCL` even when the
+same process already owns the port.
 
 Use direct HTTP requests with `curl` as the lowest-common-denominator fallback.
 The board enumerates as a USB NCM network interface and exposes its control API
@@ -57,11 +73,14 @@ subscriber behavior with the freshly built skill-local binary.
 
 ## MCP Fast Path
 
-The primary local MCP entry is
-`./host-tools/target/release/linkr-host mcp`. Build it once with
+The primary installed MCP entry is the resident
+`http://127.0.0.1:8787/mcp` endpoint supervised by `linkr-tray`. From a source
+checkout, build it once with
 `cargo build --release --manifest-path ./host-tools/Cargo.toml`; the command
-completes the MCP handshake immediately, then starts and supervises the
-loopback Web UI, device gateway and shared Serial Broker in the background.
+`./host-tools/target/release/linkr-host serve` exposes Web, Broker, and MCP in
+one loopback daemon. `./host-tools/target/release/linkr-host mcp` is retained
+for stdio-only clients; it completes the MCP handshake immediately, then starts
+and supervises the loopback Host in the background.
 Temporary Host startup failures use bounded exponential retry and must not be
 treated as a permanently disabled MCP server. Client configuration and the
 complete tool contract are in `./doc/mcp-server.md`. The Node adapter is
@@ -108,6 +127,8 @@ skill at that path.
 - Optional CLI binary (macOS/Linux): `./skills/radxa-linkr-debugger/scripts/bin/radxa-linkr-debuggerctl`
 - Optional CLI binary (Windows): `./skills/radxa-linkr-debugger/scripts/bin/radxa-linkr-debuggerctl.exe`
 - Primary Host/MCP binary from a source checkout: `./host-tools/target/release/linkr-host`
+- Unified source installer: `./scripts/install-host.sh` or `./scripts/install-host.ps1`
+- Installed MCP endpoint: `http://127.0.0.1:8787/mcp`
 
 ## Repository Change Rules
 
@@ -1300,6 +1321,13 @@ perform side-effectful operations.
 **API runner** (`scripts/web-ota-hil.sh`): Issues raw HTTP requests against the
 board OTA endpoints. Headless and fast. Exercises the OTA state machine, error
 codes, and gate logic.
+
+After test reboot, USB NCM may re-enumerate after the firmware's watchdog gate.
+The API runner uses `test_marker_present` to distinguish a missed auto-confirm
+from rollback: `idle` + confirmed + marker cleared is success, while the same
+state with the marker still present is rollback. Missing marker evidence is
+inconclusive. The manual flow posts `/confirm` only after observing
+`pending_test`, and then requires confirmed idle with the marker cleared.
 
 **Browser runner** (`web/scripts/ota-hil.mjs`): Drives a real Chromium/Chromium
 instance via Playwright against the board-hosted Web UI at

@@ -1,15 +1,16 @@
 # Local MCP server
 
-The repository includes a generic local stdio MCP server for Codex, OpenCode
-and other MCP clients. It is implemented by the Rust `linkr-host` process and
-is a host adapter, not a second device protocol:
+The Rust `linkr-host` process exposes a resident Streamable HTTP MCP endpoint
+for Codex, OpenCode and other MCP clients. A stdio adapter remains available
+for clients that cannot connect to an HTTP MCP endpoint. Both transports are
+host adapters, not a second device protocol:
 
 ```text
-Agent -- stdio MCP -- Linkr device gateway -- USB NCM HTTP -- RP2350
-                         |
-                         +-- linkr-serial-broker.v1 -- CH347F UART0/UART1
-                                      |
-                                      +-- Web and other Agent subscribers
+Agent -- Streamable HTTP MCP /mcp -- Linkr device gateway -- USB NCM -- RP2350
+               |                         |
+               |                         +-- linkr-serial-broker.v1 -- CH347F
+               |                                      |
+               +-- stdio compatibility                +-- Web/Agent subscribers
 ```
 
 The Web application continues to use the loopback HTTP/WebSocket gateway. MCP
@@ -26,8 +27,33 @@ npm --prefix web run build
 cargo build --release --manifest-path host-tools/Cargo.toml
 ```
 
-Run MCP directly with
-`host-tools/target/release/linkr-host mcp`. The server writes MCP only on
+When the unified desktop stack or `linkr-host serve` is running, the preferred
+endpoint is `http://127.0.0.1:8787/mcp`. It stays available independently of
+an individual Agent process. Configure an HTTP-capable MCP client with that
+URL, for example Codex:
+
+```toml
+[mcp_servers.radxa_linkr_debugger]
+url = "http://127.0.0.1:8787/mcp"
+startup_timeout_sec = 20
+```
+
+OpenCode v2 uses the equivalent remote MCP entry:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "radxa_linkr_debugger": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8787/mcp"
+    }
+  }
+}
+```
+
+For stdio-only clients, run
+`host-tools/target/release/linkr-host mcp`. The adapter writes MCP only on
 stdout; diagnostics and automatically started Host logs go to stderr. MCP
 completes its stdio handshake before checking Web assets, the Host port,
 USB-NCM or the debugger, so a temporary local dependency failure does not make
@@ -46,8 +72,8 @@ Gateway readiness uses the host-only `GET /healthz` endpoint. It does not poll
 firmware `/api/v1/status`, so one MCP operation produces only its intended
 firmware request and does not consume a second slot from the device HTTP pool.
 
-For Codex, add the following to `~/.codex/config.toml`, using the absolute path
-to this checkout:
+The stdio compatibility configuration for Codex uses the absolute installed or
+checkout path:
 
 ```toml
 [mcp_servers.radxa_linkr_debugger]
@@ -57,27 +83,25 @@ args = ["mcp"]
 startup_timeout_sec = 20
 ```
 
-For OpenCode v2, add a local stdio server to `opencode.json`:
+The stdio compatibility configuration for OpenCode v2 is:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "servers": {
-      "radxa_linkr_debugger": {
-        "type": "local",
-        "command": [
-          "/Volumes/拓展盘/Dev/agent-debugboard/host-tools/target/release/linkr-host",
-          "mcp"
-        ]
-      }
+    "radxa_linkr_debugger": {
+      "type": "local",
+      "command": [
+        "/Volumes/拓展盘/Dev/agent-debugboard/host-tools/target/release/linkr-host",
+        "mcp"
+      ]
     }
   }
 }
 ```
 
-Restart the MCP client after changing its configuration. Other MCP clients can
-use the equivalent stdio command and argument list.
+Restart the MCP client after changing its configuration. Do not configure both
+HTTP and stdio entries under the same server name.
 
 Environment overrides:
 

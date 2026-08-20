@@ -17,7 +17,7 @@ RP2354 硬件需要完成专用 board 定义和 HIL 验证后才能声明支持�
 | 模块 | 当前支持 |
 | --- | --- |
 | USB 控制 | 复合 USB：NCM HTTP/WS + CDC ACM fallback |
-| 主机自动化 | Rust `linkr-host` 统一承载 Web/网关/Broker/MCP，另提供支持 JSON 输出的 Rust CLI/TUI |
+| 主机自动化 | Rust `linkr-host` 统一承载 Web/网关/Broker/MCP 与 UART 原始 RX 归档，另提供支持 JSON 输出的 Rust CLI/TUI |
 | Web UI | 仪表盘 http://172.29.203.1/ |
 | 逻辑分析仪 | PIO2+DMA，100 kHz–125 MHz，WebSocket/raw-TCP Sigrok，[共用 packed arena 与当前 WIDE11 捕获](doc/logic-analyzer.md) |
 | 功率分析仪 | 触发式采集，环形缓冲，CSV/NDJSON 导出 |
@@ -74,7 +74,15 @@ radxa-linkr-debuggerctl doctor
 radxa-linkr-debuggerctl status
 ```
 
-如需主机托管的 Web UI、共享串口会话和 MCP，先构建 Web，再启动单一 Rust Host 进程：
+如需主机托管的 Web UI、共享串口会话和常驻 MCP，推荐运行统一安装器：
+
+```sh
+./scripts/install-host.sh
+```
+
+安装后托盘图标负责监督 Web/Broker/MCP，Web 地址为
+<http://127.0.0.1:8787/>，MCP 地址为
+<http://127.0.0.1:8787/mcp>。开发时也可以手动构建并启动单一 Rust Host：
 
 ```sh
 npm --prefix web ci
@@ -82,7 +90,7 @@ npm --prefix web run build
 cargo run --manifest-path host-tools/Cargo.toml -- serve
 ```
 
-然后打开 <http://127.0.0.1:8787/>。详见
+详见
 [Host Tools](host-tools/README.md) 和 [MCP 服务](doc/mcp-server.md)。
 
 如果 release CLI 尚未下载或安装，请先看 [安装 CLI](docs/user/install.zh-CN.md)；

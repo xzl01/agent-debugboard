@@ -1,4 +1,11 @@
-export type AutomationTaskOwner = "startup" | "test";
+export type AutomationTaskOwner =
+  | "startup"
+  | "test"
+  | "power"
+  | "persistent"
+  | "ota"
+  | "boot"
+  | "recovery";
 
 export interface AutomationTaskControl {
   owner: AutomationTaskOwner | null;
@@ -17,7 +24,7 @@ export function createAutomationTaskLock(): AutomationTaskLock {
   return {
     owner: () => currentOwner,
     acquire(owner) {
-      if (currentOwner != null && currentOwner !== owner) return false;
+      if (currentOwner != null) return false;
       currentOwner = owner;
       return true;
     },

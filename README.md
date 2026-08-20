@@ -18,7 +18,7 @@ definition and HIL validation before it can be declared supported.
 | Area | Supported |
 | --- | --- |
 | USB control | Composite USB: NCM HTTP/WS + CDC ACM fallback |
-| Host automation | Rust `linkr-host` for Web/gateway/Broker/MCP plus Rust CLI/TUI with JSON output |
+| Host automation | Rust `linkr-host` for Web/gateway/Broker/MCP and raw UART RX archives, plus Rust CLI/TUI with JSON output |
 | Web UI | Dashboard at http://172.29.203.1/ |
 | Logic analyzer | PIO2+DMA, 100 kHz–125 MHz, WebSocket/raw-TCP Sigrok with a [common packed arena and current WIDE11 capture](doc/logic-analyzer.md) |
 | Power analyzer | Triggered capture with ring buffer, CSV/NDJSON export |
@@ -95,8 +95,17 @@ radxa-linkr-debuggerctl doctor
 radxa-linkr-debuggerctl status
 ```
 
-For the host-served Web UI, shared serial sessions and MCP, build and run the
-single Rust Host process:
+For the host-served Web UI, shared serial sessions, and resident MCP, use the
+unified installer:
+
+```sh
+./scripts/install-host.sh
+```
+
+The tray icon then supervises Web/Broker/MCP. Web is available at
+<http://127.0.0.1:8787/> and MCP at
+<http://127.0.0.1:8787/mcp>. For development, build and run the single Rust
+Host manually:
 
 ```sh
 npm --prefix web ci
@@ -104,7 +113,7 @@ npm --prefix web run build
 cargo run --manifest-path host-tools/Cargo.toml -- serve
 ```
 
-Then open <http://127.0.0.1:8787/>. See
+See
 [Host Tools](host-tools/README.md) and the [MCP server](doc/mcp-server.md).
 
 If the released host CLI is not downloaded or installed yet, see

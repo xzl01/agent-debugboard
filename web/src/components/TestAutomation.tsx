@@ -1,6 +1,15 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { FlaskConical, Loader2, PenLine, Play, ScrollText } from "lucide-react";
-import { Card } from "./ui";
+import {
+  CircleAlert,
+  FlaskConical,
+  Loader2,
+  Maximize2,
+  Minimize2,
+  PenLine,
+  Play,
+  ScrollText,
+} from "lucide-react";
+import { Button, Card } from "./ui";
 import { TestRunnerView } from "./TestRunnerView";
 import { TestReport } from "./TestReport";
 import type { UseBoard } from "@/hooks/useBoard";
@@ -19,12 +28,15 @@ const WorkflowComposer = lazy(() => import("./WorkflowComposer").then((module) =
 
 const STORAGE_KEY = "linkr-test-script";
 
-function loadScript(): TestScript {
+function loadScript(defaultName: string): TestScript {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) return parseTestScript(saved, { validatePlan: false });
+    if (saved) {
+      const parsed = parseTestScript(saved, { validatePlan: false });
+      return parsed.name === "New Test" ? { ...parsed, name: defaultName } : parsed;
+    }
   } catch { /* ignore corrupted data */ }
-  return defaultScript();
+  return defaultScript(defaultName);
 }
 
 const TAB_ICONS = { editor: PenLine, running: Play, report: ScrollText } as const;
@@ -34,21 +46,27 @@ export function TestAutomation({
   serialRef,
   taskControl,
   workspaceTabs,
+  focusMode = false,
+  onFocusModeChange,
 }: {
   board: UseBoard;
   serialRef: React.RefObject<SerialAutomationHandle>;
   taskControl: AutomationTaskControl;
   workspaceTabs?: ReactNode;
+  focusMode?: boolean;
+  onFocusModeChange?: (focused: boolean) => void;
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>("editor");
-  const [script, setScript] = useState<TestScript>(loadScript);
+  const [script, setScript] = useState<TestScript>(() => loadScript(t("test.defaultName")));
+  const [draftState, setDraftState] = useState<"saving" | "saved" | "error">("saved");
   const [stepStates, setStepStates] = useState<Map<string, StepStatus>>(new Map());
   const [stepResults, setStepResults] = useState<StepResult[]>([]);
   const [serialLogs, setSerialLogs] = useState<SerialLogEntry[]>([]);
   const [adcSamples, setAdcSamples] = useState<AdcSampleEntry[]>([]);
   const [powerCaptures, setPowerCaptures] = useState<PowerCaptureEvidenceEntry[]>([]);
   const [runSummary, setRunSummary] = useState<RunSummary | null>(null);
+  const [executedScript, setExecutedScript] = useState<TestScript | null>(null);
   const [startedAtMs, setStartedAtMs] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -61,16 +79,47 @@ export function TestAutomation({
   boardRef.current = board;
   const execution = useMemo(() => tryBuildExecutionPlan(script), [script]);
   const executionPlan = execution.plan;
+  const executedPlan = useMemo(
+    () => executedScript ? tryBuildExecutionPlan(executedScript).plan : executionPlan,
+    [executedScript, executionPlan],
+  );
 
   useEffect(() => {
     try {
       // Persist drafts even when the execution plan is temporarily invalid
       // (e.g. empty loop body while composing). Run still validates strictly.
       localStorage.setItem(STORAGE_KEY, serializeTestScript(script));
+      setDraftState("saved");
     } catch {
       // Keep the editor usable when storage is unavailable or full.
+      setDraftState("error");
     }
   }, [script]);
+
+  const handleScriptChange = useCallback((nextScript: TestScript) => {
+    setDraftState("saving");
+    setRunError(null);
+    setScript(nextScript);
+  }, []);
+
+  const handleNew = useCallback(() => {
+    if (!window.confirm(t("test.new.confirm"))) return;
+    runnerRef.current?.abort();
+    runningRef.current = false;
+    taskControl.release("test");
+    setScript(defaultScript(t("test.defaultName")));
+    setDraftState("saving");
+    setRunError(null);
+    setStepStates(new Map());
+    setStepResults([]);
+    setSerialLogs([]);
+    setAdcSamples([]);
+    setPowerCaptures([]);
+    setRunSummary(null);
+    setExecutedScript(null);
+    setIsRunning(false);
+    setTab("editor");
+  }, [t, taskControl.release]);
 
   useEffect(() => () => {
     runnerRef.current?.abort();
@@ -127,16 +176,28 @@ export function TestAutomation({
     [taskControl.release],
   );
 
-  const handleRun = useCallback(() => {
+  const startRun = useCallback((sourceScript: TestScript) => {
     if (runningRef.current) return;
-    if (execution.error) {
-      setRunError(execution.error);
+    const runExecution = tryBuildExecutionPlan(sourceScript);
+    if (runExecution.error) {
+      setRunError(runExecution.error);
       return;
     }
+    const runScript = parseTestScript(serializeTestScript(sourceScript));
     try {
-      preflightTestRun(script, boardRef.current, serialRef.current);
+      preflightTestRun(runScript, boardRef.current, serialRef.current);
     } catch (reason) {
-      setRunError(reason instanceof Error ? reason.message : String(reason));
+      const message = reason instanceof Error ? reason.message : String(reason);
+      const serialMatch = /^(UART[01]) is required for this test but is not connected$/.exec(
+        message,
+      );
+      if (message === "debug board is not connected") {
+        setRunError(t("test.error.boardDisconnected"));
+      } else if (serialMatch) {
+        setRunError(t("test.error.serialDisconnected", { channel: serialMatch[1] }));
+      } else {
+        setRunError(message);
+      }
       return;
     }
     if (!taskControl.acquire("test")) {
@@ -156,11 +217,12 @@ export function TestAutomation({
     setAdcSamples([]);
     setPowerCaptures([]);
     setRunSummary(null);
+    setExecutedScript(runScript);
     const now = Date.now();
     setStartedAtMs(now);
     let runner: RunnerHandle;
     try {
-      runner = createTestRunner(script, boardRef, serialRef, callbacks);
+      runner = createTestRunner(runScript, boardRef, serialRef, callbacks);
     } catch (reason) {
       callbacks.onError(reason instanceof Error ? reason.message : String(reason));
       return;
@@ -169,19 +231,23 @@ export function TestAutomation({
     void runner.start().catch((reason) => callbacks.onError(
       reason instanceof Error ? reason.message : String(reason),
     ));
-  }, [callbacks, execution.error, script, serialRef, t, taskControl.acquire]);
+  }, [callbacks, serialRef, t, taskControl.acquire]);
+
+  const handleRun = useCallback(() => {
+    startRun(script);
+  }, [script, startRun]);
 
   const handleAbort = useCallback(() => {
     runnerRef.current?.abort();
   }, []);
 
   const handleReRun = useCallback(() => {
-    handleRun();
-  }, [handleRun]);
+    startRun(executedScript ?? script);
+  }, [executedScript, script, startRun]);
 
   const viewTabs = (
     <div
-      className="inline-flex rounded-xl border border-line/70 bg-panel2 p-1"
+      className="automation-view-tabs inline-flex min-w-0 rounded-xl border border-line/70 bg-panel p-1"
       role="tablist"
       aria-label={t("test.title")}
     >
@@ -193,14 +259,16 @@ export function TestAutomation({
         return (
           <button
             key={t2}
+            id={`automation-tab-${t2}`}
             type="button"
             role="tab"
+            aria-controls={`automation-panel-${t2}`}
             aria-selected={active}
             disabled={disabled || disabledReport}
             onClick={() => setTab(t2)}
             className={`flex min-h-8 items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors ${
               active
-                ? "bg-panel text-ink shadow-sm"
+                ? "bg-brand/10 text-brand ring-1 ring-inset ring-brand/15"
                 : "text-ink-dim hover:text-ink disabled:opacity-40"
             }`}
           >
@@ -212,24 +280,59 @@ export function TestAutomation({
     </div>
   );
 
+  const taskBusy = taskControl.owner != null && taskControl.owner !== "test";
+  const runDisabledReason = !board.connected
+    ? t("test.error.boardDisconnected")
+    : taskBusy
+      ? t("test.error.taskBusy")
+      : undefined;
+
   return (
     <Card
       title={workspaceTabs ? undefined : t("test.title")}
       subtitle={workspaceTabs ? undefined : t("test.subtitle")}
       icon={FlaskConical}
       headerLeading={workspaceTabs}
-      className="min-h-[clamp(680px,76vh,980px)] xl:h-[clamp(680px,76vh,980px)] xl:min-h-0"
+      className="automation-workspace-shell min-h-[clamp(680px,76vh,980px)] xl:h-[clamp(680px,76vh,980px)] xl:min-h-0"
       contentClassName="flex min-h-0 flex-col overflow-hidden p-0"
     >
-      <div className="flex shrink-0 items-center border-b border-line/60 bg-panel2/35 px-3 py-2">
+      <div className="automation-taskbar flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-line/60 bg-panel px-3 py-2">
         {viewTabs}
+        {onFocusModeChange && (
+          <Button
+            variant="ghost"
+            className="min-h-8 py-1 text-xs"
+            aria-controls="hardware-controls"
+            aria-expanded={!focusMode}
+            aria-pressed={focusMode}
+            id="automation-focus-toggle"
+            onClick={() => onFocusModeChange(!focusMode)}
+          >
+            {focusMode ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            {focusMode ? t("test.focus.exit") : t("test.focus.enter")}
+          </Button>
+        )}
       </div>
       {runError && (
-        <div className="mx-4 mt-3 shrink-0 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
-          {runError}
+        <div
+          className="automation-error mx-4 mt-3 flex shrink-0 items-start gap-2 rounded-lg border border-danger/30 bg-panel px-3 py-2 text-xs text-danger"
+          data-testid="automation-error"
+          role="alert"
+        >
+          <CircleAlert className="mt-0.5 shrink-0" size={14} />
+          <span className="min-w-0 break-words">{runError}</span>
         </div>
       )}
-      <div className={tab === "editor" ? "min-h-0 flex-1 overflow-hidden" : "min-h-0 flex-1 overflow-auto p-4"}>
+      <div
+        id={`automation-panel-${tab}`}
+        role="tabpanel"
+        aria-labelledby={`automation-tab-${tab}`}
+        aria-busy={isRunning && tab === "running"}
+        data-automation-view={tab}
+        className={tab === "editor"
+          ? "automation-view-region min-h-0 flex-1 overflow-hidden"
+          : "automation-view-region min-h-0 flex-1 overflow-auto p-3 sm:p-4"}
+      >
         {tab === "editor" && (
           <Suspense fallback={
             <div className="flex min-h-[420px] items-center justify-center gap-2 text-sm text-ink-dim">
@@ -239,15 +342,18 @@ export function TestAutomation({
           }>
             <WorkflowComposer
               script={script}
-              onChange={setScript}
+              onChange={handleScriptChange}
+              onNew={handleNew}
+              draftState={draftState}
               onRun={handleRun}
-              runDisabled={execution.error != null || (taskControl.owner != null && taskControl.owner !== "test")}
+              runDisabled={execution.error != null || taskBusy || !board.connected}
+              runDisabledReason={runDisabledReason}
             />
           </Suspense>
         )}
         {tab === "running" && (
           <TestRunnerView
-            steps={executionPlan}
+            steps={executedPlan}
             stepStates={stepStates}
             stepResults={stepResults}
             serialLogs={serialLogs}
@@ -256,9 +362,9 @@ export function TestAutomation({
             onAbort={handleAbort}
           />
         )}
-        {tab === "report" && runSummary && (
+        {tab === "report" && runSummary && executedScript && (
           <TestReport
-            script={script}
+            script={executedScript}
             summary={runSummary}
             serialLogs={serialLogs}
             adcSamples={adcSamples}

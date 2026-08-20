@@ -1,6 +1,60 @@
-# Install Host CLI
+# Install Host Tools
 
 [中文](install.zh-CN.md)
+
+## Recommended: unified desktop install
+
+The desktop release archive installs the Web UI, Serial Broker, resident HTTP
+MCP, CLI/TUI, and tray supervisor together:
+
+| OS / CPU | Unified desktop archive |
+| --- | --- |
+| Windows x64 | `radxa-linkr-desktop_windows_amd64.zip` |
+| Linux x64 / AMD64 | `radxa-linkr-desktop_linux_amd64.tar.gz` |
+| macOS Apple Silicon | `radxa-linkr-desktop_darwin_arm64.tar.gz` |
+
+Download the archive and `SHA256SUMS.txt` from the same GitHub Release, verify
+it, extract it, and run the bundled installer:
+
+```sh
+./install.sh
+```
+
+On Windows PowerShell:
+
+```powershell
+.\install.ps1
+```
+
+The installer does not use sudo or modify `PATH`. It writes to the current
+user's application-data directory and registers login autostart. The tray icon
+uses green, amber, and red states for running, starting, and unavailable
+Web/Broker/MCP services. Its menu opens the Web console, Host JSON status, and
+Host UART archives, restarts its managed services, or quits. UART sessions
+opened through Bridge are archived as raw RX on this computer by default;
+direct Web Serial sessions remain browser-local. The default policy uses
+64 MiB segments, a 2 GiB unpinned quota, and 30-day retention.
+
+Resident endpoints:
+
+- Web: <http://127.0.0.1:8787/>
+- MCP (Streamable HTTP): <http://127.0.0.1:8787/mcp>
+- Status: <http://127.0.0.1:8787/host/api/v1/status>
+- UART archive status: <http://127.0.0.1:8787/host/api/v1/serial-logging/status>
+
+The Linux desktop archive requires GTK 3 and Ayatana AppIndicator 3 runtime
+libraries. On a headless machine without a system tray, run the installed
+`linkr-host serve` directly.
+
+To install the same stack from a source checkout:
+
+```sh
+./scripts/install-host.sh
+```
+
+Use `./scripts/install-host.ps1` on PowerShell. Optional switches are
+`--no-start`, `--no-autostart`, and `--prefix DIR`; PowerShell uses `-NoStart`,
+`-NoAutostart`, and `-Prefix`.
 
 ## Download from GitHub Releases
 
@@ -96,6 +150,53 @@ If you are developing `cmd-ng` itself from source:
 cargo build --manifest-path cmd-ng/Cargo.toml
 ./cmd-ng/target/debug/radxa-linkr-debuggerctl --help
 ```
+
+## Run the Web UI, shared Serial Broker, and MCP manually
+
+Developers can also build the stack manually from a checkout:
+
+```sh
+npm --prefix web ci
+npm --prefix web run build
+cargo build --release --manifest-path host-tools/Cargo.toml
+```
+
+Start the combined Web host, board gateway, and shared Serial Broker:
+
+```sh
+host-tools/target/release/linkr-host serve
+```
+
+Then open <http://127.0.0.1:8787/>. To verify Web assets, the loopback Host,
+the board API, and CH347F serial discovery together, run:
+
+```sh
+host-tools/target/release/linkr-host doctor
+```
+
+`serve` also exposes the resident MCP URL at
+<http://127.0.0.1:8787/mcp>. Agent clients that support only stdio can still
+start the compatibility adapter with `mcp`; it adopts or supervises the
+loopback Host automatically:
+
+```sh
+host-tools/target/release/linkr-host mcp
+```
+
+See the [MCP setup guide](../../doc/mcp-server.md) for the Codex/OpenCode HTTP and stdio
+configuration. The current packaging and first-run paths are summarized in the
+[installation flow diagram](../../doc/current-installation-flow.png).
+
+## Install or update debugger firmware
+
+For a fresh ROM BOOTSEL flash, use only the combined
+`radxa-linkr-debugger-rp2350.uf2`, which contains MCUboot and the application.
+Never use the application-only `zephyr.uf2` for a ROM BOOTSEL flash. An existing
+MCUboot installation can be updated with
+`radxa-linkr-debugger-rp2350-ota.bin`, followed by OTA test and confirm.
+
+See the [firmware flashing procedures](../../AGENTS.md#flashing-procedures) for
+the complete recovery and OTA boundaries.
 
 ## First commands
 

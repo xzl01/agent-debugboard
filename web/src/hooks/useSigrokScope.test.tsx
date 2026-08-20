@@ -203,4 +203,27 @@ describe("useSigrokScope live-session lifecycle", () => {
     expect(client?.connect).toHaveBeenLastCalledWith("ws://fixture.invalid/api/v1/ws/12");
     view.close();
   });
+
+  it("treats an already released firmware session as successful cleanup", async () => {
+    vi.mocked(api.createLiveSession).mockResolvedValue({
+      session_id: 31,
+      ws_url: "/api/v1/ws/31",
+      connected: false,
+    });
+    vi.mocked(api.deleteLiveSession).mockRejectedValue(
+      Object.assign(new Error("unknown live session id"), { code: "unknown_session_id" }),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const view = renderHook();
+
+    await act(async () => { await view.current().ensureConnected(); });
+    const client = sigrokMocks.MockSigrokClient.instances[0];
+    act(() => { client?.emitState("disconnected"); });
+    await flush();
+
+    expect(api.deleteLiveSession).toHaveBeenCalledWith(31);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+    view.close();
+  });
 });

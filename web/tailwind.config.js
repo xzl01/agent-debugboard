@@ -19,6 +19,7 @@ export default {
         "terminal-ink": "rgb(var(--c-terminal-ink) / <alpha-value>)",
         "on-brand": "rgb(var(--c-on-brand) / <alpha-value>)",
         "on-danger": "rgb(var(--c-on-danger) / <alpha-value>)",
+        overlay: "rgb(var(--c-overlay) / <alpha-value>)",
       },
       borderRadius: {
         xl: "0.9rem",

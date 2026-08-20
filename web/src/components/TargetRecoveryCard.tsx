@@ -1,18 +1,25 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Loader2, ShieldAlert, Zap } from "lucide-react";
 import type { PowerOutput } from "@/lib/types";
 import type { TargetRecoveryMode } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { Badge, Button, Card } from "./ui";
+import type { AutomationTaskControl } from "@/lib/automationTask";
 
 const RECOVERY_RAILS = ["5v_out", "12v_out", "20v_out"] as const;
 
 export function TargetRecoveryCard({
   outputs,
   onEnter,
+  disabled = false,
+  compact = false,
+  taskControl,
 }: {
   outputs: PowerOutput[];
   onEnter: (mode: TargetRecoveryMode, rail: string) => Promise<void>;
+  disabled?: boolean;
+  compact?: boolean;
+  taskControl?: AutomationTaskControl;
 }) {
   const { t } = useI18n();
   const [mode, setMode] = useState<TargetRecoveryMode>("rockchip-maskrom");
@@ -24,12 +31,21 @@ export function TargetRecoveryCard({
 
   const availableRails = useMemo(() => {
     const reported = new Set(outputs.filter((output) => output.controllable).map((output) => output.name));
-    const filtered = RECOVERY_RAILS.filter((name) => reported.has(name));
-    return filtered.length > 0 ? filtered : RECOVERY_RAILS;
+    return RECOVERY_RAILS.filter((name) => reported.has(name));
   }, [outputs]);
+  useEffect(() => {
+    if (availableRails.includes(rail as (typeof RECOVERY_RAILS)[number])) return;
+    const firstRail = availableRails[0];
+    if (firstRail) setRail(firstRail);
+  }, [availableRails, rail]);
   const activeLevel = mode === "qualcomm-edl" ? t("targetRecovery.high") : t("targetRecovery.low");
 
   const run = async () => {
+    if (!availableRails.includes(rail as (typeof RECOVERY_RAILS)[number])) return;
+    if (taskControl && !taskControl.acquire("recovery")) {
+      setError(t("task.error.busy"));
+      return;
+    }
     setBusy(true);
     setError(null);
     setDone(false);
@@ -41,17 +57,21 @@ export function TargetRecoveryCard({
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusy(false);
+      taskControl?.release("recovery");
     }
   };
 
   return (
     <Card
       title={t("targetRecovery.title")}
-      subtitle={t("targetRecovery.subtitle")}
-      icon={Zap}
+      subtitle={compact ? undefined : t("targetRecovery.subtitle")}
+      icon={compact ? undefined : Zap}
       right={<Badge tone="warn">CON_MAS</Badge>}
+      className={compact ? "rounded-none border-0 shadow-none" : undefined}
+      headerClassName={compact ? "min-h-11 border-b-0 px-3 pb-1 pt-2" : undefined}
+      contentClassName={compact ? "p-3" : undefined}
     >
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+      <div className={compact ? "grid grid-cols-[minmax(0,1fr)_minmax(112px,0.58fr)] gap-2" : "grid gap-3 sm:grid-cols-2 xl:grid-cols-1"}>
         <label className="grid gap-1.5 text-xs text-ink-dim">
           {t("targetRecovery.mode")}
           <select
@@ -61,8 +81,10 @@ export function TargetRecoveryCard({
               setConfirming(false);
               setDone(false);
             }}
-            disabled={busy}
-            className="min-h-10 rounded-xl border border-line/70 bg-panel2 px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+            disabled={disabled || busy || availableRails.length === 0}
+            className={compact
+              ? "min-h-9 rounded-lg border border-line/70 bg-panel2 px-2.5 text-[11px] text-ink outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+              : "min-h-10 rounded-xl border border-line/70 bg-panel2 px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-brand/40"}
           >
             <option value="rockchip-maskrom">Rockchip MASKROM</option>
             <option value="qualcomm-edl">Qualcomm EDL</option>
@@ -77,8 +99,10 @@ export function TargetRecoveryCard({
               setConfirming(false);
               setDone(false);
             }}
-            disabled={busy}
-            className="min-h-10 rounded-xl border border-line/70 bg-panel2 px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+            disabled={disabled || busy || availableRails.length === 0}
+            className={compact
+              ? "min-h-9 rounded-lg border border-line/70 bg-panel2 px-2.5 text-[11px] text-ink outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+              : "min-h-10 rounded-xl border border-line/70 bg-panel2 px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-brand/40"}
           >
             {availableRails.map((name) => (
               <option key={name} value={name}>{name.replace("_out", "").toUpperCase()}</option>
@@ -87,7 +111,11 @@ export function TargetRecoveryCard({
         </label>
       </div>
 
-      <p className="mt-3 text-xs leading-5 text-ink-dim">
+      {availableRails.length === 0 && (
+        <p role="status" className="mt-3 text-xs text-warn">{t("targetRecovery.noRails")}</p>
+      )}
+
+      <p className={compact ? "mt-2 text-[10px] leading-4 text-ink-dim" : "mt-3 text-xs leading-5 text-ink-dim"}>
         {t("targetRecovery.sequence").replace("{level}", activeLevel)}
       </p>
 
@@ -103,7 +131,12 @@ export function TargetRecoveryCard({
             </span>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button variant="danger" onClick={run} disabled={busy}>
+            <Button
+              variant={compact ? "default" : "danger"}
+              className={compact ? "border-warn/60 text-warn hover:border-warn" : undefined}
+              onClick={run}
+              disabled={disabled || busy || availableRails.length === 0}
+            >
               {busy && <Loader2 size={16} className="animate-spin" />}
               {busy ? t("targetRecovery.running") : t("targetRecovery.confirmAction")}
             </Button>
@@ -114,13 +147,13 @@ export function TargetRecoveryCard({
         </div>
       ) : (
         <Button
-          className="mt-3"
+          className={compact ? "mt-2 min-h-9 rounded-lg py-1 text-[11px]" : "mt-3"}
           variant="default"
           onClick={() => {
             setError(null);
             setConfirming(true);
           }}
-          disabled={busy}
+          disabled={disabled || busy || availableRails.length === 0}
         >
           <ShieldAlert size={16} />
           {t("targetRecovery.enter")}

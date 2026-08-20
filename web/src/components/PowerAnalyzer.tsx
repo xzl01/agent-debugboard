@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   BatteryCharging,
@@ -8,6 +8,7 @@ import {
   HardDrive,
   History,
   MousePointerClick,
+  Plus,
   Play,
   Power,
   Radio,
@@ -49,9 +50,15 @@ import {
   type PowerCaptureExportProgress,
 } from "@/lib/powerCaptureExport";
 import { useI18n } from "@/lib/i18n";
+import type { AutomationTaskControl } from "@/lib/automationTask";
 import { buildPowerChartAxis, PowerChartYAxis } from "./PowerChartAxis";
 
-const COLORS = ["#4f7cff", "#f59e0b", "#22c55e", "#ef4444"];
+const COLORS = [
+  "rgb(var(--c-brand))",
+  "rgb(var(--c-ink-dim))",
+  "rgb(var(--c-warn))",
+  "rgb(var(--c-ok))",
+];
 const WIDTH = 720;
 const HEIGHT = 180;
 const SAMPLE_RATE_PRESETS = [10, 50, 100, 250, 500];
@@ -60,6 +67,7 @@ const DURATION_PRESETS_SECONDS = [10, 30, 300, 1800, 3600, 14400];
 const PRE_TRIGGER_PRESETS_SECONDS = [0, 1, 2, 5];
 const DEVICE_TELEMETRY_BUFFER_SAMPLES = 256;
 const CONTROL_CLASS = "mt-1.5 w-full rounded-lg border border-line bg-panel px-2.5 py-2 text-xs text-ink outline-none transition-colors focus:border-brand/60 focus:ring-2 focus:ring-brand/15 disabled:cursor-not-allowed disabled:opacity-60";
+type AnalyzerStage = "setup" | "capture" | "results";
 
 const TRIGGER_OPTIONS: Array<{
   value: CaptureTrigger;
@@ -111,18 +119,18 @@ function formatCount(value: number | null) {
 }
 
 function StepHeading({
-  number,
+  icon: Icon,
   title,
   description,
 }: {
-  number: number;
+  icon: LucideIcon;
   title: string;
   description: string;
 }) {
   return (
     <div className="mb-3 flex items-start gap-2.5">
-      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-brand text-[11px] font-semibold text-on-brand">
-        {number}
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-brand/10 text-brand">
+        <Icon size={14} />
       </span>
       <div className="min-w-0">
         <h3 className="text-xs font-semibold text-ink">{title}</h3>
@@ -152,7 +160,6 @@ function MetricItem({
 }
 
 export function PowerAnalyzer({
-  metric,
   gpios,
   state,
   progress,
@@ -162,10 +169,10 @@ export function PowerAnalyzer({
   onStop,
   onCancel,
   onClear,
+  taskControl,
   defaultOpen = false,
   showHeader = true,
 }: {
-  metric: PowerMetric;
   gpios: SafeGpio[];
   state: "idle" | "connecting" | "armed" | "recording" | "receiving";
   progress: {
@@ -181,12 +188,16 @@ export function PowerAnalyzer({
   onStop: () => void;
   onCancel: () => void;
   onClear: () => void;
+  taskControl: AutomationTaskControl;
   /** Opens the analyzer when it is displayed as the main workspace content. */
   defaultOpen?: boolean;
   /** Lets a workspace provide the analyzer title alongside its local navigation. */
   showHeader?: boolean;
 }) {
   const { t } = useI18n();
+  const [stage, setStage] = useState<AnalyzerStage>(captures.length > 0 ? "results" : "setup");
+  const previousLatestCaptureIdRef = useRef(captures.at(-1)?.id);
+  const [metric, setMetric] = useState<PowerMetric>("current");
   const [trigger, setTrigger] = useState<CaptureTrigger>("manual");
   const [source, setSource] = useState<string>(USER_POWER_RAILS[0]);
   const [gpio, setGpio] = useState("");
@@ -196,7 +207,7 @@ export function PowerAnalyzer({
   const [preDurationSeconds, setPreDurationSeconds] = useState(1);
   const [stopMode, setStopMode] = useState<"timed" | "manual">("timed");
   const [timedDurationSeconds, setTimedDurationSeconds] = useState(10);
-  const [rail, setRail] = useState<string>(USER_POWER_RAILS[0]);
+  const [rail, setRail] = useState<string>(captures.at(-1)?.source ?? USER_POWER_RAILS[0]);
   const [batteryCapacityMah, setBatteryCapacityMah] = useState(10_000);
   const [efficiencyPercent, setEfficiencyPercent] = useState(90);
   const [targetRuntimeHours, setTargetRuntimeHours] = useState(8);
@@ -204,6 +215,12 @@ export function PowerAnalyzer({
   const [exportFormat, setExportFormat] = useState<PowerCaptureExportFormat | null>(null);
   const [exportProgress, setExportProgress] = useState<PowerCaptureExportProgress | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [captureError, setCaptureError] = useState<string | null>(null);
+  const [selectedCaptureId, setSelectedCaptureId] = useState<number | null>(captures.at(-1)?.id ?? null);
+  const ownsTaskRef = useRef(false);
+  const captureStartedRef = useRef(false);
+  const stateRef = useRef(state);
+  const onCancelRef = useRef(onCancel);
   const preDurationLimitSeconds = powerCapturePreTriggerLimitSeconds(rateHz);
 
   const windowSummary = useMemo(
@@ -238,7 +255,9 @@ export function PowerAnalyzer({
       cancelled = true;
     };
   }, [stopMode, timedDurationSeconds, windowSummary.preSamples, windowSummary.rateHz]);
-  const series = useMemo(() => captures.map((capture, captureIndex) => {
+  const latestCapture = captures.at(-1);
+  const selectedCapture = captures.find((capture) => capture.id === selectedCaptureId) ?? latestCapture;
+  const series = useMemo(() => selectedCapture ? [selectedCapture].map((capture, captureIndex) => {
     const triggerTime = capture.triggerDeviceTimeUs ??
       capture.samples[capture.triggerOffset]?.deviceTimeUs ?? 0;
     return {
@@ -252,7 +271,7 @@ export function PowerAnalyzer({
         return [{ x: (sample.deviceTimeUs - triggerTime) / 1000, value }];
       }),
     };
-  }), [captures, metric, rail]);
+  }) : [], [metric, rail, selectedCapture]);
   const allPoints = series.flatMap((item) => item.points);
   const minX = Math.min(-1, ...allPoints.map((point) => point.x));
   const maxX = Math.max(1, ...allPoints.map((point) => point.x));
@@ -261,50 +280,127 @@ export function PowerAnalyzer({
     Math.max(metric === "current" ? 0.001 : 0.01, ...allPoints.map((point) => point.value)),
   );
   const maxY = chartAxis.maximum;
-  const latestCapture = captures.at(-1);
-  const latestSummary = useMemo(
-    () => latestCapture ? summarizePowerCapture(latestCapture, rail) : null,
-    [latestCapture, rail],
+  const selectedSummary = useMemo(
+    () => selectedCapture ? summarizePowerCapture(selectedCapture, rail) : null,
+    [rail, selectedCapture],
   );
-  const latestSampleCount = latestCapture
-    ? latestCapture.sampleCount ?? latestCapture.samples.length
+  const selectedSampleCount = selectedCapture
+    ? selectedCapture.sampleCount ?? selectedCapture.samples.length
     : 0;
-  const latestEffectiveRateHz = latestSummary && latestSummary.durationMs > 0 && latestSampleCount > 1
-    ? (latestSampleCount - 1) * 1000 / latestSummary.durationMs
+  const selectedEffectiveRateHz = selectedSummary && selectedSummary.durationMs > 0 && selectedSampleCount > 1
+    ? (selectedSampleCount - 1) * 1000 / selectedSummary.durationMs
     : 0;
   const batteryEstimate = useMemo(
-    () => latestSummary && !latestCapture?.incomplete
+    () => selectedSummary && !selectedCapture?.incomplete
       ? estimateFiveVoltBattery(
-        latestSummary,
+        selectedSummary,
         batteryCapacityMah,
         efficiencyPercent,
         targetRuntimeHours,
       )
       : null,
-    [batteryCapacityMah, efficiencyPercent, latestCapture?.incomplete, latestSummary, targetRuntimeHours],
+    [batteryCapacityMah, efficiencyPercent, selectedCapture?.incomplete, selectedSummary, targetRuntimeHours],
   );
-  const disabled = state !== "idle";
+  const blockedByOtherTask = taskControl.owner != null && taskControl.owner !== "power";
+  const disabled = state !== "idle" || blockedByOtherTask;
   const exporting = exportFormat != null;
+
+  useEffect(() => {
+    setSelectedCaptureId((current) => {
+      if (current != null && captures.some((capture) => capture.id === current)) return current;
+      return captures.at(-1)?.id ?? null;
+    });
+  }, [captures]);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  useEffect(() => {
+    onCancelRef.current = onCancel;
+  }, [onCancel]);
+
+  useEffect(() => {
+    if (!ownsTaskRef.current) return;
+    if (state !== "idle") {
+      captureStartedRef.current = true;
+      return;
+    }
+    if (!captureStartedRef.current) return;
+    ownsTaskRef.current = false;
+    captureStartedRef.current = false;
+    taskControl.release("power");
+  }, [state, taskControl.release]);
+
+  useEffect(() => () => {
+    if (!ownsTaskRef.current) return;
+    if (stateRef.current !== "idle") onCancelRef.current();
+    ownsTaskRef.current = false;
+    captureStartedRef.current = false;
+    taskControl.release("power");
+  }, [taskControl.release]);
+
+  useEffect(() => {
+    if (state !== "idle") setStage("capture");
+  }, [state]);
+
+  useEffect(() => {
+    const previousId = previousLatestCaptureIdRef.current;
+    if (latestCapture && latestCapture.id !== previousId) {
+      setStage("results");
+      setSelectedCaptureId(latestCapture.id);
+      setRail(latestCapture.source);
+    } else if (!latestCapture && stage === "results") {
+      setStage("setup");
+    }
+    previousLatestCaptureIdRef.current = latestCapture?.id;
+  }, [latestCapture, stage]);
+
+  const triggerLabelKey = trigger === "power_on" ? "powerOn" : trigger;
+  const captureSourceLabel = trigger === "gpio"
+    ? (gpio || gpios[0]?.name || "—")
+    : powerRailLabel(source);
 
   const selectSource = (nextSource: string) => {
     setSource(nextSource);
     setRail(nextSource);
   };
-  const arm = () => void onArm({
-    trigger,
-    source: trigger === "gpio" ? (gpio || gpios[0]?.name || "") : source,
-    edge: trigger === "gpio" ? edge : "either",
-    thresholdUa: Math.round(Math.max(0, thresholdMa) * 1000),
-    rateHz: windowSummary.rateHz,
-    preSamples: windowSummary.preSamples,
-    postSamples: windowSummary.postSamples,
-    streaming: true,
-    stopAfterMs: stopMode === "timed"
-      ? Math.max(100, timedDurationSeconds * 1000)
-      : undefined,
-  }).catch(() => {
-    // useBoard exposes the actionable error through the shared board status.
-  });
+  const arm = async () => {
+    setCaptureError(null);
+    if (!taskControl.acquire("power")) {
+      setCaptureError(t("analyzer.error.taskBusy"));
+      return;
+    }
+    ownsTaskRef.current = true;
+    captureStartedRef.current = false;
+    try {
+      await onArm({
+        trigger,
+        source: trigger === "gpio" ? (gpio || gpios[0]?.name || "") : source,
+        edge: trigger === "gpio" ? edge : "either",
+        thresholdUa: Math.round(Math.max(0, thresholdMa) * 1000),
+        rateHz: windowSummary.rateHz,
+        preSamples: windowSummary.preSamples,
+        postSamples: windowSummary.postSamples,
+        streaming: true,
+        stopAfterMs: stopMode === "timed"
+          ? Math.max(100, timedDurationSeconds * 1000)
+          : undefined,
+      });
+    } catch (reason) {
+      if (ownsTaskRef.current) {
+        ownsTaskRef.current = false;
+        captureStartedRef.current = false;
+        taskControl.release("power");
+      }
+      setCaptureError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const clearAllCaptures = () => {
+    if (!window.confirm(t("analyzer.clearConfirm"))) return;
+    onClear();
+  };
 
   const exportCapture = async (
     capture: PowerCapture,
@@ -345,9 +441,40 @@ export function PowerAnalyzer({
         </summary>
       )}
 
-      <section className={`${showHeader ? "border-t border-line/60" : ""} p-3 sm:p-4`}>
+      <div className={`${showHeader ? "border-t" : ""} flex flex-wrap items-center justify-between gap-2 border-b border-line/60 bg-panel px-3 py-2.5`}>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={`h-2 w-2 shrink-0 rounded-full ${stage === "results" ? "bg-ok" : stage === "capture" ? "bg-brand" : "bg-line"}`} />
+          <span className="text-xs font-semibold text-ink">{t(`analyzer.stage.${stage}`)}</span>
+          <span className="hidden text-[10px] text-ink-dim sm:inline">
+            {stage === "setup"
+              ? t("analyzer.guide.triggerDescription")
+              : stage === "capture"
+                ? t("analyzer.guide.captureDescription")
+                : t("analyzer.results.description")}
+          </span>
+        </div>
+        {stage === "results" && !disabled && (
+          <div className="flex w-full items-center justify-between gap-3 border-t border-line/50 pt-2 sm:w-auto sm:justify-end sm:border-0 sm:pt-0">
+            <span className="hidden max-w-44 text-right text-[10px] leading-snug text-ink-dim lg:block">
+              {t("analyzer.stage.newHint")}
+            </span>
+            <Button
+              variant="primary"
+              className="min-h-10 min-w-0 flex-1 whitespace-nowrap px-4 text-xs sm:flex-none"
+              onClick={() => setStage("setup")}
+            >
+              <Plus size={15} />
+              {t("analyzer.stage.new")}
+            </Button>
+          </div>
+        )}
+      </div>
+      <p className="sr-only" aria-live="polite">{t(`analyzer.stage.${stage}`)}</p>
+
+      {stage === "setup" && <>
+      <section className="p-3 sm:p-4">
         <StepHeading
-          number={1}
+          icon={MousePointerClick}
           title={t("analyzer.guide.triggerTitle")}
           description={t("analyzer.guide.triggerDescription")}
         />
@@ -440,7 +567,7 @@ export function PowerAnalyzer({
 
       <section className="border-t border-line/60 p-3 sm:p-4">
         <StepHeading
-          number={2}
+          icon={Clock3}
           title={t("analyzer.guide.windowTitle")}
           description={t("analyzer.guide.windowDescription")}
         />
@@ -467,7 +594,7 @@ export function PowerAnalyzer({
                 .replaceAll("{interval}", formatWindowTime(windowSummary.intervalMs))}
             </p>
             <div className="mt-2 flex flex-wrap gap-1">
-              {SAMPLE_RATE_PRESETS.map((preset) => (
+              {SAMPLE_RATE_PRESETS.slice(0, 3).map((preset) => (
                 <button
                   key={preset}
                   type="button"
@@ -483,6 +610,28 @@ export function PowerAnalyzer({
                 </button>
               ))}
             </div>
+            <details className="mt-1.5 rounded-lg border border-line/50 bg-panel/55 px-2 py-1.5">
+              <summary className="cursor-pointer text-[9px] font-medium text-ink-dim outline-none focus-visible:ring-2 focus-visible:ring-brand/30">
+                {t("analyzer.presets.more")}
+              </summary>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {SAMPLE_RATE_PRESETS.slice(3).map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => setRateHz(preset)}
+                    className={`min-h-6 rounded-md border px-1.5 text-[9px] transition-colors ${
+                      windowSummary.rateHz === preset
+                        ? "border-brand/50 bg-brand/10 text-brand"
+                        : "border-line/60 bg-panel text-ink-dim hover:text-ink"
+                    }`}
+                  >
+                    {preset} Hz
+                  </button>
+                ))}
+              </div>
+            </details>
           </div>
           <div className="grid gap-3 rounded-xl border border-line/60 bg-panel/55 p-3 sm:grid-cols-2">
             <div>
@@ -564,7 +713,7 @@ export function PowerAnalyzer({
                     />
                   </label>
                   <div className="mt-2 flex flex-wrap gap-1">
-                    {DURATION_PRESETS_SECONDS.map((preset) => (
+                    {DURATION_PRESETS_SECONDS.slice(0, 3).map((preset) => (
                       <button
                         key={preset}
                         type="button"
@@ -580,6 +729,28 @@ export function PowerAnalyzer({
                       </button>
                     ))}
                   </div>
+                  <details className="mt-1.5 rounded-lg border border-line/50 bg-panel/55 px-2 py-1.5">
+                    <summary className="cursor-pointer text-[9px] font-medium text-ink-dim outline-none focus-visible:ring-2 focus-visible:ring-brand/30">
+                      {t("analyzer.presets.more")}
+                    </summary>
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {DURATION_PRESETS_SECONDS.slice(3).map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          disabled={disabled}
+                          onClick={() => setTimedDurationSeconds(preset)}
+                          className={`min-h-6 rounded-md border px-2 text-[9px] transition-colors ${
+                            timedDurationSeconds === preset
+                              ? "border-brand/50 bg-brand/10 text-brand"
+                              : "border-line/60 bg-panel text-ink-dim hover:text-ink"
+                          }`}
+                        >
+                          {formatWindowTime(preset * 1000)}
+                        </button>
+                      ))}
+                    </div>
+                  </details>
                 </>
               ) : (
                 <p className="mt-2 rounded-lg bg-brand/10 px-2.5 py-2 text-[10px] leading-relaxed text-ink-dim">
@@ -643,20 +814,60 @@ export function PowerAnalyzer({
             )}
           </div>
         </div>
-      </section>
 
-      <section className="border-t border-line/60 p-3 sm:p-4">
+        <div
+          data-testid="power-capture-sticky-action"
+          className="sticky bottom-6 z-10 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line/80 bg-panel px-3 py-2.5"
+        >
+          <span className="min-w-0 text-[10px] text-ink-dim">
+            {t("analyzer.captureSummary")
+              .replaceAll("{source}", captureSourceLabel)
+              .replaceAll("{rate}", String(windowSummary.rateHz))
+              .replaceAll("{before}", formatWindowTime(windowSummary.preDurationMs))
+              .replaceAll("{after}", stopMode === "timed" ? formatWindowTime(windowSummary.postDurationMs) : t("analyzer.timeline.untilStop"))}
+          </span>
+          <Button variant="primary" className="shrink-0" onClick={() => setStage("capture")}>
+            {t("analyzer.stage.continue")} <Play size={14} />
+          </Button>
+        </div>
+      </section>
+      </>}
+
+      {stage === "capture" && (
+      <section className="p-3 sm:p-4">
         <StepHeading
-          number={3}
+          icon={Radio}
           title={t("analyzer.guide.captureTitle")}
           description={t("analyzer.guide.captureDescription")}
         />
+        <div className="mb-4 grid gap-px overflow-hidden rounded-xl border border-line/60 bg-line/60 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="bg-panel px-3 py-2.5">
+            <div className="text-[10px] text-ink-dim">{t("analyzer.trigger")}</div>
+            <div className="mt-1 text-xs font-semibold text-ink">{t(`analyzer.trigger.${triggerLabelKey}`)}</div>
+          </div>
+          <div className="bg-panel px-3 py-2.5">
+            <div className="text-[10px] text-ink-dim">{trigger === "gpio" ? "GPIO" : t("analyzer.source")}</div>
+            <div className="mt-1 font-mono text-xs font-semibold text-ink">{captureSourceLabel}</div>
+          </div>
+          <div className="bg-panel px-3 py-2.5">
+            <div className="text-[10px] text-ink-dim">{t("analyzer.rate")}</div>
+            <div className="mt-1 font-mono text-xs font-semibold text-ink">{windowSummary.rateHz} Hz</div>
+          </div>
+          <div className="bg-panel px-3 py-2.5">
+            <div className="text-[10px] text-ink-dim">{t("analyzer.stopMode")}</div>
+            <div className="mt-1 text-xs font-semibold text-ink">
+              {stopMode === "timed"
+                ? formatWindowTime(windowSummary.totalDurationMs)
+                : t("analyzer.timeline.untilStop")}
+            </div>
+          </div>
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           {state === "idle" ? (
             <Button
               variant="primary"
-              onClick={arm}
-              disabled={trigger === "gpio" && gpios.length === 0}
+              onClick={() => void arm()}
+              disabled={disabled || (trigger === "gpio" && gpios.length === 0)}
             >
               <Radio size={15} />{t("analyzer.arm")}
             </Button>
@@ -706,20 +917,53 @@ export function PowerAnalyzer({
                 .replaceAll("{dropped}", (progress.dropped ?? 0).toLocaleString())}
             </span>
           )}
+          {state === "idle" && (
+            <Button variant="ghost" onClick={() => setStage("setup")}>
+              {t("analyzer.stage.edit")}
+            </Button>
+          )}
         </div>
+        {captureError && (
+          <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[10px] text-danger">
+            {captureError}
+          </div>
+        )}
       </section>
+      )}
 
-      {captures.length > 0 && latestCapture && latestSummary && (
-        <section className="border-t border-line/60 bg-panel/45 p-3 sm:p-4">
+      {stage === "results" && captures.length > 0 && selectedCapture && selectedSummary && (
+        <section className="bg-panel/45 p-3 sm:p-4">
           <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
             <div>
               <div className="flex items-center gap-2 text-xs font-semibold text-ink">
-                <span className="grid h-6 w-6 place-items-center rounded-full bg-ok/15 text-ok">4</span>
+                <span className="grid h-7 w-7 place-items-center rounded-lg bg-ok/15 text-ok">
+                  <Gauge size={14} />
+                </span>
                 {t("analyzer.results.title")}
               </div>
               <p className="mt-1 max-w-[72ch] text-[10px] leading-relaxed text-ink-dim">{t("analyzer.results.description")}</p>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <div
+                role="group"
+                aria-label={t("power.chart.metric")}
+                className="inline-flex rounded-lg border border-line/70 bg-panel2/60 p-0.5"
+              >
+                {(["current", "power"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={metric === value}
+                    onClick={() => setMetric(value)}
+                    className={`inline-flex min-h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium transition-colors ${
+                      metric === value ? "bg-brand text-on-brand" : "text-ink-dim hover:text-ink"
+                    }`}
+                  >
+                    {value === "current" ? <Activity size={12} /> : <Zap size={12} />}
+                    {t(`power.chart.${value}`)}
+                  </button>
+                ))}
+              </div>
               <select
                 value={rail}
                 onChange={(event) => setRail(event.target.value)}
@@ -728,9 +972,9 @@ export function PowerAnalyzer({
               >
                 {USER_POWER_RAILS.map((name) => <option key={name} value={name}>{powerRailLabel(name)}</option>)}
               </select>
-              <Button disabled={disabled || exporting} variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => void exportCapture(latestCapture, "csv")}><Download size={13} />CSV</Button>
-              <Button disabled={disabled || exporting} variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => void exportCapture(latestCapture, "ndjson")}><Download size={13} />NDJSON</Button>
-              <Button disabled={disabled || exporting} variant="ghost" className="min-h-8 px-2 py-1" onClick={onClear} aria-label={t("analyzer.clear")}><Trash2 size={13} /></Button>
+              <Button disabled={disabled || exporting} variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => void exportCapture(selectedCapture, "csv")}><Download size={13} />CSV</Button>
+              <Button disabled={disabled || exporting} variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => void exportCapture(selectedCapture, "ndjson")}><Download size={13} />NDJSON</Button>
+              <Button disabled={disabled || exporting} variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={clearAllCaptures}><Trash2 size={13} />{t("analyzer.clearAll")}</Button>
             </div>
           </div>
           {exportFormat && exportProgress && (
@@ -748,32 +992,72 @@ export function PowerAnalyzer({
             </div>
           )}
 
+          <div className="grid items-start gap-3 xl:grid-cols-[220px_minmax(0,1fr)]">
+          <aside className="min-w-0 rounded-xl border border-line/60 bg-panel p-2" aria-label={t("analyzer.results.title")}>
+            <div className="flex items-center justify-between gap-2 px-1 pb-2 text-[10px] font-medium text-ink-dim">
+              <span className="inline-flex items-center gap-1.5"><History size={12} />{t("analyzer.results.title")}</span>
+              <span className="font-mono">{captures.length}</span>
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-1 xl:max-h-[420px] xl:flex-col xl:overflow-y-auto">
+              {[...captures].reverse().map((capture) => {
+                const sampleCount = capture.sampleCount ?? capture.samples.length;
+                const isSelected = capture.id === selectedCapture.id;
+                return (
+                  <button
+                    type="button"
+                    key={capture.id}
+                    aria-pressed={isSelected}
+                    onClick={() => {
+                      setSelectedCaptureId(capture.id);
+                      setRail(capture.source);
+                    }}
+                    className={`min-w-[170px] rounded-lg border px-2.5 py-2 text-left transition-colors xl:min-w-0 ${
+                      isSelected ? "border-brand/45 bg-brand/5" : "border-line/60 bg-panel2/30 hover:border-brand/25"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2 text-[11px] font-medium text-ink">
+                      <span className="font-mono">#{capture.id}</span>
+                      <span className={`h-1.5 w-1.5 rounded-full ${capture.incomplete || capture.droppedSamples ? "bg-warn" : "bg-ok"}`} />
+                    </div>
+                    <div className="mt-1 truncate text-[9px] text-ink-dim">
+                      {powerRailLabel(capture.source)} · {capture.rateHz} Hz
+                    </div>
+                    <div className="mt-1 font-mono text-[9px] text-ink-dim">
+                      {t("analyzer.receivedSamples").replaceAll("{samples}", sampleCount.toLocaleString())}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </aside>
+
+          <div className="min-w-0">
           <div className="grid divide-y divide-line/50 rounded-xl border border-line/60 bg-panel px-2 sm:grid-cols-3 sm:divide-x sm:divide-y-0 xl:grid-cols-6">
-            <MetricItem icon={<Clock3 size={12} />} label={t("analyzer.duration")} value={formatWindowTime(latestSummary.durationMs)} />
-            <MetricItem icon={<Activity size={12} />} label={t("analyzer.averageCurrent")} value={formatPowerMetric(latestSummary.averageCurrentA, "current")} tone="text-brand" />
-            <MetricItem icon={<Gauge size={12} />} label={t("analyzer.peakCurrent")} value={formatPowerMetric(latestSummary.peakCurrentA, "current")} />
-            <MetricItem icon={<Zap size={12} />} label={t("analyzer.averagePower")} value={formatPowerMetric(latestSummary.averagePowerW, "power")} />
-            <MetricItem icon={<BatteryCharging size={12} />} label={t("analyzer.charge")} value={`${formatIntegrated(latestSummary.milliampHours)} mAh`} />
-            <MetricItem icon={<Zap size={12} />} label={t("analyzer.energy")} value={`${formatIntegrated(latestSummary.wattHours)} Wh`} tone="text-warn" />
+            <MetricItem icon={<Clock3 size={12} />} label={t("analyzer.duration")} value={formatWindowTime(selectedSummary.durationMs)} />
+            <MetricItem icon={<Activity size={12} />} label={t("analyzer.averageCurrent")} value={formatPowerMetric(selectedSummary.averageCurrentA, "current")} tone="text-brand" />
+            <MetricItem icon={<Gauge size={12} />} label={t("analyzer.peakCurrent")} value={formatPowerMetric(selectedSummary.peakCurrentA, "current")} />
+            <MetricItem icon={<Zap size={12} />} label={t("analyzer.averagePower")} value={formatPowerMetric(selectedSummary.averagePowerW, "power")} />
+            <MetricItem icon={<BatteryCharging size={12} />} label={t("analyzer.charge")} value={`${formatIntegrated(selectedSummary.milliampHours)} mAh`} />
+            <MetricItem icon={<Zap size={12} />} label={t("analyzer.energy")} value={`${formatIntegrated(selectedSummary.wattHours)} Wh`} tone="text-warn" />
           </div>
           <p className="mt-1.5 text-[9px] text-ink-dim">
             {t("analyzer.results.estimateNote")
-              .replaceAll("{voltage}", String(latestSummary.nominalVoltageV))
-              .replaceAll("{id}", String(latestCapture.id))}
+              .replaceAll("{voltage}", String(selectedSummary.nominalVoltageV))
+              .replaceAll("{id}", String(selectedCapture.id))}
           </p>
-          <p className={`mt-1 text-[9px] ${latestCapture.incomplete || latestCapture.droppedSamples ? "text-danger" : "text-ok"}`}>
-            {latestCapture.droppedSamples
+          <p className={`mt-1 text-[9px] ${selectedCapture.incomplete || selectedCapture.droppedSamples ? "text-danger" : "text-ok"}`}>
+            {selectedCapture.droppedSamples
               ? t("analyzer.results.dropped")
-                .replaceAll("{count}", latestSampleCount.toLocaleString())
-                .replaceAll("{rate}", latestEffectiveRateHz.toFixed(1))
-                .replaceAll("{dropped}", latestCapture.droppedSamples.toLocaleString())
-              : latestCapture.incomplete
+                .replaceAll("{count}", selectedSampleCount.toLocaleString())
+                .replaceAll("{rate}", selectedEffectiveRateHz.toFixed(1))
+                .replaceAll("{dropped}", selectedCapture.droppedSamples.toLocaleString())
+              : selectedCapture.incomplete
                 ? t("analyzer.results.incomplete")
-                  .replaceAll("{count}", latestSampleCount.toLocaleString())
-                  .replaceAll("{rate}", latestEffectiveRateHz.toFixed(1))
+                  .replaceAll("{count}", selectedSampleCount.toLocaleString())
+                  .replaceAll("{rate}", selectedEffectiveRateHz.toFixed(1))
               : t("analyzer.results.noDrops")
-                .replaceAll("{count}", latestSampleCount.toLocaleString())
-                .replaceAll("{rate}", latestEffectiveRateHz.toFixed(1))}
+                .replaceAll("{count}", selectedSampleCount.toLocaleString())
+                .replaceAll("{rate}", selectedEffectiveRateHz.toFixed(1))}
           </p>
 
           <div className="mt-3">
@@ -809,9 +1093,7 @@ export function PowerAnalyzer({
               <div className="mt-1 flex min-w-0 items-center justify-between gap-2 text-[9px] text-ink-dim">
                 <span className="font-mono">{minX.toFixed(0)} ms</span>
                 <span className="flex min-w-0 flex-1 items-center justify-center gap-2">
-                  {captures.map((capture, index) => (
-                    <span key={capture.id} className="truncate"><i className="mr-1 inline-block h-2 w-2 rounded-full" style={{ background: COLORS[index % COLORS.length] }} />#{capture.id}</span>
-                  ))}
+                  <span className="truncate"><i className="mr-1 inline-block h-2 w-2 rounded-full" style={{ background: COLORS[0] }} />#{selectedCapture.id}</span>
                 </span>
                 <span className="font-mono">{maxX.toFixed(0)} ms</span>
               </div>
@@ -846,7 +1128,7 @@ export function PowerAnalyzer({
                   </div>
                   <p className="mt-1 text-[10px] leading-relaxed text-ink-dim">
                     {t("analyzer.battery.thisRunDetail")
-                      .replaceAll("{energy}", formatIntegrated(latestSummary.wattHours))
+                      .replaceAll("{energy}", formatIntegrated(selectedSummary.wattHours))
                       .replaceAll("{input}", formatIntegrated(batteryEstimate.rechargeInputWh))
                       .replaceAll("{efficiency}", String(Math.round(batteryEstimate.efficiency * 100)))}
                   </p>
@@ -876,6 +1158,8 @@ export function PowerAnalyzer({
                 {t("analyzer.battery.incomplete")}
               </div>
             )}
+          </div>
+          </div>
           </div>
         </section>
       )}

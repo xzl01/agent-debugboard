@@ -887,10 +887,10 @@ export function serializeTestScript(script: TestScript): string {
   return lines.join("\n") + "\n";
 }
 
-export function defaultScript(): TestScript {
+export function defaultScript(name = "New Test"): TestScript {
   return {
     schema: "linkr-test.v1",
-    name: "New Test",
+    name,
     version: "1.0",
     steps: [],
   };

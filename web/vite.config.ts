@@ -4,13 +4,11 @@ import http from "node:http";
 import path from "path";
 
 // The Radxa Linkr Debugger firmware serves its HTTP/WebSocket control API on the
-// USB-NCM control service at http://172.29.203.1:8080. Port 80 is the
-// compatibility relay used by the board-hosted page and has a much smaller
-// connection pool, so the development proxy must use the native service.
+// USB-NCM-local port 80 service at http://172.29.203.1.
 // WebSocket upgrades stay same-origin in the browser to avoid CORS/PNA issues.
 export default defineConfig(({ mode }) => {
   const isFirmwareBuild = mode === "firmware" || Boolean(process.env.VITE_OUT_DIR);
-  const debuggerTarget = process.env.VITE_DEBUGGER_TARGET || "http://172.29.203.1:8080";
+  const debuggerTarget = process.env.VITE_DEBUGGER_TARGET || "http://172.29.203.1";
 
   return {
     base: process.env.VITE_BASE_PATH || "/",

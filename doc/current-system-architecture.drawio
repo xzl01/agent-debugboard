@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="drawio" version="31.1.5">
+  <diagram name="Current Architecture">
+    <mxGraphModel dx="1600" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1654" pageHeight="1300" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="2" value="Consumers" style="swimlane;startSize=30;rounded=1;whiteSpace=wrap;html=1;container=1;pointerEvents=0;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;fontSize=15;" vertex="1" parent="1">
+          <mxGeometry x="40" y="30" width="1440" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="3" value="Browser / React Web UI&#xa;Host-served :8787&#xa;or Vite development :5173" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="2">
+          <mxGeometry x="30" y="55" width="260" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="4" value="Codex / OpenCode / Agent&#xa;bounded tools + progress" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13;" vertex="1" parent="2">
+          <mxGeometry x="340" y="55" width="250" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="5" value="Rust CLI / TUI&#xa;radxa-linkr-debuggerctl&#xa;direct NCM / CDC; bypasses Host" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" vertex="1" parent="2">
+          <mxGeometry x="650" y="55" width="250" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="6" value="Browser Web Serial&#xa;optional direct UART owner&#xa;bypasses shared Broker" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="2">
+          <mxGeometry x="960" y="55" width="230" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="7" value="linkr-tray&#xa;login autostart + status icon&#xa;supervises the Host process" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#444444;fontSize=12;" vertex="1" parent="2">
+          <mxGeometry x="1250" y="55" width="160" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="8" value="Local Rust Host (loopback-only 127.0.0.1:8787)" style="swimlane;startSize=30;rounded=1;whiteSpace=wrap;html=1;container=1;pointerEvents=0;fillColor=#fffaf2;strokeColor=#d79b00;fontStyle=1;fontSize=15;" vertex="1" parent="1">
+          <mxGeometry x="40" y="280" width="1440" height="290" as="geometry" />
+        </mxCell>
+        <mxCell id="9" value="Static Web Host&#xa;web/dist + SPA fallback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="8">
+          <mxGeometry x="30" y="60" width="250" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="10" value="Board HTTP / WS Gateway&#xa;/api/* + /api/v1/ws/*&#xa;origin guard + bounded proxy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=13;" vertex="1" parent="8">
+          <mxGeometry x="350" y="60" width="280" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="11" value="MCP Service + Compatibility Adapter&#xa;resident Streamable HTTP /mcp&#xa;stdio linkr-host mcp + tool envelopes/cursors" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13;" vertex="1" parent="8">
+          <mxGeometry x="700" y="60" width="280" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="12" value="Shared Serial Broker&#xa;linkr-serial-broker.v1&#xa;one OS handle / channel, shared RX, ordered TX&#xa;2 ms or 16 KiB RX batching + serialize once" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="8">
+          <mxGeometry x="1040" y="50" width="350" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="13" value="Development path: Vite :5173 proxies /api and live WebSockets directly to firmware :8080; serial still uses Host :8787.&#xa;Compatibility boundary: Node adapters remain migration references; new Agents use resident /mcp or the stdio adapter." style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#f5f5f5;strokeColor=#999999;fontColor=#666666;fontSize=12;align=left;spacingLeft=10;" vertex="1" parent="8">
+          <mxGeometry x="350" y="200" width="620" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="46" value="Host UART Archive&#xa;bounded RX writer + /host/api/v1/serial-logs&#xa;raw .bin + NDJSON index + retention / pin" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="8">
+          <mxGeometry x="1040" y="205" width="350" height="65" as="geometry" />
+        </mxCell>
+
+        <mxCell id="14" value="Radxa Linkr Debugger Hardware" style="swimlane;startSize=30;rounded=1;whiteSpace=wrap;html=1;container=1;pointerEvents=0;fillColor=#f3f8ff;strokeColor=#6c8ebf;fontStyle=1;fontSize=15;" vertex="1" parent="1">
+          <mxGeometry x="40" y="630" width="1440" height="250" as="geometry" />
+        </mxCell>
+        <mxCell id="15" value="RP2350 / Zephyr Firmware&#xa;USB-NCM HTTP + WebSocket service&#xa;status, power, switch, GPIO, ADC&#xa;logic/power capture, OTA, watchdog&#xa;USB CDC ACM shell fallback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="14">
+          <mxGeometry x="40" y="55" width="470" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="16" value="CH347F Host Interfaces&#xa;UART0 = D1&#xa;UART1 = D3&#xa;JTAG / SWD path" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="14">
+          <mxGeometry x="650" y="55" width="300" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="17" value="Board I/O Plane&#xa;power rails + recovery lines&#xa;SD / USB / VIN muxes&#xa;safe GPIO + ADC telemetry" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" vertex="1" parent="14">
+          <mxGeometry x="1080" y="55" width="270" height="160" as="geometry" />
+        </mxCell>
+
+        <mxCell id="18" value="Target Board Under Test" style="swimlane;startSize=30;rounded=1;whiteSpace=wrap;html=1;container=1;pointerEvents=0;fillColor=#f5fff5;strokeColor=#82b366;fontStyle=1;fontSize=15;" vertex="1" parent="1">
+          <mxGeometry x="40" y="940" width="1440" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="19" value="Console / Bootloader / Shell&#xa;shared UART receive stream" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="18">
+          <mxGeometry x="100" y="55" width="300" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="20" value="Debug + Capture Signals&#xa;JTAG / SWD / logic analyzer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="18">
+          <mxGeometry x="570" y="55" width="300" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="21" value="Power / Boot / Storage Routing&#xa;rails, reset, recovery, SD/USB mux" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" vertex="1" parent="18">
+          <mxGeometry x="1040" y="55" width="310" height="85" as="geometry" />
+        </mxCell>
+
+        <mxCell id="30" value="HTTP / WS" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#6c8ebf;fontColor=#4d6d91;exitX=0.35;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="3" target="9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="31" value="host-served REST + live WS" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#6c8ebf;fontColor=#4d6d91;exitX=0.65;exitY=1;entryX=0.25;entryY=0;" edge="1" parent="1" source="3" target="10">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="240" y="250" />
+              <mxPoint x="460" y="250" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="32" value="serial WS" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#d6b656;fontColor=#8a6d1d;exitX=0.85;exitY=1;entryX=0.15;entryY=0;" edge="1" parent="1" source="3" target="12">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="290" y="240" />
+              <mxPoint x="1130" y="240" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="33" value="HTTP MCP /mcp or stdio" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#9673a6;fontColor=#6b4f7a;exitX=0.5;exitY=1;entryX=0.3;entryY=0;" edge="1" parent="1" source="4" target="11">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="505" y="260" />
+              <mxPoint x="825" y="260" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="34" value="board API" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#9673a6;fontColor=#6b4f7a;exitX=0;exitY=0.45;entryX=1;entryY=0.45;" edge="1" parent="8" source="11" target="10">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="35" value="serial client" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#9673a6;fontColor=#6b4f7a;exitX=1;exitY=0.55;entryX=0;entryY=0.55;" edge="1" parent="8" source="11" target="12">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="36" value="USB-NCM HTTP / WS&#xa;Host target 172.29.203.1:8080" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#d79b00;fontColor=#9a6500;flowAnimation=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="10" target="15">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="37" value="CH347F serial reads / writes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#d6b656;fontColor=#8a6d1d;flowAnimation=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="12" target="16">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="38" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;dashed=1;strokeColor=#82b366;fontColor=#4f7c4e;exitX=0.15;exitY=1;entryX=0;entryY=0.35;" edge="1" parent="1" source="5" target="15">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="720" y="220" />
+              <mxPoint x="20" y="220" />
+              <mxPoint x="20" y="750" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="39" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;dashed=1;strokeColor=#d6b656;fontColor=#8a6d1d;exitX=0.8;exitY=1;entryX=0.8;entryY=0;" edge="1" parent="1" source="6" target="16">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1160" y="220" />
+              <mxPoint x="1510" y="220" />
+              <mxPoint x="1510" y="610" />
+              <mxPoint x="930" y="610" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="40" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#82b366;fontColor=#4f7c4e;exitX=1;exitY=0.2;entryX=0;entryY=0.2;" edge="1" parent="14" source="15" target="17">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="590" y="45" />
+              <mxPoint x="1030" y="45" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="41" value="UART console" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#d6b656;fontColor=#8a6d1d;flowAnimation=1;exitX=0.25;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="16" target="19">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="765" y="910" />
+              <mxPoint x="290" y="910" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="42" value="JTAG / SWD" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#6c8ebf;fontColor=#4d6d91;exitX=0.65;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="16" target="20">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="43" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#6c8ebf;fontColor=#4d6d91;exitX=0.35;exitY=1;entryX=0.25;entryY=0;" edge="1" parent="1" source="15" target="20">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="245" y="900" />
+              <mxPoint x="645" y="900" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="44" value="power / routes / GPIO" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#82b366;fontColor=#4f7c4e;flowAnimation=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="17" target="21">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="45" value="start / health / restart" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#666666;fontColor=#555555;exitX=0.5;exitY=1;entryX=0.9;entryY=0;" edge="1" parent="1" source="7" target="8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="47" value="raw RX before decode" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#82b366;fontColor=#4f7c4e;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="8" source="12" target="46">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="50" value="Solid = primary path     Dashed = optional or migration-only     Animated arrows = high-volume/live data" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#cccccc;fontColor=#666666;fontSize=11;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1140" width="1440" height="40" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

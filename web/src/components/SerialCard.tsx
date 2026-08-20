@@ -6,25 +6,28 @@ import {
   useRef,
   useState,
   type MouseEvent,
-  type ReactNode,
 } from "react";
 import {
+  Archive,
   Check,
   Columns2,
   Copy,
   LayoutPanelTop,
+  Plug,
   ShieldAlert,
-  Terminal as TerminalIcon,
+  Usb,
   X,
 } from "lucide-react";
-import { Button, Card } from "./ui";
+import { Button } from "./ui";
 import {
+  isSerialDisconnectBlocked,
   SerialTerminalPane,
   type SerialChannelHandle,
   type SerialChannelId,
   type SerialChannelStatus,
 } from "./SerialTerminalPane";
 import { useI18n } from "@/lib/i18n";
+import { HostSerialLogs } from "./HostSerialLogs";
 
 const CH347_VID = 0x1a86;
 const CHANNELS: SerialChannelId[] = ["uart0", "uart1"];
@@ -42,6 +45,7 @@ const SETUP_COPY_BUTTON_CLASS =
   "w-full overflow-hidden rounded-md border border-line/70 bg-panel2 px-3 py-2 text-left font-mono text-[11px] text-ink break-all transition-colors hover:border-brand/40 hover:bg-brand/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40";
 
 type LayoutMode = "tabs" | "split";
+type ContextDrawerTab = "connection" | "archive";
 type CopyState = "idle" | "success" | "error";
 type CopyTarget = "flag" | "origin";
 
@@ -49,8 +53,11 @@ const EMPTY_STATUS: SerialChannelStatus = {
   connected: false,
   connecting: false,
   automationActive: false,
+  brokerWriteLocked: false,
   source: null,
   portInfo: "",
+  baud: 115200,
+  lineEnding: "cr",
   rxBytes: 0,
   txBytes: 0,
 };
@@ -74,9 +81,9 @@ export const SerialCard = forwardRef<
   {
     vinRoute?: string;
     onSetVin: (route: "1.8v" | "3.3v") => Promise<void>;
-    workspaceTabs?: ReactNode;
+    onConnectionChange?: (connections: Record<SerialChannelId, boolean>) => void;
   }
->(function SerialCard({ vinRoute, onSetVin, workspaceTabs }, automationRef) {
+>(function SerialCard({ vinRoute, onSetVin, onConnectionChange }, automationRef) {
   const { t } = useI18n();
   const isSecureContext = typeof window !== "undefined" && window.isSecureContext;
   const hasWebSerialApi = typeof navigator !== "undefined" && "serial" in navigator;
@@ -87,6 +94,8 @@ export const SerialCard = forwardRef<
   const [changingVoltage, setChangingVoltage] = useState(false);
   const [sharedError, setSharedError] = useState<string | null>(null);
   const [showSetupModal, setShowSetupModal] = useState(false);
+  const [showContextDrawer, setShowContextDrawer] = useState(false);
+  const [contextDrawerTab, setContextDrawerTab] = useState<ContextDrawerTab>("connection");
   const [copyState, setCopyState] = useState<Record<CopyTarget, CopyState>>({
     flag: "idle",
     origin: "idle",
@@ -117,6 +126,13 @@ export const SerialCard = forwardRef<
       current[channel] === status ? current : { ...current, [channel]: status }
     );
   }, []);
+
+  useEffect(() => {
+    onConnectionChange?.({
+      uart0: statuses.uart0.connected,
+      uart1: statuses.uart1.connected,
+    });
+  }, [onConnectionChange, statuses.uart0.connected, statuses.uart1.connected]);
 
   const requestPort = useCallback(
     async (channel: SerialChannelId) => {
@@ -180,6 +196,15 @@ export const SerialCard = forwardRef<
   useEffect(() => {
     setCopyState({ flag: "idle", origin: "idle" });
   }, [showSetupModal]);
+
+  useEffect(() => {
+    if (!showContextDrawer || typeof window === "undefined") return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setShowContextDrawer(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showContextDrawer]);
 
   useEffect(() => {
     if (!showSetupModal || typeof window === "undefined" || typeof document === "undefined") {
@@ -260,6 +285,16 @@ export const SerialCard = forwardRef<
 
   async function changeVin(next: "1.8v" | "3.3v") {
     if (next === vinRoute) return;
+    if (
+      CHANNELS.some(
+        (channel) =>
+          statuses[channel].automationActive ||
+          Boolean(channelHandle(channel)?.isAutomationActive())
+      )
+    ) {
+      setSharedError(t("serial.vioAutomationLocked"));
+      return;
+    }
 
     const current =
       vinRoute === "1.8v" || vinRoute === "3.3v" ? vinRoute : t("serial.vioUnknown");
@@ -340,21 +375,56 @@ export const SerialCard = forwardRef<
     setShowSetupModal(true);
   }
 
+  async function connectChannel(
+    channel: SerialChannelId,
+    source: "webserial" | "bridge"
+  ) {
+    const handle = channelHandle(channel);
+    if (!handle || statuses[channel].connected || statuses[channel].connecting) return;
+    selectChannel(channel);
+    setSharedError(null);
+    try {
+      if (source === "webserial") {
+        if (!webSerialSupported) {
+          setShowContextDrawer(false);
+          setShowSetupModal(true);
+          return;
+        }
+        await handle.connectWebSerial();
+      } else {
+        handle.connectBridge();
+      }
+    } catch (reason) {
+      setSharedError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function disconnectChannel(channel: SerialChannelId) {
+    const status = statuses[channel];
+    if (!status.connected || isSerialDisconnectBlocked(status)) return;
+    setSharedError(null);
+    try {
+      await channelHandle(channel)?.disconnect();
+    } catch (reason) {
+      setSharedError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
   const connectedCount = CHANNELS.filter((channel) => statuses[channel].connected).length;
+  const anyAutomationActive = CHANNELS.some(
+    (channel) => statuses[channel].automationActive
+  );
 
   return (
     <>
-      <Card
-        title={workspaceTabs ? undefined : t("serial.title")}
-        subtitle={workspaceTabs ? undefined : t("serial.subtitle")}
-        icon={TerminalIcon}
-        headerLeading={workspaceTabs}
-        contentClassName="flex min-h-0 flex-col"
+      <section
+        data-testid="serial-workspace"
+        className="flex min-h-0 flex-col gap-4 xl:h-[832px]"
       >
         <div
           role="toolbar"
           aria-label={t("serial.title")}
-          className="mb-3 flex max-w-full flex-wrap items-center justify-between gap-2 rounded-xl border border-line/60 bg-panel2/35 p-2"
+          className="flex min-h-[72px] max-w-full flex-wrap items-center justify-between gap-2 rounded-2xl border border-line/80 bg-panel px-3 py-2"
         >
           <div className="flex max-w-full flex-wrap items-center gap-2">
             {layout === "tabs" && (
@@ -374,7 +444,7 @@ export const SerialCard = forwardRef<
                       onClick={() => selectChannel(channel)}
                       className={`flex min-h-8 items-center gap-2 rounded-lg px-3 text-xs font-semibold transition-colors ${
                         activeChannel === channel
-                          ? "bg-panel text-ink shadow-sm"
+                          ? "bg-panel text-ink ring-1 ring-inset ring-line/70"
                           : "text-ink-dim hover:text-ink"
                       }`}
                     >
@@ -410,7 +480,7 @@ export const SerialCard = forwardRef<
                 title={t("serial.layout.tabs")}
                 className={`grid h-8 w-8 place-items-center rounded-lg transition-colors ${
                   layout === "tabs"
-                    ? "bg-panel text-brand shadow-sm"
+                    ? "bg-brand/10 text-brand ring-1 ring-inset ring-brand/15"
                     : "text-ink-dim hover:text-ink"
                 }`}
               >
@@ -423,7 +493,7 @@ export const SerialCard = forwardRef<
                 title={t("serial.layout.split")}
                 className={`grid h-8 w-8 place-items-center rounded-lg transition-colors ${
                   layout === "split"
-                    ? "bg-panel text-brand shadow-sm"
+                    ? "bg-brand/10 text-brand ring-1 ring-inset ring-brand/15"
                     : "text-ink-dim hover:text-ink"
                 }`}
               >
@@ -431,28 +501,43 @@ export const SerialCard = forwardRef<
               </button>
             </div>
           </div>
-          <label
-            className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-warn/35 bg-warn/10 px-2.5 text-xs font-medium text-warn"
-            title={t("serial.vioWarning")}
-          >
-            <ShieldAlert size={15} aria-hidden="true" />
-            <span>VIO</span>
-            <select
-              aria-label={t("serial.vioLabel")}
-              value={vinRoute === "1.8v" || vinRoute === "3.3v" ? vinRoute : ""}
-              onChange={(event) =>
-                void changeVin(event.target.value as "1.8v" | "3.3v")
-              }
-              disabled={!vinRoute || changingVoltage}
-              className="rounded-md border border-warn/30 bg-panel px-2 py-1 text-xs font-semibold text-ink outline-none focus-visible:ring-2 focus-visible:ring-warn/40 disabled:opacity-50"
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              type="button"
+              variant="default"
+              className="min-h-10 rounded-xl px-3 text-xs"
+              aria-label={`${t("serial.channels")} / ${t("serial.hostLogs.title")}`}
+              onClick={() => {
+                setContextDrawerTab("connection");
+                setShowContextDrawer(true);
+              }}
             >
-              <option value="" disabled>
-                —
-              </option>
-              <option value="3.3v">3.3V</option>
-              <option value="1.8v">1.8V</option>
-            </select>
-          </label>
+              <Archive size={15} aria-hidden="true" />
+              {t("serial.connectedCount").replaceAll("{count}", String(connectedCount))}
+            </Button>
+            <label
+              className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-warn/35 bg-warn/10 px-2.5 text-xs font-medium text-warn"
+              title={t("serial.vioWarning")}
+            >
+              <ShieldAlert size={15} aria-hidden="true" />
+              <span>VIO</span>
+              <select
+                aria-label={t("serial.vioLabel")}
+                value={vinRoute === "1.8v" || vinRoute === "3.3v" ? vinRoute : ""}
+                onChange={(event) =>
+                  void changeVin(event.target.value as "1.8v" | "3.3v")
+                }
+                disabled={!vinRoute || changingVoltage || anyAutomationActive}
+                className="rounded-md border border-warn/30 bg-panel px-2 py-1 text-xs font-semibold text-ink outline-none focus-visible:ring-2 focus-visible:ring-warn/40 disabled:opacity-50"
+              >
+                <option value="" disabled>
+                  —
+                </option>
+                <option value="3.3v">3.3V</option>
+                <option value="1.8v">1.8V</option>
+              </select>
+            </label>
+          </div>
         </div>
 
         {sharedError && (
@@ -461,12 +546,12 @@ export const SerialCard = forwardRef<
           </div>
         )}
 
-        <div className={layout === "split" ? "grid min-h-0 gap-3 lg:grid-cols-2" : "min-h-0"}>
+        <div className={layout === "split" ? "grid min-h-0 flex-1 gap-3 lg:grid-cols-2" : "flex min-h-0 flex-1"}>
           {CHANNELS.map((channel) => (
             <div
               key={channel}
               className={`min-h-0 min-w-0 ${
-                layout === "tabs" && activeChannel !== channel ? "hidden" : "flex"
+                layout === "tabs" && activeChannel !== channel ? "hidden" : "flex flex-1"
               }`}
               role={layout === "tabs" ? "tabpanel" : undefined}
             >
@@ -475,6 +560,7 @@ export const SerialCard = forwardRef<
                 channel={channel}
                 visible={layout === "split" || activeChannel === channel}
                 compact={layout === "split"}
+                fillHeight
                 webSerialSupported={webSerialSupported}
                 requestPort={requestPort}
                 releasePort={releasePort}
@@ -485,14 +571,172 @@ export const SerialCard = forwardRef<
           ))}
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-ink-dim">
-          <span>
-            {layout === "split"
-              ? `${t("serial.connectedCount").replaceAll("{count}", String(connectedCount))} · ${t("serial.focusHint")}`
-              : t("serial.dualHint")}
-          </span>
+      </section>
+
+      {showContextDrawer && (
+        <div className="fixed inset-0 z-40" data-testid="serial-context-drawer">
+          <button
+            type="button"
+            className="absolute inset-0 cursor-default bg-terminal/30"
+            aria-label={t("serial.setupClose")}
+            onClick={() => setShowContextDrawer(false)}
+          />
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${t("serial.channels")} / ${t("serial.hostLogs.title")}`}
+            className="absolute inset-y-0 right-0 flex w-full max-w-[460px] flex-col border-l border-line/70 bg-panel shadow-2xl"
+          >
+            <header className="flex items-start justify-between gap-3 border-b border-line/60 px-4 py-3">
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-ink">
+                  {t("serial.channels")} / {t("serial.hostLogs.title")}
+                </h3>
+                <p className="mt-1 text-xs text-ink-dim">{t("serial.dualHint")}</p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-9 min-h-9 w-9 shrink-0 px-0"
+                aria-label={t("serial.setupClose")}
+                onClick={() => setShowContextDrawer(false)}
+              >
+                <X size={16} />
+              </Button>
+            </header>
+
+            <div className="grid grid-cols-2 border-b border-line/60 px-4 pt-2" role="tablist">
+              {([
+                ["connection", t("serial.channels")],
+                ["archive", t("serial.hostLogs.title")],
+              ] as const).map(([tab, label]) => (
+                <button
+                  key={tab}
+                  type="button"
+                  role="tab"
+                  aria-selected={contextDrawerTab === tab}
+                  className={`border-b-2 px-3 py-2.5 text-xs font-semibold transition-colors ${
+                    contextDrawerTab === tab
+                      ? "border-brand text-brand"
+                      : "border-transparent text-ink-dim hover:text-ink"
+                  }`}
+                  onClick={() => setContextDrawerTab(tab)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {contextDrawerTab === "archive" ? (
+                <HostSerialLogs />
+              ) : (
+                <div className="space-y-4">
+                  <p className="text-xs leading-5 text-ink-dim">{t("serial.connect")}</p>
+                  <div className="space-y-2">
+                    {CHANNELS.map((channel) => {
+                      const status = statuses[channel];
+                      const connectDisabled = status.connecting || status.automationActive;
+                      const disconnectDisabled = isSerialDisconnectBlocked(status);
+                      return (
+                        <section
+                          key={channel}
+                          data-testid={`serial-session-${channel}`}
+                          className="rounded-xl border border-line/70 bg-panel2/35 p-3"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className={`h-2 w-2 rounded-full ${status.connected ? "bg-ok" : status.connecting ? "animate-pulse bg-warn" : "bg-ink-dim/35"}`} />
+                                <h4 className="text-xs font-semibold text-ink">{channel.toUpperCase()}</h4>
+                                <span className="text-[11px] text-ink-dim">
+                                  {status.connecting
+                                    ? t("serial.connecting")
+                                    : status.connected
+                                      ? t("serial.connected")
+                                      : t("serial.disconnected")}
+                                </span>
+                              </div>
+                              <p className="mt-1 truncate font-mono text-[10px] text-ink-dim">
+                                {status.source === "webserial"
+                                  ? t("serial.webSerial")
+                                  : status.source === "bridge"
+                                    ? t("serial.bridge")
+                                    : t("serial.noConnection")}
+                                {status.portInfo ? ` · ${status.portInfo}` : ""}
+                              </p>
+                            </div>
+                            <span className="shrink-0 font-mono text-[10px] text-ink-dim">
+                              {status.baud.toLocaleString()} · {status.lineEnding.toUpperCase()}
+                            </span>
+                          </div>
+
+                          <div className="mt-3 flex items-center justify-end gap-2 border-t border-line/50 pt-3">
+                            {status.connected || status.connecting ? (
+                              <Button
+                                type="button"
+                                variant="default"
+                                className="min-h-8 rounded-lg px-3 py-1 text-xs"
+                                disabled={!status.connected || disconnectDisabled}
+                                onClick={() => void disconnectChannel(channel)}
+                              >
+                                {status.connecting ? t("serial.connecting") : t("serial.disconnect")}
+                              </Button>
+                            ) : (
+                              <>
+                                <Button
+                                  type="button"
+                                  variant="primary"
+                                  className="min-h-8 rounded-lg px-3 py-1 text-xs"
+                                  disabled={connectDisabled}
+                                  onClick={() => void connectChannel(channel, "webserial")}
+                                >
+                                  <Usb size={13} /> {t("serial.webSerial")}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="default"
+                                  className="min-h-8 rounded-lg px-3 py-1 text-xs"
+                                  disabled={connectDisabled}
+                                  onClick={() => void connectChannel(channel, "bridge")}
+                                >
+                                  <Plug size={13} /> {t("serial.bridge")}
+                                </Button>
+                              </>
+                            )}
+                          </div>
+                        </section>
+                      );
+                    })}
+                  </div>
+
+                  <section className="rounded-xl border border-warn/30 bg-warn/5 p-3">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-ink">
+                      <ShieldAlert size={14} className="text-warn" />
+                      {t("serial.vioLabel")}
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      {(["1.8v", "3.3v"] as const).map((route) => (
+                        <Button
+                          key={route}
+                          type="button"
+                          variant={vinRoute === route ? "primary" : "default"}
+                          className="min-h-9 rounded-lg px-3 py-1 text-xs"
+                          disabled={!vinRoute || changingVoltage || anyAutomationActive}
+                          onClick={() => void changeVin(route)}
+                        >
+                          {route.toUpperCase()}
+                        </Button>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-[11px] leading-4 text-warn">{t("serial.vioWarning")}</p>
+                  </section>
+                </div>
+              )}
+            </div>
+          </aside>
         </div>
-      </Card>
+      )}
 
       {showSetupModal && (
         <div

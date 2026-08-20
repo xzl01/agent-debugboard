@@ -61,6 +61,7 @@ function NestedStepRows({
           <div
             key={step.id}
             role="listitem"
+            data-workflow-nested-item-id={step.id}
             className="flex min-h-9 items-center gap-2 rounded-lg border border-line/55 bg-panel/80 px-2.5 py-1.5"
           >
             <span className="w-4 shrink-0 text-right font-mono text-[9px] tabular-nums text-ink-dim">
@@ -422,15 +423,15 @@ export const WorkflowNode = memo(function WorkflowNode({
       data-workflow-drag-preview
       data-workflow-item-id={item.id}
       data-workflow-item-kind={unit ? "unit" : condition ? "condition" : loop ? "loop" : "step"}
-      className={`group relative mx-auto w-full max-w-xl rounded-2xl border bg-panel shadow-sm transition-[border-color,box-shadow,background-color] duration-200 ${
+      className={`group relative mx-auto w-full max-w-[598px] rounded-[14px] border bg-panel shadow-sm transition-[border-color,box-shadow,background-color] duration-200 ${
         dragging
           ? "border-dashed border-brand/45 bg-brand/[0.035] opacity-25 shadow-none"
           : selected
-          ? "border-brand/70 bg-brand/[0.045] shadow-md shadow-brand/10 ring-2 ring-brand/10"
+          ? "border-brand/70 bg-panel shadow-md shadow-brand/10 ring-2 ring-brand/10"
           : "border-line/70 hover:border-brand/35 hover:shadow-md"
       }`}
     >
-      <div className="flex min-h-[88px] items-center gap-3 p-3">
+      <div className="flex min-h-16 items-center gap-2 p-2.5 sm:gap-3 sm:px-3">
         <button
           type="button"
           draggable
@@ -471,14 +472,14 @@ export const WorkflowNode = memo(function WorkflowNode({
             unit ? "cursor-grab active:cursor-grabbing" : ""
           }`}
         >
-          <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${
+          <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-[10px] ${
             loop || condition ? "bg-violet-500/10 text-violet-500" : "bg-brand/10 text-brand"
           }`}>
-            <Icon size={18} />
+            <Icon size={16} />
           </span>
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-2">
-              <span className="truncate text-sm font-semibold text-ink">{title}</span>
+              <span className="truncate text-[13px] font-semibold text-ink">{title}</span>
               <Badge tone={loop || condition ? "brand" : "neutral"}>
                 {condition ? "If / Else" : loop ? (unit ? "Unit" : t("test.loop.title")) : `Step ${index + 1}`}
               </Badge>
