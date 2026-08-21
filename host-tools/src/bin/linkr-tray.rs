@@ -22,6 +22,8 @@ use tray_icon::{
 use url::Url;
 use uuid::Uuid;
 
+use radxa_linkr_host::config::DEFAULT_BOARD_URL;
+
 const HEALTH_INTERVAL: Duration = Duration::from_secs(2);
 const HEALTH_TIMEOUT: Duration = Duration::from_millis(500);
 const RESTART_INITIAL: Duration = Duration::from_millis(500);
@@ -41,7 +43,7 @@ struct Cli {
     #[arg(long)]
     web_root: Option<PathBuf>,
 
-    #[arg(long, default_value = "http://172.29.203.1:8080")]
+    #[arg(long, default_value = DEFAULT_BOARD_URL)]
     board_url: Url,
 
     #[arg(long)]
