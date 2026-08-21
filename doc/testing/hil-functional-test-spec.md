@@ -976,7 +976,7 @@ await new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error('ADC3 batch timeout')), 5000);
   ws.addEventListener('open', () => {
     ws.send(JSON.stringify({
-      type: 'subscribe', topic: 'adc', rate_hz: 100, batch_size: 10, id: 'adc3-batch',
+      type: 'subscribe', topic: 'live', rate_hz: 100, batch_size: 10, id: 'adc3-batch',
     }));
   });
   ws.addEventListener('message', (event) => {

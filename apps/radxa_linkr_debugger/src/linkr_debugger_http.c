@@ -1516,6 +1516,14 @@ static int linkr_debugger_http_handle_gpio(struct http_client_ctx *client,
 			bool value = req.value != 0;
 
 			ret = linkr_debugger_gpio_set_output(desc, value);
+			if (ret == -EPERM) {
+				k_mutex_unlock(&linkr_debugger_http_lock);
+				linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+						     HTTP_403_FORBIDDEN,
+						     "gpio", "input_only",
+						     "GPIO is firmware-owned input-only (ADC3)");
+				return 0;
+			}
 			if (ret < 0) {
 				k_mutex_unlock(&linkr_debugger_http_lock);
 				linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
