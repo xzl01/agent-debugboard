@@ -105,5 +105,12 @@ GitHub Release, and uploads the fixed release assets.
 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` | Statically linked Rust CLI/TUI for Linux x64 / AMD64 |
 | `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` | Statically linked Rust CLI/TUI for Linux ARM64 / AArch64 |
 | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` | Rust CLI/TUI for macOS Apple Silicon |
+| `radxa-linkr-desktop_windows_amd64.zip` | Unified Windows x64 desktop bundle: Web UI, Host gateway, Serial Broker, resident MCP, CLI, tray supervisor, and installer |
+| `radxa-linkr-desktop_linux_amd64.tar.gz` | Unified Linux x64 / AMD64 desktop bundle; requires GTK 3 and Ayatana AppIndicator 3 runtime libraries |
+| `radxa-linkr-desktop_darwin_arm64.tar.gz` | Unified macOS Apple Silicon desktop bundle |
 | `skills-radxa-linkr-debugger.tar.gz` | Agent skill bundle |
 | `SHA256SUMS.txt` | SHA256 checksums for all release assets |
+
+The formal workflow publishes exactly 13 assets. The rolling nightly channel
+intentionally publishes a smaller nine-asset canary set and does not include
+desktop bundles or the Linux ARM64 CLI archive.

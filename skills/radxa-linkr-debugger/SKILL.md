@@ -1422,9 +1422,9 @@ Git tag together with a prerelease that is explicitly marked **not**
 the latest release. The channel uploads a fixed nine-asset subset (combined UF2, OTA
 bin, ELF, map, three Rust CLI archives, the skill bundle, and
 `SHA256SUMS.txt`) and prunes any other assets from previous runs.
-Unlike the formal `Release` workflow, which ships ten assets, the
-nightly channel intentionally omits the Linux ARM64 Rust CLI
-archive.
+Unlike the formal `Release` workflow, which ships 13 assets, the
+nightly channel intentionally omits the Linux ARM64 Rust CLI archive and all
+three unified desktop archives.
 
 The nightly channel is rolling and testing-only. Formal `v*` releases
 keep their own `Release` workflow, semantic tags, signing policy, and
