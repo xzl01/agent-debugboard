@@ -517,7 +517,13 @@ export default function App() {
         )}
 
         {hardwareDialogOpen && createPortal(
-          <div className="fixed inset-0 z-50 flex justify-end bg-overlay/30">
+          <div
+            className="fixed inset-0 z-50 flex justify-end bg-overlay/30"
+            data-testid="hardware-controls-backdrop"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) closeHardwareDialog();
+            }}
+          >
             <dialog
               open
               ref={hardwareDialogRef}

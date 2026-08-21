@@ -438,6 +438,27 @@ describe("App workspace", () => {
     expect(dialog?.querySelector('[data-testid="hardware-section-panel-io"]')).toBeNull();
   });
 
+  it("closes the hardware drawer from the backdrop without closing on drawer content", () => {
+    const { host } = mountApp();
+    const opener = byTestId<HTMLButtonElement>(host, "open-hardware-controls");
+    act(() => opener.focus());
+    click(opener);
+
+    const dialog = document.body.querySelector<HTMLDialogElement>(
+      'dialog[aria-labelledby="hardware-controls-title"]'
+    );
+    if (!dialog) throw new TypeError("Hardware controls dialog not found");
+    const backdrop = byTestId<HTMLDivElement>(document.body, "hardware-controls-backdrop");
+
+    click(dialog);
+    expect(document.body.querySelector('dialog[aria-labelledby="hardware-controls-title"]')).toBe(dialog);
+
+    click(backdrop);
+    expect(document.body.querySelector('dialog[aria-labelledby="hardware-controls-title"]')).toBeNull();
+    expect(document.body.style.overflow).toBe("");
+    expect(document.activeElement).toBe(opener);
+  });
+
   it("shows one hardware task group at a time", () => {
     const { host } = mountApp();
     click(byTestId(host, "open-hardware-controls"));
