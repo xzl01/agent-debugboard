@@ -1774,6 +1774,10 @@ static int linkr_debugger_ws_handle_control_message(struct linkr_debugger_ws_cli
 		}
 
 		if (ret < 0) {
+			if (ret == -EPERM) {
+				return linkr_debugger_ws_emit_error(client, "gpio", "input_only",
+						"GPIO is firmware-owned input-only (ADC3)");
+			}
 			return linkr_debugger_ws_emit_error(client, "gpio", "configure_failed",
 						"failed to configure GPIO");
 		}

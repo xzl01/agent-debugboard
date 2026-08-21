@@ -9,10 +9,11 @@ export const POLICY_FILES = Object.freeze([
   ".github/workflows/nightly.yml",
   "AGENTS.md",
   "web/package.json",
+  "web/package-lock.json",
 ]);
 
 const REQUIRED_GATE_NEEDS = Object.freeze([
-  "version-gate", "decoder", "nix", "web", "scripts", "windows-installer",
+  "version-gate", "decoder", "nix", "web", "desktop-release", "scripts", "windows-installer",
   "firmware", "host-cli", "host-tools", "skill-bundle",
 ]);
 
@@ -51,6 +52,7 @@ export function checkRepositoryGateContents(contents) {
   const nightly = contents.get(".github/workflows/nightly.yml") ?? "";
   const agents = contents.get("AGENTS.md") ?? "";
   const webPackage = contents.get("web/package.json") ?? "";
+  const webPackageLock = contents.get("web/package-lock.json") ?? "";
 
   if (!/^  pull_request:\s*$/m.test(build) || !/^  workflow_call:\s*$/m.test(build)) {
     fail(failures, "G01", ".github/workflows/build.yml", "complete validation must support pull_request and workflow_call");
@@ -71,7 +73,9 @@ export function checkRepositoryGateContents(contents) {
     fail(failures, "G04", ".github/workflows/pages.yml", "Pages must validate, build, then deploy in order");
   }
   if (!reusableValidation(release) || !needs(job(release, "rust-cli-release")).includes("validation")
-      || !needs(job(release, "release")).includes("rust-cli-release")) {
+      || !needs(job(release, "host-desktop-release")).includes("validation")
+      || !needs(job(release, "release")).includes("rust-cli-release")
+      || !needs(job(release, "release")).includes("host-desktop-release")) {
     fail(failures, "G05", ".github/workflows/release.yml", "release publication must transitively depend on validation");
   }
   if (!reusableValidation(nightly) || !exact(needs(job(nightly, "rust-cli-release")), ["validation"])
@@ -89,6 +93,41 @@ export function checkRepositoryGateContents(contents) {
     }
   } catch {
     fail(failures, "G08", "web/package.json", "package file must be valid JSON with the canonical test entry");
+  }
+  try {
+    const lock = JSON.parse(webPackageLock);
+    const nonRegistryPackages = Object.entries(lock.packages ?? {}).filter(([, metadata]) => {
+      if (typeof metadata?.resolved !== "string") return false;
+      try {
+        return new URL(metadata.resolved).host !== "registry.npmjs.org";
+      } catch {
+        return true;
+      }
+    });
+    if (nonRegistryPackages.length > 0) {
+      fail(failures, "G11", "web/package-lock.json", "Web dependencies must resolve only from the canonical npm registry");
+    }
+  } catch {
+    fail(failures, "G11", "web/package-lock.json", "Web package lock must be valid JSON");
+  }
+  const desktop = job(build, "desktop-release");
+  const releaseDesktop = job(release, "host-desktop-release");
+  if (!/ubuntu-latest/.test(desktop) || !/macos-latest/.test(desktop) || !/windows-latest/.test(desktop)
+      || !/cargo build --locked --release --manifest-path host-tools\/Cargo\.toml/.test(desktop)
+      || !/cargo build --locked --release --manifest-path cmd-ng\/Cargo\.toml/.test(desktop)
+      || !/wasm-bindgen-cli --version 0\.2\.121 --locked/.test(desktop)
+      || !/rustup target add wasm32-unknown-unknown/.test(desktop)
+      || !/Verify bundled installer/.test(desktop) || !/Package desktop archive/.test(desktop)
+      || !/wasm-bindgen-cli --version 0\.2\.121 --locked/.test(releaseDesktop)
+      || !/rustup target add wasm32-unknown-unknown/.test(releaseDesktop)) {
+    fail(failures, "G09", ".github/workflows/build.yml", "complete validation must preflight every formal desktop archive platform");
+  }
+  if (!/release_notes="docs\/releases\/\$\{RELEASE_TAG%%-\*\}\.md"/.test(release)
+      || !/release_flags=\(\)/.test(release)
+      || !/\[\[ "\$RELEASE_TAG" == \*-\* \]\]/.test(release)
+      || !/release_flags\+=\(--prerelease --latest=false\)/.test(release)
+      || (release.match(/"\$\{release_flags\[@\]\}"/g) ?? []).length !== 2) {
+    fail(failures, "G10", ".github/workflows/release.yml", "formal releases must use curated notes and mark prerelease tags as non-latest prereleases");
   }
   return { ok: failures.length === 0, failures };
 }

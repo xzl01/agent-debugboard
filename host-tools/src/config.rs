@@ -13,7 +13,7 @@ use crate::serial_log::{default_log_root, SerialLogConfig};
 
 pub const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 pub const DEFAULT_PORT: u16 = 8787;
-pub const DEFAULT_BOARD_URL: &str = "http://172.29.203.1:8080";
+pub const DEFAULT_BOARD_URL: &str = "http://172.29.203.1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SerialLogMode {
@@ -213,6 +213,12 @@ pub fn is_allowed_origin(origin: Option<&str>, trusted: &HashSet<String>) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_board_url_uses_the_firmware_http_service() {
+        let options = ServeOptions::default();
+        assert_eq!(options.board_url.as_str(), "http://172.29.203.1/");
+    }
 
     #[test]
     fn only_loopback_http_origins_are_implicitly_trusted() {

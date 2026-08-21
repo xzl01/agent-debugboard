@@ -19,8 +19,32 @@
 
 #define LINKR_DEBUGGER_CAPTURE_ARENA_CANARY_PATTERN 0xa5U
 
+#ifdef LINKR_DEBUGGER_CAPTURE_ARENA_HOST_TEST
+/*
+ * Mach-O limits section alignment to 16 KiB, so a 32 KiB-aligned global is
+ * silently under-aligned by the macOS linker. Keep the firmware allocation
+ * exact, but over-allocate and align the host-model view explicitly.
+ */
+static uint8_t linkr_debugger_capture_arena_host_storage[
+	LINKR_DEBUGGER_CAPTURE_ARENA_BYTES + LINKR_DEBUGGER_CAPTURE_ARENA_ALIGN - 1U];
+
+static uint8_t *linkr_debugger_capture_arena_storage(void)
+{
+	uintptr_t start = (uintptr_t)linkr_debugger_capture_arena_host_storage;
+	uintptr_t aligned = (start + LINKR_DEBUGGER_CAPTURE_ARENA_ALIGN - 1U) &
+		~(uintptr_t)(LINKR_DEBUGGER_CAPTURE_ARENA_ALIGN - 1U);
+
+	return (uint8_t *)aligned;
+}
+#else
 static uint8_t linkr_debugger_capture_arena[LINKR_DEBUGGER_CAPTURE_ARENA_BYTES]
 	__aligned(LINKR_DEBUGGER_CAPTURE_ARENA_ALIGN);
+
+static uint8_t *linkr_debugger_capture_arena_storage(void)
+{
+	return linkr_debugger_capture_arena;
+}
+#endif
 
 static enum linkr_debugger_capture_arena_owner linkr_debugger_capture_arena_current_owner =
 	LINKR_DEBUGGER_CAPTURE_ARENA_OWNER_NONE;
@@ -52,7 +76,7 @@ static void linkr_debugger_capture_arena_unlock(unsigned int key)
 
 static void linkr_debugger_capture_arena_fill_canary(size_t offset)
 {
-	memset(&linkr_debugger_capture_arena[offset],
+	memset(&linkr_debugger_capture_arena_storage()[offset],
 		LINKR_DEBUGGER_CAPTURE_ARENA_CANARY_PATTERN,
 		LINKR_DEBUGGER_CAPTURE_ARENA_CANARY_BYTES);
 }
@@ -60,7 +84,7 @@ static void linkr_debugger_capture_arena_fill_canary(size_t offset)
 static bool linkr_debugger_capture_arena_check_canary(size_t offset)
 {
 	for (size_t i = 0U; i < LINKR_DEBUGGER_CAPTURE_ARENA_CANARY_BYTES; i++) {
-		if (linkr_debugger_capture_arena[offset + i] !=
+		if (linkr_debugger_capture_arena_storage()[offset + i] !=
 		    LINKR_DEBUGGER_CAPTURE_ARENA_CANARY_PATTERN) {
 			return false;
 		}
@@ -210,22 +234,22 @@ static void linkr_debugger_capture_arena_finish_release(
 
 uint8_t *linkr_debugger_capture_arena_base(void)
 {
-	return linkr_debugger_capture_arena;
+	return linkr_debugger_capture_arena_storage();
 }
 
 size_t linkr_debugger_capture_arena_size(void)
 {
-	return sizeof(linkr_debugger_capture_arena);
+	return LINKR_DEBUGGER_CAPTURE_ARENA_BYTES;
 }
 
 void *linkr_debugger_capture_arena_region(size_t offset, size_t size)
 {
-	if (offset > sizeof(linkr_debugger_capture_arena) ||
-	    size > sizeof(linkr_debugger_capture_arena) - offset) {
+	if (offset > LINKR_DEBUGGER_CAPTURE_ARENA_BYTES ||
+	    size > LINKR_DEBUGGER_CAPTURE_ARENA_BYTES - offset) {
 		return NULL;
 	}
 
-	return &linkr_debugger_capture_arena[offset];
+	return &linkr_debugger_capture_arena_storage()[offset];
 }
 
 uint32_t *linkr_debugger_capture_arena_la_packed_ring(void)

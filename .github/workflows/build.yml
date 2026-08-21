@@ -168,6 +168,108 @@ jobs:
           host-tools/target/debug/linkr-host mcp --help
           host-tools/target/debug/linkr-tray --help
 
+  desktop-release:
+    name: Preflight unified desktop release archive
+    needs: version-gate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: radxa-linkr-desktop_linux_amd64.tar.gz
+          - os: macos-latest
+            asset_name: radxa-linkr-desktop_darwin_arm64.tar.gz
+          - os: windows-latest
+            asset_name: radxa-linkr-desktop_windows_amd64.zip
+
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
+
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev libgtk-3-dev libayatana-appindicator3-dev
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            host-tools
+            cmd-ng
+
+      - name: Build Web, Host, tray and CLI
+        shell: bash
+        run: |
+          suffix=""
+          if [ "${{ runner.os }}" = "Windows" ]; then suffix=".exe"; fi
+          npm --prefix web ci
+          npm --prefix web run build
+          cargo build --locked --release --manifest-path host-tools/Cargo.toml
+          cargo build --locked --release --manifest-path cmd-ng/Cargo.toml
+          "host-tools/target/release/linkr-host$suffix" --version
+          "host-tools/target/release/linkr-tray$suffix" --version
+          "cmd-ng/target/release/radxa-linkr-debuggerctl$suffix" --version
+
+      - name: Assemble desktop bundle
+        shell: bash
+        run: |
+          suffix=""
+          if [ "${{ runner.os }}" = "Windows" ]; then suffix=".exe"; fi
+          root="desktop-release/radxa-linkr-desktop"
+          mkdir -p "$root/bin" "$root/share/radxa-linkr-debugger/web"
+          cp "host-tools/target/release/linkr-host$suffix" "$root/bin/"
+          cp "host-tools/target/release/linkr-tray$suffix" "$root/bin/"
+          cp "cmd-ng/target/release/radxa-linkr-debuggerctl$suffix" "$root/bin/"
+          cp -R web/dist/. "$root/share/radxa-linkr-debugger/web/"
+          cp scripts/install-host.sh "$root/install.sh"
+          cp scripts/install-host.ps1 "$root/install.ps1"
+
+      - name: Verify bundled installer
+        if: runner.os != 'Windows'
+        run: |
+          sh -n desktop-release/radxa-linkr-desktop/install.sh
+          desktop-release/radxa-linkr-desktop/install.sh --dry-run --no-start --no-autostart
+
+      - name: Verify bundled installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = '.\desktop-release\radxa-linkr-desktop\install.ps1'
+          $null = [scriptblock]::Create((Get-Content $installer -Raw))
+          & $installer -DryRun -NoStart -NoAutostart
+
+      - name: Package desktop archive
+        if: runner.os != 'Windows'
+        run: tar -C desktop-release -czf desktop-release/${{ matrix.asset_name }} radxa-linkr-desktop
+
+      - name: Package desktop archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path desktop-release\radxa-linkr-desktop -DestinationPath desktop-release\${{ matrix.asset_name }}
+
+      - name: Verify desktop archive exists
+        shell: bash
+        run: test -s "desktop-release/${{ matrix.asset_name }}"
+
   scripts:
     name: Check install and helper scripts
     needs: version-gate
@@ -452,6 +554,7 @@ jobs:
       - nix
       - web
       - host-tools
+      - desktop-release
       - scripts
       - windows-installer
       - firmware
