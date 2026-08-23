@@ -137,22 +137,159 @@ curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"input"}'
 curl -X POST http://172.29.203.1/api/v1/bootloader
 ```
 
-## 目标设备恢复模式
+## 任务（固件目录与保存的请求序列）
 
-### `GET /api/v1/target-recovery`
+固件 API 只负责把通用任务 blob 存到 flash，不执行、重放或自动植入任务。
+固件同时在 `GET /api/v1/tasks/catalog` 上提供不可变的内置任务目录；
+CLI 与 Web UI 严格消费该目录，并通过已有 power、GPIO、switch API 派发所
+选任务。host 自身不持有任何恢复配方。当前目录提供六个 MASKROM/EDL 条目，
+stored entry 走独立路径，永远不会出现在 `GET /api/v1/tasks/catalog` 中。
 
-返回支持的恢复模式、电源轨、固定时序以及安全释放方向。
+### `GET /api/v1/tasks/catalog`
 
-### `POST /api/v1/target-recovery`
-
-在断电重启目标电源轨时使 `CON_MAS` 保持有效，然后将引脚释放为输入。Qualcomm EDL 为高电平有效，Rockchip MASKROM 为低电平有效。
+返回固件拥有的不可变内置目录。host 校验响应 envelope（`schema`、`ok`、
+`command: "task"`、`action: "catalog"`、`version: 1`）并拒绝未知字段。
+每个目录条目声明 id、显示名、要派发到白名单路径
+`/api/v1/power`、`/api/v1/gpio`、`/api/v1/switch` 的 `PUT` 记录列表，
+以及一个强制的 cleanup 序列。host 使用与 stored task 相同的通用任务
+runner 派发目录条目。
 
 ```sh
-curl -X POST http://172.29.203.1/api/v1/target-recovery \
-  -d '{"mode":"rockchip-maskrom","rail":"5v_out"}'
+curl -fsS http://172.29.203.1/api/v1/tasks/catalog
 ```
 
-有效模式：`qualcomm-edl`、`rockchip-maskrom`。有效电源轨：`5v_out`、`12v_out`、`20v_out`。固件会保持断电 1000 ms，上电前预置恢复信号 20 ms，上电后继续保持 500 ms，即使时序失败也会将 `CON_MAS` 释放为高阻输入。
+### 冻结的边界
+
+| 边界 | 值 |
+|---|---|
+| 每个 blob 的任务数 | 4 |
+| 每个任务的请求数 | 32 |
+| blob 字节数 | 4096 |
+| 任务 id 字节数 | 31 |
+| 任务名称字节数 | 63 |
+| 请求行字节数 | 256 |
+| 路径字节数 | 96 |
+| body 字节数 | 192 |
+| `wait_ms` 范围 | 0 到 60000 |
+
+### 存储布局
+
+任务保存在 `Settings+NVS` 的 `linkr/task/tasks` 键下，blob 始终以
+字面量 `# linkr-task.v1` 开头。每个任务使用 `# task <id>` 标记，后接一条
+或多条 NDJSON 请求记录。典型记录：
+
+```json
+{"method":"PUT","path":"/api/v1/power/12v_out","body":"{\"state\":\"off\"}","wait_ms":1000}
+```
+
+同一个任务的第二条记录会写在另一行 NDJSON：
+
+```json
+{"method":"PUT","path":"/api/v1/gpio/CON_MAS","body":"{\"direction\":\"input\"}","wait_ms":0}
+```
+
+完整文件形如：
+
+```text
+# linkr-task.v1
+# task power-cycle
+{"method":"PUT","path":"/api/v1/gpio/GP13","body":"{\"direction\":\"input\"}","wait_ms":0}
+{"method":"PUT","path":"/api/v1/power/12v_out","body":"{\"state\":\"off\"}","wait_ms":1000}
+```
+
+每条记录必须使用 `method:"PUT"`、JSON 字符串形式的 `body`，且 `path`
+只能位于 `/api/v1/power/`、`/api/v1/gpio/` 或 `/api/v1/switch/` 之下。
+`wait_ms` 缺省值为 0，必须为 0 到 60000 的整数。blob、版本标记、路径白
+名单以及上表中的边界都在解析时校验；任何违规记录都会返回
+`invalid_blob`。小于 `0x20` 且不是 tab/LF/CR 的字节在写入前会被拒绝，
+保证 GET 返回的 JSON 始终能够逐字节还原已存 blob。
+
+旧开发期数据（任何写入先前任务存储标记或 settings key 的内容）由新版
+任务存储契约定向失效：新版本固定为 `# linkr-task.v1` 标记与
+`linkr/task/tasks` 键。既没有迁移路径，也不提供读取别名；仍持有旧数据
+的板子在升级后只会显示空任务契约。
+
+### `GET /api/v1/tasks`
+
+返回任务状态和精确存储的 blob。空板返回 `tasks: []` 和 `blob: ""`，
+HTTP 状态仍是 200，响应与其他端点使用相同信封：
+
+```json
+{
+  "schema": "radxa-linkr-debugger.v1",
+  "ok": true,
+  "command": "task",
+  "action": "list",
+  "backend": { "available": true },
+  "task_count": 1,
+  "tasks": [
+    { "id": "power-cycle", "name": "power-cycle", "request_count": 3 }
+  ],
+  "blob": "# linkr-task.v1\n# task power-cycle\n{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/CON_MAS\",\"body\":\"{\\\"direction\\\":\\\"input\\\"}\",\"wait_ms\":0}\n{\"method\":\"PUT\",\"path\":\"/api/v1/power/12v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\",\"wait_ms\":1000}\n{\"method\":\"PUT\",\"path\":\"/api/v1/power/12v_out\",\"body\":\"{\\\"state\\\":\\\"on\\\"}\",\"wait_ms\":0}\n"
+}
+```
+
+固定字段：`schema`、`ok`、`command:"task"`、`action:"list"`、`backend`
+（`{available}`）、`task_count`（数字）、`tasks[]`（`id`、`name`、
+`request_count`）、`blob`（字符串，逐字节存储内容）。已存任务未设置
+`name` 时，`name` 默认等于 `id`。响应容量按照 `2 * 4096` 加上有限
+envelope 与摘要开销计算；超出容量时返回 `response_too_large`，**不会**
+截断。GET 处理器不获取采集或 flash 仲裁器。
+
+### `PUT /api/v1/tasks`
+
+替换已存储的 blob。请求体为完整的 `linkr-task.v1` 文本；同时接受
+JSON 字符串字面量（`"..."`），服务端会先反转义标准转义再校验。该端点
+需要获取共享 mutation helper，若采集或 OTA 正在运行，会返回 `busy`
+（HTTP 409），不会写入。blob 超过 4096 字节返回 `body_too_large`
+（HTTP 413）。成功响应：
+
+```json
+{
+  "schema": "radxa-linkr-debugger.v1",
+  "ok": true,
+  "command": "task",
+  "action": "store",
+  "stored": true
+}
+```
+
+### `DELETE /api/v1/tasks`
+
+清空已存储的 blob，不影响当前硬件状态。先获取共享 mutation helper，
+采集或 OTA 进行中时返回 `busy`（HTTP 409）。成功响应：
+
+```json
+{
+  "schema": "radxa-linkr-debugger.v1",
+  "ok": true,
+  "command": "task",
+  "action": "clear",
+  "cleared": true
+}
+```
+
+### 方法处理
+
+`/api/v1/tasks` 仅接受 GET、PUT、DELETE；其他动词返回 `method_not_allowed`
+（HTTP 405）。端点本身不会重放记录，固件契约就是“只存不执行”；执行由
+客户端负责。
+
+### 客户端执行与边界
+
+CLI 与 Web UI 通过 `GET /api/v1/tasks` 取回 blob，按 id 选中一个任务，
+再按顺序把每条记录派发到普通 HTTP API。每条记录请求成功后，客户端再根据
+记录中的 `wait_ms` 在本地睡眠；`wait_ms` 只是任务元数据，**不会**进入
+传给 power、GPIO 或 switch 端点的请求体。首次失败即停止执行。失败之后的
+记录绝不再派发，发送给板子的 wire `body` 也不会包含 `wait_ms`。
+
+CLI 与 Web 页面在各自的输出层上报失败信息，**不会**出现在共享 HTTP
+信封里。CLI JSON 失败字段使用 `error.record_index`（1-based）和
+`error.path`（`error` 对象下 snake_case），并在 `task` action 上以非零
+退出码结束。CLI 非 JSON 失败则把
+`task record <n> path "<path>" failed: <message>` 写到 stderr。Web 页面
+返回内部结果，包含 `failedIndex`（1-based）和 `failedPath`
+（camelCase）以及解析/网络错误字符串。
 
 ## Watchdog
 
@@ -272,7 +409,7 @@ Arm 捕获。
 {"type": "command", "command": "power_set", "id": "1", "output": "12v_out", "state": "on"}
 ```
 
-可用命令：`power_set`、`switch_route`、`gpio_set`、`target_recovery`、`bootloader`、`capture_arm`、`capture_trigger`、`capture_stop`、`capture_cancel`。
+可用命令：`power_set`、`switch_route`、`gpio_set`、`bootloader`、`capture_arm`、`capture_trigger`、`capture_stop`、`capture_cancel`。保存的任务序列仅通过 HTTP 管理。
 
 功耗捕获必须显式指定上位机流式协议模式：
 
@@ -283,27 +420,36 @@ Arm 捕获。
 布防前应将 `mode` 与状态响应中的 `power_capture_protocol` 对比，避免固件与 Web
 版本不一致时无限等待。
 
-目标设备恢复命令：
+GPIO 命令（包括直接控制恢复线）：
 
 ```json
-{"type":"command","command":"target_recovery","id":"2","mode":"qualcomm-edl","output":"5v_out"}
+{"type":"command","command":"gpio_set","id":"2","gpio":"CON_MAS","direction":"output","value":1}
 ```
+
+对 ADC3 所有的 `GP29` 等仅输入 GPIO 发起输出请求时，`/api/v1/gpio/<id>`
+返回 HTTP 403，`gpio_set` 返回错误帧。两种传输都使用 `error.code`
+`input_only`，且 `error.message` 包含 `input-only`。其他 GPIO 配置失败使用
+`configure_failed`。
+
+WebSocket 不提供独立的 MASKROM/EDL 命令，也不提供通用 task-run 命令。
+built-in 来自固件目录 `GET /api/v1/tasks/catalog`，客户端通过通用任务
+runner 组合已有的普通 `gpio_set` 与 `power_set` 命令执行。
 
 ### 服务端 → 客户端消息
 
 **状态快照**（状态变化时推送）：
 ```json
-{"type": "snapshot", "topic": "status", "power_capture_protocol": "host-stream-v1", "sequence": 1, "power_outputs": [...], "switches": {...}, "watchdog": {...}, "gpios": [...], "board_monitoring": {...}}
+{"type": "snapshot", "topic": "status", "power_capture_protocol": "host-stream-v1", "sequence": 1, "power_outputs": [], "switches": {}, "watchdog": {}, "gpios": [], "board_monitoring": {}}
 ```
 
 **ADC 遥测**（按订阅速率推送）：
 ```json
-{"type": "telemetry", "topic": "adc", "sequence": 1, "uptime_us": 12345, "readings": [...]}
+{"type": "telemetry", "topic": "adc", "sequence": 1, "uptime_us": 12345, "readings": []}
 ```
 
 **批处理遥测**（`batch_size > 1` 时）：
 ```json
-{"type": "telemetry-batch", "topic": "adc", "channels": [...], "samples": [...]}
+{"type": "telemetry-batch", "topic": "adc", "channels": [], "samples": []}
 ```
 
 每个 WebSocket 客户端由 256 点遥测环形缓冲支持。批处理消息包含

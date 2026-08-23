@@ -46,6 +46,12 @@ The main dashboard provides cards for:
   connected to J12's upper port (`target`).
 - **GPIO** — read/write safe GPIOs (`GP7`-`GP20`, `GP29`).
 
+The **Saved configuration** card starts collapsed. Use the chevron button in its
+header to show or hide the saved rows and actions while the title, description,
+and current status remain visible. Collapsing the card does not save, clear, or
+refresh anything, and re-expanding it preserves the current selection and
+in-progress feedback.
+
 The Power & current card includes a triggered power analyzer. It supports
 manual, current-threshold, GPIO-edge, and power-on triggers, keeps four captures
 for overlay comparison, and exports CSV or NDJSON. Captures use firmware device
@@ -68,14 +74,81 @@ The Terminal workspace lives alongside the primary dashboard and contains:
   directly. Enter sends CRLF by default; CR and LF modes are available from the
   toolbar.
 
-## Advanced & Recovery
+## Workspace Tabs
 
-- **OTA card** — delivers RP2350 firmware updates over the same USB NCM HTTP
-  API. See [ota.md](ota.md) for the full OTA workflow.
-- **Startup power analysis** — see the dedicated section below.
-- **Automated testing** — build command sequences, select consecutive commands
-  into a visible loop frame, set 1-1000 rounds, and follow each loop iteration
-  independently in the run view and exported report.
+The right workspace offers parallel tabs for **Web Terminal**, **Power
+Analysis**, **Logic Analyzer**, **Automation**, and **Configuration**. GPIO
+controls live in **Hardware controls → I/O**, which keeps one authoritative
+hardware control surface. The pin disc color itself
+reflects every latest live value: black is LOW and red is HIGH, including
+while a pin is an input. A dashed outer ring marks an input and a solid ring
+marks an output; the smaller level disc stays inside that direction boundary.
+Pins are driven by direct gestures with no selection step: a short tap
+requests output LOW once the 220 ms double-tap window expires, a second tap
+inside that window requests input acquisition instead, and holding a pin for
+600 ms requests output HIGH while a danger-colored progress sweep uses that same
+dashed/solid direction ring. Moving more than 8 px, losing pointer capture, a `pointercancel`,
+or pressing Escape cancels a gesture without writing anything. Keyboard
+operation is immediate on a focused pin: Enter/Space/0 drive LOW, 1 drives
+HIGH, and I requests input; key auto-repeat is ignored. The card allows one
+in-flight request at a time and dims the pending pin. Mounting or refreshing
+the pinout never writes GPIO state, the UI is non-optimistic, and the latest
+firmware snapshot remains the displayed authority while a request is in
+flight. The
+MASKROM/EDL recovery line `CON_MAS` (`GP7`) is a regular allowlisted output, so
+it can be driven through these gestures. `GP29` stays input-only while it is
+owned by the `adc3` voltage monitor; unsupported output attempts fail at the
+firmware layer and the card displays that error.
+
+The Hardware controls drawer remembers its last **Power** or **I/O** section in
+browser storage. Clicking the backdrop outside the drawer closes it; clicks
+inside the drawer do not.
+
+## Built-In And Saved Tasks
+
+Inside the **Automation** workspace, MASKROM and EDL appear as six ordinary
+firmware-owned built-in task rows, fetched from `GET /api/v1/tasks/catalog`
+and covering every combination of mode and `5v_out`, `12v_out`, or `20v_out`.
+The Web UI keeps no recovery recipes of its own: rails, GPIO levels, and wait
+timings all come from the validated firmware catalog. Built-ins use the same
+generic task runner as stored tasks and dispatch only ordinary power and GPIO
+requests. They are not stored in firmware flash and do not consume any of the
+four stored-task slots. The **Task** card lets you:
+
+- List the catalog built-ins together with tasks returned by `GET /api/v1/tasks`.
+  The two fetches are independent: if the catalog is unavailable or fails
+  validation, built-in rows disappear behind a visible error while stored
+  tasks stay usable.
+- Run a built-in directly without reading or mutating `/api/v1/tasks`.
+- Save the current editor workflow after it is expanded and verified to
+  contain only firmware-executable primitive steps.
+- Run a stored task: the page downloads the current `linkr-task.v1` blob,
+  selects the task by id, and dispatches each record through the ordinary
+  power, GPIO, and switch endpoints in order. `wait_ms` is applied
+  client-side after every successful request; the first failure stops the
+  run and surfaces the failed record. The wire `body` sent to the board
+  never carries `wait_ms`.
+- Clear all stored tasks. Live hardware is unchanged.
+
+If a stored task uses a reserved built-in ID, the matching built-in row marks
+the stored entry as shadowed and running that ID selects the built-in. Clearing
+stored tasks removes the collision but leaves all catalog built-ins visible.
+
+The firmware does not auto-run, replay, or pre-stage saved tasks at boot.
+A stored task that still lives in flash after a reboot is inert until the
+**Task card** runs it explicitly. Old development-stage task data is
+intentionally invalidated by the new marker `# linkr-task.v1` and the new
+key `linkr/task/tasks`; there is no migration or read alias for it.
+
+## Firmware Tools And Power Analysis
+
+- **Firmware Tools** in the dashboard sidebar contains the OTA and BOOTSEL
+  controls. See [ota.md](ota.md) for the full OTA workflow.
+- **Power Analysis** is a workspace tab with ordinary captures and startup
+  analysis.
+- **Automation** is a workspace tab with the test editor and the
+  flash-backed Task card that lists, stores, runs, and clears saved
+  request sequences.
 
 ## Connecting Target Serial
 
@@ -163,7 +236,7 @@ permissions are recreated when USB reconnects.
 
 ## Startup Power Analysis
 
-The startup workflow lives under **Advanced & recovery**. It requires the
+The startup workflow lives in the **Power Analysis** workspace tab. It requires the
 selected UART0 or UART1 connection and an idle power-capture session. After one
 explicit confirmation it:
 

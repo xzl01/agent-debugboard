@@ -141,19 +141,122 @@ radxa-linkr-debuggerctl test run startup.ndjson --output startup-report.json
 {"id":"boot-loop","type":"loop","params":{"count":3,"steps":[{"id":"cycle-off","type":"power_off","params":{"rail":"5v_out"}},{"id":"settle","type":"delay","params":{"ms":1000}},{"id":"cycle-on","type":"power_on","params":{"rail":"5v_out"}}]}}
 ```
 
-## 目标设备恢复模式
+## 任务（固件目录与保存的请求序列）
 
-请使用专用恢复命令，不要手动组合 `CON_MAS` GPIO 操作。固件会执行完整电源循环，时序完成或失败后都会将 `CON_MAS` 释放为输入。
+内置自动化任务全部来自固件拥有的不可变目录 `GET /api/v1/tasks/catalog`。
+CLI 自身不保存任何恢复配方：每条 rail、GPIO、电平、等待与 cleanup 步骤都
+由固件目录提供。当前目录固定包含六个 MASKROM/EDL 配方，分别覆盖模式与
+`5v_out`、`12v_out`、`20v_out` 的组合：
 
-```sh
-# Qualcomm EDL 使用高电平有效的恢复信号
-radxa-linkr-debuggerctl recovery enter qualcomm-edl 5v_out --confirm
-
-# Rockchip MASKROM 使用低电平有效的恢复信号
-radxa-linkr-debuggerctl recovery enter rockchip-maskrom 5v_out --confirm
+```text
+builtin/maskrom/5v_out     builtin/edl/5v_out
+builtin/maskrom/12v_out    builtin/edl/12v_out
+builtin/maskrom/20v_out    builtin/edl/20v_out
 ```
 
-最后一个参数只能是用户可见的目标电源轨：`5v_out`、`12v_out` 或 `20v_out`。因为目标设备会断电且未保存的状态会丢失，必须显式传入 `--confirm`。该功能与 `bootloader` 不同，后者进入调试板 MCU 的 RP2350 BOOTSEL。
+built-in 不占用固件任务槽，也不会通过 `/api/v1/tasks` 读取、写入或删除；
+它们由通用任务 runner 派发，每条记录就是普通的 `gpio` 或 `power` PUT。
+
+同一个合并列表还包括显式保存在调试板 flash `linkr/task/tasks` 键下的
+任务 blob。固件只校验和保存 blob，不负责执行；CLI 通过
+`GET /api/v1/tasks` 取回已存任务，在本地解析并按顺序派发。`wait_ms` 只在
+成功请求后由客户端 sleep，不会进入控制端点。built-in 与 stored task 都
+在首次失败时停止，失败或部分取消的 built-in 随后执行目录声明的 cleanup
+序列；CLI 不推断也不硬编码任何 cleanup。stored task 不推断 cleanup。
+built-in 成功结束时所选电源轨保持开启。该流程与进入调试板 RP2350
+BOOTSEL 的 `bootloader` 无关。
+
+固件目录接口不可用时，`task list` 仍然展示 stored task，同时返回结构化的
+`catalog_error` 与 `catalog_available:false`；任何 `task run builtin/...`
+调用都会返回 `catalog_unavailable`，不会回退到被 shadow 的 stored task。
+stored task 在目录不可用期间仍可正常工作。
+
+```sh
+# 列出合并后的固件目录（built-in 与 stored）
+radxa-linkr-debuggerctl task list
+
+# 直接运行内置任务，不写入固件 flash
+radxa-linkr-debuggerctl task run builtin/maskrom/12v_out --confirm
+
+# 把本地文件里的 linkr-task.v1 blob 写入板子
+radxa-linkr-debuggerctl task store my-task.ndjson my-task-id
+
+# 执行已存储任务：CLI 取回 blob 并按顺序派发记录
+radxa-linkr-debuggerctl task run my-task-id --confirm
+
+# 清除全部已存储任务
+radxa-linkr-debuggerctl task clear
+```
+
+保存记录规则——每条记录都是对 `/api/v1/power/`、`/api/v1/gpio/` 或
+`/api/v1/switch/` 白名单下某路径的单条 `PUT`，附 JSON 字符串形式的
+`body` 以及可选的整数 `wait_ms`（范围 `0..60000`）。blob 始终以
+`# linkr-task.v1` 开头，每个任务用 `# task <id>` 标记，blob 上限为
+4096 字节，最多 4 个任务、每个任务最多 32 条记录。任何越界、不在白名单
+内的路径、JSON body 非法或方法不是 `PUT` 的记录，都会在写入前被
+`invalid_blob` 拒绝，从而保证下一次 `GET /api/v1/tasks` 返回的内容
+与存储内容逐字节相等。
+
+执行行为——`task run <task-id> --confirm` 采用 fail-closed 契约：缺少
+`--confirm` 时在任何板卡请求前返回 `confirmation_required`。确认后首先
+通过 `GET /api/v1/tasks/catalog` 取回固件目录，并先于任何 stored task
+解析 built-in；若目录不可用且目标 id 以 `builtin/` 开头，CLI 直接返回
+`catalog_unavailable`，不会回退到被 shadow 的 stored task。命中 built-in
+时直接执行且不访问 `/api/v1/tasks`，否则通过 `GET /api/v1/tasks` 下载
+当前 blob，按 id 选中 stored task，再通过普通 HTTP API 按顺序派发每条
+`PUT` 记录。记录之间，客户端**仅在响应成功之后**按记录的 `wait_ms` sleep。
+失败（例如引脚未知或返回 4xx）会立即停止：失败之后的记录**不会**再派发，
+CLI 以非零状态退出。JSON 失败字段使用 `error.record_index`（1-based）
+和 `error.path`（`error` 对象下 snake_case）；非 JSON 失败把
+`task record <n> path "<path>" failed: <message>` 写到 stderr。每条
+请求的 wire `body` 都是存储记录的 `body` 字段原文；`wait_ms` 永远不会到达
+固件。若已存任务使用固件目录声明的 built-in ID，`task list` 会把它标记
+为被遮蔽，`task run` 选择不可变的 built-in；`task clear` 仍会删除该
+stored entry，但不会影响目录条目。JSON 列表的 `task_count` 是合并后的
+可见数量，`stored_task_count` 单独报告固件条目数，每行带 `source`，
+并附 `catalog_available` 与 `catalog_error` 报告目录获取结果。
+Ctrl+C 会在请求之间或 `wait_ms` 期间协作取消。built-in cleanup 来自目录
+声明，作为主失败/取消之外的独立结果报告，cleanup 失败不会覆盖主错误；
+首条请求前取消不执行 cleanup。
+
+开机行为——固件**不再**存储或执行任何开机任务。已存任务保持静默，
+直到 CLI 或 Web UI 显式运行它们。旧开发期数据（旧任务存储标记或
+settings key 下写入的任何内容）由新版契约定向失效：新版本固定为
+`# linkr-task.v1` 标记与 `linkr/task/tasks` 键。没有迁移、没有读取
+别名、也没有针对陈旧条目的复位路径；仍持有旧数据的板子只会显示空
+任务契约。
+
+```text
+GET    /api/v1/tasks
+PUT    /api/v1/tasks
+DELETE /api/v1/tasks
+```
+
+固件目录中的 built-in 属于固件镜像，因此执行 `task clear` 后仍然存在。
+显式保存的自定义任务通过 `linkr/task/tasks` 键跨普通重启与 combined-UF2
+恢复保留，直到 `task clear` 删除；清除 stored task 不改变当前硬件状态。
+
+### CDC 串口 fallback
+
+当 HTTP 或 Web UI 不可用，但 USB CDC ACM shell 仍能工作时，固件在
+串口控制台暴露同一套任务接口。shell 命令只有 `task show` 和
+`task clear`；CDC 路径上不存在 boot、default 或 replay 命令。
+
+```console
+linkr-debugger:~$ task show
+task show available=true task_count=1
+linkr-debugger:~$ task clear
+task clear ok
+```
+
+`task show` 输出一行，包含 `available`（固件 Settings+NVS 后端是否
+可达）和 `task_count`。`task clear` 先获取 capture 仲裁器，再获取
+flash 仲裁器；如有任一处于忙状态（live capture 或 OTA 正在进行），
+它返回 `task clear error=busy` 并以 `-EBUSY` 退出，**不会**删除
+已存 blob。清除成功时输出 `task clear ok` 并以 0 退出。后端错误
+（忙路径之后）则输出 `task clear error=storage_error` 并以 `-EIO`
+退出。CDC shell 使用与 HTTP 层相同的固件枚举 ID，**不**维护主机
+侧目录。这是 HTTP 或 WS 卡死时的 fallback，不改变 HTTP/CLI 表面。
 
 ## Watchdog
 

@@ -51,8 +51,8 @@ Always unmount/eject before switching the route back.
 
 ## Capture startup current waveform
 
-Use the Web UI's startup power analysis (under **Advanced & recovery**), or do
-it manually via the CLI:
+Use the Web UI's startup power analysis in the **Power Analysis** workspace, or
+do it manually via the CLI:
 
 ```sh
 # 1. Start recording ADC data

@@ -135,24 +135,141 @@ commands and placing them in a loop frame.
 {"id":"boot-loop","type":"loop","params":{"count":3,"steps":[{"id":"cycle-off","type":"power_off","params":{"rail":"5v_out"}},{"id":"settle","type":"delay","params":{"ms":1000}},{"id":"cycle-on","type":"power_on","params":{"rail":"5v_out"}}]}}
 ```
 
-## Target Recovery Modes
+## Tasks (firmware catalog and saved request sequences)
 
-Use the dedicated recovery command instead of manually driving `CON_MAS`. The
-firmware performs a complete power cycle and always releases `CON_MAS` back to
-input when the sequence completes or fails.
+Built-in automation tasks come from the firmware-owned immutable catalog at
+`GET /api/v1/tasks/catalog`. The CLI keeps no recovery recipes of its own:
+every rail, GPIO, polarity, wait, and cleanup step arrives through the
+catalog. The current catalog always exposes the six MASKROM/EDL recipes,
+one per combination of mode and the `5v_out`, `12v_out`, and `20v_out` rails:
 
-```sh
-# Qualcomm EDL samples an active-high recovery signal
-radxa-linkr-debuggerctl recovery enter qualcomm-edl 5v_out --confirm
-
-# Rockchip MASKROM samples an active-low recovery signal
-radxa-linkr-debuggerctl recovery enter rockchip-maskrom 5v_out --confirm
+```text
+builtin/maskrom/5v_out     builtin/edl/5v_out
+builtin/maskrom/12v_out    builtin/edl/12v_out
+builtin/maskrom/20v_out    builtin/edl/20v_out
 ```
 
-The final argument must be a user-facing target rail: `5v_out`, `12v_out`, or
-`20v_out`. `--confirm` is mandatory because the target device loses power and
-unsaved state. This is separate from `bootloader`, which enters the debugger
-MCU's RP2350 BOOTSEL mode.
+Built-ins do not consume firmware task slots and are never read from, written
+to, or deleted through `/api/v1/tasks`; they are dispatched through the
+generic task runner, so each record is an ordinary `gpio` or `power` PUT.
+
+The same merged listing includes task blobs explicitly persisted in debugger
+flash under `linkr/task/tasks`. The firmware only validates and stores those
+blobs; the CLI fetches a selected stored task through `GET /api/v1/tasks`,
+parses it locally, and dispatches each record through normal HTTP. `wait_ms`
+is applied client-side after a successful request and never reaches a control
+endpoint. The first failure stops either built-in or stored execution. A
+failed or partially cancelled built-in then runs the cleanup sequence
+declared by the catalog; the CLI never infers or hardcodes its own cleanup.
+Stored tasks never infer cleanup. A successful built-in finishes with the
+selected rail on. This task flow is separate from `bootloader`, which enters
+the debugger MCU's RP2350 BOOTSEL mode.
+
+If the firmware catalog endpoint fails, `task list` still shows the stored
+tasks together with a structured `catalog_error` and `catalog_available:false`,
+and any `task run builtin/...` invocation returns `catalog_unavailable`
+without falling back to a shadowed stored task. Stored tasks continue to work
+while the catalog is unavailable.
+
+```sh
+# List the merged firmware catalog (built-in and stored)
+radxa-linkr-debuggerctl task list
+
+# Run a built-in task without storing it in firmware flash
+radxa-linkr-debuggerctl task run builtin/maskrom/12v_out --confirm
+
+# Store a linkr-task.v1 blob read from a file
+radxa-linkr-debuggerctl task store my-task.ndjson my-task-id
+
+# Run a stored task; the CLI fetches the blob and dispatches records
+radxa-linkr-debuggerctl task run my-task-id --confirm
+
+# Clear all stored tasks
+radxa-linkr-debuggerctl task clear
+```
+
+Saved record rules — every record is a single `PUT` against an allowlisted
+path under `/api/v1/power/`, `/api/v1/gpio/`, or `/api/v1/switch/`, with a
+JSON-string `body` and an optional integer `wait_ms` in `0..60000`. The blob
+starts with `# linkr-task.v1`, lists each task under `# task <id>`, and is
+bounded at 4096 bytes with at most 4 tasks and 32 records per task. Records
+that fall outside these limits, paths that fail the allowlist, malformed
+JSON bodies, or non-PUT methods are rejected with `invalid_blob` before the
+blob is written, so what is returned by the next `GET /api/v1/tasks` is
+exactly what was stored.
+
+Run behavior — `task run <task-id> --confirm` is fail-closed: omitting
+`--confirm` returns `confirmation_required` before any board request. It first
+fetches the firmware catalog from `GET /api/v1/tasks/catalog` and resolves a
+built-in before any stored task; if the catalog is unavailable and the
+requested id starts with `builtin/`, the CLI returns `catalog_unavailable`
+instead of falling back to a shadowed stored task. A matched built-in is
+executed directly without accessing `/api/v1/tasks`; otherwise the CLI
+downloads the current stored blob, selects the named task, and dispatches each
+record through `PUT` against the public HTTP API in order. Between records the
+client sleeps `wait_ms` **only after a successful response**. A failure
+(for example an unknown pin or a 4xx error) stops immediately: no later
+record is dispatched, and the CLI exits nonzero. The JSON failure uses
+`error.record_index` (1-based) and `error.path` under the `error` object;
+the non-JSON failure writes
+`task record <n> path "<path>" failed: <message>` to stderr. The wire
+`body` sent on each request is the stored record's `body` field verbatim;
+`wait_ms` never reaches the board. If a stored task uses a built-in ID
+declared by the firmware catalog, `task list` marks it as shadowed and
+`task run` selects the immutable built-in. `task clear` still removes that
+stored entry but never removes the catalog entries. JSON `task list` reports
+the merged `task_count` and the firmware entry count separately as
+`stored_task_count`; each row carries `source`, and `catalog_available` plus
+`catalog_error` report the catalog fetch outcome. Ctrl+C stops cooperatively
+between requests or during `wait_ms`. Built-in cleanup comes from the catalog
+and is reported separately from the primary failure/cancellation; cleanup
+failure never replaces the primary error. Cancellation before the first
+request performs no cleanup.
+
+Boot behavior — the firmware no longer stores or executes any task at
+boot. Saved tasks are inert until the CLI or Web UI explicitly runs them.
+Old development data (anything written under the previous task-store
+marker or settings key) is intentionally invalidated by the new marker
+`# linkr-task.v1` and the new key `linkr/task/tasks`. There is no
+migration, no read alias, and no reset for stale entries. A board that
+still holds old data simply shows the empty task contract.
+
+```text
+GET    /api/v1/tasks
+PUT    /api/v1/tasks
+DELETE /api/v1/tasks
+```
+
+The firmware catalog built-ins remain available after `task clear` because
+they are part of the firmware image, not the stored blob. Explicitly stored
+custom tasks survive normal firmware reboot and combined-UF2 recovery through
+the `linkr/task/tasks` key until `task clear` removes them; clearing stored
+tasks does not change live hardware.
+
+### CDC Fallback
+
+When HTTP or the Web UI is unavailable but the USB CDC ACM shell still
+works, the firmware exposes the same task surface on the serial console.
+The shell commands are `task show` and `task clear` only; there are no
+boot, default, or replay commands on the CDC surface.
+
+```console
+linkr-debugger:~$ task show
+task show available=true task_count=1
+linkr-debugger:~$ task clear
+task clear ok
+```
+
+`task show` prints one line with `available` (firmware Settings+NVS
+backend reachability) and `task_count`. `task clear` acquires the capture
+owner and then the flash owner; if either is busy (live capture or OTA
+in flight) it returns `task clear error=busy` and exits with `-EBUSY`
+without deleting the stored blob. A successful clear writes
+`task clear ok` and exits zero. A backend failure (after the busy path)
+prints `task clear error=storage_error` and exits with `-EIO`. The CDC
+shell uses the same firmware-enumerated IDs as the HTTP layer and
+does not maintain a host-side catalog. This is the fallback when HTTP
+or WS is wedged; it does not change the HTTP/CLI command surface.
 
 ## Watchdog
 

@@ -92,27 +92,173 @@ Enter ROM BOOTSEL mode. The MCU resets 250ms after the response.
 curl -X POST http://172.29.203.1/api/v1/bootloader
 ```
 
-## Target Recovery Modes
+## Tasks (firmware catalog and saved request sequences)
 
-### `GET /api/v1/target-recovery`
+The firmware API stores generic task blobs in flash; it does not execute,
+replay, or auto-seed tasks. The firmware also owns the immutable built-in task
+catalog at `GET /api/v1/tasks/catalog`; the CLI and Web UI consume that
+catalog strictly and dispatch every selected task through the existing
+public power, GPIO, and switch APIs. Hosts hold no recovery recipes of their
+own. The current catalog exposes the six MASKROM/EDL entries; stored entries
+remain on a separate path and never appear in `GET /api/v1/tasks/catalog`.
 
-Returns the supported recovery modes, rails, fixed timing, and safe release
-direction.
+### `GET /api/v1/tasks/catalog`
 
-### `POST /api/v1/target-recovery`
-
-Power-cycle a target rail while asserting `CON_MAS`, then release the pin to
-input. Qualcomm EDL is active high; Rockchip MASKROM is active low.
+Returns the firmware-owned immutable built-in catalog. Hosts validate the
+response envelope (`schema`, `ok`, `command: "task"`, `action: "catalog"`,
+`version: 1`) and reject unknown fields. Each catalog entry declares its id,
+display name, the list of `PUT` records to dispatch against the allowlisted
+`/api/v1/power`, `/api/v1/gpio`, and `/api/v1/switch` paths, and a
+mandatory cleanup sequence. Hosts dispatch catalog entries through the same
+generic task runner used for stored tasks.
 
 ```sh
-curl -X POST http://172.29.203.1/api/v1/target-recovery \
-  -d '{"mode":"rockchip-maskrom","rail":"5v_out"}'
+curl -fsS http://172.29.203.1/api/v1/tasks/catalog
 ```
 
-Valid modes: `qualcomm-edl`, `rockchip-maskrom`. Valid rails: `5v_out`,
-`12v_out`, `20v_out`. The firmware waits 1000 ms with the rail off, establishes
-the recovery signal for 20 ms before power-on, holds it for 500 ms after
-power-on, and releases `CON_MAS` to high-impedance input even on failure.
+### Frozen Limits
+
+| Limit | Value |
+|---|---|
+| Tasks per blob | 4 |
+| Requests per task | 32 |
+| Blob bytes | 4096 |
+| Task id bytes | 31 |
+| Task name bytes | 63 |
+| Request line bytes | 256 |
+| Path bytes | 96 |
+| Body bytes | 192 |
+| `wait_ms` range | 0 through 60000 |
+
+### Storage Layout
+
+Tasks are persisted in `Settings+NVS` under the key
+`linkr/task/tasks`, and the blob always starts with the literal
+`# linkr-task.v1`. Each task follows a `# task <id>` marker and one or more
+NDJSON request records. A typical record is:
+
+```json
+{"method":"PUT","path":"/api/v1/power/12v_out","body":"{\"state\":\"off\"}","wait_ms":1000}
+```
+
+A second record in the same task would appear on its own NDJSON line:
+
+```json
+{"method":"PUT","path":"/api/v1/gpio/CON_MAS","body":"{\"direction\":\"input\"}","wait_ms":0}
+```
+
+The full file looks like:
+
+```text
+# linkr-task.v1
+# task power-cycle
+{"method":"PUT","path":"/api/v1/gpio/GP13","body":"{\"direction\":\"input\"}","wait_ms":0}
+{"method":"PUT","path":"/api/v1/power/12v_out","body":"{\"state\":\"off\"}","wait_ms":1000}
+```
+
+Every record must use `method:"PUT"`, a JSON-string `body`, and a `path`
+under one of `/api/v1/power/`, `/api/v1/gpio/`, or `/api/v1/switch/`.
+`wait_ms` defaults to 0 when omitted and must be an integer from 0 through
+60000. The blob, the marker text, the path allowlist, and the bounds above
+are validated at parse time; an invalid record returns `invalid_blob`. Bytes
+under `0x20` other than tab/LF/CR are rejected before storage so the GET
+JSON encoder always reproduces the stored blob exactly.
+
+Old development data (anything written under the previous task-store marker
+or settings key) is intentionally invalidated by the new marker
+`# linkr-task.v1` and the new key `linkr/task/tasks`. There is no migration
+path and no read alias; a board that still holds old data simply shows the
+empty task contract after upgrade.
+
+### `GET /api/v1/tasks`
+
+Returns the task state and the exact stored blob. An empty board returns
+`tasks: []` and `blob: ""` with HTTP 200; the response is the same envelope
+that every other endpoint uses:
+
+```json
+{
+  "schema": "radxa-linkr-debugger.v1",
+  "ok": true,
+  "command": "task",
+  "action": "list",
+  "backend": { "available": true },
+  "task_count": 1,
+  "tasks": [
+    { "id": "power-cycle", "name": "power-cycle", "request_count": 3 }
+  ],
+  "blob": "# linkr-task.v1\n# task power-cycle\n{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/CON_MAS\",\"body\":\"{\\\"direction\\\":\\\"input\\\"}\",\"wait_ms\":0}\n{\"method\":\"PUT\",\"path\":\"/api/v1/power/12v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\",\"wait_ms\":1000}\n{\"method\":\"PUT\",\"path\":\"/api/v1/power/12v_out\",\"body\":\"{\\\"state\\\":\\\"on\\\"}\",\"wait_ms\":0}\n"
+}
+```
+
+Stable fields: `schema`, `ok`, `command:"task"`, `action:"list"`, `backend`
+({`available`}), `task_count` (numeric), `tasks[]` (`id`, `name`,
+`request_count`), `blob` (string, exact bytes). `name` defaults to `id`
+when the stored task did not set one. The response capacity is derived
+from `2 * 4096` plus bounded envelope/summary overhead; a request that
+exceeds the capacity returns `response_too_large` instead of a truncated
+body. The GET handler does not acquire the capture or flash arbiter.
+
+### `PUT /api/v1/tasks`
+
+Replaces the stored blob. The body is the full `linkr-task.v1` text. A JSON
+string literal is also accepted (`"..."`), in which case the server unescapes
+standard escapes before validation. The endpoint requires the shared
+mutation helper, so a concurrent capture or OTA session returns
+`busy` (HTTP 409) without writing. A blob larger than 4096 bytes returns
+`body_too_large` (HTTP 413). On success the response is:
+
+```json
+{
+  "schema": "radxa-linkr-debugger.v1",
+  "ok": true,
+  "command": "task",
+  "action": "store",
+  "stored": true
+}
+```
+
+### `DELETE /api/v1/tasks`
+
+Clears the stored blob; live hardware is unchanged. Acquires the shared
+mutation helper first and returns `busy` (HTTP 409) when capture or OTA
+is in flight. Successful response:
+
+```json
+{
+  "schema": "radxa-linkr-debugger.v1",
+  "ok": true,
+  "command": "task",
+  "action": "clear",
+  "cleared": true
+}
+```
+
+### Method Handling
+
+GET, PUT, and DELETE are the only supported methods; any other verb on
+`/api/v1/tasks` returns `method_not_allowed` (HTTP 405). The endpoint never
+replays stored requests; the firmware contract is store-only. Execution is the
+client's job.
+
+### Client-Side Run And Limits
+
+The CLI and the Web UI fetch the blob via `GET /api/v1/tasks`, select one
+task by id, and dispatch each record in order through the public HTTP API.
+Each successful request is followed by a client-side `wait_ms` sleep when
+the record carries one; `wait_ms` is task metadata only and is **not**
+forwarded to the power, GPIO, or switch endpoints. The first failure stops
+the run. Records past the failure are never dispatched, and the wire `body`
+sent to the board never includes `wait_ms`.
+
+The CLI and the page report the failure on their own human/JSON surface,
+not on the shared HTTP envelope. The CLI JSON failure uses
+`error.record_index` (1-based) and `error.path` (snake_case under the
+`error` object) and exits nonzero on the `task` action. The CLI's
+non-JSON failure writes `task record <n> path "<path>" failed: <message>`
+to stderr. The Web page surfaces an internal result that carries
+`failedIndex` (1-based) and `failedPath` (camelCase) plus the resolver
+error string.
 
 ## Watchdog
 
@@ -232,7 +378,7 @@ Up to 4 concurrent clients.
 {"type": "command", "command": "power_set", "id": "1", "output": "12v_out", "state": "on"}
 ```
 
-Available commands: `power_set`, `switch_route`, `gpio_set`, `target_recovery`, `bootloader`, `capture_arm`, `capture_trigger`, `capture_stop`, `capture_cancel`.
+Available commands: `power_set`, `switch_route`, `gpio_set`, `bootloader`, `capture_arm`, `capture_trigger`, `capture_stop`, `capture_cancel`. Saved task sequences are managed over HTTP only.
 
 Power capture requires an explicit host-stream protocol mode:
 
@@ -243,27 +389,37 @@ Power capture requires an explicit host-stream protocol mode:
 Compare `mode` with the `power_capture_protocol` advertised by status before
 arming. This prevents mixed firmware/Web versions from waiting indefinitely.
 
-Target recovery command:
+GPIO command (including direct recovery-line control):
 
 ```json
-{"type":"command","command":"target_recovery","id":"2","mode":"qualcomm-edl","output":"5v_out"}
+{"type":"command","command":"gpio_set","id":"2","gpio":"CON_MAS","direction":"output","value":1}
 ```
+
+An output attempt on an input-only GPIO, such as ADC3-owned `GP29`, returns
+HTTP 403 from `/api/v1/gpio/<id>` and an error frame from `gpio_set`. Both
+transports use `error.code` `input_only` and an `error.message` containing
+`input-only`. Other GPIO configuration failures use `configure_failed`.
+
+There is no dedicated MASKROM/EDL WebSocket command and no generic task-run
+WebSocket command. Built-ins come from the firmware catalog at
+`GET /api/v1/tasks/catalog`; clients execute them by composing the existing
+ordinary `gpio_set` and `power_set` commands through the generic task runner.
 
 ### Server → Client Messages
 
 **Status snapshot** (pushed on state change):
 ```json
-{"type": "snapshot", "topic": "status", "power_capture_protocol": "host-stream-v1", "sequence": 1, "power_outputs": [...], "switches": {...}, "watchdog": {...}, "gpios": [...], "board_monitoring": {...}}
+{"type": "snapshot", "topic": "status", "power_capture_protocol": "host-stream-v1", "sequence": 1, "power_outputs": [], "switches": {}, "watchdog": {}, "gpios": [], "board_monitoring": {}}
 ```
 
 **ADC telemetry** (at subscribed rate):
 ```json
-{"type": "telemetry", "topic": "adc", "sequence": 1, "uptime_us": 12345, "readings": [...]}
+{"type": "telemetry", "topic": "adc", "sequence": 1, "uptime_us": 12345, "readings": []}
 ```
 
 **Batch telemetry** (when `batch_size > 1`):
 ```json
-{"type": "telemetry-batch", "topic": "adc", "channels": [...], "samples": [...]}
+{"type": "telemetry-batch", "topic": "adc", "channels": [], "samples": []}
 ```
 
 Each WebSocket client is backed by a 256-sample telemetry ring. Batch messages
