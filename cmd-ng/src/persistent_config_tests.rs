@@ -3,7 +3,7 @@ use crate::config_command;
 use crate::persistent_config::{
     ConfigItemId, ConfigItemKind, ConfigValue, PersistentConfigResponse,
 };
-use crate::ws_client::WsStatusSnapshot;
+use crate::ws_status::WsStatusSnapshot;
 use anyhow::Result;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -303,6 +303,9 @@ struct NoIoClient;
 
 impl BoardTransport for NoIoClient {
     fn send_text(&self, _: BoardRequest) -> Result<String> {
+        panic!("unexpected I/O")
+    }
+    fn send_raw_json(&self, _: crate::client::BoardRawJsonRequest) -> Result<String> {
         panic!("unexpected I/O")
     }
     fn upload_binary(&self, _: BoardBinaryUpload) -> Result<String> {

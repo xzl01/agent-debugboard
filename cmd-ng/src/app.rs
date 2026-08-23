@@ -1287,6 +1287,7 @@ mod tests {
     #[derive(Default)]
     struct FakeClient {
         requests: RefCell<Vec<BoardRequest>>,
+        raw_json_requests: RefCell<Vec<crate::client::BoardRawJsonRequest>>,
         uploads: RefCell<Vec<FakeUpload>>,
         response: String,
         upload_response: String,
@@ -1306,6 +1307,14 @@ mod tests {
     impl BoardTransport for FakeClient {
         fn send_text(&self, request: BoardRequest) -> Result<String> {
             self.requests.borrow_mut().push(request);
+            if let Some(err) = &self.err {
+                return Err(anyhow::anyhow!(err.clone()));
+            }
+            Ok(self.response.clone())
+        }
+
+        fn send_raw_json(&self, request: crate::client::BoardRawJsonRequest) -> Result<String> {
+            self.raw_json_requests.borrow_mut().push(request);
             if let Some(err) = &self.err {
                 return Err(anyhow::anyhow!(err.clone()));
             }
