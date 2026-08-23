@@ -72,6 +72,11 @@ The Linux archives are statically linked with musl and do not depend on the
 host glibc version. They are compatible with Debian 11 and newer distributions
 on the matching CPU architecture.
 
+Every archive exposes the same program under two names:
+`radxa-linkr-debuggerctl` and the shorter `rdb`. Unix archives store `rdb` as a
+relative symbolic link; the Windows archive contains `rdb.exe` as the matching
+hard-linked executable. They have identical options, output, and exit status.
+
 ## Skill-local install script
 
 From a repository checkout, download a specific release version into the
@@ -86,6 +91,7 @@ its full path:
 
 ```sh
 ./skills/radxa-linkr-debugger/scripts/bin/radxa-linkr-debuggerctl --help
+./skills/radxa-linkr-debugger/scripts/bin/rdb --help
 ```
 
 The installer downloads from `xzl01/agent-debugboard` by default. Use
@@ -112,6 +118,7 @@ The PowerShell script is also skill-local. Run the downloaded executable with:
 
 ```powershell
 .\skills\radxa-linkr-debugger\scripts\bin\radxa-linkr-debuggerctl.exe --help
+.\skills\radxa-linkr-debugger\scripts\bin\rdb.exe --help
 ```
 
 Private repository PowerShell release download:
@@ -137,10 +144,12 @@ directory already on your `PATH`. For example, on Linux or macOS:
 
 ```sh
 sudo install -m 0755 ./radxa-linkr-debuggerctl /usr/local/bin/radxa-linkr-debuggerctl
+sudo ln -sfn radxa-linkr-debuggerctl /usr/local/bin/rdb
 ```
 
-On Windows, copy `radxa-linkr-debuggerctl.exe` into a directory listed in
-`$env:PATH`, or add its containing directory to the user `PATH`.
+On Windows, copy both `radxa-linkr-debuggerctl.exe` and `rdb.exe` into a
+directory listed in `$env:PATH`, or add their containing directory to the user
+`PATH`.
 
 ## Building from source
 
@@ -206,6 +215,7 @@ After placing the executable on `PATH`, verify the CLI is working:
 radxa-linkr-debuggerctl --help
 radxa-linkr-debuggerctl --version
 radxa-linkr-debuggerctl doctor
+rdb doctor
 ```
 
 Running the CLI without a subcommand starts the interactive TUI. Use subcommands such as `status`, `adc read`, or `power set` when you want the traditional command-line mode.

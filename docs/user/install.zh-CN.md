@@ -66,6 +66,10 @@ PowerShell 使用 `./scripts/install-host.ps1`。可加 `--no-start`、
 Linux 归档使用 musl 静态链接，不依赖主机 glibc 版本；在 CPU 架构匹配时，
 可用于 Debian 11 及更新的发行版。
 
+每份归档都以两个名称提供同一个程序：`radxa-linkr-debuggerctl` 和短命令 `rdb`。
+Unix 归档中的 `rdb` 是相对符号链接，Windows 归档中的 `rdb.exe` 是对应硬链接；
+两者的参数、输出和退出状态完全相同。
+
 ## Skill 本地安装脚本
 
 在仓库 checkout 内把指定 release 版本下载到仓库的 skill 目录：
@@ -78,6 +82,7 @@ Linux 归档使用 musl 静态链接，不依赖主机 glibc 版本；在 CPU �
 
 ```sh
 ./skills/radxa-linkr-debugger/scripts/bin/radxa-linkr-debuggerctl --help
+./skills/radxa-linkr-debugger/scripts/bin/rdb --help
 ```
 
 安装脚本默认从 `xzl01/agent-debugboard` 下载。仅当使用 fork 或 release
@@ -104,6 +109,7 @@ PowerShell 脚本同样只安装到 skill 目录。下载后用以下命令运�
 
 ```powershell
 .\skills\radxa-linkr-debugger\scripts\bin\radxa-linkr-debuggerctl.exe --help
+.\skills\radxa-linkr-debugger\scripts\bin\rdb.exe --help
 ```
 
 私有仓库 PowerShell release 下载：
@@ -129,10 +135,11 @@ Linux 或 macOS 上：
 
 ```sh
 sudo install -m 0755 ./radxa-linkr-debuggerctl /usr/local/bin/radxa-linkr-debuggerctl
+sudo ln -sfn radxa-linkr-debuggerctl /usr/local/bin/rdb
 ```
 
-Windows 上请把 `radxa-linkr-debuggerctl.exe` 复制到 `$env:PATH` 已包含的目录，
-或把其所在目录加入用户 `PATH`。
+Windows 上请把 `radxa-linkr-debuggerctl.exe` 和 `rdb.exe` 一起复制到
+`$env:PATH` 已包含的目录，或把其所在目录加入用户 `PATH`。
 
 ## 从源码构建
 
@@ -195,6 +202,7 @@ Codex/OpenCode 的 HTTP 和 stdio 配置参见 [MCP 配置指南](../reference/m
 radxa-linkr-debuggerctl --help
 radxa-linkr-debuggerctl --version
 radxa-linkr-debuggerctl doctor
+rdb doctor
 ```
 
 不带子命令直接运行 CLI 会启动交互式 TUI。需要传统命令行模式时使用 `status`、`adc read`、`power set` 等子命令。

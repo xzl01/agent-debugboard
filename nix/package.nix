@@ -36,6 +36,7 @@ rustPlatform.buildRustPackage {
   NIX_SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
 
   postInstall = ''
+    ln -s radxa-linkr-debuggerctl "$out/bin/rdb"
     install -Dm644 skills/radxa-linkr-debugger/SKILL.md \
       "$out/share/radxa-linkr-debugger/skills/radxa-linkr-debugger/SKILL.md"
     install -Dm755 skills/radxa-linkr-debugger/scripts/install.sh \

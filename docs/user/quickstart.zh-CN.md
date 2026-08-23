@@ -15,11 +15,13 @@
 | Linux ARM64 / AArch64 | `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` |
 | macOS Apple Silicon | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` |
 
-解压后放到 PATH 下：
+每份归档都包含 `radxa-linkr-debuggerctl` 及其短命令别名 `rdb`。解压两个名称后
+放到 PATH 下：
 
 ```sh
 # Linux / macOS
 sudo install -m 0755 ./radxa-linkr-debuggerctl /usr/local/bin/
+sudo ln -sfn radxa-linkr-debuggerctl /usr/local/bin/rdb
 
 # macOS — 如果 Gatekeeper 弹警告
 xattr -dr com.apple.quarantine ./radxa-linkr-debuggerctl
@@ -29,6 +31,7 @@ xattr -dr com.apple.quarantine ./radxa-linkr-debuggerctl
 
 ```sh
 radxa-linkr-debuggerctl --version
+rdb --version
 ```
 
 完整安装指南：[安装 CLI](install.zh-CN.md)

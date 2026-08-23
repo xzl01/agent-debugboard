@@ -72,6 +72,12 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/../../.." && pwd)
 install_dir="$script_dir/bin"
 binary_path="$install_dir/radxa-linkr-debuggerctl"
+alias_path="$install_dir/rdb"
+
+install_alias() {
+  rm -f "$alias_path"
+  ln -s radxa-linkr-debuggerctl "$alias_path"
+}
 
 can_build_from_source() {
   [ -f "$repo_root/cmd-ng/Cargo.toml" ] && command -v cargo >/dev/null 2>&1
@@ -207,6 +213,7 @@ radxa-linkr-debuggerctl skill install dry-run
 mode:        build Rust cmd-ng from source
 repo root:   $repo_root
 output:      $binary_path
+alias:       $alias_path -> radxa-linkr-debuggerctl
 EOF
   else
     cat <<EOF
@@ -217,6 +224,7 @@ version:     $VERSION
 platform:    ${os}/${arch}
 asset:       $asset
 install dir: $install_dir
+alias:       $alias_path -> radxa-linkr-debuggerctl
 auth token:  $(if [ -n "$token" ]; then echo "yes"; else echo "no"; fi)
 asset URL:   $(release_url "$asset")
 EOF
@@ -234,7 +242,9 @@ if can_build_from_source && [ "$VERSION_EXPLICIT" -eq 0 ]; then
     cp "$repo_root/cmd-ng/target/release/radxa-linkr-debuggerctl" "$binary_path"
   )
   chmod 755 "$binary_path"
+  install_alias
   echo "Installed radxa-linkr-debuggerctl to $binary_path"
+  echo "Linked rdb to $alias_path"
   "$binary_path" --version 2>/dev/null || true
   exit 0
 fi
@@ -297,10 +307,12 @@ fi
 
 cp "$binary" "$binary_path"
 chmod 755 "$binary_path"
+install_alias
 
 if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
   xattr -dr com.apple.quarantine "$binary_path" 2>/dev/null || true
 fi
 
 echo "Installed radxa-linkr-debuggerctl to $binary_path"
+echo "Linked rdb to $alias_path"
 "$binary_path" --version 2>/dev/null || true

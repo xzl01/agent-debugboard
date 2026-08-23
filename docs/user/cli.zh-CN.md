@@ -2,7 +2,10 @@
 
 [English](cli.md)
 
-`radxa-linkr-debuggerctl` 通过 USB NCM 与调试板通信。板子运行 DHCPv4 server，主机会自动获取兼容地址，无需额外配置。默认设备 URL 为 `http://172.29.203.1`，仅在需要覆盖时才传 `--url`。
+`radxa-linkr-debuggerctl` 通过 USB NCM 与调试板通信。release 安装包还会提供
+指向同一可执行文件的 `rdb` 链接，因此两个名称接受完全相同的命令。板子运行
+DHCPv4 server，主机会自动获取兼容地址。默认设备 URL 为
+`http://172.29.203.1`，仅在需要覆盖时才传 `--url`。
 
 ```sh
 # 检查连接和板子健康状态

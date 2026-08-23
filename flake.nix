@@ -36,6 +36,11 @@
             program = "${pkgs.radxa-linkr-debuggerctl}/bin/radxa-linkr-debuggerctl";
             meta.description = "Run the Radxa Linkr Debugger CLI";
           };
+          rdb = {
+            type = "app";
+            program = "${pkgs.radxa-linkr-debuggerctl}/bin/rdb";
+            meta.description = "Run the Radxa Linkr Debugger CLI through its rdb alias";
+          };
           default = self.apps.${system}.radxa-linkr-debuggerctl;
         };
 
@@ -57,6 +62,28 @@
         checks = {
           build = pkgs.radxa-linkr-debuggerctl;
           openocd-latest = pkgs.openocd-latest;
+          rdb-alias = pkgs.runCommand "radxa-linkr-debuggerctl-rdb-alias-check"
+            {
+              nativeBuildInputs = [ pkgs.diffutils ];
+              SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+              NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+            } ''
+            set -x
+            echo "checking rdb symlink" >&2
+            test -L "${pkgs.radxa-linkr-debuggerctl}/bin/rdb"
+            expected_target="radxa-linkr-debuggerctl"
+            actual_target="$("${pkgs.coreutils}/bin/readlink" "${pkgs.radxa-linkr-debuggerctl}/bin/rdb")"
+            test "$actual_target" = "$expected_target"
+
+            echo "checking CLI version parity" >&2
+            primary_version="$TMPDIR/primary-version"
+            rdb_version="$TMPDIR/rdb-version"
+            "${pkgs.radxa-linkr-debuggerctl}/bin/radxa-linkr-debuggerctl" --version > "$primary_version"
+            "${pkgs.radxa-linkr-debuggerctl}/bin/rdb" --version > "$rdb_version"
+            cmp "$primary_version" "$rdb_version"
+            echo "creating check output" >&2
+            touch "$out"
+          '';
           formatting = pkgs.runCommand "radxa-linkr-debugboard-flake-formatting-check" { } ''
             workdir="$TMPDIR/nix-format-check"
             mkdir -p "$workdir"

@@ -23,7 +23,15 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir "../../.."))
 $installDir = Join-Path $scriptDir "bin"
 $target = Join-Path $installDir "radxa-linkr-debuggerctl.exe"
+$aliasTarget = Join-Path $installDir "rdb.exe"
 $versionExplicit = $PSBoundParameters.ContainsKey('Version')
+
+function Install-RdbAlias {
+    if (Test-Path -LiteralPath $aliasTarget) {
+        Remove-Item -LiteralPath $aliasTarget -Force
+    }
+    New-Item -ItemType HardLink -Path $aliasTarget -Target $target | Out-Null
+}
 
 function Test-CanBuildFromSource([string]$Root) {
     $hasCargoToml = Test-Path -LiteralPath (Join-Path $Root "cmd-ng/Cargo.toml") -PathType Leaf
@@ -117,6 +125,7 @@ if ($DryRun) {
         Write-Host "mode:        build Rust cmd-ng from source"
         Write-Host "repo root:   $repoRoot"
         Write-Host "output:      $target"
+        Write-Host "alias:       $aliasTarget -> radxa-linkr-debuggerctl.exe"
     } else {
         $tokenState = if ([string]::IsNullOrWhiteSpace($token)) { "no" } else { "yes" }
         Write-Host "radxa-linkr-debuggerctl skill install dry-run"
@@ -126,6 +135,7 @@ if ($DryRun) {
         Write-Host "platform:    windows/$arch"
         Write-Host "asset:       $asset"
         Write-Host "install dir: $installDir"
+        Write-Host "alias:       $aliasTarget -> radxa-linkr-debuggerctl.exe"
         Write-Host "auth token:  $tokenState"
         Write-Host "asset URL:   $assetUrl"
     }
@@ -146,7 +156,9 @@ if ($canBuild -and -not $versionExplicit) {
     } finally {
         Pop-Location
     }
+    Install-RdbAlias
     Write-Host "Installed radxa-linkr-debuggerctl to $target"
+    Write-Host "Linked rdb.exe to $aliasTarget"
     $versionOutput = & $target --version 2>$null
     if ($LASTEXITCODE -eq 0) {
         Write-Host $versionOutput
@@ -195,7 +207,9 @@ try {
     }
 
     Copy-Item -Path $binary.FullName -Destination $target -Force
+    Install-RdbAlias
     Write-Host "Installed radxa-linkr-debuggerctl to $target"
+    Write-Host "Linked rdb.exe to $aliasTarget"
     $versionOutput = & $target --version 2>$null
     if ($LASTEXITCODE -eq 0) {
         Write-Host $versionOutput

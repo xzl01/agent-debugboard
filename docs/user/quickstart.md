@@ -16,11 +16,13 @@ Download the archive for your OS from
 | Linux ARM64 / AArch64 | `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` |
 | macOS Apple Silicon | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` |
 
-Extract and put the binary somewhere on your PATH:
+Each archive contains `radxa-linkr-debuggerctl` and its short `rdb` alias.
+Extract both names and put them somewhere on your PATH:
 
 ```sh
 # Linux / macOS
 sudo install -m 0755 ./radxa-linkr-debuggerctl /usr/local/bin/
+sudo ln -sfn radxa-linkr-debuggerctl /usr/local/bin/rdb
 
 # macOS — if Gatekeeper complains
 xattr -dr com.apple.quarantine ./radxa-linkr-debuggerctl
@@ -30,6 +32,7 @@ Verify:
 
 ```sh
 radxa-linkr-debuggerctl --version
+rdb --version
 ```
 
 Full install guide: [Install CLI](install.md)

@@ -2,7 +2,11 @@
 
 [中文](cli.zh-CN.md)
 
-`radxa-linkr-debuggerctl` talks to the board over USB NCM. The board runs a DHCPv4 server, so the host gets a compatible address automatically — no configuration needed. The default device URL is `http://172.29.203.1`; pass `--url` only to override it.
+`radxa-linkr-debuggerctl` talks to the board over USB NCM. Installed release
+packages also provide `rdb` as a link to that exact executable, so either name
+accepts the same commands. The board runs a DHCPv4 server, so the host gets a
+compatible address automatically. The default device URL is
+`http://172.29.203.1`; pass `--url` only to override it.
 
 ```sh
 # Check connection and board health
