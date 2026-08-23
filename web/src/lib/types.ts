@@ -87,6 +87,16 @@ export interface CaptureConfig {
   stopAfterMs?: number;
 }
 
+export type BoardCaptureState = "idle" | "connecting" | "armed" | "recording" | "receiving";
+
+export interface BoardCaptureProgress {
+  received: number;
+  total: number;
+  persisted?: number;
+  queuedChunks?: number;
+  dropped?: number;
+}
+
 export interface CaptureSample {
   offset: number;
   triggered: boolean;

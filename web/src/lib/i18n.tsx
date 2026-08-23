@@ -243,7 +243,7 @@ const en: Dict = {
   "power.onDurationHint": "Timing starts when this page first observes the rail on; ≥ means it was already on when monitoring began.",
 
   "adc3.title": "GPIO29 / ADC3 voltage",
-  "adc3.subtitle": "Fixed 0–3.3 V scale · latest 90 samples (~9 s at 10 Hz)",
+  "adc3.subtitle": "Fixed 0–3.3 V scale · latest 90 samples (~1.5 s at 60 Hz)",
   "adc3.monitorOnly": "monitor only",
   "adc3.chart.aria": "GPIO29 / ADC3 voltage trend on a fixed 0 to 3.3 volt scale",
 
@@ -1308,7 +1308,7 @@ const zh: Dict = {
   "power.onDurationHint": "计时从本页面首次观察到电源轨开启开始；≥ 表示开始监测前电源轨就已开启。",
 
   "adc3.title": "GPIO29 / ADC3 电压",
-  "adc3.subtitle": "固定 0–3.3 V 量程 · 最近 90 个样本（10 Hz 时约 9 秒）",
+  "adc3.subtitle": "固定 0–3.3 V 量程 · 最近 90 个样本（60 Hz 时约 1.5 秒）",
   "adc3.monitorOnly": "仅监测",
   "adc3.chart.aria": "GPIO29 / ADC3 电压趋势图，固定量程为 0 到 3.3 伏",
 
