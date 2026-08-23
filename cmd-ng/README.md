@@ -28,8 +28,14 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 - 默认设备 URL 仍是 `http://172.29.203.1`
 - `--json` 仍要求固件返回 `schema/ok/command`
 - TUI 现在以 HTTP 轮询作为主数据通道，因此可以稳定多开；实时高频采集改由 `adc record` 走 websocket
-- TUI 控件区把 power、Switch（包含 VIN）和 GPIO 合并进同一个控制面，方向键/Tab 统一导航，Space/Enter 切换当前项，`i` 把当前 GPIO 切回输入，`t/u` 仍可直接切到 `target`/`usb-reader`；状态区会同时显示 switch 的 `desired` / `actual` 以便诊断后端回读差异；VIN 只在固件报告时显示，且切换前需要确认
-- GPIO 在 CLI/TUI 中会同时显示 `GPxx` 和 `note`；控制时可使用 `GPxx`、数字引脚（如 `13`）或精确 note（如 `CON_MAS`）。`GP29` 仍在持久化/安全目录中，但由 ADC3 占用时是 input-only；输出请求会被固件拒绝。参见[固件说明](../apps/radxa_linkr_debugger/README.md)与[权威 ADC telemetry contract](../doc/adc-telemetry.md#gp29-ownership)。
+- TUI 使用无常态边框的高密度布局：顶部两行状态与按需出现的七行三通道电流示波器，其下固定显示 Controls、Saved Config、Status 三页页签和当前页表头；示波器按各通道可见峰值自适应量程，无数据时高度为零，底部是不会截断半个操作的 htop 式键位块
+- Tab/Shift+Tab 前后切页；上下键按可见行移动 Controls/Saved Config 焦点，GPIO 双列行会保持左右位置，左右键只在同一物理行的兄弟 GPIO cell 间切换；Status 页方向键直接滚动。Power/Switch 的整行和每个 GPIO 半行 cell 都有独立鼠标命中区域
+- TUI 的 Power 行完全使用最新固件状态中的 `power_outputs` 目录并保持固件顺序；host 不维护 rail 常量，新增/移除/重排输出都会随下一次状态刷新反映，`5V_FIN` 作为输入电源不会成为可控行
+- TUI GPIO 排列只使用固件返回的 `layoutGroup/layoutLabel/layoutRow/layoutColumn`，不会在 host 端硬编码连接器或 pin map，也不会按 `note` 隐藏任何 GPIO；包括 `CON_MAS` 在内的所有固件返回项都会显示。正常宽度下同一固件物理行最多显示两个独立 cell，窄于 48 列时每针单行，缺失 metadata 的引脚按固件快照顺序回退显示
+- TUI GPIO 主操作与 Web UI 一致：输入切到输出 HIGH，输出在 HIGH/LOW 间切换；状态使用 `◌ IN LOW`、`◌ IN HIGH`、`○ OUT LOW`、`● OUT HIGH`，LOW 深灰、HIGH 红色；电源和需要确认的 switch（包括 VIO）第一次操作只打开红框确认，三秒内再次确认才执行；确认框是常态界面之外唯一带边框的区域
+- 本次 TUI 显示重设计不改变 HTTP 端点、两秒轮询周期、确认/动作语义、硬件默认值或固件行为
+- MASKROM/EDL 只作为固件目录提供的普通自动化任务出现；使用 `task list` 查看并通过 `task run builtin/...` 执行，TUI 不提供专用入口；host 不持有任何恢复配方
+- GPIO 在 CLI/TUI 中会同时显示 `GPxx` 和 `note`；控制时可使用 `GPxx`、数字引脚（如 `13`）或精确 note（如 `CON_MAS`）。`GP29` 仍在持久化/安全目录中，但由 ADC3 占用时是 input-only；输出请求会被固件拒绝。参见[固件说明](../apps/radxa_linkr_debugger/README.md)与[权威 ADC telemetry contract](../docs/reference/adc-telemetry.md#gp29-ownership)。
 - `adc read` 默认返回四个 descriptor：`5v_out`、`12v_out`、`20v_out`（电流）和 `adc3`（GP29 电压）。HTTP rich path 中三路电流的 `current_ua` 是 signed integer µA，ADC3 从 `sensor_value` 得到 signed integer µV；`adc read -v` 还显示 `signal`、`raw`、`mv`、`sensor_value` 等诊断字段，host 不做 ADC 校准或零点修正。
 - 实时 WebSocket 使用紧凑形状：单样本 reading 包含 `name`、`signal`、`kind`、`unit`、`value`，其中 `value` 是由 `unit` 指定的 signed integer（电流 `uA`、电压 `uV`），且只有电流通道携带 `power_enabled`。Batch 先声明 `channels[]`，每个 `values: i32[]` 按位置与 `channels` 对齐；`power_enabled_mask` 是 unsigned 8-bit 掩码，仅对 `kind="current"` 的通道有意义。WS 不携带 HTTP 的 `raw`、`mv`、`current_ua` 或 `sensor_value`；完整 wire shape 见[权威 ADC telemetry contract](../doc/adc-telemetry.md)。
 - `adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]` 会创建 live websocket session；`.ndjson` 输出完整 telemetry 记录，`.csv` 输出设备时间戳和三路电流列；默认请求 1000Hz，`--rate-hz` 可指定 1..1000Hz，高于 100Hz 时 CLI 请求 batch JSON 并逐样本展开；正常完成或连接、解析、写盘失败后都会关闭并删除自身 session

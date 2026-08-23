@@ -1,15 +1,22 @@
 use super::config_result::ConfigJobKind;
 use super::config_state::ConfigConfirmation;
+use super::pages::ActivePage;
 use super::{handle_key, TuiModel};
 use crate::persistent_config::{ConfigAction, PersistentConfigResponse, PersistentConfigStatus};
-use crate::ws_client::WsStatusSnapshot;
+use crate::ws_status::WsStatusSnapshot;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
 const SHOW: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":true,"version":1},"pending":1,"items":[{"id":"power/alpha","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":true,"requires_confirm":true,"apply_state":"pending"},{"id":"switch/beta","kind":"switch","current":{"route":"pc"},"saved":{"route":"target"},"selected":false,"requires_confirm":false,"apply_state":"applied"}]}"#;
 
+const SHOW_MANY: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":true,"version":1},"pending":0,"items":[{"id":"power/p0","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":false,"requires_confirm":false,"apply_state":"applied"},{"id":"power/p1","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":false,"requires_confirm":false,"apply_state":"applied"},{"id":"power/p2","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":false,"requires_confirm":false,"apply_state":"applied"},{"id":"power/p3","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":false,"requires_confirm":false,"apply_state":"applied"},{"id":"power/p4","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":false,"requires_confirm":false,"apply_state":"applied"}]}"#;
+
 fn model() -> TuiModel {
-    let response = PersistentConfigResponse::from_raw(SHOW.to_string()).unwrap();
+    model_from(SHOW)
+}
+
+fn model_from(raw: &str) -> TuiModel {
+    let response = PersistentConfigResponse::from_raw(raw.to_string()).unwrap();
     response.validate(&ConfigAction::Get, None).unwrap();
     let mut model = TuiModel::new("http://127.0.0.1:0".to_string(), Duration::from_millis(100));
     model
@@ -143,6 +150,37 @@ fn escape_dismisses_error_without_losing_selection() {
 
     assert!(model.saved_config.error.is_none());
     assert_eq!(model.saved_config.selected_ids(), selected);
+}
+
+#[test]
+fn tab_is_ignored_while_save_confirmation_is_open() {
+    let mut model = model();
+    press(&mut model, KeyCode::Char('s'));
+    assert!(model.saved_config.confirmation().is_some());
+
+    press(&mut model, KeyCode::Tab);
+
+    assert_eq!(model.active_page, ActivePage::Controls);
+    assert!(model.saved_config.confirmation().is_some());
+}
+
+#[test]
+fn page_keys_move_the_config_cursor_by_three_items() {
+    let mut model = model_from(SHOW_MANY);
+    press(&mut model, KeyCode::Char('c'));
+    assert_eq!(model.active_page, ActivePage::SavedConfig);
+    assert!(model.saved_config.focused);
+
+    press(&mut model, KeyCode::PageDown);
+    assert_eq!(model.saved_config.cursor, 3);
+    press(&mut model, KeyCode::PageDown);
+    assert_eq!(model.saved_config.cursor, 4);
+    press(&mut model, KeyCode::PageUp);
+    assert_eq!(model.saved_config.cursor, 1);
+    press(&mut model, KeyCode::Char('['));
+    assert_eq!(model.saved_config.cursor, 0);
+    press(&mut model, KeyCode::Char(']'));
+    assert_eq!(model.saved_config.cursor, 3);
 }
 
 #[test]
