@@ -94,7 +94,7 @@ radxa-linkr-debuggerctl --json ota confirm
 
 ## Web OTA Card
 
-The Web UI also provides an OTA card under **Advanced & recovery**. It delivers
+The Web UI provides an OTA card under **Firmware Tools** in the dashboard. It delivers
 RP2350 firmware updates over the same USB NCM HTTP API, with no separate host
 tooling required. When the UI is served from GitHub Pages over HTTPS, the
 device-bridge gateway (`npm run device-bridge`) is required. See

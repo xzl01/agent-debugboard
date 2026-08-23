@@ -56,9 +56,13 @@ Run without arguments:
 radxa-linkr-debuggerctl
 ```
 
-The interactive terminal UI shows power outputs, switch routes, and GPIO
-status. Try it: use arrow keys to select `5v_out`, press Space to toggle it
-on, and watch the state change from `off` to `on`.
+The interactive terminal UI opens on the Controls page. Its borderless table
+shows one power, switch, or GPIO object per row with a full-row selection; live
+current rows appear above it only when data exists, and the last row contains
+htop-style key/action blocks. Use the arrow keys to choose `5v_out`, then press
+Space. Tab and Shift+Tab move between Controls, Saved Config, and Status.
+The first press opens the red-bordered confirmation box without changing the
+rail; press Space again within three seconds to turn it on.
 
 More: [TUI Guide](tui.md)
 

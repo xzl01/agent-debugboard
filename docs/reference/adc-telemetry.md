@@ -226,16 +226,26 @@ telemetry. It keeps:
 
 - One power row per controllable current rail (`5v_out`, `12v_out`,
   `20v_out`), with shared `MeasurementSparkline` showing current and
-  power at 10 Hz with a 90-sample window (about 9 seconds of history).
-  The window is shared between current and power; both values auto-scale.
+  power from the 60 Hz live subscription with a 90-sample window (about
+  1.5 seconds of history). The window is shared between current and
+  power; both values auto-scale.
 - A monitor-only ADC3 (`adc3`) section between the current rows and
   the PowerAnalyzer, rendered only when the firmware emits an `adc3`
   reading. ADC3 uses a fixed 0..3,300,000 µV scale (nominal 0..3.3 V).
   The shared sparkline component reuses the same 90-sample SVG
-  history with the same 10 Hz cadence; only the Y scale is fixed.
+  history with the same animation-frame cadence; only the Y scale is
+  fixed.
 - PowerAnalyzer remains a current-only triggered capture story: 2048
   samples, three current channels, manual / current-threshold / GPIO
   edge / power-on triggers, four-overlay comparison, CSV/NDJSON export.
+
+The live WebSocket subscription stays at 60 Hz with `batch_size` 1 on
+the wire. The Web UI coalesces that stream onto animation frames: while
+the tab is visible, only the newest readings are published to the Power
+card once per frame; while the tab is hidden the preview pauses, and an
+armed or active streaming capture keeps ingesting every sample
+losslessly because capture ingestion never routes through the
+animation-frame preview.
 
 GP29 appears in the GPIO catalog for snapshot compatibility, but the
 Web UI must treat it as input-only while also showing its ADC3 voltage.

@@ -89,6 +89,11 @@ reset halt
 reset run
 ```
 
+The current CH347 driver does not provide physical SRST in SWD mode. The
+RP2040 target configuration uses `SYSRESETREQ` instead, so `reset halt` and
+`reset run` act on the target core, not a board-level reset line. Do not
+rely on physical reset through the CH347F.
+
 Only if the target is unresponsive, has no reset line, or soft reset fails,
 hard-restart the target by power-cycling the power output that actually powers it:
 

@@ -255,6 +255,18 @@ deep-burst path on the representative HIL setup. They are not evidence for the
   and the post-lease HTTP `/api/v1/status` plus `/api/v1/adc/read` health checks
   pass within the freeze-final envelope.
 
+### Bandwidth Guard During Capture
+
+Every sigrok capture mode (bounded, stream, and packed burst, over both the
+WebSocket and raw-TCP transports) holds the capture arbiter for the whole
+capture lifetime. While the arbiter is owned by the logic analyzer, the ADC
+telemetry sampler stops producing samples, so no telemetry frames compete with
+logic samples for USB-NCM bandwidth; the sampler resumes automatically as soon
+as the capture releases the arbiter, so no explicit resume command exists.
+This applies in addition to the arena-level WIDE11 quiesce: the arena quiesce
+protects the shared ring memory, while the bandwidth guard frees the link for
+all capture modes.
+
 At the requested 125 MHz rate the actual rate returned in the CONFIG_RESP ACK is
 the RP2350 quantized 125081 kHz even when the caller asked for 125000 kHz. The
 freeze-final HIL still accepts that quantized actual rate for SINGLE/FAST8 and

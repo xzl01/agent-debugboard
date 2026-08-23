@@ -64,6 +64,10 @@ target extended-remote :3333
 - `reset halt` — 复位目标并立即暂停
 - `reset run` — 复位目标并让其运行
 
+当前 CH347 驱动在 SWD 模式下不提供物理 SRST。RP2040 target 配置改用
+`SYSRESETREQ`，因此 `reset halt` 和 `reset run` 作用在目标 core 上，而非
+板级 reset 线。不要假设 CH347F 提供物理复位。
+
 仅在软重启不可行时，才使用电源输出断电再上电（`power set 5v_out off`
 再 `on`）作为硬重启 fallback。
 

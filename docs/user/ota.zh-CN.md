@@ -84,7 +84,7 @@ radxa-linkr-debuggerctl --json ota confirm
 
 ## Web OTA 卡片
 
-Web UI 在 **高级与恢复** 下也提供 OTA 卡片。它通过同一 USB NCM HTTP API
+Web UI 仪表盘侧栏的**固件工具**中提供 OTA 卡片。它通过同一 USB NCM HTTP API
 交付 RP2350 固件更新，不需要额外的主机工具。当 UI 通过 HTTPS 从 GitHub
 Pages 提供服务时，需要设备桥接网关（`npm run device-bridge`）。详见
 [Web UI 指南](webui.zh-CN.md)。

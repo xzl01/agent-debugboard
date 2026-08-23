@@ -67,6 +67,11 @@ Prefer OpenOCD reset commands or the target OS reboot path first:
 - `reset halt` — reset the target and halt immediately
 - `reset run` — reset the target and let it run
 
+The current CH347 driver does not expose physical SRST in SWD mode. The
+RP2040 target configuration uses `SYSRESETREQ` instead, so `reset halt` and
+`reset run` act on the target core rather than a board-level reset line.
+Do not rely on physical reset through the CH347F.
+
 Use power-cycling (`radxa-linkr-debuggerctl power set 5v_out off` then `on`)
 only as a hard-restart fallback when soft reset is not available.
 

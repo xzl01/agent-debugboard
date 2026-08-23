@@ -53,7 +53,11 @@ radxa-linkr-debuggerctl doctor
 radxa-linkr-debuggerctl
 ```
 
-交互式终端界面会显示电源输出、switch 路由和 GPIO 状态。试试看：用方向键选到 `5v_out`，按 Space 切换电源，观察状态从 `off` 变成 `on`。
+交互式终端界面默认打开 Controls 页。无边框表格中每个电源、switch 或 GPIO 对象
+各占一行，当前项整行高亮；只有收到数据时才在表格上方显示实时电流行，最后一行
+是 htop 式键位/操作块。用方向键选中 `5v_out`；Tab/Shift+Tab 用于在 Controls、
+Saved Config、Status 三页间切换。第一次按 Space 只会打开红色边框确认框，不会改变电源，
+三秒内再次按 Space 才会打开该电源轨。
 
 更多：[TUI 指南](tui.zh-CN.md)
 
