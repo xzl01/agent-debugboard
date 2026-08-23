@@ -20,19 +20,19 @@ rustup 管理的 stable Rust toolchain 仍是外部前置条件；构建前需�
    nix-shell
    ```
 
-2. 初始化 west 工作区（仅需一次）：
+2. 更新 west 工作区到清单锁定版本（仅需一次）：
 
    ```sh
-   scripts/setup-zephyr.sh
+   make workspace
    ```
 
-   脚本会创建仓库内隔离的 `.zephyr-workspace/`，只下载 RP2350 编译
-   所需模块，并执行 `west zephyr-export`。
+   该命令在包含本仓库的现有 west 工作区中执行
+   `west update --narrow -o=--depth=1`（`west.yml` 位于仓库根）。
 
 3. 构建：
 
    ```sh
-   scripts/build-firmware.sh
+   make firmware
    ```
 
 ## 手动工作流（不使用 Nix）
@@ -48,9 +48,10 @@ rustup 管理的 stable Rust toolchain 仍是外部前置条件；构建前需�
 2. 初始化 west 工作区：
 
    ```sh
-   scripts/setup-zephyr.sh
-   pip install -r .zephyr-workspace/zephyr/scripts/requirements.txt
-   pip install -r .zephyr-workspace/bootloader/mcuboot/scripts/requirements.txt
+   west init -l .
+   west update --narrow -o=--depth=1
+   pip install -r zephyr/scripts/requirements.txt
+   pip install -r bootloader/mcuboot/scripts/requirements.txt
    ```
 
 3. 如果还没有安装 Zephyr SDK，需要先安装。当前本地构建已用 Zephyr SDK
@@ -64,7 +65,7 @@ rustup 管理的 stable Rust toolchain 仍是外部前置条件；构建前需�
 
    ```sh
    source .venv/bin/activate
-   scripts/build-firmware.sh
+   make firmware
    ```
 
 ## 构建产物

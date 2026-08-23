@@ -21,19 +21,19 @@ the `wasm32-unknown-unknown` target before building.
    nix-shell
    ```
 
-2. Initialize the west workspace (once):
+2. Update the west workspace to the pinned manifest (once):
 
    ```sh
-   scripts/setup-zephyr.sh
+   make workspace
    ```
 
-   This creates an isolated, repo-local `.zephyr-workspace/`, downloads only
-   the modules required by the RP2350 build, and runs `west zephyr-export`.
+   This runs `west update --narrow -o=--depth=1` inside the existing west
+   workspace that contains this repository (`west.yml` at the repo root).
 
 3. Build:
 
    ```sh
-   scripts/build-firmware.sh
+   make firmware
    ```
 
 ## Manual Workflow (Without Nix)
@@ -49,9 +49,10 @@ the `wasm32-unknown-unknown` target before building.
 2. Initialize the west workspace:
 
    ```sh
-   scripts/setup-zephyr.sh
-   pip install -r .zephyr-workspace/zephyr/scripts/requirements.txt
-   pip install -r .zephyr-workspace/bootloader/mcuboot/scripts/requirements.txt
+   west init -l .
+   west update --narrow -o=--depth=1
+   pip install -r zephyr/scripts/requirements.txt
+   pip install -r bootloader/mcuboot/scripts/requirements.txt
    ```
 
 3. Install the Zephyr SDK if not already present. The current local build has
@@ -65,7 +66,7 @@ the `wasm32-unknown-unknown` target before building.
 
    ```sh
    source .venv/bin/activate
-   scripts/build-firmware.sh
+   make firmware
    ```
 
 ## Build Artifacts

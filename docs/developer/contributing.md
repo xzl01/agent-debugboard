@@ -57,7 +57,7 @@ changes, reproduce every affected GitHub Actions lane locally when practical:
 - Shell installer/test scripts: `sh -n ...` and `shellcheck ...`
 - Firmware changes: full canonical build only (one at a time into the shared
   `build/radxa_linkr_debugger/` directory):
-  `scripts/build-firmware.sh`
+  `make firmware`
 
 Do not run single-object or single-driver firmware compile checks; they disturb
 the user's build/cache workflow. Use the full firmware/package workflow instead.

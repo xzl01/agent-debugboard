@@ -34,16 +34,16 @@ export ZEPHYR_SDK_INSTALL_DIR=/path/to/zephyr-sdk-1.0.1
 nix-shell
 ```
 
-Inside the shell, initialize the west workspace once:
+Inside the shell, update the west workspace to the pinned manifest once:
 
 ```sh
-scripts/setup-zephyr.sh
+make workspace
 ```
 
 Then build:
 
 ```sh
-scripts/build-firmware.sh
+make firmware
 ```
 
 ## Manual Setup (Without Nix)
@@ -55,9 +55,10 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip west
 
-scripts/setup-zephyr.sh
-pip install -r .zephyr-workspace/zephyr/scripts/requirements.txt
-pip install -r .zephyr-workspace/bootloader/mcuboot/scripts/requirements.txt
+west init -l .
+west update --narrow -o=--depth=1
+pip install -r zephyr/scripts/requirements.txt
+pip install -r bootloader/mcuboot/scripts/requirements.txt
 ```
 
 Install the Zephyr SDK if it is not already installed. The current local build
@@ -67,7 +68,7 @@ Build:
 
 ```sh
 source .venv/bin/activate
-scripts/build-firmware.sh
+make firmware
 ```
 
 ## Build Output

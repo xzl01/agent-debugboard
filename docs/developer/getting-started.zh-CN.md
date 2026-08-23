@@ -35,13 +35,13 @@ nix-shell
 在 nix-shell 内初始化 west 工作区（仅需一次）：
 
 ```sh
-scripts/setup-zephyr.sh
+make workspace
 ```
 
 然后构建：
 
 ```sh
-scripts/build-firmware.sh
+make firmware
 ```
 
 ## 手动配置（不使用 Nix）
@@ -53,9 +53,10 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip west
 
-scripts/setup-zephyr.sh
-pip install -r .zephyr-workspace/zephyr/scripts/requirements.txt
-pip install -r .zephyr-workspace/bootloader/mcuboot/scripts/requirements.txt
+west init -l .
+west update --narrow -o=--depth=1
+pip install -r zephyr/scripts/requirements.txt
+pip install -r bootloader/mcuboot/scripts/requirements.txt
 ```
 
 如果还没有安装 Zephyr SDK，需要先安装。当前本地构建已用 Zephyr SDK
@@ -65,7 +66,7 @@ pip install -r .zephyr-workspace/bootloader/mcuboot/scripts/requirements.txt
 
 ```sh
 source .venv/bin/activate
-scripts/build-firmware.sh
+make firmware
 ```
 
 ## 构建产物
