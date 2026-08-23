@@ -87,6 +87,7 @@ target_sources(app PRIVATE
   src/linkr_debugger_capture_arbiter.c
   src/linkr_debugger_capture_arena.c
   src/linkr_debugger_control.c
+  src/linkr_debugger_gpio_error.c
   src/linkr_debugger_config_codec.c
   src/linkr_debugger_config_store.c
   src/linkr_debugger_config_replay.c
@@ -103,6 +104,9 @@ target_sources(app PRIVATE
   src/linkr_debugger_config_shell.c
   src/linkr_debugger_flash_arbiter.c
   src/linkr_debugger_http_body.c
+  src/linkr_debugger_http_task_response.c
+  src/linkr_debugger_task_catalog.c
+  src/linkr_debugger_task_http.c
   src/linkr_debugger_http.c
   src/linkr_debugger_logic_analyzer.c
   src/linkr_debugger_json_cursor.c
@@ -112,6 +116,8 @@ target_sources(app PRIVATE
   src/linkr_debugger_network.c
   src/linkr_debugger_task.c
   src/linkr_debugger_task_parse.c
+  src/linkr_debugger_task_mutation.c
+  src/linkr_debugger_task_shell.c
   src/linkr_debugger_shell.c
   src/linkr_debugger_sigrok_linkr.c
   src/linkr_debugger_ws.c

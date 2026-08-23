@@ -7,6 +7,7 @@ enum linkr_debugger_flash_owner {
 	LINKR_DEBUGGER_FLASH_OWNER_NONE = 0,
 	LINKR_DEBUGGER_FLASH_OWNER_CONFIG,
 	LINKR_DEBUGGER_FLASH_OWNER_OTA,
+	LINKR_DEBUGGER_FLASH_OWNER_TASK,
 };
 
 void linkr_debugger_flash_arbiter_reset(void);

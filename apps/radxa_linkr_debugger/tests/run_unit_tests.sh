@@ -189,6 +189,14 @@ cc -std=c11 -Wall -Wextra -Werror \
 "${OUT}/linkr_debugger_http_body_test"
 
 cc -std=c11 -Wall -Wextra -Werror \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_gpio_error.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_gpio_error.c" \
+	-o "${OUT}/linkr_debugger_gpio_error_test"
+
+"${OUT}/linkr_debugger_gpio_error_test"
+
+cc -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CAPTURE_ARENA_HOST_TEST \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.c" \
@@ -243,6 +251,75 @@ cc -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	-fsyntax-only \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c"
+
+cc -std=c11 -Wall -Wextra -Werror \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_catalog.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_task_catalog.c" \
+	-o "${OUT}/linkr_debugger_task_catalog_test"
+
+"${OUT}/linkr_debugger_task_catalog_test"
+
+cc -std=c11 -Wall -Wextra -Werror \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_http_task_response.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_http_task_response.c" \
+	-o "${OUT}/linkr_debugger_http_task_response_test"
+
+"${OUT}/linkr_debugger_http_task_response_test"
+
+cc -std=c11 -Wall -Wextra -Werror \
+	-Wframe-larger-than=1024 \
+	-DLINKR_DEBUGGER_TASK_HOST_TEST \
+	-DLINKR_DEBUGGER_TASK_HTTP_HOST_TEST=1 \
+	-include "${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_task_http_stubs.h" \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	-fsyntax-only \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_catalog.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_http.c"
+
+cc -std=c11 -Wall -Wextra -Werror \
+	-DLINKR_DEBUGGER_TASK_HOST_TEST \
+	-DLINKR_DEBUGGER_TASK_HTTP_HOST_TEST=1 \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-include "${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_task_http_stubs.h" \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_task_http.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_catalog.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_http.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_parse.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_mutation.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_http_task_response.c" \
+	-o "${OUT}/linkr_debugger_task_http_test"
+
+"${OUT}/linkr_debugger_task_http_test"
+
+cc -std=c11 -Wall -Wextra -Werror \
+	-DLINKR_DEBUGGER_TASK_HOST_TEST \
+	-DLINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST \
+	-DLINKR_DEBUGGER_FLASH_ARBITER_HOST_TEST \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/tests/model_host" \
+	-I"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/stubs" \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_task_shell.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_shell.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_parse.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_mutation.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_arbiter.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_flash_arbiter.c" \
+	-o "${OUT}/linkr_debugger_task_shell_test"
+
+"${OUT}/linkr_debugger_task_shell_test"
 
 cc -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST \
