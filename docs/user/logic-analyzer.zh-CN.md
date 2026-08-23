@@ -325,7 +325,7 @@ Web UI 循环流式传输 600 样本的实时帧。每帧是一个无间隙的�
 
 ## 延伸阅读
 
-- [实现细节](../../doc/logic-analyzer.md) — 固件架构、API 参考、速率指导
+- [实现细节](../reference/logic-analyzer.md) — 固件架构、API 参考、速率指导
   和文件级源码索引
 - [PulseView](https://sigrok.org/wiki/PulseView)
 - [Sigrok 文件格式](https://sigrok.org/wiki/File_format:Sigrok/v2)

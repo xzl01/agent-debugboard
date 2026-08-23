@@ -11,7 +11,7 @@ retired: it receives no firmware builds, release artifacts, compatibility
 fixes, or hardware validation. RP2354 hardware requires a dedicated board
 definition and HIL validation before it can be declared supported.
 
-![Radxa Linkr Debugger promo](doc/marketing/radxa-linkr-debugger-promo.png)
+![Radxa Linkr Debugger promo](docs/assets/marketing/radxa-linkr-debugger-promo.png)
 
 ## Features
 
@@ -20,22 +20,22 @@ definition and HIL validation before it can be declared supported.
 | USB control | Composite USB: NCM HTTP/WS + CDC ACM fallback |
 | Host automation | Rust `linkr-host` for Web/gateway/Broker/MCP and raw UART RX archives, plus Rust CLI/TUI with JSON output |
 | Web UI | Dashboard at http://172.29.203.1/ |
-| Logic analyzer | PIO2+DMA, 100 kHz–125 MHz, WebSocket/raw-TCP Sigrok with a [common packed arena and current WIDE11 capture](doc/logic-analyzer.md) |
+| Logic analyzer | PIO2+DMA, 100 kHz–125 MHz, WebSocket/raw-TCP Sigrok with a [common packed arena and current WIDE11 capture](docs/reference/logic-analyzer.md) |
 | Power analyzer | Triggered capture with ring buffer, CSV/NDJSON export |
 | Power outputs | `12v_out`, `5v_out`, `20v_out`, `vdd_5v` |
-| ADC monitor | Current readings for `5v_out`, `12v_out`, and `20v_out` plus GP29/ADC3 voltage telemetry; see [doc/adc-telemetry.md](doc/adc-telemetry.md) |
+| ADC monitor | Current readings for `5v_out`, `12v_out`, and `20v_out` plus GP29/ADC3 voltage telemetry; see [docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md) |
 | Switch routes | Firmware-advertised TF/SD, USB hub mux, TF write-protect (`writable`/`protected`), VIN (1.8V/3.3V) |
-| GPIO | `GP7`–`GP20`; `GP29` remains cataloged but is input-only while owned by `adc3` (see [GP29 ownership](doc/adc-telemetry.md#gp29-ownership)) |
+| GPIO | `GP7`–`GP20`; `GP29` remains cataloged but is input-only while owned by `adc3` (see [GP29 ownership](docs/reference/adc-telemetry.md#gp29-ownership)) |
 | OTA update | MCUboot unsigned OTA |
 | Watchdog | Autonomous recovery to BOOTSEL |
-| Persistent configuration | [One explicit firmware-owned snapshot](doc/persistent-configuration.md); safe values restore at boot, dangerous values require confirmation, and clear leaves live hardware unchanged |
+| Persistent configuration | [One explicit firmware-owned snapshot](docs/reference/persistent-configuration.md); safe values restore at boot, dangerous values require confirmation, and clear leaves live hardware unchanged |
 | Captive portal | DHCP option 114/HTTP auto-open for Web UI |
 
 WIDE11 uses a 144184 B hardware slice and a 30720 B WS telemetry ring within the 149048 B total backing allocation.
 
 ADC3 contract, wire shapes, and GP29 ownership rules live in
-[doc/adc-telemetry.md](doc/adc-telemetry.md); the dated
-[2026-07-31 ADC3 telemetry HIL report](doc/testing/results/2026-07-31-adc3-telemetry-hil.md)
+[docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md); the dated
+[2026-07-31 ADC3 telemetry HIL report](docs/testing/results/2026-07-31-adc3-telemetry-hil.md)
 is the hardware-validation evidence for the GP29 direct-ownership subcase.
 
 `5V_FIN` is intentionally treated as a separate input/source power input. It is
@@ -45,7 +45,7 @@ not exposed as a controllable output.
 
 Persistent configuration is one explicit, firmware-owned snapshot on a
 single v1 wire format; see the
-[canonical contract](doc/persistent-configuration.md). The snapshot header is
+[canonical contract](docs/reference/persistent-configuration.md). The snapshot header is
 12 bytes; byte 4 version 1 is the only accepted version and byte 7 zero is
 the only accepted restore padding. Save captures live values, persists the
 v1 snapshot, and applies those values immediately, so a confirmed Save
@@ -60,9 +60,9 @@ the snapshot does not change live hardware.
 
 Local validation is not real-hardware HIL. The 2026-08-05 real-hardware HIL
 passed the v1 save-and-apply flow; see the
-[dated v1-save HIL report](doc/testing/results/2026-08-05-persistent-config-v1-save-hil.md).
+[dated v1-save HIL report](docs/testing/results/2026-08-05-persistent-config-v1-save-hil.md).
 The historical 2026-07-30 real-hardware HIL passed all six runner flows;
-see the [historical six-flow report](doc/testing/results/2026-07-30-persistent-config-hil.md).
+see the [historical six-flow report](docs/testing/results/2026-07-30-persistent-config-hil.md).
 Future local tests remain distinct from board HIL.
 
 ### Frozen Contract Summary
@@ -114,21 +114,27 @@ cargo run --manifest-path host-tools/Cargo.toml -- serve
 ```
 
 See
-[Host Tools](host-tools/README.md) and the [MCP server](doc/mcp-server.md).
+[Host Tools](host-tools/README.md) and the [MCP server](docs/reference/mcp-server.md).
 
 If the released host CLI is not downloaded or installed yet, see
 [Install the CLI](docs/user/install.md) for the stable release channel and the
 separate rolling nightly channel. Agents can use the bounded local
-[MCP server](doc/mcp-server.md) for shared UART and common board operations;
+[MCP server](docs/reference/mcp-server.md) for shared UART and common board operations;
 curl remains the cross-platform fallback. For automation through the CLI, prefer
 `--json`; parse `schema`, `ok`, `command`, and `error.code` instead of
 human-readable text.
 
 ## Documentation
 
-- **[User Guide](docs/user/)** — CLI, TUI, WebUI, OTA, OpenOCD, Logic Analyzer, Power Analyzer
-- **[Developer Guide](docs/developer/)** — Build, flash, contribute, hardware mapping
-- **[Persistent Configuration](doc/persistent-configuration.md)** — Firmware-owned snapshot, restore, and confirmation behavior
+The canonical tree lives under `docs/`. Start at the
+[Documentation Index](docs/README.md) for the full layout, including
+reference contracts, HIL procedures, hardware references, and shared
+artwork.
+
+- [User Guide](docs/user/README.md) — CLI, TUI, Web UI, OTA, OpenOCD, Logic Analyzer, Power Analyzer
+- [Developer Guide](docs/developer/README.md) — Build, flash, contribute, hardware mapping
+- [Testing](docs/testing/hil-functional-test-spec.md) — HIL spec and dated board-level evidence
+- [Persistent Configuration](docs/reference/persistent-configuration.md) — Firmware-owned snapshot, restore, and confirmation behavior
 
 ## For AI Agents
 
@@ -145,7 +151,7 @@ Before making repository changes, AI agents should also read
 - Firmware changes must verify and preserve the USB CDC ACM serial BOOTSEL fallback path before finishing.
 - Skill changes must include a subagent validation/test run.
 - When adding new functionality, add corresponding functional tests whenever practical.
-- Firmware and hardware-interactive host changes require HIL functional testing before conclusion; see `AGENTS.md` and `doc/testing/hil-functional-test-spec.md`.
+- Firmware and hardware-interactive host changes require HIL functional testing before conclusion; see `AGENTS.md` and `docs/testing/hil-functional-test-spec.md`.
 - Prefer describing board hardware in Device Tree whenever Zephyr bindings and the board model can express it cleanly.
 - Keep software implementation standard, consistent, and elegant; avoid ad hoc patterns that make maintenance, automation, or documentation harder to follow.
 - Keep MCU-side output as close as practical to raw interface values; prefer host-side interpretation, calibration, and presentation when that preserves the raw firmware contract.
@@ -153,7 +159,7 @@ Before making repository changes, AI agents should also read
 Recommended agent flow:
 
 ```sh
-# Preferred local Agent integration; see doc/mcp-server.md for client config.
+# Preferred local Agent integration; see docs/reference/mcp-server.md for client config.
 cargo run --manifest-path host-tools/Cargo.toml -- mcp
 
 # CLI fallback and diagnostics.
@@ -175,9 +181,8 @@ apps/radxa_linkr_debugger/        Zephyr application
 apps/radxa_linkr_debugger/src/    Firmware source and shared board model
 apps/radxa_linkr_debugger/tests/  Unit tests
 cmd-ng/                          Primary Rust host CLI/TUI
-host-tools/                      Rust Web host, device gateway, Serial Broker, and MCP
-web/                             React UI and migration-only Node host adapters
-doc/                          Hardware documents, schematics, and marketing assets
-skills/radxa-linkr-debugger/      Agent-facing skill and operating guide
-west.yml                      Zephyr workspace manifest
+web/                             Web UI and device bridge
+docs/                            Documentation tree (user, developer, reference, testing, hardware, and assets)
+skills/radxa-linkr-debugger/     Agent-facing skill and operating guide
+west.yml                         Zephyr workspace manifest
 ```

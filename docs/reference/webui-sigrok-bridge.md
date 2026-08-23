@@ -33,7 +33,7 @@ Binary frames are routed directly to the sigrok protocol handler without convers
 
 ## Protocol
 
-The Web UI uses the sigrok binary protocol as documented in `doc/sigrok-linkr-v1.md`.
+The Web UI uses the sigrok binary protocol as documented in `docs/reference/sigrok-linkr-v1.md`.
 
 Key protocol parameters for Web UI:
 - **CONFIG v1 pre/post**: uint16; bounded captures use 1..65535 and stream uses
@@ -99,6 +99,6 @@ The sigrok-over-WebSocket path provides:
 
 ## See Also
 
-- `doc/sigrok-linkr-v1.md` — Sigrok protocol specification
-- `doc/logic-analyzer.md` — Logic analyzer overview
-- `doc/capture-trigger-architecture.md` — Hardware capture architecture
+- `docs/reference/sigrok-linkr-v1.md` — Sigrok protocol specification
+- `docs/reference/logic-analyzer.md` — Logic analyzer overview
+- `docs/reference/capture-trigger-architecture.md` — Hardware capture architecture

@@ -63,4 +63,4 @@ transfer function.
 ## Schematic reference
 
 The current schematic copy is stored at:
-- [doc/radxa-linkr-debugger-schematic-x1.1.pdf](../../doc/radxa-linkr-debugger-schematic-x1.1.pdf)
+- [docs/hardware/radxa-linkr-debugger-schematic-x1.1.pdf](../hardware/radxa-linkr-debugger-schematic-x1.1.pdf)

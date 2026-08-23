@@ -14,7 +14,7 @@ shape.
 > directly-observed evidence on the canonical build for HIL spec 4b.1,
 > 4b.2, 4b.3, 4b.4, the direct GP29 ownership subcase of 4b.5, and the
 > combined-UF2 dual BOOTSEL recovery guards from sections 9 and 10; see
-> [the dated report](testing/results/2026-07-31-adc3-telemetry-hil.md).
+> [the dated report](../testing/results/2026-07-31-adc3-telemetry-hil.md).
 > The historical v1 snapshot compatibility subcases of 4b.5, the full HIL
 > spec 4b.6 boundary, and the rolling nightly checks (HIL spec section
 > 12h) are out of scope for that report. Local `app adc` unit tests and
@@ -311,7 +311,7 @@ This contract is enforced through a small, consistent set of files:
   the rich HTTP responses, and the four-descriptor runtime catalog.
 - `skills/radxa-linkr-debugger/SKILL.md` keeps the curl-first examples
   above and points users back here for the wire shapes.
-- `doc/testing/hil-functional-test-spec.md` carries the ADC3-specific
+- `docs/testing/hil-functional-test-spec.md` carries the ADC3-specific
   checklist items required before any claim of validation.
 
 ## 8. Things This Contract Does Not Cover

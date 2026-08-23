@@ -72,7 +72,7 @@ only as a hard-restart fallback when soft reset is not available.
 
 ## Full Workflow
 
-See [doc/openocd/README.md](../../doc/openocd/README.md) for the full OpenOCD
+See [docs/reference/openocd/README.md](../reference/openocd/README.md) for the full OpenOCD
 workflow and configuration details.
 
 ## Related

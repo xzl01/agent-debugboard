@@ -70,7 +70,7 @@ firmware reuses the prepared common packed ring/sink lifecycle, treats packed
 samples after prefill as the sole trigger authority, scans edges in software,
 and freezes and drains the exact `[T-pre,T+post)` window. No invented IRQ pairing
 or new buffer is used. Existing deep post behavior remains when pre=0. See the
-[2026-07-28 HIL report](testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md).
+[2026-07-28 HIL report](../testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md).
 
 ### Hardware Buffer
 
@@ -211,7 +211,7 @@ covered by the historical 2026-07-27 freeze-final HIL matrices below.
 **Historical WIDE12 baseline (not current WIDE11; retained for context only)**:
 SM-A (GP10-GP20, 11-bit autopush22, 200000 B) plus SM-B (GP29, 1-bit autopush32,
 12500 B); two DMA channels, 212500 B total source; 216684 B shared arena.
-See `doc/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md` for the
+See `docs/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md` for the
 WIDE12 historical evidence.
 
 #### Historical 2026-07-27 WIDE11 freeze-final HIL evidence
@@ -245,7 +245,7 @@ deep-burst path on the representative HIL setup. They are not evidence for the
   and post-capture board-health recovery. This is the only physical-stimulus mapping
   pattern covered by the freeze-final HIL; **it does not demonstrate high-state
   mapping on GP18–GP20 or simultaneous dual-lane transitions**. See
-  `doc/testing/hil-functional-test-spec.md` and the SKILL before claiming full
+  `docs/testing/hil-functional-test-spec.md` and the SKILL before claiming full
   WIDE11 high-state mapping.
 - **Telemetry isolation** (`logic-analyzer-wide11-telemetry-isolation-freeze-final-sequential.json`):
   pass. The arena lease fully quiesces the board's ADC HTTP/telemetry
@@ -264,7 +264,7 @@ rate, not the quantized actual: WIDE11 is capped at requested 100 MHz, while
 SINGLE/FAST8 stay at requested up to 125 MHz.
 
 Historical WIDE11 generic packed-burst HIL report:
-`doc/testing/results/2026-07-27-logic-analyzer-generic-packed-burst-hil.md`.
+`docs/testing/results/2026-07-27-logic-analyzer-generic-packed-burst-hil.md`.
 
 ### Bounded Capture Engine (pre-trigger and post-trigger)
 
@@ -352,7 +352,7 @@ Native sigrok-cli and PulseView connect via raw-TCP on port 5556:
 sigrok-cli -d linkr-debugger:conn=tcp-raw/172.29.203.1/5556 --scan
 ```
 
-The protocol is the sigrok binary protocol (see `doc/sigrok-linkr-v1.md`).
+The protocol is the sigrok binary protocol (see `docs/reference/sigrok-linkr-v1.md`).
 This is separate from the Web UI WebSocket path.
 
 ## File Reference

@@ -4,7 +4,7 @@
 
 Radxa Linkr Debugger 是一块 USB 控制的硬件桥接板，用于自动化 bring-up、恢复和调试。一根 USB 线连到 PC，就能控制目标板供电、启动模式、SD 路由、电流监测和 GPIO——全部可通过 CLI、Web UI 或 AI Agent 脚本化操作。
 
-![Radxa Linkr Debugger 调试板俯视示意图](../../doc/marketing/radxa-linkr-debugger-board-top-view.svg)
+![Radxa Linkr Debugger 调试板俯视示意图](../assets/marketing/radxa-linkr-debugger-board-top-view.svg)
 
 *该俯视图用于快速定位主要接口；电气定义和针脚编号请以下方表格及原理图为准。*
 
@@ -31,7 +31,7 @@ Radxa Linkr Debugger 是一块 USB 控制的硬件桥接板，用于自动化 br
 请以下方 J16 针脚表为准。
 
 以下连接器编号以当前 G3 原理图
-（[`doc/radxa-linkr-debugger-schematic-x1.1.pdf`](../../doc/radxa-linkr-debugger-schematic-x1.1.pdf)）
+（[`docs/hardware/radxa-linkr-debugger-schematic-x1.1.pdf`](../hardware/radxa-linkr-debugger-schematic-x1.1.pdf)）
 为准。连接排线或探针前，请先确认板上丝印的 1 脚标记。
 
 ## 接口和端口

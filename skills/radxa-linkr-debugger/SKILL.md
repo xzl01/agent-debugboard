@@ -15,7 +15,7 @@ control, and target UART work when its tools are available. The unified
 installer runs it under `linkr-tray`; `linkr-host mcp` remains the stdio
 compatibility path. MCP shares the host Serial Broker with the Web UI and provides
 cursor-based reads, bounded waits, and short exclusive writes. See
-`./doc/mcp-server.md` from the repository root.
+`./docs/reference/mcp-server.md` from the repository root.
 
 The tray enables Host-managed raw UART RX archiving. Bridge/MCP UART sessions
 are stored as `linkr-serial-log.v1` under the user's application-data directory;
@@ -83,7 +83,7 @@ for stdio-only clients; it completes the MCP handshake immediately, then starts
 and supervises the loopback Host in the background.
 Temporary Host startup failures use bounded exponential retry and must not be
 treated as a permanently disabled MCP server. Client configuration and the
-complete tool contract are in `./doc/mcp-server.md`. The Node adapter is
+complete tool contract are in `./docs/reference/mcp-server.md`. The Node adapter is
 migration-only and must not be preferred for new installations.
 
 - Read-only: `linkr_board_status`, `linkr_adc_read`, `linkr_serial_status`,
@@ -401,7 +401,7 @@ applies it immediately; every structurally valid v1 snapshot replays every
 saved entry, including dangerous values, on every future normal boot. A
 stored blob whose version byte is not 1 is never replayed, migrated, or
 auto-cleared. The full model and API contract are in
-[Persistent Configuration](../../doc/persistent-configuration.md).
+[Persistent Configuration](../../docs/reference/persistent-configuration.md).
 
 ### Read Saved Configuration
 
@@ -647,7 +647,7 @@ output GPIOs for safe cleanup plus readback validation. The
 two consecutive reboots, asserting `snapshot.version: 1`, `pending: 0`,
 and full replay of every saved entry on each boot. The 2026-08-05
 real-hardware HIL report records this flow as PASS; see the
-[dated v1-save HIL report](../../doc/testing/results/2026-08-05-persistent-config-v1-save-hil.md).
+[dated v1-save HIL report](../../docs/testing/results/2026-08-05-persistent-config-v1-save-hil.md).
 
 <!-- persistent-config-example: skill-config-hil-dry-run -->
 ```sh
@@ -657,11 +657,11 @@ sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh --dry-run safe-
 Todo 14 checker, mock, and fixture results are local proof of the documented
 contracts only. Local validation is not real-hardware HIL. The 2026-08-05
 real-hardware HIL passed the v1 save-and-apply flow; see the
-[dated v1-save HIL report](../../doc/testing/results/2026-08-05-persistent-config-v1-save-hil.md).
+[dated v1-save HIL report](../../docs/testing/results/2026-08-05-persistent-config-v1-save-hil.md).
 The historical 2026-07-30 real-hardware HIL passed all six runner flows
 for persistence, confirmation, OTA retention, ROM BOOTSEL retention, and
 CDC fallback; see the
-[historical six-flow report](../../doc/testing/results/2026-07-30-persistent-config-hil.md).
+[historical six-flow report](../../docs/testing/results/2026-07-30-persistent-config-hil.md).
 Future local checks remain distinct from board HIL and cannot replace another
 board run when hardware behavior changes.
 
@@ -793,7 +793,7 @@ Firmware reuses the prepared common packed ring/sink lifecycle. Packed samples
 are the sole trigger authority after prefill, software scans the edge, and the
 firmware freezes and drains the exact `[T-pre,T+post)` window. No invented IRQ
 pairing or new buffer is used. Existing deep post behavior remains when pre=0.
-The dated evidence is [2026-07-28 pre-trigger and UART HIL](../../doc/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md).
+The dated evidence is [2026-07-28 pre-trigger and UART HIL](../../docs/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md).
 
 GP7-GP9 are not available in Sigrok modes. Web UI sigrok is limited to
 GP10-GP20 (GP29 excluded from LA and input-only while used by ADC3). FAST8 mode
@@ -829,7 +829,7 @@ frames, max 1024 samples per frame, 140000 B total payload. Two-phase START prep
 ownership and quiesce before the response. NONE sends START_RESP in RUNNING state with no
 ARMED event; triggered captures send START_RESP in ARMED state followed by the ARMED event.
 GO then synchronously enables the sampler SM(s). The historical WIDE12 predecessor
-evidence remains at `doc/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md`;
+evidence remains at `docs/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md`;
 it is not current WIDE11 evidence.
 
 On RP2350 the capture backend uses a 32768-byte aligned hardware DMA write ring
@@ -936,7 +936,7 @@ For native sigrok/PulseView, connect via raw-TCP port 5556:
 sigrok-cli -d linkr-debugger:conn=tcp-raw/<board-ip>/5556 --scan
 ```
 
-Full semantics and limits: `doc/logic-analyzer.md`.
+Full semantics and limits: `docs/reference/logic-analyzer.md`.
 
 High-rate recording is a separate websocket workflow. Use the Rust CLI when you
 need to write NDJSON telemetry records to a file. It defaults to 1000Hz and
@@ -1109,7 +1109,7 @@ firmware-owned physical layout metadata: `layoutGroup`, `layoutLabel`,
 `GP10`-`GP20` (J16). `GP29` remains in the persisted/safe catalog but
 is owned by the `adc3` voltage monitor on this firmware and is
 **input-only**; output attempts fail at the firmware layer (see
-[GP29 ownership in adc-telemetry.md](../../doc/adc-telemetry.md#gp29-ownership)).
+[GP29 ownership in adc-telemetry.md](../../docs/reference/adc-telemetry.md#gp29-ownership)).
 Control targets may use canonical `GPxx`, raw numeric pins such as `4`, or
 board-specific exact notes such as `CON_MAS` or `J16_PIN1`.
 
@@ -1183,12 +1183,12 @@ combined UF2 1521152 bytes
 OTA bin 734692 bytes
 (SHA256 `fb68a90bce315e7ed2f3b236b128b1fc37df6afb010c50b9d3e95e4f0084284f`).
 The dated
-[ADC3 telemetry HIL report](../../doc/testing/results/2026-07-31-adc3-telemetry-hil.md)
+[ADC3 telemetry HIL report](../../docs/testing/results/2026-07-31-adc3-telemetry-hil.md)
 records the exact build and recovery evidence for this baseline, including
 the combined-UF2 dual BOOTSEL recovery. The earlier 701900/847832 flash
 (82.79%) with 475896/532480 RAM (89.37%) and 1455616-byte combined UF2
 baseline is historical; the dated
-[pre-trigger and UART HIL report](../../doc/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md)
+[pre-trigger and UART HIL report](../../docs/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md)
 remains the authority for that build. Earlier freeze-build sizes are
 historical and remain unchanged in their dated reports.
 
@@ -1308,7 +1308,7 @@ production acceptance. The HIL must exercise the full OTA sequence:
 upload the MCUboot-format payload, trigger `ota test`, observe the test boot
 reboot, confirm the watchdog health gate auto-confirms or manually confirm,
 and verify rollback behavior when the watchdog resets before confirm. See
-`doc/testing/hil-functional-test-spec.md` for the full checklist. HIL is
+`docs/testing/hil-functional-test-spec.md` for the full checklist. HIL is
 required before final acceptance; if any step is deferred or blocked, record it
 explicitly and do not claim that the corresponding validation has passed.
 
@@ -1558,7 +1558,7 @@ The four ADC descriptors in this firmware are `5v_out`, `12v_out`,
 `20v_out` (current, µA, with `power_enabled`) and `adc3` (voltage on
 GP29, µV). The HTTP rich read and the compact WebSocket single-sample
 and batch frames live in
-[doc/adc-telemetry.md](../../doc/adc-telemetry.md); that file is the
+[docs/reference/adc-telemetry.md](../../docs/reference/adc-telemetry.md); that file is the
 authoritative contract. Highlights:
 
 - `GET /api/v1/adc/read` exposes both raw ADC diagnostics

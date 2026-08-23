@@ -96,7 +96,7 @@ Before concluding such a change, the following must be verified on real hardware
 - BOOTSEL entry path
 - corresponding functional tests for new features when practical
 
-Detailed checklist and procedures are maintained in `doc/testing/hil-functional-test-spec.md`.
+Detailed checklist and procedures are maintained in `docs/testing/hil-functional-test-spec.md`.
 
 ## Test organization and registration
 
@@ -117,7 +117,7 @@ test out of the local entry point.
   must be registered there.
 - Live HIL tests that require a connected debugger are not part of the offline
   unit runner. They must state their hardware prerequisites and follow
-  `doc/testing/hil-functional-test-spec.md`.
+  `docs/testing/hil-functional-test-spec.md`.
 - Run `node scripts/check-test-registration.mjs --root .` after adding,
   moving, or renaming tests. The registration check must remain in the complete
   validation workflow.

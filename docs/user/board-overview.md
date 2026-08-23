@@ -4,7 +4,7 @@
 
 Radxa Linkr Debugger is a USB-controlled hardware bridge for automated board bring-up, recovery, and debug. One USB cable to your PC gives you control over target power, boot mode, SD routing, current monitoring, and GPIO — all scriptable from the CLI, Web UI, or an AI agent.
 
-![Radxa Linkr Debugger top-view board illustration](../../doc/marketing/radxa-linkr-debugger-board-top-view.svg)
+![Radxa Linkr Debugger top-view board illustration](../assets/marketing/radxa-linkr-debugger-board-top-view.svg)
 
 *Top-view illustration for locating the major connectors. Use the connector
 tables and schematic below for electrical definitions and pin numbering.*
@@ -33,7 +33,7 @@ The simplified illustration does not separately show the J16 safe GPIO header;
 use the J16 pin table below when connecting GPIO or logic-analyzer probes.
 
 Connector numbering below follows the current G3 schematic
-([`doc/radxa-linkr-debugger-schematic-x1.1.pdf`](../../doc/radxa-linkr-debugger-schematic-x1.1.pdf)).
+([`docs/hardware/radxa-linkr-debugger-schematic-x1.1.pdf`](../hardware/radxa-linkr-debugger-schematic-x1.1.pdf)).
 Before attaching a cable or probe, confirm the pin-1 marker on the board
 silkscreen.
 

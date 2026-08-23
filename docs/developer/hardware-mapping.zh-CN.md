@@ -59,4 +59,4 @@ MCU 同时上报原始 ADC 调试值，以及通过 Zephyr
 ## 原理图参考
 
 当前原理图副本放在：
-- [doc/radxa-linkr-debugger-schematic-x1.1.pdf](../../doc/radxa-linkr-debugger-schematic-x1.1.pdf)
+- [docs/hardware/radxa-linkr-debugger-schematic-x1.1.pdf](../hardware/radxa-linkr-debugger-schematic-x1.1.pdf)

@@ -41,7 +41,7 @@ cargo test --manifest-path cmd-ng/Cargo.toml --all-targets
 - 只要实际可行，新功能对应的功能测试
 
 详细检查清单和流程维护在
-[doc/testing/hil-functional-test-spec.md](../../doc/testing/hil-functional-test-spec.md)。
+[docs/testing/hil-functional-test-spec.md](../testing/hil-functional-test-spec.md)。
 
 ## CI 验证
 

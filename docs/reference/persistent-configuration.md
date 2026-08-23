@@ -620,11 +620,11 @@ not require the board. They are not real-hardware HIL.
 
 The 2026-08-05 real-hardware HIL passed the v1 save-and-apply flow.
 See the
-[dated v1-save persistent-configuration HIL report](testing/results/2026-08-05-persistent-config-v1-save-hil.md).
+[dated v1-save persistent-configuration HIL report](../testing/results/2026-08-05-persistent-config-v1-save-hil.md).
 The historical 2026-07-30 real-hardware HIL passed all six runner flows; see
-the [historical six-flow report](testing/results/2026-07-30-persistent-config-hil.md).
+the [historical six-flow report](../testing/results/2026-07-30-persistent-config-hil.md).
 The board-level procedure remains defined by
-[doc/testing/hil-functional-test-spec.md](testing/hil-functional-test-spec.md)
+[docs/testing/hil-functional-test-spec.md](../testing/hil-functional-test-spec.md)
 and validated:
 
 - Boot defaults first, then v1 full restore replays every saved entry,
@@ -651,69 +651,69 @@ files and this document together.
 
 Firmware implementation:
 
-- [apps/radxa_linkr_debugger/src/linkr_debugger_config_service.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_service.c):
+- [apps/radxa_linkr_debugger/src/linkr_debugger_config_service.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_service.c):
   service mutex, capture/flash owner acquisition and reverse release, save
   (persist plus replay), boot restore, and clear entry points.
-- [apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c):
+- [apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c):
   ten-stage replay order shared by Save and boot restore, and
   stop-first-failure replay.
-- [apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c):
+- [apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c):
   catalog, magic `LRCF`, version `1`, entry format, encode and decode
   validation, dangerous classification.
-- [apps/radxa_linkr_debugger/src/linkr_debugger_config_store.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_store.c):
+- [apps/radxa_linkr_debugger/src/linkr_debugger_config_store.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_store.c):
   Zephyr Settings backend, `linkr/config/snapshot` key, `storage_partition`
   mount, save and clear semantics.
-- [apps/radxa_linkr_debugger/src/linkr_debugger_config_policy.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_policy.c):
+- [apps/radxa_linkr_debugger/src/linkr_debugger_config_policy.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_policy.c):
   request resolution, snapshot projection, canonicalization, and
   confirmation report population.
-- [apps/radxa_linkr_debugger/src/linkr_debugger_config_http.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_http.c):
+- [apps/radxa_linkr_debugger/src/linkr_debugger_config_http.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_http.c):
   HTTP routing, body accumulation, response dispatch, `Cache-Control:
   no-store`.
-- [apps/radxa_linkr_debugger/src/linkr_debugger_config_http_encode.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_http_encode.c):
+- [apps/radxa_linkr_debugger/src/linkr_debugger_config_http_encode.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_http_encode.c):
   envelope serialization for `get`, `save`, `clear`, and the error
   envelope with `dangerous_items` and `activity`.
-- [apps/radxa_linkr_debugger/src/linkr_debugger_config_http_result.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_http_result.c):
+- [apps/radxa_linkr_debugger/src/linkr_debugger_config_http_result.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_http_result.c):
   HTTP status mapping and error code names.
-- [apps/radxa_linkr_debugger/src/linkr_debugger_config_shell.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_shell.c):
+- [apps/radxa_linkr_debugger/src/linkr_debugger_config_shell.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_shell.c):
   CDC ACM `config show|save|clear` grammar and error text.
-- [apps/radxa_linkr_debugger/src/linkr_debugger_config_summary.c](../apps/radxa_linkr_debugger/src/linkr_debugger_config_summary.c):
+- [apps/radxa_linkr_debugger/src/linkr_debugger_config_summary.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_summary.c):
   compact status WebSocket summary fields `available`, `reason`,
   `saved_count`, `pending_count`.
-- [apps/radxa_linkr_debugger/src/linkr_debugger_capture_arbiter.c](../apps/radxa_linkr_debugger/src/linkr_debugger_capture_arbiter.c):
+- [apps/radxa_linkr_debugger/src/linkr_debugger_capture_arbiter.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_capture_arbiter.c):
   capture owner arbitration with the logic analyzer, the sigrok linkr sink,
   and the persistent-configuration service.
-- [apps/radxa_linkr_debugger/src/linkr_debugger_flash_arbiter.c](../apps/radxa_linkr_debugger/src/linkr_debugger_flash_arbiter.c):
+- [apps/radxa_linkr_debugger/src/linkr_debugger_flash_arbiter.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_flash_arbiter.c):
   flash owner arbitration between OTA and the persistent-configuration
   service.
-- [apps/radxa_linkr_debugger/boards/rpi_pico2_rp2350a_m33_mcuboot.conf](../apps/radxa_linkr_debugger/boards/rpi_pico2_rp2350a_m33_mcuboot.conf):
+- [apps/radxa_linkr_debugger/boards/rpi_pico2_rp2350a_m33_mcuboot.conf](../../apps/radxa_linkr_debugger/boards/rpi_pico2_rp2350a_m33_mcuboot.conf):
   `CONFIG_NVS`, `CONFIG_SETTINGS`, `CONFIG_SETTINGS_NVS`,
   `CONFIG_NVS_DATA_CRC`, and `CONFIG_SETTINGS_NVS_SECTOR_COUNT=8`.
 
 Host CLI and TUI implementation:
 
-- [cmd-ng/src/persistent_config.rs](../cmd-ng/src/persistent_config.rs):
+- [cmd-ng/src/persistent_config.rs](../../cmd-ng/src/persistent_config.rs):
   envelope, item, snapshot, and busy types shared by CLI and TUI.
-- [cmd-ng/src/persistent_config_validate.rs](../cmd-ng/src/persistent_config_validate.rs):
+- [cmd-ng/src/persistent_config_validate.rs](../../cmd-ng/src/persistent_config_validate.rs):
   envelope field validation rules for `get`, `save`, `clear`, and
   the known error codes.
-- [cmd-ng/src/persistent_config_render.rs](../cmd-ng/src/persistent_config_render.rs):
+- [cmd-ng/src/persistent_config_render.rs](../../cmd-ng/src/persistent_config_render.rs):
   human-readable renderer for the three verbs.
-- [cmd-ng/src/persistent_config_value.rs](../cmd-ng/src/persistent_config_value.rs):
+- [cmd-ng/src/persistent_config_value.rs](../../cmd-ng/src/persistent_config_value.rs):
   per-kind value parsing and kind-mismatch rejection.
-- [cmd-ng/src/config_command.rs](../cmd-ng/src/config_command.rs):
+- [cmd-ng/src/config_command.rs](../../cmd-ng/src/config_command.rs):
   `config show|save|clear` grammar, item-order preservation, and
   `--confirm` handling.
-- [cmd-ng/src/client.rs](../cmd-ng/src/client.rs):
+- [cmd-ng/src/client.rs](../../cmd-ng/src/client.rs):
   HTTP client for `GET`, `PUT /api/v1/config`,
   `DELETE /api/v1/config`, default base URL, and envelope validation.
-- [cmd-ng/src/tui/config_io.rs](../cmd-ng/src/tui/config_io.rs): TUI mutation
+- [cmd-ng/src/tui/config_io.rs](../../cmd-ng/src/tui/config_io.rs): TUI mutation
   plus authoritative refresh.
 
 Tests:
 
-- [cmd-ng/src/persistent_config_tests.rs](../cmd-ng/src/persistent_config_tests.rs):
+- [cmd-ng/src/persistent_config_tests.rs](../../cmd-ng/src/persistent_config_tests.rs):
   HTTP contract, parser, and renderer behavior.
-- [cmd-ng/src/persistent_config_model_tests.rs](../cmd-ng/src/persistent_config_model_tests.rs):
+- [cmd-ng/src/persistent_config_model_tests.rs](../../cmd-ng/src/persistent_config_model_tests.rs):
   envelope validation cases.
-- [cmd-ng/src/tui/config_io_tests.rs](../cmd-ng/src/tui/config_io_tests.rs):
+- [cmd-ng/src/tui/config_io_tests.rs](../../cmd-ng/src/tui/config_io_tests.rs):
   mutation-plus-refresh, busy, storage error, and confirmation behavior.

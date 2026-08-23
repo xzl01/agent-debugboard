@@ -70,7 +70,7 @@ target extended-remote :3333
 ## 完整流程
 
 完整 OpenOCD 工作流和配置详情见
-[doc/openocd/README.md](../../doc/openocd/README.md)。
+[docs/reference/openocd/README.md](../reference/openocd/README.md)。
 
 ## 相关文档
 

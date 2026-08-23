@@ -336,7 +336,7 @@ stream data.
 
 ## Further Reading
 
-- [Implementation details](../../doc/logic-analyzer.md) — firmware architecture,
+- [Implementation details](../reference/logic-analyzer.md) — firmware architecture,
   API reference, rate guidance, and file-level source map
 - [PulseView](https://sigrok.org/wiki/PulseView)
 - [Sigrok file format](https://sigrok.org/wiki/File_format:Sigrok/v2)

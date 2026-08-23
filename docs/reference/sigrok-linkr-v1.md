@@ -332,7 +332,7 @@ same artifact as the historical WIDE12 baseline.
 **Historical WIDE12 baseline (not current WIDE11; retained for context only)**:
 SM-A (GP10-GP20, 11-bit autopush22, 200000 B) plus SM-B (GP29, 1-bit autopush32,
 12500 B); two DMA channels, 212500 B total source; 216684 B shared arena.
-See `doc/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md` for the
+See `docs/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md` for the
 WIDE12 historical evidence.
 
 HELLO server_flags bit 0 advertises CONFIG_V2 capability and bit 1 advertises

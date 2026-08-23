@@ -183,9 +183,9 @@ loopback Host automatically:
 host-tools/target/release/linkr-host mcp
 ```
 
-See the [MCP setup guide](../../doc/mcp-server.md) for the Codex/OpenCode HTTP and stdio
+See the [MCP setup guide](../reference/mcp-server.md) for the Codex/OpenCode HTTP and stdio
 configuration. The current packaging and first-run paths are summarized in the
-[installation flow diagram](../../doc/current-installation-flow.png).
+[installation flow diagram](../assets/architecture/current-installation-flow.png).
 
 ## Install or update debugger firmware
 

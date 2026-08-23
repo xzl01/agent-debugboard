@@ -45,7 +45,7 @@ Tests:
 Schematics:
 
 ```text
-doc/radxa-linkr-debugger-schematic-x1.1.pdf  (RP2350A)
+docs/hardware/radxa-linkr-debugger-schematic-x1.1.pdf  (RP2350A)
 ```
 
 The USB interface enumerates as a composite USB device. The board exposes its
@@ -85,7 +85,7 @@ and power-output off-to-on triggers are supported. Firmware reports the trigger
 device timestamp, sample sequence, and telemetry dropped counter; the host
 persists the waveform from ADC telemetry. Only one trigger owner is allowed at
 a time. See
-[the power analyzer protocol](../../doc/power-analyzer.md).
+[the power analyzer protocol](../../docs/reference/power-analyzer.md).
 
 ### ADC Telemetry
 
@@ -116,7 +116,7 @@ then carries `values: i32[]` positionally aligned with channels, one
 scalar per channel per sample. `power_enabled_mask` is an unsigned 8-bit
 field whose bits map to current channels only (kind="current"); the
 voltage channel does not carry a power state. See the authoritative
-contract in [doc/adc-telemetry.md](../../doc/adc-telemetry.md).
+contract in [docs/reference/adc-telemetry.md](../../docs/reference/adc-telemetry.md).
 
 `adc read adc3` is a thin convenience path used by the host CLI and
 Web UI to surface the new voltage reading. The `GET /api/v1/adc/read`
@@ -186,7 +186,7 @@ curl -fsS -X PUT -H 'Content-Type: application/json' \
 The firmware keeps exactly one explicit snapshot of selected control values
 that survives reboot, MCUboot OTA, and combined-UF2 recovery. The canonical
 design and full client surface are documented in
-[doc/persistent-configuration.md](../../doc/persistent-configuration.md); this
+[docs/reference/persistent-configuration.md](../../docs/reference/persistent-configuration.md); this
 section describes the firmware-side contract the clients depend on.
 
 ### Storage And Startup
@@ -385,10 +385,10 @@ documentation grammar; they do not prove real-board persistence across
 reboot, MCUboot OTA, or combined-UF2 recovery. Local validation is not
 real-hardware HIL. The 2026-08-05 real-hardware HIL passed the v1
 save-and-apply flow; see the
-[dated v1-save HIL report](../../doc/testing/results/2026-08-05-persistent-config-v1-save-hil.md).
+[dated v1-save HIL report](../../docs/testing/results/2026-08-05-persistent-config-v1-save-hil.md).
 The historical 2026-07-30 real-hardware HIL passed all six runner flows;
-see the [historical six-flow report](../../doc/testing/results/2026-07-30-persistent-config-hil.md).
-The HIL procedure lives in `doc/testing/hil-functional-test-spec.md`. Future
+see the [historical six-flow report](../../docs/testing/results/2026-07-30-persistent-config-hil.md).
+The HIL procedure lives in `docs/testing/hil-functional-test-spec.md`. Future
 local tests remain distinct from board HIL and do not replace a new board
 run when hardware behavior changes.
 
@@ -551,8 +551,8 @@ ring. The allocation is sized to `max(normal, burst)=149048 B`; WIDE11 does not
 extend it, and WIDE12 is historical only. GP29 is excluded from WIDE11 because
 it is owned by ADC3 and input-only; see [GP29 ADC3 ownership](#gp29-adc3-ownership).
 See the
-[authoritative logic-analyzer architecture and matrices](../../doc/logic-analyzer.md)
-and the [dated WIDE11 HIL evidence](../../doc/testing/results/2026-07-27-logic-analyzer-generic-packed-burst-hil.md).
+[authoritative logic-analyzer architecture and matrices](../../docs/reference/logic-analyzer.md)
+and the [dated WIDE11 HIL evidence](../../docs/testing/results/2026-07-27-logic-analyzer-generic-packed-burst-hil.md).
 The dated 2026-07-27 report is historical `pre=0` evidence and does not validate
 the later pre-trigger implementation.
 CDC ACM shell BOOTSEL and combined-UF2 HTTP BOOTSEL recovery were both

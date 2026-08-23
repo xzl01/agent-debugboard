@@ -203,5 +203,5 @@ window.
 
 ## Further Reading
 
-- [Protocol details](../../doc/power-analyzer.md) — capture protocol, WebSocket
+- [Protocol details](../reference/power-analyzer.md) — capture protocol, WebSocket
   message format, and firmware-side implementation

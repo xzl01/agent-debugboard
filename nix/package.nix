@@ -42,9 +42,9 @@ rustPlatform.buildRustPackage {
       "$out/share/radxa-linkr-debugger/skills/radxa-linkr-debugger/scripts/install.sh"
     install -Dm755 skills/radxa-linkr-debugger/scripts/install.ps1 \
       "$out/share/radxa-linkr-debugger/skills/radxa-linkr-debugger/scripts/install.ps1"
-    install -Dm644 doc/openocd/README.md \
+    install -Dm644 docs/reference/openocd/README.md \
       "$out/share/doc/radxa-linkr-debugger/openocd.md"
-    install -Dm644 doc/testing/hil-functional-test-spec.md \
+    install -Dm644 docs/testing/hil-functional-test-spec.md \
       "$out/share/doc/radxa-linkr-debugger/testing/hil-functional-test-spec.md"
 
     if [ -d man ]; then

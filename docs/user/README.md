@@ -2,6 +2,8 @@
 
 [中文](README.zh-CN.md)
 
+Welcome to the Radxa Linkr Debugger user guide. This section covers day-to-day use of the board and host tools. For the full documentation tree, see the [Documentation Index](../README.md).
+
 ## Getting Started
 
 - [Quick Start](quickstart.md) — Get running in 5 minutes

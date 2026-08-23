@@ -42,7 +42,7 @@ Before concluding such a change, the following must be verified on real hardware
 - corresponding functional tests for new features when practical
 
 Detailed checklist and procedures are maintained in
-[doc/testing/hil-functional-test-spec.md](../../doc/testing/hil-functional-test-spec.md).
+[docs/testing/hil-functional-test-spec.md](../testing/hil-functional-test-spec.md).
 
 ## CI validation
 

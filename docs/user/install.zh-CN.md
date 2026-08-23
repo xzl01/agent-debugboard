@@ -173,9 +173,9 @@ host-tools/target/release/linkr-host doctor
 host-tools/target/release/linkr-host mcp
 ```
 
-Codex/OpenCode 的 HTTP 和 stdio 配置参见 [MCP 配置指南](../../doc/mcp-server.md)。
+Codex/OpenCode 的 HTTP 和 stdio 配置参见 [MCP 配置指南](../reference/mcp-server.md)。
 当前打包和首次启动路径见
-[安装流程图](../../doc/current-installation-flow.png)。
+[安装流程图](../assets/architecture/current-installation-flow.png)。
 
 ## 安装或更新调试器固件
 

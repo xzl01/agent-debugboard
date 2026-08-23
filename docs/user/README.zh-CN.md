@@ -2,6 +2,8 @@
 
 [English](README.md)
 
+欢迎来到 Radxa Linkr Debugger 用户指南。本章节涵盖调试板与主机工具的日常使用。完整文档树请参见[文档索引](../README.md)。
+
 ## 入门
 
 - [快速入门](quickstart.zh-CN.md) — 5 分钟跑起来

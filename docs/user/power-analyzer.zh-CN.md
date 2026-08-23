@@ -182,5 +182,5 @@ Q6A），可手动指定为 **U-Boot** 或 **UEFI**。
 
 ## 延伸阅读
 
-- [协议细节](../../doc/power-analyzer.md) — 捕获协议、WebSocket 消息格式
+- [协议细节](../reference/power-analyzer.md) — 捕获协议、WebSocket 消息格式
   和固件端实现
