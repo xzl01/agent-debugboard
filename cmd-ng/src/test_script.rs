@@ -516,7 +516,7 @@ pub fn apply_defaults(step: &mut TestStep) {
             serde_json::json!({"channel": "uart0", "command": "uname -a", "pattern": "Linux", "timeout_ms": 10000})
         }
         StepType::AdcRead => serde_json::json!({"channel": "5v_out"}),
-        StepType::GpioSet => serde_json::json!({"pin": "GP13", "value": 1}),
+        StepType::GpioSet => serde_json::json!({"pin": "GP13", "direction": "output", "value": 1}),
         StepType::GpioAssert => {
             serde_json::json!({"pin": "GP13", "direction": "output", "value": 1})
         }

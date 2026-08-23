@@ -448,12 +448,18 @@ fn execute_step(
 
         StepType::GpioSet => {
             let pin = step.params["pin"].as_str().unwrap_or("GP13");
-            let value = step.params["value"].as_i64().unwrap_or(1);
+            let direction = step.params["direction"].as_str().unwrap_or("output");
+            let body = if direction == "input" {
+                serde_json::json!({"direction": "input"})
+            } else {
+                let value = step.params["value"].as_i64().unwrap_or(1);
+                serde_json::json!({"direction": "output", "value": value})
+            };
             client.send_text(BoardRequest {
                 method: reqwest::Method::PUT,
                 path: format!("/api/v1/gpio/{pin}"),
                 query: vec![],
-                body: Some(serde_json::json!({"direction": "output", "value": value})),
+                body: Some(body),
             })?;
         }
 
