@@ -51,7 +51,7 @@ Evidence roots:
 | 6 | Realtime / WebSocket telemetry high-rate 1000 records | PASS | `core-hil/realtime-network/high-rate-1000-validation.json` (3,351–21,057,734 ns host interval; 900–2,100 µs device interval; `dropped_samples=204` on row 0 is the expected ring-overrun sentinel) |
 | 7 | Four concurrent WebSocket clients | PASS | `core-hil/realtime-network/four-client-concurrency.json` |
 | 8 | Captive portal (HTTP 200, AAAA NOERROR, 302 redirects, 405) | PASS for HTTP/AAAA/302/405 | `core-hil/realtime-network/capport-network-validation.json` |
-| 9 | Wildcard DNS A | FAIL | `capport-network-validation.json` returns `198.18.0.41`, not `172.29.203.1` |
+| 9 | Historical wildcard DNS A expectation | FAIL (obsolete contract) | `capport-network-validation.json` returns `198.18.0.41`, not `172.29.203.1`; that unbound response was host Meta/VPN interception, not a board DNS response |
 | 10 | DHCP DORA option 114 | BLOCKED | `core-hil/realtime-network/dhcp-dora-blocked.json` — sudo requires a password, so the documented exclusive NM handoff + tcpdump + dhclient DORA were not attempted |
 | 11 | Final cleanup verdict | FAIL (overall) / PASS (HTTP/WS) | `core-hil/realtime-network/final-cleanup-verdict.json` reports `low_rate_verdict=PASS`, `high_rate_verdict=PASS`, `four_client_verdict=PASS`, `network_verdict=FAIL`, `dhcp_verdict=BLOCKED`, `cleanup_failures=[]`, `safe_state=ok`; `overall_verdict=REALTIME_NETWORK_HIL: FAIL` |
 | 12 | Browser UI: layout/structure/overflow/State-A/State-B/State-C/state-2b/telemetry/LA panel/serial setup dialog (except position)/bridge | PASS (15/20 sub-cases) | `browser-hil/VERDICT.md` |
@@ -99,10 +99,12 @@ Evidence roots:
    `memory_ws_phase2` FAIL in
    `core-hil/control/run-20260731T051957Z-602457/summary.tsv` and is
    reproduced in browser-hil `p3 step ws-frame-summary`.
-3. **Wildcard DNS A returns `198.18.0.41`, not `172.29.203.1`.** The
-   board-local DNS responder does not match the captive-portal contract on
-   this run; AAAA NOERROR/NODATA, port-80 CAPPORT, 302 redirect, and 405
-   rejection still pass.
+3. **Historical wildcard DNS A expectation returns `198.18.0.41`, not
+   `172.29.203.1`.** This was a stale contract: the unbound result was host
+   Meta/VPN interception, while an eth0-bound DNS query was connection
+   refused. The board intentionally advertises neither DNS nor a default
+   router; AAAA NOERROR/NODATA was not a valid board-DNS assertion. Port-80
+   CAPPORT, 302 redirect, and 405 rejection still pass.
 4. **Web Serial setup dialog positioning defect (new in-scope product
    bug).** `web/src/components/SerialCard.tsx` renders the setup modal
    inline under a transformed `.animate-fade-up` grid. `position: fixed`
