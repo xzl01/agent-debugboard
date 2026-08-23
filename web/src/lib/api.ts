@@ -1,5 +1,8 @@
 import { parsePersistentConfigError, parsePersistentConfigGet, parsePersistentConfigMutation } from "./persistentConfig.ts";
 import type { PersistentConfig } from "./persistentConfig.ts";
+import { parseTaskListResponse, type TaskListData } from "./taskRunner.ts";
+import { isTaskControlPath } from "./taskBlob.ts";
+import { parseTaskCatalogResponse, type BuiltInTask } from "./builtinTasks.ts";
 
 // Thin client for the Radxa Linkr Debugger firmware REST API. Local development
 // uses Vite's same-origin proxy. The Pages build points this at the loopback
@@ -125,11 +128,30 @@ export const deleteLiveSession = (sessionId: number) =>
 export const enterBootloader = () =>
   request("/bootloader", { method: "POST" });
 
-export const enterTargetRecovery = (mode: TargetRecoveryMode, rail: string) =>
-  request<TargetRecoveryResult>("/target-recovery", {
-    method: "POST",
-    body: JSON.stringify({ mode, rail }),
+export const getTasks = async (signal?: AbortSignal): Promise<TaskListData> =>
+  parseTaskListResponse(await request<unknown>("/tasks", { signal }));
+
+export const getTaskCatalog = async (signal?: AbortSignal): Promise<readonly BuiltInTask[]> =>
+  parseTaskCatalogResponse(await request<unknown>("/tasks/catalog", { signal }));
+
+export const storeTaskBlob = (blob: string) =>
+  request<unknown>("/tasks", {
+    method: "PUT",
+    body: blob,
   });
+
+export const clearTasks = () =>
+  request<unknown>("/tasks", { method: "DELETE" });
+
+const BOARD_API_PREFIX = "/api/v1";
+
+// Stored task records carry the firmware-visible `/api/v1` path; the plain
+// request helper prefixes BASE, so the seam strips the stored prefix and
+// forwards the exact stored body. wait_ms never leaves the client.
+export const dispatchTaskRequest = (path: string, body: string, signal?: AbortSignal) =>
+  isTaskControlPath(path)
+    ? request<unknown>(path.slice(BOARD_API_PREFIX.length), { method: "PUT", body, signal })
+    : Promise.reject(new BoardApiError(`refusing invalid stored task path ${JSON.stringify(path)}`, "invalid_path"));
 
 async function configRequest(path: string, action: string, init?: RequestInit): Promise<unknown> {
   try {

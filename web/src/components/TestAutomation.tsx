@@ -8,38 +8,28 @@ import {
   PenLine,
   Play,
   ScrollText,
+  Workflow,
 } from "lucide-react";
 import { Button, Card } from "./ui";
+import { TaskCard } from "./TaskCard";
 import { TestRunnerView } from "./TestRunnerView";
 import { TestReport } from "./TestReport";
 import type { UseBoard } from "@/hooks/useBoard";
 import type { SerialAutomationHandle } from "./SerialCard";
 import type { TestScript, StepResult, StepStatus, RunSummary, AdcSampleEntry, SerialLogEntry, PowerCaptureEvidenceEntry } from "@/lib/testScript";
 import { defaultScript, parseTestScript, serializeTestScript, tryBuildExecutionPlan } from "@/lib/testScript";
+import { loadStoredTestScript, persistTestScript } from "@/lib/testScriptStorage";
 import { createTestRunner, preflightTestRun, type RunnerCallbacks, type RunnerHandle } from "@/lib/testRunner";
 import { useI18n } from "@/lib/i18n";
 import type { AutomationTaskControl } from "@/lib/automationTask";
 
-type Tab = "editor" | "running" | "report";
+type Tab = "editor" | "running" | "report" | "tasks";
 
 const WorkflowComposer = lazy(() => import("./WorkflowComposer").then((module) => ({
   default: module.WorkflowComposer,
 })));
 
-const STORAGE_KEY = "linkr-test-script";
-
-function loadScript(defaultName: string): TestScript {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const parsed = parseTestScript(saved, { validatePlan: false });
-      return parsed.name === "New Test" ? { ...parsed, name: defaultName } : parsed;
-    }
-  } catch { /* ignore corrupted data */ }
-  return defaultScript(defaultName);
-}
-
-const TAB_ICONS = { editor: PenLine, running: Play, report: ScrollText } as const;
+const TAB_ICONS = { editor: PenLine, running: Play, report: ScrollText, tasks: Workflow } as const;
 
 export function TestAutomation({
   board,
@@ -58,7 +48,10 @@ export function TestAutomation({
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>("editor");
-  const [script, setScript] = useState<TestScript>(() => loadScript(t("test.defaultName")));
+  const [script, setScript] = useState<TestScript>(() => {
+    const loaded = loadStoredTestScript();
+    return loaded.name === "New Test" ? { ...loaded, name: t("test.defaultName") } : loaded;
+  });
   const [draftState, setDraftState] = useState<"saving" | "saved" | "error">("saved");
   const [stepStates, setStepStates] = useState<Map<string, StepStatus>>(new Map());
   const [stepResults, setStepResults] = useState<StepResult[]>([]);
@@ -85,15 +78,8 @@ export function TestAutomation({
   );
 
   useEffect(() => {
-    try {
-      // Persist drafts even when the execution plan is temporarily invalid
-      // (e.g. empty loop body while composing). Run still validates strictly.
-      localStorage.setItem(STORAGE_KEY, serializeTestScript(script));
-      setDraftState("saved");
-    } catch {
-      // Keep the editor usable when storage is unavailable or full.
-      setDraftState("error");
-    }
+    persistTestScript(script);
+    setDraftState("saved");
   }, [script]);
 
   const handleScriptChange = useCallback((nextScript: TestScript) => {
@@ -251,7 +237,7 @@ export function TestAutomation({
       role="tablist"
       aria-label={t("test.title")}
     >
-      {(["editor", "running", "report"] as Tab[]).map((t2) => {
+      {(["editor", "running", "report", "tasks"] as Tab[]).map((t2) => {
         const Icon = TAB_ICONS[t2];
         const active = tab === t2;
         const disabled = isRunning ? t2 !== "running" : t2 === "running";
@@ -350,6 +336,13 @@ export function TestAutomation({
               runDisabledReason={runDisabledReason}
             />
           </Suspense>
+        )}
+        {tab === "tasks" && (
+          <TaskCard
+            connected={board.connected}
+            currentScript={script}
+            taskControl={taskControl}
+          />
         )}
         {tab === "running" && (
           <TestRunnerView

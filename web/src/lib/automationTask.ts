@@ -1,11 +1,11 @@
 export type AutomationTaskOwner =
   | "startup"
   | "test"
+  | "task"
   | "power"
   | "persistent"
   | "ota"
-  | "boot"
-  | "recovery";
+  | "boot";
 
 export interface AutomationTaskControl {
   owner: AutomationTaskOwner | null;

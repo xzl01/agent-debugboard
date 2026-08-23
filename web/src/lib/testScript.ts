@@ -25,7 +25,7 @@ export interface SerialWaitParams { channel: SerialChannel; pattern: string; tim
 export interface SerialSendParams { channel: SerialChannel; text: string }
 export interface SerialExpectParams { channel: SerialChannel; command: string; pattern: string; timeout_ms: number }
 export interface AdcReadParams { channel: string }
-export interface GpioSetParams { pin: string; value: 0 | 1 }
+export interface GpioSetParams { pin: string; direction?: "input" | "output"; value?: 0 | 1 }
 export interface GpioAssertParams { pin: string; direction: "input" | "output"; value: 0 | 1 }
 export interface SwitchRouteParams { switch: SwitchName; route: string }
 export interface CaptureParams {
@@ -675,7 +675,7 @@ export function defaultStepParams<T extends StepType>(type: T): StepParamsFor<T>
     serial_send: { channel: "uart0", text: "root\n" },
     serial_expect: { channel: "uart0", command: "uname -a", pattern: "Linux", timeout_ms: 10000 },
     adc_read: { channel: "5v_out" },
-    gpio_set: { pin: "GP13", value: 1 },
+    gpio_set: { pin: "GP13", direction: "output", value: 1 },
     gpio_assert: { pin: "GP13", direction: "output", value: 1 },
     switch_route: { switch: "sd", route: "target" },
     capture: { rail: "5v_out", trigger: "manual", duration_ms: 5000, threshold_a: 0.1 },

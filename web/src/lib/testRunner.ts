@@ -497,7 +497,11 @@ export function createTestRunner(
         case "gpio_set": {
           const p = step.params as import("./testScript").GpioSetParams;
           touchedGpios.add(p.pin);
-          await getBoard().setGpio(p.pin, "output", p.value);
+          await getBoard().setGpio(
+            p.pin,
+            p.direction ?? "output",
+            p.direction === "input" ? undefined : (p.value ?? 1),
+          );
           break;
         }
         case "gpio_assert": {
