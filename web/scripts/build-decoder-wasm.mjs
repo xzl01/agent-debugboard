@@ -17,9 +17,21 @@ const outName = "logic-decoder";
 const publicJsPath = "/assets/decoder/logic-decoder.js";
 const publicWasmPath = "/assets/decoder/logic-decoder_bg.wasm";
 
-function resolveRustCommand(command) {
-  const executable = process.platform === "win32" ? `${command}.exe` : command;
-  const rustupCommand = path.join(os.homedir(), ".cargo", "bin", executable);
+export function resolveRustCommand(
+  command,
+  {
+    home = os.homedir(),
+    pathValue = process.env.PATH ?? "",
+    platform = process.platform,
+  } = {}
+) {
+  const executable = platform === "win32" ? `${command}.exe` : command;
+  const delimiter = platform === "win32" ? ";" : path.delimiter;
+  const pathHasCommand = pathValue
+    .split(delimiter)
+    .some((directory) => directory.length > 0 && existsSync(path.join(directory, executable)));
+  if (pathHasCommand) return command;
+  const rustupCommand = path.join(home, ".cargo", "bin", executable);
   return existsSync(rustupCommand) ? rustupCommand : command;
 }
 

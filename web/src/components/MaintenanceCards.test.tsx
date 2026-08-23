@@ -16,7 +16,6 @@ import {
 } from "@/lib/automationTask";
 import { BootCard } from "./BootCard";
 import { OtaCard } from "./OtaCard";
-import { TargetRecoveryCard } from "./TargetRecoveryCard";
 
 vi.mock("@/lib/ota", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/lib/ota")>();
@@ -141,38 +140,13 @@ describe("maintenance safety controls", () => {
     view.close();
   });
 
-  it("disables target recovery when firmware reports no controllable recovery rail", () => {
-    const view = render(<TargetRecoveryCard outputs={[]} onEnter={vi.fn()} />);
-    expect(view.host.querySelector('[role="status"]')?.textContent).toContain(
-      "firmware did not report a controllable recovery rail",
-    );
-    expect(button(view.host, "Enter target recovery").disabled).toBe(true);
-    expect([...view.host.querySelectorAll("option")]).toHaveLength(2);
-    view.close();
-  });
-
-  it("uses only a reported recovery rail and owns the task until the sequence finishes", async () => {
-    const request = deferred<void>();
-    const lock = createAutomationTaskLock();
-    const onEnter = vi.fn().mockReturnValue(request.promise);
-    const view = render(
-      <TargetRecoveryCard
-        outputs={[
-          { name: "5v_out", controllable: true, state: "off", value: 0 },
-          { name: "12v_out", controllable: false, state: "off", value: 0 },
-        ]}
-        onEnter={onEnter}
-        taskControl={taskControl(lock)}
-      />,
-    );
-
-    act(() => button(view.host, "Enter target recovery").click());
-    act(() => button(view.host, "Confirm and power cycle").click());
-    expect(onEnter).toHaveBeenCalledWith("rockchip-maskrom", "5v_out");
-    expect(lock.acquire("test")).toBe(false);
-    await act(async () => request.resolve());
-    expect(lock.acquire("test")).toBe(true);
-    view.close();
+  it("keeps recovery exposed only through tasks, with no dedicated recovery API or card", async () => {
+    const { existsSync } = await import("node:fs");
+    const api = await import("@/lib/api");
+    expect("enterTargetRecovery" in api).toBe(false);
+    expect(Object.values(api).every((value) => typeof value !== "function" ||
+      String(value).indexOf("/target-recovery") === -1)).toBe(true);
+    expect(existsSync(new URL("./TargetRecoveryCard.tsx", import.meta.url))).toBe(false);
   });
 
   it("shows the OTA lifecycle and locks firmware mutations while disconnected or task-owned", () => {

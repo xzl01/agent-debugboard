@@ -150,7 +150,7 @@ export function createDryRunPlan(options) {
     ],
     steps: flows.flatMap((flow) => [
       `open real Web UI at ${options.boardUrl}/`,
-      "expand Advanced & recovery and locate Firmware OTA",
+      "expand Debugger maintenance and locate Firmware OTA",
       `select ${options.image} with the page file input`,
       "wait for browser-computed SHA-256 ready state",
       "click Upload image and wait for verified state",
@@ -244,36 +244,47 @@ async function waitForOtaState(boardUrl, predicate, timeoutMs, diagnostics) {
   throw new Error(`Timed out waiting for OTA state; last=${JSON.stringify(lastStatus)}`);
 }
 
-async function openOtaCard(page, boardUrl) {
+export function locateOtaCard(page) {
+  return page.locator("section", {
+    has: page.getByRole("heading", { name: "Firmware OTA", exact: true }),
+  });
+}
+
+export async function openOtaCard(page, boardUrl) {
   await page.goto(`${boardUrl}/`, { waitUntil: "networkidle", timeout: 30_000 });
-  await page.getByText("Advanced & recovery", { exact: true }).click();
+  await page.getByText("Debugger maintenance", { exact: true }).click();
   await page.getByText("Firmware OTA", { exact: true }).waitFor({ timeout: 10_000 });
 }
 
-async function selectAndUpload(page, image, uploadTimeoutMs) {
-  await page.locator('input[type="file"][accept*=".bin"]').setInputFiles(image);
-  await page.getByText("SHA-256 computed locally. Ready to upload.", { exact: true }).waitFor({ timeout: 30_000 });
-  const upload = page.getByRole("button", { name: "Upload image" });
+export async function selectAndUpload(otaCard, image, uploadTimeoutMs) {
+  await otaCard.locator('input[type="file"][accept*=".bin"]').setInputFiles(image);
+  await otaCard.getByText("SHA-256 computed locally. Ready to upload.", { exact: true }).waitFor({ timeout: 30_000 });
+  const upload = otaCard.getByRole("button", { name: "Upload image" });
   if (!(await upload.isEnabled())) {
     throw new Error("Upload image is disabled after hashing");
   }
   await upload.click();
-  await page.getByText("verified", { exact: true }).waitFor({ timeout: uploadTimeoutMs });
+  await otaCard.getByText("verified", { exact: true }).waitFor({ timeout: uploadTimeoutMs });
 }
 
-async function startTestBoot(page) {
+export async function startTestBoot(page, otaCard) {
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Start test boot" }).click();
+  await otaCard.getByRole("button", { name: "Start test boot" }).click();
 }
 
-async function runConfirmFlow(page, boardUrl, options, flow, diagnostics) {
-  await selectAndUpload(page, options.image, options.uploadTimeoutMs);
+export async function waitForOtaCardConfirmed(otaCard, timeoutMs) {
+  await otaCard.getByText("idle", { exact: true }).waitFor({ timeout: timeoutMs });
+  await otaCard.getByText("confirmed", { exact: true }).waitFor({ timeout: timeoutMs });
+}
+
+async function runConfirmFlow(page, otaCard, boardUrl, options, flow, diagnostics) {
+  await selectAndUpload(otaCard, options.image, options.uploadTimeoutMs);
   await page.screenshot({ path: path.join(options.screenshotDir, `ota-hil-${flow}-verified.png`), fullPage: true });
-  await startTestBoot(page);
+  await startTestBoot(page, otaCard);
   await waitForOtaState(boardUrl, (status) => status.state === "pending_test", options.rebootTimeoutMs, diagnostics);
 
   if (flow === "manual") {
-    const confirm = page.getByRole("button", { name: "Confirm image" });
+    const confirm = otaCard.getByRole("button", { name: "Confirm image" });
     await confirm.waitFor({ state: "visible", timeout: 10_000 });
     const deadline = Date.now() + 10_000;
     while (!(await confirm.isEnabled()) && Date.now() < deadline) {
@@ -291,6 +302,7 @@ async function runConfirmFlow(page, boardUrl, options, flow, diagnostics) {
     flow === "auto" ? 45_000 : 15_000,
     diagnostics
   );
+  await waitForOtaCardConfirmed(otaCard, options.rebootTimeoutMs);
   await page.screenshot({ path: path.join(options.screenshotDir, `ota-hil-${flow}-confirmed.png`), fullPage: true });
   return confirmed;
 }
@@ -318,13 +330,14 @@ export async function runBrowserOtaHil(options) {
     });
 
     await openOtaCard(page, options.boardUrl);
+    const otaCard = locateOtaCard(page);
     const initial = await fetchOtaStatus(options.boardUrl, options.shortTimeoutMs);
     const flows = options.flow === "both" ? ["auto", "manual"] : [options.flow];
     const results = [];
     const diagnostics = [];
 
     for (const flow of flows) {
-      const confirmed = await runConfirmFlow(page, options.boardUrl, options, flow, diagnostics);
+      const confirmed = await runConfirmFlow(page, otaCard, options.boardUrl, options, flow, diagnostics);
       results.push({ flow, confirmed: summarizeStatus(confirmed) });
     }
 
