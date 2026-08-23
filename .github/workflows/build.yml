@@ -192,7 +192,7 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          shellcheck skills/radxa-linkr-debugger/scripts/install.sh scripts/install-host.sh apps/radxa_linkr_debugger/tests/run_unit_tests.sh skills/radxa-linkr-debugger/scripts/web-ota-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.test.sh scripts/setup-zephyr.sh scripts/build-firmware.sh
+          shellcheck skills/radxa-linkr-debugger/scripts/install.sh scripts/install-host.sh apps/radxa_linkr_debugger/tests/run_unit_tests.sh skills/radxa-linkr-debugger/scripts/web-ota-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.test.sh
           sh -n skills/radxa-linkr-debugger/scripts/install.sh
           sh -n scripts/install-host.sh
           scripts/install-host.sh --dry-run
@@ -200,8 +200,6 @@ jobs:
           sh -n skills/radxa-linkr-debugger/scripts/web-ota-hil.sh
           sh -n skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh
           sh -n skills/radxa-linkr-debugger/scripts/config-persistence-hil.test.sh
-          sh -n scripts/setup-zephyr.sh
-          sh -n scripts/build-firmware.sh
 
       - name: Validate GitHub Actions workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7

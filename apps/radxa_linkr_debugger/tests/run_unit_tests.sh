@@ -7,6 +7,8 @@
 
 set -eu
 
+CC="${CC:-cc}"
+
 SCRIPT_DIR="$(dirname -- "$0")"
 ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 OUT="${ROOT}/build/radxa_linkr_debugger_unit"
@@ -30,7 +32,7 @@ struct sensor_value {
 #endif
 EOF
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DCONFIG_SOC_SERIES_RP2350 \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_model.c" \
@@ -39,7 +41,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_model_rp2350_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CONFIG_CODEC_HOST_TEST \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
@@ -49,7 +51,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_config_codec_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CONFIG_CODEC_HOST_TEST \
 	-DLINKR_DEBUGGER_CONFIG_STORE_HOST_TEST \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
@@ -61,7 +63,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_config_store_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CONFIG_CODEC_HOST_TEST \
 	-DLINKR_DEBUGGER_CONFIG_SERVICE_HOST_TEST \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
@@ -74,7 +76,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_config_policy_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CONFIG_CODEC_HOST_TEST \
 	-DLINKR_DEBUGGER_CONFIG_SERVICE_HOST_TEST \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
@@ -87,7 +89,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_config_replay_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CONFIG_CODEC_HOST_TEST \
 	-DLINKR_DEBUGGER_CONFIG_SERVICE_HOST_TEST \
 	-pthread \
@@ -104,7 +106,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_config_service_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CONFIG_HTTP_HOST_TEST=1 \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
 	-include "${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_config_http_stubs.h" \
@@ -119,7 +121,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_config_http_codec_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CONFIG_HTTP_HOST_TEST=1 \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
 	-include "${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_config_http_stubs.h" \
@@ -136,7 +138,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_config_http_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_summary.c" \
@@ -145,7 +147,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_config_summary_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all \
 	-I"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/stubs" \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
@@ -156,7 +158,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_config_shell_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_OTA_HOST_TEST \
 	-DLINKR_DEBUGGER_OTA_FULL_HOST_TEST \
 	-DLINKR_DEBUGGER_FLASH_ARBITER_HOST_TEST \
@@ -171,7 +173,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_ota_parser_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CAPTIVE_PORTAL_HOST_TEST \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_captive_portal.c" \
@@ -180,7 +182,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_portal_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_http_body.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_http_body.c" \
@@ -188,7 +190,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_http_body_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_gpio_error.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_gpio_error.c" \
@@ -196,7 +198,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_gpio_error_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CAPTURE_ARENA_HOST_TEST \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.c" \
@@ -205,7 +207,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_capture_arena_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_engine.c" \
@@ -214,7 +216,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_capture_engine_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_gpio_guard.c" \
@@ -223,15 +225,14 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_capture_gpio_guard_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_ws_sampler_sync.c" \
 	-o "${OUT}/linkr_debugger_ws_sampler_sync_test"
 
 "${OUT}/linkr_debugger_ws_sampler_sync_test"
 
-
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_TASK_HOST_TEST \
 	-pthread \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
@@ -246,13 +247,13 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_task_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-Wframe-larger-than=256 \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	-fsyntax-only \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_catalog.c" \
@@ -263,7 +264,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_task_catalog_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_http_task_response.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_http_task_response.c" \
@@ -271,7 +272,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_http_task_response_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-Wframe-larger-than=1024 \
 	-DLINKR_DEBUGGER_TASK_HOST_TEST \
 	-DLINKR_DEBUGGER_TASK_HTTP_HOST_TEST=1 \
@@ -281,7 +282,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_catalog.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_http.c"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_TASK_HOST_TEST \
 	-DLINKR_DEBUGGER_TASK_HTTP_HOST_TEST=1 \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
@@ -300,7 +301,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_task_http_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_TASK_HOST_TEST \
 	-DLINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST \
 	-DLINKR_DEBUGGER_FLASH_ARBITER_HOST_TEST \
@@ -321,7 +322,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_task_shell_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
@@ -331,7 +332,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_capture_arbiter_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_FLASH_ARBITER_HOST_TEST \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
@@ -341,7 +342,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_flash_arbiter_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_LA_HOST_TEST \
 	-DCONFIG_SOC_SERIES_RP2350 \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
@@ -351,7 +352,7 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_logic_analyzer_test"
 
-cc -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST \
 	-DLINKR_DEBUGGER_CAPTURE_ARENA_HOST_TEST \
 	-DLINKR_DEBUGGER_LA_HOST_TEST \

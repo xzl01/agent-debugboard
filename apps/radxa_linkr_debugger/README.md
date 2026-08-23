@@ -14,10 +14,10 @@ Agent/AI operators should read the repository skill first:
 Build (RP2350):
 
 ```sh
-scripts/setup-zephyr.sh
-pip install -r .zephyr-workspace/zephyr/scripts/requirements.txt
-pip install -r .zephyr-workspace/bootloader/mcuboot/scripts/requirements.txt
-scripts/build-firmware.sh
+make workspace
+pip install -r zephyr/scripts/requirements.txt
+pip install -r bootloader/mcuboot/scripts/requirements.txt
+make firmware
 ```
 
 Use `build/radxa_linkr_debugger/` as the only canonical build directory for this
