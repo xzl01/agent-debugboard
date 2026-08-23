@@ -54,11 +54,6 @@ enum linkr_debugger_vin_route {
 	LINKR_DEBUGGER_VIN_ROUTE_3V3 = 1,
 };
 
-enum linkr_debugger_target_recovery_mode {
-	LINKR_DEBUGGER_TARGET_RECOVERY_QUALCOMM_EDL = 0,
-	LINKR_DEBUGGER_TARGET_RECOVERY_ROCKCHIP_MASKROM = 1,
-};
-
 enum linkr_debugger_tf_wp_route {
 	LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE = 0,
 	LINKR_DEBUGGER_TF_WP_ROUTE_PROTECTED = 1,
@@ -90,14 +85,6 @@ const char *linkr_debugger_tf_wp_route_to_string(enum linkr_debugger_tf_wp_route
 int linkr_debugger_vin_route_microvolt(enum linkr_debugger_vin_route route);
 bool linkr_debugger_vin_route_from_microvolt(int32_t microvolt,
 					    enum linkr_debugger_vin_route *route);
-bool linkr_debugger_parse_target_recovery_mode(
-	const char *arg, enum linkr_debugger_target_recovery_mode *mode);
-const char *linkr_debugger_target_recovery_mode_to_string(
-	enum linkr_debugger_target_recovery_mode mode);
-bool linkr_debugger_target_recovery_active_level(
-	enum linkr_debugger_target_recovery_mode mode);
-bool linkr_debugger_target_recovery_rail_allowed(
-	const struct linkr_debugger_rail_desc *rail);
 bool linkr_debugger_rail_initial_enabled(const struct linkr_debugger_rail_desc *rail);
 bool linkr_debugger_rail_state_allowed(const struct linkr_debugger_rail_desc *rail,
 					      bool enabled);

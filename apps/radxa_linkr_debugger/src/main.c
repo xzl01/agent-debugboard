@@ -13,6 +13,7 @@
 #include "linkr_debugger_http.h"
 #include "linkr_debugger_logic_analyzer.h"
 #include "linkr_debugger_network.h"
+#include "linkr_debugger_task.h"
 #include "linkr_debugger_ota.h"
 #include "linkr_debugger_shell.h"
 #include "linkr_debugger_sigrok_linkr.h"
@@ -89,6 +90,7 @@ int main(void)
 	}
 
 	linkr_debugger_http_init();
+	linkr_debugger_task_init();
 	ret = linkr_debugger_ws_init();
 	if (ret < 0) {
 		LOG_ERR("WebSocket init failed: %d", ret);

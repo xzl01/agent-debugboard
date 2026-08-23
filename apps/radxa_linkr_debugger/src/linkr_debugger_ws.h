@@ -31,6 +31,8 @@ int linkr_debugger_ws_setup(int ws_socket, struct http_request_ctx *request_ctx,
 int linkr_debugger_ws_session_create(struct linkr_debugger_ws_session_info *info);
 int linkr_debugger_ws_session_delete(uint32_t session_id);
 int linkr_debugger_ws_session_lookup(uint32_t session_id, struct linkr_debugger_ws_session_info *info);
+void linkr_debugger_ws_sigrok_telemetry_pause_acquire(void);
+void linkr_debugger_ws_sigrok_telemetry_pause_release(void);
 
 int linkr_debugger_ws_sigrok_burst_pool_begin(
 	uint32_t session_id, uint32_t stream_generation, uint32_t source_generation);

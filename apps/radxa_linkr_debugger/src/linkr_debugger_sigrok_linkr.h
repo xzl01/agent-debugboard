@@ -276,6 +276,7 @@ struct linkr_debugger_sigrok_linkr_session {
 	uint16_t next_session_id;
 	uint16_t active_session_id;
 	bool capture_owner_held;
+	bool telemetry_pause_held;
 	uint32_t sample_index;
 	uint32_t emitted_samples;
 	int client_fd;

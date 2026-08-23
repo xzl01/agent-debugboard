@@ -27,6 +27,14 @@ int linkr_debugger_ws_sigrok_burst_pool_begin(uint32_t session_id,
 	return 0;
 }
 
+void linkr_debugger_ws_sigrok_telemetry_pause_acquire(void)
+{
+}
+
+void linkr_debugger_ws_sigrok_telemetry_pause_release(void)
+{
+}
+
 void linkr_debugger_ws_sigrok_burst_pool_abort(uint32_t session_id,
 	uint32_t stream_generation)
 {
@@ -847,6 +855,10 @@ static void sigrok_linkr_cleanup_capture(
 
 	session = &runtime->session;
 	sigrok_linkr_raw_burst_abort(runtime);
+	if (session->telemetry_pause_held) {
+		linkr_debugger_ws_sigrok_telemetry_pause_release();
+		session->telemetry_pause_held = false;
+	}
 	if (session->capture_owner_held) {
 		if (linkr_debugger_logic_analyzer_is_ring_active()) {
 			(void)linkr_debugger_logic_analyzer_stop_ring();
@@ -893,6 +905,10 @@ static void sigrok_linkr_stop_capture_if_pending(
 		return;
 	}
 	if (!session->capture_owner_held) {
+		if (session->telemetry_pause_held) {
+			linkr_debugger_ws_sigrok_telemetry_pause_release();
+			session->telemetry_pause_held = false;
+		}
 		return;
 	}
 
@@ -900,6 +916,10 @@ static void sigrok_linkr_stop_capture_if_pending(
 	(void)linkr_debugger_capture_arbiter_release(
 		LINKR_DEBUGGER_CAPTURE_OWNER_SIGROK_LINKR);
 	session->capture_owner_held = false;
+	if (session->telemetry_pause_held) {
+		linkr_debugger_ws_sigrok_telemetry_pause_release();
+		session->telemetry_pause_held = false;
+	}
 }
 #endif
 
@@ -1772,6 +1792,10 @@ void linkr_debugger_sigrok_linkr_rollback_start_failure(
 	if (session != NULL) {
 		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
 		session->capture_owner_held = false;
+		if (session->telemetry_pause_held) {
+			linkr_debugger_ws_sigrok_telemetry_pause_release();
+			session->telemetry_pause_held = false;
+		}
 	}
 	if (action != NULL) {
 		memset(action, 0, sizeof(*action));
@@ -2284,12 +2308,20 @@ int linkr_debugger_sigrok_linkr_start_prepare_capture(
 
 	prepare->state = LINKR_DEBUGGER_SIGROK_LINKR_START_PREPARE_PREPARED;
 	session->capture_owner_held = true;
+	if (!session->telemetry_pause_held) {
+		linkr_debugger_ws_sigrok_telemetry_pause_acquire();
+		session->telemetry_pause_held = true;
+	}
 	return 0;
 
 fail:
 	linkr_debugger_sigrok_linkr_start_prepare_cleanup(prepare);
 	prepare->state = LINKR_DEBUGGER_SIGROK_LINKR_START_PREPARE_CANCELLED;
 	session->capture_owner_held = false;
+	if (session->telemetry_pause_held) {
+		linkr_debugger_ws_sigrok_telemetry_pause_release();
+		session->telemetry_pause_held = false;
+	}
 	return ret;
 }
 
@@ -2326,6 +2358,10 @@ void linkr_debugger_sigrok_linkr_start_prepare_cancel(
 	if (session != NULL) {
 		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
 		session->capture_owner_held = false;
+		if (session->telemetry_pause_held) {
+			linkr_debugger_ws_sigrok_telemetry_pause_release();
+			session->telemetry_pause_held = false;
+		}
 	}
 }
 
@@ -2392,6 +2428,10 @@ int linkr_debugger_sigrok_linkr_start_prepare_go(
 		linkr_debugger_sigrok_linkr_start_prepare_cleanup(prepare);
 		session->state = LINKR_DEBUGGER_SIGROK_LINKR_SESSION_CONFIGURED;
 		session->capture_owner_held = false;
+		if (session->telemetry_pause_held) {
+			linkr_debugger_ws_sigrok_telemetry_pause_release();
+			session->telemetry_pause_held = false;
+		}
 	}
 	prepare->state = LINKR_DEBUGGER_SIGROK_LINKR_START_PREPARE_DONE;
 	return ret;

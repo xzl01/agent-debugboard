@@ -300,38 +300,6 @@ static void test_vin_route_parser(void)
 	assert(!linkr_debugger_vin_route_from_microvolt(LINKR_DEBUGGER_VIN_3V3_UV, NULL));
 }
 
-static void test_target_recovery_contract(void)
-{
-	enum linkr_debugger_target_recovery_mode mode =
-		LINKR_DEBUGGER_TARGET_RECOVERY_ROCKCHIP_MASKROM;
-
-	assert(linkr_debugger_parse_target_recovery_mode("qualcomm-edl", &mode));
-	assert(mode == LINKR_DEBUGGER_TARGET_RECOVERY_QUALCOMM_EDL);
-	assert(linkr_debugger_target_recovery_active_level(mode));
-	assert_str_eq(linkr_debugger_target_recovery_mode_to_string(mode),
-		      "qualcomm-edl");
-
-	assert(linkr_debugger_parse_target_recovery_mode("rockchip-maskrom", &mode));
-	assert(mode == LINKR_DEBUGGER_TARGET_RECOVERY_ROCKCHIP_MASKROM);
-	assert(!linkr_debugger_target_recovery_active_level(mode));
-	assert_str_eq(linkr_debugger_target_recovery_mode_to_string(mode),
-		      "rockchip-maskrom");
-
-	assert(!linkr_debugger_parse_target_recovery_mode("rockchip-maskroom", &mode));
-	assert(!linkr_debugger_parse_target_recovery_mode(NULL, &mode));
-	assert(!linkr_debugger_parse_target_recovery_mode("qualcomm-edl", NULL));
-
-	assert(linkr_debugger_target_recovery_rail_allowed(
-		linkr_debugger_find_rail("5v_out")));
-	assert(linkr_debugger_target_recovery_rail_allowed(
-		linkr_debugger_find_rail("12v_out")));
-	assert(linkr_debugger_target_recovery_rail_allowed(
-		linkr_debugger_find_rail("20v_out")));
-	assert(!linkr_debugger_target_recovery_rail_allowed(
-		linkr_debugger_find_rail("5v_ws")));
-	assert(!linkr_debugger_target_recovery_rail_allowed(NULL));
-}
-
 static void test_tf_wp_route_parser(void)
 {
 	enum linkr_debugger_tf_wp_route route = LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE;
@@ -395,7 +363,6 @@ int main(void)
 	test_bool_parser();
 	test_gpio_pin_parser();
 	test_vin_route_parser();
-	test_target_recovery_contract();
 	test_tf_wp_route_parser();
 	test_heartbeat_state();
 

@@ -7,6 +7,7 @@
 
 #include "linkr_debugger_control.h"
 #include "linkr_debugger_config_shell.h"
+#include "linkr_debugger_task_shell.h"
 #include "linkr_debugger_shell.h"
 
 #include <errno.h>
@@ -135,9 +136,15 @@ SHELL_STATIC_SUBCMD_SET_CREATE(config_cmds,
 	SHELL_CMD(clear, NULL, "Clear saved configuration; does not change current hardware.", linkr_debugger_config_shell_clear),
 	SHELL_SUBCMD_SET_END);
 
+SHELL_STATIC_SUBCMD_SET_CREATE(task_cmds,
+	SHELL_CMD(show, NULL, "Show stored task status.", linkr_debugger_task_shell_show),
+	SHELL_CMD(clear, NULL, "Clear all stored tasks.", linkr_debugger_task_shell_clear),
+	SHELL_SUBCMD_SET_END);
+
 SHELL_CMD_REGISTER(bootloader, NULL,
 				   "Enter MCU BOOTSEL for UF2/picotool flashing.",
 				   cmd_bootloader);
 SHELL_CMD_REGISTER(vin, &vin_cmds, "Control VIN voltage route.", NULL);
 SHELL_CMD_REGISTER(config, &config_cmds, "Control configuration snapshots.", NULL);
 SHELL_CMD_REGISTER(tf_wp, &tf_wp_cmds, "Control TF card write-protect route.", NULL);
+SHELL_CMD_REGISTER(task, &task_cmds, "Manage tasks stored in flash.", NULL);

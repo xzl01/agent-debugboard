@@ -49,9 +49,6 @@ struct linkr_debugger_control_snapshot {
 };
 
 #define LINKR_DEBUGGER_CURRENT_BATCH_MAX 20U
-#define LINKR_DEBUGGER_TARGET_RECOVERY_OFF_MS 1000U
-#define LINKR_DEBUGGER_TARGET_RECOVERY_SETUP_MS 20U
-#define LINKR_DEBUGGER_TARGET_RECOVERY_HOLD_MS 500U
 
 struct linkr_debugger_watchdog_status {
 	bool supported;
@@ -109,10 +106,6 @@ int linkr_debugger_gpio_set_output(const struct linkr_debugger_safe_gpio_desc *d
 int linkr_debugger_gpio_set_input(const struct linkr_debugger_safe_gpio_desc *desc);
 const char *linkr_debugger_safe_gpio_direction_name(size_t index);
 const char *linkr_debugger_safe_gpio_direction(const struct linkr_debugger_safe_gpio_desc *desc);
-
-int linkr_debugger_target_recovery_enter(
-	enum linkr_debugger_target_recovery_mode mode,
-	const struct linkr_debugger_rail_desc *rail);
 
 void linkr_debugger_watchdog_status_get(struct linkr_debugger_watchdog_status *status);
 void linkr_debugger_watchdog_note_core_alive(void);

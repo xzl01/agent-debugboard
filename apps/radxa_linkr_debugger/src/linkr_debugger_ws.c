@@ -11,6 +11,7 @@
 #include "linkr_debugger_capture_arena.h"
 #include "linkr_debugger_control.h"
 #include "linkr_debugger_config_summary.h"
+#include "linkr_debugger_gpio_error.h"
 #include "linkr_debugger_logic_analyzer.h"
 #include "linkr_debugger_monitoring.h"
 #include "linkr_debugger_model.h"
@@ -243,6 +244,7 @@ static struct k_mutex linkr_debugger_ws_sample_ring_lock;
 static struct k_event linkr_debugger_ws_sampler_events;
 static struct k_sem linkr_debugger_ws_sampler_pause_ack;
 static bool linkr_debugger_ws_sampler_pause_requested;
+static bool linkr_debugger_ws_sigrok_telemetry_pause_requested;
 static bool linkr_debugger_ws_arena_quiesced;
 static struct linkr_debugger_ws_sampler_sync linkr_debugger_ws_sampler_sync;
 static uint64_t linkr_debugger_ws_latest_sample_sequence;
@@ -998,6 +1000,24 @@ static void linkr_debugger_capture_ingest_sample(const struct linkr_debugger_ws_
 	}
 }
 
+void linkr_debugger_ws_sigrok_telemetry_pause_acquire(void)
+{
+	k_mutex_lock(&linkr_debugger_ws_sample_ring_lock, K_FOREVER);
+	linkr_debugger_ws_sigrok_telemetry_pause_requested = true;
+	k_mutex_unlock(&linkr_debugger_ws_sample_ring_lock);
+	k_event_post(&linkr_debugger_ws_sampler_events,
+		LINKR_DEBUGGER_WS_SAMPLER_EVENT_CONFIG);
+}
+
+void linkr_debugger_ws_sigrok_telemetry_pause_release(void)
+{
+	k_mutex_lock(&linkr_debugger_ws_sample_ring_lock, K_FOREVER);
+	linkr_debugger_ws_sigrok_telemetry_pause_requested = false;
+	k_mutex_unlock(&linkr_debugger_ws_sample_ring_lock);
+	k_event_post(&linkr_debugger_ws_sampler_events,
+		LINKR_DEBUGGER_WS_SAMPLER_EVENT_CONFIG);
+}
+
 static bool linkr_debugger_ws_adc_sampler_pause_if_requested(void)
 {
 	bool pause_requested;
@@ -1066,8 +1086,19 @@ static void linkr_debugger_adc_sampler_thread(void *p1, void *p2, void *p3)
 		uint32_t period_us;
 		size_t sample_count;
 		int ret;
+		bool telemetry_paused;
 
 		if (linkr_debugger_ws_adc_sampler_pause_if_requested()) {
+			continue;
+		}
+
+		k_mutex_lock(&linkr_debugger_ws_sample_ring_lock, K_FOREVER);
+		telemetry_paused = linkr_debugger_ws_sigrok_telemetry_pause_requested;
+		k_mutex_unlock(&linkr_debugger_ws_sample_ring_lock);
+		if (telemetry_paused) {
+			(void)k_event_wait_safe(&linkr_debugger_ws_sampler_events,
+					   LINKR_DEBUGGER_WS_SAMPLER_EVENT_CONFIG,
+					   false, K_MSEC(50));
 			continue;
 		}
 
@@ -1756,6 +1787,7 @@ static int linkr_debugger_ws_handle_control_message(struct linkr_debugger_ws_cli
 
 	if (strcmp(request->command, "gpio_set") == 0) {
 		const struct linkr_debugger_safe_gpio_desc *gpio;
+		bool output_requested;
 		int ret;
 
 		gpio = linkr_debugger_find_safe_gpio_by_identifier(request->gpio);
@@ -1764,9 +1796,10 @@ static int linkr_debugger_ws_handle_control_message(struct linkr_debugger_ws_cli
 					"GPIO target must be GP13, 13, or an allowlist note such as CON_MAS");
 		}
 
+		output_requested = strcmp(request->direction, "output") == 0;
 		if (strcmp(request->direction, "input") == 0) {
 			ret = linkr_debugger_gpio_set_input(gpio);
-		} else if (strcmp(request->direction, "output") == 0) {
+		} else if (output_requested) {
 			ret = linkr_debugger_gpio_set_output(gpio, request->value != 0);
 		} else {
 			return linkr_debugger_ws_emit_error(client, "gpio", "invalid_request",
@@ -1774,37 +1807,15 @@ static int linkr_debugger_ws_handle_control_message(struct linkr_debugger_ws_cli
 		}
 
 		if (ret < 0) {
-			return linkr_debugger_ws_emit_error(client, "gpio", "configure_failed",
-						"failed to configure GPIO");
+			const struct linkr_debugger_gpio_error *gpio_error =
+				linkr_debugger_gpio_configure_error(output_requested, ret);
+
+			return linkr_debugger_ws_emit_error(client, "gpio", gpio_error->code,
+							gpio_error->message);
 		}
 
 		linkr_debugger_ws_publish_state_change();
 		return linkr_debugger_ws_emit_result_and_snapshot(client, request->id, "gpio_set", "ok");
-	}
-
-	if (strcmp(request->command, "target_recovery") == 0) {
-		enum linkr_debugger_target_recovery_mode mode;
-		const struct linkr_debugger_rail_desc *rail;
-		int ret;
-
-		if (!linkr_debugger_parse_target_recovery_mode(request->mode, &mode)) {
-			return linkr_debugger_ws_emit_error(client, "target-recovery", "invalid_mode",
-						"mode must be qualcomm-edl or rockchip-maskrom");
-		}
-		rail = linkr_debugger_find_rail(request->output);
-		if (!linkr_debugger_target_recovery_rail_allowed(rail)) {
-			return linkr_debugger_ws_emit_error(client, "target-recovery", "invalid_rail",
-						"output must be 5v_out, 12v_out, or 20v_out");
-		}
-
-		ret = linkr_debugger_target_recovery_enter(mode, rail);
-		if (ret < 0) {
-			return linkr_debugger_ws_emit_error(client, "target-recovery", "sequence_failed",
-						"target recovery sequence failed; CON_MAS was released");
-		}
-		linkr_debugger_ws_publish_state_change();
-		return linkr_debugger_ws_emit_result_and_snapshot(
-			client, request->id, "target_recovery", "ok");
 	}
 
 	if (strcmp(request->command, "bootloader") == 0) {
@@ -1948,6 +1959,10 @@ static void sigrok_ws_release_capture_if_held(struct linkr_debugger_ws_client *c
 	(void)linkr_debugger_capture_arbiter_release(
 		LINKR_DEBUGGER_CAPTURE_OWNER_SIGROK_LINKR);
 	client->sigrok_session.capture_owner_held = false;
+	if (client->sigrok_session.telemetry_pause_held) {
+		linkr_debugger_ws_sigrok_telemetry_pause_release();
+		client->sigrok_session.telemetry_pause_held = false;
+	}
 }
 
 struct sigrok_ws_stream_queue_item {
@@ -4074,6 +4089,7 @@ int linkr_debugger_ws_init(void)
 	sigrok_ws_burst_pool_init();
 	k_sem_init(&linkr_debugger_ws_sampler_pause_ack, 0, 1);
 	linkr_debugger_ws_sampler_pause_requested = false;
+	linkr_debugger_ws_sigrok_telemetry_pause_requested = false;
 	linkr_debugger_ws_arena_quiesced = false;
 	memset(&linkr_debugger_ws_sampler_sync, 0,
 		sizeof(linkr_debugger_ws_sampler_sync));
