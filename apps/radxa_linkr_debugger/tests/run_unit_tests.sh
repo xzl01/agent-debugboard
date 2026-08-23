@@ -222,6 +222,28 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_ws_sampler_sync_test"
 
+
+cc -std=c11 -Wall -Wextra -Werror \
+	-DLINKR_DEBUGGER_TASK_HOST_TEST \
+	-pthread \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${HOST_STUB_DIR}" \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_parse.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_task.c" \
+	-o "${OUT}/linkr_debugger_task_test"
+
+"${OUT}/linkr_debugger_task_test"
+
+cc -std=c11 -Wall -Wextra -Werror \
+	-Wframe-larger-than=256 \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	-fsyntax-only \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c"
+
 cc -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \

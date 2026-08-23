@@ -105,9 +105,13 @@ target_sources(app PRIVATE
   src/linkr_debugger_http_body.c
   src/linkr_debugger_http.c
   src/linkr_debugger_logic_analyzer.c
+  src/linkr_debugger_json_cursor.c
+  src/linkr_debugger_json_value.c
   src/linkr_debugger_monitoring.c
   src/linkr_debugger_model.c
   src/linkr_debugger_network.c
+  src/linkr_debugger_task.c
+  src/linkr_debugger_task_parse.c
   src/linkr_debugger_shell.c
   src/linkr_debugger_sigrok_linkr.c
   src/linkr_debugger_ws.c
