@@ -1,23 +1,25 @@
-{ pkgs ? import <nixpkgs> {} }:
+{ pkgs ? import <nixpkgs> { } }:
 
 let
   # Zephyr SDK packaging from https://github.com/nix-community/zephyr-nix,
   # pinned for reproducibility. Used in classic (non-flake) mode, following
   # the upstream shell.nix example:
   #   packages = [ (zephyr.sdk.override { targets = [ "arm-zephyr-eabi" ]; }) ];
-  zephyr-nix = pkgs.callPackage (builtins.fetchTarball {
-    url = "https://github.com/nix-community/zephyr-nix/archive/6966fb1cbf2fdb494bea3062c5e8e7d44dd8ac9c.tar.gz";
-    sha256 = "0h3y6cqsckyawc9m49bfwh9xprzndqv28isdg7ln5chgac8cxfp3";
-  }) {
-    # zephyr-src/pyproject-nix are only needed by zephyr-nix.pythonEnv, which
-    # we intentionally do not use: this repo builds against its west-pinned
-    # Zephyr checkout, so the Python environment is assembled from nixpkgs
-    # below instead. Nix laziness means these nulls are never evaluated.
-    zephyr-src = null;
-    pyproject-nix = null;
-    # Required by SDK >= 1.0 (GDB Python bindings).
-    python312 = pkgs.python312;
-  };
+  zephyr-nix = pkgs.callPackage
+    (builtins.fetchTarball {
+      url = "https://github.com/nix-community/zephyr-nix/archive/6966fb1cbf2fdb494bea3062c5e8e7d44dd8ac9c.tar.gz";
+      sha256 = "0h3y6cqsckyawc9m49bfwh9xprzndqv28isdg7ln5chgac8cxfp3";
+    })
+    {
+      # zephyr-src/pyproject-nix are only needed by zephyr-nix.pythonEnv, which
+      # we intentionally do not use: this repo builds against its west-pinned
+      # Zephyr checkout, so the Python environment is assembled from nixpkgs
+      # below instead. Nix laziness means these nulls are never evaluated.
+      zephyr-src = null;
+      pyproject-nix = null;
+      # Required by SDK >= 1.0 (GDB Python bindings).
+      python312 = pkgs.python312;
+    };
 
   pythonWithZephyr = pkgs.python3.withPackages (ps: with ps; [
     west
@@ -39,6 +41,8 @@ let
     pylink-square
     pyserial
   ]);
+
+  openocdLatest = pkgs.callPackage ./nix/openocd-latest.nix { };
 in
 pkgs.mkShell {
   packages = [
@@ -53,12 +57,14 @@ pkgs.mkShell {
     pkgs.udev
     pythonWithZephyr
     pkgs.nodejs_22
-    # Rust comes from rustup (see README): the wasm32-unknown-unknown target
-    # std is required for the decoder and nixpkgs rustc cannot provide it.
-    # clang acts as the rustup host linker because rustup's bundled ld
-    # wrapper references garbage-collected nix store paths.
+    pkgs.cargo
+    pkgs.rustc
+    pkgs.clippy
+    pkgs.rustfmt
     pkgs.clang
+    pkgs.lld
     pkgs.wasm-bindgen-cli
+    openocdLatest
     pkgs.picotool
     pkgs.udisks2
     pkgs.wget

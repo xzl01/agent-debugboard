@@ -13,11 +13,37 @@ Radxa Linkr Debugger 可以和 OpenOCD 配合使用：Linkr Debugger 负责目�
 
 ## 安装与验证
 
-安装 OpenOCD 后确认版本：
+仓库以 `openocd-latest` flake output 形式发布一个固定版本的、启用 CH347
+支持的 OpenOCD 包。包名是稳定的；上游版本被锁定在包含 CH347 JTAG/SWD 支持
+的特定 commit（当前为 `da3920b0a52dc2d394afb222c688dac7e57acc1b`），不会
+每次求值时浮动。需要可复现的 CH347 OpenOCD 时，请使用这个包。
+
+在仓库内直接运行该固定包：
+
+```sh
+nix shell .#openocd-latest -c openocd --version
+nix shell .#openocd-latest -c openocd -c "adapter list" -c shutdown
+```
+
+可执行文件名是 `openocd`，`adapter list` 必须包含 `ch347`。如果不在仓库
+目录下，可以通过 flake 引用消费该包：
+
+```sh
+nix shell github:xzl01/agent-debugboard#openocd-latest -c openocd --version
+```
+
+flake 还导出 `agent-debugboard.packages.${system}.openocd-latest`，仓库
+overlay 在 Nixpkgs 导入中追加 `pkgs.openocd-latest`。
+
+如果无法使用 Nix 包，请使用系统包管理器安装 OpenOCD 并验证：
 
 ```sh
 openocd --version
 ```
+
+如果系统 OpenOCD 的 `adapter list` 不包含 `ch347`，请优先使用仓库的
+`openocd-latest` 包，回退到 WCH/vendor OpenOCD 构建，或补齐对应的
+interface 脚本后再运行目标流程。
 
 ## 给目标板供电
 

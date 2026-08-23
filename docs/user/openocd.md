@@ -15,11 +15,40 @@ target JTAG/SWD.
 
 ## Install and Verify
 
-Install OpenOCD, then verify:
+The repository ships a pinned, CH347-enabled OpenOCD package as the
+`openocd-latest` flake output. The package name is stable; the upstream
+revision is pinned to the commit that included CH347 JTAG/SWD support at
+update time (currently `da3920b0a52dc2d394afb222c688dac7e57acc1b`) and does
+not float on every evaluation. Use this package whenever you need a
+reproducible CH347-capable OpenOCD.
+
+Run the pinned package directly from the repository:
+
+```sh
+nix shell .#openocd-latest -c openocd --version
+nix shell .#openocd-latest -c openocd -c "adapter list" -c shutdown
+```
+
+The executable name is `openocd`, and `adapter list` must include `ch347`.
+To consume the package from outside the repository, use the flake reference:
+
+```sh
+nix shell github:xzl01/agent-debugboard#openocd-latest -c openocd --version
+```
+
+The flake also exposes `agent-debugboard.packages.${system}.openocd-latest`,
+and the repository overlay adds `pkgs.openocd-latest` to a Nixpkgs import.
+
+If you cannot use the Nix package, install OpenOCD from your system package
+manager and verify:
 
 ```sh
 openocd --version
 ```
+
+If your system OpenOCD does not advertise `ch347` in `adapter list`, prefer
+the repository's `openocd-latest` package, fall back to the WCH/vendor OpenOCD
+build, or add the matching interface script before running the target flow.
 
 ## Power the Target
 

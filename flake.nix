@@ -25,6 +25,7 @@
       in
       {
         packages = {
+          openocd-latest = pkgs.openocd-latest;
           radxa-linkr-debuggerctl = pkgs.radxa-linkr-debuggerctl;
           default = pkgs.radxa-linkr-debuggerctl;
         };
@@ -55,6 +56,7 @@
 
         checks = {
           build = pkgs.radxa-linkr-debuggerctl;
+          openocd-latest = pkgs.openocd-latest;
           formatting = pkgs.runCommand "radxa-linkr-debugboard-flake-formatting-check" { } ''
             workdir="$TMPDIR/nix-format-check"
             mkdir -p "$workdir"
@@ -62,22 +64,30 @@
             cp ${./flake.nix} "$workdir/flake.nix"
             cp ${./nix/package.nix} "$workdir/package.nix"
             cp ${./nix/overlay.nix} "$workdir/overlay.nix"
+            cp ${./nix/openocd-latest.nix} "$workdir/openocd-latest.nix"
+            cp ${./shell.nix} "$workdir/shell.nix"
 
-            chmod u+w "$workdir/flake.nix" "$workdir/package.nix" "$workdir/overlay.nix"
+            chmod u+w "$workdir/flake.nix" "$workdir/package.nix" "$workdir/overlay.nix" "$workdir/openocd-latest.nix" "$workdir/shell.nix"
 
             before_flake=$(sha256sum "$workdir/flake.nix" | cut -d' ' -f1)
             before_package=$(sha256sum "$workdir/package.nix" | cut -d' ' -f1)
             before_overlay=$(sha256sum "$workdir/overlay.nix" | cut -d' ' -f1)
+            before_openocd=$(sha256sum "$workdir/openocd-latest.nix" | cut -d' ' -f1)
+            before_shell=$(sha256sum "$workdir/shell.nix" | cut -d' ' -f1)
 
-            ${pkgs.nixpkgs-fmt}/bin/nixpkgs-fmt "$workdir/flake.nix" "$workdir/package.nix" "$workdir/overlay.nix"
+            ${pkgs.nixpkgs-fmt}/bin/nixpkgs-fmt "$workdir/flake.nix" "$workdir/package.nix" "$workdir/overlay.nix" "$workdir/openocd-latest.nix" "$workdir/shell.nix"
 
             after_flake=$(sha256sum "$workdir/flake.nix" | cut -d' ' -f1)
             after_package=$(sha256sum "$workdir/package.nix" | cut -d' ' -f1)
             after_overlay=$(sha256sum "$workdir/overlay.nix" | cut -d' ' -f1)
+            after_openocd=$(sha256sum "$workdir/openocd-latest.nix" | cut -d' ' -f1)
+            after_shell=$(sha256sum "$workdir/shell.nix" | cut -d' ' -f1)
 
             test "$before_flake" = "$after_flake"
             test "$before_package" = "$after_package"
             test "$before_overlay" = "$after_overlay"
+            test "$before_openocd" = "$after_openocd"
+            test "$before_shell" = "$after_shell"
 
             touch "$out"
           '';

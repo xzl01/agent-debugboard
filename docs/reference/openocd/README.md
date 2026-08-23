@@ -17,6 +17,36 @@ CMSIS-DAP/Picoprobe adapter.
 
 ## Install OpenOCD
 
+### Nix package (recommended, pinned CH347)
+
+The repository ships a pinned CH347-enabled OpenOCD package as the
+`openocd-latest` flake output. The package name is stable; the upstream
+revision is pinned to a specific commit that includes CH347 JTAG/SWD support
+(currently `da3920b0a52dc2d394afb222c688dac7e57acc1b`), and does not float on
+every evaluation. Use this whenever you need reproducible CH347 support.
+
+Run it directly from the repository:
+
+```sh
+nix shell .#openocd-latest -c openocd --version
+nix shell .#openocd-latest -c openocd -c "adapter list" -c shutdown
+```
+
+The package exposes `openocd` as its executable. `adapter list` must include
+`ch347`.
+
+Use the package from outside the repository via the flake reference:
+
+```sh
+nix shell github:xzl01/agent-debugboard#openocd-latest -c openocd --version
+```
+
+The flake also exposes `agent-debugboard.packages.${system}.openocd-latest`,
+and the repository overlay adds `pkgs.openocd-latest` to a Nixpkgs import.
+See `docs/developer/build.md` for the package/overlay/flake boundary.
+
+### OS packages (fallback)
+
 macOS:
 
 ```sh
@@ -37,10 +67,11 @@ Verify:
 openocd --version
 ```
 
-CH347F support depends on the OpenOCD build and adapter driver scripts available
-on the host. If your system OpenOCD does not include CH347F support, use the
-WCH/vendor OpenOCD build or add the matching interface script before running
-the target flow.
+CH347F support depends on the system OpenOCD build and adapter driver
+scripts available on the host. If `adapter list` does not include `ch347`,
+prefer the repository's `openocd-latest` package above, fall back to the
+WCH/vendor OpenOCD build, or add the matching interface script before
+running the target flow.
 
 ## Target Flow
 
