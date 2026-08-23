@@ -26,6 +26,35 @@ explicitly asks for upstream work. In particular, never solve this repository's
 problems by patching sibling `zephyr/`, `modules/`, or other shared checkout
 code when the intended change belongs in this repository.
 
+## Skills and documentation ownership
+
+Skills under `skills/` are Agent operating runbooks for driving Linkr against
+a real target device. They may contain:
+
+- target-device operation and debugging through MCP, CLI, TUI, Web UI, or curl
+- confirmation rules and dangerous-value gates the firmware enforces
+- safety-recovery workflows (BOOTSEL, watchdog, CDC ACM fallback, OTA recovery)
+- concise troubleshooting for the most common hardware-facing failures
+
+Skills must not contain Linkr Debugger self-development content:
+
+- Linkr source builds, linker config, or implementation internals
+- test-HIL procedures or board-level test specifications
+- release engineering, changelogs, or release-artifact handling
+- historical measurements, dated HIL reports, or self-debug narratives
+
+Canonical destinations for these topics:
+
+- development, build, flash, and contribution: `docs/developer/`
+- protocol and wire contracts, including the v1 persistent-configuration
+  snapshot: `docs/reference/`
+- HIL procedures, the functional-test spec, and dated board-level evidence:
+  `docs/testing/`
+
+When a skill needs any of those topics, it links to the canonical doc rather
+than copying the content. Update the canonical doc first; the skill links,
+not the other way around.
+
 ## Flashing procedures
 
 **⚠️ 重要：线刷（ROM BOOTSEL）必须使用合成完整 UF2 文件 `radxa-linkr-debugger-rp2350.uf2`，不能使用应用 UF2 文件 `zephyr.uf2`。使用应用 UF2 会导致板子变砖。**
