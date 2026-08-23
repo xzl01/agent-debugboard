@@ -401,17 +401,27 @@ jobs:
       - name: Package Rust host CLI artifact
         if: runner.os != 'Windows'
         run: |
-          mkdir -p dist/rust-cli
-          tar -C "$(dirname "${{ matrix.binary_path }}")" \
+          stage_dir=dist/rust-cli/stage
+          mkdir -p "$stage_dir"
+          cp "${{ matrix.binary_path }}" "$stage_dir/radxa-linkr-debuggerctl"
+          ln -s radxa-linkr-debuggerctl "$stage_dir/rdb"
+          test "$(readlink "$stage_dir/rdb")" = radxa-linkr-debuggerctl
+          tar -C "$stage_dir" \
             -czf dist/rust-cli/${{ matrix.artifact_name }} \
-            "$(basename "${{ matrix.binary_path }}")"
+            radxa-linkr-debuggerctl rdb
 
       - name: Package Rust host CLI artifact (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist/rust-cli | Out-Null
-          Compress-Archive -Path "${{ matrix.binary_path }}" -DestinationPath dist/rust-cli/${{ matrix.artifact_name }}
+          $stageDir = "dist/rust-cli/stage"
+          New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+          Copy-Item -Path "${{ matrix.binary_path }}" -Destination (Join-Path $stageDir "radxa-linkr-debuggerctl.exe")
+          New-Item -ItemType HardLink -Path (Join-Path $stageDir "rdb.exe") -Target (Join-Path $stageDir "radxa-linkr-debuggerctl.exe") | Out-Null
+          $primaryHash = (Get-FileHash -Algorithm SHA256 (Join-Path $stageDir "radxa-linkr-debuggerctl.exe")).Hash
+          $aliasHash = (Get-FileHash -Algorithm SHA256 (Join-Path $stageDir "rdb.exe")).Hash
+          if ($primaryHash -ne $aliasHash) { throw "rdb.exe must match radxa-linkr-debuggerctl.exe" }
+          Compress-Archive -Path (Join-Path $stageDir "radxa-linkr-debuggerctl.exe"), (Join-Path $stageDir "rdb.exe") -DestinationPath dist/rust-cli/${{ matrix.artifact_name }}
 
       - name: Upload Rust host CLI artifacts
         uses: actions/upload-artifact@v6

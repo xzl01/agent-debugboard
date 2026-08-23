@@ -88,14 +88,24 @@ jobs:
       - name: Package Rust nightly archive
         if: runner.os != 'Windows'
         run: |
-          mkdir -p rust-release
-          tar -C "$(dirname "${{ matrix.binary_path }}")" -czf rust-release/${{ matrix.asset_name }} "$(basename "${{ matrix.binary_path }}")"
+          stage_dir=rust-release/stage
+          mkdir -p "$stage_dir"
+          cp "${{ matrix.binary_path }}" "$stage_dir/radxa-linkr-debuggerctl"
+          ln -s radxa-linkr-debuggerctl "$stage_dir/rdb"
+          test "$(readlink "$stage_dir/rdb")" = radxa-linkr-debuggerctl
+          tar -C "$stage_dir" -czf rust-release/${{ matrix.asset_name }} radxa-linkr-debuggerctl rdb
       - name: Package Rust nightly archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path rust-release | Out-Null
-          Compress-Archive -Path "${{ matrix.binary_path }}" -DestinationPath rust-release/${{ matrix.asset_name }}
+          $stageDir = "rust-release/stage"
+          New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+          Copy-Item -Path "${{ matrix.binary_path }}" -Destination (Join-Path $stageDir "radxa-linkr-debuggerctl.exe")
+          New-Item -ItemType HardLink -Path (Join-Path $stageDir "rdb.exe") -Target (Join-Path $stageDir "radxa-linkr-debuggerctl.exe") | Out-Null
+          $primaryHash = (Get-FileHash -Algorithm SHA256 (Join-Path $stageDir "radxa-linkr-debuggerctl.exe")).Hash
+          $aliasHash = (Get-FileHash -Algorithm SHA256 (Join-Path $stageDir "rdb.exe")).Hash
+          if ($primaryHash -ne $aliasHash) { throw "rdb.exe must match radxa-linkr-debuggerctl.exe" }
+          Compress-Archive -Path (Join-Path $stageDir "radxa-linkr-debuggerctl.exe"), (Join-Path $stageDir "rdb.exe") -DestinationPath rust-release/${{ matrix.asset_name }}
       - name: Upload Rust nightly archive
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4.6.2
         with:
