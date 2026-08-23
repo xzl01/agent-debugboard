@@ -167,15 +167,15 @@ print('Phase 2 memory schema check passed')
 "
 ```
 
-验证 HTTP 响应 JSON 长度低于 4096 字节（协议限制检查）：
+验证 HTTP 响应 JSON 长度低于专用 6144 字节 status buffer（协议限制检查）：
 
 ```sh
 LEN=$(timeout 5s curl -fsS http://172.29.203.1/api/v1/status | wc -c)
 echo "status response size: $LEN bytes"
-[ "$LEN" -lt 4096 ] || { echo "status response must be below 4096 bytes"; exit 1; }
+[ "$LEN" -lt 6144 ] || { echo "status response must be below 6144 bytes"; exit 1; }
 ```
 
-验证 WebSocket `snapshot/status` 包含相同的 `memory` 形状和 Phase 2 对象：
+验证 WebSocket `snapshot/status` 的 initial snapshot 只用于形状校验，后续 event-driven subsequent snapshots 由状态变化触发：
 
 ```sh
 timeout 5s node <<'NODE'
@@ -206,7 +206,7 @@ const wsUrl = new URL(rawUrl, base);
 wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
 
 let snapshotCount = 0;
-const MAX_SNAPSHOTS = 3;
+const MAX_SNAPSHOTS = 1;
 
 await new Promise((resolve, reject) => {
   const ws = new WebSocket(wsUrl);
@@ -244,7 +244,7 @@ await new Promise((resolve, reject) => {
   });
   ws.addEventListener('error', () => reject(new Error('WebSocket error')));
 });
-console.log(`WS memory Phase 2 check passed (${snapshotCount} snapshots received)`);
+console.log(`WS memory initial snapshot check passed (${snapshotCount} snapshot received); later snapshots are event-driven`);
 NODE
 ```
 
@@ -398,9 +398,9 @@ PY
 ### 2c. 强制门户发现
 
 验证 DHCP option 114（Captive Portal URI）已正确通告。利用 tcpdump 在 NCM 接口
-捕获 DHCP DORA 过程，解析 option 3（router）、option 6（DNS）和 option 114
-（Captive Portal URI）。以下为 Linux 示例；macOS/Windows 使用对应平台 tcpdump
-或 DHCP 工具：
+捕获 DHCP DORA 过程，解析客户端 Parameter Request List（PRL）和 ACK 中的 option
+114。该 NCM 链路仅供本地访问：固件不得通告 option 3（router）或 option 6（DNS）。
+以下为 Linux 示例；macOS/Windows 使用对应平台 tcpdump 或 DHCP 工具：
 
 ```sh
 # 先用 ip link 确认 NCM 接口名，再显式填写；不要自动选择第一块网卡。
@@ -436,15 +436,19 @@ wait "$TCPDUMP_PID" || [ "$?" -eq 124 ]
 
 # 展开客户端请求和 ACK 的 DHCP options。不同 Wireshark 版本的字段名不同，
 # 因此保留 verbose 文本作为 HIL 记录，并人工确认请求 PRL 包含 114，且 ACK
-# 包含 option 3、6、114 的精确值。
+# 包含 option 114 而不通告 router 或 DNS。
 timeout 5s tshark -r "$DHCP_CAPTURE" -Y 'dhcp.option.dhcp == 3' -V \
   > /tmp/linkr-dhcp-request.txt
 timeout 5s tshark -r "$DHCP_CAPTURE" -Y 'dhcp.option.dhcp == 5' -V \
   > /tmp/linkr-dhcp-ack.txt
 grep -E 'Parameter Request List|Captive-Portal|Option.*114' \
   /tmp/linkr-dhcp-request.txt
-grep -E 'Router|Domain Name Server|Captive-Portal|Option.*(3|6|114)' \
+grep -E 'Captive-Portal|Option.*114' \
   /tmp/linkr-dhcp-ack.txt
+if grep -E 'Router|Domain Name Server|Option.*(3|6)' /tmp/linkr-dhcp-ack.txt; then
+  echo "DHCP ACK must not advertise router or DNS"
+  exit 1
+fi
 
 if [ "$NCM_WAS_MANAGED" = yes ]; then
   sudo timeout 5s dhclient -r "$NCM_IFACE" || true
@@ -453,41 +457,14 @@ if [ "$NCM_WAS_MANAGED" = yes ]; then
 fi
 ```
 
-客户端请求的 Parameter Request List 必须包含 option 114。ACK 必须包含 router
-`172.29.203.1`、DNS `172.29.203.1` 和 option 114 URI
-`http://172.29.203.1/captive-portal/api`；把 `/tmp/linkr-dhcp-ack.txt` 留作
-HIL 记录。上述命令会恢复原 NetworkManager 所有权；不要同时运行两个 DHCP
-client。
+DHCP DORA 的客户端 PRL 必须请求 DHCP option 114。DHCPACK 必须包含 DHCP option
+114，URI 必须为 `http://172.29.203.1/captive-portal/api`。DHCPACK 不得通告 DHCP
+option 3（router）或 DHCP option 6（DNS）。把 `/tmp/linkr-dhcp-ack.txt` 留作 HIL
+记录。上述命令会恢复原 NetworkManager 所有权；不要同时运行两个 DHCP client。
 
-验证 DNS 泛解析 A 记录（对任意查询名返回 `172.29.203.1`）：
-
-```sh
-timeout 5s dig +short @172.29.203.1 anything.example A
-```
-
-期望 `172.29.203.1`；若输出为空或包含非 IP 字符串则失败。
-
-验证 DNS AAAA 查询返回 NOERROR 且 answers 为空（NODATA）：
-
-```sh
-timeout 5s dig @172.29.203.1 anything.example AAAA +notcp +tries=1 +time=2 +noedns
-```
-
-通过检查输出中是否存在 `NOERROR` 且 `ANSWER: 0` 来区分 NODATA 与
-timeout/NXDOMAIN：
-
-```sh
-timeout 5s dig @172.29.203.1 anything.example AAAA +notcp +tries=1 +time=2 +noedns | python3 -c "
-import sys
-import re
-text = sys.stdin.read()
-m = re.search(r'status:\s*([A-Z]+).*?ANSWER:\s*(\d+)', text, re.S)
-assert m is not None, f'Cannot parse dig header: {text[:300]}'
-status, answers = m.group(1), int(m.group(2))
-assert status == 'NOERROR' and answers == 0, f'Expected NOERROR + 0 answers, got {status} + {answers}'
-print('AAAA NOERROR/NODATA OK')
-"
-```
+板子不提供 DNS 服务，也不提供 wildcard A/AAAA 响应；不要把 `172.29.203.1` 当作
+DNS resolver 进行直接查询。继续使用下方多宿主检查验证主机原有的外部 DNS 和默认
+路由在 NCM DHCP 后仍可用。
 
 验证 HTTP port 80 `/captive-portal/api` 返回 `Content-Type: application/captive+json` 和 HTTP 200：
 
@@ -572,7 +549,7 @@ echo "After NCM connect: default gw=$CURR_DEFAULT_GW dns=$CURR_DNS"
 }
 EXTERNAL_ADDR=$(timeout 5s getent ahostsv4 example.com | awk 'NR == 1 {print $1}')
 [ -n "$EXTERNAL_ADDR" ] && [ "$EXTERNAL_ADDR" != "172.29.203.1" ] || {
-  echo "External DNS resolution is unavailable or captured by the board DNS"
+  echo "External DNS resolution is unavailable or intercepted by the host environment"
   exit 1
 }
 echo "Existing Internet route and DNS remain usable"
@@ -593,7 +570,7 @@ mock，与真实硬件无关。Todo 16 实机 HIL 必须在 Todo 15 通过、固
 代码块。未来真实硬件命令一律放在 `text` 块或 prose，防止本地文档检查意外
 触发真实硬件操作。
 
-参见 [持久化配置文档](../persistent-configuration.md)。本地验证不等于真实硬件
+参见 [持久化配置文档](../reference/persistent-configuration.md)。本地验证不等于真实硬件
 HIL。2026-08-05 真实硬件 HIL 通过 v1 save-and-apply flow，见
 [日期 v1-save HIL 报告](results/2026-08-05-persistent-config-v1-save-hil.md)。历史 2026-07-30
 真实硬件 HIL 的六个 runner flow 全部通过，见
@@ -775,13 +752,13 @@ output 的 GPIO 逐个切回 input；随后再次 GET 读取并验证两类状�
 
 #### 证据与报告
 
-每次真实硬件 HIL 必须产出以下产物并归档到 `doc/testing/results/`：
+每次真实硬件 HIL 必须产出以下产物并归档到 `docs/testing/results/`：
 
 ```text
-doc/testing/results/<YYYY-MM-DD>-persistent-config-hil.md
-doc/testing/results/<YYYY-MM-DD>-persistent-config-hil.raw.jsonl
-doc/testing/results/<YYYY-MM-DD>-persistent-config-hil.serial.log
-doc/testing/results/<YYYY-MM-DD>-persistent-config-hil.SHA256SUMS
+docs/testing/results/<YYYY-MM-DD>-persistent-config-hil.md
+docs/testing/results/<YYYY-MM-DD>-persistent-config-hil.raw.jsonl
+docs/testing/results/<YYYY-MM-DD>-persistent-config-hil.serial.log
+docs/testing/results/<YYYY-MM-DD>-persistent-config-hil.SHA256SUMS
 ```
 
 报告正文必须列出：
@@ -796,6 +773,96 @@ doc/testing/results/<YYYY-MM-DD>-persistent-config-hil.SHA256SUMS
 硬件 HIL 的六个 runner flow 实际执行结果同样为 PASS，权威证据见
 [历史六 flow 报告](results/2026-07-30-persistent-config-hil.md)；Todo 14 本地证明
 及未来本地测试仍不构成或替代真实硬件 HIL。
+
+### 2b. Rust TUI 键盘、鼠标与确认行为
+
+修改 `cmd-ng` 的 TUI 渲染、导航、鼠标命中或真实硬件控制逻辑时，必须用当前源码
+的 release build 启动 TUI，并在 `80x24` 和 `120x32` 两种尺寸中验证。操作期间用
+另一终端的 CLI/HTTP 读取实际硬件状态，不得只根据 TUI 本地显示判定通过。
+
+必测项：
+
+- 常态区域不得出现外框或空白分隔行；确认浮层是唯一允许带边框的区域。顶部状态
+  固定两行；无 ADC 数据时遥测占零行，有数据时示波器固定七行（一行表头、六行
+  图形）。三路电流必须按确定性列宽并排显示，80 列为 27/27/26，120 列为
+  40/40/40；每路按可见峰值和最新值的 `ceil(max(..., 1) * 5 / 4)` 独立缩放，
+  不得使用固定 5000 mA 量程。
+- Controls、Saved Config、Status 三页页签和当前页表头各固定一行，Tab/Shift+Tab
+  在三页间前后切换，且只有活动页签使用反色/粗体焦点。
+- Controls 每个 Power、Switch 对象严格占一行并使用稳定列。GPIO 只消费固件返回的
+  `layoutGroup/layoutLabel/layoutRow/layoutColumn`：48 列及以上时同一固件物理行
+  最多两个独立 cell，低于 48 列时每针单行，不得跨固件行配对；缺失 metadata
+  的引脚按快照顺序独立回退，host 不得硬编码连接器、pin map 或镜像规则。80x24
+  首屏至少暴露 14 个硬件对象/cell，120x32 至少 21 个。Saved Config 每个条目占
+  一行，Status 每个 switch 或监控字段占一行。
+- 当前 Power、Switch 与 Saved Config 行的焦点背景必须从第 0 列铺到终端最后一列；
+  GPIO 焦点只覆盖自己的半行 cell，不能覆盖或隐藏兄弟 cell。电源 ON/OFF 分别为
+  绿/深灰；switch ready/pending/mismatch 分别为青/黄/红；GPIO 必须显示
+  `◌ IN LOW`、`◌ IN HIGH`、`○ OUT LOW`、`● OUT HIGH`，LOW 为无浅色背景的
+  深灰，HIGH 为粗体红色。
+- 最后一行固定为 htop 式键位栏；键块与操作标签必须视觉可分，每个键/操作单元
+  要么完整显示、要么整段省略，不得在右边界截断半个单元。确认和错误状态必须
+  替换常态键位提示。
+- 上下键按共享视觉投影移动并在可能时保持 GPIO 左右位置；左右键只能在同一投影行
+  的兄弟 GPIO cell 间切换。PgUp/PgDn 与 `g` 必须使用同一投影，每个 GPIO 都可达。
+  Controls 与 Saved Config 必须自动滚动并保持当前项可见；Status 直接滚动，各页
+  滚动位置彼此独立。
+- Power/Switch 的鼠标命中区域覆盖整行；成对 GPIO 的左右半行矩形必须互不重叠、
+  分别命中对应引脚，空半行必须 inert。鼠标左键与 Enter/Space 走同一主操作；
+  GPIO 右键与 `i` 都恢复 input；右键点击非 GPIO 行不得产生硬件请求。
+- GPIO 使用安全测试脚（默认 GP13）：`input -> 主操作 -> output HIGH -> 主操作 ->
+  output LOW -> 主操作 -> output HIGH -> 右键/i -> input`。每一步都从 API 回读，
+  LOW 必须显示为无浅色背景的深灰、HIGH 必须显示为粗体红色，且颜色不依赖
+  input/output 方向。
+- 每个 Power 控件第一次操作只打开红色边框确认框；取消和超时都不得改变实际
+  电源，三秒内再次 Enter/Space 或点击 Confirm 只执行一次状态切换。
+- 固件标记 `requires_confirm` 的 switch（包括 VIO）使用同一醒目确认框；默认
+  VIO HIL 只打开并取消确认框，保持 `3.3v`。实际切换 `1.8v` 仍须满足
+  第 6 节的目标兼容性与物理测量前置条件。
+- 正常退出、连接错误和 Ctrl+C 后，raw mode、alternate screen、鼠标捕获与光标状态
+  都必须恢复。
+- 安装后的 `rdb` 与 `radxa-linkr-debuggerctl` 对 `--version`、`--help` 和
+  `--json status` 返回相同退出状态与输出；Unix 必须是指向主程序的相对符号链接，
+  Windows 两个 `.exe` 必须为同一硬链接或具有相同 SHA256。
+
+结束前把所有测试过的 GPIO 恢复为 input、Power 恢复为 off、VIN 保持 `3.3v`，并
+按本规范验证 HTTP/WS、CDC fallback、HTTP BOOTSEL 与 CDC BOOTSEL。证据写入
+`docs/testing/results/<YYYY-MM-DD>-cmd-ng-tui-controls-hil.md`，并保存 80x24/120x32
+三页、带三通道示波器的 Controls、GPIO 双 cell 选择态及确认态终端截图，明确区分
+真实板卡 HIL 和 TestBackend/mock-board 本地 QA。
+
+### 2c. 固件目录自动化任务
+
+MASKROM/EDL 来自固件拥有的不可变目录 `GET /api/v1/tasks/catalog`，host 不
+保存任何恢复配方，也不能新增固件专用 API、WebSocket 命令、CDC 命令、
+开机默认值或 replay 路径。修改固件目录、通用 task runner 或 catalog 解析
+后，必须验证：
+
+- `task list` 列出 `GET /api/v1/tasks/catalog` 返回的条目，每行
+  `source=builtin`；原始 `GET /api/v1/tasks` 仍只报告 stored entry。两个
+  拉取相互独立，catalog 不可用时 `task list` 仍展示 stored task 并带
+  `catalog_error`，`task run builtin/...` 直接返回 `catalog_unavailable`。
+- 缺少 `--confirm` 的 `task run` 必须在零 transport request 时返回
+  `confirmation_required`；所有实际执行使用 `task run builtin/... --confirm`。
+- confirmed built-in 不读取或修改 `/api/v1/tasks`，主序列与 cleanup 序列
+  完全由固件目录声明的 `PUT` 记录驱动，host 不在客户端硬编码
+  `CON_MAS`/`rail`/等待步骤。客户端等待仅在每个 PUT 成功之后按记录的
+  `wait_ms` 应用。
+- MASKROM 把 `CON_MAS` 拉低、EDL 把它拉高；成功后 `CON_MAS` 回读为 input，
+  所选 rail 回读为 on（具体行为以固件目录为准）。首次失败立即停止主序列，
+  随后只运行固件目录声明的 cleanup 序列；主错误保持权威，cleanup 结果单独
+  记录，不允许 host 推断 rail 回滚。首条请求前取消不 cleanup，stored task
+  失败或取消也不推断 cleanup。
+- stored task 与固件目录声明的 ID 碰撞时，客户端列表标记 stored entry 被
+  遮蔽，执行时 built-in 胜出；`task clear` 只删除 stored entry，目录条目
+  继续存在。
+- 只有连接了由所选 rail 供电、且可独立确认 USB ROM 枚举的目标夹具，才能
+  把对应 MASKROM/EDL 行记为 pass；缺少兼容目标或 rail 接线必须标记
+  `[blocked]`。
+
+HIL 前后逐字节保存并恢复 `/api/v1/tasks` blob，记录全部 Power/GPIO/Switch 基线；
+结束时把 `CON_MAS` 恢复 input、VIN 保持 `3.3v`，其余硬件状态恢复基线。证据写入
+`docs/testing/results/<YYYY-MM-DD>-builtin-automation-tasks-hil.md`。
 
 ### 3. 电源输出 get/set
 
@@ -845,7 +912,7 @@ timeout 5s radxa-linkr-debuggerctl --json adc read 20v_out
 ### 4b. ADC3 Compact Telemetry & GP29 Ownership
 
 本节与第 4 节组合形成 ADC 验收表面。完整合约以
-[doc/adc-telemetry.md](../adc-telemetry.md) 为准；这里只列出 HIL
+[docs/reference/adc-telemetry.md](../reference/adc-telemetry.md) 为准；这里只列出 HIL
 要确认的最小集合。4b.1、4b.2、4b.3、4b.4 中 ADC3 90-point /
 render / responsive 直接观测子集，以及 4b.5 的 GP29 直接所有权
 子项已经在 2026-07-31 真实板卡 HIL 中通过，证据见
@@ -1359,7 +1426,7 @@ matrix passed 62/62. Eighteen continuous matrix rows ended with an explicit
 capacity OVERRUN; four had `capacity_stop_before_data=true`. Those rows prove
 lossless-or-stop terminal behavior, not sustained operation at the requested
 rate. Historical WIDE12 predecessor evidence remains at
-`doc/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md`.
+`docs/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md`.
 
 #### 8b.4.2 WIDE11 Deep-Burst Pin Mapping HIL
 
@@ -2147,7 +2214,7 @@ HIL 报告。
 期望检查项（每条 `required`、`pending`，未跑真实 evidence 之前不能算 pass）：
 
 - nightly workflow 是**仅**修改 GitHub Release 与 tag 的发布链路，不应驱动
-  任何专用 `[passed]` 状态写入 `doc/testing/results/`。任何 `[passed]`
+  任何专用 `[passed]` 状态写入 `docs/testing/results/`。任何 `[passed]`
   标签只能来自真实板卡 HIL 流程。
 - 正式 `v*` release 的 SHA256SUMS、`radxa-linkr-debugger-rp2350.uf2`、
   `radxa-linkr-debugger-rp2350-ota.bin` 等产物在 nightly run 与正式
@@ -2162,7 +2229,7 @@ HIL 报告。
   HIL 验收仍以正式 `Release` workflow 的资产为权威来源。
 - 任何"nightly 已通过 HIL"的说法都不被允许。nightly 通道是滚动
   测试产物，不构成 formal validation evidence；正式 HIL 证据必须独立
-  写到命名带日期和测试主题的 `doc/testing/results/<date>-<topic>-hil.md`。
+  写到命名带日期和测试主题的 `docs/testing/results/<date>-<topic>-hil.md`。
 
 ## 最短 HIL smoke test
 
@@ -2194,17 +2261,17 @@ VIN 1.8V 切换不属于默认 smoke test 范围；它需要目标板电压兼�
 ## Final Post-Fix HIL Evidence
 
 The current bounded pre-trigger and UART sample-0 decoder results are recorded in
-`doc/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md`, including
+`docs/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md`, including
 canonical footprint, HTTP and CDC BOOTSEL recovery, WebSocket protocol evidence,
 browser decode evidence, and visual QA.
 
 The following results were obtained from actual post-fix HIL runs against the final
-firmware build. The dated repository report at `doc/testing/results/2026-07-25-logic-analyzer-finite-hil.md`
+firmware build. The dated repository report at `docs/testing/results/2026-07-25-logic-analyzer-finite-hil.md`
 preserves pass summaries, SHA-256 identities, and the post-patch transport-cleanup regression
 results; the original JSON outputs named under `/tmp` are not checked in.
 
 Full logic analyzer finite HIL evidence report (2026-07-25):
-`doc/testing/results/2026-07-25-logic-analyzer-finite-hil.md`
+`docs/testing/results/2026-07-25-logic-analyzer-finite-hil.md`
 
 ### WS SINGLE 1MHz Continuous (`/tmp/linkr-final-ws-1mhz.json`)
 Overall pass, 4,995,072 samples, 998,963.5 samples/s effective rate,

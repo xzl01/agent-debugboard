@@ -367,7 +367,7 @@ negative_upload() {
   bad_sha="0000000000000000000000000000000000000000000000000000000000000000"
   note "negative upload: SHA256 mismatch should return firmware JSON error"
   if [ "$DRY_RUN" -eq 1 ]; then
-    plan run_timeout "$SHORT_TIMEOUT" curl -sS -o /tmp/linkr-ota-bad-sha.json -w '%{http_code}' -X POST \
+    plan run_timeout "$UPLOAD_TIMEOUT" curl -sS -o /tmp/linkr-ota-bad-sha.json -w '%{http_code}' -X POST \
       -H "Content-Type: application/octet-stream" \
       -H "X-Linkr-Ota-Size: $size" \
       -H "X-Linkr-Ota-Sha256: $bad_sha" \
@@ -377,7 +377,7 @@ negative_upload() {
     bad_sha_body=$(mktemp "${TMPDIR:-/tmp}/linkr-ota-bad-sha.XXXXXX") || fail "mktemp failed"
     bad_type_body=$(mktemp "${TMPDIR:-/tmp}/linkr-ota-bad-type.XXXXXX") || fail "mktemp failed"
     trap 'rm -f "$bad_sha_body" "$bad_type_body"' EXIT HUP INT TERM
-    bad_sha_http=$(run_timeout "$SHORT_TIMEOUT" curl -sS -o "$bad_sha_body" -w '%{http_code}' -X POST \
+    bad_sha_http=$(run_timeout "$UPLOAD_TIMEOUT" curl -sS -o "$bad_sha_body" -w '%{http_code}' -X POST \
       -H "Content-Type: application/octet-stream" \
       -H "X-Linkr-Ota-Size: $size" \
       -H "X-Linkr-Ota-Sha256: $bad_sha" \
@@ -391,7 +391,7 @@ negative_upload() {
   fi
   note "negative upload: unsupported content type should preserve first error"
   if [ "$DRY_RUN" -eq 1 ]; then
-    plan run_timeout "30s" curl -sS -o /tmp/linkr-ota-bad-type.json -w '%{http_code}' -X POST \
+    plan run_timeout "$UPLOAD_TIMEOUT" curl -sS -o /tmp/linkr-ota-bad-type.json -w '%{http_code}' -X POST \
       -H "Content-Type: text/plain" \
       -H "X-Linkr-Ota-Size: $size" \
       -H "X-Linkr-Ota-Sha256: $sha" \
@@ -399,7 +399,7 @@ negative_upload() {
       "$(api_url /ota/upload)" "# expect HTTP 415 and error.code unsupported_content_type"
     plan run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /ota)" "# verify last_error.code remains unsupported_content_type"
   else
-    bad_type_http=$(run_timeout "30s" curl -sS -o "$bad_type_body" -w '%{http_code}' -X POST \
+    bad_type_http=$(run_timeout "$UPLOAD_TIMEOUT" curl -sS -o "$bad_type_body" -w '%{http_code}' -X POST \
       -H "Content-Type: text/plain" \
       -H "X-Linkr-Ota-Size: $size" \
       -H "X-Linkr-Ota-Sha256: $sha" \

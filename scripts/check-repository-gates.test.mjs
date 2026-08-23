@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { POLICY_FILES, checkRepositoryGateContents } from "./check-repository-gates.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const PRJ_CONFIG = "apps/radxa_linkr_debugger/prj.conf";
+const HIL_SPEC = "docs/testing/hil-functional-test-spec.md";
+const OTA_HIL = "skills/radxa-linkr-debugger/scripts/web-ota-hil.sh";
+const BUILD_WORKFLOW = ".github/workflows/build.yml";
+const PAGES_WORKFLOW = ".github/workflows/pages.yml";
+const RELEASE_WORKFLOW = ".github/workflows/release.yml";
+const VERSION_BUMP_WORKFLOW = ".github/workflows/version-bump.yml";
+const VALID_SHA = "0123456789abcdef0123456789abcdef01234567";
 
 async function repositoryContents() {
   return new Map(await Promise.all(POLICY_FILES.map(async (relative) => [
@@ -22,8 +32,336 @@ function mutation(contents, relative, replace, replacement = "") {
   return changed;
 }
 
+function actionMutation(contents, { relative, action, reference }) {
+  const changed = new Map(contents);
+  const original = changed.get(relative) ?? "";
+  const actionReference = new RegExp(`(uses:\\s*${action}@)[^\\s#]+(?:\\s+#\\s*[^\\n]+)?`);
+  assert.match(original, actionReference, `action mutation marker missing: ${relative}: ${action}`);
+  changed.set(relative, original.replace(actionReference, `$1${reference}`));
+  return changed;
+}
+
+function workflowJob(workflow, name) {
+  const body = workflow.slice(Math.max(0, workflow.search(/^jobs:\s*$/m)));
+  const headers = [...body.matchAll(/^  ([a-z0-9-]+):\s*$/gm)];
+  const index = headers.findIndex((header) => header[1] === name);
+  assert.notEqual(index, -1, `workflow job missing: ${name}`);
+  return body.slice(headers[index].index, headers[index + 1]?.index);
+}
+
+function sourceGateScript(workflow) {
+  const source = workflowJob(workflow, "source");
+  const marker = "        run: |\n";
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, "source gate run step missing");
+  const run = source.slice(start + marker.length);
+  const nextStep = run.search(/^      - /m);
+  return run.slice(0, nextStep < 0 ? undefined : nextStep).replace(/^          /gm, "");
+}
+
+async function runSourceGate(workflow, requested, inherited) {
+  const directory = await mkdtemp(path.join(tmpdir(), "agent-debugboard-source-gate-"));
+  const output = path.join(directory, "github-output");
+  await writeFile(output, "");
+  try {
+    const result = spawnSync("bash", ["-euo", "pipefail", "-c", sourceGateScript(workflow)], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: output,
+        INHERITED_SOURCE_SHA: inherited,
+        REQUESTED_SOURCE_SHA: requested,
+      },
+    });
+    return { output: await readFile(output, "utf8"), status: result.status, stderr: result.stderr };
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+}
+
 test("accepts the complete repository gate contract", async () => {
   assert.deepEqual(checkRepositoryGateContents(await repositoryContents()), { ok: true, failures: [] });
+});
+
+test("Given an inherited or immutable source SHA, when the source gate runs, then it emits the effective SHA", async (t) => {
+  const build = (await repositoryContents()).get(BUILD_WORKFLOW);
+
+  await t.test("uses the inherited SHA for an empty reusable input", async () => {
+    const result = await runSourceGate(build, "", VALID_SHA);
+    assert.equal(result.status, 0);
+    assert.equal(result.output, `effective_source_sha=${VALID_SHA}\n`);
+  });
+
+  await t.test("uses a valid immutable reusable input", async () => {
+    const requested = "fedcba9876543210fedcba9876543210fedcba98";
+    const result = await runSourceGate(build, requested, VALID_SHA);
+    assert.equal(result.status, 0);
+    assert.equal(result.output, `effective_source_sha=${requested}\n`);
+  });
+});
+
+test("Given an invalid reusable source SHA, when the source gate runs, then it fails before checkout", async (t) => {
+  const build = (await repositoryContents()).get(BUILD_WORKFLOW);
+  const cases = [
+    ["short", VALID_SHA.slice(0, -1)],
+    ["uppercase", VALID_SHA.toUpperCase()],
+    ["symbolic", "main"],
+    ["whitespace", `${VALID_SHA} `],
+  ];
+
+  for (const [name, requested] of cases) {
+    await t.test(name, async () => {
+      const result = await runSourceGate(build, requested, VALID_SHA);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /source_sha must be exactly 40 lowercase hexadecimal characters/);
+      assert.equal(result.output, "");
+    });
+  }
+});
+
+test("rejects immutable source selection and action pin regressions", async (t) => {
+  const baseline = await repositoryContents();
+  const cases = [
+    ["source input validation", BUILD_WORKFLOW, 'if [[ -n "$REQUESTED_SOURCE_SHA" && ! "$REQUESTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then', "if false; then"],
+    ["source input grammar", BUILD_WORKFLOW, "^[0-9a-f]{40}$", "^[0-9a-fA-F]{40}$"],
+    ["version gate source dependency", BUILD_WORKFLOW, "  version-gate:\n    name: Check synchronized project version\n    needs: source\n", "  version-gate:\n    name: Check synchronized project version\n"],
+    ["Nix source dependency", BUILD_WORKFLOW, "  nix:\n    name: Check Nix flake\n    needs: source\n", "  nix:\n    name: Check Nix flake\n"],
+    ["aggregate source dependency", BUILD_WORKFLOW, "    needs:\n      - source\n      - version-gate\n", "    needs:\n      - version-gate\n"],
+    ["build mutable action", BUILD_WORKFLOW, "uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0", "uses: actions/checkout@v6 # v6.1.0"],
+    ["build wrong action pin", BUILD_WORKFLOW, "uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0", "uses: actions/setup-python@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.3.0"],
+    ["build wrong action comment", BUILD_WORKFLOW, "uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0", "uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.0.0"],
+    ["release mutable action", RELEASE_WORKFLOW, "uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0", "uses: actions/download-artifact@v6 # v6.0.0"],
+    ["release wrong action pin", RELEASE_WORKFLOW, "uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable", "uses: dtolnay/rust-toolchain@d23441a48e516b6c34aea4fa41551a30e30af803 # stable"],
+    ["release wrong action comment", RELEASE_WORKFLOW, "uses: zephyrproject-rtos/action-zephyr-setup@be8136a8bba01580485d98b7ad2d32477c36a49a # v1", "uses: zephyrproject-rtos/action-zephyr-setup@be8136a8bba01580485d98b7ad2d32477c36a49a # v2"],
+  ];
+
+  for (const [name, relative, replace, replacement] of cases) {
+    await t.test(name, () => {
+      const result = checkRepositoryGateContents(mutation(baseline, relative, replace, replacement));
+      assert.equal(result.ok, false);
+      assert.ok(result.failures.some((failure) => failure.code === "G12"));
+    });
+  }
+});
+
+test("rejects mutable, wrong, and missing action pins in every governed workflow", async (t) => {
+  const baseline = await repositoryContents();
+  baseline.set(VERSION_BUMP_WORKFLOW, await readFile(path.join(ROOT, VERSION_BUMP_WORKFLOW), "utf8"));
+  const workflows = [
+    {
+      name: "build",
+      relative: BUILD_WORKFLOW,
+      action: "actions/checkout",
+      sha: "d23441a48e516b6c34aea4fa41551a30e30af803",
+      tag: "v6",
+      comment: "v6.1.0",
+    },
+    {
+      name: "release",
+      relative: RELEASE_WORKFLOW,
+      action: "actions/checkout",
+      sha: "d23441a48e516b6c34aea4fa41551a30e30af803",
+      tag: "v6",
+      comment: "v6.1.0",
+    },
+    {
+      name: "Pages",
+      relative: PAGES_WORKFLOW,
+      action: "actions/configure-pages",
+      sha: "983d7736d9b0ae728b81ab479565c72886d7745b",
+      tag: "v5",
+      comment: "v5.0.0",
+    },
+    {
+      name: "Version Bump",
+      relative: VERSION_BUMP_WORKFLOW,
+      action: "actions/setup-python",
+      sha: "ece7cb06caefa5fff74198d8649806c4678c61a1",
+      tag: "v6",
+      comment: "v6.3.0",
+    },
+  ];
+  const mutations = [
+    ["mutable", ({ tag, comment }) => `${tag} # ${comment}`],
+    ["wrong", ({ comment }) => `${VALID_SHA} # ${comment}`],
+    ["missing comment", ({ sha }) => sha],
+  ];
+
+  for (const workflow of workflows) {
+    for (const [kind, reference] of mutations) {
+      await t.test(`${workflow.name} ${kind} action pin`, () => {
+        const result = checkRepositoryGateContents(actionMutation(baseline, {
+          relative: workflow.relative,
+          action: workflow.action,
+          reference: reference(workflow),
+        }));
+        assert.equal(result.ok, false);
+        assert.ok(result.failures.some((failure) => failure.code === "G12"));
+      });
+    }
+  }
+});
+
+test("loads the Version Bump workflow for action pin validation", () => {
+  assert.ok(POLICY_FILES.includes(VERSION_BUMP_WORKFLOW));
+});
+
+test("rejects a Pages validation source SHA override", async () => {
+  const baseline = await repositoryContents();
+  const result = checkRepositoryGateContents(mutation(
+    baseline,
+    PAGES_WORKFLOW,
+    "    uses: ./.github/workflows/build.yml\n",
+    "    uses: ./.github/workflows/build.yml\n    with:\n      source_sha: ${{ github.sha }}\n",
+  ));
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.some((failure) => failure.code === "G04"));
+});
+
+test("rejects per-step release checkout and permission-scope regressions", async (t) => {
+  const baseline = await repositoryContents();
+  const cases = [
+    ["second release checkout without a resolved ref", RELEASE_WORKFLOW, "          persist-credentials: false\n\n      - name: Set up Python\n", "          persist-credentials: false\n\n      - name: Checkout injected source\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0\n        with:\n          persist-credentials: false\n\n      - name: Set up Python\n"],
+    ["root id-token permission", RELEASE_WORKFLOW, "permissions:\n  contents: read\n\njobs:\n", "permissions:\n  contents: read\n  id-token: write\n\njobs:\n"],
+    ["root packages permission", RELEASE_WORKFLOW, "permissions:\n  contents: read\n\njobs:\n", "permissions:\n  contents: read\n  packages: read\n\njobs:\n"],
+    ["root actions permission", RELEASE_WORKFLOW, "permissions:\n  contents: read\n\njobs:\n", "permissions:\n  contents: read\n  actions: read\n\njobs:\n"],
+    ["blank-separated root permission", RELEASE_WORKFLOW, "permissions:\n  contents: read\n\njobs:\n", "permissions:\n  contents: read\n\n  id-token: write\n\njobs:\n"],
+    ["nonpublisher id-token permission", RELEASE_WORKFLOW, "  version-gate:\n    name: Check synchronized project version and tag\n    needs: resolve\n", "  version-gate:\n    name: Check synchronized project version and tag\n    needs: resolve\n    permissions:\n      contents: read\n      id-token: write\n"],
+    ["nonpublisher packages permission", RELEASE_WORKFLOW, "  version-gate:\n    name: Check synchronized project version and tag\n    needs: resolve\n", "  version-gate:\n    name: Check synchronized project version and tag\n    needs: resolve\n    permissions:\n      contents: read\n      packages: read\n"],
+    ["nonpublisher actions permission", RELEASE_WORKFLOW, "  version-gate:\n    name: Check synchronized project version and tag\n    needs: resolve\n", "  version-gate:\n    name: Check synchronized project version and tag\n    needs: resolve\n    permissions:\n      contents: read\n      actions: read\n"],
+    ["blank-separated nonpublisher permission", RELEASE_WORKFLOW, "  version-gate:\n    name: Check synchronized project version and tag\n    needs: resolve\n", "  version-gate:\n    name: Check synchronized project version and tag\n    needs: resolve\n    permissions:\n      contents: read\n\n      id-token: write\n"],
+    ["publisher extra id-token permission", RELEASE_WORKFLOW, "    permissions:\n      contents: write\n    needs:\n", "    permissions:\n      contents: write\n      id-token: write\n    needs:\n"],
+    ["blank-separated publisher permission", RELEASE_WORKFLOW, "    permissions:\n      contents: write\n    needs:\n", "    permissions:\n      contents: write\n\n      id-token: write\n    needs:\n"],
+  ];
+
+  for (const [name, relative, replace, replacement] of cases) {
+    await t.test(name, () => {
+      const result = checkRepositoryGateContents(mutation(baseline, relative, replace, replacement));
+      assert.equal(result.ok, false);
+      assert.ok(result.failures.some((failure) => failure.code === "G12"));
+    });
+  }
+});
+
+test("includes every source that defines the exported OpenOCD contract", () => {
+  assert.deepEqual(
+    POLICY_FILES.filter((relative) => relative.startsWith("nix/")).sort(),
+    ["nix/openocd-latest.nix", "nix/overlay.nix"],
+  );
+  assert.ok(POLICY_FILES.includes("Makefile"));
+  assert.ok(POLICY_FILES.includes("flake.nix"));
+});
+
+test("includes the firmware local-only DHCP policy", () => {
+  assert.ok(POLICY_FILES.includes(PRJ_CONFIG));
+});
+
+test("includes the Web OTA HIL timeout policy", () => {
+  assert.ok(POLICY_FILES.includes(OTA_HIL));
+});
+
+test("rejects Web OTA negative-upload timeout regressions", async (t) => {
+  const baseline = await repositoryContents();
+  const cases = [
+    ["bad SHA dry-run upload", 'plan run_timeout "$UPLOAD_TIMEOUT" curl -sS -o /tmp/linkr-ota-bad-sha.json', 'plan run_timeout "$SHORT_TIMEOUT" curl -sS -o /tmp/linkr-ota-bad-sha.json'],
+    ["bad SHA upload", 'bad_sha_http=$(run_timeout "$UPLOAD_TIMEOUT" curl -sS -o "$bad_sha_body"', 'bad_sha_http=$(run_timeout "$SHORT_TIMEOUT" curl -sS -o "$bad_sha_body"'],
+    ["bad Content-Type dry-run upload", 'plan run_timeout "$UPLOAD_TIMEOUT" curl -sS -o /tmp/linkr-ota-bad-type.json', 'plan run_timeout "$SHORT_TIMEOUT" curl -sS -o /tmp/linkr-ota-bad-type.json'],
+    ["bad Content-Type upload", 'bad_type_http=$(run_timeout "$UPLOAD_TIMEOUT" curl -sS -o "$bad_type_body"', 'bad_type_http=$(run_timeout "$SHORT_TIMEOUT" curl -sS -o "$bad_type_body"'],
+    ["status request", 'run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url "$1")"', 'run_timeout "$UPLOAD_TIMEOUT" curl -fsS "$(api_url "$1")"'],
+    ["OTA test control", 'maybe_run run_timeout "$SHORT_TIMEOUT" curl -fsS -X POST "$(api_url /ota/test)"', 'maybe_run run_timeout "$UPLOAD_TIMEOUT" curl -fsS -X POST "$(api_url /ota/test)"'],
+    ["OTA confirmation control", 'maybe_run run_timeout "$SHORT_TIMEOUT" curl -fsS -X POST "$(api_url /ota/confirm)"', 'maybe_run run_timeout "$UPLOAD_TIMEOUT" curl -fsS -X POST "$(api_url /ota/confirm)"'],
+    ["post-negative-upload status", 'status_body=$(run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /ota)")', 'status_body=$(run_timeout "$UPLOAD_TIMEOUT" curl -fsS "$(api_url /ota)")'],
+  ];
+
+  for (const [name, replace, replacement] of cases) {
+    await t.test(name, () => {
+      const result = checkRepositoryGateContents(mutation(baseline, OTA_HIL, replace, replacement));
+      assert.equal(result.ok, false);
+      assert.ok(result.failures.some((failure) => failure.code === "G17"));
+    });
+  }
+});
+
+test("rejects captive-portal local-only DHCP regressions", async (t) => {
+  const baseline = await repositoryContents();
+  baseline.set(PRJ_CONFIG, await readFile(path.join(ROOT, PRJ_CONFIG), "utf8"));
+  const specTitle = "# HIL 功能测试规范\n";
+  const cases = [
+    ["DHCP router option", PRJ_CONFIG, "CONFIG_NET_DHCPV4_SERVER_OPTION_ROUTER=n\n", "CONFIG_NET_DHCPV4_SERVER_OPTION_ROUTER=y\n", "G16"],
+    ["DHCP DNS address", PRJ_CONFIG, "CONFIG_NET_DHCPV4_SERVER_OPTION_DNS_ADDRESS=\"\"\n", "CONFIG_NET_DHCPV4_SERVER_OPTION_DNS_ADDRESS=\"1.1.1.1\"\n", "G16"],
+    ["board wildcard DNS expectation", HIL_SPEC, specTitle, `${specTitle}\n\`\`\`sh\ndig @172.29.203.1 anything.example A\n\`\`\`\n`, "G16"],
+    ["router and DNS in ACK", HIL_SPEC, specTitle, `${specTitle}\nDHCPACK 必须包含 DHCP option 3（router）和 DHCP option 6（DNS）。\n`, "G16"],
+  ];
+
+  for (const [name, relative, replace, replacement, code] of cases) {
+    await t.test(name, () => {
+      const result = checkRepositoryGateContents(mutation(baseline, relative, replace, replacement));
+      assert.equal(result.ok, false);
+      assert.ok(result.failures.some((failure) => failure.code === code));
+    });
+  }
+});
+
+test("requires durable CI and local gate registrations", async (t) => {
+  const baseline = await repositoryContents();
+  const cases = [
+    ["CI rdb alias test", BUILD_WORKFLOW, "scripts/check-rdb-alias.test.mjs ", ""],
+    ["CI test-registration checker", BUILD_WORKFLOW, "node scripts/check-test-registration.mjs --root .\n", ""],
+    ["local nightly test", "Makefile", "scripts/check-nightly-workflow.test.mjs \\\n", ""],
+    ["local skill-boundary checker", "Makefile", "node scripts/check-skill-boundary.mjs --root .", ""],
+  ];
+
+  for (const [name, relative, replace, replacement] of cases) {
+    await t.test(name, () => {
+      const result = checkRepositoryGateContents(mutation(baseline, relative, replace, replacement));
+      assert.equal(result.ok, false);
+      assert.ok(result.failures.some((failure) => failure.code === "G12"));
+    });
+  }
+});
+
+test("requires the rdb alias test and checker in Makefile gates", async (t) => {
+  const baseline = await repositoryContents();
+  const cases = [
+    ["test", "scripts/check-rdb-alias.test.mjs \\\n"],
+    ["checker", "node scripts/check-rdb-alias.mjs --root ."],
+  ];
+
+  for (const [name, replace] of cases) {
+    await t.test(name, () => {
+      const result = checkRepositoryGateContents(mutation(baseline, "Makefile", replace, ""));
+      assert.equal(result.ok, false);
+      assert.ok(result.failures.some((failure) => failure.code === "G12"));
+    });
+  }
+});
+
+test("rejects permanent worktree-scope registration", async (t) => {
+  const baseline = await repositoryContents();
+  const cases = [
+    ["CI checker", BUILD_WORKFLOW, "          node scripts/check-skill-boundary.mjs --root .\n", "          node scripts/check-skill-boundary.mjs --root .\n          node scripts/check-worktree-scope.mjs --root .\n"],
+    ["Makefile checker", "Makefile", "node scripts/check-skill-boundary.mjs --root .", "node scripts/check-skill-boundary.mjs --root . && \\\n\t$(NIX) \"node scripts/check-worktree-scope.mjs --root .\""],
+  ];
+
+  for (const [name, relative, replace, replacement] of cases) {
+    await t.test(name, () => {
+      const result = checkRepositoryGateContents(mutation(baseline, relative, replace, replacement));
+      assert.equal(result.ok, false);
+      assert.ok(result.failures.some((failure) => failure.code === "G12"));
+    });
+  }
+});
+
+test("requires CI and Makefile durable gate parity", async () => {
+  const baseline = await repositoryContents();
+  const result = checkRepositoryGateContents(mutation(
+    baseline,
+    "Makefile",
+    "scripts/check-doc-layout.test.mjs \\\n",
+    "",
+  ));
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.some((failure) => failure.code === "G12"));
 });
 
 test("rejects every publication and branch-policy bypass", async (t) => {
@@ -36,6 +374,36 @@ test("rejects every publication and branch-policy bypass", async (t) => {
     ["nightly validation", ".github/workflows/nightly.yml", "    needs: validation\n", "", "G06"],
     ["pull request policy", "AGENTS.md", "  must require pull requests, reject direct pushes, and require\n", "  should allow direct pushes and require\n", "G07"],
     ["Web discovery runner", "web/package.json", '"test": "node scripts/run-tests.mjs"', '"test": "node --test one.test.mjs"', "G08"],
+    ["embedded Web Rust toolchain", "shell.nix", "    pkgs.cargo\n", "", "G09"],
+    ["Rust clippy toolchain", "shell.nix", "    pkgs.clippy\n", "", "G09"],
+    ["Rust formatting toolchain", "shell.nix", "    pkgs.rustfmt\n", "", "G09"],
+    ["OpenOCD source pin", "nix/openocd-latest.nix", '    rev = "da3920b0a52dc2d394afb222c688dac7e57acc1b";\n', "", "G10"],
+    ["OpenOCD overlay export", "nix/overlay.nix", "  openocd-latest = final.callPackage ./openocd-latest.nix { };\n", "", "G10"],
+    ["OpenOCD flake package", "flake.nix", "        packages = {\n          openocd-latest = pkgs.openocd-latest;\n", "        packages = {\n", "G10"],
+    ["OpenOCD flake check", "flake.nix", "        checks = {\n          build = pkgs.radxa-linkr-debuggerctl;\n          openocd-latest = pkgs.openocd-latest;\n", "        checks = {\n          build = pkgs.radxa-linkr-debuggerctl;\n", "G10"],
+    ["OpenOCD shell reuse", "shell.nix", "  openocdLatest = pkgs.callPackage ./nix/openocd-latest.nix { };\n", "", "G10"],
+    ["persistent docs test", "Makefile", "scripts/check-persistent-configuration-docs.test.mjs", "", "G11"],
+    ["persistent docs checker", "Makefile", "node scripts/check-persistent-configuration-docs.mjs --root .", "", "G11"],
+    ["reusable source SHA input", ".github/workflows/build.yml", "      source_sha:\n", "", "G12"],
+    ["complete build checkout binding", ".github/workflows/build.yml", "          ref: ${{ needs.source.outputs.effective_source_sha }}\n", "", "G12"],
+    ["resolver tag peeling", ".github/workflows/release.yml", 'git rev-parse --verify "${tag_ref}^{commit}"', 'git rev-parse --verify "$tag_ref"', "G12"],
+    ["resolver tag fetch", ".github/workflows/release.yml", "          fetch-tags: true\n", "", "G12"],
+    ["validation SHA binding", ".github/workflows/release.yml", "      source_sha: ${{ needs.resolve.outputs.resolved_sha }}", "", "G12"],
+    ["release checkout SHA", ".github/workflows/release.yml", "      - name: Checkout application\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0\n        with:\n          fetch-depth: 0\n          ref: ${{ needs.resolve.outputs.resolved_sha }}\n          path: app\n          persist-credentials: false\n\n      - name: Set up Python\n", "      - name: Checkout application\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0\n        with:\n          fetch-depth: 0\n          ref: ${{ needs.resolve.outputs.normalized_tag }}\n          path: app\n          persist-credentials: false\n\n      - name: Set up Python\n", "G12"],
+    ["desktop checkout SHA", ".github/workflows/release.yml", "      - name: Checkout application\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0\n        with:\n          ref: ${{ needs.resolve.outputs.resolved_sha }}\n          path: app\n          persist-credentials: false\n\n      - name: Set up Rust\n        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable\n\n      - name: Set up Node.js\n", "      - name: Checkout application\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0\n        with:\n          ref: ${{ needs.resolve.outputs.normalized_tag }}\n          path: app\n          persist-credentials: false\n\n      - name: Set up Rust\n        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable\n\n      - name: Set up Node.js\n", "G12"],
+    ["desktop resolve dependency", ".github/workflows/release.yml", "    needs:\n      - resolve\n      - validation\n      - version-gate\n", "    needs:\n      - validation\n      - version-gate\n", "G12"],
+    ["direct resolver dependency", ".github/workflows/release.yml", "      - resolve\n      - validation\n", "      - validation\n", "G12"],
+    ["remote tag peel", ".github/workflows/release.yml", '          while [[ "$object_type" == "tag" ]]; do', "          while false; do", "G12"],
+    ["remote SHA comparison", ".github/workflows/release.yml", '          [[ "$object_sha" == "$RESOLVED_SHA" ]]\n', "", "G12"],
+    ["write permission scope", ".github/workflows/release.yml", "  contents: read\n", "  contents: write\n", "G12"],
+    ["English flake input", "docs/developer/build.md", '    agent-debugboard.url = "github:xzl01/agent-debugboard";\n', "", "G13"],
+    ["Chinese flake input", "docs/developer/build.zh-CN.md", '    agent-debugboard.url = "github:xzl01/agent-debugboard";\n', "", "G13"],
+    ["legacy import expression", "docs/developer/build.md", '        overlays = [ agent-debugboard.overlays.default ];\n', '        overlays = [ (import github:xzl01/agent-debugboard).overlays.default ];\n', "G13"],
+    ["status response wording", "docs/testing/hil-functional-test-spec.md", "验证 HTTP 响应 JSON 长度低于专用 6144 字节 status buffer（协议限制检查）：\n", "验证 HTTP 响应 JSON 长度低于专用 4096 字节 status buffer（协议限制检查）：\n", "G14"],
+    ["status response assertion", "docs/testing/hil-functional-test-spec.md", '[ "$LEN" -lt 6144 ] || { echo "status response must be below 6144 bytes"; exit 1; }\n', '[ "$LEN" -lt 4096 ] || { echo "status response must be below 4096 bytes"; exit 1; }\n', "G14"],
+    ["status buffer capacity", "apps/radxa_linkr_debugger/src/linkr_debugger_http.c", "#define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 6144U\n", "#define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 4096U\n", "G14"],
+    ["WS snapshot cadence", "docs/testing/hil-functional-test-spec.md", "const MAX_SNAPSHOTS = 1;\n", "const MAX_SNAPSHOTS = 3;\n", "G15"],
+    ["WS state snapshot gate", "apps/radxa_linkr_debugger/src/linkr_debugger_ws.c", "if (events & LINKR_DEBUGGER_WS_EVENT_STATE) {\n", "if (events & LINKR_DEBUGGER_WS_EVENT_SAMPLE) {\n", "G15"],
   ];
 
   for (const [name, relative, replace, replacement, code] of cases) {
