@@ -1,4 +1,4 @@
-import { clauseAround, negated, normalizeShell, shellBlocks } from "./markdown.mjs";
+import { negated, normalizeShell, shellBlocks } from "./markdown.mjs";
 import { STALE_HIL_STATUS } from "./contracts.mjs";
 
 function requireFacts(content, facts, code, surface, failures) {
@@ -101,7 +101,6 @@ export function checkSkillFacts(content, surface, failures) {
     ["expected curl exit", /\[ "\$curl_status" -eq 22 \]/],
     ["preserved error body", /printf '%s\\n' "\$response"/],
     ["no auto-confirm", /do not auto-confirm/i],
-    ["skill local validation distinct", /(?:local|Local) (?:checker|mock|fixture|test|validation)s? (?:is |are )?not real-hardware HIL/i],
   ], "skill-policy", surface, failures);
   for (const expression of [
     /(?:auto|automatically)\s+(?:Current (?:sync|refresh|synchronization)|writes?|saves?|persists?)/i,
@@ -146,6 +145,7 @@ const HIL_FACTS = Object.freeze([
   ["final VIN", /switch\/vin=3\.3v/],
   ["final GPIO", /GPIO 都为 input/],
   ["final power", /power output 都为\n?off/],
+  ["local HIL dry-run", /config-persistence-hil\.sh --dry-run safe-reboot/],
 ]);
 
 const HIL_SHELL = new Set([

@@ -1,7 +1,10 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { ERROR_CODES, FROZEN_SUMMARY, HIL_REPORT_PATH, RESPONSE_FIELDS, WEB_CURRENT_SYNC_CONTRACT } from "./contracts.mjs";
+import {
+  ERROR_CODES, FROZEN_SUMMARY, HIL_REPORT_PATH, RESPONSE_FIELDS, SKILL_CURRENT_SYNC_CONTRACT,
+  WEB_CURRENT_SYNC_CONTRACT,
+} from "./contracts.mjs";
 
 function summaryTable() {
   return ["| Contract ID | Frozen literal |", "| --- | --- |", ...FROZEN_SUMMARY.map(([id, value]) => `| \`${id}\` | \`${value.replaceAll("|", "\\|")}\` |`)].join("\n");
@@ -15,8 +18,8 @@ function marked(id, language, command) {
   return `<!-- persistent-config-example: ${id} -->\n\`\`\`${language}\n${command}\n\`\`\``;
 }
 
-function currentSyncMarkerBlock() {
-  const body = WEB_CURRENT_SYNC_CONTRACT.map(([id, value]) => `${id}:${value}`).join("\n");
+function currentSyncMarkerBlock(contract = WEB_CURRENT_SYNC_CONTRACT) {
+  const body = contract.map(([id, value]) => `${id}:${value}`).join("\n");
   return `<!-- persistent-config-current-sync:\n${body}\n-->`;
 }
 
@@ -25,7 +28,7 @@ function canonical(extra) {
   const errors = ERROR_CODES.join(", ");
   return `# Persistent Configuration
 
-See the [HIL procedure](testing/hil-functional-test-spec.md).
+See the [HIL procedure](../testing/hil-functional-test-spec.md).
 
 ## Scope And Non-Goals
 
@@ -117,7 +120,7 @@ This feature does not provide encrypted or secure storage, authentication, or au
 
 ## Validation Boundaries
 
-Local validation is not real-hardware HIL. The 2026-08-05 real-hardware HIL passed the v1 save-and-apply flow. See the [dated v1-save HIL report](testing/results/2026-08-05-persistent-config-v1-save-hil.md). The historical 2026-07-30 real-hardware HIL passed all six runner flows; see the [historical six-flow report](testing/results/2026-07-30-persistent-config-hil.md). Future local tests remain distinct from board HIL.
+Local validation is not real-hardware HIL. The 2026-08-05 real-hardware HIL passed the v1 save-and-apply flow. See the [dated v1-save HIL report](../testing/results/2026-08-05-persistent-config-v1-save-hil.md). The historical 2026-07-30 real-hardware HIL passed all six runner flows; see the [historical six-flow report](../testing/results/2026-07-30-persistent-config-hil.md). Future local tests remain distinct from board HIL.
 
 ## Source Of Truth
 
@@ -128,22 +131,23 @@ ${extra}`;
 export function fixtureDocuments(extra = "") {
   const table = summaryTable();
   return {
-    "doc/persistent-configuration.md": canonical(extra),
-    "README.md": `# Root\n\n## Persistent Configuration\n\nSee [canonical](doc/persistent-configuration.md). Local validation is not real-hardware HIL. The 2026-08-05 real-hardware HIL passed the v1 save-and-apply flow; see the [dated v1-save HIL report](doc/testing/results/2026-08-05-persistent-config-v1-save-hil.md). The historical 2026-07-30 real-hardware HIL passed all six runner flows; see the [historical six-flow report](doc/testing/results/2026-07-30-persistent-config-hil.md). Future local tests remain distinct from board HIL.\n\n### Frozen Contract Summary\n\n${table}\n\n## Other\n\nNamed profiles are available and authentication is guaranteed elsewhere.`,
-    "README.zh-CN.md": `# 根\n\n## 持久化配置\n\n见[规范](doc/persistent-configuration.md)。本地验证不等于真实硬件 HIL。2026-08-05 真实硬件 HIL 通过 v1 save-and-apply flow；见[日期 v1-save HIL 报告](doc/testing/results/2026-08-05-persistent-config-v1-save-hil.md)。历史 2026-07-30 真实硬件 HIL 六个 runner flow 全部通过；见[历史六 flow 报告](doc/testing/results/2026-07-30-persistent-config-hil.md)。未来本地测试仍不能替代板级 HIL。\n\n### 固定契约摘要\n\n${table}`,
-    "apps/radxa_linkr_debugger/README.md": `# App\n\n\`curl -fsS http://172.29.203.1/api/v1/status\`\n\n## Persistent Configuration\n\nSee [canonical](../../doc/persistent-configuration.md).\n\n### Storage And Startup\n### HTTP Contract\n\nThe only common response fields are \`schema\`, \`ok\`, \`command\`, and \`action\`. Successful \`get\` adds \`backend\`, \`snapshot\`, \`pending\`, and \`items\`. Successful \`save\` adds \`saved_items\`,\n\`confirmation_items\`, \`applied_items\`, \`snapshot\`, and numeric \`pending\`. Successful\n\`clear\` adds \`noop\`, \`snapshot\`, and numeric \`pending\`. A \`confirmation_required\` error lists \`dangerous_items\`. A \`busy\` error carries \`activity\`. An \`apply_failed\` error carries \`applied_items\`, \`failed_item\`, and \`pending_items\`.\n\n### Boot Restore And Replay Order\n### CDC ACM Commands\n### Capture And OTA Exclusion\n### Recovery Boundaries\n### Local Versus HIL Validation\n\nLocal validation is not real-hardware HIL. The 2026-08-05 real-hardware HIL passed the v1 save-and-apply flow; see the [dated v1-save HIL report](../../doc/testing/results/2026-08-05-persistent-config-v1-save-hil.md). The historical 2026-07-30 real-hardware HIL passed all six runner flows; see the [historical six-flow report](../../doc/testing/results/2026-07-30-persistent-config-hil.md). Future local tests remain distinct from board HIL.\n\nRaw MCUboot OTA API\n\n\`\`\`sh\ncurl -fsS http://172.29.203.1/api/v1/ota\n\`\`\``,
-    "skills/radxa-linkr-debugger/SKILL.md": `# Skill\n\n## JSON Contract\n\n## Persistent Configuration\n\nSee [canonical](../../doc/persistent-configuration.md).\n\n### Read Saved Configuration\n### Save Selected Current Values\n### Clear Without Changing Hardware\n### Handle Confirmation And Busy Errors\n\nPreserve the non-2xx JSON body. Do not auto-confirm a dangerous save.\n\n${example("curl-config-save-dangerous-unconfirmed", "set +e\nresponse=\"$(curl --fail-with-body -sS -X PUT http://172.29.203.1/api/v1/config -H 'Content-Type: application/json' --data '{\"items\":[\"switch/usb\"],\"confirm\":false}')\"\ncurl_status=$?\nset -e\n[ \"$curl_status\" -eq 22 ]\nprintf '%s\\n' \"$response\"")}\n\n### CLI And CDC Fallback\n\n### Automatic Current Synchronization
+    "docs/reference/persistent-configuration.md": canonical(extra),
+    "README.md": `# Root\n\n## Persistent Configuration\n\nSee [canonical](docs/reference/persistent-configuration.md). Local validation is not real-hardware HIL. The 2026-08-05 real-hardware HIL passed the v1 save-and-apply flow; see the [dated v1-save HIL report](docs/testing/results/2026-08-05-persistent-config-v1-save-hil.md). The historical 2026-07-30 real-hardware HIL passed all six runner flows; see the [historical six-flow report](docs/testing/results/2026-07-30-persistent-config-hil.md). Future local tests remain distinct from board HIL.\n\n### Frozen Contract Summary\n\n${table}\n\n## Other\n\nNamed profiles are available and authentication is guaranteed elsewhere.`,
+    "README.zh-CN.md": `# 根\n\n## 持久化配置\n\n见[规范](docs/reference/persistent-configuration.md)。本地验证不等于真实硬件 HIL。2026-08-05 真实硬件 HIL 通过 v1 save-and-apply flow；见[日期 v1-save HIL 报告](docs/testing/results/2026-08-05-persistent-config-v1-save-hil.md)。历史 2026-07-30 真实硬件 HIL 六个 runner flow 全部通过；见[历史六 flow 报告](docs/testing/results/2026-07-30-persistent-config-hil.md)。未来本地测试仍不能替代板级 HIL。\n\n### 固定契约摘要\n\n${table}`,
+    "apps/radxa_linkr_debugger/README.md": `# App\n\n\`curl -fsS http://172.29.203.1/api/v1/status\`\n\n## Persistent Configuration\n\nSee [canonical](../../docs/reference/persistent-configuration.md).\n\n### Storage And Startup\n### HTTP Contract\n\nThe only common response fields are \`schema\`, \`ok\`, \`command\`, and \`action\`. Successful \`get\` adds \`backend\`, \`snapshot\`, \`pending\`, and \`items\`. Successful \`save\` adds \`saved_items\`,\n\`confirmation_items\`, \`applied_items\`, \`snapshot\`, and numeric \`pending\`. Successful\n\`clear\` adds \`noop\`, \`snapshot\`, and numeric \`pending\`. A \`confirmation_required\` error lists \`dangerous_items\`. A \`busy\` error carries \`activity\`. An \`apply_failed\` error carries \`applied_items\`, \`failed_item\`, and \`pending_items\`.\n\n### Boot Restore And Replay Order\n### CDC ACM Commands\n### Capture And OTA Exclusion\n### Recovery Boundaries\n### Local Versus HIL Validation\n\nLocal validation is not real-hardware HIL. The 2026-08-05 real-hardware HIL passed the v1 save-and-apply flow; see the [dated v1-save HIL report](../../docs/testing/results/2026-08-05-persistent-config-v1-save-hil.md). The historical 2026-07-30 real-hardware HIL passed all six runner flows; see the [historical six-flow report](../../docs/testing/results/2026-07-30-persistent-config-hil.md). Future local tests remain distinct from board HIL.\n\nRaw MCUboot OTA API\n\n\`\`\`sh\ncurl -fsS http://172.29.203.1/api/v1/ota\n\`\`\``,
+    "skills/radxa-linkr-debugger/SKILL.md": `# Skill\n\n## JSON Contract\n\n## Persistent Configuration\n\nSee [canonical](../../docs/reference/persistent-configuration.md).\n\n### Read Saved Configuration\n### Save Selected Current Values\n### Clear Without Changing Hardware\n### Handle Confirmation And Busy Errors\n\nPreserve the non-2xx JSON body. Do not auto-confirm a dangerous save.\n\n${example("curl-config-save-dangerous-unconfirmed", "set +e\nresponse=\"$(curl --fail-with-body -sS -X PUT http://172.29.203.1/api/v1/config -H 'Content-Type: application/json' --data '{\"items\":[\"switch/usb\"],\"confirm\":false}')\"\ncurl_status=$?\nset -e\n[ \"$curl_status\" -eq 22 ]\nprintf '%s\\n' \"$response\"")}\n\n### CLI And CDC Fallback\n\n### Automatic Current Synchronization
 
-The Web Saved Config \`Current\` column is firmware-authoritative data from \`/api/v1/config\`. Live firmware-enumerated control changes auto-refresh Current; identical, reordered, or unrelated WS frames do not cause additional config GETs. Automatic Current sync does not write flash, change the saved snapshot, or auto-persist ordinary setters. Local unsaved checkbox drafts survive Current refresh. \`Refresh\` is a manual recovery or retry action after a transient failure or suspected stale UI, not a required normal step. Local checker, mock, fixture, and Vitest results are not real-hardware HIL; Todo 6 post-fix real-board HIL remains required.
+The Web Saved Config \`Current\` column is firmware-authoritative data from \`/api/v1/config\`. Live firmware-enumerated control changes auto-refresh Current; identical, reordered, or unrelated WS frames do not cause additional config GETs. Automatic Current sync does not write flash, change the saved snapshot, or auto-persist ordinary setters. Local unsaved checkbox drafts survive Current refresh. \`Refresh\` is a manual recovery or retry action after a transient failure or suspected stale UI, not a required normal step.
 
-${currentSyncMarkerBlock()}
+${currentSyncMarkerBlock(SKILL_CURRENT_SYNC_CONTRACT)}
 
-### Persistence Recovery Safety\n### Dry-Run And HIL Boundaries\n\nLocal validation is not real-hardware HIL. The 2026-08-05 real-hardware HIL passed the v1 save-and-apply flow; see the [dated v1-save HIL report](../../doc/testing/results/2026-08-05-persistent-config-v1-save-hil.md). The historical 2026-07-30 real-hardware HIL passed all six runner flows; see the [historical six-flow report](../../doc/testing/results/2026-07-30-persistent-config-hil.md). Future local tests remain distinct from board HIL.\n\n## Common Commands`,
-    "doc/testing/hil-functional-test-spec.md": [
+### Persistence Recovery Safety\n\nUse the canonical contract for snapshot semantics. The snapshot lives under \`storage_partition\` through Settings+NVS at \`linkr/config/snapshot\`; \`config clear\` removes the snapshot only.\n\n## Common Commands`,
+    "docs/testing/hil-functional-test-spec.md": [
       "# HIL", "", "### 2c. 强制门户发现", "", "### 2d. 持久化配置", "",
-      "See [canonical](../persistent-configuration.md). 本地验证不等于真实硬件 HIL。2026-08-05 真实硬件 HIL 通过 v1 save-and-apply flow；见[日期 v1-save HIL 报告](results/2026-08-05-persistent-config-v1-save-hil.md)。历史 2026-07-30 真实硬件 HIL 六个 runner flow 全部通过；见[历史六 flow 报告](results/2026-07-30-persistent-config-hil.md)。未来本地测试仍不能替代板级 HIL。", "",
-      "#### Todo 14 本地文档验收", "#### Todo 16 实机前置条件",
-      "Use --serial <identified-cdc-device>. config-persistence-hil.sh --execute --url http://172.29.203.1 all --confirm-dangerous-save radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin. CH347 target UART 不是持久化",
+      "See [canonical](../reference/persistent-configuration.md). 本地验证不等于真实硬件 HIL。2026-08-05 真实硬件 HIL 通过 v1 save-and-apply flow；见[日期 v1-save HIL 报告](results/2026-08-05-persistent-config-v1-save-hil.md)。历史 2026-07-30 真实硬件 HIL 六个 runner flow 全部通过；见[历史六 flow 报告](results/2026-07-30-persistent-config-hil.md)。未来本地测试仍不能替代板级 HIL。", "",
+       "#### Todo 14 本地文档验收", "#### Todo 16 实机前置条件",
+       "sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh --dry-run safe-reboot",
+       "Use --serial <identified-cdc-device>. config-persistence-hil.sh --execute --url http://172.29.203.1 all --confirm-dangerous-save radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin. CH347 target UART 不是持久化",
       "配置的前置条件。", "#### 安全恢复", "switch/sd=usb-reader, switch/tf_wp=protected, switch/sd=target, switch/tf_wp=writable.",
       "#### 危险项 pending 与固件确认", "危险项必须精确选择非启动默认值 `switch/usb=pc`。未确认 save 返回 HTTP 409 confirmation_required 必须包含 dangerous_items; Save 即保存并立即应用, 部分失败时 `apply_failed` 列出 `applied_items`、`failed_item` 和 `pending_items`. 成功 save 的断言字段是 `saved_items`、`confirmation_items`、`applied_items`、`snapshot` 和数值 `pending`; `pending_items` 只属于 `apply_failed` 的部分执行结果.",
       "#### dangerous-auto-restore 与固件确认", "dangerous-auto-restore 是当前固件上唯一在 `all` runner 中验证危险项的真实硬件 flow, consecutive 2 次重启的 v1 自动重放是核心契约. 一次确认的危险 Save 保存非启动默认值 `switch/usb=pc` 并写 v1; snapshot.version == 1, pending == 0; 连续两次重启之后 current 与 saved 都为 pc 且 apply_state 仍为 applied.",
@@ -153,7 +157,7 @@ ${currentSyncMarkerBlock()}
       "switch/vin=3.3v; GPIO 都为 input; power output 都为", "off. Enumerate controllable power outputs to off and output GPIOs to input, then GET-validate both.", "#### 证据与报告", "", "### 3. 电源输出 get/set",
     ].join("\n"),
     [HIL_REPORT_PATH]: "# 2026-08-05 Persistent Configuration v1 Save HIL\n\nPASS\n",
-    "doc/testing/results/2026-07-30-persistent-config-hil.md": "# 2026-07-30 Persistent Configuration HIL\n\nPASS\n",
+    "docs/testing/results/2026-07-30-persistent-config-hil.md": "# 2026-07-30 Persistent Configuration HIL\n\nPASS\n",
   };
 }
 

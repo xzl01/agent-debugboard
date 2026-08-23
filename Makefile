@@ -29,3 +29,7 @@ workspace: ## Update the west workspace to the pinned manifest (once)
 
 unit-tests: ## Firmware host-model unit tests
 	$(NIX) "CC=gcc $(APP)/tests/run_unit_tests.sh"
+
+persistent-configuration-docs: ## Persistent-configuration documentation contract
+	$(NIX) "node --test scripts/check-persistent-configuration-docs.test.mjs" && \
+	$(NIX) "node scripts/check-persistent-configuration-docs.mjs --root ."

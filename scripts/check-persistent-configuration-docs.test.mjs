@@ -3,7 +3,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
-  DOC_SURFACES, FROZEN_SUMMARY, REQUIRED_EXAMPLES, WEB_CURRENT_SYNC_CONTRACT, checkPersistentConfigurationDocs, formatFailures,
+  DOC_SURFACES, FROZEN_SUMMARY, REQUIRED_EXAMPLES, SKILL_CURRENT_SYNC_CONTRACT, WEB_CURRENT_SYNC_CONTRACT,
+  checkPersistentConfigurationDocs, formatFailures,
 } from "./check-persistent-configuration-docs.mjs";
 import { FORBIDDEN_MUTATIONS, fixtureDocuments, withFixture } from "./persistent-configuration-docs/fixtures.mjs";
 import { buildCli, executeExamples, startMock, withCliWrapper } from "./persistent-configuration-docs/loopback.mjs";
@@ -22,9 +23,9 @@ test("persistent-configuration documentation contract", async (suite) => {
 
   await suite.test("freezes exactly the six planned surfaces and twelve versioned summary IDs", () => {
     assert.deepEqual(DOC_SURFACES.map((surface) => surface.path), [
-      "doc/persistent-configuration.md", "README.md", "README.zh-CN.md",
+      "docs/reference/persistent-configuration.md", "README.md", "README.zh-CN.md",
       "apps/radxa_linkr_debugger/README.md", "skills/radxa-linkr-debugger/SKILL.md",
-      "doc/testing/hil-functional-test-spec.md",
+      "docs/testing/hil-functional-test-spec.md",
     ]);
     const summaryIds = FROZEN_SUMMARY.map(([id]) => id);
     assert.deepEqual(summaryIds, [
@@ -54,6 +55,11 @@ test("persistent-configuration documentation contract", async (suite) => {
     assert.equal(literals.get("current-no-write"), "display-sync-no-auto-save-no-flash-no-apply");
     assert.equal(literals.get("current-no-flood"), "one-transition-one-refresh;identical-frames-zero-GETs");
     assert.equal(literals.get("current-hil-boundary"), "Todo-6-post-fix-HIL-still-required");
+  });
+
+  await suite.test("keeps HIL completion ownership out of the skill current-sync contract", () => {
+    assert.equal(SKILL_CURRENT_SYNC_CONTRACT.length, 8);
+    assert.ok(!SKILL_CURRENT_SYNC_CONTRACT.some(([id]) => id === "current-hil-boundary"));
   });
 
   await suite.test("marker parser extracts each ID/value pair from the canonical block", () => {
@@ -90,9 +96,9 @@ test("persistent-configuration documentation contract", async (suite) => {
 
   await suite.test("rejects stale Todo 16 pending wording after dated HIL completion", async () => {
     const documents = fixtureDocuments();
-    documents["README.md"] = documents["README.md"].replace(
-      "\n## Other",
-      "\nTodo 16 real-hardware HIL evidence is pending.\n\n## Other",
+    documents["docs/reference/persistent-configuration.md"] = documents["docs/reference/persistent-configuration.md"].replace(
+      "\n## Source Of Truth",
+      "\nTodo 16 real-hardware HIL evidence is pending.\n\n## Source Of Truth",
     );
     await withFixture(async (root) => {
       const result = await checkPersistentConfigurationDocs(root);
@@ -102,19 +108,19 @@ test("persistent-configuration documentation contract", async (suite) => {
 
   await suite.test("rejects wrong-case English headings and the old English HIL H2", async () => {
     const documents = fixtureDocuments();
-    documents["doc/persistent-configuration.md"] = documents["doc/persistent-configuration.md"].replace("# Persistent Configuration", "# Persistent configuration");
-    documents["doc/testing/hil-functional-test-spec.md"] = documents["doc/testing/hil-functional-test-spec.md"].replace("### 2d. 持久化配置", "## Persistent configuration HIL checks");
+    documents["docs/reference/persistent-configuration.md"] = documents["docs/reference/persistent-configuration.md"].replace("# Persistent Configuration", "# Persistent configuration");
+    documents["docs/testing/hil-functional-test-spec.md"] = documents["docs/testing/hil-functional-test-spec.md"].replace("### 2d. 持久化配置", "## Persistent configuration HIL checks");
     await withFixture(async (root) => {
       const result = await checkPersistentConfigurationDocs(root);
       assert.deepEqual(result.failures.filter(({ code }) => code === "section-missing").map(({ surface }) => surface), [
-        "doc/persistent-configuration.md", "doc/testing/hil-functional-test-spec.md",
+        "docs/reference/persistent-configuration.md", "docs/testing/hil-functional-test-spec.md",
       ]);
     }, documents);
   });
 
   await suite.test("rejects broken local links, summary drift, and unmarked shell blocks", async () => {
     const documents = fixtureDocuments("\n\`\`\`sh\ncurl -fsS http://172.29.203.1/api/v1/config\n\`\`\`");
-    documents["README.md"] = documents["README.md"].replace("doc/persistent-configuration.md", "doc/missing.md");
+    documents["README.md"] = documents["README.md"].replace("docs/reference/persistent-configuration.md", "docs/reference/missing.md");
     documents["README.zh-CN.md"] = documents["README.zh-CN.md"].replace("Settings+NVS", "Settings+ZMS");
     await withFixture(async (root) => {
       const result = await checkPersistentConfigurationDocs(root);
@@ -154,7 +160,7 @@ test("persistent-configuration documentation contract", async (suite) => {
 
   await suite.test("rejects executable real-HIL blocks, fixed ttys, and policy drift", async () => {
     const documents = fixtureDocuments();
-    documents["doc/testing/hil-functional-test-spec.md"] = documents["doc/testing/hil-functional-test-spec.md"]
+    documents["docs/testing/hil-functional-test-spec.md"] = documents["docs/testing/hil-functional-test-spec.md"]
       .replace("#### Clear 不改变硬件", "<!-- persistent-config-example: forbidden-hil -->\n```sh\ncurl -fsS http://172.29.203.1/api/v1/config\n```\n\n#### Clear 不改变硬件")
       .replace("switch/sd=usb-reader", "switch/sd=target-only")
       .replace("Use --serial <identified-cdc-device>.", "Use /dev/ttyACM0.");
@@ -184,7 +190,7 @@ test("persistent-configuration documentation contract", async (suite) => {
 
   await suite.test("requires TUI refresh and focused blur keys", async () => {
     const documents = fixtureDocuments();
-    documents["doc/persistent-configuration.md"] = documents["doc/persistent-configuration.md"]
+    documents["docs/reference/persistent-configuration.md"] = documents["docs/reference/persistent-configuration.md"]
       .replace("`r` refreshes HTTP status and requests an authoritative config GET.", "")
       .replace("While focused,\n`c` or `Esc` blurs it.", "");
     await withFixture(async (root) => {

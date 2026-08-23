@@ -1,6 +1,8 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-export { DOC_SURFACES, FROZEN_SUMMARY, REQUIRED_EXAMPLES, WEB_CURRENT_SYNC_CONTRACT } from "./persistent-configuration-docs/contracts.mjs";
+export {
+  DOC_SURFACES, FROZEN_SUMMARY, REQUIRED_EXAMPLES, SKILL_CURRENT_SYNC_CONTRACT, WEB_CURRENT_SYNC_CONTRACT,
+} from "./persistent-configuration-docs/contracts.mjs";
 export { checkPersistentConfigurationDocs } from "./persistent-configuration-docs/validator.mjs";
 
 export function formatFailures(failures) {

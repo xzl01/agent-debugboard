@@ -1,39 +1,39 @@
-export const HIL_REPORT_PATH = "doc/testing/results/2026-08-05-persistent-config-v1-save-hil.md";
+export const HIL_REPORT_PATH = "docs/testing/results/2026-08-05-persistent-config-v1-save-hil.md";
 export const HIL_COMPLETION_LITERAL = "local-distinct;real-HIL-2026-08-05-v1-save-pass";
 export const STALE_HIL_STATUS = /(?:Todo\s*16[^.\n]{0,140}(?:pending|remains pending|待完成|尚待完成|证据尚未生成)|(?:real-hardware HIL evidence|真实硬件 HIL 证据)[^.\n]{0,100}(?:pending|尚待完成|尚未生成))/i;
 
 export const DOC_SURFACES = Object.freeze([
   {
-    path: "doc/persistent-configuration.md",
+    path: "docs/reference/persistent-configuration.md",
     heading: "# Persistent Configuration",
-    links: ["doc/testing/hil-functional-test-spec.md", HIL_REPORT_PATH],
+    links: ["docs/testing/hil-functional-test-spec.md", HIL_REPORT_PATH],
   },
   {
     path: "README.md",
     heading: "## Persistent Configuration",
-    links: ["doc/persistent-configuration.md", HIL_REPORT_PATH],
+    links: ["docs/reference/persistent-configuration.md", HIL_REPORT_PATH],
     summaryHeading: "### Frozen Contract Summary",
   },
   {
     path: "README.zh-CN.md",
     heading: "## 持久化配置",
-    links: ["doc/persistent-configuration.md", HIL_REPORT_PATH],
+    links: ["docs/reference/persistent-configuration.md", HIL_REPORT_PATH],
     summaryHeading: "### 固定契约摘要",
   },
   {
     path: "apps/radxa_linkr_debugger/README.md",
     heading: "## Persistent Configuration",
-    links: ["doc/persistent-configuration.md", HIL_REPORT_PATH],
+    links: ["docs/reference/persistent-configuration.md", HIL_REPORT_PATH],
   },
   {
     path: "skills/radxa-linkr-debugger/SKILL.md",
     heading: "## Persistent Configuration",
-    links: ["doc/persistent-configuration.md", HIL_REPORT_PATH],
+    links: ["docs/reference/persistent-configuration.md"],
   },
   {
-    path: "doc/testing/hil-functional-test-spec.md",
+    path: "docs/testing/hil-functional-test-spec.md",
     heading: "### 2d. 持久化配置",
-    links: ["doc/persistent-configuration.md", HIL_REPORT_PATH],
+    links: ["docs/reference/persistent-configuration.md", HIL_REPORT_PATH],
   },
 ]);
 
@@ -63,6 +63,8 @@ export const WEB_CURRENT_SYNC_CONTRACT = Object.freeze([
   ["current-mutation-truthful", "save-clear-pending-until-authority"],
   ["current-hil-boundary", "Todo-6-post-fix-HIL-still-required"],
 ]);
+
+export const SKILL_CURRENT_SYNC_CONTRACT = Object.freeze(WEB_CURRENT_SYNC_CONTRACT.slice(0, -1));
 
 export const CANONICAL_HEADINGS = Object.freeze([
   "## Scope And Non-Goals",
@@ -104,7 +106,6 @@ export const SKILL_HEADINGS = Object.freeze([
   "### CLI And CDC Fallback",
   "### Automatic Current Synchronization",
   "### Persistence Recovery Safety",
-  "### Dry-Run And HIL Boundaries",
 ]);
 
 export const HIL_HEADINGS = Object.freeze([

@@ -301,6 +301,11 @@ curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["switch/s
 curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["switch/usb"],"confirm":true}' http://172.29.203.1/api/v1/config
 ```
 
+<!-- persistent-config-example: curl-config-save-dangerous-unconfirmed -->
+```sh
+curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["switch/usb"],"confirm":false}' http://172.29.203.1/api/v1/config
+```
+
 <!-- persistent-config-example: curl-config-clear -->
 ```sh
 curl -fsS -X DELETE http://172.29.203.1/api/v1/config

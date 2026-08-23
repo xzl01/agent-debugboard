@@ -3,10 +3,10 @@ import path from "node:path";
 import {
   APP_END_MARKER, APP_HEADINGS, CANONICAL_HEADINGS, DOC_SURFACES, ERROR_CODES, FORBIDDEN_CLAIMS,
   FROZEN_SUMMARY, HIL_HEADINGS, REQUIRED_EXAMPLES, REQUIRED_LITERALS, RESPONSE_FIELDS, SKILL_HEADINGS,
-  WEB_CURRENT_SYNC_CONTRACT,
+  SKILL_CURRENT_SYNC_CONTRACT, WEB_CURRENT_SYNC_CONTRACT,
 } from "./contracts.mjs";
 import {
-  addFailure, checkCurrentSyncMarkers, checkLinks, clauseAround, curlRequest, headingIndex,
+  addFailure, checkCurrentSyncMarkers, checkLinks, curlRequest, headingIndex,
   markedShellExamples, negated, normalizeShell, requireHeadings, sectionFor,
 } from "./markdown.mjs";
 import { checkApplicationFacts, checkCanonicalFacts, checkHilCompletionFacts, checkHilFacts, checkSkillFacts } from "./requirements.mjs";
@@ -85,9 +85,9 @@ function checkSurfaceMap(surface, text, section, failures) {
     requireHeadings(section.content, SKILL_HEADINGS, surface.path, failures);
     checkPlacement(text, "## JSON Contract", surface.heading, "## Common Commands", surface.path, failures);
     checkSkillFacts(section.content, surface.path, failures);
-    checkCurrentSyncMarkers(surface, section.content, WEB_CURRENT_SYNC_CONTRACT, failures);
+    checkCurrentSyncMarkers(surface, section.content, SKILL_CURRENT_SYNC_CONTRACT, failures);
   }
-  if (surface.path === "doc/testing/hil-functional-test-spec.md") {
+  if (surface.path === "docs/testing/hil-functional-test-spec.md") {
     requireHeadings(section.content, HIL_HEADINGS, surface.path, failures);
     checkPlacement(text, "### 2c. 强制门户发现", surface.heading, "### 3. 电源输出 get/set", surface.path, failures);
     checkHilFacts(section.content, surface.path, failures);
@@ -146,9 +146,11 @@ export async function checkPersistentConfigurationDocs(rootPath) {
     await checkLinks(root, surface, section, failures);
     examples.push(...markedShellExamples(surface, section, failures));
     checkForbidden(surface, section, failures);
-    checkHilCompletionFacts(section.content, surface.path, failures);
+    if (surface.path === "docs/reference/persistent-configuration.md" || surface.path === "docs/testing/hil-functional-test-spec.md") {
+      checkHilCompletionFacts(section.content, surface.path, failures);
+    }
     checkSurfaceMap(surface, text, section, failures);
-    if (surface.path === "doc/persistent-configuration.md") {
+    if (surface.path === "docs/reference/persistent-configuration.md") {
       canonical = true;
       checkCanonical(surface, section, failures);
       checkCanonicalFacts(section.content, surface.path, failures);
@@ -163,7 +165,7 @@ export async function checkPersistentConfigurationDocs(rootPath) {
   }
   if (canonical) for (const [id, spec] of Object.entries(REQUIRED_EXAMPLES)) {
     const example = byId.get(id);
-    if (!example) addFailure(failures, "example-missing", "doc/persistent-configuration.md", `missing persistent-config-example: ${id}`);
+    if (!example) addFailure(failures, "example-missing", "docs/reference/persistent-configuration.md", `missing persistent-config-example: ${id}`);
     else checkExample(example, spec, failures);
   }
   const english = summaries.get("README.md");
