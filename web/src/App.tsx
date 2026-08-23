@@ -13,7 +13,6 @@ import {
   Cpu,
   Loader2,
   Route,
-  RotateCcw,
   ServerCrash,
   SlidersHorizontal,
   Terminal,
@@ -34,7 +33,6 @@ import { PowerAnalysisWorkspace } from "./components/PowerAnalysisWorkspace";
 import { TestAutomation } from "./components/TestAutomation";
 import { LogicAnalyzerCard } from "./components/LogicAnalyzerCard";
 import { ConfigurationWorkspace } from "./components/ConfigurationWorkspace";
-import { TargetRecoveryCard } from "./components/TargetRecoveryCard";
 import {
   WorkbenchStatusBar,
   type SerialConnectionSummary,
@@ -64,6 +62,25 @@ const DIALOG_FOCUSABLE_SELECTOR = [
 ].join(", ");
 
 type HardwareSectionId = "power" | "io";
+
+const HARDWARE_SECTION_STORAGE_KEY = "linkr-hardware-controls-section";
+
+function readStoredHardwareSection(): HardwareSectionId {
+  try {
+    const value = window.localStorage.getItem(HARDWARE_SECTION_STORAGE_KEY);
+    return value === "power" || value === "io" ? value : "power";
+  } catch {
+    return "power";
+  }
+}
+
+function writeStoredHardwareSection(section: HardwareSectionId): void {
+  try {
+    window.localStorage.setItem(HARDWARE_SECTION_STORAGE_KEY, section);
+  } catch {
+    // Best-effort persistence; in-memory state is the authority.
+  }
+}
 
 export default function App() {
   const board = useBoard();
@@ -107,7 +124,7 @@ export default function App() {
   const [selectedWorkspaceTab, setSelectedWorkspaceTab] = useState<WorkspaceTabId>("terminal");
   const [automationFocusMode, setAutomationFocusMode] = useState(true);
   const [hardwareDialogRequested, setHardwareDialogRequested] = useState(false);
-  const [selectedHardwareSection, setSelectedHardwareSection] = useState<HardwareSectionId>("power");
+  const [selectedHardwareSection, setSelectedHardwareSection] = useState<HardwareSectionId>(() => readStoredHardwareSection());
   const hardwareDialogOpen = hardwareDialogRequested;
   const hardwareDialogRef = useRef<HTMLDialogElement>(null);
   const hardwareDialogCloseRef = useRef<HTMLButtonElement>(null);
@@ -178,7 +195,6 @@ export default function App() {
     if (!focused && document.activeElement instanceof HTMLElement) {
       hardwareDialogOpenerRef.current = document.activeElement;
     }
-    if (!focused) setSelectedHardwareSection("power");
     setHardwareDialogRequested(!focused);
     setAutomationFocusMode(focused);
   }, []);
@@ -192,8 +208,12 @@ export default function App() {
     if (document.activeElement instanceof HTMLElement) {
       hardwareDialogOpenerRef.current = document.activeElement;
     }
-    setSelectedHardwareSection("power");
     setHardwareDialogRequested(true);
+  }, []);
+
+  const selectHardwareSection = useCallback((section: HardwareSectionId) => {
+    setSelectedHardwareSection(section);
+    writeStoredHardwareSection(section);
   }, []);
 
   const scrollToHardwareControl = useCallback((id: string) => {
@@ -316,14 +336,6 @@ export default function App() {
             onSet={board.setSwitch}
             disabled={!board.connected || automationOwner != null}
             stale={!board.connected}
-          />
-        </div>
-        <div id="hardware-control-recovery" className="scroll-mt-14">
-          <TargetRecoveryCard
-            outputs={board.snapshot.powerOutputs}
-            onEnter={board.enterTargetRecovery}
-            disabled={!board.connected || automationOwner != null}
-            taskControl={automationTaskControl}
           />
         </div>
       </div>
@@ -517,7 +529,13 @@ export default function App() {
         )}
 
         {hardwareDialogOpen && createPortal(
-          <div className="fixed inset-0 z-50 flex justify-end bg-overlay/30">
+          <div
+            data-testid="hardware-controls-backdrop"
+            className="fixed inset-0 z-50 flex justify-end bg-overlay/30"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) closeHardwareDialog();
+            }}
+          >
             <dialog
               open
               ref={hardwareDialogRef}
@@ -568,7 +586,7 @@ export default function App() {
                       aria-controls={`hardware-section-panel-${section.id}`}
                       tabIndex={selected ? 0 : -1}
                       data-testid={`hardware-section-tab-${section.id}`}
-                      onClick={() => setSelectedHardwareSection(section.id)}
+                      onClick={() => selectHardwareSection(section.id)}
                       className={`flex min-h-10 items-center justify-center gap-2 rounded-lg px-3 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand/40 ${
                         selected
                           ? "bg-brand/10 text-brand ring-1 ring-inset ring-brand/15"
@@ -591,7 +609,6 @@ export default function App() {
                     {([
                       { id: "hardware-control-power", icon: Zap, label: t("test.hardware.anchor.power") },
                       { id: "hardware-control-routing", icon: Route, label: t("test.hardware.anchor.routing") },
-                      { id: "hardware-control-recovery", icon: RotateCcw, label: t("test.hardware.anchor.recovery") },
                     ] as const).map(({ id, icon: Icon, label }) => (
                       <button
                         key={id}

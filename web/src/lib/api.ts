@@ -16,17 +16,11 @@ export interface LiveSession {
   connected: boolean;
 }
 
-export type TargetRecoveryMode = "qualcomm-edl" | "rockchip-maskrom";
-
-export interface TargetRecoveryResult {
-  action: "enter";
-  mode: TargetRecoveryMode;
-  rail: string;
-  active_level: 0 | 1;
-  off_ms: number;
-  setup_ms: number;
-  hold_ms: number;
-  release_direction: "input";
+interface PowerMutationResponse {
+  readonly power_output?: {
+    readonly name?: string;
+    readonly state?: string;
+  };
 }
 
 export class BoardApiError extends Error {
@@ -40,7 +34,13 @@ export class BoardApiError extends Error {
   }
 }
 
-async function request<T = any>(path: string, init?: RequestInit): Promise<T> {
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value))
+    : null;
+}
+
+async function request<T = unknown>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(BASE + path, {
@@ -51,6 +51,7 @@ async function request<T = any>(path: string, init?: RequestInit): Promise<T> {
       },
     });
   } catch (e) {
+    if (init?.signal?.aborted) throw e;
     throw new BoardApiError(
       `${e instanceof Error ? e.message : "Network request failed"}. ` +
         "If this page is hosted on GitHub Pages, start the local gateway with `npm run device-bridge`."
@@ -58,7 +59,7 @@ async function request<T = any>(path: string, init?: RequestInit): Promise<T> {
   }
 
   const text = await res.text();
-  let data: any = {};
+  let data: unknown = {};
   if (text) {
     try {
       data = JSON.parse(text);
@@ -71,11 +72,17 @@ async function request<T = any>(path: string, init?: RequestInit): Promise<T> {
     }
   }
 
-  if (!res.ok || data.ok === false) {
-    const err = data?.error;
+  const envelope = asRecord(data);
+  if (!res.ok || envelope?.ok === false) {
+    const error = asRecord(envelope?.error);
+    const message = typeof error?.message === "string"
+      ? error.message
+      : `HTTP ${res.status} ${res.statusText}`;
+    const code = typeof error?.code === "string" ? error.code : undefined;
     throw new BoardApiError(
-      err?.message || `HTTP ${res.status} ${res.statusText}`,
-      err?.code, data
+      message,
+      code,
+      data
     );
   }
   return data as T;
@@ -94,7 +101,7 @@ export const getStatus = () => request("/status");
 export const getAdc = () => request("/adc/read");
 
 export const setPower = (name: string, on: boolean) =>
-  request(`/power/${encodeURIComponent(name)}`, {
+  request<PowerMutationResponse>(`/power/${encodeURIComponent(name)}`, {
     method: "PUT",
     body: JSON.stringify({ state: on ? "on" : "off" }),
   });

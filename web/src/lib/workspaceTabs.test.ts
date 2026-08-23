@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  WORKSPACE_TABS,
   getNextWorkspaceTabIndex,
   getWorkspacePanelId,
   getWorkspaceTabId,
 } from "./workspaceTabs.ts";
+
+test("keeps a five-tab workspace without a gpio tab", () => {
+  assert.deepEqual(WORKSPACE_TABS, [
+    "terminal",
+    "powerAnalysis",
+    "logicAnalyzer",
+    "automation",
+    "configuration",
+  ]);
+});
 
 test("moves workspace tab focus with arrow keys and home/end", () => {
   assert.equal(getNextWorkspaceTabIndex(0, "ArrowRight", 5), 1);

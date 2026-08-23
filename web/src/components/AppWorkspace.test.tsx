@@ -49,8 +49,8 @@ const boardMocks = vi.hoisted(() => ({
 
 const persistentMocks = vi.hoisted(() => ({
   state: {
-    config: null as unknown,
-    error: null as unknown,
+    config: null,
+    error: null,
     loading: false,
     busy: null,
     supported: false,
@@ -95,7 +95,6 @@ vi.mock("@/hooks/useBoard", () => ({
     setSwitch: boardMocks.setSwitch,
     setGpio: vi.fn(),
     enterBootloader: vi.fn(),
-    enterTargetRecovery: vi.fn(),
   }),
 }));
 
@@ -115,13 +114,11 @@ vi.mock("./PowerCard", () => ({ PowerCard: () => null }));
 vi.mock("./SwitchCard", () => ({ SwitchCard: () => null }));
 vi.mock("./BootCard", () => ({ BootCard: () => null }));
 vi.mock("./GpioCard", () => ({
-  GpioCard: ({ onOpenDetails }: { readonly onOpenDetails?: () => void }) => (
-    onOpenDetails
-      ? <button type="button" data-testid="mock-open-gpio" onClick={onOpenDetails}>open gpio</button>
-      : null
+  GpioCard: ({ workspaceTabs }: { readonly workspaceTabs?: ReactNode }) => (
+    <div data-testid="gpio-card">{workspaceTabs}</div>
   ),
 }));
-vi.mock("./WatchdogCard", () => ({ WatchdogCard: () => null }));
+vi.mock("./WatchdogCard", () => ({ WatchdogCard: () => <div data-testid="watchdog-card" /> }));
 vi.mock("./StartupPowerAnalysis", () => ({ StartupPowerAnalysis: () => null }));
 vi.mock("./TestAutomation", () => ({
   TestAutomation: ({
@@ -158,9 +155,6 @@ vi.mock("./TestAutomation", () => ({
 }));
 vi.mock("./OtaCard", () => ({ OtaCard: () => null }));
 vi.mock("./PersistentConfigCard", () => ({ PersistentConfigCard: () => null }));
-vi.mock("./TargetRecoveryCard", () => ({
-  TargetRecoveryCard: () => <div data-testid="target-recovery-card" />,
-}));
 
 type SerialCardMockProps = {
   readonly vinRoute?: string;
@@ -277,6 +271,7 @@ afterEach(() => {
   persistentMocks.state.supported = false;
   automationMocks.lastAcquire = null;
   vi.useRealTimers();
+  localStorage.clear();
   scrollIntoViewMock.mockClear();
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
@@ -349,6 +344,49 @@ describe("App workspace", () => {
     expect(document.activeElement).toBe(powerTab);
     expect(powerTab.getAttribute("aria-selected")).toBe("true");
     expect(powerTab.tabIndex).toBe(0);
+  });
+
+  it("keeps workspace tabs on a fixed horizontal scan line instead of wrapping", () => {
+    // Given: the rendered global workspace navigation
+    const { host } = mountApp();
+
+    // When: locating the tablist and its scroll container
+    const tablist = host.querySelector('[role="tablist"][aria-label="workspace.tabs"]');
+    const scroller = tablist?.parentElement;
+
+    // Then: the outer wrapper owns horizontal scrolling while the tablist keeps
+    // a fixed single-line width, so narrow viewports scroll instead of wrapping
+    expect(scroller?.className).toContain("overflow-x-auto");
+    expect(tablist?.className).toContain("min-w-max");
+    expect(tablist?.className).not.toContain("flex-wrap");
+  });
+
+  it("renders exactly five workspace tabs with no GPIO workspace", () => {
+    const { host } = mountApp();
+
+    const tablist = host.querySelector('[role="tablist"][aria-label="workspace.tabs"]');
+    expect(tablist?.querySelectorAll('[role="tab"]')).toHaveLength(5);
+    expect(host.querySelector("#workspace-tab-gpio")).toBeNull();
+    expect(host.querySelector("#workspace-panel-gpio")).toBeNull();
+    expect(host.querySelector("#workspace-tab-configuration")).not.toBeNull();
+  });
+
+  it("moves End to the Configuration tab and wraps ArrowRight back to Terminal", () => {
+    const { host } = mountApp();
+    const automationTab = byId<HTMLButtonElement>(host, "workspace-tab-automation");
+    act(() => automationTab.focus());
+
+    press(automationTab, "End");
+
+    const configurationTab = byId<HTMLButtonElement>(host, "workspace-tab-configuration");
+    expect(document.activeElement).toBe(configurationTab);
+    expect(configurationTab.getAttribute("aria-selected")).toBe("true");
+
+    press(configurationTab, "ArrowRight");
+
+    const terminalTab = byId<HTMLButtonElement>(host, "workspace-tab-terminal");
+    expect(document.activeElement).toBe(terminalTab);
+    expect(terminalTab.getAttribute("aria-selected")).toBe("true");
   });
 
   it("keeps the serial VIN callback mapped to the board vin switch", () => {
@@ -429,11 +467,12 @@ describe("App workspace", () => {
     expect(dialog?.classList.contains("relative")).toBe(true);
     expect(dialog?.querySelector('[data-testid="hardware-section-tab-power"]')?.getAttribute("aria-selected")).toBe("true");
     expect(dialog?.querySelector('[data-testid="hardware-section-panel-power"]')).not.toBeNull();
-    expect(dialog?.querySelector('[data-testid="target-recovery-card"]')).not.toBeNull();
+    expect(dialog?.querySelector('[data-testid="target-recovery-card"]')).toBeNull();
     const anchors = dialog?.querySelector('[data-testid="hardware-control-anchors"]');
     expect(anchors).not.toBeNull();
+    expect(anchors?.querySelector('[data-testid="hardware-anchor-recovery"]')).toBeNull();
     scrollIntoViewMock.mockClear();
-    click(byTestId<HTMLButtonElement>(anchors as HTMLElement, "hardware-anchor-recovery"));
+    click(byTestId<HTMLButtonElement>(anchors as HTMLElement, "hardware-anchor-routing"));
     expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
     expect(dialog?.querySelector('[data-testid="hardware-section-panel-io"]')).toBeNull();
   });
@@ -450,5 +489,109 @@ describe("App workspace", () => {
     expect(dialog.querySelector('[data-testid="hardware-section-panel-power"]')).toBeNull();
     expect(dialog.querySelector('[data-testid="hardware-section-tab-recovery"]')).toBeNull();
     expect(dialog.querySelector('[data-testid="hardware-section-tab-firmware"]')).toBeNull();
+  });
+
+  it("keeps GPIO and watchdog controls in the hardware drawer io section", () => {
+    const { host } = mountApp();
+    click(byTestId(host, "open-hardware-controls"));
+    const dialog = document.body.querySelector<HTMLDialogElement>('dialog[aria-labelledby="hardware-controls-title"]');
+    if (!dialog) throw new TypeError("Hardware controls dialog not found");
+
+    click(byTestId<HTMLButtonElement>(dialog, "hardware-section-tab-io"));
+
+    expect(dialog.querySelector('[data-testid="gpio-card"]')).not.toBeNull();
+    expect(dialog.querySelector('[data-testid="watchdog-card"]')).not.toBeNull();
+    expect(dialog.querySelector('[data-testid="gpio-controls-anchor"]')).not.toBeNull();
+  });
+
+  it("closes the hardware drawer on an exact backdrop click but not on inside clicks", () => {
+    const { host } = mountApp();
+    click(byTestId(host, "open-hardware-controls"));
+    const dialog = document.body.querySelector<HTMLDialogElement>('dialog[aria-labelledby="hardware-controls-title"]');
+    if (!dialog) throw new TypeError("Hardware controls dialog not found");
+
+    act(() => {
+      dialog.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    expect(document.body.querySelector('dialog[aria-labelledby="hardware-controls-title"]')).not.toBeNull();
+
+    const backdrop = byTestId<HTMLDivElement>(document.body, "hardware-controls-backdrop");
+    act(() => {
+      backdrop.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    expect(document.body.querySelector('dialog[aria-labelledby="hardware-controls-title"]')).toBeNull();
+  });
+
+  it("restores the persisted hardware section from localStorage on open", () => {
+    localStorage.setItem("linkr-hardware-controls-section", "io");
+    const { host } = mountApp();
+
+    click(byTestId(host, "open-hardware-controls"));
+
+    const dialog = document.body.querySelector<HTMLDialogElement>('dialog[aria-labelledby="hardware-controls-title"]');
+    if (!dialog) throw new TypeError("Hardware controls dialog not found");
+    expect(byTestId(dialog, "hardware-section-tab-io").getAttribute("aria-selected")).toBe("true");
+    expect(dialog.querySelector('[data-testid="hardware-section-panel-io"]')).not.toBeNull();
+  });
+
+  it("keeps the selected hardware section when the drawer is closed and reopened", () => {
+    const { host } = mountApp();
+    click(byTestId(host, "open-hardware-controls"));
+    const firstDialog = document.body.querySelector<HTMLDialogElement>('dialog[aria-labelledby="hardware-controls-title"]');
+    if (!firstDialog) throw new TypeError("Hardware controls dialog not found");
+    click(byTestId<HTMLButtonElement>(firstDialog, "hardware-section-tab-io"));
+    click(firstDialog.querySelector<HTMLButtonElement>('[aria-label="test.hardware.close"]') as HTMLButtonElement);
+
+    click(byTestId(host, "open-hardware-controls"));
+
+    const dialog = document.body.querySelector<HTMLDialogElement>('dialog[aria-labelledby="hardware-controls-title"]');
+    if (!dialog) throw new TypeError("Hardware controls dialog not found");
+    expect(byTestId(dialog, "hardware-section-tab-io").getAttribute("aria-selected")).toBe("true");
+    expect(localStorage.getItem("linkr-hardware-controls-section")).toBe("io");
+  });
+
+  it("defaults to the power section when the persisted value is invalid", () => {
+    localStorage.setItem("linkr-hardware-controls-section", "bogus");
+    const { host } = mountApp();
+
+    click(byTestId(host, "open-hardware-controls"));
+
+    const dialog = document.body.querySelector<HTMLDialogElement>('dialog[aria-labelledby="hardware-controls-title"]');
+    if (!dialog) throw new TypeError("Hardware controls dialog not found");
+    expect(byTestId(dialog, "hardware-section-tab-power").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("survives localStorage read and write failures", () => {
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    const { host } = mountApp();
+
+    click(byTestId(host, "open-hardware-controls"));
+
+    const dialog = document.body.querySelector<HTMLDialogElement>('dialog[aria-labelledby="hardware-controls-title"]');
+    if (!dialog) throw new TypeError("Hardware controls dialog not found");
+    expect(byTestId(dialog, "hardware-section-tab-power").getAttribute("aria-selected")).toBe("true");
+    getItem.mockRestore();
+
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    click(byTestId<HTMLButtonElement>(dialog, "hardware-section-tab-io"));
+    expect(byTestId(dialog, "hardware-section-tab-io").getAttribute("aria-selected")).toBe("true");
+    expect(dialog.querySelector('[data-testid="hardware-section-panel-io"]')).not.toBeNull();
+    setItem.mockRestore();
+  });
+
+  it("preserves the restored hardware section when the drawer opens from automation", () => {
+    localStorage.setItem("linkr-hardware-controls-section", "io");
+    const { host } = mountApp();
+    click(byId<HTMLButtonElement>(host, "workspace-tab-automation"));
+
+    click(byTestId(host, "toggle-automation-focus"));
+
+    const dialog = document.body.querySelector<HTMLDialogElement>('dialog[aria-labelledby="hardware-controls-title"]');
+    if (!dialog) throw new TypeError("Hardware controls dialog not found");
+    expect(byTestId(dialog, "hardware-section-tab-io").getAttribute("aria-selected")).toBe("true");
   });
 });
