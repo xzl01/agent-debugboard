@@ -19,6 +19,8 @@
   --c-on-brand: 255 255 255;
   --c-on-danger: 255 255 255;
   --c-overlay: 15 23 42;
+  --c-gpio-low: 15 23 42;
+  --c-gpio-on-level: 255 255 255;
   color-scheme: light;
 }
 
@@ -39,6 +41,8 @@
   --c-on-brand: 15 23 42;
   --c-on-danger: 15 23 42;
   --c-overlay: 0 0 0;
+  --c-gpio-low: 2 6 23;
+  --c-gpio-on-level: 255 255 255;
   color-scheme: dark;
 }
 
@@ -147,7 +151,7 @@ summary::-webkit-details-marker {
   .automation-view-tabs {
     display: grid;
     width: 100%;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .automation-view-tabs > [role="tab"] {
@@ -209,6 +213,30 @@ button {
 .serial-activity-ripple {
   animation: serial-activity-ripple 720ms cubic-bezier(0.25, 1, 0.5, 1) both;
   will-change: opacity, transform;
+}
+
+/* GPIO hold-progress arc: paint-only stroke sweep over the 600ms hold
+   threshold. The JS timer is the action authority; this is feedback only.
+   pathLength=1 on the arc makes 1 the full circumference. */
+@keyframes gpio-hold-sweep {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.gpio-hold-arc {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: gpio-hold-sweep 0.6s linear forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gpio-hold-arc {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

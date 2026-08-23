@@ -33,18 +33,19 @@ for overlay comparison, and exports CSV or NDJSON. Captures use firmware device
 timestamps and a pre/post-trigger ring buffer instead of browser timing.
 
 The Power card consumes the four-descriptor ADC telemetry contract
-documented in [doc/adc-telemetry.md](../doc/adc-telemetry.md):
+documented in [docs/reference/adc-telemetry.md](../docs/reference/adc-telemetry.md):
 
 - One row per controllable current rail (`5v_out`, `12v_out`, `20v_out`),
-  each with a shared `MeasurementSparkline` (`mode="power"`) that runs at
-  10 Hz and keeps a 90-sample rolling window (about 9 seconds of
-  history). Current and power share the same SVG history; both
-  auto-scale, the unit minimum is fixed per metric.
+  each with a shared `MeasurementSparkline` (`mode="power"`) fed by the
+  60 Hz live subscription and keeping a 90-sample rolling window (about
+  1.5 seconds of history). Current and power share the same SVG history;
+  both auto-scale, the unit minimum is fixed per metric.
 - A monitor-only `adc3` (`GP29`) section rendered between the current
   rows and the PowerAnalyzer, only when the firmware reports an `adc3`
   reading. It reuses the shared `MeasurementSparkline` in
-  `mode="voltage"`, the same 90-sample window and the same 10 Hz
-  cadence, but with a fixed 0..3,300,000 µV Y scale (nominal 0..3.3 V).
+  `mode="voltage"`, the same 90-sample window and the same
+  animation-frame cadence, but with a fixed 0..3,300,000 µV Y scale
+  (nominal 0..3.3 V).
   The voltage channel has no `power_enabled`; clients must treat the
   newest `value` as the canonical signed integer microvolt reading and
   must not apply any host-side ADC calibration.
@@ -52,6 +53,13 @@ documented in [doc/adc-telemetry.md](../doc/adc-telemetry.md):
   2048 samples, three current channels, manual / current-threshold /
   GPIO-edge / power-on triggers, four-overlay comparison, CSV/NDJSON
   export.
+
+Live telemetry stays at 60 Hz with one sample per WebSocket frame on the
+wire. The UI republishes only the newest readings once per animation
+frame while the tab is visible. Hidden tabs keep armed or active
+streaming captures connected and lossless — capture ingestion never
+passes through the animation-frame preview — but the visual preview
+pauses until the tab is visible again.
 
 GP29 is in the persisted/safe catalog but is input-only while owned by
 the `adc3` voltage monitor; ordinary GPIO output commands against GP29
@@ -142,7 +150,7 @@ HELLO server flags bit 0 (`CONFIG_V2`) and bit 1 (`GENERIC_PACKED_BURST`) are
 separate capabilities. Completion is `pre_samples + post_samples`, with
 `triggerIndex` equal to `pre_samples`. Stream still forces pre and post to zero;
 trigger NONE, unsupported or high-rate generic packed burst, and ordinary deep
-capture remain pre=0. See the [dated HIL report](../doc/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md).
+capture remain pre=0. See the [dated HIL report](../docs/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md).
 
 Firmware reuses the prepared common packed ring/sink lifecycle. After prefill,
 packed samples are the sole trigger authority, edge detection is performed in
@@ -178,7 +186,7 @@ SMs and the endless DMA channels before draining committed data, so the
 consumer never reads samples that hardware could overwrite after the terminal
 event. CDC ACM shell BOOTSEL and combined-UF2 HTTP BOOTSEL recovery were
 also confirmed on the same freeze build. Historical WIDE12 baseline
-(100 MHz / post=100000): `doc/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md`.
+(100 MHz / post=100000): `docs/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md`.
 
 **Stream** mode also uses the sigrok live session. At negotiated high rates with
 GENERIC_PACKED_BURST, post=0 captures exactly 100000 samples losslessly then
@@ -194,7 +202,7 @@ sigrok-cli are documented elsewhere in the repository and are separate from the
 browser WebSocket path.
 
 The logic analyzer lives in the **Terminal workspace** alongside the serial
-terminal, not under Advanced & recovery. The browser-based Rust/WASM decoder
+terminal, not under Debugger maintenance. The browser-based Rust/WASM decoder
 serves the stable URLs `/assets/decoder/logic-decoder.js` and
 `/assets/decoder/logic-decoder_bg.wasm` with `application/wasm` MIME for the
 binary and gzip compression. It decodes UART, I2C, and SPI protocols only and
@@ -269,7 +277,7 @@ fallback when those suffixes are unavailable. Bridge mode uses the versioned
 by Web, automation, and MCP clients; receive data is broadcast, writes
 are ordered and acknowledged, and an automation client can claim exclusive
 write access. The old unversioned/raw-text WebSocket protocol is intentionally
-unsupported. See [the Serial Broker protocol](../doc/serial-broker.md).
+unsupported. See [the Serial Broker protocol](../docs/reference/serial-broker.md).
 
 ## Local MCP server
 
@@ -286,7 +294,7 @@ status, ADC, confirmed power/route controls, and cursor-based UART tools without
 opening a second CH347F handle. MCP automatically starts the loopback Host when
 needed; tool listing does not touch the board. Configuration, tool contracts
 and safety exclusions are documented in
-[the local MCP server guide](../doc/mcp-server.md).
+[the local MCP server guide](../docs/reference/mcp-server.md).
 
 The gateway exposes a host-only `/healthz` readiness endpoint, so MCP does not
 issue an extra firmware status request before every operation. Board status is
@@ -295,7 +303,7 @@ full-log reads and hand-written prompt sequences.
 
 ## Startup power analysis
 
-The infrequent startup workflow lives under **Advanced & recovery** rather than
+The infrequent startup workflow lives under **Debugger maintenance** rather than
 on the primary dashboard. It requires the selected UART0 or UART1 connection and
 an idle power-capture session. After one explicit confirmation it:
 
@@ -324,7 +332,7 @@ not serial activity beyond that window.
 
 ## Web OTA
 
-The OTA card lives in **Advanced & recovery** alongside the startup power
+The OTA card lives in **Debugger maintenance** alongside the startup power
 tools. It delivers RP2350 firmware updates over the same USB NCM
 HTTP API used by the rest of the UI, with no separate host tooling required.
 
