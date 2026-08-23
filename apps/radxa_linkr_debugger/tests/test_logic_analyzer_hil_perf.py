@@ -399,6 +399,50 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertEqual(diagnostics["skipped_events"], 1)
         self.assertEqual(diagnostics["skipped_data_frames"], 0)
 
+    def test_tcp_partial_data_frame_after_deadline_keeps_stop_response_aligned(self) -> None:
+        # Given
+        data_payload = b"\xff" + b"\x00" * 9
+        data_frame = runner.build_frame(runner.FRAME_DATA, data_payload, 41)
+        stop_frame = runner.build_frame(runner.FRAME_STOP_RESP, self.ack_payload(), 42)
+        chunks = iter([
+            data_frame[:runner.SIGROK_HEADER_BYTES],
+            data_frame[runner.SIGROK_HEADER_BYTES:runner.SIGROK_HEADER_BYTES + 1],
+            data_frame[runner.SIGROK_HEADER_BYTES + 1:],
+            stop_frame[:runner.SIGROK_HEADER_BYTES],
+            stop_frame[runner.SIGROK_HEADER_BYTES:],
+        ])
+        sock = FakeSocket([])
+        current_time = 0.0
+
+        def monotonic() -> float:
+            return current_time
+
+        def recv(byte_count: int) -> bytes:
+            nonlocal current_time
+            chunk = next(chunks)
+            self.assertLessEqual(len(chunk), byte_count)
+            if len(chunk) == 1:
+                current_time = 1.0
+            return chunk
+
+        # When
+        with mock.patch.object(runner.time, "monotonic", side_effect=monotonic), mock.patch.object(sock, "recv", side_effect=recv):
+            try:
+                data_frame = runner.recv_frame(sock, 0.25)
+            except TimeoutError:
+                data_frame = None
+            stop = runner.sigrok_stop(sock, 1.0, 42)
+
+        # Then
+        self.assertTrue(stop["received"], stop)
+        if data_frame is None:
+            self.fail("DATA frame was discarded after its read started")
+        header, payload = data_frame
+        self.assertEqual(header.frame_type, runner.FRAME_DATA)
+        self.assertEqual(payload, data_payload)
+        self.assertTrue(stop["sent"], stop)
+        self.assertEqual(stop["frame_type"], runner.FRAME_STOP_RESP)
+
     def test_ws_request_wait_skips_event_before_config_response(self) -> None:
         ack = bytes([1, 0, 2, 0xE8, 0x03, 0])
         ws_conn = FakeWsConnection([

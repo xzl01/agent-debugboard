@@ -619,11 +619,11 @@ def handshake_has_expected_high_rate_flags(handshake: Mapping[str, object]) -> b
     return isinstance(hello, Mapping) and bool(hello.get("expected_high_rate_flags_present"))
 
 
-def recv_exact(sock: socket.socket, byte_count: int, deadline: float) -> bytes:
+def recv_exact(sock: socket.socket, byte_count: int, deadline: float | None) -> bytes:
     chunks: list[bytes] = []
     remaining = byte_count
     while remaining > 0:
-        if time.monotonic() >= deadline:
+        if not chunks and deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError(f"timeout while receiving {byte_count} bytes")
         chunk = sock.recv(remaining)
         if not chunk:
@@ -636,7 +636,7 @@ def recv_exact(sock: socket.socket, byte_count: int, deadline: float) -> bytes:
 def recv_frame(sock: socket.socket, timeout_s: float) -> tuple[SigrokHeader, bytes]:
     deadline = time.monotonic() + timeout_s
     header = parse_header(recv_exact(sock, SIGROK_HEADER_BYTES, deadline))
-    payload = recv_exact(sock, header.payload_len, deadline) if header.payload_len else b""
+    payload = recv_exact(sock, header.payload_len, None) if header.payload_len else b""
     return header, payload
 
 
