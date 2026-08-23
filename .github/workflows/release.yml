@@ -12,56 +12,87 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  validation:
-    name: Run the complete repository validation workflow
+  resolve:
+    name: Resolve immutable release source
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-    uses: ./.github/workflows/build.yml
-
-  version-gate:
-    name: Check synchronized project version and tag
-    runs-on: ubuntu-latest
-
+    outputs:
+      normalized_tag: ${{ steps.resolve.outputs.normalized_tag }}
+      resolved_sha: ${{ steps.resolve.outputs.resolved_sha }}
     steps:
-      - name: Resolve release tag
-        id: release
+      - name: Checkout release refs
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Resolve release tag to commit
+        id: resolve
         shell: bash
         env:
           REQUESTED_TAG: ${{ inputs.tag }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            release_tag="$REQUESTED_TAG"
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            [[ "$GITHUB_REF_TYPE" == "tag" ]]
+            tag="$GITHUB_REF_NAME"
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="$REQUESTED_TAG"
           else
-            release_tag="$GITHUB_REF_NAME"
-          fi
-          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid release tag: $release_tag" >&2
             exit 1
           fi
-          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          tag_ref="refs/tags/$tag"
+          git show-ref --verify --quiet "$tag_ref"
+          resolved_sha="$(git rev-parse --verify "${tag_ref}^{commit}")"
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            event_sha="$(git rev-parse --verify "${GITHUB_SHA}^{commit}")"
+            [[ "$resolved_sha" == "$event_sha" ]]
+          fi
+          printf 'normalized_tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'resolved_sha=%s\n' "$resolved_sha" >> "$GITHUB_OUTPUT"
 
+  validation:
+    name: Run the complete repository validation workflow
+    needs: resolve
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.resolved_sha }}
+
+  version-gate:
+    name: Check synchronized project version and tag
+    needs: resolve
+    runs-on: ubuntu-latest
+
+    steps:
       - name: Checkout application
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          ref: ${{ steps.release.outputs.tag }}
+          ref: ${{ needs.resolve.outputs.resolved_sha }}
           path: app
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
       - name: Check synchronized versions and release tag
         env:
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.normalized_tag }}
         run: python3 app/scripts/version_sync.py check --tag "$RELEASE_TAG"
 
   rust-cli-release:
     name: Build Rust host CLI release archives
     needs:
+      - resolve
       - validation
       - version-gate
     runs-on: ${{ matrix.os }}
@@ -91,40 +122,24 @@ jobs:
             binary_path: app/cmd-ng/target/release/radxa-linkr-debuggerctl.exe
 
     steps:
-      - name: Resolve release tag
-        id: release
-        shell: bash
-        env:
-          REQUESTED_TAG: ${{ inputs.tag }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            release_tag="$REQUESTED_TAG"
-          else
-            release_tag="$GITHUB_REF_NAME"
-          fi
-          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid release tag: $release_tag" >&2
-            exit 1
-          fi
-          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
-
       - name: Checkout application
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          ref: ${{ steps.release.outputs.tag }}
+          ref: ${{ needs.resolve.outputs.resolved_sha }}
           path: app
+          persist-credentials: false
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Set up Python for Linux cross compilation
         if: runner.os == 'Linux'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: app/cmd-ng
 
@@ -163,7 +178,7 @@ jobs:
           else
             cargo build --locked --release --manifest-path app/cmd-ng/Cargo.toml
           fi
-          expected_version="${{ steps.release.outputs.tag }}"
+          expected_version="${{ needs.resolve.outputs.normalized_tag }}"
           expected_version="${expected_version#v}"
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
             qemu-aarch64-static "${{ matrix.binary_path }}" --help
@@ -200,7 +215,7 @@ jobs:
           Compress-Archive -Path (Join-Path $stageDir "radxa-linkr-debuggerctl.exe"), (Join-Path $stageDir "rdb.exe") -DestinationPath rust-release/${{ matrix.asset_name }}
 
       - name: Upload Rust release archive
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: rust-release-${{ matrix.artifact_id }}
           path: rust-release/${{ matrix.asset_name }}
@@ -209,6 +224,7 @@ jobs:
   host-desktop-release:
     name: Build unified desktop Host archives
     needs:
+      - resolve
       - validation
       - version-gate
     runs-on: ${{ matrix.os }}
@@ -227,30 +243,18 @@ jobs:
             asset_name: radxa-linkr-desktop_windows_amd64.zip
 
     steps:
-      - name: Resolve release tag
-        id: release
-        shell: bash
-        env:
-          REQUESTED_TAG: ${{ inputs.tag }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            release_tag="$REQUESTED_TAG"
-          else
-            release_tag="$GITHUB_REF_NAME"
-          fi
-          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
-
       - name: Checkout application
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          ref: ${{ steps.release.outputs.tag }}
+          ref: ${{ needs.resolve.outputs.resolved_sha }}
           path: app
+          persist-credentials: false
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: npm
@@ -263,7 +267,7 @@ jobs:
           sudo apt-get install -y libudev-dev libgtk-3-dev libayatana-appindicator3-dev
 
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             app/host-tools
@@ -306,7 +310,7 @@ jobs:
         run: Compress-Archive -Path desktop-release\radxa-linkr-desktop -DestinationPath desktop-release\${{ matrix.asset_name }}
 
       - name: Upload desktop archive
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: desktop-release-${{ matrix.artifact_id }}
           path: desktop-release/${{ matrix.asset_name }}
@@ -315,50 +319,37 @@ jobs:
   release:
     name: Build and publish release assets
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs:
+      - resolve
       - version-gate
       - rust-cli-release
       - host-desktop-release
 
     steps:
-      - name: Resolve release tag
-        id: release
-        shell: bash
-        env:
-          REQUESTED_TAG: ${{ inputs.tag }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            release_tag="$REQUESTED_TAG"
-          else
-            release_tag="$GITHUB_REF_NAME"
-          fi
-          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid release tag: $release_tag" >&2
-            exit 1
-          fi
-          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
-
       - name: Checkout application
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
-          ref: ${{ steps.release.outputs.tag }}
+          ref: ${{ needs.resolve.outputs.resolved_sha }}
           path: app
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: app/web/package-lock.json
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Install wasm-bindgen CLI
         run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
@@ -367,7 +358,7 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
 
       - name: Set up Zephyr workspace
-        uses: zephyrproject-rtos/action-zephyr-setup@v1
+        uses: zephyrproject-rtos/action-zephyr-setup@be8136a8bba01580485d98b7ad2d32477c36a49a # v1
         with:
           app-path: app
           toolchains: arm-zephyr-eabi
@@ -390,14 +381,14 @@ jobs:
           cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.map release-assets/radxa-linkr-debugger-rp2350.map
 
       - name: Download Rust release archives
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           pattern: rust-release-*
           path: rust-release-downloads
           merge-multiple: true
 
       - name: Download desktop release archives
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           pattern: desktop-release-*
           path: desktop-release-downloads
@@ -434,7 +425,7 @@ jobs:
         working-directory: app
         run: |
           cat > dist/release-notes.md <<EOF
-          Radxa Linkr Debugger ${{ steps.release.outputs.tag }}
+          Radxa Linkr Debugger ${{ needs.resolve.outputs.normalized_tag }}
 
           Included assets:
           - RP2350 firmware: combined initial/recovery UF2, OTA BIN, ELF, and MAP
@@ -449,9 +440,21 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.normalized_tag }}
+          RESOLVED_SHA: ${{ needs.resolve.outputs.resolved_sha }}
         working-directory: app
         run: |
+          set -euo pipefail
+          object_json="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")"
+          object_type="$(jq -r '.object.type' <<<"$object_json")"
+          object_sha="$(jq -r '.object.sha' <<<"$object_json")"
+          while [[ "$object_type" == "tag" ]]; do
+            object_json="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")"
+            object_type="$(jq -r '.object.type' <<<"$object_json")"
+            object_sha="$(jq -r '.object.sha' <<<"$object_json")"
+          done
+          [[ "$object_type" == "commit" ]]
+          [[ "$object_sha" == "$RESOLVED_SHA" ]]
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release view "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
