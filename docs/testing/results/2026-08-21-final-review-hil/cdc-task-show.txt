@@ -1,0 +1,30 @@
+[m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.009,000] [0m<inf> linkr_debugger_network: DHCPv4 server started from 172.29.203.10[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.009,000] [0m<inf> linkr_debugger_usb_net: usb event: Device suspended[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.010,000] [0m<inf> radxa_linkr_debugger: radxa-linkr-debugger controller ready over NCM HTTP with CDC ACM fallback[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.010,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=10[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.010,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=10 uptime_seconds=0[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.010,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=-1 core_age_ms=0 cmd_age_ms=0 grace_remaining_ms=14999 uptime_ms=10[0m
+[1;32mlinkr-debugger:~$ [mtask show
+task show available=true task_count=0
+[1;32mlinkr-debugger:~$ [m[18D[J[1;31m[1;31m--- 351 messages dropped ---
+[0m[m[00:00:00.510,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=510[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.510,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=510 uptime_seconds=0[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.510,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=0 cmd_age_ms=0 grace_remaining_ms=14499 uptime_ms=510[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.516,000] [0m<inf> linkr_debugger_usb_net: usb event: Bus reset[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.589,000] [0m<inf> linkr_debugger_usb_net: usb event: Bus reset[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.687,000] [0m<inf> linkr_debugger_usb_net: usb event: New device configuration[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.688,000] [0m<inf> linkr_debugger_usb_net: usb event: CDC ACM line coding[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:01.011,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=1011[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:01.011,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=1011 uptime_seconds=1[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:01.011,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=1 cmd_age_ms=1 grace_remaining_ms=13998 uptime_ms=1011[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[1;31m[1;31m--- 1 messages dropped ---
+[0m[m[00:00:55.556,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=55556[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:55.556,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=55556 uptime_seconds=55[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:55.556,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=19 cmd_age_ms=35 grace_remaining_ms=0 uptime_ms=55556[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:56.057,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=56057[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:56.057,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=56057 uptime_seconds=56[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:56.057,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=20 cmd_age_ms=36 grace_remaining_ms=0 uptime_ms=56057[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:56.059,000] [0m<inf> linkr_debugger_usb_net: usb event: CDC ACM control line state[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:56.060,000] [0m<inf> linkr_debugger_usb_net: usb event: CDC ACM control line state[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m
