@@ -6,8 +6,20 @@ import { GpioCard } from "./GpioCard";
 import { PowerCard } from "./PowerCard";
 import { SwitchCard } from "./SwitchCard";
 
+const I18N_TEMPLATES: Record<string, string> = {
+  "gpio.pinAria": "{name} GP{pin}, {direction}, {level}",
+};
+
 vi.mock("@/lib/i18n", () => ({
-  useI18n: () => ({ t: (key: string) => key }),
+  useI18n: () => ({
+    t: (key: string, params?: Record<string, string | number>) => {
+      const template = I18N_TEMPLATES[key] ?? key;
+      if (!params) return template;
+      return template.replace(/\{(\w+)\}/g, (match, name: string) =>
+        name in params ? String(params[name]) : match,
+      );
+    },
+  }),
 }));
 
 vi.mock("./PowerSparkline", () => ({
@@ -40,12 +52,22 @@ function button(host: HTMLElement, text: string): HTMLButtonElement {
   return match;
 }
 
-function changeSelect(select: HTMLSelectElement, value: string) {
+function press(element: Element, key: string) {
   act(() => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-    setter?.call(select, value);
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+    element.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
   });
+}
+
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+function pinButton(host: HTMLElement, pin: number): SVGGElement {
+  const element = host.querySelector<SVGGElement>(`[role="button"][aria-label*="GP${pin},"]`);
+  if (!element) throw new TypeError(`GPIO pin GP${pin} not found`);
+  return element;
 }
 
 const outputs: PowerOutput[] = [
@@ -133,29 +155,39 @@ describe("hardware control cards", () => {
     view.close();
   });
 
-  it("keeps GPIO current state factual until the edited direction is applied", () => {
+  it("keeps the pin accessible direction and level firmware-factual across a keyboard action", async () => {
+    // Given: a layout-valid input GPIO reported HIGH by the firmware snapshot
     const gpio: SafeGpio = {
       name: "GP12",
       pin: 12,
       note: "safe input",
       direction: "input",
       value: 1,
+      layoutGroup: "J16",
+      layoutLabel: "GP12",
+      layoutRow: 2,
+      layoutColumn: 0,
     };
-    const onSet = vi.fn();
+    const onSet = vi.fn().mockResolvedValue(undefined);
     const view = render(<GpioCard gpios={[gpio]} onSet={onSet} />);
+    expect(pinButton(view.host, 12).getAttribute("aria-label")).toContain("gpio.input");
+    expect(pinButton(view.host, 12).getAttribute("aria-label")).toContain("gpio.high");
 
-    expect(view.host.textContent).toContain("gpio.current: gpio.input · gpio.high");
-    const direction = view.host.querySelector<HTMLSelectElement>("select");
-    if (!direction) throw new TypeError("Direction select not found");
-    changeSelect(direction, "output");
+    // When: a keyboard gesture drives the pin output HIGH
+    press(pinButton(view.host, 12), "1");
+    await flush();
 
-    expect(view.host.textContent).toContain("gpio.current: gpio.input · gpio.high");
-    const value = [...view.host.querySelectorAll<HTMLSelectElement>("select")][1];
-    if (!value) throw new TypeError("Value select not found");
-    changeSelect(value, "0");
-    act(() => button(view.host, "gpio.set").click());
-    expect(onSet).toHaveBeenCalledWith("GP12", "output", 0);
-    expect(view.host.textContent).toContain("gpio.current: gpio.input · gpio.high");
+    // Then: onSet carries the requested write, but the accessible state still
+    // reflects the last firmware snapshot instead of optimistic local state
+    expect(onSet).toHaveBeenCalledWith("GP12", "output", 1);
+    expect(pinButton(view.host, 12).getAttribute("aria-label")).toContain("gpio.input");
+    expect(pinButton(view.host, 12).getAttribute("aria-label")).toContain("gpio.high");
+
+    // When: the firmware reports the applied state in a new snapshot
+    view.rerender(<GpioCard gpios={[{ ...gpio, direction: "output" }]} onSet={onSet} />);
+
+    // Then: the accessible direction tracks the new snapshot
+    expect(pinButton(view.host, 12).getAttribute("aria-label")).toContain("gpio.output");
     view.close();
   });
 
@@ -177,24 +209,35 @@ describe("hardware control cards", () => {
     view.close();
   });
 
-  it("filters the full GPIO list by pin number, name, or interface note", () => {
+  it("keeps every layout-valid pin in the fixed pinout and exposes no filter surface", () => {
+    // Given: a full connector pinout with several layout-valid pins
     const gpios: SafeGpio[] = [
-      { name: "CON_USER", pin: 9, note: "user button", direction: "input", value: 0 },
-      { name: "GP12", pin: 12, note: "camera reset", direction: "output", value: 1 },
+      { name: "GP10", pin: 10, note: "uart tx", direction: "output", value: 1, layoutGroup: "J16", layoutLabel: "GP10", layoutRow: 0, layoutColumn: 0 },
+      { name: "GP11", pin: 11, note: "uart rx", direction: "input", value: 0, layoutGroup: "J16", layoutLabel: "GP11", layoutRow: 1, layoutColumn: 0 },
+      { name: "GP12", pin: 12, note: "camera reset", direction: "input", value: 1, layoutGroup: "J16", layoutLabel: "GP12", layoutRow: 2, layoutColumn: 1 },
     ];
     const view = render(<GpioCard gpios={gpios} onSet={vi.fn()} />);
-    const filter = view.host.querySelector<HTMLInputElement>('[data-testid="gpio-filter"]');
-    if (!filter) throw new TypeError("GPIO filter not found");
 
-    act(() => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-      setter?.call(filter, "camera");
-      filter.dispatchEvent(new Event("input", { bubbles: true }));
-      filter.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    // Then: every supplied pin is present and the card has no filter input that
+    // could alter membership
+    const pins = () => view.host.querySelectorAll('[role="button"][aria-label*="GP"]');
+    expect(pins()).toHaveLength(3);
+    expect(view.host.querySelector("input")).toBeNull();
 
-    expect(view.host.textContent).toContain("GP12");
-    expect(view.host.textContent).not.toContain("CON_USER");
+    // When: a state notification rerenders the card with new levels and directions
+    view.rerender(
+      <GpioCard
+        gpios={gpios.map((g) => ({ ...g, direction: g.direction === "input" ? "output" : "input", value: g.value > 0 ? 0 : 1 }))}
+        onSet={vi.fn()}
+      />,
+    );
+
+    // Then: pin membership is unchanged - notifications never add, remove, or
+    // reorder pins in the fixed pinout
+    expect(pins()).toHaveLength(3);
+    for (const pin of [10, 11, 12]) {
+      expect(pinButton(view.host, pin)).toBeDefined();
+    }
     view.close();
   });
 });

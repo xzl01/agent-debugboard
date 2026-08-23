@@ -18,14 +18,28 @@ export interface GpioLayoutGroup {
   rows: Map<number, (GpioLayoutCell | null)[]>;
   rowCount: number;
   columnCount: number;
+  generic: boolean;
 }
 
-const J13_ROWS = 2;
-const J13_COLS = 2;
-const J16_ROWS = 6;
-const J16_COLS = 2;
+// Presentation-safety bound only: coordinates beyond this are treated as
+// invalid firmware metadata, not as board geometry.
+export const GPIO_LAYOUT_MAX_EXTENT = 64;
 
-function toLayoutCell(gpio: SafeGpio): GpioLayoutCell {
+function toLayoutCell(gpio: SafeGpio, layoutGroup: string, layoutRow: number, layoutColumn: number): GpioLayoutCell {
+  return {
+    pin: gpio.pin,
+    name: gpio.name,
+    note: gpio.note,
+    value: gpio.value,
+    direction: gpio.direction,
+    layoutGroup,
+    layoutLabel: gpio.layoutLabel ?? gpio.name,
+    layoutRow,
+    layoutColumn,
+  };
+}
+
+function toFallbackCell(gpio: SafeGpio): GpioLayoutCell {
   return {
     pin: gpio.pin,
     name: gpio.name,
@@ -34,68 +48,87 @@ function toLayoutCell(gpio: SafeGpio): GpioLayoutCell {
     direction: gpio.direction,
     layoutGroup: (gpio.layoutGroup ?? "").toUpperCase(),
     layoutLabel: gpio.layoutLabel ?? gpio.name,
-    layoutRow: gpio.layoutRow ?? 0,
-    layoutColumn: gpio.layoutColumn ?? 0,
+    layoutRow: 0,
+    layoutColumn: 0,
   };
+}
+
+function isValidCoordinate(value: number | undefined): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value < GPIO_LAYOUT_MAX_EXTENT
+  );
 }
 
 function emptyRow(columns: number): (GpioLayoutCell | null)[] {
   return Array.from({ length: columns }, () => null);
 }
 
+export const GPIO_FALLBACK_GROUP_ID = "__gpio_fallback__";
+
 export function groupGpioLayout(gpios: SafeGpio[]): {
-  j13: GpioLayoutGroup | null;
-  j16: GpioLayoutGroup | null;
-  fallback: SafeGpio[];
+  groups: GpioLayoutGroup[];
+  fallback: GpioLayoutGroup | null;
 } {
-  const j13Rows = new Map<number, (GpioLayoutCell | null)[]>();
-  for (let r = 0; r < J13_ROWS; r++) j13Rows.set(r, emptyRow(J13_COLS));
-  let j13Has = false;
-  const j16Rows = new Map<number, (GpioLayoutCell | null)[]>();
-  for (let r = 0; r < J16_ROWS; r++) j16Rows.set(r, emptyRow(J16_COLS));
-  let j16Has = false;
-  const fallback: SafeGpio[] = [];
+  const cellsByGroup = new Map<string, GpioLayoutCell[]>();
+  const occupied = new Map<string, Set<string>>();
+  const fallbackCells: GpioLayoutCell[] = [];
 
   for (const raw of gpios) {
-    const cell = toLayoutCell(raw);
-    if (cell.layoutGroup === "J13" && cell.layoutRow < J13_ROWS && cell.layoutColumn < J13_COLS) {
-      j13Rows.get(cell.layoutRow)![cell.layoutColumn] = cell;
-      j13Has = true;
-    } else if (cell.layoutGroup === "J16" && cell.layoutRow < J16_ROWS && cell.layoutColumn < J16_COLS) {
-      const mirrored = { ...cell, layoutColumn: J16_COLS - 1 - cell.layoutColumn };
-      j16Rows.get(mirrored.layoutRow)![mirrored.layoutColumn] = mirrored;
-      j16Has = true;
-    } else {
-      fallback.push(raw);
+    const layoutGroup = (raw.layoutGroup ?? "").trim().toUpperCase();
+    if (!layoutGroup || !isValidCoordinate(raw.layoutRow) || !isValidCoordinate(raw.layoutColumn)) {
+      fallbackCells.push(toFallbackCell(raw));
+      continue;
     }
+    const cellKey = `${raw.layoutRow}:${raw.layoutColumn}`;
+    let occupiedCells = occupied.get(layoutGroup);
+    if (!occupiedCells) {
+      occupiedCells = new Set();
+      occupied.set(layoutGroup, occupiedCells);
+    }
+    if (occupiedCells.has(cellKey)) {
+      fallbackCells.push(toFallbackCell(raw));
+      continue;
+    }
+    occupiedCells.add(cellKey);
+    let cells = cellsByGroup.get(layoutGroup);
+    if (!cells) {
+      cells = [];
+      cellsByGroup.set(layoutGroup, cells);
+    }
+    cells.push(toLayoutCell(raw, layoutGroup, raw.layoutRow, raw.layoutColumn));
   }
 
-  return {
-    j13: j13Has
-      ? {
-          group: "J13",
-          label: "J13",
-          rows: j13Rows,
-          rowCount: J13_ROWS,
-          columnCount: J13_COLS,
-        }
-      : null,
-    j16: j16Has
-      ? {
-          group: "J16",
-          label: "J16",
-          rows: j16Rows,
-          rowCount: J16_ROWS,
-          columnCount: J16_COLS,
-        }
-      : null,
-    fallback,
-  };
-}
+  const groups: GpioLayoutGroup[] = [];
+  for (const [group, cells] of cellsByGroup) {
+    let rowCount = 0;
+    let columnCount = 0;
+    for (const cell of cells) {
+      rowCount = Math.max(rowCount, cell.layoutRow + 1);
+      columnCount = Math.max(columnCount, cell.layoutColumn + 1);
+    }
+    const rows = new Map<number, (GpioLayoutCell | null)[]>();
+    for (let r = 0; r < rowCount; r++) rows.set(r, emptyRow(columnCount));
+    for (const cell of cells) {
+      const row = rows.get(cell.layoutRow) ?? emptyRow(columnCount);
+      rows.set(cell.layoutRow, row);
+      row[cell.layoutColumn] = cell;
+    }
+    groups.push({ group, label: group, rows, rowCount, columnCount, generic: false });
+  }
 
-export const GPIO_PINOUT_CONSTANTS = {
-  J13_ROWS,
-  J13_COLS,
-  J16_ROWS,
-  J16_COLS,
-};
+  const fallback = fallbackCells.length
+    ? {
+        group: GPIO_FALLBACK_GROUP_ID,
+        label: GPIO_FALLBACK_GROUP_ID,
+        rows: new Map(fallbackCells.map((cell, index) => [index, [cell]])),
+        rowCount: fallbackCells.length,
+        columnCount: 1,
+        generic: true,
+      }
+    : null;
+
+  return { groups, fallback };
+}

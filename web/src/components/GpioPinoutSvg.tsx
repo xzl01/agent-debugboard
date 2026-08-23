@@ -1,232 +1,57 @@
 import { useId } from "react";
 import type { SafeGpio } from "@/lib/types";
-import {
-  groupGpioLayout,
-  type GpioLayoutCell,
-  type GpioLayoutGroup,
-} from "@/lib/gpioLayout";
+import { groupGpioLayout, type GpioLayoutGroup } from "@/lib/gpioLayout";
 import { useI18n } from "@/lib/i18n";
+import { GPIO_DIRECTION_STROKE, GPIO_FILL_HIGH, GPIO_FILL_LOW, type GpioAction } from "./GpioPin";
+import {
+  FILL_SELECTED,
+  FILL_TRIGGER,
+  FILL_UNSELECTED,
+  GpioPinoutGroup,
+  STROKE_DEFAULT,
+  STROKE_TRIGGER,
+  placeGroup,
+  type GpioPinoutSvgVariant,
+} from "./GpioPinoutGroup";
+
+export type { GpioPinoutSvgVariant };
 
 export interface GpioPinoutSvgProps {
   gpios: SafeGpio[];
+  variant?: GpioPinoutSvgVariant;
   selectedPins?: readonly number[];
   triggerPin?: number | null;
   triggerActive?: boolean;
   disabledPins?: readonly number[];
   onTogglePin?: (pin: number) => void;
   onSetTriggerPin?: (pin: number | null) => void;
-}
-
-const PIN_RADIUS = 15;
-const COL_GAP = 6;
-const ROW_GAP = 4;
-const PADDING = 6;
-const HEADER_HEIGHT = 14;
-const TOUCH_TARGET_RADIUS = 17;
-
-const FILL_UNSELECTED = "rgb(var(--c-panel))";
-const FILL_SELECTED = "rgb(var(--c-brand) / 0.14)";
-const FILL_TRIGGER = "rgb(var(--c-warn) / 0.14)";
-const STROKE_SELECTED = "rgb(var(--c-brand) / 0.75)";
-const STROKE_TRIGGER = "rgb(var(--c-warn) / 0.8)";
-const STROKE_DEFAULT = "rgb(var(--c-line))";
-const LABEL_DEFAULT = "rgb(var(--c-ink))";
-const LABEL_SELECTED = "rgb(var(--c-brand))";
-const LABEL_TRIGGER = "rgb(var(--c-warn))";
-const LABEL_DIM = "rgb(var(--c-ink-dim))";
-const HEADER_TEXT = "rgb(var(--c-ink))";
-const CONNECTOR_OUTLINE = "rgb(var(--c-line))";
-const FILL_DISABLED = "rgb(var(--c-panel2))";
-const STROKE_DISABLED = "rgb(var(--c-ink-dim) / 0.45)";
-
-interface PlacedCell {
-  cell: GpioLayoutCell;
-  cx: number;
-  cy: number;
-}
-
-function pinLabelFontSize(label: string): number {
-  if (label.length <= 4) return 9.5;
-  if (label.length <= 5) return 8;
-  return 7.5;
-}
-
-function pinLabelLines(label: string): string[] {
-  if (label.length <= 5) return [label];
-  return [label.slice(0, 4), label.slice(4)];
-}
-
-function placeGroup(group: GpioLayoutGroup): {
-  width: number;
-  height: number;
-  cells: PlacedCell[];
-} {
-  const diameter = PIN_RADIUS * 2;
-  const groupWidth =
-    PADDING * 2 + group.columnCount * diameter + (group.columnCount - 1) * COL_GAP;
-  const groupHeight =
-    PADDING * 2 + HEADER_HEIGHT + group.rowCount * diameter + (group.rowCount - 1) * ROW_GAP;
-  const topOffset = PADDING + HEADER_HEIGHT;
-  const cells: PlacedCell[] = [];
-  for (let row = 0; row < group.rowCount; row++) {
-    const rowCells = group.rows.get(row) ?? [];
-    for (let col = 0; col < group.columnCount; col++) {
-      const cell = rowCells[col] ?? null;
-      if (!cell) continue;
-      const cx = PADDING + col * (diameter + COL_GAP) + PIN_RADIUS;
-      const cy = topOffset + row * (diameter + ROW_GAP) + PIN_RADIUS;
-      cells.push({ cell, cx, cy });
-    }
-  }
-  return { width: groupWidth, height: groupHeight, cells };
-}
-
-function renderGroup(
-  group: GpioLayoutGroup,
-  selectedSet: ReadonlySet<number>,
-  disabledSet: ReadonlySet<number>,
-  triggerPin: number | null,
-  triggerActive: boolean,
-  onTogglePin: ((pin: number) => void) | undefined,
-  onSetTriggerPin: ((pin: number | null) => void) | undefined,
-  labelForGroup: string
-) {
-  const { width, height, cells } = placeGroup(group);
-  return (
-    <g key={group.group}>
-      <rect
-        x={0.5}
-        y={0.5}
-        width={width - 1}
-        height={height - 1}
-        rx={10}
-        ry={10}
-        fill="rgb(var(--c-panel2) / 0.45)"
-        stroke={CONNECTOR_OUTLINE}
-        strokeWidth={1}
-      />
-      <text
-        x={width / 2}
-        y={PADDING + 4}
-        textAnchor="middle"
-        fontFamily="monospace"
-        fontSize={10}
-        fontWeight={700}
-        fill={HEADER_TEXT}
-      >
-        {group.label}
-      </text>
-      <text
-        x={width / 2}
-        y={PADDING + 13}
-        textAnchor="middle"
-        fontFamily="monospace"
-        fontSize={8}
-        fill={LABEL_DIM}
-      >
-        {labelForGroup}
-      </text>
-      {cells.map(({ cell, cx, cy }) => {
-        const isDisabled = disabledSet.has(cell.pin);
-        const isTrigger = triggerPin === cell.pin && triggerActive;
-        const isSelected = selectedSet.has(cell.pin);
-        const fill = isDisabled
-          ? FILL_DISABLED
-          : isTrigger
-          ? FILL_TRIGGER
-          : isSelected
-            ? FILL_SELECTED
-            : FILL_UNSELECTED;
-        const stroke = isDisabled
-          ? STROKE_DISABLED
-          : isTrigger
-            ? STROKE_TRIGGER
-            : isSelected
-              ? STROKE_SELECTED
-              : STROKE_DEFAULT;
-        const strokeWidth = isDisabled ? 1 : isTrigger || isSelected ? 1.5 : 1;
-        const labelFill = isDisabled
-          ? LABEL_DIM
-          : isTrigger
-            ? LABEL_TRIGGER
-            : isSelected
-              ? LABEL_SELECTED
-              : LABEL_DEFAULT;
-        const labelFontSize = pinLabelFontSize(cell.layoutLabel);
-        const labelLines = pinLabelLines(cell.layoutLabel);
-        return (
-          <g
-            key={`pin-${cell.pin}`}
-            className={isDisabled ? "transition-opacity duration-150" : "transition-opacity duration-150 hover:opacity-80"}
-            style={{ cursor: isDisabled ? "not-allowed" : "pointer", opacity: isDisabled ? 0.65 : 1 }}
-            onClick={() => {
-              if (isDisabled) return;
-              if (isTrigger) {
-                onSetTriggerPin?.(null);
-              } else {
-                onSetTriggerPin?.(cell.pin);
-              }
-            }}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              if (isDisabled) return;
-              onTogglePin?.(cell.pin);
-            }}
-          >
-            <circle
-              cx={cx}
-              cy={cy}
-              r={PIN_RADIUS}
-              fill={fill}
-              stroke={stroke}
-              strokeWidth={strokeWidth}
-            />
-            <text
-              x={cx}
-              y={labelLines.length === 1 ? cy + labelFontSize * 0.34 : cy - 1.5}
-              textAnchor="middle"
-              fontFamily="monospace"
-              fontSize={labelFontSize}
-              fontWeight={700}
-              fill={labelFill}
-            >
-              {labelLines.map((line, index) => (
-                <tspan key={line} x={cx} dy={index === 0 ? 0 : labelFontSize * 0.95}>
-                  {line}
-                </tspan>
-              ))}
-            </text>
-            <circle
-              cx={cx}
-              cy={cy}
-              r={TOUCH_TARGET_RADIUS}
-              fill="transparent"
-              pointerEvents="all"
-            />
-          </g>
-        );
-      })}
-    </g>
-  );
+  gpioPendingPin?: number | null;
+  gpioInstructionsId?: string;
+  onGpioAction?: (pin: number, action: GpioAction) => void;
 }
 
 export function GpioPinoutSvg({
   gpios,
+  variant = "logic-analyzer",
   selectedPins,
   triggerPin,
   triggerActive = false,
   disabledPins,
   onTogglePin,
   onSetTriggerPin,
+  gpioPendingPin,
+  gpioInstructionsId,
+  onGpioAction,
 }: GpioPinoutSvgProps) {
   const { t } = useI18n();
   const titleId = useId();
-  const { j13, j16 } = groupGpioLayout(gpios);
+  const { groups: layoutGroups, fallback } = groupGpioLayout(gpios);
   const selectedSet = new Set(selectedPins ?? []);
   const disabledSet = new Set(disabledPins ?? []);
   const trigger = triggerPin ?? null;
 
-  if (!j13 && !j16) {
+  const allGroups = fallback ? [...layoutGroups, fallback] : layoutGroups;
+  if (allGroups.length === 0) {
     return (
       <div className="rounded-lg border border-line/60 bg-panel2/30 p-4 text-xs text-ink-dim">
         {t("logicAnalyzer.noLayout")}
@@ -234,9 +59,10 @@ export function GpioPinoutSvg({
     );
   }
 
-  const groups: { group: GpioLayoutGroup; label: string }[] = [];
-  if (j13) groups.push({ group: j13, label: t("logicAnalyzer.j13Subtitle") });
-  if (j16) groups.push({ group: j16, label: t("logicAnalyzer.j16Subtitle") });
+  const groups: { group: GpioLayoutGroup; label: string }[] = allGroups.map((group) => ({
+    group: group.generic ? { ...group, label: t("logicAnalyzer.fallbackGroup") } : group,
+    label: group.generic ? t("logicAnalyzer.fallbackSubtitle") : "",
+  }));
 
   const placed = groups.map((g) => ({ ...g, ...placeGroup(g.group) }));
   const gap = 8;
@@ -250,16 +76,21 @@ export function GpioPinoutSvg({
   const groupNodes = placed.map((g, idx) => {
     const node = (
       <g key={`g-${g.group.group}-${idx}`} transform={`translate(${cursorX}, 0)`}>
-        {renderGroup(
-          g.group,
-          selectedSet,
-          disabledSet,
-          trigger,
-          triggerActive,
-          onTogglePin,
-          onSetTriggerPin,
-          g.label
-        )}
+        <GpioPinoutGroup
+          group={g.group}
+          variant={variant}
+          selectedSet={selectedSet}
+          disabledSet={disabledSet}
+          triggerPin={trigger}
+          triggerActive={triggerActive}
+          onTogglePin={onTogglePin}
+          onSetTriggerPin={onSetTriggerPin}
+          gpioPendingPin={gpioPendingPin}
+          gpioInstructionsId={gpioInstructionsId}
+          onGpioAction={onGpioAction}
+          label={g.label}
+          t={t}
+        />
       </g>
     );
     cursorX += g.width + (idx === placed.length - 1 ? 0 : gap);
@@ -269,38 +100,73 @@ export function GpioPinoutSvg({
   return (
     <div className="space-y-2">
       <svg
-        role="img"
+        role={variant === "gpio" ? "group" : "img"}
         aria-labelledby={titleId}
         viewBox={`0 0 ${totalWidth} ${totalHeight}`}
         className="mx-auto w-full"
         style={{ maxWidth: 224 }}
       >
-        <title id={titleId}>{t("logicAnalyzer.pinoutAria")}</title>
+        <title id={titleId}>
+          {variant === "gpio" ? t("gpio.pinoutAria") : t("logicAnalyzer.pinoutAria")}
+        </title>
         {groupNodes}
       </svg>
-      <div className="grid grid-cols-3 gap-1 border-t border-line/50 pt-2 text-[9px] leading-3 text-ink-dim">
-        <span className="inline-flex items-center gap-1">
-          <span
-            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-            style={{ background: FILL_UNSELECTED, border: `1px solid ${STROKE_DEFAULT}` }}
-          />
-          {t("logicAnalyzer.pinout.legend.unselected")}
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span
-            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-            style={{ background: FILL_SELECTED }}
-          />
-          {t("logicAnalyzer.pinout.legend.selected")}
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span
-            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-            style={{ background: FILL_TRIGGER, border: `1px solid ${STROKE_TRIGGER}` }}
-          />
-          {t("logicAnalyzer.pinout.legend.trigger")}
-        </span>
-      </div>
+      {variant === "gpio" ? (
+        <div className="grid grid-cols-2 gap-1 border-t border-line/50 pt-2 text-[9px] leading-3 text-ink-dim">
+          <span className="inline-flex items-center gap-1">
+            <span
+              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ background: GPIO_FILL_LOW, border: `1px solid ${GPIO_DIRECTION_STROKE}` }}
+            />
+            {t("gpio.low")}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span
+              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ background: GPIO_FILL_HIGH, border: `1px solid ${GPIO_DIRECTION_STROKE}` }}
+            />
+            {t("gpio.high")}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span
+              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ border: `1.5px dashed ${GPIO_DIRECTION_STROKE}` }}
+            />
+            {t("gpio.input")}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span
+              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ border: `1.5px solid ${GPIO_DIRECTION_STROKE}` }}
+            />
+            {t("gpio.output")}
+          </span>
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-1 border-t border-line/50 pt-2 text-[9px] leading-3 text-ink-dim">
+          <span className="inline-flex items-center gap-1">
+            <span
+              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ background: FILL_UNSELECTED, border: `1px solid ${STROKE_DEFAULT}` }}
+            />
+            {t("logicAnalyzer.pinout.legend.unselected")}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span
+              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ background: FILL_SELECTED }}
+            />
+            {t("logicAnalyzer.pinout.legend.selected")}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span
+              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ background: FILL_TRIGGER, border: `1px solid ${STROKE_TRIGGER}` }}
+            />
+            {t("logicAnalyzer.pinout.legend.trigger")}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
