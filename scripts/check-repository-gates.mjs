@@ -11,9 +11,20 @@ export const POLICY_FILES = Object.freeze([
   ".github/workflows/nightly.yml",
   ".github/workflows/version-bump.yml",
   "AGENTS.md",
+  "apps/radxa_linkr_debugger/CMakeLists.txt",
   "apps/radxa_linkr_debugger/prj.conf",
+  "apps/radxa_linkr_debugger/sections-ram.ld",
+  "apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.c",
+  "apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.h",
+  "apps/radxa_linkr_debugger/src/linkr_debugger_control.c",
   "apps/radxa_linkr_debugger/src/linkr_debugger_http.c",
+  "apps/radxa_linkr_debugger/src/linkr_debugger_logic_analyzer.c",
+  "apps/radxa_linkr_debugger/src/linkr_debugger_sigrok_linkr.c",
+  "apps/radxa_linkr_debugger/src/linkr_debugger_sigrok_linkr.h",
   "apps/radxa_linkr_debugger/src/linkr_debugger_ws.c",
+  "apps/radxa_linkr_debugger/src/linkr_debugger_ws.h",
+  "docs/README.md",
+  "docs/reference/logic-analyzer.md",
   "docs/testing/hil-functional-test-spec.md",
   "skills/radxa-linkr-debugger/scripts/web-ota-hil.sh",
   "Makefile",
@@ -74,6 +85,78 @@ function flakeOverlayContract(english, chinese) {
   return true;
 }
 
+function hasOnlyConfigValue(source, key, value) {
+  const assignments = [...source.matchAll(new RegExp(`^${key}=([^\\r\\n#]+)`, "gm"))];
+  return assignments.length === 1 && assignments[0][1].trim() === value;
+}
+
+function firmwareMemoryCaptureContract({
+  appCmake,
+  sectionsRam,
+  captureArenaHeader,
+  captureArenaSource,
+  controlSource,
+  logicAnalyzerSource,
+  logicAnalyzerDoc,
+  sigrokHeader,
+  sigrokSource,
+  wsHeader,
+  wsSource,
+  prjConfig,
+  docsIndex,
+}) {
+  const configValues = [
+    ["CONFIG_NET_PKT_RX_COUNT", "16"],
+    ["CONFIG_NET_PKT_TX_COUNT", "16"],
+    ["CONFIG_NET_BUF_RX_COUNT", "64"],
+    ["CONFIG_NET_BUF_TX_COUNT", "64"],
+    ["CONFIG_HEAP_MEM_POOL_SIZE", "49152"],
+    ["CONFIG_NET_SOCKETS_SERVICE_STACK_SIZE", "2400"],
+    ["CONFIG_NET_IPV6", "n"],
+    ["CONFIG_I2C", "n"],
+    ["CONFIG_SPI", "n"],
+    ["CONFIG_MAIN_STACK_SIZE", "2048"],
+  ];
+  const captureArena = /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_ALIGN\s+32768U\b/.test(captureArenaHeader)
+    && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_WS_SAMPLE_RING_BYTES\s+30720U\b/.test(captureArenaHeader)
+    && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_POWER_CAPTURE_BYTES\s+65672U\b/.test(captureArenaHeader)
+    && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_SIGROK_WS_POOL_BYTES\s+16816U\b/.test(captureArenaHeader)
+    && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_BURST_TOTAL_BYTES\s+144184U\b/.test(captureArenaHeader)
+    && /LINKR_DEBUGGER_CAPTURE_ARENA_BYTES\s*\\?[\s\S]*LINKR_DEBUGGER_CAPTURE_ARENA_NORMAL_BYTES/.test(captureArenaHeader)
+    && /static\s+uint8_t\s+linkr_debugger_capture_arena\s*\[\s*LINKR_DEBUGGER_CAPTURE_ARENA_BYTES\s*\]\s*__aligned\(\s*LINKR_DEBUGGER_CAPTURE_ARENA_ALIGN\s*\)/.test(captureArenaSource)
+    && /max\(normal,\s*burst\)=149048 B/.test(logicAnalyzerDoc);
+  const linker = /zephyr_linker_sources\(\s*RAM_SECTIONS\s+SORT_KEY\s+0\s+sections-ram\.ld\s*\)/.test(appCmake)
+    && /SECTION_PROLOGUE\(\s*\.bss\.pre_capture\s*,\s*\(\s*NOLOAD\s*\)[\s\S]*?KEEP\(\s*\*\(\s*\.bss\.pre_capture\.sigrok_runtime\s*\)\s*\)[\s\S]*?KEEP\(\s*\*\(\s*\.bss\.pre_capture\.ws_clients\s*\)\s*\)[\s\S]*?GROUP_NOLOAD_LINK_IN\(\s*RAMABLE_REGION\s*,\s*RAMABLE_REGION\s*\)[\s\S]*?ASSERT\(\s*SIZEOF\(\s*\.bss\.pre_capture\s*\)\s*==\s*0xDA40/.test(sectionsRam)
+    && /ASSERT\(\s*__data_region_end\s*<=\s*0x20010000/.test(sectionsRam)
+    && /ASSERT\(\s*__bss_start\s*==\s*0x20010000/.test(sectionsRam)
+    && /ASSERT\(\s*\(\s*__bss_start\s*&\s*0x7fff\s*\)\s*==\s*0/.test(sectionsRam);
+  const sigrok = /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_RING_BUFFER_BYTES\s+32768U\b/.test(sigrokHeader)
+    && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_STREAM_QDEPTH_LIMIT\s+32U\b/.test(sigrokHeader)
+    && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_WS_DATA_SLOT_COUNT\s+8U\b/.test(sigrokHeader)
+    && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_WS_TERMINAL_SLOT_COUNT\s+1U\b/.test(sigrokHeader)
+    && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_COUNT\s+12U\b/.test(sigrokHeader)
+    && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_QUEUE_MEMORY_LIMIT_BYTES\s+49152U\b/.test(sigrokHeader)
+    && /Z_GENERIC_SECTION\(\s*\.bss\.pre_capture\.sigrok_runtime\s*\)/.test(sigrokSource)
+    && !/section\(\s*"\.bss\.pre_capture\.sigrok_runtime"\s*\)/.test(sigrokSource)
+    && /BUILD_ASSERT\(\s*sizeof\(\s*linkr_debugger_sigrok_linkr_runtime\s*\)\s*==\s*27168U\s*\)/.test(sigrokSource)
+    && /memset\(\s*&linkr_debugger_sigrok_linkr_runtime\s*,\s*0\s*,\s*sizeof\(\s*linkr_debugger_sigrok_linkr_runtime\s*\)\s*\)\s*;[\s\S]*?linkr_debugger_sigrok_linkr_runtime\.listen_fd\s*=\s*-1\s*;[\s\S]*?linkr_debugger_sigrok_linkr_runtime\.client_fd\s*=\s*-1\s*;[\s\S]*?linkr_debugger_sigrok_linkr_runtime\.next_sequence_id\s*=\s*1U\s*;[\s\S]*?k_(?:fifo|mutex|sem)_init\(/.test(sigrokSource)
+    && /K_THREAD_STACK_DEFINE\(\s*server_stack\s*,\s*2048U\s*\)/.test(sigrokSource);
+  const ws = /#define\s+LINKR_DEBUGGER_WS_MAX_CLIENTS\s+4\b/.test(wsHeader)
+    && /#define\s+LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE\s+6144\b/.test(wsSource)
+    && /Z_GENERIC_SECTION\(\s*\.bss\.pre_capture\.ws_clients\s*\)/.test(wsSource)
+    && !/section\(\s*"\.bss\.pre_capture\.ws_clients"\s*\)/.test(wsSource)
+    && /BUILD_ASSERT\(\s*sizeof\(\s*linkr_debugger_ws_clients\s*\)\s*==\s*28704U\s*\)/.test(wsSource)
+    && /memset\(\s*linkr_debugger_ws_clients\s*,\s*0\s*,\s*sizeof\(\s*linkr_debugger_ws_clients\s*\)\s*\)\s*;[\s\S]*?k_mutex_init\(/.test(wsSource)
+    && /K_THREAD_STACK_DEFINE\(\s*linkr_debugger_adc_sampler_stack\s*,\s*2048\s*\)/.test(wsSource);
+  const stacks = /#define\s+LINKR_DEBUGGER_LA_STREAM_THREAD_STACK_SIZE\s+2048U\b/.test(logicAnalyzerSource)
+    && /K_THREAD_STACK_DEFINE\(\s*la_stream_ring_thread_stack\s*,\s*LINKR_DEBUGGER_LA_STREAM_THREAD_STACK_SIZE\s*\)/.test(logicAnalyzerSource)
+    && /K_THREAD_STACK_DEFINE\(\s*la_stream_ring_consumer_thread_stack\s*,\s*LINKR_DEBUGGER_LA_STREAM_THREAD_STACK_SIZE\s*\)/.test(logicAnalyzerSource)
+    && /K_THREAD_STACK_DEFINE\(\s*linkr_debugger_watchdog_supervisor_stack\s*,\s*1024\s*\)/.test(controlSource);
+  return captureArena && linker && sigrok && ws && stacks
+    && configValues.every(([key, value]) => hasOnlyConfigValue(prjConfig, key, value))
+    && /Local\s+unit tests and CI gates are not HIL/.test(docsIndex);
+}
+
 export function checkRepositoryGateContents(contents) {
   const failures = [];
   const build = contents.get(".github/workflows/build.yml") ?? "";
@@ -90,8 +173,19 @@ export function checkRepositoryGateContents(contents) {
   const webPackage = contents.get("web/package.json") ?? "";
   const buildEn = contents.get("docs/developer/build.md") ?? "";
   const buildZh = contents.get("docs/developer/build.zh-CN.md") ?? "";
+  const appCmake = contents.get("apps/radxa_linkr_debugger/CMakeLists.txt") ?? "";
+  const sectionsRam = contents.get("apps/radxa_linkr_debugger/sections-ram.ld") ?? "";
+  const captureArenaHeader = contents.get("apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.h") ?? "";
+  const captureArenaSource = contents.get("apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.c") ?? "";
+  const controlSource = contents.get("apps/radxa_linkr_debugger/src/linkr_debugger_control.c") ?? "";
+  const logicAnalyzerSource = contents.get("apps/radxa_linkr_debugger/src/linkr_debugger_logic_analyzer.c") ?? "";
+  const logicAnalyzerDoc = contents.get("docs/reference/logic-analyzer.md") ?? "";
+  const sigrokSource = contents.get("apps/radxa_linkr_debugger/src/linkr_debugger_sigrok_linkr.c") ?? "";
+  const sigrokHeader = contents.get("apps/radxa_linkr_debugger/src/linkr_debugger_sigrok_linkr.h") ?? "";
   const statusSource = contents.get("apps/radxa_linkr_debugger/src/linkr_debugger_http.c") ?? "";
+  const wsHeader = contents.get("apps/radxa_linkr_debugger/src/linkr_debugger_ws.h") ?? "";
   const wsSource = contents.get("apps/radxa_linkr_debugger/src/linkr_debugger_ws.c") ?? "";
+  const docsIndex = contents.get("docs/README.md") ?? "";
   const hilSpec = contents.get("docs/testing/hil-functional-test-spec.md") ?? "";
   const prjConfig = contents.get("apps/radxa_linkr_debugger/prj.conf") ?? "";
   const webOtaHil = contents.get("skills/radxa-linkr-debugger/scripts/web-ota-hil.sh") ?? "";
@@ -184,6 +278,13 @@ export function checkRepositoryGateContents(contents) {
   }
   if (!hil.otaNegativeUploadTimeouts) {
     fail(failures, "G17", "skills/radxa-linkr-debugger/scripts/web-ota-hil.sh", "negative full-body OTA uploads must use UPLOAD_TIMEOUT while status and OTA control requests use SHORT_TIMEOUT");
+  }
+  if (!firmwareMemoryCaptureContract({
+    appCmake, sectionsRam, captureArenaHeader, captureArenaSource, controlSource,
+    logicAnalyzerSource, logicAnalyzerDoc, sigrokHeader, sigrokSource, wsHeader,
+    wsSource, prjConfig, docsIndex,
+  })) {
+    fail(failures, "G18", "apps/radxa_linkr_debugger/{CMakeLists.txt,sections-ram.ld,prj.conf,src/*} + docs/{README.md,reference/logic-analyzer.md}", "firmware memory and capture layout must retain approved capacities, pre-capture NOBITS initialization, stack targets, disabled features, and non-HIL documentation");
   }
   return { ok: failures.length === 0, failures };
 }
