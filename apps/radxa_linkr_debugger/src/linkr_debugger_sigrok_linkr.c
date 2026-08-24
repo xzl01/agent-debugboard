@@ -190,11 +190,9 @@ struct linkr_debugger_sigrok_linkr_runtime {
 	uint8_t tx_control_payload[LINKR_DEBUGGER_SIGROK_LINKR_CONTROL_MAX_RESPONSE_BYTES];
 };
 
-static struct linkr_debugger_sigrok_linkr_runtime linkr_debugger_sigrok_linkr_runtime = {
-	.listen_fd = -1,
-	.client_fd = -1,
-	.next_sequence_id = 1U,
-};
+static struct linkr_debugger_sigrok_linkr_runtime linkr_debugger_sigrok_linkr_runtime
+	Z_GENERIC_SECTION(.bss.pre_capture.sigrok_runtime);
+BUILD_ASSERT(sizeof(linkr_debugger_sigrok_linkr_runtime) == 27168U);
 
 static void sigrok_linkr_raw_burst_release_slot_locked(
 	struct sigrok_linkr_raw_burst_pool *pool, uint8_t slot_index)
@@ -3314,11 +3312,16 @@ static void server_thread(void *p1, void *p2, void *p3)
 	}
 }
 
-static K_THREAD_STACK_DEFINE(server_stack, 4096U);
+static K_THREAD_STACK_DEFINE(server_stack, 2048U);
 static struct k_thread server_thread_data;
 
 int linkr_debugger_sigrok_linkr_init(void)
 {
+	memset(&linkr_debugger_sigrok_linkr_runtime, 0,
+		sizeof(linkr_debugger_sigrok_linkr_runtime));
+	linkr_debugger_sigrok_linkr_runtime.listen_fd = -1;
+	linkr_debugger_sigrok_linkr_runtime.client_fd = -1;
+	linkr_debugger_sigrok_linkr_runtime.next_sequence_id = 1U;
 	k_fifo_init(&linkr_debugger_sigrok_linkr_runtime.stream_fifo);
 	k_mutex_init(&linkr_debugger_sigrok_linkr_runtime.raw_burst.lock);
 	k_sem_init(&linkr_debugger_sigrok_linkr_runtime.raw_burst.space_sem,

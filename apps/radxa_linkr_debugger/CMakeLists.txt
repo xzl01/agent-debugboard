@@ -9,6 +9,7 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(radxa_linkr_debugger)
 
 zephyr_linker_sources(SECTIONS sections-rom.ld)
+zephyr_linker_sources(RAM_SECTIONS SORT_KEY 0 sections-ram.ld)
 zephyr_iterable_section(NAME http_resource_desc_linkr_debugger_http_service
   KVMA RAM_REGION GROUP RODATA_REGION)
 

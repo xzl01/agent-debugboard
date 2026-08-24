@@ -225,7 +225,9 @@ struct linkr_debugger_ws_sampler_workspace {
 	struct linkr_debugger_ws_adc_sample ingest_sample;
 };
 
-static struct linkr_debugger_ws_client linkr_debugger_ws_clients[LINKR_DEBUGGER_WS_MAX_CLIENTS];
+static struct linkr_debugger_ws_client linkr_debugger_ws_clients[LINKR_DEBUGGER_WS_MAX_CLIENTS]
+	Z_GENERIC_SECTION(.bss.pre_capture.ws_clients);
+BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28704U);
 static struct linkr_debugger_ws_client_thread_arg linkr_debugger_ws_thread_args[LINKR_DEBUGGER_WS_MAX_CLIENTS];
 static K_THREAD_STACK_ARRAY_DEFINE(linkr_debugger_ws_stacks, LINKR_DEBUGGER_WS_MAX_CLIENTS,
 	LINKR_DEBUGGER_WS_STACK_SIZE);
@@ -248,7 +250,7 @@ static bool linkr_debugger_ws_sigrok_telemetry_pause_requested;
 static bool linkr_debugger_ws_arena_quiesced;
 static struct linkr_debugger_ws_sampler_sync linkr_debugger_ws_sampler_sync;
 static uint64_t linkr_debugger_ws_latest_sample_sequence;
-static K_THREAD_STACK_DEFINE(linkr_debugger_adc_sampler_stack, 4096);
+static K_THREAD_STACK_DEFINE(linkr_debugger_adc_sampler_stack, 2048);
 static struct k_thread linkr_debugger_adc_sampler_thread_data;
 
 BUILD_ASSERT(LINKR_DEBUGGER_CAPTURE_ARENA_WS_SAMPLE_RING_BYTES ==
@@ -4072,12 +4074,14 @@ static void linkr_debugger_ws_capture_arena_resume(void *user_data)
 
 int linkr_debugger_ws_init(void)
 {
+	memset(linkr_debugger_ws_clients, 0, sizeof(linkr_debugger_ws_clients));
 	k_mutex_init(&linkr_debugger_ws_clients_lock);
 	k_mutex_init(&linkr_debugger_capture_lock);
 	for (size_t i = 0; i < ARRAY_SIZE(linkr_debugger_ws_clients); i++) {
 		linkr_debugger_ws_clients[i].slot = (uint8_t)i;
 		k_mutex_init(&linkr_debugger_ws_clients[i].lock);
 		k_event_init(&linkr_debugger_ws_clients[i].events);
+		k_fifo_init(&linkr_debugger_ws_clients[i].sigrok_stream_fifo);
 		k_work_init_delayable(&linkr_debugger_ws_clients[i].sigrok_stream_wake_work,
 			sigrok_ws_stream_wake_work_handler);
 		linkr_debugger_ws_clients[i].active = false;
