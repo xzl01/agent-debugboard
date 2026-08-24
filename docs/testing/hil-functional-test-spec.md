@@ -1289,36 +1289,59 @@ HTTP health true.
 
 #### 8b.3 Stream Mode (post_samples=0)
 
-Verify stream mode runs until stopped. Stream at 1 MHz for 5 seconds, verify
-continuous sample delivery without gaps, then stop cleanly.
+Verify stream mode behavior. With `GENERIC_PACKED_BURST`, post=0 at the
+high rates documented in section 8b.4.1 (100 MHz or 125 MHz SINGLE/FAST8,
+100 MHz WIDE11) captures exactly 100000 samples losslessly then auto-STOPs
+and drains; WIDE11 at 125 MHz is rejected by START (INVALID_CONFIG).
+At lower non-packed rates, post=0 runs until the client stops. The
+continuous 1 MHz stream case is **not** a sustained PASS on the current
+architecture; see section 8b.4 for the strict duration contract and the
+current WS 1 MHz boundary diagnostic (`server_overrun` at ~0.119 s,
+43,232 samples, zero gaps/disconnects, restart and HTTP health,
+`pass=false` because duration was not met).
 
-#### 8b.4 Continuous Ceilings and 1MHz Stability
+#### 8b.4 Continuous Operating Points and Sustained Stability
 
-Canonical 1MHz validation: stream WS SINGLE at 1MHz for 5 seconds, repeated for
-10 consecutive runs. Each run must satisfy:
+Sustained-duration validation is governed by a strict semantics contract. A
+continuous run is `pass=true` only when it meets **all** of the following:
 
-- JSON `overall_pass: true`
-- Effective rate >= 950 ksps
+- At least 95% of the requested duration is reached
+- `stop_response.received: true`
 - Zero sample-index gaps
 - Zero disconnects
 - Zero protocol-level decode errors
-- `stop_response.received: true`
+- Zero overruns
 - Immediate restart capability confirmed
 - HTTP health after stop
 
+An early server STOPPED/OVERRUN that arrives before the requested duration
+is a clean lossless terminal, but it is `pass=false` for sustained-duration
+purposes and is recorded as a capacity diagnostic, not a sustained PASS.
+
+Validated operating points and boundary diagnostics under the strict contract:
+
 | Transport | Mode | Rate | Expected |
 |-----------|------|------|----------|
-| WebSocket | SINGLE continuous | 1 MHz | 10 consecutive 5-second runs, zero gaps/disconnects, >= 950 ksps |
+| WebSocket | SINGLE continuous | 300 kHz | 5-second sustained PASS: exactly 1,499,136 samples in 5.012458 s, zero gaps/disconnects/overruns, STOP, restart, HTTP health |
+| WebSocket | SINGLE continuous | 400 kHz | Boundary diagnostic: explicit `server_overrun` at ~0.084 s, zero gaps/disconnects, restart and HTTP health; `pass=false` because duration was not met |
+| TCP | SINGLE continuous | 350 kHz | 5-second sustained PASS: exactly 1,755,136 samples in 5.008183 s, zero gaps/disconnects/overruns, STOP, restart, HTTP health |
+| TCP | SINGLE continuous | 400 kHz | Boundary diagnostic: explicit `server_overrun` at ~0.116 s, zero gaps/disconnects, restart and HTTP health; `pass=false` because duration was not met |
 | WebSocket | FAST8 continuous | 240 kHz | 5-second no-gap |
 | WebSocket | FAST8 continuous | 241 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
 | WebSocket | WIDE11 continuous | 149 kHz | 5-second no-gap |
 | WebSocket | WIDE11 continuous | 150 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
-| TCP | SINGLE continuous | 443 kHz | 5-second no-gap (historical/representative) |
-| TCP | SINGLE continuous | 444 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
 | TCP | FAST8 continuous | 241 kHz | 5-second no-gap |
 | TCP | FAST8 continuous | 242 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
 | TCP | WIDE11 continuous | 147 kHz | 5-second no-gap |
 | TCP | WIDE11 continuous | 148 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
+
+The 300 kHz (WS) and 350 kHz (TCP) rows are proven sustained-duration
+operating points on the representative HIL setup under the strict
+contract. The 400 kHz WS/TCP and 1 MHz WS rows bracket the boundary where
+the runner still records an explicit lossless `server_overrun` with zero
+gaps/disconnects, but the requested 5 s duration is not met and the runner
+reports `pass=false`. They are recorded as boundary diagnostics, not
+sustained PASS, and they are not exact absolute ceilings.
 
 Bounded pre=0 and post=1..512 HIL results (exact finite engine). post=513 to 65535 uses packed ring streaming.
 post=65536 is not a valid uint16; use CONFIG_V2 with u32LE pre/post for >65535 captures.
@@ -1338,7 +1361,7 @@ post=65536 is not a valid uint16; use CONFIG_V2 with u32LE pre/post for >65535 c
 | WS | SINGLE | falling | 100 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
 | WS | SINGLE | either | 100 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
 | TCP | SINGLE | rising | 100 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| WS | SINGLE | continuous | 1 MHz | 0 | 4,997,120 samples, 999,340.8 samples/s, zero sample-index gaps, zero disconnects |
+| WS | SINGLE | continuous (historical) | 1 MHz | 0 | Historical pre-transport-cleanup evidence: 4,997,120 samples, 999,340.8 samples/s, zero sample-index gaps, zero disconnects. Not a current sustained PASS under the strict 95% duration contract; current WS 1 MHz ends in explicit `server_overrun` at ~0.119 s (43,232 samples), zero gaps/disconnects, restart and HTTP health. |
 
 Bounded post=65535 results (packed ring streaming, user-stop):
 
@@ -1421,11 +1444,12 @@ After each deep burst run, verify HTTP health and restart capability. The 144184
 restores ADC telemetry, power capture, and normal Sigrok pool after drain;
 confirm these services are functional after the capture completes.
 
-The final authoritative TCP/WS matrix passed 54/54 cases and the high-rate
-matrix passed 62/62. Eighteen continuous matrix rows ended with an explicit
-capacity OVERRUN; four had `capacity_stop_before_data=true`. Those rows prove
-lossless-or-stop terminal behavior, not sustained operation at the requested
-rate. Historical WIDE12 predecessor evidence remains at
+The historical authoritative TCP/WS matrix reported 54/54 cases and the
+high-rate matrix passed 62/62. Eighteen historical continuous rows ended with
+an explicit capacity OVERRUN; four had `capacity_stop_before_data=true`.
+Those rows prove lossless-or-stop terminal behavior, not sustained operation
+at the requested rate, and the current strict duration evaluator does not count
+an early terminal as a sustained PASS. Historical WIDE12 predecessor evidence remains at
 `docs/testing/results/2026-07-26-logic-analyzer-wide12-100k-hil.md`.
 
 #### 8b.4.2 WIDE11 Deep-Burst Pin Mapping HIL
@@ -2265,18 +2289,32 @@ The current bounded pre-trigger and UART sample-0 decoder results are recorded i
 canonical footprint, HTTP and CDC BOOTSEL recovery, WebSocket protocol evidence,
 browser decode evidence, and visual QA.
 
-The following results were obtained from actual post-fix HIL runs against the final
-firmware build. The dated repository report at `docs/testing/results/2026-07-25-logic-analyzer-finite-hil.md`
-preserves pass summaries, SHA-256 identities, and the post-patch transport-cleanup regression
-results; the original JSON outputs named under `/tmp` are not checked in.
+The current sustained-duration evidence under the strict 95% duration contract
+is recorded in `docs/testing/results/2026-08-24-firmware-memory-optimization-hil.md`.
+That report is the authoritative source for the WS 300 kHz and TCP 350 kHz
+sustained operating points, the WS 400 kHz / WS 1 MHz / TCP 400 kHz boundary
+diagnostics, the 62/62 high-rate matrix, the stack high-water values, and
+the combined-UF2 HTTP + CDC BOOTSEL dual recovery. It also establishes that
+the optimized and clean detached HEAD control images share the same
+pre-existing high-rate continuous limitation.
+
+The following historical results were obtained from earlier post-fix HIL runs.
+They are not rewritten as current sustained PASS claims and they are not
+projections or estimates of the current architecture.
 
 Full logic analyzer finite HIL evidence report (2026-07-25):
 `docs/testing/results/2026-07-25-logic-analyzer-finite-hil.md`
 
-### WS SINGLE 1MHz Continuous (`/tmp/linkr-final-ws-1mhz.json`)
-Overall pass, 4,995,072 samples, 998,963.5 samples/s effective rate,
-zero sample-index gaps, zero disconnects, STOP response received, immediate restart
-and HTTP health confirmed.
+### Historical WS SINGLE 1MHz Continuous (`/tmp/linkr-final-ws-1mhz.json`)
+Historical, pre-transport-cleanup-patch evidence. Overall pass on the
+then-current architecture, 4,995,072 samples, 998,963.5 samples/s effective
+rate, zero sample-index gaps, zero disconnects, STOP response received,
+immediate restart and HTTP health confirmed. The current architecture
+does not achieve this sustained rate; the current WS 1 MHz ends in explicit
+`server_overrun` at ~0.119 s (43,232 samples) with zero gaps/disconnects,
+restart and HTTP health retained, but the requested 5 s duration is not
+met and the strict runner reports `pass=false`. Treat this row as
+historical/different-pipeline evidence, not a current operating point.
 
 ### GP10 UART Trigger Validation (`/tmp/linkr-final-gp10-*.json`)
 Six isolated bounded captures at 1 MHz and 2 MHz, rising/falling/either trigger types,
@@ -2284,13 +2322,19 @@ each with 4096 samples and trigger offset 0. All six passes:
 `/tmp/linkr-final-gp10-1mhz-rising.json`, `/tmp/linkr-final-gp10-1mhz-falling.json`,
 `/tmp/linkr-final-gp10-1mhz-either.json`, `/tmp/linkr-final-gp10-2mhz-rising.json`,
 `/tmp/linkr-final-gp10-2mhz-falling.json`, `/tmp/linkr-final-gp10-2mhz-either.json`.
+These bounded pre-trigger rows continue to use 1 MHz / 2 MHz intentionally
+because bounded pre-trigger is the contract that historically needed 1 MHz
+validation, and the trigger tests remain passing on the current architecture.
 
 ### TCP Bounded 100kHz (`/tmp/linkr-final-tcp-bounded.json`)
 All three modes (SINGLE, FAST8, WIDE11) received exactly 65535 samples with zero
 sample-index gaps, stop response received, immediate restart and HTTP health confirmed.
 
-These results demonstrate the final implementation against the reference smoke test
-criteria. They are not projections or estimates.
+These historical results demonstrate the bounded/triggered implementation
+against the reference smoke test criteria. They are not projections or
+estimates. The historical WS SINGLE 1 MHz continuous row is preserved for
+context only; the authoritative sustained-duration evidence for the current
+architecture is in the 2026-08-24 report cited above.
 
 ## 参考来源
 

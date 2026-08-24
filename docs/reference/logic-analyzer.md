@@ -128,12 +128,19 @@ The matrix `pass` rule has three accepted shapes:
    sample count (`post_samples`, or the negotiated 100000-sample high-rate cap)
    with zero gaps and decode errors, followed by server EVENT STOPPED or a
    successful client STOP_REQ/STOP_RESP cleanup.
-2. **Client duration completion**: a continuous run reached its requested
-   duration cleanly and the client received STOP_RESP for its STOP_REQ.
+2. **Sustained-duration completion**: a continuous run reached at least 95% of
+   the requested duration, the client received STOP_RESP for its STOP_REQ, and
+   the run had zero sample-index gaps, zero decode errors, zero disconnects,
+   zero overruns, and passed the restart and HTTP-health checks. This is the
+   shape that earns a sustained-throughput claim.
 3. **Explicit lossless capacity stop**: a continuous capture received server
    EVENT OVERRUN with zero gaps, decode errors, or disconnects and passed the
    restart and HTTP-health checks. The delivered DATA count may be zero or
-   non-zero; a client STOP_REQ/STOP_RESP is not required.
+   non-zero; a client STOP_REQ/STOP_RESP is not required. The run's effective
+   duration must be recorded; a row that ended well before its requested
+   duration is `pass=false` for sustained-duration purposes, even though it
+   satisfies the lossless-or-stop terminal contract. Such rows are recorded
+   as capacity diagnostics, not as operating points.
 
 A zero-DATA capacity stop (no DATA frames, only a STOPPED/OVERRUN event) is **not**
 labeled a passing sustained-throughput claim. It is labeled `capacity_stop_before_data`
@@ -141,9 +148,11 @@ and is treated as a capacity-stop diagnostic, not a continuous-streaming pass: i
 proves the firmware stopped cleanly before the consumer saw any data, which is what
 the lossless-or-stop contract requires, but it does not show a measured throughput
 envelope. Tests or matrix cells that observe an immediate `sample_index=0` OVERRUN
-with `data_frames=0` must label the row this way.
+with `data_frames=0` must label the row this way. An early server STOPPED/OVERRUN
+that arrives before the requested duration is the same shape: a clean lossless
+terminal is a diagnostic, not a sustained PASS.
 
-### Measured No-Gap Continuous Ceilings
+### Measured Continuous Operating Points
 
 On the representative HIL setup:
 
@@ -155,13 +164,15 @@ On the representative HIL setup:
 | TCP bounded SINGLE 100 kHz, post=65535 | 100 kHz | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
 | TCP bounded FAST8 100 kHz, post=65535 | 100 kHz | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
 | TCP bounded WIDE11 100 kHz, post=65535 | 100 kHz | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
-| WS continuous SINGLE | 1 MHz | 10 consecutive 5-second runs, ~4.991M-4.997M samples each, 998.16-998.70 ksps effective, zero sample-index gaps, zero disconnects, STOP response, immediate restart and HTTP health |
+| WS continuous SINGLE | 300 kHz | 5.012458 s, 1,499,136 samples, ~299,082 samples/s, zero sample-index gaps, zero disconnects, zero overruns, STOP response, restart and HTTP health |
+| TCP continuous SINGLE | 350 kHz | 5.008183 s, 1,755,136 samples, ~350,454 samples/s, zero sample-index gaps, zero disconnects, zero overruns, STOP response, restart and HTTP health |
+| WS continuous SINGLE | 400 kHz | 0.084225 s, 27,392 samples, explicit `server_overrun`, zero gaps, zero disconnects, restart and HTTP health; `pass=false` because duration was not met (boundary diagnostic, not sustained PASS) |
+| WS continuous SINGLE | 1 MHz | 0.119245 s, 43,232 samples, explicit `server_overrun`, zero gaps, zero disconnects, restart and HTTP health; `pass=false` because duration was not met (boundary diagnostic, not sustained PASS) |
+| TCP continuous SINGLE | 400 kHz | 0.116484 s, 57,344 samples, explicit `server_overrun`, zero gaps, zero disconnects, restart and HTTP health; `pass=false` because duration was not met (boundary diagnostic, not sustained PASS) |
 | WS continuous FAST8 | 240 kHz | 5-second no-gap ceiling |
 | WS continuous FAST8 | 241 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
 | WS continuous WIDE11 | 149 kHz | 5-second no-gap ceiling |
 | WS continuous WIDE11 | 150 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
-| TCP continuous SINGLE | 443 kHz | 5-second no-gap ceiling |
-| TCP continuous SINGLE | 444 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
 | TCP continuous FAST8 | 241 kHz | 5-second no-gap ceiling |
 | TCP continuous FAST8 | 242 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
 | TCP continuous WIDE11 | 147 kHz | 5-second no-gap ceiling |
@@ -179,12 +190,34 @@ On the representative HIL setup:
 | WS bounded SINGLE falling post=512 | 100 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
 | WS bounded SINGLE either post=512 | 100 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
 | TCP bounded SINGLE rising post=512 | 100 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| WS continuous SINGLE | 1 MHz | 4,997,120 samples, 999,340.8 samples/s, zero sample-index gaps, zero disconnects |
 
-Adjacent WS SINGLE failure was not measured under the final architecture. The 1MHz
-result is a verified operating point, not a claimed absolute ceiling. 50MHz and
-125MHz are short single-shot bursts; the firmware does not claim sustained
-streaming at those rates.
+The 300 kHz (WS) and 350 kHz (TCP) rows above are proven sustained-duration
+operating points under the strict 95% duration + STOP_RESP contract on the
+representative HIL setup; the 400 kHz WS/TCP and 1 MHz WS rows bracket the
+boundary where the strict runner still records an explicit lossless
+`server_overrun` with zero gaps/disconnects, but the requested 5 s duration
+is not met and the runner reports `pass=false`. They are recorded as
+boundary diagnostics, not sustained PASS, and they are not exact absolute
+ceilings. Adjacent WS SINGLE failure was not measured under the final
+architecture. The 50 MHz and 125 MHz bounded-trigger rows are short
+single-shot bursts; the firmware does not claim sustained streaming at
+those rates.
+
+The historical `WS continuous SINGLE 1 MHz` ~999 ksps claim (10 consecutive
+5-second runs of ~4.991M-4.997M samples each, plus the 4,997,120-sample
+single run) and the historical `TCP continuous SINGLE 443 kHz` 5-second
+no-gap ceiling are pre-transport-cleanup or otherwise different-pipeline
+evidence from earlier 2026-07-25/26 dated reports. They are not current
+operating points; the current architecture exhibits the same pre-existing
+high-rate continuous limitation regardless of whether the firmware is the
+final optimized image or the clean detached HEAD control image. The
+2026-07-31 full-functional HIL already recorded ten
+41,344 to 42,976-sample overrun windows on WS SINGLE 1 MHz with the same
+shape. See the [2026-08-24 firmware memory optimization HIL](../testing/results/2026-08-24-firmware-memory-optimization-hil.md)
+for the head-to-head proof that the optimization did not change the
+pre-existing 1 MHz/TCP 443 kHz continuous limitation, and the
+historical 2026-07-25/26/27 reports for the original sources of those
+older claims.
 
 ### Generic Packed Burst (CONFIG_V2)
 
