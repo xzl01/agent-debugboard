@@ -533,7 +533,7 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertEqual(result["stream_disconnect_error"], {"type": "ConnectionError", "message": "stream_disconnect_error"})
         self.assertEqual(result["stats"]["disconnects"], 1)
 
-    def test_tcp_capture_case_stops_on_server_overrun_without_stop_req_or_disconnect_wait(self) -> None:
+    def test_tcp_capture_case_rejects_early_server_overrun_without_stop_req_or_disconnect_wait(self) -> None:
         fake_sock = FakeSocket([])
         ack = self.ack_payload()
         with (
@@ -548,11 +548,12 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
                 AssertionError("should stop after server terminal"),
             ]),
             mock.patch.object(runner, "sigrok_stop", return_value={"received": True, "sent": True, "frame_type": runner.FRAME_STOP_RESP}) as stop_mock,
-            mock.patch.object(runner, "sigrok_fresh_restart_probe", return_value={"ok": True}),
-            mock.patch.object(runner, "board_health", return_value={"ok": True}),
+            mock.patch.object(runner, "sigrok_fresh_restart_probe", return_value={"ok": True}) as restart_probe_mock,
+            mock.patch.object(runner, "board_health", return_value={"ok": True}) as board_health_mock,
         ):
             result = runner.sigrok_capture_case("host", 5556, "http://board", "SINGLE", 1000, 0, 0, 1.0, 1.0)
-        self.assertTrue(result["pass"], result["reason"])
+        self.assertFalse(result["pass"])
+        self.assertEqual(result["reason"], "continuous data window duration not met")
         self.assertEqual(result["terminal_reason"], "server_overrun")
         self.assertTrue(result["server_auto_stopped"])
         self.assertFalse(result["client_stop_sent"])
@@ -562,6 +563,8 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertFalse(result["continuous_data_observed"])
         self.assertNotIn("stream_disconnect_error", result)
         stop_mock.assert_not_called()
+        restart_probe_mock.assert_called_once()
+        board_health_mock.assert_called_once_with("http://board", 1.0)
 
     def test_ws_capture_case_records_stream_disconnect_error_details(self) -> None:
         fake_ws = FakeWsConnection([])
@@ -594,7 +597,7 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertEqual(result["stream_disconnect_error"], {"type": "RuntimeError", "message": "stream_disconnect_error"})
         self.assertEqual(result["stats"]["disconnects"], 1)
 
-    def test_ws_capture_case_stops_on_server_overrun_without_stop_req_or_disconnect_wait(self) -> None:
+    def test_ws_capture_case_rejects_early_server_overrun_without_stop_req_or_disconnect_wait(self) -> None:
         fake_ws = FakeWsConnection([])
 
         class WsModule:
@@ -621,11 +624,12 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
                 AssertionError("should stop after server terminal"),
             ]),
             mock.patch.object(runner, "ws_sigrok_stop", return_value={"received": True, "sent": True, "frame_type": runner.FRAME_STOP_RESP}) as stop_mock,
-            mock.patch.object(runner, "ws_sigrok_fresh_restart_probe", return_value={"ok": True}),
-            mock.patch.object(runner, "board_health", return_value={"ok": True}),
+            mock.patch.object(runner, "ws_sigrok_fresh_restart_probe", return_value={"ok": True}) as restart_probe_mock,
+            mock.patch.object(runner, "board_health", return_value={"ok": True}) as board_health_mock,
         ):
             result = runner.sigrok_ws_capture_case("http://board", "SINGLE", 1000, 0, 0, 1.0, 1.0)
-        self.assertTrue(result["pass"], result["reason"])
+        self.assertFalse(result["pass"])
+        self.assertEqual(result["reason"], "continuous data window duration not met")
         self.assertEqual(result["terminal_reason"], "server_overrun")
         self.assertTrue(result["server_auto_stopped"])
         self.assertFalse(result["client_stop_sent"])
@@ -635,6 +639,8 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertTrue(result["continuous_data_observed"])
         self.assertNotIn("stream_disconnect_error", result)
         stop_mock.assert_not_called()
+        restart_probe_mock.assert_called_once()
+        board_health_mock.assert_called_once_with("http://board", 1.0)
 
     def test_tcp_fresh_restart_probe_fails_when_start_wait_skips_data(self) -> None:
         ack = self.ack_payload()
@@ -933,7 +939,7 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertFalse(passed)
         self.assertEqual(reason, "sample_index gaps detected")
 
-    def test_sigrok_pass_accepts_continuous_overrun_terminal_when_clean_and_restart_ok(self) -> None:
+    def test_sigrok_pass_accepts_continuous_overrun_at_duration_threshold_when_clean_and_restart_ok(self) -> None:
         stats = runner.StreamStats(data_frames=2, received_sample_count=413696, payload_bytes=413696, overrun_events=1)
         stop = {"received": False, "sent": False, "reason": "server terminal"}
         restart = {"ok": True}
@@ -944,7 +950,7 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
             stats=stats,
             requested_samples=None,
             requested_duration_s=1.0,
-            stream_elapsed_s=1.016,
+            stream_elapsed_s=0.95,
             stop_response=stop,
             immediate_restart=restart,
             board_health_after=health,
@@ -952,7 +958,7 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         )
         self.assertTrue(passed, reason)
 
-    def test_sigrok_pass_accepts_continuous_overrun_before_first_data_frame(self) -> None:
+    def test_sigrok_pass_rejects_continuous_overrun_before_duration_window(self) -> None:
         stats = runner.StreamStats(overrun_events=1)
         passed, reason = runner.evaluate_sigrok_pass(
             bounded=False,
@@ -966,7 +972,25 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
             board_health_after={"ok": True},
             terminal_reason="server_overrun",
         )
-        self.assertTrue(passed, reason)
+        self.assertFalse(passed)
+        self.assertEqual(reason, "continuous data window duration not met")
+
+    def test_sigrok_pass_rejects_continuous_stopped_before_duration_window(self) -> None:
+        stats = runner.StreamStats(data_frames=1, received_sample_count=1, payload_bytes=1, stopped_events=1)
+        passed, reason = runner.evaluate_sigrok_pass(
+            bounded=False,
+            trigger_required=False,
+            stats=stats,
+            requested_samples=None,
+            requested_duration_s=5.0,
+            stream_elapsed_s=0.001,
+            stop_response={"received": False, "sent": False, "reason": "server terminal"},
+            immediate_restart={"ok": True},
+            board_health_after={"ok": True},
+            terminal_reason="server_stopped",
+        )
+        self.assertFalse(passed)
+        self.assertEqual(reason, "continuous data window duration not met")
 
     def test_sigrok_pass_rejects_bounded_overrun_before_requested_samples(self) -> None:
         stats = runner.StreamStats(data_frames=2, received_sample_count=95072, payload_bytes=95072, overrun_events=1)

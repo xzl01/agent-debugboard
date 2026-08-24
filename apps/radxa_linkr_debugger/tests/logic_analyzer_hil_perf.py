@@ -1660,8 +1660,6 @@ def evaluate_sigrok_pass(
         return False, "server terminal error received"
     if bounded and terminal_accepts_completion and not requested_met:
         return False, "requested pre+post sample count not met"
-    if not bounded and terminal_accepts_completion:
-        duration_met = True
     checks = [
         (not trigger_required or stats.triggered_events > 0, "trigger event not received"),
         (not trigger_required or stats.trigger_sample_offset_valid(), "trigger sample offset invalid"),
