@@ -143,7 +143,7 @@ static int64_t linkr_debugger_watchdog_last_feed_ms;
 static const char *linkr_debugger_watchdog_failing_service = NULL;
 static const char *linkr_debugger_watchdog_last_reported_service;
 static struct linkr_debugger_heartbeat_state linkr_debugger_watchdog_heartbeat;
-static K_THREAD_STACK_DEFINE(linkr_debugger_watchdog_supervisor_stack, 1536);
+static K_THREAD_STACK_DEFINE(linkr_debugger_watchdog_supervisor_stack, 1024);
 static struct k_thread linkr_debugger_watchdog_supervisor_thread;
 
 #if HAS_REGULATORS

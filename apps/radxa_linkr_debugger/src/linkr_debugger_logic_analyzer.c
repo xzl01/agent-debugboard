@@ -60,7 +60,7 @@ static const struct device *const la_dma_dev = DEVICE_DT_GET(DT_NODELABEL(dma));
 #define LINKR_DEBUGGER_LA_STREAM_WAIT_PRODUCER BIT(0)
 #define LINKR_DEBUGGER_LA_STREAM_WAIT_CONSUMER BIT(1)
 #define LINKR_DEBUGGER_LA_DMA_ABORT_TIMEOUT_US 1000U
-#define LINKR_DEBUGGER_LA_STREAM_THREAD_STACK_SIZE 3072U
+#define LINKR_DEBUGGER_LA_STREAM_THREAD_STACK_SIZE 2048U
 /* Must outrank CONFIG_NET_TCP_WORKER_PRIO=2: at 1 MHz the usable ring window
  * is 7.168 ms. The producer only polls DMA/trigger state and wakes the lower
  * priority consumer; websocket_send_msg is not called from it.
