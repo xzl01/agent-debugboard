@@ -784,8 +784,9 @@ docs/testing/results/<YYYY-MM-DD>-persistent-config-hil.SHA256SUMS
 
 - 常态区域不得出现外框或空白分隔行；确认浮层是唯一允许带边框的区域。顶部状态
   固定两行；无 ADC 数据时遥测占零行，有数据时示波器固定七行（一行表头、六行
-  图形）。三路电流必须按确定性列宽并排显示，80 列为 27/27/26，120 列为
-  40/40/40；每路按可见峰值和最新值的 `ceil(max(..., 1) * 5 / 4)` 独立缩放，
+  图形）。三路电流必须按确定性列宽并排显示：80 列为 26/26/26，零基 gutter
+  位于 26、53；120 列为 40/39/39，零基 gutter 位于 40、80。每路按可见峰值和
+  最新值的 `ceil(max(..., 1) * 5 / 4)` 独立缩放，
   不得使用固定 5000 mA 量程。
 - Controls、Saved Config、Status 三页页签和当前页表头各固定一行，Tab/Shift+Tab
   在三页间前后切换，且只有活动页签使用反色/粗体焦点。
@@ -796,10 +797,11 @@ docs/testing/results/<YYYY-MM-DD>-persistent-config-hil.SHA256SUMS
   首屏至少暴露 14 个硬件对象/cell，120x32 至少 21 个。Saved Config 每个条目占
   一行，Status 每个 switch 或监控字段占一行。
 - 当前 Power、Switch 与 Saved Config 行的焦点背景必须从第 0 列铺到终端最后一列；
-  GPIO 焦点只覆盖自己的半行 cell，不能覆盖或隐藏兄弟 cell。电源 ON/OFF 分别为
-  绿/深灰；switch ready/pending/mismatch 分别为青/黄/红；GPIO 必须显示
-  `◌ IN LOW`、`◌ IN HIGH`、`○ OUT LOW`、`● OUT HIGH`，LOW 为无浅色背景的
-  深灰，HIGH 为粗体红色。
+   GPIO 焦点只覆盖自己的半行 cell，不能覆盖或隐藏兄弟 cell。电源 ON/OFF 分别为
+   绿/深灰；switch ready/pending/mismatch 分别为青/黄/红；GPIO 必须显示
+   `◌ IN LOW`、`◌ IN HIGH`、`○ OUT LOW`、`● OUT HIGH`，LOW 为无浅色背景的
+   深灰，HIGH 为粗体红色。在途动作必须追加 `[LOW…]`、`[HIGH…]` 或 `[INPUT…]`，
+   同时继续显示动作前最近一次固件权威方向/电平，直到动作后的状态刷新完成。
 - 最后一行固定为 htop 式键位栏；键块与操作标签必须视觉可分，每个键/操作单元
   要么完整显示、要么整段省略，不得在右边界截断半个单元。确认和错误状态必须
   替换常态键位提示。
@@ -808,24 +810,77 @@ docs/testing/results/<YYYY-MM-DD>-persistent-config-hil.SHA256SUMS
   Controls 与 Saved Config 必须自动滚动并保持当前项可见；Status 直接滚动，各页
   滚动位置彼此独立。
 - Power/Switch 的鼠标命中区域覆盖整行；成对 GPIO 的左右半行矩形必须互不重叠、
-  分别命中对应引脚，空半行必须 inert。鼠标左键与 Enter/Space 走同一主操作；
-  GPIO 右键与 `i` 都恢复 input；右键点击非 GPIO 行不得产生硬件请求。
-- GPIO 使用安全测试脚（默认 GP13）：`input -> 主操作 -> output HIGH -> 主操作 ->
-  output LOW -> 主操作 -> output HIGH -> 右键/i -> input`。每一步都从 API 回读，
-  LOW 必须显示为无浅色背景的深灰、HIGH 必须显示为粗体红色，且颜色不依赖
-  input/output 方向。
+  分别命中对应引脚，空半行必须 inert。GPIO 的 `l`/`L` 驱动 LOW、`o`/`O` 驱动
+  HIGH、`i`/`I` 恢复 input；Enter/Space/`0`/`1` 对 GPIO 均为 inert。鼠标左键在
+  600ms 前释放后进入 220ms await-second 窗口，窗口到期才驱动 LOW；按住到 600ms
+  一次性驱动 HIGH，同一引脚在窗口到期前第二次按下/释放恢复 input 且无瞬态 LOW；
+  中键、右键始终 inert。这些 direct action
+  在非 GPIO 行不得产生硬件请求。
+- GPIO 手势 HIL 必须验证同一终端 cell 内的 Moved 或左键 Drag 报告保持有效，只有
+  跨到不同 pin、终端列或终端行才取消；还必须验证 600ms 到期的 Up 派发原始 pin 的
+  HIGH，以及 await-second 到期的第二次 Down 先派发原始 pin 的 LOW 并消费该次
+  Down，不能产生 input 瞬态。
+- GPIO 使用安全测试脚（默认 GP13）：从 input 开始，依次验证 `l` 与左键单击均
+  得到 `output LOW`，`o` 与左键按住 600ms 均得到 `output HIGH`，`i` 与同脚
+  左键双击均恢复 input。
+  每一步都从 API 回读；LOW 必须显示为无浅色背景的深灰、HIGH 必须显示为粗体红色，
+  且颜色不依赖 input/output 方向。动作执行期间还必须验证对应 pending 标签与动作前
+  权威状态同时可见，完成或失败后标签消失；左键按住期间必须显示 `[HOLD…]`，
+  释放或派发后消失。
 - 每个 Power 控件第一次操作只打开红色边框确认框；取消和超时都不得改变实际
   电源，三秒内再次 Enter/Space 或点击 Confirm 只执行一次状态切换。
-- 固件标记 `requires_confirm` 的 switch（包括 VIO）使用同一醒目确认框；默认
-  VIO HIL 只打开并取消确认框，保持 `3.3v`。实际切换 `1.8v` 仍须满足
-  第 6 节的目标兼容性与物理测量前置条件。
+- TUI 的 switch 激活策略对所有固件广告的 switch 一律使用同一三秒确认框，
+  不再区分固件 `requires_confirm`。被点击的 switch 整行焦点在确认框打开后
+  仍保留合成 `accent.select` 背景，被模态遮住之外的 cell 不会被取消或替换。
+  第一次点击不发送任何 PUT；只有一次有效确认才会路由一次。命名测试
+  覆盖：作为动态产品合同的代表，下面两条命名 case 验证新策略下
+  `switch/sd` 与 `switch/tf_wp`（两者在本发布版里都不带
+  `requires_confirm`）走完整的「点击 → 弹出确认框 → 0 个 PUT →
+  取消/超时保持 0 个 PUT → 再点击 → 新确认 → 1 个 PUT」路径：
+  - `tui_switch_pointer_sd_first_click_zero_put_then_fresh_confirm_routes_once`
+  - `tui_switch_pointer_tf_wp_first_click_zero_put_then_fresh_confirm_routes_once`
+  这两条 case 必须以 `switch/sd` 与 `switch/tf_wp` 为唯一产品名锚点；
+  任何新增的 firmware-advertised switch 都按同一策略自动进入 TUI 确认门控，
+  不再为本策略硬编码任何生产 switch 名称或路由值。VIO HIL 仍只打开并取消
+  确认框、保持 `3.3v`，实际切换 `1.8v` 仍须满足第 6 节的目标兼容性与物理
+  测量前置条件。
+- 上述命名 TUI switch case 与所有 2b 节其它 mouse / confirm / GPIO HIL 都
+  必须在与运行 HIL 的用户无关的环境中执行：runner 不允许假定任何固定
+  user PID、`HOME` 路径、shell 启动文件、tmux server 名称或
+  `radxa-linkr-debuggerctl` 二进制绝对路径；runner 必须按当前 shell 的实际
+  UID/PID 自动隔离临时目录、`adc record` 输出文件、`tmux send-keys` 目标
+  session 与任何 mock HTTP 后端。该隔离保证不同用户、不同主机、不同 CI 上
+  重跑同一组 case 都不会读到其它用户的历史产物，也不会把结果误算到非本
+  用户头上。
+- 硬件确认事件 3 秒截止（当前 release）必须独立于 tick：在确认框打开后，
+  必须分别验证 (a) 严格早于 `started + CONFIRM_TIMEOUT` 的 Enter/Space 或
+  Confirm 点击执行硬件切换；(b) 达到或超过 `started + CONFIRM_TIMEOUT` 才
+  到达的确认事件被识别为过期，发出该命令的 `timeout_message`，不执行硬件
+  切换。判定在确认事件自身完成，不得依赖下一次渲染或 poll tick 先观察到
+  超时；该 case 只引用当前 release 的源码契约，HTTP 回读必须在超时分支后
+  显示硬件未变。
+- GPIO 直接键修饰键过滤（当前 release）必须覆盖四类输入：(a) 小写
+  `l`/`o`/`i` 不带任何修饰键 → 派发对应 DriveLow / DriveHigh / SetInput；
+  (b) 大写 `L`/`O`/`I` 且修饰键恰好为 Shift → 同样派发对应意图；
+  (c) Ctrl/Alt/Super 任意组合，无论大小写，均返回 `None`，无硬件请求且
+  不取消既有手势；(d) 大小写与 Shift 失配的组合（小写配 Shift、大写无 Shift）
+  也返回 `None`，同样无硬件请求且不取消既有手势。每一步必须用 HTTP 回读
+  验证硬件状态未发生变化，且既有 GPIO 手势（若处于 Down 或 AwaitSecond）
+  保持不变。
+- 终端 `Resize` 重绘边界（当前 release）必须验证：`Event::Resize` 到达
+  时取消任何进行中的 GPIO 手势（同时清掉初始左键 Down 与 AwaitSecond
+  状态），整体清空 `hit_map` 让旧命中矩形失效，并在消费下一个排队输入
+  事件前完成一次强制重绘。Resize 之后排队的鼠标事件必须按新几何评估，
+  不得落在旧 cell 上。该 case 必须包含两次 Resize 之间的 Down→队列→
+  Resize→Up 序列，证明旧几何不会派发任何硬件请求。
 - 正常退出、连接错误和 Ctrl+C 后，raw mode、alternate screen、鼠标捕获与光标状态
   都必须恢复。
 - 安装后的 `rdb` 与 `radxa-linkr-debuggerctl` 对 `--version`、`--help` 和
   `--json status` 返回相同退出状态与输出；Unix 必须是指向主程序的相对符号链接，
   Windows 两个 `.exe` 必须为同一硬链接或具有相同 SHA256。
 
-结束前把所有测试过的 GPIO 恢复为 input、Power 恢复为 off、VIN 保持 `3.3v`，并
+结束前把所有测试过的 GPIO 恢复为 input、Power 恢复为测试前 HTTP 权威基线、VIN
+保持 `3.3v`，并
 按本规范验证 HTTP/WS、CDC fallback、HTTP BOOTSEL 与 CDC BOOTSEL。证据写入
 `docs/testing/results/<YYYY-MM-DD>-cmd-ng-tui-controls-hil.md`，并保存 80x24/120x32
 三页、带三通道示波器的 Controls、GPIO 双 cell 选择态及确认态终端截图，明确区分

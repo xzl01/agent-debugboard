@@ -46,11 +46,11 @@ The main dashboard provides cards for:
   connected to J12's upper port (`target`).
 - **GPIO** — read/write safe GPIOs (`GP7`-`GP20`, `GP29`).
 
-The **Saved configuration** card starts collapsed. Use the chevron button in its
-header to show or hide the saved rows and actions while the title, description,
-and current status remain visible. Collapsing the card does not save, clear, or
-refresh anything, and re-expanding it preserves the current selection and
-in-progress feedback.
+Within the **Configuration > Saved** tab, the **Saved configuration** card is
+always visible. Its saved rows and actions appear below the header; power and
+switch groups start open while the GPIO group starts closed. Group disclosure
+only changes local presentation and never saves, clears, or refreshes anything.
+Selection and in-progress feedback remain intact when a group is opened or closed.
 
 The Power & current card includes a triggered power analyzer. It supports
 manual, current-threshold, GPIO-edge, and power-on triggers, keeps four captures
@@ -91,7 +91,8 @@ dashed/solid direction ring. Moving more than 8 px, losing pointer capture, a `p
 or pressing Escape cancels a gesture without writing anything. Keyboard
 operation is immediate on a focused pin: Enter/Space/0 drive LOW, 1 drives
 HIGH, and I requests input; key auto-repeat is ignored. The card allows one
-in-flight request at a time and dims the pending pin. Mounting or refreshing
+in-flight request at a time and marks the pending pin with a dimmed level
+disc plus a solid warn-colored busy ring. Mounting or refreshing
 the pinout never writes GPIO state, the UI is non-optimistic, and the latest
 firmware snapshot remains the displayed authority while a request is in
 flight. The

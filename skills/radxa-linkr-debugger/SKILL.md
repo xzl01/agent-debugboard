@@ -167,6 +167,33 @@ radxa-linkr-debuggerctl --json status
 radxa-linkr-debuggerctl
 ```
 
+In the TUI, the first keyboard or mouse activation of every advertised switch
+opens the existing three-second hardware confirmation and sends no request.
+The TUI applies this gate to every firmware-advertised switch regardless of
+the firmware `requires_confirm` flag, and the policy itself never hardcodes
+any production switch name or route. A switch click selects its full row
+before the modal opens; that full-row selection stays visible on every cell
+not covered by the modal until the confirmation resolves. A fresh
+confirmation routes once; cancellation or timeout routes zero times. This
+TUI gate does not replace firmware `requires_confirm`, which remains
+authoritative for Saved Config and the API/CLI surfaces.
+
+On the Saved Config page, left-button Down on a visible item row re-resolves
+that item's stable firmware ID, focuses the page, moves the cursor, and
+toggles the local checkbox selection exactly once. Mouse Up, Drag, Moved,
+scrolling, middle or right-button events, and Down on a stale row whose ID
+is no longer present are inert. The visible `Controls`, `Saved Config`, and
+`Status` tab labels accept left-button Down to switch pages; the active
+label, the two-space gaps between labels, every other mouse event, and tab
+input blocked by a confirmation or Saved Config error are inert.
+
+These TUI-only behaviors do not change the Web UI, the firmware, the HTTP
+API, the persistent-configuration wire contract, or the non-TUI CLI
+commands. For the full TUI interaction contract, see the
+[TUI guide](../../docs/user/tui.md); the canonical design contract,
+including the universal switch confirmation semantics and the scope gutter
+geometry, lives in [cmd-ng/DESIGN.md](../../cmd-ng/DESIGN.md).
+
 Use `--json` in unattended CLI flows and parse the same response envelope as
 curl. For installation or a platform-specific binary, use the
 [install guide](../../docs/user/install.md); do not substitute a locally
@@ -290,6 +317,26 @@ curl --fail-with-body -sS -X PUT -H 'Content-Type: application/json' \
 Do not expose schematic codenames as a substitute for the firmware catalog.
 Use a catalog-provided name, raw pin number, or exact board note only when the
 current API identifies that same pin.
+
+In the TUI (`radxa-linkr-debuggerctl` with no arguments), a selected GPIO cell
+takes direct keys: `l`/`L` drives LOW, `o`/`O` drives HIGH, `i`/`I` restores
+input; Enter, Space, `0`, and `1` are inert on a GPIO. The direct-key decoder
+accepts only lowercase `l`/`o`/`i` with no modifiers and uppercase `L`/`O`/`I`
+with exactly Shift; any other modifier (Ctrl, Alt, Super) and any mismatched
+case/Shift form returns no intent and is fully inert without disturbing the
+current gesture state. A left click released before 600 ms opens a 220 ms
+second-click window whose expiry drives LOW; a press held for 600 ms drives
+HIGH once, and a second press on the same pin before that window expires
+restores input. Middle and right buttons are always inert. A held press shows
+`[HOLD…]` on the pin until the gesture resolves. Same-cell Moved or left
+Drag reports remain active; only a report that crosses a terminal cell
+cancels the gesture. A terminal `Resize` is the TUI redraw boundary: it
+cancels any in-flight GPIO gesture, invalidates the existing hit rectangles,
+and forces a redraw before the next queued input is consumed. The visible
+`Controls`, `Saved Config`, and `Status` tab labels accept left-button Down to
+switch pages; the active label, two-space gaps, other mouse events, and tab
+input blocked by a confirmation or Saved Config error are inert. See the
+[TUI guide](../../docs/user/tui.md) for the full interaction contract.
 
 ## ADC, Power Analysis, And Logic Capture
 
