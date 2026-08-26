@@ -1,36 +1,14 @@
 use super::confirm::ConfirmableCommand;
 use super::controls::control_targets;
-use super::events::handle_key;
+use super::events::{handle_key, KeyOutcome};
+use super::events_fixture::{model_with_switch, press};
 use super::gpio_fixture::current_power_outputs;
 use super::model::TuiModel;
 use super::pages::ActivePage;
 use crate::client::DEFAULT_BASE_URL;
 use crate::ws_status::{TuiStatusSwitchInfo, WsStatusSnapshot};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-use std::time::Duration;
-
-fn press(model: &mut TuiModel, code: KeyCode) {
-    handle_key(model, KeyEvent::new(code, KeyModifiers::NONE)).unwrap();
-}
-
-fn model_with_switch() -> TuiModel {
-    let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
-    model.width = 120;
-    let mut snapshot = WsStatusSnapshot {
-        power_outputs: current_power_outputs(),
-        ..Default::default()
-    };
-    snapshot.switches.insert(
-        "sd".to_string(),
-        TuiStatusSwitchInfo {
-            route: "target".to_string(),
-            routes: vec!["target".to_string(), "usb-reader".to_string()],
-            ..Default::default()
-        },
-    );
-    model.apply_status_snapshot(snapshot);
-    model
-}
+use std::time::{Duration, Instant};
 
 #[test]
 fn g_jumps_to_first_gpio_in_unified_grid() {
@@ -83,7 +61,15 @@ fn confirmation_modal_blocks_other_keys_and_esc_cancels() {
     assert_eq!(model.control_idx, 0, "modal must block navigation keys");
     assert!(model.hardware_confirm.is_some());
 
-    press(&mut model, KeyCode::Esc);
+    assert_eq!(
+        handle_key(
+            &mut model,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            Instant::now(),
+        )
+        .unwrap(),
+        KeyOutcome::Redraw
+    );
     assert!(model.hardware_confirm.is_none());
     assert_eq!(model.status, "Power toggle cancelled");
 }
@@ -93,7 +79,15 @@ fn tab_cycles_pages_and_shift_tab_reverses() {
     let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
     assert_eq!(model.active_page, ActivePage::Controls);
 
-    press(&mut model, KeyCode::Tab);
+    assert_eq!(
+        handle_key(
+            &mut model,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            Instant::now(),
+        )
+        .unwrap(),
+        KeyOutcome::Redraw
+    );
     assert_eq!(model.active_page, ActivePage::SavedConfig);
     press(&mut model, KeyCode::Tab);
     assert_eq!(model.active_page, ActivePage::Status);
@@ -103,6 +97,7 @@ fn tab_cycles_pages_and_shift_tab_reverses() {
     handle_key(
         &mut model,
         KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+        Instant::now(),
     )
     .unwrap();
     assert_eq!(model.active_page, ActivePage::Status);
@@ -193,15 +188,15 @@ fn enter_on_the_status_page_does_not_activate_anything() {
 }
 
 #[test]
-fn vin_route_uses_the_shared_hardware_confirmation_state() {
+fn keyboard_activation_confirms_a_switch_without_the_firmware_risk_flag() {
     let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
     let mut snapshot = WsStatusSnapshot::default();
     snapshot.switches.insert(
-        "vin".to_string(),
+        "tf_wp".to_string(),
         TuiStatusSwitchInfo {
-            route: "3.3v".to_string(),
-            routes: vec!["3.3v".to_string(), "1.8v".to_string()],
-            requires_confirm: true,
+            route: "writable".to_string(),
+            routes: vec!["writable".to_string(), "protected".to_string()],
+            requires_confirm: false,
         },
     );
     model.apply_status_snapshot(snapshot);
@@ -215,8 +210,8 @@ fn vin_route_uses_the_shared_hardware_confirmation_state() {
             .as_ref()
             .map(|confirm| &confirm.command),
         Some(&ConfirmableCommand::RouteSwitch {
-            name: "vin".to_string(),
-            route: "1.8v".to_string(),
+            name: "tf_wp".to_string(),
+            route: "protected".to_string(),
         })
     );
 }
@@ -227,17 +222,18 @@ fn quit_key_closes_tui() {
     let quit = handle_key(
         &mut model,
         KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        Instant::now(),
     )
     .unwrap();
 
-    assert!(quit);
+    assert_eq!(quit, KeyOutcome::Exit);
     assert!(model.closed);
 }
 
 #[test]
 fn non_press_key_events_are_ignored() {
     let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
-    let quit = handle_key(
+    let outcome = handle_key(
         &mut model,
         KeyEvent {
             code: KeyCode::Char('c'),
@@ -245,10 +241,11 @@ fn non_press_key_events_are_ignored() {
             kind: KeyEventKind::Release,
             state: KeyEventState::NONE,
         },
+        Instant::now(),
     )
     .unwrap();
 
-    assert!(!quit);
+    assert_eq!(outcome, KeyOutcome::Continue);
     assert!(!model.closed);
 
     let before_idx = model.control_idx;
@@ -260,6 +257,7 @@ fn non_press_key_events_are_ignored() {
             kind: KeyEventKind::Repeat,
             state: KeyEventState::NONE,
         },
+        Instant::now(),
     )
     .unwrap();
 

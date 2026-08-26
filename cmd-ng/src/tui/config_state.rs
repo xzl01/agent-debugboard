@@ -22,6 +22,26 @@ pub(super) enum ConfigConfirmation {
     },
 }
 
+impl ConfigConfirmation {
+    fn remains_valid(&self, items: &[PersistentConfigItem]) -> bool {
+        match self {
+            Self::Save {
+                items: requested,
+                dangerous,
+            } => {
+                requested.iter().all(|id| {
+                    items
+                        .iter()
+                        .find(|item| &item.id == id)
+                        .is_some_and(|item| {
+                            dangerous.contains(id) == (item.requires_confirm == Some(true))
+                        })
+                }) && dangerous.iter().all(|id| requested.contains(id))
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct SavedConfigState {
     pub(super) summary: Option<PersistentConfigStatus>,
@@ -99,6 +119,13 @@ impl SavedConfigState {
         }
         self.items = response.envelope.items;
         self.selected = selected;
+        if self
+            .confirmation
+            .as_ref()
+            .is_some_and(|confirmation| !confirmation.remains_valid(&self.items))
+        {
+            self.confirmation = None;
+        }
         self.cursor = previous_cursor
             .and_then(|id| self.items.iter().position(|item| item.id == id))
             .unwrap_or_else(|| self.cursor.min(self.items.len().saturating_sub(1)));

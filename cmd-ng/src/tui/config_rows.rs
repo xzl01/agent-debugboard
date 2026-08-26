@@ -1,5 +1,6 @@
 use super::config_columns::{clip, column_plan, ColumnKind};
 use super::config_state::SavedConfigState;
+use super::text_width::clip_display;
 use crate::persistent_config::{
     ConfigApplyState, ConfigItemKind, ConfigValue, GpioDirection, GpioLevel, PowerState,
 };
@@ -70,26 +71,27 @@ pub(super) fn build_saved_config_content(
             .push(Line::from(Span::styled(badges.join(" "), badge_style())));
     }
     if !state.loaded {
-        append_error(&mut content.lines, state);
+        append_error(&mut content.lines, state, width);
         return content;
     }
     if !state.backend_available {
-        content
-            .lines
-            .push(Line::from(format!("reason={}", state.backend_reason)));
+        content.lines.push(Line::from(clip_display(
+            &format!("reason={}", state.backend_reason),
+            width,
+        )));
     } else if state.items.is_empty() {
         content.lines.push(Line::from("(none)"));
     } else {
         append_items(&mut content, state, width);
     }
-    append_error(&mut content.lines, state);
+    append_error(&mut content.lines, state, width);
     content
 }
 
-fn append_error(lines: &mut Vec<Line<'static>>, state: &SavedConfigState) {
+fn append_error(lines: &mut Vec<Line<'static>>, state: &SavedConfigState, width: usize) {
     if let Some(error) = &state.error {
         lines.push(Line::from(Span::styled(
-            format!("error={error} [Esc]"),
+            clip_display(&format!("error={error} [Esc]"), width),
             error_style(),
         )));
     }

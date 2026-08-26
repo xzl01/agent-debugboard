@@ -1,3 +1,4 @@
+use super::text_width::{clip_display, display_width};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -101,8 +102,8 @@ pub(super) fn column_plan(width: usize) -> Vec<Column> {
 }
 
 pub(super) fn clip(text: &str, width: usize) -> String {
-    let clipped: String = text.chars().take(width).collect();
-    let padding = width.saturating_sub(clipped.chars().count());
+    let clipped = clip_display(text, width);
+    let padding = width.saturating_sub(display_width(&clipped));
     format!("{clipped}{:padding$}", "", padding = padding)
 }
 

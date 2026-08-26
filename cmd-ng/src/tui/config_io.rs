@@ -24,14 +24,28 @@ where
 }
 
 struct ActiveJob {
+    generation: u64,
     request: ConfigRequest,
     handle: JoinHandle<()>,
 }
 
+struct QueuedResult {
+    generation: u64,
+    result: ConfigJobResult,
+}
+
+#[cfg(test)]
+type EmptyHook = Box<dyn Fn(&ConfigWorker) + Send>;
+
 pub(super) struct ConfigWorker {
-    sender: Sender<ConfigJobResult>,
-    receiver: Receiver<ConfigJobResult>,
+    sender: Sender<QueuedResult>,
+    receiver: Receiver<QueuedResult>,
     active: Option<ActiveJob>,
+    next_generation: u64,
+    #[cfg(test)]
+    pub(super) empty_hook: Option<EmptyHook>,
+    #[cfg(test)]
+    queued_for_test: Option<ConfigJobResult>,
 }
 
 impl ConfigWorker {
@@ -41,6 +55,11 @@ impl ConfigWorker {
             sender,
             receiver,
             active: None,
+            next_generation: 0,
+            #[cfg(test)]
+            empty_hook: None,
+            #[cfg(test)]
+            queued_for_test: None,
         }
     }
 
@@ -53,6 +72,10 @@ impl ConfigWorker {
         if self.active.is_some() {
             return false;
         }
+        let Some(generation) = self.next_generation.checked_add(1) else {
+            return false;
+        };
+        self.next_generation = generation;
         let sender = self.sender.clone();
         let worker_request = request.clone();
         let handle = thread::spawn(move || {
@@ -60,41 +83,88 @@ impl ConfigWorker {
                 Ok(client) => execute_request(&client, worker_request),
                 Err(error) => ConfigJobResult::transport(worker_request, error.to_string()),
             };
-            drop(sender.send(result));
+            let queued = QueuedResult { generation, result };
+            drop(sender.send(queued));
         });
-        self.active = Some(ActiveJob { request, handle });
+        self.active = Some(ActiveJob {
+            generation,
+            request,
+            handle,
+        });
         true
     }
 
     pub(super) fn poll(&mut self) -> Option<ConfigJobResult> {
-        match self.receiver.try_recv() {
-            Ok(result) => {
-                let request = result.request.clone();
-                if self.join_active().is_err() {
-                    return Some(ConfigJobResult::transport(
-                        request,
-                        "config worker stopped".to_string(),
-                    ));
-                }
-                Some(result)
-            }
-            Err(TryRecvError::Empty) => {
-                if self
-                    .active
-                    .as_ref()
-                    .is_some_and(|active| active.handle.is_finished())
-                {
-                    let request = self.active.as_ref().map(|active| active.request.clone())?;
-                    let _ = self.join_active();
-                    return Some(ConfigJobResult::transport(
-                        request,
-                        "config worker stopped".to_string(),
-                    ));
-                }
-                None
-            }
-            Err(TryRecvError::Disconnected) => None,
+        #[cfg(test)]
+        if let Some(result) = self.queued_for_test.take() {
+            return Some(result);
         }
+        loop {
+            match self.receiver.try_recv() {
+                Ok(queued) => {
+                    let Some(active) = self.active.as_ref() else {
+                        continue;
+                    };
+                    if queued.generation != active.generation {
+                        continue;
+                    }
+                    let request = queued.result.request.clone();
+                    if self.join_active().is_err() {
+                        return Some(ConfigJobResult::transport(
+                            request,
+                            "config worker stopped".to_string(),
+                        ));
+                    }
+                    return Some(queued.result);
+                }
+                Err(TryRecvError::Empty) => {
+                    #[cfg(test)]
+                    if let Some(hook) = self.empty_hook.take() {
+                        hook(self);
+                    }
+                    let active = self.active.as_ref()?;
+                    if !active.handle.is_finished() {
+                        return None;
+                    }
+                    let generation = active.generation;
+                    let request = active.request.clone();
+                    if self.join_active().is_err() {
+                        return Some(ConfigJobResult::transport(
+                            request,
+                            "config worker stopped".to_string(),
+                        ));
+                    }
+                    loop {
+                        match self.receiver.try_recv() {
+                            Ok(queued) => {
+                                if queued.generation == generation {
+                                    return Some(queued.result);
+                                }
+                            }
+                            Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
+                                return Some(ConfigJobResult::transport(
+                                    request,
+                                    "config worker stopped".to_string(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                Err(TryRecvError::Disconnected) => return None,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn queue_for_test(&mut self, result: ConfigJobResult) {
+        self.queued_for_test = Some(result);
+    }
+
+    #[cfg(test)]
+    pub(super) fn active_finished(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.handle.is_finished())
     }
 
     fn join_active(&mut self) -> Result<(), ()> {

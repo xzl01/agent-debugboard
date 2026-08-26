@@ -1,11 +1,12 @@
 use super::config_result::ConfigJobKind;
 use super::config_state::ConfigConfirmation;
+use super::events::KeyOutcome;
 use super::pages::ActivePage;
 use super::{handle_key, TuiModel};
 use crate::persistent_config::{ConfigAction, PersistentConfigResponse, PersistentConfigStatus};
 use crate::ws_status::WsStatusSnapshot;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const SHOW: &str = r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":true,"version":1},"pending":1,"items":[{"id":"power/alpha","kind":"power","current":{"state":"off"},"saved":{"state":"on"},"selected":true,"requires_confirm":true,"apply_state":"pending"},{"id":"switch/beta","kind":"switch","current":{"route":"pc"},"saved":{"route":"target"},"selected":false,"requires_confirm":false,"apply_state":"applied"}]}"#;
 
@@ -35,8 +36,12 @@ fn press(model: &mut TuiModel, code: KeyCode) {
     press_with_modifiers(model, code, KeyModifiers::NONE);
 }
 
-fn press_with_modifiers(model: &mut TuiModel, code: KeyCode, modifiers: KeyModifiers) -> bool {
-    handle_key(model, KeyEvent::new(code, modifiers)).unwrap()
+fn press_with_modifiers(
+    model: &mut TuiModel,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> KeyOutcome {
+    handle_key(model, KeyEvent::new(code, modifiers), Instant::now()).unwrap()
 }
 
 #[test]
@@ -61,10 +66,16 @@ fn config_focus_arrows_and_space_preserve_hardware_cursor() {
 fn lowercase_c_focuses_and_blurs_saved_config() {
     let mut model = model();
 
-    press(&mut model, KeyCode::Char('c'));
+    assert_eq!(
+        press_with_modifiers(&mut model, KeyCode::Char('c'), KeyModifiers::NONE),
+        KeyOutcome::Redraw
+    );
     assert!(model.saved_config.focused);
 
-    press(&mut model, KeyCode::Char('c'));
+    assert_eq!(
+        press_with_modifiers(&mut model, KeyCode::Char('c'), KeyModifiers::NONE),
+        KeyOutcome::Redraw
+    );
     assert!(!model.saved_config.focused);
     assert!(!model.closed);
 }
@@ -76,7 +87,7 @@ fn ctrl_c_quits_while_saved_config_is_focused() {
 
     let quit = press_with_modifiers(&mut model, KeyCode::Char('c'), KeyModifiers::CONTROL);
 
-    assert!(quit);
+    assert_eq!(quit, KeyOutcome::Exit);
     assert!(model.closed);
 }
 
@@ -87,7 +98,7 @@ fn ctrl_c_quits_while_save_confirmation_is_open() {
 
     let quit = press_with_modifiers(&mut model, KeyCode::Char('c'), KeyModifiers::CONTROL);
 
-    assert!(quit);
+    assert_eq!(quit, KeyOutcome::Exit);
     assert!(model.closed);
     assert!(matches!(
         model.saved_config.confirmation(),
@@ -102,7 +113,7 @@ fn ctrl_c_quits_while_saved_config_error_is_visible() {
 
     let quit = press_with_modifiers(&mut model, KeyCode::Char('c'), KeyModifiers::CONTROL);
 
-    assert!(quit);
+    assert_eq!(quit, KeyOutcome::Exit);
     assert!(model.closed);
     assert_eq!(model.saved_config.error.as_deref(), Some("storage_error"));
 }
@@ -114,7 +125,7 @@ fn q_quits_while_saved_config_confirmation_is_open() {
 
     let quit = press_with_modifiers(&mut model, KeyCode::Char('q'), KeyModifiers::NONE);
 
-    assert!(quit);
+    assert_eq!(quit, KeyOutcome::Exit);
     assert!(model.closed);
 }
 
@@ -122,22 +133,52 @@ fn q_quits_while_saved_config_confirmation_is_open() {
 fn save_key_opens_and_confirms_danger_confirmation_and_apply_key_is_unbound() {
     let mut model = model();
 
-    press(&mut model, KeyCode::Char('s'));
+    assert_eq!(
+        press_with_modifiers(&mut model, KeyCode::Char('s'), KeyModifiers::NONE),
+        KeyOutcome::Redraw
+    );
     assert!(matches!(
         model.saved_config.confirmation(),
         Some(ConfigConfirmation::Save { .. })
     ));
-    press(&mut model, KeyCode::Esc);
+    assert_eq!(
+        press_with_modifiers(&mut model, KeyCode::Esc, KeyModifiers::NONE),
+        KeyOutcome::Redraw
+    );
     assert!(model.saved_config.confirmation().is_none());
 
-    press(&mut model, KeyCode::Char('a'));
+    assert_eq!(
+        press_with_modifiers(&mut model, KeyCode::Char('a'), KeyModifiers::NONE),
+        KeyOutcome::Continue
+    );
     assert!(model.saved_config.confirmation().is_none());
     assert_eq!(model.saved_config.busy, None);
 
-    press(&mut model, KeyCode::Char('s'));
-    press(&mut model, KeyCode::Enter);
+    assert_eq!(
+        press_with_modifiers(&mut model, KeyCode::Char('s'), KeyModifiers::NONE),
+        KeyOutcome::Redraw
+    );
+    assert_eq!(
+        press_with_modifiers(&mut model, KeyCode::Enter, KeyModifiers::NONE),
+        KeyOutcome::Redraw
+    );
     assert!(model.saved_config.confirmation().is_none());
     assert_eq!(model.saved_config.busy, Some(ConfigJobKind::Save));
+}
+
+#[test]
+fn save_without_selection_creates_blocking_error_and_requests_redraw() {
+    let mut model = model();
+    press(&mut model, KeyCode::Char('c'));
+    press(&mut model, KeyCode::Char(' '));
+    assert!(model.saved_config.selected_ids().is_empty());
+
+    let outcome = press_with_modifiers(&mut model, KeyCode::Char('s'), KeyModifiers::NONE);
+
+    assert_eq!(outcome, KeyOutcome::Redraw);
+    assert!(model.saved_config.error.is_some());
+    assert!(model.saved_config.confirmation().is_none());
+    assert!(model.saved_config.busy.is_none());
 }
 
 #[test]
@@ -146,7 +187,10 @@ fn escape_dismisses_error_without_losing_selection() {
     model.saved_config.error = Some("storage_error".to_string());
     let selected = model.saved_config.selected_ids();
 
-    press(&mut model, KeyCode::Esc);
+    assert_eq!(
+        press_with_modifiers(&mut model, KeyCode::Esc, KeyModifiers::NONE),
+        KeyOutcome::Redraw
+    );
 
     assert!(model.saved_config.error.is_none());
     assert_eq!(model.saved_config.selected_ids(), selected);

@@ -2,6 +2,8 @@ use super::config_io::ConfigWorker;
 use super::config_state::SavedConfigState;
 use super::confirm::HardwareConfirmation;
 use super::controls::control_items;
+use super::gpio_io::{GpioJob, GpioWorker};
+use super::gpio_layout::TuiGpioLayout;
 use super::hit::HitMap;
 use super::pages::ActivePage;
 use super::{TuiActionMsg, TUI_HISTORY_LIMIT};
@@ -17,19 +19,9 @@ pub(super) struct TuiSwitchState {
     pub(super) desired_route: String,
     pub(super) actual_route: String,
     pub(super) routes: Vec<String>,
-    pub(super) requires_confirm: bool,
     pub(super) pending_route: Option<String>,
     pub(super) pending_until: Option<Instant>,
     pub(super) route_intent_active: bool,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct TuiGpioLayout {
-    pub(super) pin: u32,
-    pub(super) group: Option<String>,
-    pub(super) label: Option<String>,
-    pub(super) row: Option<u32>,
-    pub(super) column: Option<u32>,
 }
 
 pub struct TuiModel {
@@ -61,6 +53,10 @@ pub struct TuiModel {
     pub monitoring: BoardMonitoring,
     pub(super) saved_config: SavedConfigState,
     pub(super) config_worker: ConfigWorker,
+    pub(super) gpio_worker: GpioWorker,
+    pub(super) gpio_pending: Option<GpioJob>,
+    pub(super) gpio_gesture: super::gpio_gesture::GpioGesture,
+    pub(super) gpio_poll_defer_until: Option<Instant>,
     pub closed: bool,
     pub channel_ids: Vec<String>,
 }
@@ -96,6 +92,10 @@ impl TuiModel {
             monitoring: BoardMonitoring::default(),
             saved_config: SavedConfigState::default(),
             config_worker: ConfigWorker::new(),
+            gpio_worker: GpioWorker::new(),
+            gpio_pending: None,
+            gpio_gesture: super::gpio_gesture::GpioGesture::default(),
+            gpio_poll_defer_until: None,
             closed: false,
             channel_ids: vec![
                 "5v_out".to_string(),
@@ -154,7 +154,6 @@ impl TuiModel {
                     desired_route,
                     actual_route: info.route,
                     routes: info.routes,
-                    requires_confirm: info.requires_confirm,
                     pending_route,
                     pending_until,
                     route_intent_active,
@@ -162,11 +161,19 @@ impl TuiModel {
             );
         }
         self.switches = switches;
+        if self
+            .hardware_confirm
+            .as_ref()
+            .is_some_and(|confirm| !confirm.remains_advertised(&self.power_names, &self.switches))
+        {
+            self.hardware_confirm = None;
+        }
         self.gpio_names = snapshot
             .gpios
             .iter()
             .map(|gpio| gpio.name.clone())
             .collect();
+        self.gpio_gesture.cancel_missing_pin(&self.gpio_names);
         self.gpio_notes.clear();
         self.gpio_levels.clear();
         self.gpio_is_input.clear();

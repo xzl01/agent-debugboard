@@ -1,6 +1,7 @@
 use super::config_render::render_confirmation;
 use super::config_rows::build_saved_config_content;
 use super::config_state::SavedConfigState;
+use super::hit::HitRegions;
 use crate::persistent_config::{ConfigAction, PersistentConfigResponse, PersistentConfigStatus};
 use anyhow::{anyhow, Result};
 use ratatui::backend::TestBackend;
@@ -144,7 +145,8 @@ fn save_confirmation_uses_red_border_and_yellow_bold_emphasis() -> Result<()> {
         assert!(state.request_save().is_none());
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend)?;
-        terminal.draw(|frame| render_confirmation(frame, &state))?;
+        let mut hits = HitRegions::default();
+        terminal.draw(|frame| render_confirmation(frame, &state, &mut hits))?;
         let buffer = terminal.backend().buffer().clone();
         let area = confirmation_area(Rect::new(0, 0, width, height));
 
@@ -183,7 +185,8 @@ fn compact_terminal_clips_confirmation_without_panicking() -> Result<()> {
     let backend = TestBackend::new(20, 7);
     let mut terminal = Terminal::new(backend)?;
 
-    terminal.draw(|frame| render_confirmation(frame, &state))?;
+    let mut hits = HitRegions::default();
+    terminal.draw(|frame| render_confirmation(frame, &state, &mut hits))?;
 
     assert_eq!(terminal.backend().buffer().area.width, 20);
     assert_eq!(terminal.backend().buffer().area.height, 7);

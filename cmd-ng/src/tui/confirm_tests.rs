@@ -2,19 +2,18 @@ use super::confirm::{ConfirmableCommand, HardwareConfirmation, CONFIRM_TIMEOUT};
 use std::time::{Duration, Instant};
 
 #[test]
-fn confirmation_expires_only_after_the_timeout_window() {
+fn confirmation_expires_at_the_exact_timeout_boundary() {
+    let now = Instant::now();
     let command = ConfirmableCommand::SetPower {
         output: "12v_out".to_string(),
         next_state: true,
     };
-    let fresh = HardwareConfirmation::new(command.clone());
-    assert!(!fresh.expired());
-
-    let stale = HardwareConfirmation {
+    let confirmation = HardwareConfirmation {
         command,
-        started: Instant::now() - CONFIRM_TIMEOUT - Duration::from_millis(1),
+        started: now,
     };
-    assert!(stale.expired());
+    assert!(!confirmation.expired_at(now + CONFIRM_TIMEOUT - Duration::from_nanos(1)));
+    assert!(confirmation.expired_at(now + CONFIRM_TIMEOUT));
 }
 
 #[test]
