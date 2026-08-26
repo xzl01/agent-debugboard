@@ -3,20 +3,20 @@
 // Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
 // Copyright (c) Jiali Chen <chenjiali@radxa.com>
 
-use crate::client::{BoardRequest, BoardTransport};
-use crate::ws_status::WsStatusSnapshot;
+use crate::client::BoardTransport;
 use anyhow::Result;
-use crossterm::event::{self, Event};
-use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
-use reqwest::Method;
-use std::io::{self, Stdout};
-use std::time::{Duration, Instant};
+use ratatui::{backend::CrosstermBackend, Terminal};
+use std::io;
+use std::time::Duration;
 
 mod actions;
 #[cfg(test)]
 mod actions_tests;
 mod board_io;
+#[cfg(test)]
+mod board_io_tests;
+#[cfg(test)]
+mod cjk_render_tests;
 mod config_columns;
 mod config_io;
 #[cfg(test)]
@@ -33,9 +33,13 @@ mod config_rows;
 mod config_state;
 #[cfg(test)]
 mod config_state_tests;
+#[cfg(test)]
+mod config_worker_tests;
 mod confirm;
 #[cfg(test)]
 mod confirm_tests;
+#[cfg(test)]
+mod confirmation_event_deadline_tests;
 mod control_columns;
 mod control_rows;
 #[cfg(test)]
@@ -45,24 +49,83 @@ mod controls;
 mod controls_tests;
 #[cfg(test)]
 mod dense_layout_tests;
+mod direct_gpio_key;
 mod events;
+#[cfg(test)]
+mod events_fixture;
 #[cfg(test)]
 mod events_tests;
 #[cfg(test)]
+mod gpio_direct_key_modifier_tests;
+#[cfg(test)]
 mod gpio_fixture;
+mod gpio_gesture;
+mod gpio_gesture_control;
+#[cfg(test)]
+mod gpio_gesture_runtime_tests;
+#[cfg(test)]
+mod gpio_gesture_tests;
+mod gpio_gesture_types;
 #[cfg(test)]
 mod gpio_hit_tests;
 #[cfg(test)]
+mod gpio_hold_render_tests;
+mod gpio_io;
+#[cfg(test)]
+mod gpio_io_tests;
+#[cfg(test)]
+mod gpio_keybar_tests;
+#[cfg(test)]
+mod gpio_keyboard_tests;
+mod gpio_layout;
+#[cfg(test)]
 mod gpio_layout_tests;
+mod gpio_mouse_events;
+#[cfg(test)]
+mod gpio_mouse_gesture_tests;
+#[cfg(test)]
+mod gpio_mouse_tests;
 mod gpio_projection;
 #[cfg(test)]
 mod gpio_projection_tests;
+#[cfg(test)]
+mod gpio_render_lifecycle_tests;
+#[cfg(test)]
+mod gpio_render_tests;
+#[cfg(test)]
+mod gpio_worker_fixture;
+#[cfg(test)]
+mod gpio_worker_loop_tests;
 mod hit;
 #[cfg(test)]
+mod hit_tests;
+mod hit_types;
+#[cfg(test)]
+mod keyboard_boundary_fixture;
+#[cfg(test)]
+mod keyboard_redraw_boundary_tests;
+#[cfg(test)]
 mod loop_tests;
+#[cfg(test)]
+mod mock_board;
 mod model;
 #[cfg(test)]
 mod model_tests;
+mod mouse_events;
+#[cfg(test)]
+mod mouse_events_tests;
+#[cfg(test)]
+mod mouse_fixture;
+#[cfg(test)]
+mod mouse_input_safety_tests;
+#[cfg(test)]
+mod mouse_outcome_tests;
+#[cfg(test)]
+mod mouse_page_pass_through_tests;
+#[cfg(test)]
+mod mouse_page_tests;
+#[cfg(test)]
+mod mouse_redraw_boundary_tests;
 #[cfg(test)]
 mod mouse_tests;
 #[cfg(test)]
@@ -77,29 +140,51 @@ mod pages_tests;
 mod projection_navigation_tests;
 mod render;
 mod render_body;
+mod render_body_hits;
 #[cfg(test)]
 mod render_chrome_tests;
 mod render_keybar;
 mod render_modal;
 #[cfg(test)]
 mod render_modal_tests;
+#[cfg(test)]
+mod render_selection_tests;
 mod render_status;
 mod render_telemetry;
 #[cfg(test)]
 mod render_telemetry_tests;
 #[cfg(test)]
 mod render_tests;
+#[cfg(test)]
+mod resize_redraw_boundary_tests;
+mod runtime;
+#[cfg(test)]
+mod safety_input_tests;
+#[cfg(test)]
+mod safety_refresh_tests;
+#[cfg(test)]
+mod saved_config_error_key_tests;
+#[cfg(test)]
+mod saved_config_gpio_gesture_tests;
+#[cfg(test)]
+mod saved_config_mouse_tests;
+#[cfg(test)]
+mod saved_config_render_tests;
 mod status_page;
 #[cfg(test)]
 mod status_page_tests;
+#[cfg(test)]
+mod switch_mouse_tests;
+#[cfg(test)]
+mod switch_render_tests;
 mod terminal;
 #[cfg(test)]
 mod terminal_tests;
+mod text_width;
 
-use config_state::ConfigRequest;
-use events::{handle_key, handle_mouse};
+#[cfg(test)]
+use events::handle_key;
 use model::TuiModel;
-use render::render_ui;
 use terminal::{finish, TerminalSession};
 
 pub const TUI_HISTORY_LIMIT: usize = 240;
@@ -110,8 +195,6 @@ pub struct TuiActionMsg {
     pub status: String,
     pub err: Option<String>,
 }
-
-const HTTP_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 pub fn run_tui<TClient>(client: TClient, base_url: String, timeout: Duration) -> Result<u8>
 where
@@ -125,113 +208,7 @@ where
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = event_loop(&mut model, &mut terminal);
+    let result = runtime::event_loop(&mut model, &mut terminal);
 
     finish(result, &mut session)
-}
-
-fn event_loop(
-    model: &mut TuiModel,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-) -> Result<u8> {
-    let mut last_tick = Instant::now() - TUI_POLL_INTERVAL;
-
-    loop {
-        if last_tick.elapsed() >= TUI_POLL_INTERVAL {
-            on_time_tick(model)?;
-            last_tick = Instant::now();
-        }
-
-        terminal.draw(|frame| {
-            model.width = frame.area().width as usize;
-            model.height = frame.area().height as usize;
-            render_ui(frame, model);
-        })?;
-
-        if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
-                Event::Key(key) if handle_key(model, key)? => {
-                    return Ok(0);
-                }
-                Event::Key(_) => {}
-                Event::Mouse(mouse) => handle_mouse(model, mouse)?,
-                _ => {}
-            }
-        }
-    }
-}
-
-fn on_time_tick(model: &mut TuiModel) -> Result<()> {
-    if let Some(result) = model.config_worker.poll() {
-        let outcome = model.saved_config.finish(result);
-        model.status = outcome.status().to_string();
-    }
-
-    if model
-        .hardware_confirm
-        .as_ref()
-        .is_some_and(|confirm| confirm.expired())
-    {
-        if let Some(confirm) = model.hardware_confirm.take() {
-            model.status = confirm.command.timeout_message();
-            model.last_http_poll = Some(Instant::now());
-        }
-    }
-
-    if model.closed || model.paused {
-        return Ok(());
-    }
-
-    let should_poll = match model.last_http_poll {
-        Some(t) => t.elapsed() >= HTTP_POLL_INTERVAL,
-        None => true,
-    };
-    if should_poll {
-        poll_http(model)?;
-    }
-    Ok(())
-}
-
-fn poll_http(model: &mut TuiModel) -> Result<()> {
-    model.last_http_poll = Some(Instant::now());
-    let client = crate::client::BoardClient::new(&model.base_url, model.timeout)?;
-    let status_data = client.send_text(BoardRequest {
-        method: Method::GET,
-        path: "/api/v1/status".to_string(),
-        query: vec![],
-        body: None,
-    })?;
-    let status_snapshot: WsStatusSnapshot = serde_json::from_str(&status_data)?;
-    let config_changed = model.apply_status_snapshot(status_snapshot);
-
-    let adc_data = client.send_text(BoardRequest {
-        method: Method::GET,
-        path: "/api/v1/adc/read".to_string(),
-        query: vec![],
-        body: None,
-    })?;
-    let adc_response = crate::adc::transform_response(&adc_data).map_err(|e| anyhow::anyhow!(e))?;
-    model.apply_adc_response(adc_response.readings);
-
-    if model.hardware_confirm.is_none() {
-        model.status = "HTTP mode".to_string();
-    }
-    model.err = None;
-    if config_changed {
-        if let Some(request) = model.saved_config.request_refresh() {
-            start_config_request(model, request);
-        }
-    }
-    Ok(())
-}
-
-fn start_config_request(model: &mut TuiModel, request: ConfigRequest) {
-    let kind = request.kind();
-    if model
-        .config_worker
-        .start(model.base_url.clone(), model.timeout, request)
-    {
-        model.saved_config.start(kind);
-        model.status = format!("Saved Config {}…", kind.as_str());
-    }
 }

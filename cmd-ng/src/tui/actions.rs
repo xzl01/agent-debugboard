@@ -1,6 +1,7 @@
-use super::board_io::{perform_control_action, set_gpio_input, set_gpio_output, set_switch_route};
+use super::board_io::{perform_control_action, set_switch_route};
 use super::confirm::{ConfirmableCommand, HardwareConfirmation};
 use super::controls::{next_switch_route, ControlItem};
+use super::gpio_io::{GpioAction, GpioJob};
 use super::model::TuiModel;
 use anyhow::Result;
 use std::time::{Duration, Instant};
@@ -8,14 +9,15 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ControlIntent {
     Primary,
-    RestoreInput,
+    DriveLow,
+    DriveHigh,
+    SetInput,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ControlCommand {
     SetGpioOutput { name: String, value: bool },
     SetGpioInput { name: String },
-    RouteSwitch { name: String, route: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,31 +48,30 @@ pub(super) fn resolve_activation(
             let Some(next_route) = next_switch_route(state) else {
                 return Activation::Rejected(format!("switch {name} has no advertised routes"));
             };
-            if state.requires_confirm {
-                Activation::Confirm(ConfirmableCommand::RouteSwitch {
-                    name: name.clone(),
-                    route: next_route,
-                })
-            } else {
-                Activation::Immediate(ControlCommand::RouteSwitch {
-                    name: name.clone(),
-                    route: next_route,
-                })
-            }
-        }
-        (ControlItem::Gpio(name), ControlIntent::Primary) => {
-            let level = *model.gpio_levels.get(name).unwrap_or(&false);
-            let is_input = *model.gpio_is_input.get(name).unwrap_or(&true);
-            let next = if is_input { true } else { !level };
-            Activation::Immediate(ControlCommand::SetGpioOutput {
+            Activation::Confirm(ConfirmableCommand::RouteSwitch {
                 name: name.clone(),
-                value: next,
+                route: next_route,
             })
         }
-        (ControlItem::Gpio(name), ControlIntent::RestoreInput) => {
+        (ControlItem::Gpio(_), ControlIntent::Primary) => Activation::Ignored,
+        (ControlItem::Gpio(name), ControlIntent::DriveLow) => {
+            Activation::Immediate(ControlCommand::SetGpioOutput {
+                name: name.clone(),
+                value: false,
+            })
+        }
+        (ControlItem::Gpio(name), ControlIntent::DriveHigh) => {
+            Activation::Immediate(ControlCommand::SetGpioOutput {
+                name: name.clone(),
+                value: true,
+            })
+        }
+        (ControlItem::Gpio(name), ControlIntent::SetInput) => {
             Activation::Immediate(ControlCommand::SetGpioInput { name: name.clone() })
         }
-        (_, ControlIntent::RestoreInput) => Activation::Ignored,
+        (_, ControlIntent::DriveLow | ControlIntent::DriveHigh | ControlIntent::SetInput) => {
+            Activation::Ignored
+        }
     }
 }
 
@@ -79,9 +80,21 @@ pub(super) fn activate_item(
     item: ControlItem,
     intent: ControlIntent,
 ) -> Result<()> {
+    if model.gpio_pending.is_some()
+        && matches!(
+            (&item, intent),
+            (
+                ControlItem::Power(_) | ControlItem::Switch(_),
+                ControlIntent::Primary
+            )
+        )
+    {
+        return Ok(());
+    }
     match resolve_activation(model, &item, intent) {
         Activation::Immediate(command) => execute_immediate(model, command),
         Activation::Confirm(command) => {
+            model.gpio_gesture.cancel();
             model.status = format!("Confirm {} within 3s", command.target_text());
             model.hardware_confirm = Some(HardwareConfirmation::new(command));
             Ok(())
@@ -94,7 +107,10 @@ pub(super) fn activate_item(
     }
 }
 
-pub(super) fn confirm_hardware(model: &mut TuiModel) -> Result<()> {
+pub(super) fn confirm_hardware(model: &mut TuiModel, now: Instant) -> Result<()> {
+    if expire_hardware_confirmation(model, now) {
+        return Ok(());
+    }
     let Some(confirm) = model.hardware_confirm.take() else {
         return Ok(());
     };
@@ -103,6 +119,21 @@ pub(super) fn confirm_hardware(model: &mut TuiModel) -> Result<()> {
             toggle_power(model, &output, next_state)
         }
         ConfirmableCommand::RouteSwitch { name, route } => route_switch(model, &name, &route),
+    }
+}
+
+pub(super) fn expire_hardware_confirmation(model: &mut TuiModel, now: Instant) -> bool {
+    match model.hardware_confirm.take() {
+        Some(confirm) if confirm.expired_at(now) => {
+            model.status = confirm.command.timeout_message();
+            model.last_http_poll = Some(now);
+            true
+        }
+        Some(confirm) => {
+            model.hardware_confirm = Some(confirm);
+            false
+        }
+        None => false,
     }
 }
 
@@ -115,19 +146,54 @@ pub(super) fn cancel_hardware(model: &mut TuiModel) {
 fn execute_immediate(model: &mut TuiModel, command: ControlCommand) -> Result<()> {
     match command {
         ControlCommand::SetGpioOutput { name, value } => {
-            let action = set_gpio_output(&model.base_url, model.timeout, &name, value)?;
-            model.gpio_levels.insert(name.clone(), value);
-            model.gpio_is_input.insert(name, false);
-            model.apply_action_msg(action);
+            let action = if value {
+                GpioAction::DriveHigh
+            } else {
+                GpioAction::DriveLow
+            };
+            start_gpio_job(
+                model,
+                GpioJob {
+                    action,
+                    target: name,
+                },
+            );
         }
         ControlCommand::SetGpioInput { name } => {
-            let action = set_gpio_input(&model.base_url, model.timeout, &name)?;
-            model.gpio_is_input.insert(name, true);
-            model.apply_action_msg(action);
+            start_gpio_job(
+                model,
+                GpioJob {
+                    action: GpioAction::SetInput,
+                    target: name,
+                },
+            );
         }
-        ControlCommand::RouteSwitch { name, route } => route_switch(model, &name, &route)?,
     }
     Ok(())
+}
+
+fn start_gpio_job(model: &mut TuiModel, job: GpioJob) {
+    model.gpio_gesture.cancel();
+    if let Some(pending) = &model.gpio_pending {
+        model.status = format!(
+            "{} dropped: {} in flight",
+            job.action.status_text(&job.target),
+            pending.action.status_text(&pending.target),
+        );
+        return;
+    }
+    if model
+        .gpio_worker
+        .start(model.base_url.clone(), model.timeout, job.clone())
+    {
+        model.status = format!("{}…", job.action.status_text(&job.target));
+        model.gpio_pending = Some(job);
+    } else {
+        model.status = format!(
+            "{} dropped: worker busy",
+            job.action.status_text(&job.target)
+        );
+    }
 }
 
 fn toggle_power(model: &mut TuiModel, output: &str, next_state: bool) -> Result<()> {

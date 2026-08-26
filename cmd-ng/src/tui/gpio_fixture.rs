@@ -1,6 +1,7 @@
 use super::controls::{control_items, ControlItem};
 use super::model::TuiModel;
 use super::render::render_ui;
+use super::render_body::build_body_content;
 use crate::client::DEFAULT_BASE_URL;
 use crate::ws_status::{TuiStatusPowerOutput, WsStatusSnapshot};
 use anyhow::{anyhow, Result};
@@ -61,13 +62,22 @@ pub(super) fn find_row(buffer: &Buffer, needle: &str) -> Result<u16> {
         .ok_or_else(|| anyhow!("no buffer row contains {needle:?}"))
 }
 
+pub(super) fn body_line(model: &TuiModel, width: usize, needle: &str) -> Result<String> {
+    build_body_content(model, width)
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .find(|line| line.contains(needle))
+        .ok_or_else(|| anyhow!("no body line contains {needle:?} at width {width}"))
+}
+
 pub(super) fn control_rect(model: &TuiModel, gpio: &str) -> Result<Rect> {
     let wanted = ControlItem::Gpio(gpio.to_string());
     model
         .hit_map
         .controls
         .iter()
-        .find(|(_, item)| *item == wanted)
+        .find(|(_, item)| **item == wanted)
         .map(|(rect, _)| *rect)
         .ok_or_else(|| anyhow!("no hit rect for {gpio}"))
 }
