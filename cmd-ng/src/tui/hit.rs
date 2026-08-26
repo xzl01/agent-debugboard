@@ -1,54 +1,81 @@
 use super::controls::ControlItem;
+use super::hit_types::{
+    HardwareModalTarget, SavedConfigModalTarget, SavedConfigRowTarget, TabTarget,
+};
 use ratatui::layout::Rect;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ModalButton {
-    Confirm,
-    Cancel,
+#[derive(Debug)]
+pub(super) struct HitRegion<T> {
+    rect: Rect,
+    target: T,
+}
+
+impl<T> HitRegion<T> {
+    fn contains(&self, column: u16, row: u16) -> bool {
+        column >= self.rect.x
+            && column < self.rect.x + self.rect.width
+            && row >= self.rect.y
+            && row < self.rect.y + self.rect.height
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct HitRegions<T> {
+    regions: Vec<HitRegion<T>>,
+}
+
+impl<T> Default for HitRegions<T> {
+    fn default() -> Self {
+        Self {
+            regions: Vec::new(),
+        }
+    }
+}
+
+impl<T> HitRegions<T> {
+    pub(super) fn push(&mut self, rect: Rect, target: T) {
+        self.regions.push(HitRegion { rect, target });
+    }
+
+    pub(super) fn at(&self, column: u16, row: u16) -> Option<&T> {
+        self.regions
+            .iter()
+            .find(|region| region.contains(column, row))
+            .map(|region| &region.target)
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.regions.clear();
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.regions.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&Rect, &T)> {
+        self.regions
+            .iter()
+            .map(|region| (&region.rect, &region.target))
+    }
 }
 
 #[derive(Debug, Default)]
 pub(super) struct HitMap {
-    pub(super) controls: Vec<(Rect, ControlItem)>,
-    pub(super) confirm_button: Option<Rect>,
-    pub(super) cancel_button: Option<Rect>,
+    pub(super) controls: HitRegions<ControlItem>,
+    pub(super) tabs: HitRegions<TabTarget>,
+    pub(super) saved_config_rows: HitRegions<SavedConfigRowTarget>,
+    pub(super) hardware_modal: HitRegions<HardwareModalTarget>,
+    pub(super) saved_config_modal: HitRegions<SavedConfigModalTarget>,
 }
 
 impl HitMap {
     pub(super) fn clear(&mut self) {
         self.controls.clear();
-        self.confirm_button = None;
-        self.cancel_button = None;
+        self.tabs.clear();
+        self.saved_config_rows.clear();
+        self.hardware_modal.clear();
+        self.saved_config_modal.clear();
     }
-
-    pub(super) fn push_control(&mut self, rect: Rect, item: ControlItem) {
-        self.controls.push((rect, item));
-    }
-
-    pub(super) fn control_at(&self, column: u16, row: u16) -> Option<&ControlItem> {
-        self.controls
-            .iter()
-            .find(|(rect, _)| rect_contains(*rect, column, row))
-            .map(|(_, item)| item)
-    }
-
-    pub(super) fn modal_button_at(&self, column: u16, row: u16) -> Option<ModalButton> {
-        if self
-            .confirm_button
-            .is_some_and(|rect| rect_contains(rect, column, row))
-        {
-            return Some(ModalButton::Confirm);
-        }
-        if self
-            .cancel_button
-            .is_some_and(|rect| rect_contains(rect, column, row))
-        {
-            return Some(ModalButton::Cancel);
-        }
-        None
-    }
-}
-
-fn rect_contains(rect: Rect, column: u16, row: u16) -> bool {
-    column >= rect.x && column < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }

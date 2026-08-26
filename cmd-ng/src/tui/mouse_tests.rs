@@ -1,66 +1,9 @@
-use super::confirm::{ConfirmableCommand, HardwareConfirmation};
+use super::confirm::ConfirmableCommand;
 use super::controls::{control_targets, ControlItem};
-use super::events::handle_mouse;
-use super::gpio_fixture::current_power_outputs;
-use super::model::TuiModel;
-use super::render::render_ui;
-use crate::client::DEFAULT_BASE_URL;
-use crate::ws_status::WsStatusSnapshot;
+use super::hit_types::HardwareModalTarget;
+use super::mouse_fixture::{click, control_rect, draw, draw_sized, model, power_confirmation};
 use anyhow::{anyhow, Result};
-use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::backend::TestBackend;
-use ratatui::layout::Rect;
-use ratatui::Terminal;
-use std::time::Duration;
-
-fn model() -> TuiModel {
-    let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
-    model.apply_status_snapshot(WsStatusSnapshot {
-        power_outputs: current_power_outputs(),
-        ..Default::default()
-    });
-    model
-}
-
-fn draw(model: &mut TuiModel) -> Result<()> {
-    draw_sized(model, 80, 30)
-}
-
-fn draw_sized(model: &mut TuiModel, width: u16, height: u16) -> Result<()> {
-    let backend = TestBackend::new(width, height);
-    let mut terminal = Terminal::new(backend)?;
-    terminal.draw(|frame| render_ui(frame, model))?;
-    Ok(())
-}
-
-fn click(model: &mut TuiModel, kind: MouseEventKind, column: u16, row: u16) -> Result<()> {
-    handle_mouse(
-        model,
-        MouseEvent {
-            kind,
-            column,
-            row,
-            modifiers: KeyModifiers::NONE,
-        },
-    )?;
-    Ok(())
-}
-
-fn control_rect(model: &TuiModel, wanted: &ControlItem) -> Option<Rect> {
-    model
-        .hit_map
-        .controls
-        .iter()
-        .find(|(_, item)| item == wanted)
-        .map(|(rect, _)| *rect)
-}
-
-fn power_confirmation() -> HardwareConfirmation {
-    HardwareConfirmation::new(ConfirmableCommand::SetPower {
-        output: "12v_out".to_string(),
-        next_state: true,
-    })
-}
+use crossterm::event::{MouseButton, MouseEventKind};
 
 #[test]
 fn left_click_on_power_row_opens_confirmation_without_http() -> Result<()> {
@@ -97,7 +40,9 @@ fn cancel_button_click_cancels_the_pending_confirmation() -> Result<()> {
     draw(&mut model)?;
     let cancel = model
         .hit_map
-        .cancel_button
+        .hardware_modal
+        .iter()
+        .find_map(|(rect, target)| (*target == HardwareModalTarget::cancel()).then_some(*rect))
         .ok_or_else(|| anyhow!("cancel button is missing"))?;
 
     click(
