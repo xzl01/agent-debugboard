@@ -109,14 +109,14 @@ fn power_row_exposes_state_live_mode_and_description() -> Result<()> {
 }
 
 #[test]
-fn switch_row_covers_ready_mismatch_pending_and_confirm_mode() -> Result<()> {
+fn switch_row_covers_state_tones_and_effective_confirm_mode() -> Result<()> {
     let mut model = model_with_states();
     let rows = control_rows(&model);
 
     let ready = row_named(&rows, "sd")?;
     assert_eq!(ready.state_route, "target");
     assert_eq!(ready.tone, RowTone::SwitchReady);
-    assert_eq!(ready.mode, "auto");
+    assert_eq!(ready.mode, "confirm");
     assert_eq!(ready.description, "target/usb-reader");
 
     let confirm = row_named(&rows, "vin")?;

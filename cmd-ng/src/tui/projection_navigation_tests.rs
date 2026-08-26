@@ -3,6 +3,7 @@ use super::events::handle_key;
 use super::gpio_fixture::{item_index, projection_model};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::time::Instant;
 
 #[test]
 fn right_selects_the_metadata_sibling_cell() -> Result<()> {
@@ -76,6 +77,7 @@ fn g_jumps_to_the_first_projected_gpio() -> Result<()> {
     handle_key(
         &mut model,
         KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        Instant::now(),
     )?;
     assert_eq!(
         model.control_idx,

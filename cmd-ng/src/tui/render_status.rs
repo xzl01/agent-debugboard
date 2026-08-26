@@ -1,14 +1,11 @@
 use super::model::TuiModel;
+use super::text_width::{clip_display, display_width, sanitize_display};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 const APP_TITLE: &str = "Radxa Linkr Debugger TUI";
-
-fn clip(text: &str, width: usize) -> String {
-    text.chars().take(width).collect()
-}
 
 fn title_style() -> Style {
     Style::default().add_modifier(Modifier::BOLD)
@@ -34,33 +31,35 @@ fn right_state(model: &TuiModel) -> String {
 
 fn status_row_one(model: &TuiModel, width: usize) -> Line<'static> {
     let right = right_state(model);
-    let url = format!(" url={}", model.base_url);
-    let title_len = APP_TITLE.chars().count();
-    let url_len = url.chars().count();
-    let right_len = right.chars().count();
+    let url = sanitize_display(&format!(" url={}", model.base_url));
+    let title_width = display_width(APP_TITLE);
+    let url_width = display_width(&url);
+    let right_width = display_width(&right);
 
     let mut left = format!("{APP_TITLE}{url}");
-    let mut right_text = right.clone();
-    if title_len + url_len + 1 + right_len > width {
+    let mut right_text = sanitize_display(&right);
+    if title_width + url_width + 1 + right_width > width {
         right_text = String::new();
     }
-    if right_text.is_empty() && title_len + url_len > width {
+    if right_text.is_empty() && title_width + url_width > width {
         left = APP_TITLE.to_string();
     }
-    let left_len = left.chars().count();
-    let right_len = right_text.chars().count();
+    let left_width = display_width(&left);
+    let right_width = display_width(&right_text);
 
-    if !right_text.is_empty() && left_len + 1 + right_len <= width {
-        let gap = width - left_len - right_len;
+    if !right_text.is_empty() && left_width + 1 + right_width <= width {
+        let gap = width - left_width - right_width;
         return Line::from(vec![
             Span::styled(left, title_style()),
             Span::raw(" ".repeat(gap)),
             Span::raw(right_text),
         ]);
     }
+    let clipped = clip_display(&left, width);
+    let clipped_width = display_width(&clipped);
     Line::from(vec![
-        Span::styled(clip(&left, width), title_style()),
-        Span::raw(" ".repeat(width.saturating_sub(left_len.min(width)))),
+        Span::styled(clipped, title_style()),
+        Span::raw(" ".repeat(width.saturating_sub(clipped_width))),
     ])
 }
 
@@ -69,7 +68,7 @@ fn status_row_two(model: &TuiModel, width: usize) -> Line<'static> {
         Some(err) => (err.clone(), error_style()),
         None => (model.status.clone(), Style::default()),
     };
-    Line::from(Span::styled(clip(&text, width), style))
+    Line::from(Span::styled(clip_display(&text, width), style))
 }
 
 pub(super) fn render_status_band(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {

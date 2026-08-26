@@ -1,4 +1,5 @@
 use super::confirm::{ConfirmableCommand, HardwareConfirmation};
+use super::hit_types::HardwareModalTarget;
 use super::model::TuiModel;
 use super::render::render_ui;
 use super::render_modal::modal_area;
@@ -62,8 +63,16 @@ fn hardware_confirmation_modal_is_centered_red_and_names_the_target() -> Result<
         Color::Red,
         "border must be red"
     );
-    assert!(model.hit_map.confirm_button.is_some());
-    assert!(model.hit_map.cancel_button.is_some());
+    assert!(model
+        .hit_map
+        .hardware_modal
+        .iter()
+        .any(|(_, target)| *target == HardwareModalTarget::confirm()));
+    assert!(model
+        .hit_map
+        .hardware_modal
+        .iter()
+        .any(|(_, target)| *target == HardwareModalTarget::cancel()));
     Ok(())
 }
 

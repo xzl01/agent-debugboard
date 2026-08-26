@@ -10,21 +10,66 @@ use std::time::Duration;
 
 const BAR_GLYPHS: &str = "▁▂▃▄▅▆▇█";
 const CHANNELS: [&str; 3] = ["5v_out", "12v_out", "20v_out"];
+const CJK_CHANNELS: [&str; 3] = ["五伏输出", "十二伏输出", "二十伏输出"];
+
+#[derive(Clone, Copy)]
+struct ScopeCase {
+    width: u16,
+    height: u16,
+    starts: [usize; 3],
+    gutters: [u16; 2],
+}
+
+const SCOPE_CASES: [ScopeCase; 4] = [
+    ScopeCase {
+        width: 47,
+        height: 24,
+        starts: [0, 16, 32],
+        gutters: [15, 31],
+    },
+    ScopeCase {
+        width: 48,
+        height: 24,
+        starts: [0, 17, 33],
+        gutters: [16, 32],
+    },
+    ScopeCase {
+        width: 80,
+        height: 24,
+        starts: [0, 27, 54],
+        gutters: [26, 53],
+    },
+    ScopeCase {
+        width: 120,
+        height: 32,
+        starts: [0, 41, 81],
+        gutters: [40, 80],
+    },
+];
 
 fn model_with_channels(peak_ma: i32) -> TuiModel {
+    model_with_named_channels(&CHANNELS, peak_ma)
+}
+
+fn model_with_named_channels(channels: &[&str], peak_ma: i32) -> TuiModel {
     let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
-    for channel in CHANNELS {
+    model.channel_ids = channels
+        .iter()
+        .map(|channel| (*channel).to_string())
+        .collect();
+    for channel in channels {
         model.latest.insert(
-            channel.to_string(),
+            (*channel).to_string(),
             AdcReading {
-                name: channel.to_string(),
+                name: (*channel).to_string(),
                 current_ua: Some(peak_ma * 1000),
                 power_enabled: Some(true),
                 ..Default::default()
             },
         );
-        let ramp: Vec<i32> = (1..=5).map(|step| peak_ma * step / 5).collect();
-        model.history.insert(channel.to_string(), ramp);
+        model
+            .history
+            .insert((*channel).to_string(), vec![peak_ma; 120]);
     }
     model
 }
@@ -115,20 +160,92 @@ fn scope_graph_spans_multiple_rows_with_block_glyphs() -> Result<()> {
 }
 
 #[test]
-fn scope_channels_split_into_deterministic_columns() -> Result<()> {
-    let mut model = model_with_channels(10);
-    let buffer = draw(&mut model, 80, 24)?;
-    let header = row_text(&buffer, 2);
-    assert_eq!(char_index(&header, "5v_out")?, 0, "header={header:?}");
-    assert_eq!(char_index(&header, "12v_out")?, 27, "header={header:?}");
-    assert_eq!(char_index(&header, "20v_out")?, 54, "header={header:?}");
+fn scope_header_reserves_one_column_gutters_at_canonical_widths() -> Result<()> {
+    for case in SCOPE_CASES {
+        // Given
+        let mut model = model_with_channels(10);
 
-    let mut model = model_with_channels(10);
-    let buffer = draw(&mut model, 120, 32)?;
+        // When
+        let buffer = draw(&mut model, case.width, case.height)?;
+        let header = row_text(&buffer, 2);
+
+        // Then
+        for (channel, start) in CHANNELS.iter().zip(case.starts) {
+            assert_eq!(char_index(&header, channel)?, start, "header={header:?}");
+        }
+        for gutter in case.gutters {
+            assert_eq!(buffer[(gutter, 2)].symbol(), " ", "header={header:?}");
+        }
+        assert_eq!(header.chars().count(), case.width as usize);
+    }
+    Ok(())
+}
+
+#[test]
+fn scope_graph_reserves_gutters_in_all_six_rows() -> Result<()> {
+    for case in SCOPE_CASES {
+        // Given
+        let mut model = model_with_channels(10);
+
+        // When
+        let buffer = draw(&mut model, case.width, case.height)?;
+
+        // Then
+        for y in 3u16..=8 {
+            for gutter in case.gutters {
+                assert_eq!(
+                    buffer[(gutter, y)].symbol(),
+                    " ",
+                    "width={} y={y}",
+                    case.width
+                );
+            }
+            assert_eq!(row_text(&buffer, y).chars().count(), case.width as usize);
+        }
+        for y in 4u16..=8 {
+            for gutter in case.gutters {
+                assert!(BAR_GLYPHS.contains(buffer[(gutter - 1, y)].symbol()));
+                assert!(BAR_GLYPHS.contains(buffer[(gutter + 1, y)].symbol()));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn scope_cjk_channel_names_do_not_cross_gutters() -> Result<()> {
+    // Given
+    let mut model = model_with_named_channels(&CJK_CHANNELS, 10);
+
+    // When
+    let buffer = draw(&mut model, 47, 24)?;
     let header = row_text(&buffer, 2);
-    assert_eq!(char_index(&header, "5v_out")?, 0, "header={header:?}");
-    assert_eq!(char_index(&header, "12v_out")?, 40, "header={header:?}");
-    assert_eq!(char_index(&header, "20v_out")?, 80, "header={header:?}");
+
+    // Then
+    for (symbol, start) in ["五", "十", "二"].iter().zip([0u16, 16, 32]) {
+        assert_eq!(buffer[(start, 2)].symbol(), *symbol, "header={header:?}");
+    }
+    for gutter in [15u16, 31] {
+        assert_eq!(buffer[(gutter, 2)].symbol(), " ", "header={header:?}");
+    }
+    assert_eq!(header.chars().count(), 47);
+    Ok(())
+}
+
+#[test]
+fn scope_single_channel_keeps_the_full_width() -> Result<()> {
+    // Given
+    let mut model = model_with_named_channels(&["single"], 10);
+
+    // When
+    let buffer = draw(&mut model, 47, 24)?;
+
+    // Then
+    assert_eq!(char_index(&row_text(&buffer, 2), "single")?, 0);
+    for y in 4u16..=8 {
+        assert!(BAR_GLYPHS.contains(buffer[(0, y)].symbol()));
+        assert!(BAR_GLYPHS.contains(buffer[(46, y)].symbol()));
+    }
     Ok(())
 }
 

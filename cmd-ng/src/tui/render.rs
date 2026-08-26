@@ -1,4 +1,5 @@
 use super::config_render::render_confirmation;
+use super::hit_types::TabTarget;
 use super::model::TuiModel;
 use super::page_header::render_page_header;
 use super::pages::ActivePage;
@@ -18,8 +19,12 @@ pub(super) fn render_ui(frame: &mut ratatui::Frame, model: &mut TuiModel) {
     model.hit_map.clear();
     let area = frame.area();
     if area.width == 0 || area.height < MIN_HEIGHT {
-        render_confirmation(frame, &model.saved_config);
         render_hardware_confirmation(frame, model);
+        render_confirmation(
+            frame,
+            &model.saved_config,
+            &mut model.hit_map.saved_config_modal,
+        );
         return;
     }
     let telemetry = telemetry_rows(model, area.height) as u16;
@@ -39,29 +44,48 @@ pub(super) fn render_ui(frame: &mut ratatui::Frame, model: &mut TuiModel) {
     render_page_header(frame, chunks[3], model);
     render_body(frame, chunks[4], model);
     render_keybar(frame, chunks[5], model);
-    render_confirmation(frame, &model.saved_config);
     render_hardware_confirmation(frame, model);
+    render_confirmation(
+        frame,
+        &model.saved_config,
+        &mut model.hit_map.saved_config_modal,
+    );
 }
 
-fn render_tabs(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
+fn render_tabs(frame: &mut ratatui::Frame, area: Rect, model: &mut TuiModel) {
     let tabs = [
         ("Controls", ActivePage::Controls),
         ("Saved Config", ActivePage::SavedConfig),
         ("Status", ActivePage::Status),
     ];
     let mut spans = Vec::new();
+    let mut x = area.x;
     for (index, (label, page)) in tabs.iter().enumerate() {
         if index > 0 {
             spans.push(Span::raw("  "));
+            x = x.saturating_add(2);
         }
-        if *page == model.active_page {
-            spans.push(Span::styled(
-                format!(" {label} "),
-                Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
-            ));
+        let active = *page == model.active_page;
+        let rendered_label = if active {
+            format!(" {label} ")
         } else {
-            spans.push(Span::styled(*label, Style::default().fg(Color::DarkGray)));
+            (*label).to_string()
+        };
+        let label_width = rendered_label.len() as u16;
+        let visible_width = label_width.min(area.x.saturating_add(area.width).saturating_sub(x));
+        if area.height > 0 && visible_width > 0 {
+            model
+                .hit_map
+                .tabs
+                .push(Rect::new(x, area.y, visible_width, 1), TabTarget(*page));
         }
+        let style = if active {
+            Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(rendered_label, style));
+        x = x.saturating_add(label_width);
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }

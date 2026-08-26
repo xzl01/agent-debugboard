@@ -1,3 +1,4 @@
+use super::hit_types::HardwareModalTarget;
 use super::model::TuiModel;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -71,11 +72,17 @@ fn register_button_hits(model: &mut TuiModel, inner: Rect, buttons_len: usize) {
     let pad = ((inner.width as usize) - buttons_len) / 2;
     let y = inner.y + buttons_line as u16;
     let confirm_x = inner.x + pad as u16;
-    model.hit_map.confirm_button = Some(Rect::new(confirm_x, y, CONFIRM_LABEL.len() as u16, 1));
-    model.hit_map.cancel_button = Some(Rect::new(
-        confirm_x + (CONFIRM_LABEL.len() + BUTTON_GAP) as u16,
-        y,
-        CANCEL_LABEL.len() as u16,
-        1,
-    ));
+    model.hit_map.hardware_modal.push(
+        Rect::new(confirm_x, y, CONFIRM_LABEL.len() as u16, 1),
+        HardwareModalTarget::confirm(),
+    );
+    model.hit_map.hardware_modal.push(
+        Rect::new(
+            confirm_x + (CONFIRM_LABEL.len() + BUTTON_GAP) as u16,
+            y,
+            CANCEL_LABEL.len() as u16,
+            1,
+        ),
+        HardwareModalTarget::cancel(),
+    );
 }

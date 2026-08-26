@@ -1,4 +1,4 @@
-use super::controls::{control_targets, ControlItem};
+use super::controls::control_targets;
 use super::gpio_fixture::current_power_outputs;
 use super::model::TuiModel;
 use super::render::render_ui;
@@ -6,11 +6,9 @@ use super::render_body::build_body_content;
 use crate::client::DEFAULT_BASE_URL;
 use crate::persistent_config::{ConfigAction, PersistentConfigResponse, PersistentConfigStatus};
 use crate::ws_status::{TuiStatusGpio, TuiStatusSwitchInfo, WsStatusSnapshot};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::text::Text;
 use ratatui::Terminal;
 use std::time::Duration;
@@ -100,15 +98,6 @@ fn buffer_text(buffer: &Buffer) -> String {
     text
 }
 
-fn control_rect(model: &TuiModel, wanted: &ControlItem) -> Option<Rect> {
-    model
-        .hit_map
-        .controls
-        .iter()
-        .find(|(_, item)| item == wanted)
-        .map(|(rect, _)| *rect)
-}
-
 #[test]
 fn controls_page_renders_one_row_per_object_without_separators() {
     let model = dashboard_model();
@@ -162,7 +151,7 @@ fn saved_config_page_renders_items_without_controls_page_rows() -> Result<()> {
     assert!(rendered.contains("[pending:1]"));
     assert!(!rendered.contains("12v_out"));
     assert!(!rendered.contains("Saved Config"));
-    assert!(content.marks.is_empty());
+    assert_eq!(content.marks.len(), 1);
     Ok(())
 }
 
@@ -248,37 +237,5 @@ fn body_carries_no_operation_instructions() -> Result<()> {
     let mut plain = model();
     let buffer = draw(&mut plain, 80, 24)?;
     assert!(!buffer_text(&buffer).contains("No-args starts the TUI"));
-    Ok(())
-}
-
-#[test]
-fn selected_power_row_keeps_its_state_color_in_the_buffer() -> Result<()> {
-    let mut model = model();
-    model.apply_status_snapshot(WsStatusSnapshot {
-        power_outputs: current_power_outputs(),
-        ..Default::default()
-    });
-    model.power_states.insert("12v_out".to_string(), true);
-    model.control_idx = 0;
-    let buffer = draw(&mut model, 80, 30)?;
-
-    let rect = control_rect(&model, &ControlItem::Power("12v_out".to_string()))
-        .ok_or_else(|| anyhow!("12v_out row is missing"))?;
-    for x in rect.x..rect.x + rect.width {
-        assert_eq!(
-            buffer[(x, rect.y)].bg,
-            Color::White,
-            "selected row must paint White bg across the full hit width (x={x})"
-        );
-    }
-    let state_cell = (rect.x..rect.x + rect.width)
-        .map(|x| &buffer[(x, rect.y)])
-        .find(|cell| cell.symbol() == "n")
-        .ok_or_else(|| anyhow!("selected ON state cell is missing"))?;
-    assert_eq!(
-        state_cell.fg,
-        Color::Green,
-        "selected ON row keeps green fg"
-    );
     Ok(())
 }

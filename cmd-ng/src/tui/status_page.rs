@@ -1,4 +1,5 @@
 use super::model::{TuiModel, TuiSwitchState};
+use super::text_width::{clip_display, display_width};
 use crate::monitoring::format_monitoring_summary;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -44,10 +45,6 @@ impl SwitchState {
     }
 }
 
-fn clip(text: &str, width: usize) -> String {
-    text.chars().take(width).collect()
-}
-
 fn header_style() -> Style {
     Style::default()
         .fg(Color::DarkGray)
@@ -69,8 +66,8 @@ pub(super) fn status_header_line(width: usize) -> Line<'static> {
             used += COLUMN_GAP;
         }
         let available = (*column_width).min(width.saturating_sub(used));
-        let clipped = clip(title, available);
-        let padding = available.saturating_sub(clipped.chars().count());
+        let clipped = clip_display(title, available);
+        let padding = available.saturating_sub(display_width(&clipped));
         spans.push(Span::styled(
             format!("{clipped}{:padding$}", "", padding = padding),
             header_style(),
@@ -86,11 +83,11 @@ pub(super) fn status_lines(model: &TuiModel, width: usize) -> Vec<Line<'static>>
         lines.push(switch_line(state, width));
     }
     for pair in monitoring_pairs(model) {
-        lines.push(Line::from(clip(&pair, width)));
+        lines.push(Line::from(clip_display(&pair, width)));
     }
     if let Some(err) = &model.err {
         lines.push(Line::from(Span::styled(
-            clip(&format!("error: {err}"), width),
+            clip_display(&format!("error: {err}"), width),
             Style::default().fg(Color::Red),
         )));
     }
@@ -112,9 +109,10 @@ fn switch_line(state: &TuiSwitchState, width: usize) -> Line<'static> {
             used += COLUMN_GAP;
         }
         let available = column_width.min(width.saturating_sub(used));
-        let clipped = clip(text, available);
-        used += clipped.chars().count();
-        let padding = available.saturating_sub(clipped.chars().count());
+        let clipped = clip_display(text, available);
+        let clipped_width = display_width(&clipped);
+        used += clipped_width;
+        let padding = available.saturating_sub(clipped_width);
         spans.push(Span::raw(format!(
             "{clipped}{:padding$}",
             "",
@@ -125,7 +123,7 @@ fn switch_line(state: &TuiSwitchState, width: usize) -> Line<'static> {
     if used + COLUMN_GAP < width {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            clip(derived.text(), width - used - COLUMN_GAP),
+            clip_display(derived.text(), width - used - COLUMN_GAP),
             derived.style(),
         ));
     }

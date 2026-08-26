@@ -1,4 +1,5 @@
 use super::control_rows::ControlRow;
+use super::text_width::{clip_display, display_width};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -135,8 +136,8 @@ fn cell_text(row: &ControlRow, kind: ColumnKind) -> &str {
 }
 
 fn clip(text: &str, width: usize, right_aligned: bool) -> String {
-    let clipped: String = text.chars().take(width).collect();
-    let padding = width.saturating_sub(clipped.chars().count());
+    let clipped = clip_display(text, width);
+    let padding = width.saturating_sub(display_width(&clipped));
     if right_aligned {
         format!("{:padding$}{clipped}", "", padding = padding)
     } else {

@@ -1,4 +1,5 @@
 use super::model::{current_milliamp_estimate, TuiModel};
+use super::text_width::{clip_display, display_width};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -34,12 +35,16 @@ pub(super) fn telemetry_rows(model: &TuiModel, height: u16) -> usize {
     }
 }
 
-fn column_widths(total: usize, count: usize) -> Vec<usize> {
-    let base = total / count;
-    let remainder = total % count;
-    (0..count)
+fn column_widths(total: usize, count: usize) -> (Vec<usize>, usize) {
+    let gutter_count = count.saturating_sub(1);
+    let gutter_width = usize::from(gutter_count > 0 && total >= count.saturating_add(gutter_count));
+    let content = total - gutter_width * gutter_count;
+    let base = content / count;
+    let remainder = content % count;
+    let widths = (0..count)
         .map(|index| if index < remainder { base + 1 } else { base })
-        .collect()
+        .collect();
+    (widths, gutter_width)
 }
 
 fn channel_scale(model: &TuiModel, channel: &str, window: &[i32]) -> i64 {
@@ -89,12 +94,12 @@ fn push_clipped(
     style: Style,
     budget: usize,
 ) -> usize {
-    let take = budget.min(text.chars().count());
-    if take > 0 {
-        let clipped: String = text.chars().take(take).collect();
+    let clipped = clip_display(&text, budget);
+    let used = display_width(&clipped);
+    if used > 0 {
         spans.push(Span::styled(clipped, style));
     }
-    budget - take
+    budget - used
 }
 
 pub(super) fn render_telemetry(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
@@ -102,7 +107,7 @@ pub(super) fn render_telemetry(frame: &mut ratatui::Frame, area: Rect, model: &T
     if channels.is_empty() || area.height == 0 {
         return;
     }
-    let widths = column_widths(area.width as usize, channels.len());
+    let (widths, gutter_width) = column_widths(area.width as usize, channels.len());
 
     let mut header_spans = Vec::new();
     let mut grids = Vec::new();
@@ -144,19 +149,22 @@ pub(super) fn render_telemetry(frame: &mut ratatui::Frame, area: Rect, model: &T
             budget,
         );
         header_spans.push(Span::raw(" ".repeat(budget)));
+        if index + 1 < channels.len() && gutter_width > 0 {
+            header_spans.push(Span::raw(" "));
+        }
     }
 
     let mut lines: Vec<Line<'static>> = vec![Line::from(header_spans)];
     for row in 0..GRAPH_ROWS {
-        let spans: Vec<Span<'static>> = grids
-            .iter()
-            .enumerate()
-            .map(|(index, grid)| {
-                let width = widths[index];
-                let text: String = grid[row * width..(row + 1) * width].iter().collect();
-                Span::raw(text)
-            })
-            .collect();
+        let mut spans = Vec::new();
+        for (index, grid) in grids.iter().enumerate() {
+            let width = widths[index];
+            let text: String = grid[row * width..(row + 1) * width].iter().collect();
+            spans.push(Span::raw(text));
+            if index + 1 < grids.len() && gutter_width > 0 {
+                spans.push(Span::raw(" "));
+            }
+        }
         lines.push(Line::from(spans));
     }
 

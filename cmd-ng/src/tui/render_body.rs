@@ -1,19 +1,29 @@
 use super::config_rows::build_saved_config_content;
 use super::control_columns::{row_line, selection_style, RowLayout};
-use super::control_rows::control_rows;
+use super::control_rows::{control_rows, RowTone};
 use super::controls::ControlItem;
+use super::gpio_io::GpioAction;
 use super::gpio_projection::{gpio_visual_rows, GpioCell, PAIR_MIN_WIDTH};
+use super::hit_types::SavedConfigRowTarget;
 use super::model::TuiModel;
 use super::pages::{clamp_scroll, ensure_visible, ActivePage};
+use super::render_body_hits::{register_body_hits, BodyViewport};
 use super::status_page::status_lines;
+use super::text_width::{clip_display, display_width};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 
 #[derive(Debug, Clone)]
+pub(super) enum BodyTarget {
+    Control(ControlItem),
+    SavedConfig(SavedConfigRowTarget),
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct RowMark {
-    pub(super) item: ControlItem,
+    pub(super) target: BodyTarget,
     pub(super) line: usize,
     pub(super) x_start: usize,
     pub(super) x_end: usize,
@@ -75,7 +85,7 @@ fn push_row(
         content.selection_line = Some(content.lines.len());
     }
     content.marks.push(RowMark {
-        item,
+        target: BodyTarget::Control(item),
         line: content.lines.len(),
         x_start,
         x_end,
@@ -99,13 +109,35 @@ fn push_gpio_row(content: &mut BodyContent, model: &TuiModel, cells: &[GpioCell]
         };
         spans.extend(cell_spans(cell, model, cell_width, selected));
         content.marks.push(RowMark {
-            item: ControlItem::Gpio(cell.name.clone()),
+            target: BodyTarget::Control(ControlItem::Gpio(cell.name.clone())),
             line: content.lines.len(),
             x_start,
             x_end: x_start + cell_width,
         });
     }
     content.lines.push(Line::from(spans));
+}
+
+fn pending_tag(model: &TuiModel, name: &str) -> Option<&'static str> {
+    let pending = model.gpio_pending.as_ref()?;
+    if pending.target != name {
+        return None;
+    }
+    Some(match pending.action {
+        GpioAction::DriveLow => "[LOW…]",
+        GpioAction::DriveHigh => "[HIGH…]",
+        GpioAction::SetInput => "[INPUT…]",
+    })
+}
+
+fn cell_tag(model: &TuiModel, name: &str) -> Option<&'static str> {
+    if let Some(tag) = pending_tag(model, name) {
+        return Some(tag);
+    }
+    if model.gpio_gesture.holding_pin() == Some(name) {
+        return Some("[HOLD…]");
+    }
+    None
 }
 
 fn cell_spans(
@@ -123,41 +155,59 @@ fn cell_spans(
         (false, true) => ("●", "OUT", "HIGH"),
     };
     let suffix = format!("{marker} {direction} {level_word}");
-    let suffix_width = suffix.chars().count();
+    let suffix_width = display_width(&suffix);
+    let tag = cell_tag(model, &cell.name);
+    let tag_width = tag.map_or(0, |text| display_width(text) + 1);
+    // Contract: state suffix > pending action tag > hold tag > group/label >
+    // note. A clipped pending action remains in the status line; HOLD drops.
+    let tag = tag.filter(|_| width >= suffix_width + tag_width);
+    let tail_width = suffix_width + tag.map_or(0, |text| display_width(text) + 1);
     let state_style = if level {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        RowTone::GpioHigh.state_style()
     } else {
-        Style::default().fg(Color::DarkGray)
+        RowTone::GpioLow.state_style()
     };
 
     let core = format!("{} {}", cell.group, cell.label);
-    let core_width = core.chars().count();
+    let core_width = display_width(&core);
     let plain = selection_style(Style::default(), selected);
     let state = selection_style(state_style, selected);
+    let pending = selection_style(RowTone::GpioPending.state_style(), selected);
     let muted = selection_style(Style::default().fg(Color::DarkGray), selected);
 
     let mut spans = Vec::new();
-    if width > suffix_width {
-        let core_budget = width - suffix_width - 1;
-        let clipped_core: String = core.chars().take(core_budget).collect();
-        let core_used = clipped_core.chars().count();
-        spans.push(Span::styled(clipped_core, plain));
-        spans.push(Span::styled(" ", plain));
+    if width >= tail_width {
+        let mut used = 0usize;
+        let mut core_used = 0usize;
+        if width > tail_width {
+            let core_budget = width - tail_width - 1;
+            let clipped_core = clip_display(&core, core_budget);
+            core_used = display_width(&clipped_core);
+            spans.push(Span::styled(clipped_core, plain));
+            spans.push(Span::styled(" ", plain));
+            used += core_used + 1;
+        }
         spans.push(Span::styled(suffix, state));
-        let mut used = core_used + 1 + suffix_width;
+        used += suffix_width;
+        if let Some(tag) = tag {
+            spans.push(Span::styled(format!(" {tag}"), pending));
+            used += display_width(tag) + 1;
+        }
         if core_used == core_width && !cell.note.is_empty() {
             let note = format!(" {}", cell.note);
-            let take = note.chars().count().min(width - used);
-            spans.push(Span::styled(
-                note.chars().take(take).collect::<String>(),
-                muted,
-            ));
-            used += take;
+            let clipped_note = clip_display(&note, width - used);
+            let note_used = display_width(&clipped_note);
+            if note_used > 0 {
+                spans.push(Span::styled(clipped_note, muted));
+                used += note_used;
+            }
         }
         spans.push(Span::styled(" ".repeat(width - used), plain));
     } else {
-        let clipped: String = format!("{core} {suffix}").chars().take(width).collect();
+        let clipped = clip_display(&format!("{core} {suffix}"), width);
+        let used = display_width(&clipped);
         spans.push(Span::styled(clipped, plain));
+        spans.push(Span::styled(" ".repeat(width - used), plain));
     }
     spans
 }
@@ -169,9 +219,20 @@ fn build_saved_config_page(model: &TuiModel, section_width: usize) -> BodyConten
     } else {
         None
     };
+    let marks = config
+        .item_anchors
+        .iter()
+        .zip(&model.saved_config.items)
+        .map(|(line, item)| RowMark {
+            target: BodyTarget::SavedConfig(SavedConfigRowTarget(item.id.clone())),
+            line: *line,
+            x_start: 0,
+            x_end: section_width,
+        })
+        .collect();
     BodyContent {
         lines: config.lines,
-        marks: Vec::new(),
+        marks,
         selection_line,
     }
 }
@@ -186,23 +247,7 @@ pub(super) fn render_body(frame: &mut ratatui::Frame, area: Rect, model: &mut Tu
     }
     model.set_page_scroll(offset);
 
-    for mark in &content.marks {
-        if mark.line < offset {
-            continue;
-        }
-        let visible_line = mark.line - offset;
-        if visible_line >= viewport || mark.x_start >= area.width as usize {
-            continue;
-        }
-        let x_end = mark.x_end.min(area.width as usize);
-        let rect = Rect::new(
-            area.x + mark.x_start as u16,
-            area.y + visible_line as u16,
-            (x_end - mark.x_start) as u16,
-            1,
-        );
-        model.hit_map.push_control(rect, mark.item.clone());
-    }
+    register_body_hits(BodyViewport { area, offset }, &content, model);
 
     let paragraph = Paragraph::new(Text::from(content.lines)).scroll((offset as u16, 0));
     frame.render_widget(paragraph, area);

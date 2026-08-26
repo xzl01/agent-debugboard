@@ -1,5 +1,7 @@
+use super::controls::{control_items, ControlItem};
 use super::model::TuiModel;
 use super::pages::ActivePage;
+use super::text_width::display_width;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -22,9 +24,9 @@ impl Segment {
 
     fn unit_len(&self) -> usize {
         if self.key.is_empty() {
-            self.label.chars().count()
+            display_width(&self.label)
         } else {
-            self.key.chars().count() + 1 + self.label.chars().count()
+            display_width(self.key) + 1 + display_width(&self.label)
         }
     }
 }
@@ -38,6 +40,13 @@ fn key_style() -> Style {
 
 fn label_style() -> Style {
     Style::default().fg(Color::White).bg(Color::DarkGray)
+}
+
+fn gpio_selected(model: &TuiModel) -> bool {
+    matches!(
+        control_items(model).get(model.control_idx),
+        Some(ControlItem::Gpio(_))
+    )
 }
 
 fn keybar_segments(model: &TuiModel) -> Vec<Segment> {
@@ -60,11 +69,22 @@ fn keybar_segments(model: &TuiModel) -> Vec<Segment> {
         return vec![Segment::new("Esc", "dismiss Saved Config error")];
     }
     match model.active_page {
+        ActivePage::Controls if gpio_selected(model) => vec![
+            Segment::new("l", "LOW"),
+            Segment::new("o", "HIGH"),
+            Segment::new("i", "INPUT"),
+            Segment::new("Mouse", "click/hold/2x"),
+            Segment::new("Tab/Shift+Tab", "page"),
+            Segment::new("g", "GPIO"),
+            Segment::new("p", "pause"),
+            Segment::new("r", "refresh"),
+            Segment::new("PgUp/PgDn", "Move"),
+            Segment::new("q", "quit"),
+        ],
         ActivePage::Controls => vec![
             Segment::new("q", "quit"),
             Segment::new("Tab/Shift+Tab", "page"),
             Segment::new("Enter/click", "activate"),
-            Segment::new("i", "input"),
             Segment::new("g", "GPIO"),
             Segment::new("p", "pause"),
             Segment::new("r", "refresh"),

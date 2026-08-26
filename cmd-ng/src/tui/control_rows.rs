@@ -12,6 +12,7 @@ pub(super) enum RowTone {
     SwitchMismatch,
     GpioHigh,
     GpioLow,
+    GpioPending,
 }
 
 impl RowTone {
@@ -24,6 +25,9 @@ impl RowTone {
             Self::SwitchMismatch => Style::default().fg(Color::Red),
             Self::GpioHigh => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             Self::GpioLow => Style::default().fg(Color::DarkGray),
+            Self::GpioPending => Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         }
     }
 }
@@ -113,12 +117,7 @@ fn switch_row(model: &TuiModel, item: &ControlItem, name: &str) -> ControlRow {
         name: name.to_string(),
         state_route,
         live: "-".to_string(),
-        mode: if state.is_some_and(|state| state.requires_confirm) {
-            "confirm"
-        } else {
-            "auto"
-        }
-        .to_string(),
+        mode: "confirm".to_string(),
         description: state.map_or_else(String::new, |state| state.routes.join("/")),
         tone: if pending {
             RowTone::SwitchPending

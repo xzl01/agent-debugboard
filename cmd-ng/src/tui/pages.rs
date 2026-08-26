@@ -55,6 +55,7 @@ impl TuiModel {
         if page == self.active_page {
             return;
         }
+        self.gpio_gesture.cancel();
         if self.active_page == ActivePage::SavedConfig {
             self.saved_config.blur();
         }

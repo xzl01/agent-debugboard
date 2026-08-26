@@ -16,11 +16,10 @@ const HEIGHT: u16 = 24;
 const POWER_NAMES: [&str; 4] = ["12v_out", "5v_out", "20v_out", "vdd_5v"];
 const SWITCH_NAMES: [&str; 4] = ["sd", "tf_wp", "usb", "vin"];
 const GPIO_COUNT: u32 = 13;
-const CONTROLS_SEGMENTS: [&str; 8] = [
+const CONTROLS_SEGMENTS: [&str; 7] = [
     "q quit",
     "Tab/Shift+Tab page",
     "Enter/click activate",
-    "i input",
     "g GPIO",
     "p pause",
     "r refresh",
@@ -247,10 +246,7 @@ fn keybar_drops_whole_segments_instead_of_clipping_them() -> Result<()> {
     let mut model = fixture_model();
     let buffer = draw(&mut model, 100, HEIGHT)?;
     let keybar = row_text(&buffer, HEIGHT - 1);
-    assert!(
-        keybar.contains("q quit"),
-        "the last row must be the page-aware keybar: {keybar:?}"
-    );
+    assert!(keybar.contains("q quit"), "missing keybar: {keybar:?}");
     for segment in keybar
         .trim_end()
         .split("  ")
