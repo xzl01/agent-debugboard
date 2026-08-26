@@ -10,7 +10,6 @@ export const GPIO_LABEL_ON_LEVEL = "rgb(var(--c-gpio-on-level))";
 export const GPIO_RING_BRAND = "rgb(var(--c-brand))";
 export const GPIO_PENDING_STROKE = "rgb(var(--c-warn))";
 export const GPIO_INPUT_DASH = "3 2";
-export const GPIO_PENDING_DASH = "4 3";
 
 export const GPIO_LEVEL_DISC_RADIUS = 11.5;
 export const GPIO_DIRECTION_RING_RADIUS = 14;
@@ -138,11 +137,9 @@ export function GpioPin({ cell, cx, cy, pendingPin, instructionsId, onAction, t 
           fill="none"
           stroke={GPIO_PENDING_STROKE}
           strokeWidth={1.5}
-          strokeDasharray={GPIO_PENDING_DASH}
           vectorEffect="non-scaling-stroke"
           aria-hidden="true"
-          style={{ transformBox: "fill-box", transformOrigin: "center" }}
-          className="pointer-events-none animate-spin"
+          className="pointer-events-none"
         />
       )}
       <circle

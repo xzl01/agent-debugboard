@@ -100,24 +100,31 @@ export const apiEndpoint = () => BASE;
 export const getStatus = () => request("/status");
 export const getAdc = () => request("/adc/read");
 
-export const setPower = (name: string, on: boolean) =>
-  request<PowerMutationResponse>(`/power/${encodeURIComponent(name)}`, {
+function encodeDynamicPathSegment(name: string): string {
+  if (name === "" || name === "." || name === "..") {
+    throw new BoardApiError(`invalid dynamic path segment ${JSON.stringify(name)}`, "invalid_path");
+  }
+  return encodeURIComponent(name);
+}
+
+export const setPower = async (name: string, on: boolean) =>
+  request<PowerMutationResponse>(`/power/${encodeDynamicPathSegment(name)}`, {
     method: "PUT",
     body: JSON.stringify({ state: on ? "on" : "off" }),
   });
 
-export const setSwitch = (name: string, route: string) =>
-  request(`/switch/${name}`, {
+export const setSwitch = async (name: string, route: string) =>
+  request(`/switch/${encodeDynamicPathSegment(name)}`, {
     method: "PUT",
     body: JSON.stringify({ route }),
   });
 
-export const setGpio = (
+export const setGpio = async (
   identifier: string,
   direction: "input" | "output",
   value?: number
 ) =>
-  request(`/gpio/${encodeURIComponent(identifier)}`, {
+  request(`/gpio/${encodeDynamicPathSegment(identifier)}`, {
     method: "PUT",
     body: JSON.stringify(
       direction === "output" ? { direction, value: value ? 1 : 0 } : { direction }

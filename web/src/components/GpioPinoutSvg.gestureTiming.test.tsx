@@ -11,6 +11,7 @@ import {
   renderSvg,
   rerenderSvg,
 } from "./GpioPinoutSvg.testUtils";
+import { LONG_PRESS_THRESHOLD_MS } from "./useGpioPinGesture";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -89,6 +90,28 @@ describe("GpioPinoutSvg gpio gesture timing", () => {
     advanceTimers(2000);
     expect(onGpioAction).toHaveBeenCalledTimes(1);
     view.close();
+  });
+
+  it("treats pointerup at exactly 600ms as a hold before the timer callback", () => {
+    const onGpioAction = vi.fn();
+    const view = renderSvg({ variant: "gpio", gpios: [gpio(10)], onGpioAction });
+    const pin = gpioPin(view.host, 10);
+    let monotonicNow = 1_000;
+    const performanceNow = vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
+
+    try {
+      pointerDown(pin);
+      monotonicNow += LONG_PRESS_THRESHOLD_MS;
+      pointerUp(pin);
+      advanceTimers(2_000);
+
+      expect(onGpioAction).toHaveBeenCalledTimes(1);
+      expect(onGpioAction).toHaveBeenCalledWith(10, { kind: "outputHigh" });
+      expect(onGpioAction).not.toHaveBeenCalledWith(10, { kind: "outputLow" });
+    } finally {
+      performanceNow.mockRestore();
+      view.close();
+    }
   });
 
   it("treats release after a completed hold as inert", () => {

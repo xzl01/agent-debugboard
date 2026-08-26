@@ -217,7 +217,9 @@ button {
 
 /* GPIO hold-progress arc: paint-only stroke sweep over the 600ms hold
    threshold. The JS timer is the action authority; this is feedback only.
-   pathLength=1 on the arc makes 1 the full circumference. */
+   pathLength=1 on the arc makes 1 the full circumference. The animation has
+   no fill persistence: the arc element unmounts when the hold completes or
+   cancels, so no painted residue can outlive the gesture. */
 @keyframes gpio-hold-sweep {
   from {
     stroke-dashoffset: 1;
@@ -229,7 +231,7 @@ button {
 .gpio-hold-arc {
   stroke-dasharray: 1;
   stroke-dashoffset: 1;
-  animation: gpio-hold-sweep 0.6s linear forwards;
+  animation: gpio-hold-sweep 0.6s linear;
 }
 
 @media (prefers-reduced-motion: reduce) {

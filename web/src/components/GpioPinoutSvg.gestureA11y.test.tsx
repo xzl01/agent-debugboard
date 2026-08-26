@@ -126,7 +126,7 @@ describe("GpioPinoutSvg gpio gesture accessibility and visual contract", () => {
     view.close();
   });
 
-  it("renders a warn dashed busy ring only on the pending target pin", () => {
+  it("renders a solid static warn busy ring only on the pending target pin", () => {
     const onGpioAction = vi.fn();
     const view = renderSvg({
       variant: "gpio",
@@ -141,11 +141,12 @@ describe("GpioPinoutSvg gpio gesture accessibility and visual contract", () => {
     expect(ring.getAttribute("fill")).toBe("none");
     expect(ring.getAttribute("stroke")).toBe(GPIO_PENDING_STROKE);
     expect(ring.getAttribute("stroke-width")).toBe("1.5");
-    expect(ring.getAttribute("stroke-dasharray")).not.toBeNull();
+    expect(ring.getAttribute("stroke-dasharray")).toBeNull();
     expect(ring.getAttribute("vector-effect")).toBe("non-scaling-stroke");
     expect(ring.getAttribute("aria-hidden")).toBe("true");
-    expect(ring.getAttribute("class")).toContain("animate-spin");
+    expect(ring.getAttribute("class")).not.toContain("animate-spin");
     expect(ring.getAttribute("class")).toContain("pointer-events-none");
+    expect(ring.getAttribute("style")).toBeNull();
 
     const focus = focusRing(target);
     if (!focus) throw new Error("focus ring missing");

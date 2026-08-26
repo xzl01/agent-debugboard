@@ -373,7 +373,10 @@ the direction boundary at any scale:
   a separate element above the direction
   ring, driven purely by `pathLength="1"` with a `stroke-dasharray` of `1`
   and a `stroke-dashoffset` animating from `1` to `0`, so the sweep is
-  paint-only and animates no layout property. It is transient feedback for
+  paint-only and animates no layout property. The animation carries no fill
+  persistence (`forwards` is not used): the arc element unmounts when the
+  hold completes or cancels, so no painted residue can outlive the gesture.
+  It is transient feedback for
   an in-progress gesture, never a persistent state marker.
 - Focus ring (`r = 16`, 1.5px `--c-brand` stroke, `fill="none"`): keyboard
   only, `opacity-0` by default and `group-focus-visible:opacity-100` — the SVG
@@ -448,12 +451,11 @@ Interaction contract (GPIO variant only) — direct gestures, no selection:
   `aria-disabled="true"` with the not-allowed cursor, so no pin looks
   actionable while the card lock would drop its input; only the request's
   target pin additionally carries `aria-busy="true"`, the dimmed opacity
-  treatment, and an unmistakable busy indicator: a warn-colored dashed ring
-  at `r = 16` (1.5px `rgb(var(--c-warn))`, `stroke-dasharray="4 3"`,
-  non-scaling, `aria-hidden`, no pointer events) that spins via the existing
-  `animate-spin` transform motion. The ring renders immediately below the
-  brand focus ring without replacing it, and the global reduced-motion rules
-  freeze the spin into an equally visible static warn dashed ring. The
+  treatment, and an unmistakable busy indicator: a solid static warn-colored
+  ring at `r = 16` (1.5px `rgb(var(--c-warn))`, no dash pattern, non-scaling,
+  `aria-hidden`, no pointer events, no motion). The ring renders immediately
+  below the brand focus ring without replacing it, and its static solid
+  geometry reads identically under reduced motion. The
   gesture hint stays static text.
 - Reduced motion: `prefers-reduced-motion` keeps every timing constant and
   every request rule unchanged; the hold-progress arc renders as an instant

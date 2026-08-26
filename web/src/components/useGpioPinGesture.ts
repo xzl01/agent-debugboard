@@ -16,6 +16,7 @@ type GesturePhase =
       readonly pointerId: number;
       readonly startX: number;
       readonly startY: number;
+      readonly startTime: number;
       readonly second: boolean;
     }
   | { readonly kind: "awaitSecond" }
@@ -73,6 +74,13 @@ export function useGpioPinGesture({
     setHolding(false);
   };
 
+  const fireHold = (pointerId: number) => {
+    phaseRef.current = { kind: "holdFired", pointerId };
+    setHolding(false);
+    if (blockedRef.current) return;
+    onActionRef.current({ kind: "outputHigh" });
+  };
+
   useLayoutEffect(() => {
     blockedRef.current = blocked;
     onActionRef.current = onAction;
@@ -98,6 +106,7 @@ export function useGpioPinGesture({
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
+      startTime: performance.now(),
       second,
     };
     setHolding(true);
@@ -105,10 +114,7 @@ export function useGpioPinGesture({
       timerRef.current = null;
       const current = phaseRef.current;
       if (current.kind !== "down") return;
-      phaseRef.current = { kind: "holdFired", pointerId: current.pointerId };
-      setHolding(false);
-      if (blockedRef.current) return;
-      onActionRef.current({ kind: "outputHigh" });
+      fireHold(current.pointerId);
     }, LONG_PRESS_THRESHOLD_MS);
   };
 
@@ -127,6 +133,11 @@ export function useGpioPinGesture({
     }
     if (phase.kind !== "down" || event.pointerId !== phase.pointerId) return;
     clearTimer();
+    if (performance.now() - phase.startTime >= LONG_PRESS_THRESHOLD_MS) {
+      fireHold(phase.pointerId);
+      phaseRef.current = { kind: "idle" };
+      return;
+    }
     setHolding(false);
     if (phase.second) {
       phaseRef.current = { kind: "idle" };
