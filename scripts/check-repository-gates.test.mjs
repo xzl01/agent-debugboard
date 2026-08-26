@@ -489,6 +489,7 @@ test("rejects every publication and branch-policy bypass", async (t) => {
   const baseline = await repositoryContents();
   const cases = [
     ["build dependency", ".github/workflows/build.yml", "      - host-cli\n", "", "G03"],
+    ["desktop dependency", ".github/workflows/build.yml", "      - desktop-release\n", "", "G03"],
     ["Host Tools dependency", ".github/workflows/build.yml", "      - host-tools\n", "", "G03"],
     ["Pages validation", ".github/workflows/pages.yml", "    needs: validation\n", "", "G04"],
     ["release validation", ".github/workflows/release.yml", "      - validation\n", "", "G05"],
@@ -511,7 +512,7 @@ test("rejects every publication and branch-policy bypass", async (t) => {
     ["resolver tag fetch", ".github/workflows/release.yml", "          fetch-tags: true\n", "", "G12"],
     ["validation SHA binding", ".github/workflows/release.yml", "      source_sha: ${{ needs.resolve.outputs.resolved_sha }}", "", "G12"],
     ["release checkout SHA", ".github/workflows/release.yml", "      - name: Checkout application\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0\n        with:\n          fetch-depth: 0\n          ref: ${{ needs.resolve.outputs.resolved_sha }}\n          path: app\n          persist-credentials: false\n\n      - name: Set up Python\n", "      - name: Checkout application\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0\n        with:\n          fetch-depth: 0\n          ref: ${{ needs.resolve.outputs.normalized_tag }}\n          path: app\n          persist-credentials: false\n\n      - name: Set up Python\n", "G12"],
-    ["desktop checkout SHA", ".github/workflows/release.yml", "      - name: Checkout application\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0\n        with:\n          ref: ${{ needs.resolve.outputs.resolved_sha }}\n          path: app\n          persist-credentials: false\n\n      - name: Set up Rust\n        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable\n\n      - name: Set up Node.js\n", "      - name: Checkout application\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0\n        with:\n          ref: ${{ needs.resolve.outputs.normalized_tag }}\n          path: app\n          persist-credentials: false\n\n      - name: Set up Rust\n        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable\n\n      - name: Set up Node.js\n", "G12"],
+    ["desktop checkout SHA", ".github/workflows/release.yml", "            asset_name: radxa-linkr-desktop_windows_amd64.zip\n\n    steps:\n      - name: Checkout application\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0\n        with:\n          ref: ${{ needs.resolve.outputs.resolved_sha }}\n", "            asset_name: radxa-linkr-desktop_windows_amd64.zip\n\n    steps:\n      - name: Checkout application\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0\n        with:\n          ref: ${{ needs.resolve.outputs.normalized_tag }}\n", "G12"],
     ["desktop resolve dependency", ".github/workflows/release.yml", "    needs:\n      - resolve\n      - validation\n      - version-gate\n", "    needs:\n      - validation\n      - version-gate\n", "G12"],
     ["direct resolver dependency", ".github/workflows/release.yml", "      - resolve\n      - validation\n", "      - validation\n", "G12"],
     ["remote tag peel", ".github/workflows/release.yml", '          while [[ "$object_type" == "tag" ]]; do', "          while false; do", "G12"],
@@ -525,6 +526,12 @@ test("rejects every publication and branch-policy bypass", async (t) => {
     ["status buffer capacity", "apps/radxa_linkr_debugger/src/linkr_debugger_http.c", "#define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 6144U\n", "#define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 4096U\n", "G14"],
     ["WS snapshot cadence", "docs/testing/hil-functional-test-spec.md", "const MAX_SNAPSHOTS = 1;\n", "const MAX_SNAPSHOTS = 3;\n", "G15"],
     ["WS state snapshot gate", "apps/radxa_linkr_debugger/src/linkr_debugger_ws.c", "if (events & LINKR_DEBUGGER_WS_EVENT_STATE) {\n", "if (events & LINKR_DEBUGGER_WS_EVENT_SAMPLE) {\n", "G15"],
+    ["Web dependency registry", "web/package-lock.json", "https://registry.npmjs.org/react-grab/-/react-grab-0.1.50.tgz", "https://repo.huaweicloud.com/repository/npm/react-grab/-/react-grab-0.1.50.tgz", "G11"],
+    ["desktop release preflight", ".github/workflows/build.yml", "          - os: windows-latest\n            asset_name: radxa-linkr-desktop_windows_amd64.zip\n", "", "G09"],
+    ["desktop decoder toolchain", ".github/workflows/build.yml", "      - name: Install wasm target\n        run: rustup target add wasm32-unknown-unknown\n\n      - name: Set up Node.js\n", "      - name: Set up Node.js\n", "G09"],
+    ["release desktop decoder toolchain", ".github/workflows/release.yml", "      - name: Install wasm target\n        run: rustup target add wasm32-unknown-unknown\n\n      - name: Set up Node.js\n", "      - name: Set up Node.js\n", "G09"],
+    ["prerelease marking", ".github/workflows/release.yml", "            release_flags+=(--prerelease --latest=false)\n", "", "G10"],
+    ["curated release notes", ".github/workflows/release.yml", '          release_notes="docs/releases/${RELEASE_TAG%%-*}.md"\n', "", "G10"],
   ];
 
   for (const [name, relative, replace, replacement, code] of cases) {

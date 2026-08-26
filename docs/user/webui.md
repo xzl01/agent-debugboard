@@ -268,11 +268,11 @@ npm run device-bridge
 
 The Pages build connects to `http://127.0.0.1:8787/api/v1`. By default, the
 gateway forwards HTTP and WebSocket traffic directly to the firmware service
-at `http://172.29.203.1:8080` and supplies the CORS and Private Network Access
+at `http://172.29.203.1` and supplies the CORS and Private Network Access
 headers needed by the browser. Override the upstream address when necessary:
 
 ```sh
-LINKR_BOARD_URL=http://172.29.203.1:8080 npm run device-bridge
+LINKR_BOARD_URL=http://172.29.203.1 npm run device-bridge
 ```
 
 On macOS, both `npm run dev` and `npm run device-bridge` automatically insert a

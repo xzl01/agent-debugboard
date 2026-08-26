@@ -8,7 +8,7 @@
 }:
 
 let
-  version = "0.2.1";
+  version = "0.3.0";
 in
 rustPlatform.buildRustPackage {
   pname = "radxa-linkr-debuggerctl";
@@ -18,7 +18,7 @@ rustPlatform.buildRustPackage {
 
   cargoRoot = "cmd-ng";
 
-  cargoHash = "sha256-BJMnYG98t41HgSWiHSLnHapFKR2rWFlp5A2EqN32Z54=";
+  cargoHash = "sha256-fF0hOW3MExveRvJCzfAOV44gn8XhNv93P6xVrNzzp8o=";
 
   buildAndTestSubdir = "cmd-ng";
 

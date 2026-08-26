@@ -1,6 +1,6 @@
 [package]
 name = "radxa-linkr-host"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 license = "LGPL-3.0-or-later"
 description = "Local Web, device gateway, serial broker and MCP host for Radxa Linkr Debugger"

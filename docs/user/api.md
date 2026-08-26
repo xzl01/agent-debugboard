@@ -448,7 +448,7 @@ the owning telemetry cursor's cumulative overrun count since subscription.
 | HTTP Status | Code | Meaning |
 |---|---|---|
 | 400 | `missing_power_output`, `invalid_state`, `invalid_config`, `invalid_route` | Bad request |
-| 403 | `power_output_locked`, `not_allowed` | Forbidden |
+| 403 | `power_output_locked`, `not_allowed`, `input_only` | Forbidden; `input_only` identifies firmware-owned ADC3/GP29 |
 | 404 | `unknown_power_output`, `not_found`, `unknown_channel` | Not found |
 | 405 | `method_not_allowed` | Method not allowed |
 | 409 | `already_armed`, `no_verified_image`, `upload_in_progress` | Conflict |

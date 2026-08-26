@@ -33,12 +33,13 @@ export const POLICY_FILES = Object.freeze([
   "nix/overlay.nix",
   "shell.nix",
   "web/package.json",
+  "web/package-lock.json",
   "docs/developer/build.md",
   "docs/developer/build.zh-CN.md",
 ]);
 
 const REQUIRED_GATE_NEEDS = Object.freeze([
-  "source", "version-gate", "decoder", "nix", "web", "scripts", "windows-installer",
+  "source", "version-gate", "decoder", "nix", "web", "desktop-release", "scripts", "windows-installer",
   "firmware", "host-cli", "host-tools", "skill-bundle",
 ]);
 
@@ -171,6 +172,7 @@ export function checkRepositoryGateContents(contents) {
   const overlay = contents.get("nix/overlay.nix") ?? "";
   const shell = contents.get("shell.nix") ?? "";
   const webPackage = contents.get("web/package.json") ?? "";
+  const webPackageLock = contents.get("web/package-lock.json") ?? "";
   const buildEn = contents.get("docs/developer/build.md") ?? "";
   const buildZh = contents.get("docs/developer/build.zh-CN.md") ?? "";
   const appCmake = contents.get("apps/radxa_linkr_debugger/CMakeLists.txt") ?? "";
@@ -210,7 +212,9 @@ export function checkRepositoryGateContents(contents) {
     fail(failures, "G04", ".github/workflows/pages.yml", "Pages must validate, build, then deploy in order");
   }
   if (!reusableValidation(release) || !needs(job(release, "rust-cli-release")).includes("validation")
-      || !needs(job(release, "release")).includes("rust-cli-release")) {
+      || !needs(job(release, "host-desktop-release")).includes("validation")
+      || !needs(job(release, "release")).includes("rust-cli-release")
+      || !needs(job(release, "release")).includes("host-desktop-release")) {
     fail(failures, "G05", ".github/workflows/release.yml", "release publication must transitively depend on validation");
   }
   if (!reusableValidation(nightly) || !exact(needs(job(nightly, "rust-cli-release")), ["validation"])
@@ -228,6 +232,34 @@ export function checkRepositoryGateContents(contents) {
     }
   } catch {
     fail(failures, "G08", "web/package.json", "package file must be valid JSON with the canonical test entry");
+  }
+  try {
+    const lock = JSON.parse(webPackageLock);
+    const nonRegistryPackages = Object.entries(lock.packages ?? {}).filter(([, metadata]) => {
+      if (typeof metadata?.resolved !== "string") return false;
+      try {
+        return new URL(metadata.resolved).host !== "registry.npmjs.org";
+      } catch {
+        return true;
+      }
+    });
+    if (nonRegistryPackages.length > 0) {
+      fail(failures, "G11", "web/package-lock.json", "Web dependencies must resolve only from the canonical npm registry");
+    }
+  } catch {
+    fail(failures, "G11", "web/package-lock.json", "Web package lock must be valid JSON");
+  }
+  const desktop = job(build, "desktop-release");
+  const releaseDesktop = job(release, "host-desktop-release");
+  if (!/ubuntu-latest/.test(desktop) || !/macos-latest/.test(desktop) || !/windows-latest/.test(desktop)
+      || !/cargo build --locked --release --manifest-path host-tools\/Cargo\.toml/.test(desktop)
+      || !/cargo build --locked --release --manifest-path cmd-ng\/Cargo\.toml/.test(desktop)
+      || !/wasm-bindgen-cli --version 0\.2\.121 --locked/.test(desktop)
+      || !/rustup target add wasm32-unknown-unknown/.test(desktop)
+      || !/Verify bundled installer/.test(desktop) || !/Package desktop archive/.test(desktop)
+      || !/wasm-bindgen-cli --version 0\.2\.121 --locked/.test(releaseDesktop)
+      || !/rustup target add wasm32-unknown-unknown/.test(releaseDesktop)) {
+    fail(failures, "G09", ".github/workflows/build.yml", "complete validation must preflight every formal desktop archive platform");
   }
   if (!["cargo", "rustc", "clippy", "rustfmt", "lld", "wasm-bindgen-cli"].every((tool) => new RegExp(`^\\s+pkgs\\.${tool}\\s*$`, "m").test(shell))) {
     fail(failures, "G09", "shell.nix", "classic Nix shell must provide Cargo, rustc, clippy, rustfmt, lld, and wasm-bindgen-cli for canonical Rust and embedded Web builds");
@@ -285,6 +317,13 @@ export function checkRepositoryGateContents(contents) {
     wsSource, prjConfig, docsIndex,
   })) {
     fail(failures, "G18", "apps/radxa_linkr_debugger/{CMakeLists.txt,sections-ram.ld,prj.conf,src/*} + docs/{README.md,reference/logic-analyzer.md}", "firmware memory and capture layout must retain approved capacities, pre-capture NOBITS initialization, stack targets, disabled features, and non-HIL documentation");
+  }
+  if (!/release_notes="docs\/releases\/\$\{RELEASE_TAG%%-\*\}\.md"/.test(release)
+      || !/release_flags=\(\)/.test(release)
+      || !/\[\[ "\$RELEASE_TAG" == \*-\* \]\]/.test(release)
+      || !/release_flags\+=\(--prerelease --latest=false\)/.test(release)
+      || (release.match(/"\$\{release_flags\[@\]\}"/g) ?? []).length !== 2) {
+    fail(failures, "G10", ".github/workflows/release.yml", "formal releases must use curated notes and mark prerelease tags as non-latest prereleases");
   }
   return { ok: failures.length === 0, failures };
 }

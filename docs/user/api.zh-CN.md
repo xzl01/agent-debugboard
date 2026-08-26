@@ -476,7 +476,7 @@ RAM 中。
 | HTTP 状态码 | Code | 含义 |
 |---|---|---|
 | 400 | `missing_power_output`、`invalid_state`、`invalid_config`、`invalid_route` | 请求错误 |
-| 403 | `power_output_locked`、`not_allowed` | 禁止 |
+| 403 | `power_output_locked`、`not_allowed`、`input_only` | 禁止；`input_only` 表示 ADC3/GP29 由固件占用且仅允许输入 |
 | 404 | `unknown_power_output`、`not_found`、`unknown_channel` | 未找到 |
 | 405 | `method_not_allowed` | 方法不允许 |
 | 409 | `already_armed`、`no_verified_image`、`upload_in_progress` | 冲突 |

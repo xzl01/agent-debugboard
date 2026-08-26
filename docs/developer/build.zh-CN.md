@@ -186,9 +186,15 @@ MCUboot 加应用 UF2：`radxa-linkr-debugger-rp2350.uf2`。
 | `radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz` | Linux x64 / AMD64 静态链接 Rust CLI/TUI |
 | `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` | Linux ARM64 / AArch64 静态链接 Rust CLI/TUI |
 | `radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz` | macOS Apple Silicon Rust CLI/TUI |
+| `radxa-linkr-desktop_windows_amd64.zip` | Windows x64 统一桌面包：Web UI、Host 网关、Serial Broker、常驻 MCP、CLI、托盘进程与安装脚本 |
+| `radxa-linkr-desktop_linux_amd64.tar.gz` | Linux x64 / AMD64 统一桌面包；运行时需要 GTK 3 与 Ayatana AppIndicator 3 |
+| `radxa-linkr-desktop_darwin_arm64.tar.gz` | macOS Apple Silicon 统一桌面包 |
 | `skills-radxa-linkr-debugger.tar.gz` | Agent skill 打包 |
 | `SHA256SUMS.txt` | 所有 release assets 的 SHA256 校验文件 |
 
 每份 CLI 归档都以两个命令名提供同一可执行文件。Unix 归档包含主文件
 `radxa-linkr-debuggerctl` 和相对符号链接 `rdb`；Windows 归档包含对应的两个
 硬链接 `.exe`。Rust package 仍只有一个 binary target。
+
+正式 Release workflow 固定发布 13 个资产。滚动 nightly 只发布精简的 9 项
+canary 资产，不包含桌面包和 Linux ARM64 CLI 压缩包。

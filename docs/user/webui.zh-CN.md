@@ -233,11 +233,11 @@ npm run device-bridge
 ```
 
 Pages 构建连接到 `http://127.0.0.1:8787/api/v1`。网关默认将 HTTP 和
-WebSocket 流量直接转发到固件服务 `http://172.29.203.1:8080`，并提供
+WebSocket 流量直接转发到固件服务 `http://172.29.203.1`，并提供
 浏览器所需的 CORS 和 Private Network Access 头。需要时可覆盖上游地址：
 
 ```sh
-LINKR_BOARD_URL=http://172.29.203.1:8080 npm run device-bridge
+LINKR_BOARD_URL=http://172.29.203.1 npm run device-bridge
 ```
 
 在 macOS 上，`npm run dev` 和 `npm run device-bridge` 连接默认 USB-NCM
