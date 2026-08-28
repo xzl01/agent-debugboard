@@ -76,7 +76,8 @@ jobs:
             web/package-lock.json \
             web/decoder/Cargo.toml \
             web/decoder/Cargo.lock \
-            nix/package.nix
+            nix/package.nix \
+            apps/radxa_linkr_debugger/VERSION
           git commit -m "chore(release): prepare v${version}"
           git push --set-upstream origin "$branch"
           pr_url="$(gh pr create \

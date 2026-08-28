@@ -17,7 +17,10 @@ python3 scripts/version_sync.py check
 
 The `set` command updates all managed fields and then runs the same consistency
 check used by CI. Versions must be SemVer values without a leading `v`.
-Prerelease values such as `0.3.0-rc.1` are supported.
+Prerelease values such as `0.3.0-rc.1` are supported. Before writing the
+firmware field, `set` applies the same Zephyr representability checks used by
+CI: each numeric field must be `0..255`, `VERSION_TWEAK` must be `0`, and the
+prerelease suffix must contain only lowercase `[a-z0-9.-]`.
 
 The **Version Bump** GitHub Actions workflow provides the same operation for
 maintainers. Run it manually, choose `dev` or `main` as the base branch, and it
@@ -32,6 +35,7 @@ The script keeps these files synchronized:
 - `web/package.json` and both root fields in `web/package-lock.json`
 - `web/decoder/Cargo.toml` and the decoder entry in `web/decoder/Cargo.lock`
 - `nix/package.nix`
+- `apps/radxa_linkr_debugger/VERSION` (Zephyr application version)
 
 ## CI and Release Behavior
 

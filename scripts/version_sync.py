@@ -25,12 +25,62 @@ class VersionSyncError(RuntimeError):
 
 
 def validate_version(version: str) -> str:
-    if not SEMVER_PATTERN.fullmatch(version):
+    match = SEMVER_PATTERN.fullmatch(version)
+    if match is None:
         raise VersionSyncError(
             f"invalid version {version!r}; expected SemVer without a leading 'v' "
             "(for example, 0.3.0 or 0.3.0-rc.1)"
         )
+    major, minor, patch = (int(value) for value in match.groups())
+    if major > 255 or minor > 255 or patch > 255:
+        raise VersionSyncError(
+            f"invalid version {version!r}; Zephyr VERSION fields must be 0..255"
+        )
+    base, separator, extra = version.partition("-")
+    extra = extra if separator else ""
+    if extra and re.fullmatch(r"[a-z0-9.\-]+", extra) is None:
+        raise VersionSyncError(
+            "Zephyr EXTRAVERSION only supports lowercase alphanumeric, "
+            "'.' and '-' characters"
+        )
     return version
+
+
+def zephyr_app_version_file(version: str) -> str:
+    validate_version(version)
+    base, separator, extra = version.partition("-")
+    major, minor, patch = base.split(".")
+    extra = extra if separator else ""
+    return (
+        f"VERSION_MAJOR = {major}\n"
+        f"VERSION_MINOR = {minor}\n"
+        f"PATCHLEVEL = {patch}\n"
+        "VERSION_TWEAK = 0\n"
+        f"EXTRAVERSION = {extra}\n"
+    )
+
+
+def zephyr_app_version(path: Path) -> str:
+    fields = {
+        "VERSION_MAJOR": None,
+        "VERSION_MINOR": None,
+        "PATCHLEVEL": None,
+        "VERSION_TWEAK": None,
+        "EXTRAVERSION": None,
+    }
+    text = read_text(path)
+    for line in text.splitlines():
+        for key in fields:
+            match = re.fullmatch(rf"\s*{key}\s*=\s*(.*)\s*", line)
+            if match is not None:
+                fields[key] = match.group(1)
+    if any(value is None for value in fields.values()):
+        raise VersionSyncError(f"{path}: incomplete Zephyr VERSION file")
+    if fields["VERSION_TWEAK"] != "0":
+        raise VersionSyncError(f"{path}: VERSION_TWEAK must be 0")
+    extra = fields["EXTRAVERSION"] or ""
+    suffix = f"-{extra}" if extra else ""
+    return f"{fields['VERSION_MAJOR']}.{fields['VERSION_MINOR']}.{fields['PATCHLEVEL']}{suffix}"
 
 
 def read_text(path: Path) -> str:
@@ -233,6 +283,10 @@ def managed_versions(root: Path) -> list[tuple[str, str]]:
                 ),
             ),
             ("nix/package.nix:version", nix_version(root / "nix/package.nix")),
+            (
+                "apps/radxa_linkr_debugger/VERSION:APP_VERSION_STRING",
+                zephyr_app_version(root / "apps/radxa_linkr_debugger/VERSION"),
+            ),
         ]
     )
     return versions
@@ -292,6 +346,9 @@ def version_updates(root: Path, version: str) -> dict[Path, str]:
         ),
         root / "nix/package.nix": update_nix_version(
             root / "nix/package.nix", version
+        ),
+        root / "apps/radxa_linkr_debugger/VERSION": zephyr_app_version_file(
+            version
         ),
     }
 

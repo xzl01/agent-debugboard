@@ -79,6 +79,19 @@ class VersionSyncTest(unittest.TestCase):
             "nix/package.nix",
             f'let\n  version = "{version}";\nin\n{{ inherit version; }}\n',
         )
+        if "-" in version:
+            base, extra = version.split("-", 1)
+        else:
+            base, extra = version, ""
+        major, minor, patch = base.split(".")
+        self.write(
+            "apps/radxa_linkr_debugger/VERSION",
+            f"VERSION_MAJOR = {major}\n"
+            f"VERSION_MINOR = {minor}\n"
+            f"PATCHLEVEL = {patch}\n"
+            "VERSION_TWEAK = 0\n"
+            f"EXTRAVERSION = {extra}\n",
+        )
 
     def run_main(self, *arguments: str) -> tuple[int, str, str]:
         stdout = io.StringIO()
@@ -110,12 +123,18 @@ class VersionSyncTest(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("Updated project version to 0.3.0-rc.1", stdout)
         self.assertEqual(stderr, "")
+        self.assertIn(
+            "EXTRAVERSION = rc.1",
+            (self.root / "apps/radxa_linkr_debugger/VERSION").read_text(
+                encoding="utf-8"
+            ),
+        )
 
         result, stdout, stderr = self.run_main(
             "check", "--tag", "v0.3.0-rc.1"
         )
         self.assertEqual(result, 0)
-        self.assertIn("across 10 fields", stdout)
+        self.assertIn("across 11 fields", stdout)
         self.assertEqual(stderr, "")
 
     def test_set_rejects_leading_v_without_writing(self) -> None:
@@ -124,6 +143,14 @@ class VersionSyncTest(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("without a leading 'v'", stderr)
         self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8"), before)
+
+    def test_set_rejects_versions_unrepresentable_in_zephyr(self) -> None:
+        before = (self.root / "VERSION").read_text(encoding="utf-8")
+        for version in ("256.0.0", "0.3.0-RC.1"):
+            result, _, stderr = self.run_main("set", version)
+            self.assertEqual(result, 1)
+            self.assertIn("Zephyr", stderr)
+            self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8"), before)
 
 
 if __name__ == "__main__":
