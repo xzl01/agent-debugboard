@@ -1,0 +1,1 @@
+{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"task","action":"list","backend":{"available":true},"task_count":1,"tasks":[{"id":"hil-storage","name":"hil-storage","request_count":1}],"blob":"# linkr-task.v1\n# task hil-storage\n{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP13\",\"body\":\"{\\\"direction\\\":\\\"input\\\"}\",\"wait_ms\":0}\n"}

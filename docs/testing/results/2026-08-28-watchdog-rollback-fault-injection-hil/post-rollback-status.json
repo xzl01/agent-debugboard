@@ -1,0 +1,24 @@
+{
+  "schema": "radxa-linkr-debugger.v1",
+  "ok": true,
+  "command": "status",
+  "build": {
+    "profile": "fault-injection",
+    "image_version": "0.0.1+0"
+  },
+  "watchdog": {
+    "supported": true,
+    "automatic": true,
+    "healthy": true,
+    "armed": true,
+    "timeout_ms": 5000,
+    "bootloader_on_timeout": true,
+    "fault_injection_available": true,
+    "fault_injection_armed": false
+  },
+  "runtime": {
+    "available": true,
+    "uptime_ms": 16326,
+    "uptime_seconds": 16
+  }
+}

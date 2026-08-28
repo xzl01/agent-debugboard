@@ -1,0 +1,12 @@
+{"timestamp":"2026-08-27T19:48:45Z","request":"preflight status","http_status":"200","code":"ok","assertion":"ok=true"}
+{"timestamp":"2026-08-27T19:48:45Z","request":"adc read","http_status":"200","code":"ok","assertion":"readings present"}
+{"timestamp":"2026-08-27T19:48:45Z","request":"task catalog","http_status":"200","code":"ok","assertion":"6 builtins"}
+{"timestamp":"2026-08-27T19:48:45Z","request":"task stored list","http_status":"200","code":"ok","assertion":"empty"}
+{"timestamp":"2026-08-27T19:48:45Z","request":"combined UF2 flash","http_status":"recovered","code":"ok","assertion":"HTTP recovered"}
+{"timestamp":"2026-08-27T19:48:45Z","request":"live-session subscribe","http_status":"200","code":"ok","assertion":"snapshot received"}
+{"timestamp":"2026-08-27T19:48:45Z","request":"task store","http_status":"200","code":"ok","assertion":"stored=true"}
+{"timestamp":"2026-08-27T19:48:45Z","request":"task run safe","http_status":"200","code":"ok","assertion":"requests_executed=1"}
+{"timestamp":"2026-08-27T19:48:45Z","request":"task clear","http_status":"200","code":"ok","assertion":"task_count=0"}
+{"timestamp":"2026-08-27T19:48:45Z","request":"CDC config show","http_status":"cdc","code":"ok","assertion":"saved_count=6"}
+{"timestamp":"2026-08-27T19:48:45Z","request":"HTTP BOOTSEL+UF2","http_status":"recovered","code":"ok","assertion":"RPI RP2350 enumerated"}
+{"timestamp":"2026-08-27T19:48:45Z","request":"CDC BOOTSEL+UF2","http_status":"recovered","code":"ok","assertion":"RPI RP2350 enumerated"}

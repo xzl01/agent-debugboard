@@ -1,0 +1,15 @@
+[web-ota-hil] watchdog rollback: safe HIL fault injection
+{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","build":{"profile":"fault-injection","image_version":"0.0.1+0"},"runtime":{"uptime_seconds":63}}
+[web-ota-hil] baseline image=0.0.1+0 uptime=63s
+{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"watchdog","action":"fault_injection","available":true,"armed":false}
+{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ota","state":"pending_test","current_image_confirmed":false,"test_marker_present":true}
+{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"watchdog","action":"fault_injection","available":true,"armed":true}
+[web-ota-hil] watchdog fault armed; waiting for the 5 second watchdog reset
+[web-ota-hil] watchdog reset observed after 9s; waiting for MCUboot rollback
+{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ota","state":"idle","current_image_confirmed":true,"test_marker_present":true}
+[web-ota-hil] rollback intermediate state observed: idle, current_image_confirmed=true, test_marker_present=true
+{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"ota","state":"idle","current_image_confirmed":true,"test_marker_present":false}
+{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"status","build":{"profile":"fault-injection","image_version":"0.0.1+0"},"runtime":{"uptime_seconds":16}}
+[web-ota-hil] rollback image=0.0.1+0 uptime=16s elapsed=77s
+{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"watchdog","action":"fault_injection","available":true,"armed":false}
+[web-ota-hil] watchdog rollback verified: idle, current_image_confirmed=true, OTA test marker cleared, no BOOTSEL disk

@@ -1,0 +1,4 @@
+linkr-debugger:~$ config show
+config available=true reason=ready saved_count=6 pending_count=0
+linkr-debugger:~$ bootloader
+[CDC ACM serial disconnected after BOOTSEL entry; RPI RP2350 enumerated]
