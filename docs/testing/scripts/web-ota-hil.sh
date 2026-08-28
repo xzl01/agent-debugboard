@@ -14,11 +14,13 @@ TTY=""
 FLOW="preflight"
 DRY_RUN=1
 ALLOW_UPLOAD_TEST_REBOOT=0
+ALLOW_WATCHDOG_FAULT=0
 ALLOW_BOOTSEL=0
 ALLOW_FLASH=0
 SHORT_TIMEOUT="5s"
 UPLOAD_TIMEOUT="90s"
 POLL_TIMEOUT=45
+ROLLBACK_TIMEOUT=90
 OTA_WAIT_RESULT=""
 
 usage() {
@@ -37,14 +39,15 @@ Options:
   --tty PATH                   CDC ACM tty for --flow bootsel-cdc
   --execute                    Execute side-effectful upload/test/reboot/BOOTSEL actions
   --allow-upload-test-reboot   Required with --execute for OTA upload/test/confirm flows
+  --allow-watchdog-fault       Required with --execute to arm the HIL-only watchdog fault hook
   --allow-bootsel              Required with --execute for HTTP/CDC BOOTSEL entry
   --allow-flash                Required with --execute for UF2 copy; this is separate from BOOTSEL permission
   --dry-run                    Print command plan only for side-effectful flows (default)
   --help                       Show this help
 
 Preflight and status perform only bounded GET requests. Upload, test boot, BOOTSEL,
-and UF2 copy never run unless the matching explicit gates are present.
-Watchdog rollback is reported as BLOCKED because no safe fault-injection path exists.
+UF2 copy, and fault injection never run unless the matching explicit gates are
+present. Watchdog rollback is exercised only with the HIL fault overlay.
 USAGE
 }
 
@@ -94,6 +97,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --allow-upload-test-reboot)
       ALLOW_UPLOAD_TEST_REBOOT=1
+      shift
+      ;;
+    --allow-watchdog-fault)
+      ALLOW_WATCHDOG_FAULT=1
       shift
       ;;
     --allow-bootsel)
@@ -166,10 +173,6 @@ require_ota_image() {
 
 require_uf2_image() {
   require_file "$UF2" "UF2 image"
-  case "$UF2" in
-    *.uf2) ;;
-    *) fail "UF2 image must end in .uf2, got: $UF2" ;;
-  esac
 }
 
 require_tty() {
@@ -190,6 +193,11 @@ require_bootsel_gate() {
 require_flash_gate() {
   [ "$DRY_RUN" -eq 1 ] && return 0
   [ "$ALLOW_FLASH" -eq 1 ] || fail "--allow-flash is required with --execute for UF2 copy"
+}
+
+require_watchdog_fault_gate() {
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  [ "$ALLOW_WATCHDOG_FAULT" -eq 1 ] || fail "--allow-watchdog-fault is required with --execute for watchdog rollback"
 }
 
 sha256_file() {
@@ -270,7 +278,8 @@ post_ota_confirm() {
 
 wait_for_ota() {
   target="$1"
-  deadline=$((POLL_TIMEOUT * 2))
+  poll_timeout="${2:-$POLL_TIMEOUT}"
+  deadline=$((poll_timeout * 2))
   count=0
   OTA_WAIT_RESULT=""
   note "polling OTA state for $target"
@@ -442,11 +451,122 @@ assert_http_error() {
 }
 
 watchdog_rollback() {
-  note "watchdog rollback: BLOCKED"
-  cat <<'EOF'
-BLOCKED: watchdog rollback HIL requires a safe firmware fault-injection path.
-No HTTP/WS/cmdline liveness fault is injected by this runner. Do not claim rollback passed.
-EOF
+  require_upload_gate
+  note "watchdog rollback: safe HIL fault injection"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    plan run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /watchdog/fault)" "# verify HIL fault hook is advertised"
+    plan run_timeout "$SHORT_TIMEOUT" curl -sS -X POST "$(api_url /watchdog/fault)" "# expect 409 before OTA test marker"
+    upload_valid_image
+    post_ota_test
+    plan run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /ota)" "# repeat until pending_test"
+    plan run_timeout "$SHORT_TIMEOUT" curl -fsS -X POST "$(api_url /watchdog/fault)" "# arm fault after test boot"
+    plan curl -fsS "$(api_url /watchdog)" "# poll until watchdog reset causes transport loss"
+    plan run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /ota)" "# repeat until idle/confirmed with marker cleared"
+    plan lsblk -P -o NAME,VENDOR,TYPE,PKNAME "# assert no RPI-RP2 BOOTSEL disk appeared"
+    return
+  fi
+
+  require_watchdog_fault_gate
+
+  baseline_status=$(run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /status)") ||
+    fail "cannot read baseline status"
+  baseline_image=$(printf '%s\n' "$baseline_status" |
+    grep -o '"image_version":"[^"]*"' | head -1 | cut -d'"' -f4)
+  baseline_uptime=$(printf '%s\n' "$baseline_status" |
+    grep -o '"uptime_seconds":[0-9]*' | head -1 | cut -d: -f2)
+  [ -n "$baseline_image" ] && [ -n "$baseline_uptime" ] ||
+    fail "baseline status does not expose image_version and uptime_seconds"
+  baseline_started=$(date +%s)
+  printf '%s\n' "$baseline_status"
+  note "baseline image=${baseline_image} uptime=${baseline_uptime}s"
+
+  fault_status=$(run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /watchdog/fault)") ||
+    fail "watchdog fault endpoint unavailable; use the HIL fault build"
+  printf '%s\n' "$fault_status"
+  printf '%s\n' "$fault_status" |
+    grep -q '"available"[[:space:]]*:[[:space:]]*true' ||
+    fail "firmware does not advertise watchdog fault injection"
+  printf '%s\n' "$fault_status" |
+    grep -q '"armed"[[:space:]]*:[[:space:]]*false' ||
+    fail "watchdog fault injection is already armed before OTA test"
+
+  reject_body=$(mktemp "${TMPDIR:-/tmp}/linkr-watchdog-fault-reject.XXXXXX") ||
+    fail "mktemp failed"
+  trap 'rm -f "$reject_body"' EXIT HUP INT TERM
+  reject_http=$(run_timeout "$SHORT_TIMEOUT" curl -sS -o "$reject_body" -w '%{http_code}' \
+    -X POST "$(api_url /watchdog/fault)") || {
+      echo "watchdog fault precheck transport failed; response body follows:" >&2
+      cat "$reject_body" >&2 || true
+      fail "watchdog fault precheck transport failed"
+    }
+  assert_http_error "$reject_http" "$reject_body" 409 fault_injection_rejected \
+    "watchdog fault pre-arm without OTA marker"
+  rm -f "$reject_body"
+  trap - EXIT HUP INT TERM
+
+  upload_valid_image
+  post_ota_test
+  wait_for_ota pending-or-terminal "$ROLLBACK_TIMEOUT"
+  if [ "$OTA_WAIT_RESULT" != "pending_test" ]; then
+    fail "OTA test did not enter pending_test; result=$OTA_WAIT_RESULT"
+  fi
+
+  armed_body=$(run_timeout "$SHORT_TIMEOUT" curl -fsS -X POST "$(api_url /watchdog/fault)") ||
+    fail "watchdog fault arm request failed"
+  printf '%s\n' "$armed_body"
+  printf '%s\n' "$armed_body" |
+    grep -q '"armed"[[:space:]]*:[[:space:]]*true' ||
+    fail "watchdog fault arm response did not report armed=true"
+
+  note "watchdog fault armed; waiting for the 5 second watchdog reset"
+  reset_started=$(date +%s)
+  reset_observed=0
+  while [ $(( $(date +%s) - reset_started )) -lt 15 ]; do
+    if ! run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /watchdog)" >/dev/null 2>&1; then
+      reset_observed=1
+      break
+    fi
+    sleep 0.5
+  done
+  if [ "$reset_observed" -eq 0 ]; then
+    fail "watchdog reset was not observed within 15 seconds after fault arm"
+  fi
+  reset_elapsed=$(( $(date +%s) - reset_started ))
+  note "watchdog reset observed after ${reset_elapsed}s; waiting for MCUboot rollback"
+
+  wait_for_ota pending-or-terminal "$ROLLBACK_TIMEOUT"
+  if [ "$OTA_WAIT_RESULT" != "rollback_detected" ]; then
+    fail "rollback intermediate state was not observed (idle/confirmed with marker=true); result=$OTA_WAIT_RESULT"
+  fi
+  note "rollback intermediate state observed: idle, current_image_confirmed=true, test_marker_present=true"
+  wait_for_ota confirmed-idle "$ROLLBACK_TIMEOUT"
+  rollback_status=$(run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /status)") ||
+    fail "rollback target status unavailable"
+  rollback_image=$(printf '%s\n' "$rollback_status" |
+    grep -o '"image_version":"[^"]*"' | head -1 | cut -d'"' -f4)
+  rollback_uptime=$(printf '%s\n' "$rollback_status" |
+    grep -o '"uptime_seconds":[0-9]*' | head -1 | cut -d: -f2)
+  [ "$rollback_image" = "$baseline_image" ] ||
+    fail "rollback image identity mismatch: baseline=${baseline_image} after=${rollback_image}"
+  rollback_elapsed=$(( $(date +%s) - baseline_started ))
+  no_reset_expected=$(( baseline_uptime + rollback_elapsed ))
+  [ "$rollback_uptime" -lt "$no_reset_expected" ] ||
+    fail "rollback uptime did not reset: baseline=${baseline_uptime}s elapsed=${rollback_elapsed}s after=${rollback_uptime}s"
+  printf '%s\n' "$rollback_status"
+  note "rollback image=${rollback_image} uptime=${rollback_uptime}s elapsed=${rollback_elapsed}s"
+  rollback_fault=$(run_timeout "$SHORT_TIMEOUT" curl -fsS "$(api_url /watchdog/fault)") ||
+    fail "rollback target no longer exposes the HIL fault endpoint"
+  printf '%s\n' "$rollback_fault"
+  printf '%s\n' "$rollback_fault" |
+    grep -q '"available"[[:space:]]*:[[:space:]]*true' ||
+    fail "rollback target did not advertise fault injection"
+  printf '%s\n' "$rollback_fault" |
+    grep -q '"armed"[[:space:]]*:[[:space:]]*false' ||
+    fail "rollback target still reports fault injection armed"
+  if [ -n "$(find_rpi_partition)" ]; then
+    fail "RPI-RP2 BOOTSEL disk appeared; watchdog rollback entered ROM BOOTSEL instead"
+  fi
+  note "watchdog rollback verified: idle, current_image_confirmed=true, OTA test marker cleared, no BOOTSEL disk"
 }
 
 find_rpi_partition() {
@@ -464,6 +584,7 @@ find_rpi_partition() {
       vendor = field($0, "VENDOR")
       type = field($0, "TYPE")
       pkname = field($0, "PKNAME")
+      sub(/[[:space:]]+$/, "", vendor)
       if (type == "disk" && vendor == "RPI") {
         rpi_disk[name] = 1
       }
@@ -485,7 +606,7 @@ find_rpi_partition() {
 }
 
 wait_for_rpi_partition() {
-  limit=20
+  limit=120
   count=0
   while [ "$count" -lt "$limit" ]; do
     part=$(find_rpi_partition)
@@ -506,7 +627,7 @@ bootsel_http() {
     plan lsblk -P -o NAME,VENDOR,TYPE,PKNAME "# find actual partition whose PKNAME is a VENDOR=RPI disk"
     return
   fi
-  part=$(wait_for_rpi_partition) || fail "BOOTSEL RPI partition not found after 10s"
+  part=$(wait_for_rpi_partition) || fail "BOOTSEL RPI partition not found after 60s"
   note "BOOTSEL partition: $part"
 }
 
@@ -519,11 +640,13 @@ bootsel_cdc() {
     return
   fi
   printf '%s\n' bootloader > "$TTY"
-  part=$(wait_for_rpi_partition) || fail "BOOTSEL RPI partition not found after 10s"
+  part=$(wait_for_rpi_partition) || fail "BOOTSEL RPI partition not found after 60s"
   note "BOOTSEL partition: $part"
 }
 
 flash_uf2() {
+  [ "${UF2##*/}" = "radxa-linkr-debugger-rp2350.uf2" ] ||
+    fail "UF2 image must be the canonical combined radxa-linkr-debugger-rp2350.uf2, got: $UF2"
   [ "$DRY_RUN" -eq 1 ] || require_uf2_image
   require_flash_gate
   if [ "$DRY_RUN" -eq 1 ]; then

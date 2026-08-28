@@ -146,7 +146,7 @@ export function createDryRunPlan(options) {
       "image path and .bin extension validated before upload",
       "browser confirms only when --flow manual or both is requested",
       "firmware owns auto-confirm; browser only waits for reported state",
-      "watchdog rollback is BLOCKED because no safe fault-injection path exists",
+      "watchdog rollback fault injection is exercised by the shell runner, not this browser runner",
     ],
     steps: flows.flatMap((flow) => [
       `open real Web UI at ${options.boardUrl}/`,
@@ -353,7 +353,7 @@ export async function runBrowserOtaHil(options) {
       initial: summarizeStatus(initial),
       results,
       diagnostics: trimDiagnostics(diagnostics, options.diagnosticsLimit),
-      watchdogRollback: "BLOCKED: no safe fault-injection path is available; not attempted",
+      watchdogRollback: "not-exercised-by-browser-runner; see docs/testing/scripts/web-ota-hil.sh --flow watchdog-rollback",
     };
   } finally {
     if (context) {

@@ -23,7 +23,7 @@ interface while rejecting a direct Node.js socket with `EHOSTUNREACH`. The
 `npm run dev` launcher detects the default NCM target and automatically starts
 a loopback-only raw TCP forwarder, then points Vite at that local endpoint.
 This covers both HTTP and WebSocket traffic and is stopped with Vite. The same
-workaround is used by `npm run device-bridge`. Set
+workaround is used by the development launcher only. Set
 `LINKR_NCM_FORWARDER=off` only when Node already has working local-network
 access; use `force` to exercise the forwarder on another platform.
 
@@ -112,12 +112,12 @@ npm --prefix web run build
 npm --prefix web run host
 ```
 
-The Pages build connects to `http://127.0.0.1:8787/api/v1`. By default, the
-gateway forwards HTTP and WebSocket traffic directly to the firmware service at
-`http://172.29.203.1` and supplies the CORS and Private Network Access
-headers needed by the browser. Override the upstream with `LINKR_BOARD_URL`.
-The Rust Host talks directly to the USB-NCM address on macOS and does not need
-the Node/Ruby loopback workaround used by the legacy gateway.
+The Pages build connects to `http://127.0.0.1:8787/api/v1`. Linkr Host forwards
+HTTP and WebSocket traffic directly to the firmware service at
+`http://172.29.203.1` and supplies the CORS and Private Network Access headers
+needed by the browser. Override the upstream with `LINKR_BOARD_URL`. The Rust
+Host talks directly to the USB-NCM address and does not use the legacy Node/Ruby
+gateway implementation.
 The gateway listens on loopback only and does not expose board controls to the
 LAN. Browser requests are limited to the official Pages origin and local
 development origins. Additional trusted origins can be supplied as a
@@ -359,8 +359,9 @@ firmware to auto-confirm.
 owns the ~16-second watchdog health-gated auto-confirm. If the test image runs
 healthily for ~16 seconds without a watchdog reset, firmware marks the image as
 confirmed. Firmware is designed to request MCUboot rollback after a watchdog
-reset during the unconfirmed window, but fault-injection HIL for that recovery
-path is still blocked; keep ROM BOOTSEL recovery available.
+reset during the unconfirmed window. The watchdog rollback HIL path is covered
+by the API-level runner in `docs/testing/hil-functional-test-spec.md`; keep ROM
+BOOTSEL recovery available.
 
 **Same-origin vs GitHub Pages**: when the UI is served from the board at
 `http://172.29.203.1/` it talks to the OTA endpoints directly (same-origin).
@@ -402,5 +403,6 @@ without claiming an exact unverified package attribute.
 The runner uses bounded timeouts (5-second short operations, 45-second reboot
 wait, 120-second upload timeout) and polls for OTA state with diagnostics
 truncation. It validates the `.bin` extension and non-empty file before upload.
-Watchdog rollback is BLOCKED because no safe fault-injection path exists; the
-result object reports this explicitly rather than attempting the operation.
+Watchdog rollback is exercised by the HIL-only shell runner
+(`docs/testing/scripts/web-ota-hil.sh --flow watchdog-rollback`), not by this
+browser runner; the browser result object reports that distinction explicitly.

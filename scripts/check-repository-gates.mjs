@@ -26,7 +26,7 @@ export const POLICY_FILES = Object.freeze([
   "docs/README.md",
   "docs/reference/logic-analyzer.md",
   "docs/testing/hil-functional-test-spec.md",
-  "skills/radxa-linkr-debugger/scripts/web-ota-hil.sh",
+  "docs/testing/scripts/web-ota-hil.sh",
   "Makefile",
   "flake.nix",
   "nix/openocd-latest.nix",
@@ -190,7 +190,7 @@ export function checkRepositoryGateContents(contents) {
   const docsIndex = contents.get("docs/README.md") ?? "";
   const hilSpec = contents.get("docs/testing/hil-functional-test-spec.md") ?? "";
   const prjConfig = contents.get("apps/radxa_linkr_debugger/prj.conf") ?? "";
-  const webOtaHil = contents.get("skills/radxa-linkr-debugger/scripts/web-ota-hil.sh") ?? "";
+  const webOtaHil = contents.get("docs/testing/scripts/web-ota-hil.sh") ?? "";
 
   if (!/^  pull_request:\s*$/m.test(build) || !/^  workflow_call:\s*$/m.test(build)) {
     fail(failures, "G01", ".github/workflows/build.yml", "complete validation must support pull_request and workflow_call");
@@ -309,7 +309,7 @@ export function checkRepositoryGateContents(contents) {
     fail(failures, "G16", "apps/radxa_linkr_debugger/prj.conf + docs/testing/hil-functional-test-spec.md", "captive-portal HIL must require DHCP option 114 while forbidding router/DNS advertisement and board-local wildcard DNS");
   }
   if (!hil.otaNegativeUploadTimeouts) {
-    fail(failures, "G17", "skills/radxa-linkr-debugger/scripts/web-ota-hil.sh", "negative full-body OTA uploads must use UPLOAD_TIMEOUT while status and OTA control requests use SHORT_TIMEOUT");
+    fail(failures, "G17", "docs/testing/scripts/web-ota-hil.sh", "negative full-body OTA uploads must use UPLOAD_TIMEOUT while status and OTA control requests use SHORT_TIMEOUT");
   }
   if (!firmwareMemoryCaptureContract({
     appCmake, sectionsRam, captureArenaHeader, captureArenaSource, controlSource,

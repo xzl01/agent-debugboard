@@ -352,12 +352,12 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          shellcheck skills/radxa-linkr-debugger/scripts/install.sh scripts/install-host.sh apps/radxa_linkr_debugger/tests/run_unit_tests.sh skills/radxa-linkr-debugger/scripts/web-ota-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.test.sh
+          shellcheck skills/radxa-linkr-debugger/scripts/install.sh scripts/install-host.sh apps/radxa_linkr_debugger/tests/run_unit_tests.sh docs/testing/scripts/web-ota-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.test.sh
           sh -n skills/radxa-linkr-debugger/scripts/install.sh
           sh -n scripts/install-host.sh
           scripts/install-host.sh --dry-run
           sh -n apps/radxa_linkr_debugger/tests/run_unit_tests.sh
-          sh -n skills/radxa-linkr-debugger/scripts/web-ota-hil.sh
+          sh -n docs/testing/scripts/web-ota-hil.sh
           sh -n skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh
           sh -n skills/radxa-linkr-debugger/scripts/config-persistence-hil.test.sh
 
@@ -366,7 +366,7 @@ jobs:
 
       - name: Check CI contracts and test registration
         run: |
-          node --test scripts/check-nightly-workflow.test.mjs scripts/check-rdb-alias.test.mjs scripts/check-repository-gates.test.mjs scripts/check-test-registration.test.mjs scripts/check-doc-layout.test.mjs scripts/check-skill-boundary.test.mjs
+          node --test scripts/check-nightly-workflow.test.mjs scripts/check-rdb-alias.test.mjs scripts/check-repository-gates.test.mjs scripts/check-test-registration.test.mjs scripts/check-doc-layout.test.mjs scripts/check-skill-boundary.test.mjs scripts/check-worktree-scope.test.mjs scripts/verify-frozen-evidence.test.mjs
           node scripts/check-nightly-workflow.mjs --root .
           node scripts/check-rdb-alias.mjs --root .
           node scripts/check-repository-gates.mjs --root .

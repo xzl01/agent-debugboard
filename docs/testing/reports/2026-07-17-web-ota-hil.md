@@ -79,7 +79,7 @@ After recovery flashing of the canonical UF2, the board returned to `idle` OTA s
 
 | Runner | Path | Mode |
 |---|---|---|
-| Shell API runner | `skills/radxa-linkr-debugger/scripts/web-ota-hil.sh` | Dry-run plans + executable gates |
+| Shell API runner | `docs/testing/scripts/web-ota-hil.sh` | Dry-run plans + executable gates |
 | Browser runner | `web/scripts/ota-hil.mjs` | Playwright-driven Chromium, `--execute --flow auto` / `manual` / `both` |
 | Unit tests | `web/scripts/ota-hil.test.mjs` | `npm test` (included in standard web test flow) |
 

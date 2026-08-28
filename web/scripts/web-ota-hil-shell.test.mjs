@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const runner = path.join(repoRoot, "skills/radxa-linkr-debugger/scripts/web-ota-hil.sh");
+const runner = path.join(repoRoot, "docs/testing/scripts/web-ota-hil.sh");
 
 async function runManualConfirmFixture({ terminalState = null }) {
   let confirmed = terminalState !== null;
@@ -108,4 +108,27 @@ test("manual OTA flow still posts confirm when pending_test is observable", asyn
   assert.equal(result.exitCode, 0);
   assert.match(result.stdout, /"state":"pending_test"/);
   assert.match(result.stdout, /"current_image_confirmed":true/);
+});
+
+test("flash flow rejects the app-only zephyr.uf2 before any BOOTSEL action", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "linkr-ota-hil-uf2-test-"));
+  const image = path.join(tempDir, "zephyr.uf2");
+  await writeFile(image, "app-only-uf2");
+
+  try {
+    await assert.rejects(
+      execFileAsync("sh", [
+        runner,
+        "--flow", "flash-uf2",
+        "--uf2", image,
+        "--dry-run",
+      ], { cwd: repoRoot }),
+      (error) => {
+        assert.match(error.stderr, /canonical combined radxa-linkr-debugger-rp2350\.uf2/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });

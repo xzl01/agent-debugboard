@@ -48,7 +48,10 @@ test("defaults to dry-run and plans both browser confirmation flows", () => {
 
   assert.equal(plan.mode, "dry-run");
   assert.deepEqual(plan.flows, ["auto", "manual"]);
-  assert.equal(plan.safety.some((item) => item.includes("watchdog rollback is BLOCKED")), true);
+  assert.equal(
+    plan.safety.some((item) => item.includes("watchdog rollback fault injection is exercised by the shell runner")),
+    true
+  );
   assert.equal(plan.steps.some((step) => step.includes("without clicking Confirm image")), true);
   assert.equal(plan.steps.some((step) => step.includes("click Confirm image")), true);
   assert.equal(plan.steps.some((step) => step.includes("Debugger maintenance")), true);

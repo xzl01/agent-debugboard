@@ -328,7 +328,7 @@ timeout 5s curl --compressed -fsS http://172.29.203.1/assets/app.js >/dev/null
    尝试 HTTP 兼容 fallback。若 fallback 也失败，完整地址仍需可见并允许手动选择复制。
 4. 弹窗需满足无障碍要求：`role="dialog"`、`aria-modal="true"`、初始焦点在弹窗内、
    Tab/Shift+Tab 限于弹窗内、Escape 关闭弹窗并恢复焦点到触发元素、关闭后恢复 body 滚动。
-5. 另开终端在 `web/` 目录运行 `npm run device-bridge` 并保持进程存活，使用 **Bridge**
+5. 另开终端在 `web/` 目录运行 `npm run host` 并保持进程存活，使用 **Bridge**
    按钮连接 CH347，验证可以收发串口数据。
 
 **Playwright 自动化路径**：区分两类失败模式。`page.goto` 失败或资源加载超时，指向板子
@@ -2071,23 +2071,46 @@ timeout 30s curl -sS -o /tmp/linkr-ota-error.json -w '%{http_code}\n' -X POST \
 
 步骤：
 
-1. 上传并触发测试启动，不等待 16 秒确认窗口：
+1. 构建 HIL 基线镜像（`0.0.1+0`）与候选 OTA 镜像（`0.0.2+0`）：
    ```sh
-   timeout 90s radxa-linkr-debuggerctl --json ota upload "$TEST_BIN"
-   timeout 5s radxa-linkr-debuggerctl --json ota test
-   # 板子重启进入测试镜像后，立即切断 core liveness（模拟故障）
+   mkdir -p docs/testing/results/2026-08-28-watchdog-rollback-fault-injection-hil/fault-baseline \
+     docs/testing/results/2026-08-28-watchdog-rollback-fault-injection-hil/fault-candidate
+   west build -p always -b rpi_pico2/rp2350a/m33/mcuboot \
+     --sysbuild apps/radxa_linkr_debugger \
+     -d build/radxa_linkr_debugger \
+     -- -DEXTRA_CONF_FILE="$PWD/apps/radxa_linkr_debugger/prj-fault.conf"
+   cp build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 \
+     docs/testing/results/2026-08-28-watchdog-rollback-fault-injection-hil/fault-baseline/
+   west build -p always -b rpi_pico2/rp2350a/m33/mcuboot \
+     --sysbuild apps/radxa_linkr_debugger \
+     -d build/radxa_linkr_debugger \
+     -- -DEXTRA_CONF_FILE="$PWD/apps/radxa_linkr_debugger/prj-fault-candidate.conf"
+   cp build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 \
+     docs/testing/results/2026-08-28-watchdog-rollback-fault-injection-hil/fault-candidate/
+   make firmware
    ```
 
-2. 在 16 秒门槛到期前，通过 HTTP/WS/cmdline 制造 watchdog 复位（例如
-   使 core 线程停止喂狗，使 API 服务无响应，或断开 CDC ACM liveness）。
+2. 先刷写 `0.0.1+0` HIL 基线 combined UF2（`prj-fault.conf`），确认
+   `/api/v1/watchdog/fault` 可用且无 OTA marker，再用
+   `web-ota-hil.sh --flow watchdog-rollback` 上传 `0.0.2+0` 候选镜像并触发测试
+   启动。不同的 MCUboot 版本确保真实 swap；canonical 生产镜像不包含 fault
+   hook，其版本（例如本源码树的 `0.3.0+0`）由 `VERSION`/版本同步流程决定。
 
-3. 复位后检查：板子应通过 MCUboot 回滚到上一个已确认镜像，`state` 回到 `idle`，
-   而非进入 ROM BOOTSEL。若进入了 ROM BOOTSEL（表现为 RPI-RP2 磁盘枚举），
-   则测试失败。
+3. 板子重启进入测试镜像、OTA marker 存在后，runner 调用
+   `POST /api/v1/watchdog/fault`。该 hook 禁止 production 构建暴露，并要求
+   marker 存在；armed 后 supervisor 停止喂狗，在约 5 秒后触发与真实 liveness
+   故障相同的硬件 watchdog reset，10 秒窗口到期会自动 disarmed。
 
-> 此测试用例需要制造受控的 liveness 故障，目前固件暂无安全的 fault injection
-> 路径，详见固件 README 的 FIXME 说明。此处记录预期行为，待 fault injection
-> 路径实现后补充自动化验证。
+4. 复位后先观察回滚中间态：`state=idle`、`current_image_confirmed=true`、
+   `test_marker_present=true`，证明 marker 尚未被 auto-confirm 清掉而是由
+   MCUboot 回滚保留。随后 runner 等待 marker 清除，并校验回滚后的
+   `build.image_version` 与基线一致、uptime 低于“基线 uptime+经过时间”的无复位
+   预期值。若出现了 RPI-RP2 磁盘枚举，则测试失败。
+
+> 此路径的自动化入口是 `web-ota-hil.sh --flow watchdog-rollback`，它同时验证
+> marker 不存在时 arm 被拒绝、arm 后发生运输中断、恢复后无 BOOTSEL 枚举。
+> 2026-08-28 真实板级结果是
+> [Watchdog Rollback Fault-Injection HIL](results/2026-08-28-watchdog-rollback-fault-injection-hil.md)。
 
 #### 11h. OTA 路径拒绝非 bin 文件
 
@@ -2117,7 +2140,7 @@ linkr-debugger:~$ bootloader
 ### 12. Web OTA HIL Automation
 
 This section covers the automated Web OTA HIL runners: the POSIX shell API runner
-(`skills/radxa-linkr-debugger/scripts/web-ota-hil.sh`) and the Node.js browser
+(`docs/testing/scripts/web-ota-hil.sh`) and the Node.js browser
 runner (`web/scripts/ota-hil.mjs`). Both runners are HIL tooling, not production
 OTA delivery mechanisms.
 
@@ -2130,11 +2153,13 @@ rapid headless validation of the OTA state machine, error codes, and gate logic.
 USB NCM re-enumeration can outlast the firmware's watchdog auto-confirm window.
 The API runner uses `test_marker_present` to distinguish a missed auto-confirm
 from rollback: `idle` plus `current_image_confirmed:true` plus a cleared marker
-is success, while the same state with the marker still present is rollback.
-Missing marker evidence is inconclusive. In the manual flow, `/confirm` is sent
-only after `pending_test` is observable, and the terminal state must also show
-the marker cleared. This classification assumes no external power-cycle or
-BOOTSEL action interrupts the controlled HIL run.
+is success. Immediately after an MCUboot rollback the marker may remain set
+briefly while firmware observes that the running image is already confirmed;
+the runner waits until firmware clears it. Missing marker evidence is
+inconclusive. In the manual flow, `/confirm` is sent only after `pending_test` is
+observable, and the terminal state must also show the marker cleared. This
+classification assumes no external power-cycle or BOOTSEL action interrupts the
+controlled HIL run.
 
 **Browser runner** (`ota-hil.mjs`): Drives a real Chromium/Chromium-browser
 instance via Playwright against the board-hosted Web UI at `http://172.29.203.1/`.
@@ -2152,6 +2177,7 @@ dry-run-only; it cannot be combined with `--execute`.
 | Gate flag | Required for |
 |---|---|
 | `--allow-upload-test-reboot` | OTA upload, test boot, manual confirm |
+| `--allow-watchdog-fault` | Arm the HIL-only watchdog fault hook during rollback |
 | `--allow-bootsel` | HTTP or CDC ACM BOOTSEL entry |
 | `--allow-flash` | UF2 copy to RPI-RP2 mount point |
 
@@ -2163,7 +2189,7 @@ plans print the commands that would run without executing them.
 Default preflight (read-only, no gate required):
 
 ```sh
-./skills/radxa-linkr-debugger/scripts/web-ota-hil.sh --flow preflight
+./docs/testing/scripts/web-ota-hil.sh --flow preflight
 # DRY-RUN: run_timeout 5s curl -fsS http://172.29.203.1/api/v1/status
 # DRY-RUN: run_timeout 5s curl -fsS http://172.29.203.1/api/v1/watchdog
 # DRY-RUN: run_timeout 5s curl -fsS http://172.29.203.1/api/v1/ota
@@ -2172,19 +2198,19 @@ Default preflight (read-only, no gate required):
 OTA status only:
 
 ```sh
-./skills/radxa-linkr-debugger/scripts/web-ota-hil.sh --flow status
+./docs/testing/scripts/web-ota-hil.sh --flow status
 ```
 
 Negative upload plan (dry-run, no gate required):
 
 ```sh
-./skills/radxa-linkr-debugger/scripts/web-ota-hil.sh --flow negative-upload
+./docs/testing/scripts/web-ota-hil.sh --flow negative-upload
 ```
 
 Full dry-run plan (all flows, dry-run only):
 
 ```sh
-./skills/radxa-linkr-debugger/scripts/web-ota-hil.sh --flow all
+./docs/testing/scripts/web-ota-hil.sh --flow all
 # Fails if combined with --execute
 ```
 
@@ -2193,7 +2219,7 @@ Full dry-run plan (all flows, dry-run only):
 Upload, auto-confirm flow (requires gate):
 
 ```sh
-./skills/radxa-linkr-debugger/scripts/web-ota-hil.sh \
+./docs/testing/scripts/web-ota-hil.sh \
   --flow api-auto-confirm \
   --image build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.bin \
   --execute --allow-upload-test-reboot
@@ -2202,7 +2228,7 @@ Upload, auto-confirm flow (requires gate):
 Upload, manual-confirm flow (requires gate):
 
 ```sh
-./skills/radxa-linkr-debugger/scripts/web-ota-hil.sh \
+./docs/testing/scripts/web-ota-hil.sh \
   --flow api-manual-confirm \
   --image build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.bin \
   --execute --allow-upload-test-reboot
@@ -2211,15 +2237,24 @@ Upload, manual-confirm flow (requires gate):
 Negative upload validation (requires gate):
 
 ```sh
-./skills/radxa-linkr-debugger/scripts/web-ota-hil.sh \
+./docs/testing/scripts/web-ota-hil.sh \
   --flow negative-upload \
   --execute --allow-upload-test-reboot
+```
+
+Watchdog rollback validation (requires fault HIL image and both gates):
+
+```sh
+./docs/testing/scripts/web-ota-hil.sh \
+  --flow watchdog-rollback \
+  --image docs/testing/results/2026-08-28-watchdog-rollback-fault-injection-hil/fault-candidate/zephyr.signed.bin \
+  --execute --allow-upload-test-reboot --allow-watchdog-fault
 ```
 
 HTTP BOOTSEL entry (requires gate):
 
 ```sh
-./skills/radxa-linkr-debugger/scripts/web-ota-hil.sh \
+./docs/testing/scripts/web-ota-hil.sh \
   --flow bootsel-http \
   --execute --allow-bootsel
 ```
@@ -2227,7 +2262,7 @@ HTTP BOOTSEL entry (requires gate):
 CDC ACM BOOTSEL entry (requires gate and tty):
 
 ```sh
-./skills/radxa-linkr-debugger/scripts/web-ota-hil.sh \
+./docs/testing/scripts/web-ota-hil.sh \
   --flow bootsel-cdc \
   --tty /dev/ttyACM0 \
   --execute --allow-bootsel
@@ -2236,14 +2271,14 @@ CDC ACM BOOTSEL entry (requires gate and tty):
 UF2 copy to RPI-RP2 mount (requires gate):
 
 ```sh
-./skills/radxa-linkr-debugger/scripts/web-ota-hil.sh \
+./docs/testing/scripts/web-ota-hil.sh \
   --flow flash-uf2 \
   --uf2 build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 \
   --execute --allow-flash
 ```
 
-Watchdog rollback is always reported as BLOCKED because no safe
-fault-injection path exists.
+The API runner requires `CONFIG_LINKR_DEBUGGER_FAULT_INJECTION=y` for rollback;
+production firmware rejects the flow when the fault endpoint is unavailable.
 
 #### 12e. Browser runner dry-run example
 
@@ -2272,8 +2307,9 @@ node scripts/ota-hil.mjs --execute --flow manual \
 
 The runner uses bounded timeouts (5-second short operations, 45-second reboot
 wait, 120-second upload timeout) and polling with diagnostics truncation. It
-validates `.bin` extension and non-empty file before upload. Watchdog rollback
-is BLOCKED and reported as such in the result object.
+validates `.bin` extension and non-empty file before upload. This browser runner
+does not exercise watchdog rollback; it reports that implementation separately
+and defers to the shell API runner for fault injection.
 
 #### 12g. Port and URL
 

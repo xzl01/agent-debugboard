@@ -10,7 +10,7 @@ import { POLICY_FILES, checkRepositoryGateContents } from "./check-repository-ga
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PRJ_CONFIG = "apps/radxa_linkr_debugger/prj.conf";
 const HIL_SPEC = "docs/testing/hil-functional-test-spec.md";
-const OTA_HIL = "skills/radxa-linkr-debugger/scripts/web-ota-hil.sh";
+const OTA_HIL = "docs/testing/scripts/web-ota-hil.sh";
 const BUILD_WORKFLOW = ".github/workflows/build.yml";
 const PAGES_WORKFLOW = ".github/workflows/pages.yml";
 const RELEASE_WORKFLOW = ".github/workflows/release.yml";
@@ -457,11 +457,13 @@ test("requires the rdb alias test and checker in Makefile gates", async (t) => {
   }
 });
 
-test("rejects permanent worktree-scope registration", async (t) => {
+test("requires worktree-scope unit tests without running the one-shot command", async (t) => {
   const baseline = await repositoryContents();
   const cases = [
-    ["CI checker", BUILD_WORKFLOW, "          node scripts/check-skill-boundary.mjs --root .\n", "          node scripts/check-skill-boundary.mjs --root .\n          node scripts/check-worktree-scope.mjs --root .\n"],
-    ["Makefile checker", "Makefile", "node scripts/check-skill-boundary.mjs --root .", "node scripts/check-skill-boundary.mjs --root . && \\\n\t$(NIX) \"node scripts/check-worktree-scope.mjs --root .\""],
+    ["CI unit test", BUILD_WORKFLOW, "scripts/check-worktree-scope.test.mjs", ""],
+    ["Makefile unit test", "Makefile", "scripts/check-worktree-scope.test.mjs \\\n", ""],
+    ["CI one-shot command", BUILD_WORKFLOW, "          node scripts/check-skill-boundary.mjs --root .\n", "          node scripts/check-skill-boundary.mjs --root .\n          node scripts/check-worktree-scope.mjs --root .\n"],
+    ["Makefile one-shot command", "Makefile", "node scripts/check-skill-boundary.mjs --root .", "node scripts/check-skill-boundary.mjs --root . && \\\n\t$(NIX) \"node scripts/check-worktree-scope.mjs --root .\""],
   ];
 
   for (const [name, relative, replace, replacement] of cases) {

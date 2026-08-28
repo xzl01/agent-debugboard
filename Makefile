@@ -66,7 +66,9 @@ gates: ## Repository gate checkers and their contract tests
 	scripts/check-repository-gates.test.mjs \
 	scripts/check-test-registration.test.mjs \
 	scripts/check-doc-layout.test.mjs \
-	scripts/check-skill-boundary.test.mjs" && \
+	scripts/check-skill-boundary.test.mjs \
+	scripts/check-worktree-scope.test.mjs \
+	scripts/verify-frozen-evidence.test.mjs" && \
 	$(NIX) "node scripts/check-nightly-workflow.mjs --root ." && \
 	$(NIX) "node scripts/check-rdb-alias.mjs --root ." && \
 	$(NIX) "node scripts/check-repository-gates.mjs --root ." && \

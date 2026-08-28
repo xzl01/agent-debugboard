@@ -26,10 +26,8 @@ const PERSISTENT_DOCS_COMMANDS = Object.freeze([
   "scripts/check-persistent-configuration-docs.test.mjs",
   "node scripts/check-persistent-configuration-docs.mjs --root .",
 ]);
-const WORKTREE_SCOPE_COMMANDS = Object.freeze([
-  "scripts/check-worktree-scope.test.mjs",
-  "node scripts/check-worktree-scope.mjs --root .",
-]);
+const WORKTREE_SCOPE_TEST = "scripts/check-worktree-scope.test.mjs";
+const WORKTREE_SCOPE_COMMAND = "node scripts/check-worktree-scope.mjs --root .";
 
 function count(text, pattern) {
   return [...text.matchAll(pattern)].length;
@@ -106,7 +104,8 @@ function permanentGateContract(build, makefile) {
   const localCheck = makeTarget(makefile, "check");
   const durableCommandsPresent = (text) => DURABLE_GATE_COMMANDS.every((commands) => commands.every((command) => text.includes(command)));
   const persistentDocsPresent = (text) => PERSISTENT_DOCS_COMMANDS.every((command) => text.includes(command));
-  const worktreeScopeAbsent = (text) => WORKTREE_SCOPE_COMMANDS.every((command) => !text.includes(command));
+  const worktreeScopeTestsPresent = (text) => text.includes(WORKTREE_SCOPE_TEST);
+  const worktreeScopeCommandAbsent = (text) => !text.includes(WORKTREE_SCOPE_COMMAND);
   const webTargetsUseNix = makeTarget(makefile, "web-test").includes('$(NIX) "cd web && npm test"')
     && makeTarget(makefile, "web").includes('$(NIX) "cd web && npm run build"');
   const obsoleteWrappersAbsent = !`${build}\n${makefile}`.includes("scripts/setup-zephyr.sh")
@@ -114,7 +113,8 @@ function permanentGateContract(build, makefile) {
   return durableCommandsPresent(ciGates) && durableCommandsPresent(localGates)
     && persistentDocsPresent(ciPersistentDocs) && persistentDocsPresent(localPersistentDocs)
     && PERSISTENT_DOCS_COMMANDS.every((command) => !localGates.includes(command))
-    && worktreeScopeAbsent(build) && worktreeScopeAbsent(makefile)
+    && worktreeScopeTestsPresent(build) && worktreeScopeTestsPresent(makefile)
+    && worktreeScopeCommandAbsent(build) && worktreeScopeCommandAbsent(makefile)
     && /^check:.*\bgates\b.*\bpersistent-configuration-docs\b.*\bweb-test\b.*\bweb\b/m.test(localCheck)
     && webTargetsUseNix && obsoleteWrappersAbsent;
 }
