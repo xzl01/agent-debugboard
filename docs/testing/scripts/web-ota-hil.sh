@@ -474,8 +474,9 @@ watchdog_rollback() {
     grep -o '"image_version":"[^"]*"' | head -1 | cut -d'"' -f4)
   baseline_uptime=$(printf '%s\n' "$baseline_status" |
     grep -o '"uptime_seconds":[0-9]*' | head -1 | cut -d: -f2)
-  [ -n "$baseline_image" ] && [ -n "$baseline_uptime" ] ||
+  if [ -z "$baseline_image" ] || [ -z "$baseline_uptime" ]; then
     fail "baseline status does not expose image_version and uptime_seconds"
+  fi
   baseline_started=$(date +%s)
   printf '%s\n' "$baseline_status"
   note "baseline image=${baseline_image} uptime=${baseline_uptime}s"
