@@ -258,17 +258,10 @@ if [ "${CONFIG_HIL_OTA_CONCURRENCY:-0}" = 1 ] && \
       fi
       attempts=0
       while [ "$attempts" -lt 100 ]; do
-        if awk '
-          /curl POST http:\/\/fixture.invalid\/api\/v1\/ota\/upload / {
-            active = 1
-            next
-          }
-          active && /curl GET http:\/\/fixture.invalid\/api\/v1\/ota / { status = 1 }
-          active && /curl PUT http:\/\/fixture.invalid\/api\/v1\/config / { save = 1 }
-          active && /curl DELETE http:\/\/fixture.invalid\/api\/v1\/config / { clear = 1 }
-          active && clear && /curl GET http:\/\/fixture.invalid\/api\/v1\/config / { retained = 1 }
-          END { exit !(status && save && clear && retained) }
-        ' "$CONFIG_HIL_CALLS"; then
+        if [ -f "$CONFIG_HIL_STATE_DIR/ota-status-observed" ] &&
+          [ -f "$CONFIG_HIL_STATE_DIR/ota-save-observed" ] &&
+          [ -f "$CONFIG_HIL_STATE_DIR/ota-clear-observed" ] &&
+          [ -f "$CONFIG_HIL_STATE_DIR/ota-retained-observed" ]; then
           : > "$CONFIG_HIL_STATE_DIR/ota-upload.complete"
           respond 200 "{\"schema\":\"$schema\",\"ok\":true,\"command\":\"ota\",\"state\":\"verified\"}"
         fi
@@ -279,6 +272,13 @@ if [ "${CONFIG_HIL_OTA_CONCURRENCY:-0}" = 1 ] && \
       exit 1
       ;;
     'GET /ota')
+      attempts=0
+      while [ "$attempts" -lt 100 ] &&
+        [ ! -f "$CONFIG_HIL_STATE_DIR/ota-upload.started" ]; do
+        attempts=$((attempts + 1))
+        "$CONFIG_HIL_REAL_SLEEP" 0.01
+      done
+      : > "$CONFIG_HIL_STATE_DIR/ota-status-observed"
       state=uploading
       [ "${CONFIG_HIL_OTA_BAD_STATE:-0}" = 0 ] || state=verified
       respond 200 "{\"schema\":\"$schema\",\"ok\":true,\"command\":\"ota\",\"state\":\"$state\"}"
@@ -288,12 +288,16 @@ if [ "${CONFIG_HIL_OTA_CONCURRENCY:-0}" = 1 ] && \
       if [ "$put_count" -eq 1 ]; then
         respond 200 "{\"schema\":\"$schema\",\"ok\":true,\"command\":\"config\",\"action\":\"save\",\"saved_items\":[\"switch/sd\"],\"confirmation_items\":[],\"applied_items\":[\"switch/sd\"],\"snapshot\":{\"present\":true,\"version\":1},\"pending\":0}"
       fi
+      if [ -f "$CONFIG_HIL_STATE_DIR/ota-upload.started" ]; then
+        : > "$CONFIG_HIL_STATE_DIR/ota-save-observed"
+      fi
       activity=ota
       [ "${CONFIG_HIL_OTA_WRONG_ACTIVITY:-0}" = 0 ] || activity=capture
       respond 409 "{\"schema\":\"$schema\",\"ok\":false,\"command\":\"config\",\"action\":\"save\",\"error\":{\"code\":\"busy\",\"message\":\"OTA active\"},\"activity\":\"$activity\"}"
       ;;
     'DELETE /config')
       if [ -f "$CONFIG_HIL_STATE_DIR/ota-upload.started" ] && [ ! -f "$CONFIG_HIL_STATE_DIR/ota-upload.complete" ]; then
+        : > "$CONFIG_HIL_STATE_DIR/ota-clear-observed"
         activity=ota
         [ "${CONFIG_HIL_OTA_WRONG_ACTIVITY:-0}" = 0 ] || activity=capture
         respond 409 "{\"schema\":\"$schema\",\"ok\":false,\"command\":\"config\",\"action\":\"clear\",\"error\":{\"code\":\"busy\",\"message\":\"OTA active\"},\"activity\":\"$activity\"}"
@@ -310,6 +314,9 @@ if [ "${CONFIG_HIL_OTA_CONCURRENCY:-0}" = 1 ] && \
       respond 200 "{\"schema\":\"$schema\",\"ok\":true,\"command\":\"ota\",\"state\":\"idle\"}"
       ;;
     'GET /config')
+      if [ -f "$CONFIG_HIL_STATE_DIR/ota-clear-observed" ]; then
+        : > "$CONFIG_HIL_STATE_DIR/ota-retained-observed"
+      fi
       if [ "$(grep -F -c 'curl GET http://fixture.invalid/api/v1/config ' "$CONFIG_HIL_CALLS")" -eq 1 ]; then
         respond 200 "{\"schema\":\"$schema\",\"ok\":true,\"command\":\"config\",\"action\":\"get\",\"backend\":{\"available\":true,\"reason\":\"absent\"},\"snapshot\":{\"present\":false,\"version\":null},\"pending\":0,\"items\":[{\"id\":\"switch/sd\",\"kind\":\"switch\",\"current\":{\"route\":\"target\"},\"saved\":null,\"selected\":false,\"requires_confirm\":false,\"apply_state\":\"not_saved\"}]}"
       fi
@@ -1156,12 +1163,13 @@ red_ota_preserve_concurrent_execute() {
     fail "ota-preserve did not exercise config while upload owned flash"
   }
   [ -f "$WORK/state/ota-upload.complete" ] || fail "OTA upload completed before all interleaved calls"
+  grep -F 'curl GET http://fixture.invalid/api/v1/ota ' "$CALLS" >/dev/null || \
+    fail "ota-preserve did not poll OTA state"
   assert_order "$CALLS" \
     'curl GET http://fixture.invalid/api/v1/config' \
     'curl PUT http://fixture.invalid/api/v1/config {"items":["switch/sd"],"confirm":false}' \
     'curl GET http://fixture.invalid/api/v1/config' \
     'curl POST http://fixture.invalid/api/v1/ota/upload' \
-    'curl GET http://fixture.invalid/api/v1/ota' \
     'curl PUT http://fixture.invalid/api/v1/config {"items":["switch/sd"],"confirm":false}' \
     'curl DELETE http://fixture.invalid/api/v1/config' \
     'curl GET http://fixture.invalid/api/v1/config' \
