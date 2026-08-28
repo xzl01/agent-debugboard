@@ -117,9 +117,8 @@ it does not make MCP initialization depend on Host readiness. Automatic startup
 and the gateway are intentionally loopback-only. A custom API base must be
 started and secured by its operator.
 
-The former Node MCP adapter is retained temporarily as `npm --prefix web run
---silent mcp:node` for migration testing. It is not the primary installation
-path.
+The former Node MCP adapter has been removed; the Rust `linkr-host mcp` path is
+the only supported adapter.
 
 ## Tools
 

@@ -157,14 +157,14 @@ Pages）直接使用 Web Serial。用户需要点击 **Web Serial** 按钮并接
 
 Edge 也接受此 Chromium 地址。
 
-### 设备桥接 fallback
+### Linkr Host 桥接 fallback
 
 如果不启用上述标志，保持板载页面打开，改用主机侧桥接：
 
 ```sh
 cd web
 npm ci
-npm run device-bridge
+npm run host
 ```
 
 然后在任一串口终端中使用 **Bridge** 按钮。桥接优先使用 CH347F `D1`
@@ -172,7 +172,7 @@ npm run device-bridge
 
 ### Linux 串口设备权限
 
-直连 Web Serial 和设备桥接都会以当前桌面用户身份打开串口设备。在 Linux
+直连 Web Serial 和 Linkr Host 桥接都会以当前桌面用户身份打开串口设备。在 Linux
 上，CH347 串口通常显示为 `/dev/ttyUSB0` 和 `/dev/ttyUSB1`；板载 CDC ACM
 fallback 可能显示为 `/dev/ttyACM0`。
 
@@ -191,7 +191,7 @@ sudo usermod -aG dialout "$(id -un)"
 ```
 
 随后注销并重新登录，或直接重启系统；重新插拔调试板，重启浏览器或
-`npm run device-bridge`，再尝试连接。已经运行的浏览器和终端进程不会自动
+`npm run host`，再尝试连接。已经运行的浏览器和终端进程不会自动
 获得新增的用户组权限。
 
 如果设备属于其他串口访问组，请使用 `ls -l` 显示的组，并遵循当前发行版
@@ -224,12 +224,12 @@ fuser /dev/ttyACM0
 推送到 `dev` 分支会将生产构建部署到
 <https://xzl01.github.io/agent-debugboard/>。GitHub Pages 通过 HTTPS 提供
 UI，而板载 API 通过 USB-NCM 网络上的 HTTP 暴露。从托管页面使用硬件控制
-前需要启动设备桥接网关：
+前需要启动 Linkr Host：
 
 ```sh
 cd web
 npm ci
-npm run device-bridge
+npm run host
 ```
 
 Pages 构建连接到 `http://127.0.0.1:8787/api/v1`。网关默认将 HTTP 和
@@ -237,14 +237,14 @@ WebSocket 流量直接转发到固件服务 `http://172.29.203.1`，并提供
 浏览器所需的 CORS 和 Private Network Access 头。需要时可覆盖上游地址：
 
 ```sh
-LINKR_BOARD_URL=http://172.29.203.1 npm run device-bridge
+LINKR_BOARD_URL=http://172.29.203.1 npm run host
 ```
 
-在 macOS 上，`npm run dev` 和 `npm run device-bridge` 连接默认 USB-NCM
-地址时，会自动插入一个仅监听本机回环地址的原始 TCP 转发器。这样可避免
+在 macOS 上，`npm run dev` 连接默认 USB-NCM 地址时，会自动插入一个仅监听
+本机回环地址的原始 TCP 转发器。这样可避免
 macOS 允许 `curl` 等系统工具访问该接口、却拒绝 Node.js 直接 socket 时
-持续出现 Vite `502 Bad Gateway`。该转发器同时承载 REST、OTA 和 WebSocket
-流量，并随父进程退出，不需要手工配置系统代理。
+持续出现 Vite `502 Bad Gateway`。Linkr Host 直接访问 USB-NCM 地址，不再
+需要旧的 Node/Ruby 转发器。
 
 ## 相关文档
 

@@ -190,6 +190,98 @@ function replaceTokens(template: string, values: Record<string, string | number>
   );
 }
 
+interface StepWaveformProps {
+  readonly channels: readonly (readonly WaveformPoint[])[];
+  readonly pinKeys: readonly number[];
+  readonly channelTop: number;
+  readonly triggerLineX?: number | null;
+  readonly svgHeight?: number;
+}
+
+function stepWaveformPath(points: readonly WaveformPoint[], yOffset: number): string {
+  const pathPoints = points.map((point) => ({
+    x: point.x,
+    y: yOffset + point.y,
+  }));
+
+  let d = `M ${pathPoints[0]?.x ?? 0} ${pathPoints[0]?.y ?? 0}`;
+  for (let pointIndex = 1; pointIndex < pathPoints.length; pointIndex += 1) {
+    const previous = pathPoints[pointIndex - 1];
+    const current = pathPoints[pointIndex];
+    if (!previous || !current) continue;
+
+    if (current.y !== previous.y) {
+      d += ` L ${current.x} ${previous.y}`;
+      d += ` L ${current.x} ${current.y}`;
+    } else {
+      d += ` L ${current.x} ${current.y}`;
+    }
+  }
+  return d;
+}
+
+function StepWaveform({
+  channels,
+  pinKeys,
+  channelTop,
+  triggerLineX,
+  svgHeight,
+}: StepWaveformProps) {
+  return (
+    <>
+      {pinKeys.map((pin, channelIndex) => {
+        const yOffset = channelTop + channelIndex * (CHANNEL_HEIGHT + CHANNEL_GAP);
+        return (
+          <g key={pin}>
+            <text
+              x={4}
+              y={yOffset + CHANNEL_HEIGHT / 2 + 4}
+              className="fill-ink-dim text-[10px]"
+              fontFamily="monospace"
+            >
+              {pinLabel(pin)}
+            </text>
+            <line
+              x1={PLOT_LEFT}
+              x2={WIDTH - PLOT_RIGHT}
+              y1={yOffset + CHANNEL_HEIGHT / 2}
+              y2={yOffset + CHANNEL_HEIGHT / 2}
+              stroke="rgb(var(--c-line))"
+              strokeDasharray="2 4"
+              strokeWidth={0.5}
+            />
+          </g>
+        );
+      })}
+      {triggerLineX != null && svgHeight != null && (
+        <line
+          x1={triggerLineX}
+          x2={triggerLineX}
+          y1={10}
+          y2={svgHeight - 10}
+          stroke="rgb(var(--c-danger))"
+          strokeDasharray="4 3"
+          strokeWidth={1}
+        />
+      )}
+      {channels.map((channelPoints, channelIndex) => {
+        if (channelPoints.length === 0) return null;
+        const yOffset = channelTop + channelIndex * (CHANNEL_HEIGHT + CHANNEL_GAP);
+        return (
+          <path
+            key={pinKeys[channelIndex] ?? channelIndex}
+            d={stepWaveformPath(channelPoints, yOffset)}
+            fill="none"
+            stroke={WAVEFORM_COLORS[channelIndex % WAVEFORM_COLORS.length]}
+            strokeWidth={1.5}
+            vectorEffect="non-scaling-stroke"
+          />
+        );
+      })}
+    </>
+  );
+}
+
 function areDecoderConfigsEqual(
   left: LogicDecoderProtocolConfigs,
   right: LogicDecoderProtocolConfigs
@@ -897,9 +989,12 @@ export function LogicAnalyzerCard({
   }, [activeStreamConfig, streamChannelTop]);
 
   const streamWindowRef = useRef(streamWindow);
-  // FIXME: render-time ref assignment works for the latest-window pattern but
-  // is impure; move into useEffect when refactoring the decode scheduler.
-  streamWindowRef.current = streamWindow;
+  useEffect(() => {
+    // Keep the decode scheduler on the latest window without mutating a ref
+    // during render. This effect must stay before the decode effect below so
+    // its immediate decode run observes the current stream window.
+    streamWindowRef.current = streamWindow;
+  }, [streamWindow]);
   const streamMaxAnchor = Math.max(0, streamWindow.len - streamWindow.span);
   const streamDecodeBase = streamWindow.end - Math.min(streamWindow.span, STREAM_DECODE_MAX_SAMPLES);
 
@@ -1503,9 +1598,6 @@ export function LogicAnalyzerCard({
           )}
 
           {workspaceMode === "capture" && streaming && streamWaveformData.length > 0 && (
-            // FIXME: the step-path lane rendering below duplicates the capture
-            // waveform svg almost verbatim; extract a shared StepWaveform
-            // component when the live view gains more features.
             <div className="mt-3">
               <div className="mb-2 flex flex-wrap items-center gap-3 text-[10px] text-ink-dim">
                 <span className="flex items-center gap-1 text-xs">
@@ -1596,63 +1688,11 @@ export function LogicAnalyzerCard({
                     </g>
                   );
                 })}
-                {(activeStreamConfig?.selectedPins ?? []).map((pin, channelIndex) => {
-                  const yOffset = streamChannelTop + channelIndex * (CHANNEL_HEIGHT + CHANNEL_GAP);
-                  return (
-                    <g key={pin}>
-                      <text
-                        x={4}
-                        y={yOffset + CHANNEL_HEIGHT / 2 + 4}
-                        className="fill-ink-dim text-[10px]"
-                        fontFamily="monospace"
-                      >
-                        {pinLabel(pin)}
-                      </text>
-                      <line
-                        x1={PLOT_LEFT}
-                        x2={WIDTH - PLOT_RIGHT}
-                        y1={yOffset + CHANNEL_HEIGHT / 2}
-                        y2={yOffset + CHANNEL_HEIGHT / 2}
-                        stroke="rgb(var(--c-line))"
-                        strokeDasharray="2 4"
-                        strokeWidth={0.5}
-                      />
-                    </g>
-                  );
-                })}
-                {streamWaveformData.map((channelPoints, channelIndex) => {
-                  if (channelPoints.length === 0) return null;
-                  const yOffset = streamChannelTop + channelIndex * (CHANNEL_HEIGHT + CHANNEL_GAP);
-                  const pathPoints = channelPoints.map((point) => ({
-                    x: point.x,
-                    y: yOffset + point.y,
-                  }));
-
-                  let d = `M ${pathPoints[0]?.x ?? 0} ${pathPoints[0]?.y ?? 0}`;
-                  for (let pointIndex = 1; pointIndex < pathPoints.length; pointIndex += 1) {
-                    const previous = pathPoints[pointIndex - 1];
-                    const current = pathPoints[pointIndex];
-                    if (!previous || !current) continue;
-
-                    if (current.y !== previous.y) {
-                      d += ` L ${current.x} ${previous.y}`;
-                      d += ` L ${current.x} ${current.y}`;
-                    } else {
-                      d += ` L ${current.x} ${current.y}`;
-                    }
-                  }
-
-                  return (
-                    <path
-                      key={activeStreamConfig?.selectedPins[channelIndex] ?? channelIndex}
-                      d={d}
-                      fill="none"
-                      stroke={WAVEFORM_COLORS[channelIndex % WAVEFORM_COLORS.length]}
-                      strokeWidth={1.5}
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  );
-                })}
+                <StepWaveform
+                  channels={streamWaveformData}
+                  pinKeys={activeStreamConfig?.selectedPins ?? []}
+                  channelTop={streamChannelTop}
+                />
               </svg>
             </div>
           )}
@@ -1703,77 +1743,13 @@ export function LogicAnalyzerCard({
                   );
                 })}
 
-                {capturePins.map((pin, channelIndex) => {
-                  const yOffset = channelTop + channelIndex * (CHANNEL_HEIGHT + CHANNEL_GAP);
-                  return (
-                    <g key={pin}>
-                      <text
-                        x={4}
-                        y={yOffset + CHANNEL_HEIGHT / 2 + 4}
-                        className="fill-ink-dim text-[10px]"
-                        fontFamily="monospace"
-                      >
-                        {pinLabel(pin)}
-                      </text>
-                      <line
-                        x1={PLOT_LEFT}
-                        x2={WIDTH - PLOT_RIGHT}
-                        y1={yOffset + CHANNEL_HEIGHT / 2}
-                        y2={yOffset + CHANNEL_HEIGHT / 2}
-                        stroke="rgb(var(--c-line))"
-                        strokeDasharray="2 4"
-                        strokeWidth={0.5}
-                      />
-                    </g>
-                  );
-                })}
-
-                {triggerLineX !== null && (
-                  <line
-                    x1={triggerLineX}
-                    x2={triggerLineX}
-                    y1={10}
-                    y2={svgHeight - 10}
-                    stroke="rgb(var(--c-danger))"
-                    strokeDasharray="4 3"
-                    strokeWidth={1}
-                  />
-                )}
-
-                {waveformData.map((channelPoints, channelIndex) => {
-                  if (channelPoints.length === 0) return null;
-
-                  const yOffset = channelTop + channelIndex * (CHANNEL_HEIGHT + CHANNEL_GAP);
-                  const pathPoints = channelPoints.map((point) => ({
-                    x: point.x,
-                    y: yOffset + point.y,
-                  }));
-
-                  let d = `M ${pathPoints[0]?.x ?? 0} ${pathPoints[0]?.y ?? 0}`;
-                  for (let pointIndex = 1; pointIndex < pathPoints.length; pointIndex += 1) {
-                    const previous = pathPoints[pointIndex - 1];
-                    const current = pathPoints[pointIndex];
-                    if (!previous || !current) continue;
-
-                    if (current.y !== previous.y) {
-                      d += ` L ${current.x} ${previous.y}`;
-                      d += ` L ${current.x} ${current.y}`;
-                    } else {
-                      d += ` L ${current.x} ${current.y}`;
-                    }
-                  }
-
-                  return (
-                    <path
-                      key={capturePins[channelIndex] ?? channelIndex}
-                      d={d}
-                      fill="none"
-                      stroke={WAVEFORM_COLORS[channelIndex % WAVEFORM_COLORS.length]}
-                      strokeWidth={1.5}
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  );
-                })}
+                <StepWaveform
+                  channels={waveformData}
+                  pinKeys={capturePins}
+                  channelTop={channelTop}
+                  triggerLineX={triggerLineX}
+                  svgHeight={svgHeight}
+                />
               </svg>
 
               <div className="mt-1 flex justify-between text-[9px] text-ink-dim">

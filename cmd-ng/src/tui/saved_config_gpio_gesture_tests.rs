@@ -4,7 +4,7 @@ use super::gpio_fixture::{control_rect, draw, projection_model};
 use super::mock_board::{mock_server, Reply};
 use super::mouse_events::handle_mouse_at;
 use super::runtime::{on_time_tick, start_config_request};
-use crate::client::{BoardClient, BoardRequest};
+use crate::client::{BoardClient, BoardRequest, BoardTransport};
 use anyhow::Result;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use std::time::{Duration, Instant};

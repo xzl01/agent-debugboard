@@ -1,5 +1,5 @@
 use super::TuiActionMsg;
-use crate::client::BoardRequest;
+use crate::client::{BoardRequest, BoardTransport};
 use anyhow::Result;
 use reqwest::{Method, Url};
 use std::time::Duration;

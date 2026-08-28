@@ -5,9 +5,9 @@
 `linkr-serial-broker.v1`; unversioned JSON and raw text frames are rejected.
 
 From a source checkout, build the Web UI and start it with
-`cargo run --manifest-path host-tools/Cargo.toml -- serve`. The older
-`npm --prefix web run device-bridge` implementation remains available during
-the migration, but new Web and Agent integrations should use the Rust Host.
+`cargo run --manifest-path host-tools/Cargo.toml -- serve`. The former Node
+gateway implementation has been removed; the Rust Host is the only gateway
+implementation.
 
 The Broker, rather than an individual browser tab, owns the CH347F serial
 ports. UART0 maps to the `D1` device and UART1 maps to `D3`, with sorted CH347F

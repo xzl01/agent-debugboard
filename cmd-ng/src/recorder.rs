@@ -4,7 +4,7 @@
 // Copyright (c) Jiali Chen <chenjiali@radxa.com>
 
 use crate::adc::AdcKind;
-use crate::client::{BoardClient, BoardRequest};
+use crate::client::{BoardClient, BoardRequest, BoardTransport};
 use crate::json_contract::JSON_SCHEMA;
 use crate::ws_client::{
     expand_telemetry_batch, subscribe_batch_request, subscribe_request, WsClient, WsTelemetryBatch,

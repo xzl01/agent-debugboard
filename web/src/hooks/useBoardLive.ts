@@ -29,6 +29,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function parseLiveMessage(data: unknown): unknown {
+  if (typeof data !== "string") return null;
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
 export interface UseBoardLiveOptions {
   readonly live: boolean;
   readonly pageVisible: boolean;
@@ -149,12 +158,10 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
           }
         };
         ws.onmessage = (ev) => {
-          // FIXME(review-20260821): This catch treats handler/persistence failures as malformed
-          // frames, which can hide an incomplete capture. Remove when JSON parsing is isolated
-          // from dispatch and non-parse failures flow through handleSocketFailure.
+          if (cancelled) return;
+          const parsed = parseLiveMessage(ev.data);
+          if (!isRecord(parsed)) return;
           try {
-            const parsed: unknown = typeof ev.data === "string" ? JSON.parse(ev.data) : null;
-            if (!isRecord(parsed)) return;
             const msg = parsed;
             if (msg.type === "snapshot") {
               setSnapshot((prev) => mergeBoardWsSnapshot(prev, msg));
@@ -171,8 +178,9 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
             } else {
               handleCaptureMessage(msg, [], 0);
             }
-          } catch {
-            /* ignore malformed frames */
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            handleSocketFailure(`Live WebSocket frame handling failed: ${message}`);
           }
         };
         ws.onerror = () => {

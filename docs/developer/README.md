@@ -21,7 +21,7 @@ apps/radxa_linkr_debugger/        Zephyr application
 apps/radxa_linkr_debugger/src/    Firmware source and shared board model
 apps/radxa_linkr_debugger/tests/  Unit tests
 cmd-ng/                          Primary Rust host CLI/TUI
-web/                             Web UI and device bridge
+web/                             Web UI (served by Linkr Host on GitHub Pages)
 docs/                            Documentation tree (user, developer, reference, testing, hardware, and assets)
 skills/radxa-linkr-debugger/     Agent-facing skill and operating guide
 west.yml                         Zephyr workspace manifest

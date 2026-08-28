@@ -6,7 +6,7 @@ use super::model::TuiModel;
 use super::mouse_events::{handle_mouse_at, MouseOutcome};
 use super::render;
 use super::TUI_POLL_INTERVAL;
-use crate::client::BoardRequest;
+use crate::client::{BoardRequest, BoardTransport};
 use crate::ws_status::WsStatusSnapshot;
 use anyhow::Result;
 use crossterm::event::{self, Event};

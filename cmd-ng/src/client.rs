@@ -92,68 +92,6 @@ impl BoardClient {
         })
     }
 
-    pub fn base_url(&self) -> &str {
-        &self.base_url
-    }
-
-    pub fn send_text(&self, request: BoardRequest) -> Result<String> {
-        let url = self.request_url(&request.path, &request.query)?;
-        let mut builder = self
-            .http
-            .request(request.method, url)
-            .header("Accept", "application/json");
-        if let Some(body) = request.body {
-            builder = builder
-                .header("Content-Type", "application/json")
-                .json(&body);
-        }
-
-        Self::response_text(builder.send()?)
-    }
-
-    pub fn send_raw_json(&self, request: BoardRawJsonRequest) -> Result<String> {
-        let url = self.request_url(&request.path, &request.query)?;
-        let response = self
-            .http
-            .request(request.method, url)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-            .body(request.body)
-            .send()?;
-        Self::response_text(response)
-    }
-
-    pub fn upload_binary(&self, request: BoardBinaryUpload) -> Result<String> {
-        let url = self.request_url(&request.path, &[])?;
-        let response = self
-            .http
-            .post(url)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/octet-stream")
-            .header("X-Linkr-Ota-Size", request.size.to_string())
-            .header("X-Linkr-Ota-Sha256", request.sha256)
-            .body(Body::sized(request.file, request.size))
-            .timeout(ota_upload_timeout(self.timeout))
-            .send()?;
-        Self::response_body(response)
-    }
-
-    pub fn config_show(&self) -> Result<PersistentConfigResponse> {
-        self.send_config(config_show_request(), ConfigAction::Get)
-    }
-
-    pub fn config_save(
-        &self,
-        items: &[ConfigItemId],
-        confirm: bool,
-    ) -> Result<PersistentConfigResponse> {
-        self.send_config(config_save_request(items, confirm)?, ConfigAction::Save)
-    }
-
-    pub fn config_clear(&self) -> Result<PersistentConfigResponse> {
-        self.send_config(config_clear_request(), ConfigAction::Clear)
-    }
-
     fn request_url(&self, path: &str, query: &[(String, String)]) -> Result<Url> {
         let mut url = Url::parse(&self.base_url)
             .with_context(|| format!("parse base URL {:?}", self.base_url))?;
@@ -215,23 +153,53 @@ impl BoardClient {
 
 impl BoardTransport for BoardClient {
     fn send_text(&self, request: BoardRequest) -> Result<String> {
-        Self::send_text(self, request)
+        let url = self.request_url(&request.path, &request.query)?;
+        let mut builder = self
+            .http
+            .request(request.method, url)
+            .header("Accept", "application/json");
+        if let Some(body) = request.body {
+            builder = builder
+                .header("Content-Type", "application/json")
+                .json(&body);
+        }
+
+        Self::response_text(builder.send()?)
     }
 
     fn send_raw_json(&self, request: BoardRawJsonRequest) -> Result<String> {
-        Self::send_raw_json(self, request)
+        let url = self.request_url(&request.path, &request.query)?;
+        let response = self
+            .http
+            .request(request.method, url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .body(request.body)
+            .send()?;
+        Self::response_text(response)
     }
 
     fn upload_binary(&self, request: BoardBinaryUpload) -> Result<String> {
-        Self::upload_binary(self, request)
+        let url = self.request_url(&request.path, &[])?;
+        let response = self
+            .http
+            .post(url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/octet-stream")
+            .header("X-Linkr-Ota-Size", request.size.to_string())
+            .header("X-Linkr-Ota-Sha256", request.sha256)
+            .body(Body::sized(request.file, request.size))
+            .timeout(ota_upload_timeout(self.timeout))
+            .send()?;
+        Self::response_body(response)
     }
 
     fn base_url(&self) -> &str {
-        Self::base_url(self)
+        &self.base_url
     }
 
     fn config_show(&self) -> Result<PersistentConfigResponse> {
-        Self::config_show(self)
+        self.send_config(config_show_request(), ConfigAction::Get)
     }
 
     fn config_save(
@@ -239,11 +207,11 @@ impl BoardTransport for BoardClient {
         items: &[ConfigItemId],
         confirm: bool,
     ) -> Result<PersistentConfigResponse> {
-        Self::config_save(self, items, confirm)
+        self.send_config(config_save_request(items, confirm)?, ConfigAction::Save)
     }
 
     fn config_clear(&self) -> Result<PersistentConfigResponse> {
-        Self::config_clear(self)
+        self.send_config(config_clear_request(), ConfigAction::Clear)
     }
 }
 

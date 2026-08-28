@@ -190,7 +190,7 @@ host-side bridge instead:
 ```sh
 cd web
 npm ci
-npm run device-bridge
+ npm run host
 ```
 
 Then use the **Bridge** button in either serial terminal. The bridge prefers the
@@ -199,7 +199,7 @@ the fallback when those suffixes are unavailable.
 
 ### Linux serial device permissions
 
-Direct Web Serial and the device bridge both open serial devices as the current
+Direct Web Serial and the Linkr Host bridge both open serial devices as the current
 desktop user. On Linux, CH347 ports normally appear as `/dev/ttyUSB0` and
 `/dev/ttyUSB1`; the board CDC ACM fallback may appear as `/dev/ttyACM0`.
 
@@ -220,7 +220,7 @@ sudo usermod -aG dialout "$(id -un)"
 ```
 
 Then sign out and back in, or reboot. Reconnect the board, restart the browser
-or `npm run device-bridge`, and try again. The new group membership does not
+or `npm run host`, and try again. The new group membership does not
 apply to browser or terminal processes that were already running.
 
 If the device is owned by a different serial-access group, use the group shown
@@ -258,12 +258,12 @@ downloaded after completion.
 Pushes to `dev` deploy the production build to
 <https://xzl01.github.io/agent-debugboard/>. GitHub Pages serves the UI over
 HTTPS, while the board exposes its APIs over HTTP on the USB-NCM network. Start
-the device-bridge gateway before using hardware controls from the hosted page:
+Linkr Host before using hardware controls from the hosted page:
 
 ```sh
 cd web
 npm ci
-npm run device-bridge
+npm run host
 ```
 
 The Pages build connects to `http://127.0.0.1:8787/api/v1`. By default, the
@@ -272,15 +272,15 @@ at `http://172.29.203.1` and supplies the CORS and Private Network Access
 headers needed by the browser. Override the upstream address when necessary:
 
 ```sh
-LINKR_BOARD_URL=http://172.29.203.1 npm run device-bridge
+LINKR_BOARD_URL=http://172.29.203.1 npm run host
 ```
 
-On macOS, both `npm run dev` and `npm run device-bridge` automatically insert a
+On macOS, `npm run dev` automatically inserts a
 loopback-only raw TCP forwarder when targeting the default USB-NCM address.
 This avoids repeated Vite `502 Bad Gateway` responses when macOS permits native
 tools such as `curl` to use the interface but rejects direct Node.js sockets.
-The forwarder carries REST, OTA, and WebSocket traffic and exits with its parent
-process; no manual system proxy is required.
+Linkr Host talks directly to the USB-NCM address and does not need the legacy
+Node/Ruby forwarder.
 
 ## Related
 

@@ -549,7 +549,7 @@ async function otaRequest(path: string, init?: RequestInit): Promise<unknown> {
   } catch (error) {
     throw new OtaApiError(
       `${error instanceof Error ? error.message : "Network request failed"}. ` +
-        "If this page is hosted on GitHub Pages, start the local gateway with `npm run device-bridge`."
+        "If this page is hosted on GitHub Pages, start Linkr Host with `npm run host`."
     );
   }
 
@@ -619,7 +619,7 @@ export async function uploadOtaImage(
       settle(() => {
         reject(
           new OtaApiError(
-            "Network request failed while uploading OTA image. If this page is hosted on GitHub Pages, start the local gateway with `npm run device-bridge`."
+            "Network request failed while uploading OTA image. If this page is hosted on GitHub Pages, start Linkr Host with `npm run host`."
           )
         );
       });

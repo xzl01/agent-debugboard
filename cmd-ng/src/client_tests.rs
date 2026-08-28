@@ -1,4 +1,6 @@
-use crate::client::{ota_upload_timeout, BoardBinaryUpload, BoardClient, BoardRequest};
+use crate::client::{
+    ota_upload_timeout, BoardBinaryUpload, BoardClient, BoardRequest, BoardTransport,
+};
 use reqwest::Method;
 use std::io::{Read, Write};
 use std::time::Duration;

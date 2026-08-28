@@ -84,6 +84,5 @@ MCP and other Agents share `linkr-serial-broker.v1`, so they can receive the
 same UART stream without opening competing OS handles. Write claims are short
 and operation-scoped.
 
-The former Node gateway and MCP adapter remain in `web/serial-bridge.mjs` and
-`web/scripts/linkr-mcp-server.mjs` as migration references. New integrations
+The former Node gateway and MCP adapter have been removed. New integrations
 should invoke `linkr-host`.

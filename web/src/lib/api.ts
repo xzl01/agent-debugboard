@@ -6,7 +6,7 @@ import { parseTaskCatalogResponse, type BuiltInTask } from "./builtinTasks.ts";
 
 // Thin client for the Radxa Linkr Debugger firmware REST API. Local development
 // uses Vite's same-origin proxy. The Pages build points this at the loopback
-// device gateway started by `npm run device-bridge`.
+// Linkr Host gateway started by `npm run host`.
 
 const BASE = import.meta.env?.VITE_DEVICE_API_BASE || "/api/v1";
 
@@ -54,7 +54,7 @@ async function request<T = unknown>(path: string, init?: RequestInit): Promise<T
     if (init?.signal?.aborted) throw e;
     throw new BoardApiError(
       `${e instanceof Error ? e.message : "Network request failed"}. ` +
-        "If this page is hosted on GitHub Pages, start the local gateway with `npm run device-bridge`."
+        "If this page is hosted on GitHub Pages, start Linkr Host with `npm run host`."
     );
   }
 

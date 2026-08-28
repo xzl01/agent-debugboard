@@ -5,7 +5,7 @@ import test from "node:test";
 const cases = [
   [new URL("../vite.config.ts", import.meta.url), '"http://172.29.203.1"'],
   [new URL("./dev-server.mjs", import.meta.url), '"http://172.29.203.1"'],
-  [new URL("../serial-bridge.mjs", import.meta.url), '"http://172.29.203.1"'],
+  [new URL("../../host-tools/src/config.rs", import.meta.url), '"http://172.29.203.1"'],
 ];
 
 test("local Web entry points default to the firmware port 80 service", async () => {
