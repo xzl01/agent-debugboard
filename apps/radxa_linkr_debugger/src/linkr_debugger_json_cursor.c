@@ -298,6 +298,16 @@ static bool json_parse_string(const char *text, size_t text_len, size_t *offset,
 	return false;
 }
 
+bool linkr_debugger_json_parse_string_n(const char *text, size_t text_len,
+					      size_t *offset, char *output,
+					      size_t capacity, size_t *output_len)
+{
+	if (text == NULL || offset == NULL || output == NULL) {
+		return false;
+	}
+	return json_parse_string(text, text_len, offset, output, capacity, output_len);
+}
+
 bool linkr_debugger_json_parse_string(struct linkr_debugger_json_cursor *cursor,
 						      char *output, size_t capacity)
 {
@@ -306,8 +316,9 @@ bool linkr_debugger_json_parse_string(struct linkr_debugger_json_cursor *cursor,
 	if (cursor == NULL || cursor->text == NULL || output == NULL) {
 		return false;
 	}
-	return json_parse_string(cursor->text, strlen(cursor->text), &cursor->offset,
-				 output, capacity, &output_len);
+	return linkr_debugger_json_parse_string_n(cursor->text, strlen(cursor->text),
+						  &cursor->offset, output, capacity,
+						  &output_len);
 }
 
 bool linkr_debugger_json_skip_string(struct linkr_debugger_json_cursor *cursor,
@@ -333,4 +344,60 @@ bool linkr_debugger_json_decode_complete_string(const char *text, size_t text_le
 		return false;
 	}
 	return offset == text_len;
+}
+
+int linkr_debugger_json_append_string(void *context, linkr_debugger_json_write_fn write,
+				      const char *value, size_t len)
+{
+	static const char hex[] = "0123456789abcdef";
+	int result;
+
+	if (write == NULL) {
+		return -1;
+	}
+	if (write(context, "\"", 1U) != 0) {
+		return -1;
+	}
+	for (size_t index = 0U; index < len; index++) {
+		unsigned char ch = (unsigned char)value[index];
+
+		switch (ch) {
+		case '"':
+			result = write(context, "\\\"", 2U);
+			break;
+		case '\\':
+			result = write(context, "\\\\", 2U);
+			break;
+		case '\b':
+			result = write(context, "\\b", 2U);
+			break;
+		case '\f':
+			result = write(context, "\\f", 2U);
+			break;
+		case '\n':
+			result = write(context, "\\n", 2U);
+			break;
+		case '\r':
+			result = write(context, "\\r", 2U);
+			break;
+		case '\t':
+			result = write(context, "\\t", 2U);
+			break;
+		default:
+			if (ch < 0x20U) {
+				char escaped[4] = {
+					'\\', 'u', hex[ch >> 4], hex[ch & 0x0fU],
+				};
+
+				result = write(context, escaped, sizeof(escaped));
+			} else {
+				result = write(context, (const char *)&ch, 1U);
+			}
+			break;
+		}
+		if (result != 0) {
+			return -1;
+		}
+	}
+	return write(context, "\"", 1U);
 }

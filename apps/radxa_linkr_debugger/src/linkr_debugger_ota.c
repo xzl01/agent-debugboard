@@ -620,11 +620,46 @@ static void linkr_debugger_ota_auto_confirm_work_handler(struct k_work *work)
 		return;
 	}
 
+	k_mutex_lock(&linkr_debugger_ota_lock, K_FOREVER);
+	linkr_debugger_ota_refresh_persistent_state_locked();
+	if (!linkr_debugger_watchdog_ota_test_marker_present()) {
+		k_mutex_unlock(&linkr_debugger_ota_lock);
+		return;
+	}
+	if (linkr_debugger_ota.state != LINKR_DEBUGGER_OTA_STATE_PENDING_TEST) {
+		retry = true;
+	}
+	/* After an MCUboot rollback the running image is already confirmed, but the
+	 * retained OTA marker still has to be cleared without another confirm write.
+	 */
+	if (boot_is_img_confirmed() &&
+	    linkr_debugger_ota.state == LINKR_DEBUGGER_OTA_STATE_IDLE) {
+		if (!linkr_debugger_watchdog_fault_injection_confirm_begin()) {
+			k_mutex_unlock(&linkr_debugger_ota_lock);
+			(void)k_work_reschedule(&linkr_debugger_ota_auto_confirm_work,
+						 K_MSEC(LINKR_DEBUGGER_OTA_AUTO_CONFIRM_DELAY_MS));
+			return;
+		}
+		linkr_debugger_watchdog_ota_test_marker_clear();
+		linkr_debugger_watchdog_fault_injection_confirm_end();
+		linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_IDLE;
+		k_mutex_unlock(&linkr_debugger_ota_lock);
+		return;
+	} else if (retry) {
+		k_mutex_unlock(&linkr_debugger_ota_lock);
+		(void)k_work_reschedule(&linkr_debugger_ota_auto_confirm_work,
+			 K_MSEC(LINKR_DEBUGGER_OTA_AUTO_CONFIRM_DELAY_MS));
+		return;
+	}
+	k_mutex_unlock(&linkr_debugger_ota_lock);
+
 	linkr_debugger_watchdog_status_get(&watchdog);
 	if (!watchdog.supported || !watchdog.armed || !watchdog.healthy) {
 		LOG_WRN("MCUboot image auto-confirm skipped: watchdog supported=%d armed=%d healthy=%d",
 			watchdog.supported ? 1 : 0, watchdog.armed ? 1 : 0,
 			watchdog.healthy ? 1 : 0);
+		(void)k_work_reschedule(&linkr_debugger_ota_auto_confirm_work,
+					 K_MSEC(LINKR_DEBUGGER_OTA_AUTO_CONFIRM_DELAY_MS));
 		return;
 	}
 
@@ -634,32 +669,46 @@ static void linkr_debugger_ota_auto_confirm_work_handler(struct k_work *work)
 		k_mutex_unlock(&linkr_debugger_ota_lock);
 		return;
 	}
-	if (linkr_debugger_ota.state != LINKR_DEBUGGER_OTA_STATE_PENDING_TEST) {
-		retry = true;
-	} else if (boot_is_img_confirmed()) {
+	if (boot_is_img_confirmed() &&
+	    linkr_debugger_ota.state == LINKR_DEBUGGER_OTA_STATE_IDLE) {
+		if (!linkr_debugger_watchdog_fault_injection_confirm_begin()) {
+			k_mutex_unlock(&linkr_debugger_ota_lock);
+			(void)k_work_reschedule(&linkr_debugger_ota_auto_confirm_work,
+						 K_MSEC(LINKR_DEBUGGER_OTA_AUTO_CONFIRM_DELAY_MS));
+			return;
+		}
 		linkr_debugger_watchdog_ota_test_marker_clear();
+		linkr_debugger_watchdog_fault_injection_confirm_end();
 		linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_IDLE;
 		k_mutex_unlock(&linkr_debugger_ota_lock);
 		return;
-	} else if (linkr_debugger_ota_flash_owner_acquire() < 0) {
-		retry = true;
 	}
-	if (retry) {
+	if (linkr_debugger_ota.state != LINKR_DEBUGGER_OTA_STATE_PENDING_TEST ||
+	    linkr_debugger_ota_flash_owner_acquire() < 0) {
 		k_mutex_unlock(&linkr_debugger_ota_lock);
 		(void)k_work_reschedule(&linkr_debugger_ota_auto_confirm_work,
 					 K_MSEC(LINKR_DEBUGGER_OTA_AUTO_CONFIRM_DELAY_MS));
 		return;
 	}
-
+	if (!linkr_debugger_watchdog_fault_injection_confirm_begin()) {
+		linkr_debugger_ota_flash_owner_release();
+		k_mutex_unlock(&linkr_debugger_ota_lock);
+		(void)k_work_reschedule(&linkr_debugger_ota_auto_confirm_work,
+					 K_MSEC(LINKR_DEBUGGER_OTA_AUTO_CONFIRM_DELAY_MS));
+		return;
+	}
 	ret = boot_write_img_confirmed();
-	linkr_debugger_ota_flash_owner_release();
 	if (ret < 0) {
+		linkr_debugger_watchdog_fault_injection_confirm_end();
+		linkr_debugger_ota_flash_owner_release();
 		k_mutex_unlock(&linkr_debugger_ota_lock);
 		LOG_WRN("MCUboot image auto-confirm failed: %d", ret);
 		return;
 	}
 
 	linkr_debugger_watchdog_ota_test_marker_clear();
+	linkr_debugger_watchdog_fault_injection_confirm_end();
+	linkr_debugger_ota_flash_owner_release();
 	linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_IDLE;
 	k_mutex_unlock(&linkr_debugger_ota_lock);
 	LOG_INF("MCUboot test image confirmed after watchdog health gate");
@@ -781,22 +830,31 @@ static int linkr_debugger_ota_handle_confirm(struct http_response_ctx *response_
 	if (linkr_debugger_ota.state == LINKR_DEBUGGER_OTA_STATE_UPLOADING) {
 		k_mutex_unlock(&linkr_debugger_ota_lock);
 		linkr_debugger_ota_error(response_ctx, json_buf, json_buf_len,
-				       HTTP_409_CONFLICT, "ota", "upload_in_progress",
-				       "another OTA operation is already active");
+					       HTTP_409_CONFLICT, "ota", "upload_in_progress",
+					       "another OTA operation is already active");
+		return 0;
+	}
+	if (!linkr_debugger_watchdog_fault_injection_confirm_begin()) {
+		k_mutex_unlock(&linkr_debugger_ota_lock);
+		linkr_debugger_ota_error(response_ctx, json_buf, json_buf_len,
+					       HTTP_409_CONFLICT, "ota", "fault_injection_armed",
+					       "watchdog fault injection is active; confirm is blocked");
 		return 0;
 	}
 	ret = linkr_debugger_ota_flash_owner_acquire();
 	if (ret < 0) {
+		linkr_debugger_watchdog_fault_injection_confirm_end();
 		k_mutex_unlock(&linkr_debugger_ota_lock);
 		linkr_debugger_ota_error(response_ctx, json_buf, json_buf_len,
-				       HTTP_409_CONFLICT, "ota", "flash_busy",
-				       "flash is busy with another operation");
+					       HTTP_409_CONFLICT, "ota", "flash_busy",
+					       "flash is busy with another operation");
 		return 0;
 	}
 
 	ret = boot_write_img_confirmed();
 
 	if (ret < 0) {
+		linkr_debugger_watchdog_fault_injection_confirm_end();
 		linkr_debugger_ota_flash_owner_release();
 		k_mutex_unlock(&linkr_debugger_ota_lock);
 		linkr_debugger_ota_error(response_ctx, json_buf, json_buf_len,
@@ -806,6 +864,7 @@ static int linkr_debugger_ota_handle_confirm(struct http_response_ctx *response_
 	}
 
 	linkr_debugger_watchdog_ota_test_marker_clear();
+	linkr_debugger_watchdog_fault_injection_confirm_end();
 
 	linkr_debugger_ota.state = LINKR_DEBUGGER_OTA_STATE_IDLE;
 	if (linkr_debugger_ota_encode_status(&env) < 0 ||

@@ -147,6 +147,8 @@ const char *linkr_debugger_json_schema(void);
 bool linkr_debugger_watchdog_ota_test_marker_present(void);
 void linkr_debugger_watchdog_ota_test_marker_set(void);
 void linkr_debugger_watchdog_ota_test_marker_clear(void);
+bool linkr_debugger_watchdog_fault_injection_confirm_begin(void);
+void linkr_debugger_watchdog_fault_injection_confirm_end(void);
 void linkr_debugger_watchdog_status_get(struct linkr_debugger_watchdog_status *status);
 int linkr_debugger_watchdog_prepare_planned_reboot(void);
 int test_vsnprintk(char *buffer, size_t size, const char *format, va_list args);

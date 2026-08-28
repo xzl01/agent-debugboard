@@ -57,6 +57,8 @@ struct linkr_debugger_watchdog_status {
 	bool healthy;
 	uint32_t timeout_ms;
 	bool bootloader_on_timeout;
+	bool fault_injection_available;
+	bool fault_injection_armed;
 	const char *failing_service;
 };
 
@@ -116,6 +118,12 @@ bool linkr_debugger_watchdog_ota_test_marker_present(void);
 void linkr_debugger_watchdog_ota_test_marker_set(void);
 void linkr_debugger_watchdog_ota_test_marker_clear(void);
 int linkr_debugger_watchdog_prepare_planned_reboot(void);
+bool linkr_debugger_watchdog_fault_injection_available(void);
+bool linkr_debugger_watchdog_fault_injection_armed(void);
+int linkr_debugger_watchdog_fault_injection_arm(void);
+int linkr_debugger_watchdog_fault_injection_disarm(void);
+bool linkr_debugger_watchdog_fault_injection_confirm_begin(void);
+void linkr_debugger_watchdog_fault_injection_confirm_end(void);
 
 int linkr_debugger_bootloader_now(void);
 

@@ -32,3 +32,13 @@ config LINKR_DEBUGGER_OTA
 	  Enables the unsigned MCUboot HTTP OTA endpoints for the RP2350 mcuboot
 	  board target. The upload path writes a complete MCUboot binary into
 	  slot1 and verifies the declared SHA-256 before allowing a test upgrade.
+
+config LINKR_DEBUGGER_FAULT_INJECTION
+	bool "Safe watchdog fault-injection test hook"
+	depends on LINKR_DEBUGGER_OTA
+	depends on WATCHDOG
+	default n
+	help
+	  Enables an explicit, timeout-bounded watchdog fault-injection hook used
+	  by OTA rollback HIL. It is unavailable in normal production builds and
+	  only accepts an arm request while the OTA test marker is present.

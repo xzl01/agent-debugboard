@@ -38,9 +38,9 @@ OTA 使用 MCUboot 格式的应用二进制文件交付。
    watchdog 健康门槛自动确认。
 
 固件设计为通过 retained marker，让未确认测试镜像发生复位后请求 MCUboot
-回滚，而不是进入 ROM BOOTSEL。该故障路径尚未完成 watchdog 故障注入 HIL
-验证，因此不能把自动回滚当作恢复保证。显式 `bootloader` 命令和普通非 OTA
-watchdog 复位仍正常进入 ROM BOOTSEL。
+回滚，而不是进入 ROM BOOTSEL。仓库 HIL runner 可通过仅测试构建使用的
+`CONFIG_LINKR_DEBUGGER_FAULT_INJECTION` 安全验证该路径；生产固件不包含该
+hook。显式 `bootloader` 命令和普通非 OTA watchdog 复位仍正常进入 ROM BOOTSEL。
 
 ## CLI 命令
 
@@ -86,15 +86,15 @@ radxa-linkr-debuggerctl --json ota confirm
 
 Web UI 仪表盘侧栏的**固件工具**中提供 OTA 卡片。它通过同一 USB NCM HTTP API
 交付 RP2350 固件更新，不需要额外的主机工具。当 UI 通过 HTTPS 从 GitHub
-Pages 提供服务时，需要设备桥接网关（`npm run device-bridge`）。详见
+Pages 提供服务时，需要 Linkr Host（`npm run host`）。详见
 [Web UI 指南](webui.zh-CN.md)。
 
 ## MCUboot 回滚与恢复
 
 未确认镜像的预期故障路径会通过 retained marker，在 watchdog 复位后请求
-MCUboot 回滚。该路径的 watchdog 故障注入 HIL 仍待完成；确认镜像前应验证
-实际运行状态，并始终保留物理 ROM BOOTSEL 恢复路径。初次安装和恢复请使用
-上文所述的合并产物 `radxa-linkr-debugger-rp2350.uf2`。
+MCUboot 回滚。故障注入路径仅在 HIL overlay 中实现；确认镜像前应验证实际
+运行状态，并始终保留物理 ROM BOOTSEL 恢复路径。初次安装和恢复请使用上文
+所述的合并产物 `radxa-linkr-debugger-rp2350.uf2`。
 
 ## 相关文档
 

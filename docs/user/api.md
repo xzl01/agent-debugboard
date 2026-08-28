@@ -35,7 +35,7 @@ Failure (`error` is present only when `ok` is `false`):
 curl http://172.29.203.1/api/v1/status
 ```
 
-Returns everything in one shot: `project`, `mcu`, `usb`, `power_inputs`, `power_outputs`, `switches`, `adc_channels`, `watchdog`, `board_monitoring`, `gpios`.
+Returns everything in one shot: `project`, `build` (including `profile` and `image_version`), `mcu`, `usb`, `power_inputs`, `power_outputs`, `switches`, `adc_channels`, `watchdog`, `board_monitoring`, `gpios`.
 
 ## Power
 
@@ -264,13 +264,25 @@ error string.
 
 ### `GET /api/v1/watchdog`
 
-Watchdog status. Fields: `supported`, `automatic`, `healthy`, `armed`, `timeout_ms`, `bootloader_on_timeout`, `failing_service`.
+Watchdog status. Fields: `supported`, `automatic`, `healthy`, `armed`, `timeout_ms`, `bootloader_on_timeout`, `fault_injection_available`, `fault_injection_armed`, `failing_service`. Fault-injection flags are always reported but the HIL endpoint below exists only in the fault overlay build.
+
+### `GET /api/v1/watchdog/fault`
+
+HIL-only. Returns `action=fault_injection`, `available`, and `armed`.
+
+### `POST /api/v1/watchdog/fault`
+
+HIL-only. Arms the bounded watchdog fault injection. Before `POST /api/v1/ota/test` has set the retained marker, firmware returns HTTP 409 with `error.code=fault_injection_rejected`; if the hook is already armed, it returns HTTP 409 with `error.code=already_armed`; while OTA confirm holds its marker-clear transaction, it returns HTTP 409 with `error.code=confirm_in_progress`. Arming stops the watchdog feed and auto-disarms after 10 seconds.
+
+### `DELETE /api/v1/watchdog/fault`
+
+HIL-only. Disarms the fault injection before its deadline.
 
 ## OTA Firmware Update
 
 ### `GET /api/v1/ota`
 
-OTA status. Fields: `state` (`idle`/`uploading`/`verified`/`pending_test`/`rebooting`/`failed`), `expected_size`, `written_size`, `max_size`, `swap_type`, `current_image_confirmed`, and `test_marker_present`. The marker is cleared after manual or watchdog-gated confirmation and remains set when MCUboot rolls back a test image during a controlled run.
+OTA status. Fields: `state` (`idle`/`uploading`/`verified`/`pending_test`/`rebooting`/`failed`), `expected_size`, `written_size`, `max_size`, `swap_type`, `current_image_confirmed`, and `test_marker_present`. The marker is cleared after manual or watchdog-gated confirmation. After an MCUboot rollback it remains set briefly while firmware observes the already-confirmed running image, then is cleared so the board can return to a clean idle state.
 
 ### `POST /api/v1/ota/upload`
 

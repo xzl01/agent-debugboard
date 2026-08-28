@@ -27,6 +27,10 @@ static int fake_vsnprintk_fail_count;
 static bool fake_header_valid;
 static bool fake_marker_present;
 static bool fake_image_confirmed;
+static bool fake_watchdog_healthy;
+static bool fake_fault_injection_armed;
+static bool fake_confirm_held;
+static bool fake_marker_cleared_while_held;
 static int fake_reboot_count;
 static int fake_cancel_count;
 static int fake_upgrade_call_count;
@@ -249,14 +253,30 @@ void linkr_debugger_watchdog_ota_test_marker_set(void)
 
 void linkr_debugger_watchdog_ota_test_marker_clear(void)
 {
+	fake_marker_cleared_while_held = fake_confirm_held;
 	fake_marker_present = false;
+}
+
+bool linkr_debugger_watchdog_fault_injection_confirm_begin(void)
+{
+	if (fake_fault_injection_armed || fake_confirm_held) {
+		return false;
+	}
+	fake_confirm_held = true;
+	return true;
+}
+
+void linkr_debugger_watchdog_fault_injection_confirm_end(void)
+{
+	assert(fake_confirm_held);
+	fake_confirm_held = false;
 }
 
 void linkr_debugger_watchdog_status_get(struct linkr_debugger_watchdog_status *status)
 {
 	status->supported = true;
 	status->armed = true;
-	status->healthy = true;
+	status->healthy = fake_watchdog_healthy;
 }
 
 int linkr_debugger_watchdog_prepare_planned_reboot(void)
@@ -289,6 +309,10 @@ static void reset_fixture(void)
 	fake_header_valid = true;
 	fake_marker_present = false;
 	fake_image_confirmed = true;
+	fake_watchdog_healthy = true;
+	fake_fault_injection_armed = false;
+	fake_confirm_held = false;
+	fake_marker_cleared_while_held = false;
 	fake_reboot_count = 0;
 	fake_cancel_count = 0;
 	fake_upgrade_call_count = 0;
@@ -784,6 +808,7 @@ static void test_manual_confirm_ownership(void)
 	assert(response.status == HTTP_200_OK);
 	assert(fake_confirm_call_count == 1);
 	assert(!fake_marker_present);
+	assert(fake_marker_cleared_while_held);
 	assert_owner_recoverable();
 
 	reset_fixture();
@@ -811,6 +836,16 @@ static void test_manual_confirm_ownership(void)
 	assert(fake_confirm_call_count == 0);
 	assert(linkr_debugger_flash_arbiter_owner() == LINKR_DEBUGGER_FLASH_OWNER_OTA);
 	assert(linkr_debugger_flash_arbiter_release(LINKR_DEBUGGER_FLASH_OWNER_OTA));
+
+	reset_fixture();
+	fake_marker_present = true;
+	fake_image_confirmed = false;
+	fake_fault_injection_armed = true;
+	call_confirm_route(&response);
+	assert(response.status == HTTP_409_CONFLICT);
+	assert(fake_confirm_call_count == 0);
+	assert(fake_marker_present);
+	assert_owner_recoverable();
 }
 
 static void run_auto_confirm_work(void)
@@ -826,10 +861,21 @@ static void test_auto_confirm_ownership_and_retry(void)
 
 	reset_fixture();
 	fake_marker_present = true;
+	fake_image_confirmed = true;
+	linkr_debugger_ota_init();
+	run_auto_confirm_work();
+	assert(fake_confirm_call_count == 0);
+	assert(!fake_marker_present);
+	assert(fake_marker_cleared_while_held);
+	assert_owner_recoverable();
+
+	reset_fixture();
+	fake_marker_present = true;
 	fake_image_confirmed = false;
 	run_auto_confirm_work();
 	assert(fake_confirm_call_count == 1);
 	assert(!fake_marker_present);
+	assert(fake_marker_cleared_while_held);
 	assert_owner_recoverable();
 
 	reset_fixture();
@@ -854,6 +900,7 @@ static void test_auto_confirm_ownership_and_retry(void)
 	run_auto_confirm_work();
 	assert(fake_confirm_call_count == 1);
 	assert(!fake_marker_present);
+	assert(fake_marker_cleared_while_held);
 	assert_owner_recoverable();
 
 	reset_fixture();
@@ -880,6 +927,33 @@ static void test_auto_confirm_ownership_and_retry(void)
 	assert(fake_marker_present);
 	assert(linkr_debugger_flash_arbiter_owner() == LINKR_DEBUGGER_FLASH_OWNER_OTA);
 	run_reboot_work();
+	assert_owner_recoverable();
+
+	reset_fixture();
+	fake_marker_present = true;
+	fake_image_confirmed = false;
+	fake_fault_injection_armed = true;
+	run_auto_confirm_work();
+	assert(fake_confirm_call_count == 0);
+	assert(fake_auto_confirm_schedule_count == 1);
+	assert(fake_marker_present);
+	assert_owner_recoverable();
+
+	reset_fixture();
+	fake_marker_present = true;
+	fake_image_confirmed = false;
+	fake_watchdog_healthy = false;
+	run_auto_confirm_work();
+	assert(fake_confirm_call_count == 0);
+	assert(fake_auto_confirm_schedule_count == 1);
+	assert(fake_marker_present);
+	assert_owner_recoverable();
+	fake_watchdog_healthy = true;
+	run_auto_confirm_work();
+	assert(fake_confirm_call_count == 1);
+	assert(!fake_marker_present);
+	assert(fake_marker_cleared_while_held);
+	assert(fake_auto_confirm_schedule_count == 1);
 	assert_owner_recoverable();
 }
 

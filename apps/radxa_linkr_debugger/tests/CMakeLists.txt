@@ -22,6 +22,7 @@ target_compile_definitions(linkr_debugger_model_rp2350_test PRIVATE CONFIG_SOC_S
 
 linkr_debugger_add_host_test(linkr_debugger_config_http_codec_test
   ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_codec.c
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_json_cursor.c
   ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_parse.c
   ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_json.c
   ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_encode.c
@@ -41,6 +42,7 @@ target_link_options(linkr_debugger_config_http_codec_test PRIVATE -fsanitize=add
 linkr_debugger_add_host_test(linkr_debugger_config_http_test
   ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_codec.c
   ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_http_body.c
+  ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_json_cursor.c
   ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_parse.c
   ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_json.c
   ${LINKR_DEBUGGER_SRC_DIR}/linkr_debugger_config_http_encode.c

@@ -7,6 +7,8 @@
 
 #include "linkr_debugger_http_task_response.h"
 
+#include "linkr_debugger_json_cursor.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -54,34 +56,17 @@ static int task_response_append(struct linkr_debugger_task_http_response *respon
 	return 0;
 }
 
+static int task_response_write(void *context, const char *text, size_t len)
+{
+	return task_response_append((struct linkr_debugger_task_http_response *)context,
+				    "%.*s", (int)len, text);
+}
+
 static int task_response_json_string(struct linkr_debugger_task_http_response *response,
 				     const char *value, size_t value_len)
 {
-	if (task_response_append(response, "\"") < 0) {
-		return -1;
-	}
-	for (size_t i = 0U; i < value_len; i++) {
-		unsigned char ch = (unsigned char)value[i];
-		int ret;
-
-		switch (ch) {
-		case '"': ret = task_response_append(response, "\\\""); break;
-		case '\\': ret = task_response_append(response, "\\\\"); break;
-		case '\n': ret = task_response_append(response, "\\n"); break;
-		case '\r': ret = task_response_append(response, "\\r"); break;
-		case '\t': ret = task_response_append(response, "\\t"); break;
-		default:
-			if (ch < 0x20U) {
-				return -1;
-			}
-			ret = task_response_append(response, "%c", ch);
-			break;
-		}
-		if (ret < 0) {
-			return -1;
-		}
-	}
-	return task_response_append(response, "\"");
+	return linkr_debugger_json_append_string(response, task_response_write,
+						 value, value_len);
 }
 
 static int task_response_begin(struct linkr_debugger_task_http_response *response,

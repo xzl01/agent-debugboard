@@ -68,6 +68,9 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #define LINKR_DEBUGGER_WATCHDOG_WS_STALE_MS 1500U
 #define LINKR_DEBUGGER_WATCHDOG_DIAGNOSTIC_PERIOD_MS 500U
 #define LINKR_DEBUGGER_HEARTBEAT_TICKS_PER_TOGGLE 2U
+#if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
+#define LINKR_DEBUGGER_WATCHDOG_FAULT_INJECTION_TIMEOUT_MS 10000U
+#endif
 #define LINKR_DEBUGGER_WATCHDOG_SCRATCH_INDEX 0U
 #define LINKR_DEBUGGER_WATCHDOG_BOOTSEL_MARKER 0xadb00751U
 #define LINKR_DEBUGGER_WATCHDOG_SOURCE_SCRATCH 1U
@@ -140,6 +143,11 @@ static int64_t linkr_debugger_watchdog_ws_alive_ms;
 static int64_t linkr_debugger_watchdog_started_ms;
 static int64_t linkr_debugger_watchdog_last_diagnostic_ms;
 static int64_t linkr_debugger_watchdog_last_feed_ms;
+#if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
+static bool linkr_debugger_watchdog_fault_injection_armed_state;
+static int64_t linkr_debugger_watchdog_fault_injection_expires_ms;
+static bool linkr_debugger_watchdog_fault_injection_confirm_pending;
+#endif
 static const char *linkr_debugger_watchdog_failing_service = NULL;
 static const char *linkr_debugger_watchdog_last_reported_service;
 static struct linkr_debugger_heartbeat_state linkr_debugger_watchdog_heartbeat;
@@ -540,6 +548,17 @@ static void linkr_debugger_watchdog_set_failing_service_locked(const char *servi
 	linkr_debugger_watchdog_failing_service = service;
 }
 
+#if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
+static void linkr_debugger_watchdog_fault_injection_expire_locked(int64_t now)
+{
+	if (linkr_debugger_watchdog_fault_injection_armed_state &&
+	    now >= linkr_debugger_watchdog_fault_injection_expires_ms) {
+		linkr_debugger_watchdog_fault_injection_armed_state = false;
+		linkr_debugger_watchdog_fault_injection_expires_ms = 0;
+	}
+}
+#endif
+
 static int linkr_debugger_watchdog_arm_locked(void);
 
 static int64_t linkr_debugger_watchdog_age_ms(int64_t now, int64_t last_ms)
@@ -554,6 +573,16 @@ static int64_t linkr_debugger_watchdog_age_ms(int64_t now, int64_t last_ms)
 static bool linkr_debugger_watchdog_services_healthy_locked(void)
 {
 	int64_t now = k_uptime_get();
+
+#if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
+	if (linkr_debugger_watchdog_fault_injection_armed_state) {
+		linkr_debugger_watchdog_fault_injection_expire_locked(now);
+		if (linkr_debugger_watchdog_fault_injection_armed_state) {
+			linkr_debugger_watchdog_set_failing_service_locked("fault_injection");
+			return false;
+		}
+	}
+#endif
 
 	if (linkr_debugger_watchdog_core_alive_ms == 0 ||
 	    (now - linkr_debugger_watchdog_core_alive_ms) > LINKR_DEBUGGER_WATCHDOG_CORE_STALE_MS) {
@@ -1629,8 +1658,107 @@ void linkr_debugger_watchdog_status_get(struct linkr_debugger_watchdog_status *s
 	status->healthy = linkr_debugger_watchdog_services_healthy_locked();
 	status->timeout_ms = LINKR_DEBUGGER_WATCHDOG_TIMEOUT_MS;
 	status->bootloader_on_timeout = status->supported;
+#if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
+	status->fault_injection_available = true;
+	linkr_debugger_watchdog_fault_injection_expire_locked(k_uptime_get());
+	status->fault_injection_armed = linkr_debugger_watchdog_fault_injection_armed_state;
+#else
+	status->fault_injection_available = false;
+	status->fault_injection_armed = false;
+#endif
 	status->failing_service = linkr_debugger_watchdog_failing_service;
 	k_mutex_unlock(&linkr_debugger_control_lock);
+}
+
+bool linkr_debugger_watchdog_fault_injection_available(void)
+{
+	return IS_ENABLED(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION);
+}
+
+bool linkr_debugger_watchdog_fault_injection_armed(void)
+{
+#if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
+	bool armed;
+
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	linkr_debugger_watchdog_fault_injection_expire_locked(k_uptime_get());
+	armed = linkr_debugger_watchdog_fault_injection_armed_state;
+	k_mutex_unlock(&linkr_debugger_control_lock);
+	return armed;
+#else
+	return false;
+#endif
+}
+
+int linkr_debugger_watchdog_fault_injection_arm(void)
+{
+#if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
+	int64_t now;
+
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	if (linkr_debugger_watchdog_fault_injection_armed_state) {
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		return -EALREADY;
+	}
+	if (linkr_debugger_watchdog_fault_injection_confirm_pending) {
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		return -EBUSY;
+	}
+	if (!linkr_debugger_watchdog_ota_test_marker_present()) {
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		return -EINVAL;
+	}
+	now = k_uptime_get();
+	linkr_debugger_watchdog_fault_injection_armed_state = true;
+	linkr_debugger_watchdog_fault_injection_expires_ms =
+		now + LINKR_DEBUGGER_WATCHDOG_FAULT_INJECTION_TIMEOUT_MS;
+	linkr_debugger_watchdog_last_feed_ms = now;
+	k_mutex_unlock(&linkr_debugger_control_lock);
+	LOG_WRN("watchdog fault injection armed for OTA rollback validation");
+	return 0;
+#else
+	return -ENOTSUP;
+#endif
+}
+
+bool linkr_debugger_watchdog_fault_injection_confirm_begin(void)
+{
+#if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
+	bool can_confirm;
+
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	linkr_debugger_watchdog_fault_injection_expire_locked(k_uptime_get());
+	can_confirm = !linkr_debugger_watchdog_fault_injection_armed_state;
+	if (can_confirm) {
+		linkr_debugger_watchdog_fault_injection_confirm_pending = true;
+	}
+	k_mutex_unlock(&linkr_debugger_control_lock);
+	return can_confirm;
+#else
+	return true;
+#endif
+}
+
+void linkr_debugger_watchdog_fault_injection_confirm_end(void)
+{
+#if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	linkr_debugger_watchdog_fault_injection_confirm_pending = false;
+	k_mutex_unlock(&linkr_debugger_control_lock);
+#endif
+}
+
+int linkr_debugger_watchdog_fault_injection_disarm(void)
+{
+#if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	linkr_debugger_watchdog_fault_injection_armed_state = false;
+	linkr_debugger_watchdog_fault_injection_expires_ms = 0;
+	k_mutex_unlock(&linkr_debugger_control_lock);
+	return 0;
+#else
+	return -ENOTSUP;
+#endif
 }
 
 void linkr_debugger_watchdog_note_core_alive(void)
@@ -1673,6 +1801,11 @@ int linkr_debugger_watchdog_supervisor_start(void)
 	linkr_debugger_watchdog_last_feed_ms = 0;
 	linkr_debugger_watchdog_failing_service = NULL;
 	linkr_debugger_watchdog_last_reported_service = NULL;
+#if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
+	linkr_debugger_watchdog_fault_injection_armed_state = false;
+	linkr_debugger_watchdog_fault_injection_expires_ms = 0;
+	linkr_debugger_watchdog_fault_injection_confirm_pending = false;
+#endif
 	(void)linkr_debugger_watchdog_heartbeat_step_locked(false);
 	linkr_debugger_watchdog_supervisor_started = true;
 	k_mutex_unlock(&linkr_debugger_control_lock);

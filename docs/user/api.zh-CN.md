@@ -39,7 +39,7 @@
 curl http://172.29.203.1/api/v1/status
 ```
 
-响应字段：`project`、`mcu`、`usb`、`power_inputs`、`power_outputs`、`switches`、`adc_channels`、`watchdog`、`board_monitoring`、`gpios`。
+响应字段：`project`、`build`（包含 `profile` 与 `image_version`）、`mcu`、`usb`、`power_inputs`、`power_outputs`、`switches`、`adc_channels`、`watchdog`、`board_monitoring`、`gpios`。
 
 ## 电源控制
 
@@ -295,13 +295,25 @@ CLI 与 Web 页面在各自的输出层上报失败信息，**不会**出现在�
 
 ### `GET /api/v1/watchdog`
 
-Watchdog 状态。字段：`supported`、`automatic`、`healthy`、`armed`、`timeout_ms`、`bootloader_on_timeout`、`failing_service`。
+Watchdog 状态。字段：`supported`、`automatic`、`healthy`、`armed`、`timeout_ms`、`bootloader_on_timeout`、`fault_injection_available`、`fault_injection_armed`、`failing_service`。故障注入标志总是返回，但下面 HIL endpoint 只在 fault overlay 构建中存在。
+
+### `GET /api/v1/watchdog/fault`
+
+仅 HIL 构建。返回 `action=fault_injection`、`available` 和 `armed`。
+
+### `POST /api/v1/watchdog/fault`
+
+仅 HIL 构建。启用有界的 watchdog 故障注入。在 `POST /api/v1/ota/test` 设置 retained marker 之前，固件返回 HTTP 409 且 `error.code=fault_injection_rejected`；如果已经 arm，则返回 HTTP 409 且 `error.code=already_armed`；若 OTA confirm 正持有 marker 清除事务，则返回 HTTP 409 且 `error.code=confirm_in_progress`。arm 后停止喂狗，并会在 10 秒后自动 disarmed。
+
+### `DELETE /api/v1/watchdog/fault`
+
+仅 HIL 构建。在 deadline 前 disarmed 故障注入。
 
 ## OTA 固件更新
 
 ### `GET /api/v1/ota`
 
-OTA 状态。字段：`state`（`idle`/`uploading`/`verified`/`pending_test`/`rebooting`/`failed`）、`expected_size`、`written_size`、`max_size`、`swap_type`、`current_image_confirmed`、`test_marker_present`。在受控测试中，手动确认或看门狗门控自动确认后标记会清除；若 MCUboot 回滚测试镜像，标记会保留。
+OTA 状态。字段：`state`（`idle`/`uploading`/`verified`/`pending_test`/`rebooting`/`failed`）、`expected_size`、`written_size`、`max_size`、`swap_type`、`current_image_confirmed`、`test_marker_present`。在受控测试中，手动确认或看门狗门控自动确认后标记会清除。MCUboot 回滚后标记会短暂保留，直到固件观察到当前运行镜像已确认，然后被清除，板子回到干净的 idle 状态。
 
 ### `POST /api/v1/ota/upload`
 

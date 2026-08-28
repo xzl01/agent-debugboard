@@ -1,7 +1,10 @@
 #include "linkr_debugger_config_http_json.h"
 
+#include "linkr_debugger_json_cursor.h"
+
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 static int json_fail(struct linkr_debugger_config_http_json *json)
 {
@@ -56,50 +59,22 @@ int linkr_debugger_config_http_json_append(
 	return 0;
 }
 
+static int config_json_write(void *context, const char *text, size_t len)
+{
+	return linkr_debugger_config_http_json_append(
+		(struct linkr_debugger_config_http_json *)context, "%.*s",
+		(int)len, text);
+}
+
 int linkr_debugger_config_http_json_string(
 	struct linkr_debugger_config_http_json *json, const char *value)
 {
-	int result;
-
 	if (value == NULL ||
-	    linkr_debugger_config_http_json_append(json, "\"") != 0) {
+	    linkr_debugger_json_append_string(json, config_json_write, value,
+					      strlen(value)) != 0) {
 		return json_fail(json);
 	}
-	for (const unsigned char *cursor = (const unsigned char *)value;
-	     *cursor != '\0'; cursor++) {
-		switch (*cursor) {
-		case '"':
-			result = linkr_debugger_config_http_json_append(json, "\\\"");
-			break;
-		case '\\':
-			result = linkr_debugger_config_http_json_append(json, "\\\\");
-			break;
-		case '\b':
-			result = linkr_debugger_config_http_json_append(json, "\\b");
-			break;
-		case '\f':
-			result = linkr_debugger_config_http_json_append(json, "\\f");
-			break;
-		case '\n':
-			result = linkr_debugger_config_http_json_append(json, "\\n");
-			break;
-		case '\r':
-			result = linkr_debugger_config_http_json_append(json, "\\r");
-			break;
-		case '\t':
-			result = linkr_debugger_config_http_json_append(json, "\\t");
-			break;
-		default:
-			result = *cursor < 0x20U ?
-				linkr_debugger_config_http_json_append(json, "\\u%04x", *cursor) :
-				linkr_debugger_config_http_json_append(json, "%c", *cursor);
-			break;
-		}
-		if (result != 0) {
-			return -1;
-		}
-	}
-	return linkr_debugger_config_http_json_append(json, "\"");
+	return 0;
 }
 
 void linkr_debugger_config_http_json_discard(

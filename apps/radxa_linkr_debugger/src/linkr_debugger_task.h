@@ -33,14 +33,16 @@ struct linkr_debugger_task {
 	struct linkr_debugger_task_request requests[LINKR_DEBUGGER_TASK_MAX_REQUESTS];
 };
 
+struct linkr_debugger_task_summary {
+	char id[LINKR_DEBUGGER_TASK_MAX_TASK_ID_LEN + 1];
+	char name[LINKR_DEBUGGER_TASK_MAX_TASK_NAME_LEN + 1];
+	size_t request_count;
+};
+
 struct linkr_debugger_task_status {
 	bool backend_available;
 	size_t task_count;
-	struct {
-		char id[LINKR_DEBUGGER_TASK_MAX_TASK_ID_LEN + 1];
-		char name[LINKR_DEBUGGER_TASK_MAX_TASK_NAME_LEN + 1];
-		size_t request_count;
-	} tasks[LINKR_DEBUGGER_TASK_MAX_TASKS];
+	struct linkr_debugger_task_summary tasks[LINKR_DEBUGGER_TASK_MAX_TASKS];
 };
 
 enum linkr_debugger_task_result {

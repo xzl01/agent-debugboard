@@ -13,6 +13,7 @@
 #include "linkr_debugger_config_summary.h"
 #include "linkr_debugger_gpio_error.h"
 #include "linkr_debugger_logic_analyzer.h"
+#include "linkr_debugger_json_cursor.h"
 #include "linkr_debugger_monitoring.h"
 #include "linkr_debugger_model.h"
 #include "linkr_debugger_sigrok_linkr.h"
@@ -450,54 +451,30 @@ static int linkr_debugger_ws_append(char *buf, size_t size, size_t *cursor, cons
 	return 0;
 }
 
+struct linkr_debugger_ws_string_context {
+	char *buf;
+	size_t size;
+	size_t *cursor;
+};
+
+static int linkr_debugger_ws_write(void *context, const char *text, size_t len)
+{
+	struct linkr_debugger_ws_string_context *state = context;
+
+	return linkr_debugger_ws_append(state->buf, state->size, state->cursor,
+					"%.*s", (int)len, text);
+}
+
 static int linkr_debugger_ws_append_json_string(char *buf, size_t size, size_t *cursor,
 						const char *value)
 {
-	int ret;
+	struct linkr_debugger_ws_string_context context = {
+		.buf = buf, .size = size, .cursor = cursor,
+	};
 
-	ret = linkr_debugger_ws_append(buf, size, cursor, "\"");
-	if (ret < 0) {
-		return ret;
-	}
-
-	for (const unsigned char *p = (const unsigned char *)(value != NULL ? value : "");
-	     *p != '\0'; p++) {
-		switch (*p) {
-		case '"':
-			ret = linkr_debugger_ws_append(buf, size, cursor, "\\\"");
-			break;
-		case '\\':
-			ret = linkr_debugger_ws_append(buf, size, cursor, "\\\\");
-			break;
-		case '\b':
-			ret = linkr_debugger_ws_append(buf, size, cursor, "\\b");
-			break;
-		case '\f':
-			ret = linkr_debugger_ws_append(buf, size, cursor, "\\f");
-			break;
-		case '\n':
-			ret = linkr_debugger_ws_append(buf, size, cursor, "\\n");
-			break;
-		case '\r':
-			ret = linkr_debugger_ws_append(buf, size, cursor, "\\r");
-			break;
-		case '\t':
-			ret = linkr_debugger_ws_append(buf, size, cursor, "\\t");
-			break;
-		default:
-			if (*p < 0x20U) {
-				ret = linkr_debugger_ws_append(buf, size, cursor, "\\u%04x", *p);
-			} else {
-				ret = linkr_debugger_ws_append(buf, size, cursor, "%c", *p);
-			}
-			break;
-		}
-		if (ret < 0) {
-			return ret;
-		}
-	}
-
-	return linkr_debugger_ws_append(buf, size, cursor, "\"");
+	return linkr_debugger_json_append_string(
+		&context, linkr_debugger_ws_write,
+		value != NULL ? value : "", value != NULL ? strlen(value) : 0U);
 }
 
 static int linkr_debugger_ws_append_availability(char *buf, size_t size, size_t *cursor,

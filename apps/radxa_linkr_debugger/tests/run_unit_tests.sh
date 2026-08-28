@@ -31,6 +31,29 @@ struct sensor_value {
 
 #endif
 EOF
+cat > "${HOST_STUB_DIR}/zephyr/app_version.h" <<'EOF'
+#ifndef LINKR_DEBUGGER_UNIT_APP_VERSION_H_
+#define LINKR_DEBUGGER_UNIT_APP_VERSION_H_
+
+#define APP_VERSION_STRING "0.3.0-test"
+#define APP_VERSION_EXTENDED_STRING "0.3.0-test+0"
+#define APP_BUILD_VERSION app-git-build-1
+#define CONFIG_ARCH "arm-test"
+#define CONFIG_SOC "rp2350a-test"
+#define CONFIG_BOARD_TARGET "test-board-target"
+#define CONFIG_LINKR_DEBUGGER_FAULT_INJECTION 1
+#define CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION "test-image"
+
+#endif
+EOF
+cat > "${HOST_STUB_DIR}/zephyr/version.h" <<'EOF'
+#ifndef LINKR_DEBUGGER_UNIT_VERSION_H_
+#define LINKR_DEBUGGER_UNIT_VERSION_H_
+
+#define BUILD_VERSION unit-test-build-1
+
+#endif
+EOF
 
 ${CC} -std=c11 -Wall -Wextra -Werror \
 	-DCONFIG_SOC_SERIES_RP2350 \
@@ -113,6 +136,7 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_config_http_codec.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_http_parse.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_http_json.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_http_encode.c" \
@@ -129,6 +153,7 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_config_http.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_http_body.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_http_parse.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_http_json.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_config_http_encode.c" \
@@ -191,6 +216,16 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 "${OUT}/linkr_debugger_http_body_test"
 
 ${CC} -std=c11 -Wall -Wextra -Werror \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${HOST_STUB_DIR}" \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_build_info.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_build_info.c" \
+	-o "${OUT}/linkr_debugger_build_info_test"
+
+"${OUT}/linkr_debugger_build_info_test"
+
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_gpio_error.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_gpio_error.c" \
@@ -241,11 +276,24 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_parse.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_blob.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_task.c" \
 	-o "${OUT}/linkr_debugger_task_test"
 
 "${OUT}/linkr_debugger_task_test"
+
+${CC} -std=c11 -Wall -Wextra -Werror \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_parse.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_blob.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_task_blob.c" \
+	-o "${OUT}/linkr_debugger_task_blob_test"
+
+"${OUT}/linkr_debugger_task_blob_test"
 
 ${CC} -std=c11 -Wall -Wextra -Werror \
 	-Wframe-larger-than=256 \
@@ -266,6 +314,7 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 
 ${CC} -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_http_task_response.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_http_task_response.c" \
 	-o "${OUT}/linkr_debugger_http_task_response_test"
@@ -294,6 +343,7 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_parse.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_blob.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_mutation.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_http_task_response.c" \
@@ -314,6 +364,7 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_parse.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_blob.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_mutation.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_arbiter.c" \

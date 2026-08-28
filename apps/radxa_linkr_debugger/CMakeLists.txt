@@ -5,6 +5,34 @@
 
 cmake_minimum_required(VERSION 3.20.0)
 
+# Zephyr has built-in application-version support: a VERSION file produces
+# generated app_version.h and APP_BUILD_VERSION from git describe. Pass the
+# application repository's own describe result as BUILD_VERSION so the kernel
+# build identity used by uname-style output describes this firmware image
+# rather than the Zephyr checkout.
+set(LINKR_DEBUGGER_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+if(NOT DEFINED BUILD_VERSION)
+  find_program(LINKR_DEBUGGER_GIT_EXECUTABLE NAMES git)
+  set(LINKR_DEBUGGER_GIT_RESULT 1)
+  if(LINKR_DEBUGGER_GIT_EXECUTABLE)
+    execute_process(
+      COMMAND "${LINKR_DEBUGGER_GIT_EXECUTABLE}" describe
+              --always --abbrev=12 --dirty
+      WORKING_DIRECTORY "${LINKR_DEBUGGER_REPO_ROOT}"
+      OUTPUT_VARIABLE LINKR_DEBUGGER_GIT_DESCRIPTION
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+      RESULT_VARIABLE LINKR_DEBUGGER_GIT_RESULT
+    )
+  endif()
+  if(LINKR_DEBUGGER_GIT_RESULT EQUAL 0)
+    set(BUILD_VERSION "${LINKR_DEBUGGER_GIT_DESCRIPTION}")
+  else()
+    set(BUILD_VERSION "unknown")
+    message(WARNING "radxa-linkr-debugger firmware build id unavailable; using 'unknown'")
+  endif()
+endif()
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(radxa_linkr_debugger)
 
@@ -84,6 +112,7 @@ generate_inc_file_for_target(app
 
 target_sources(app PRIVATE
   src/main.c
+  src/linkr_debugger_build_info.c
   src/linkr_debugger_captive_portal.c
   src/linkr_debugger_capture_arbiter.c
   src/linkr_debugger_capture_arena.c
@@ -108,6 +137,7 @@ target_sources(app PRIVATE
   src/linkr_debugger_http_task_response.c
   src/linkr_debugger_task_catalog.c
   src/linkr_debugger_task_http.c
+  src/linkr_debugger_task_blob.c
   src/linkr_debugger_http.c
   src/linkr_debugger_logic_analyzer.c
   src/linkr_debugger_json_cursor.c

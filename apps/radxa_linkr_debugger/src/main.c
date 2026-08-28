@@ -6,8 +6,9 @@
  * Copyright (c) Jiali Chen <chenjiali@radxa.com>
  */
 
-#include "linkr_debugger_control.h"
 #include "linkr_debugger_capture_arena.h"
+#include "linkr_debugger_build_info.h"
+#include "linkr_debugger_control.h"
 #include "linkr_debugger_config_service.h"
 #include "linkr_debugger_config_store.h"
 #include "linkr_debugger_http.h"
@@ -138,6 +139,8 @@ int main(void)
 	}
 
 	LOG_INF("radxa-linkr-debugger controller ready over NCM HTTP with CDC ACM fallback");
+	LOG_INF("firmware build id %s at %s", linkr_debugger_build_id(),
+		linkr_debugger_build_time());
 
 	while (true) {
 		linkr_debugger_watchdog_note_core_alive();

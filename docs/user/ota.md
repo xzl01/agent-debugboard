@@ -45,10 +45,11 @@ The workflow has three steps: **upload** → **test** → **confirm**.
    auto-confirm.
 
 The firmware is designed to use a retained marker so that an unconfirmed test
-image reset can request MCUboot rollback rather than ROM BOOTSEL. This failure
-path has not yet completed watchdog fault-injection HIL validation, so do not
-treat automatic rollback as a recovery guarantee. Explicit `bootloader`
-commands and ordinary non-OTA watchdog resets still enter ROM BOOTSEL normally.
+image reset can request MCUboot rollback rather than ROM BOOTSEL. The
+repository HIL runner can exercise this safely through the test-only
+`CONFIG_LINKR_DEBUGGER_FAULT_INJECTION` build; production firmware does not
+include that hook. Explicit `bootloader` commands and ordinary non-OTA watchdog
+resets still enter ROM BOOTSEL normally.
 
 ## CLI Commands
 
@@ -96,17 +97,17 @@ radxa-linkr-debuggerctl --json ota confirm
 
 The Web UI provides an OTA card under **Firmware Tools** in the dashboard. It delivers
 RP2350 firmware updates over the same USB NCM HTTP API, with no separate host
-tooling required. When the UI is served from GitHub Pages over HTTPS, the
-device-bridge gateway (`npm run device-bridge`) is required. See
+tooling required. When the UI is served from GitHub Pages over HTTPS, Linkr Host
+(`npm run host`) is required. See
 [webui.md](webui.md) for details.
 
 ## MCUboot Rollback and Recovery
 
 The intended unconfirmed-image failure path uses the retained marker to request
-MCUboot rollback after a watchdog reset. Watchdog fault-injection HIL for this
-path is still pending; verify the running image before confirmation and keep the
-physical ROM BOOTSEL recovery path available. Initial install and recovery use
-the combined `radxa-linkr-debugger-rp2350.uf2` artifact described above.
+MCUboot rollback after a watchdog reset. The fault-injection path is implemented
+only in the HIL overlay; verify the running image before confirmation and keep
+the physical ROM BOOTSEL recovery path available. Initial install and recovery
+use the combined `radxa-linkr-debugger-rp2350.uf2` artifact described above.
 
 ## Related
 

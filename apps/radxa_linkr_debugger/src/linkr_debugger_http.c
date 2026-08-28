@@ -7,6 +7,7 @@
 
 #include "linkr_debugger_http.h"
 
+#include "linkr_debugger_build_info.h"
 #include "linkr_debugger_captive_portal.h"
 #include "linkr_debugger_capture_arbiter.h"
 #include "linkr_debugger_control.h"
@@ -16,6 +17,7 @@
 #include "linkr_debugger_config_summary.h"
 #include "linkr_debugger_http_body.h"
 #include "linkr_debugger_http_task_response.h"
+#include "linkr_debugger_json_cursor.h"
 #include "linkr_debugger_task_http.h"
 #include "linkr_debugger_task_catalog.h"
 #include "linkr_debugger_monitoring.h"
@@ -289,55 +291,16 @@ static int linkr_debugger_http_append(struct linkr_debugger_http_env *env, const
 	return 0;
 }
 
+static int linkr_debugger_http_write(void *context, const char *text, size_t len)
+{
+	return linkr_debugger_http_append((struct linkr_debugger_http_env *)context,
+					  "%.*s", (int)len, text);
+}
+
 static int linkr_debugger_http_json_string(struct linkr_debugger_http_env *env, const char *value)
 {
-	int ret;
-
-	ret = linkr_debugger_http_append(env, "\"");
-	if (ret < 0) {
-		return ret;
-	}
-
-	for (const char *p = value; *p != '\0'; p++) {
-		unsigned char ch = (unsigned char)*p;
-
-		switch (ch) {
-		case '"':
-			ret = linkr_debugger_http_append(env, "\\\"");
-			break;
-		case '\\':
-			ret = linkr_debugger_http_append(env, "\\\\");
-			break;
-		case '\b':
-			ret = linkr_debugger_http_append(env, "\\b");
-			break;
-		case '\f':
-			ret = linkr_debugger_http_append(env, "\\f");
-			break;
-		case '\n':
-			ret = linkr_debugger_http_append(env, "\\n");
-			break;
-		case '\r':
-			ret = linkr_debugger_http_append(env, "\\r");
-			break;
-		case '\t':
-			ret = linkr_debugger_http_append(env, "\\t");
-			break;
-		default:
-			if (ch < 0x20U) {
-				ret = linkr_debugger_http_append(env, "\\u%04x", ch);
-			} else {
-				ret = linkr_debugger_http_append(env, "%c", ch);
-			}
-			break;
-		}
-
-		if (ret < 0) {
-			return ret;
-		}
-	}
-
-	return linkr_debugger_http_append(env, "\"");
+	return linkr_debugger_json_append_string(env, linkr_debugger_http_write,
+						 value, strlen(value));
 }
 
 static int linkr_debugger_http_json_begin(struct linkr_debugger_http_env *env, const char *command,
@@ -730,13 +693,17 @@ static int linkr_debugger_http_json_watchdog_status(struct linkr_debugger_http_e
 	return linkr_debugger_http_append(env,
 				     "{\"supported\":%s,\"automatic\":%s,\"healthy\":%s,"
 				     "\"armed\":%s,\"timeout_ms\":%u,"
-				     "\"bootloader_on_timeout\":%s,\"failing_service\":",
+				     "\"bootloader_on_timeout\":%s,"
+				     "\"fault_injection_available\":%s,"
+				     "\"fault_injection_armed\":%s,\"failing_service\":",
 				     status.supported ? "true" : "false",
 				     status.automatic ? "true" : "false",
 				     status.healthy ? "true" : "false",
 				     status.armed ? "true" : "false",
 				     (unsigned int)status.timeout_ms,
-				     status.bootloader_on_timeout ? "true" : "false") < 0 ||
+				     status.bootloader_on_timeout ? "true" : "false",
+				     status.fault_injection_available ? "true" : "false",
+				     status.fault_injection_armed ? "true" : "false") < 0 ||
 	       linkr_debugger_http_json_string(env,
 				       status.failing_service != NULL ? status.failing_service : "") < 0 ||
 	       linkr_debugger_http_append(env, "}") < 0 ? -ENOMEM : 0;
@@ -987,7 +954,11 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 	k_mutex_lock(&linkr_debugger_http_lock, K_FOREVER);
 	if (linkr_debugger_http_json_begin(&env, "status", true) < 0 ||
 	    linkr_debugger_http_append(&env,
-				     ",\"project\":\"radxa-linkr-debugger\",\"mcu\":") < 0 ||
+				     ",\"project\":\"radxa-linkr-debugger\",\"build\":{\"profile\":") < 0 ||
+	    linkr_debugger_http_json_string(&env, linkr_debugger_build_profile()) < 0 ||
+	    linkr_debugger_http_append(&env, ",\"image_version\":") < 0 ||
+	    linkr_debugger_http_json_string(&env, linkr_debugger_build_image_version()) < 0 ||
+	    linkr_debugger_http_append(&env, "},\"mcu\":") < 0 ||
 	    linkr_debugger_http_json_string(&env, linkr_debugger_mcu_name()) < 0 ||
 	    linkr_debugger_http_append(&env, ",\"usb\":") < 0 ||
 	    linkr_debugger_http_json_string(&env, linkr_debugger_usb_mode()) < 0 ||
@@ -1689,6 +1660,100 @@ static int linkr_debugger_http_handle_watchdog(struct http_client_ctx *client,
 	return 0;
 }
 
+#if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
+static int linkr_debugger_http_handle_watchdog_fault(
+	struct http_client_ctx *client,
+	enum http_transaction_status status,
+	const struct http_request_ctx *request_ctx,
+	struct http_response_ctx *response_ctx,
+	void *user_data)
+{
+	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	struct linkr_debugger_http_env env = {
+		.buf = (char *)json_buf,
+		.cap = sizeof(json_buf),
+	};
+	int ret;
+
+	ARG_UNUSED(request_ctx);
+	ARG_UNUSED(user_data);
+
+	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
+		return 0;
+	}
+
+	switch (client->method) {
+	case HTTP_GET:
+		break;
+
+	case HTTP_POST:
+		ret = linkr_debugger_watchdog_fault_injection_arm();
+		if (ret == -EALREADY) {
+			linkr_debugger_http_error(
+				response_ctx, json_buf, sizeof(json_buf),
+				HTTP_409_CONFLICT, "watchdog",
+				"already_armed",
+				"watchdog fault injection is already armed");
+			return 0;
+		}
+		if (ret == -EBUSY) {
+			linkr_debugger_http_error(
+				response_ctx, json_buf, sizeof(json_buf),
+				HTTP_409_CONFLICT, "watchdog",
+				"confirm_in_progress",
+				"watchdog fault injection cannot arm during OTA confirmation");
+			return 0;
+		}
+		if (ret < 0) {
+			linkr_debugger_http_error(
+				response_ctx, json_buf, sizeof(json_buf),
+				HTTP_409_CONFLICT, "watchdog",
+				"fault_injection_rejected",
+				"watchdog fault injection requires an active OTA test marker");
+			return 0;
+		}
+		break;
+
+	case HTTP_DELETE:
+		if (linkr_debugger_watchdog_fault_injection_disarm() < 0) {
+			linkr_debugger_http_error(
+				response_ctx, json_buf, sizeof(json_buf),
+				HTTP_404_NOT_FOUND, "watchdog",
+				"fault_injection_unavailable",
+				"watchdog fault injection is unavailable");
+			return 0;
+		}
+		break;
+
+	default:
+		linkr_debugger_http_error(
+			response_ctx, json_buf, sizeof(json_buf),
+			HTTP_405_METHOD_NOT_ALLOWED, "watchdog",
+			"method_not_allowed", "method not allowed");
+		return 0;
+	}
+
+	if (linkr_debugger_http_json_begin(&env, "watchdog", true) < 0 ||
+	    linkr_debugger_http_append(
+		    &env, ",\"action\":\"fault_injection\",\"available\":%s,"
+		    "\"armed\":%s}\n",
+		    linkr_debugger_watchdog_fault_injection_available() ?
+			    "true" : "false",
+		    linkr_debugger_watchdog_fault_injection_armed() ?
+			    "true" : "false") < 0) {
+		linkr_debugger_http_error(
+			response_ctx, json_buf, sizeof(json_buf),
+			HTTP_500_INTERNAL_SERVER_ERROR, "watchdog",
+			"response_too_large", "failed to encode watchdog fault response");
+		return 0;
+	}
+
+	linkr_debugger_http_set_json_response(
+		response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+	return 0;
+}
+#endif
+
 static void linkr_debugger_bootloader_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
@@ -1800,11 +1865,6 @@ void linkr_debugger_http_reap_stale_holders(void)
 	holder_since_ms = 0;
 }
 
-#if defined(CONFIG_LINKR_DEBUGGER_OTA)
-/* FIXME(review-20260821): `linkr_debugger_tasks_resource` stays hidden from non-OTA builds here;
- * move it out once `/api/v1/tasks/catalog` no longer depends on the OTA-only
- * code path.
- */
 #define LINKR_DEBUGGER_TASK_HTTP_RESOURCE(name_, path_, methods_, route_)                       \
 	static const enum linkr_debugger_task_http_route name_##_route = route_;                \
 	static struct http_resource_detail_dynamic name_##_detail = {                           \
@@ -1825,6 +1885,7 @@ LINKR_DEBUGGER_TASK_HTTP_RESOURCE(linkr_debugger_task_catalog_resource,
 			  LINKR_DEBUGGER_TASK_CATALOG_HTTP_PATH, BIT(HTTP_GET),
 			  LINKR_DEBUGGER_TASK_HTTP_ROUTE_CATALOG);
 
+#if defined(CONFIG_LINKR_DEBUGGER_OTA)
 #define LINKR_DEBUGGER_OTA_RESOURCE(name_, path_, methods_, route_)                              \
 	static const enum linkr_debugger_ota_route name_##_route = route_;                         \
 	static struct http_resource_detail_dynamic name_##_detail = {                              \
@@ -2098,6 +2159,13 @@ static int linkr_debugger_http_route_request(struct http_client_ctx *client,
 	if (linkr_debugger_http_path_matches(path, "/api/v1/watchdog", false)) {
 		return linkr_debugger_http_handle_watchdog(client, status, request_ctx, response_ctx, user_data);
 	}
+
+#if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
+	if (linkr_debugger_http_path_matches(path, "/api/v1/watchdog/fault", false)) {
+		return linkr_debugger_http_handle_watchdog_fault(
+			client, status, request_ctx, response_ctx, user_data);
+	}
+#endif
 
 	if (linkr_debugger_http_path_matches(path, "/api/v1/live-sessions", true)) {
 		return linkr_debugger_http_handle_live_sessions(client, status, request_ctx, response_ctx, user_data);

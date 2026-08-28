@@ -55,6 +55,38 @@ default. Normal host-side use should prefer the released
 A USB CDC ACM serial port is also kept available for Zephyr cmdline access and
 BOOTSEL fallback.
 
+### Firmware build identity
+
+The application uses Zephyr's built-in application-version support. The
+`VERSION` file in this directory carries the synchronized release version.
+Zephyr generates `app_version.h` with `APP_BUILD_VERSION` from the application
+repository's `git describe --always --abbrev=12`; the firmware `uname` and
+boot-log identity use the CMake-provided `BUILD_VERSION`, which is
+`git describe --always --abbrev=12 --dirty` and therefore also carries the
+working-tree dirty marker.
+
+Use the CDC ACM shell to identify the exact firmware image:
+
+```text
+linkr-debugger:~$ uname -a
+Zephyr linkr-debugger 0.3.0 v0.2.1-208-gc72104d89ca1-dirty (Aug 28 2026 20:23:10) arm rp2350a rpi_pico2/rp2350a/m33/mcuboot
+linkr-debugger:~$ app build-version
+v0.2.1-208-gc72104d89ca1
+```
+
+`app build-version` is the clean git revision; `uname -v` adds the dirty marker
+and compiler timestamp, which is the full build identity for a local build.
+`GET /api/v1/status` also exposes `build.profile` (`production` or
+`fault-injection`) and `build.image_version` for machine-readable identity.
+
+`uname -v` prints the release plus a build id that also carries the working-tree
+dirty marker and compiler build date/time, while `uname -s`, `-n`, `-r`, `-m`,
+`-p`, and `-i` select the individual fields. Under reproducible build
+environments the compiler date/time may be pinned by `SOURCE_DATE_EPOCH`; the
+git build id remains the reliable identity. The boot log also emits
+`firmware build id ...` after the controller is ready, so the image can be
+identified without opening the shell.
+
 The same HTTP service exposes the embedded production Web UI at
 `http://172.29.203.1/`. A clean firmware build requires Node.js 22, npm,
 the Rust toolchain, the `wasm32-unknown-unknown` target, and
@@ -418,10 +450,12 @@ sizes, the MCUboot upload area ID, swap type, and whether the current image is
 confirmed. OTA upload requires `X-Linkr-Ota-Size` and `X-Linkr-Ota-Sha256` headers.
 The test image auto-confirms after a 16-second watchdog health gate. Firmware is
 designed to use the retained marker to request MCUboot rollback after an
-unconfirmed-image watchdog reset, but fault-injection HIL for this recovery path
-is still blocked. Do not use OTA to upload `.uf2` or `.elf` files; use a
-MCUboot-format application binary such as the release asset
-`radxa-linkr-debugger-rp2350-ota.bin`.
+unconfirmed-image watchdog reset. The HIL-only
+`CONFIG_LINKR_DEBUGGER_FAULT_INJECTION` path can safely inject that reset by
+requesting the firmware to stop feeding the watchdog while the OTA test marker is
+retained. Normal production builds leave the hook disabled. Do not use OTA to
+upload `.uf2` or `.elf` files; use a MCUboot-format application binary such as
+the release asset `radxa-linkr-debugger-rp2350-ota.bin`.
 
 Captive portal discovery: the firmware runs a DHCPv4 server that assigns the
 host a local NCM address without advertising a default router or DNS server, so
@@ -480,13 +514,53 @@ feeding the hardware watchdog and the retained recovery marker drives the next
 boot into ROM BOOTSEL. The CDC ACM `bootloader` shell command remains available
 as an independent fallback path.
 
-Watchdog rollback is BLOCKED: no safe fault-injection path exists for
-validating daemon/service failure scenarios. The current firmware and HIL
-confirmation validate WebSocket recovery, autonomous watchdog status reporting,
-and CDC ACM `bootloader` fallback into ROM BOOTSEL, but they do not provide a
-controlled way to intentionally wedge HTTP/WS/cmdline liveness and prove
-automatic watchdog timeout into BOOTSEL without ad hoc destructive methods.
-Do not claim rollback behavior was HIL-verified.
+## Watchdog Fault Injection (HIL Only)
+
+`CONFIG_LINKR_DEBUGGER_FAULT_INJECTION` is a test-only Kconfig hook used by the
+real-board watchdog rollback HIL. It defaults to `n`, depends on OTA and the
+hardware watchdog, and is enabled by the separate `prj-fault.conf` overlay. It
+is not part of the canonical production firmware build.
+
+The HIL overlay sets `CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION=0.0.1+0`, and the
+separate `prj-fault-candidate.conf` sets `0.0.2+0`. The candidate keeps the same
+fault hook but a distinct MCUboot version, so the OTA test performs a real swap
+and the rollback returns to a known fault-capable baseline. The canonical
+production image keeps its own version (`0.3.0+0` in this source tree).
+
+HTTP API (available only in the HIL build):
+
+```sh
+# Read availability and arm state
+curl -fsS http://172.29.203.1/api/v1/watchdog/fault
+
+# Arm after /api/v1/ota/test has booted and the retained test marker is present
+curl --fail-with-body -sS -X POST http://172.29.203.1/api/v1/watchdog/fault
+
+# Cancel before the deadline
+curl --fail-with-body -sS -X DELETE http://172.29.203.1/api/v1/watchdog/fault
+```
+
+如果 hook 已处于 armed 状态，重复 `POST` 返回 HTTP 409 和
+`error.code=already_armed`；在 OTA test marker 尚未设置时返回
+`fault_injection_rejected`。
+
+CDC ACM shell fallback (HIL build only):
+
+```text
+watchdog fault-injection status
+watchdog fault-injection arm
+watchdog fault-injection disarm
+```
+
+Safety properties:
+
+- Production builds do not expose the HTTP endpoint or the shell subcommand.
+- Arming is rejected unless the firmware OTA test marker is present.
+- Arming is automatically disarmed after 10 seconds.
+- Arming causes the watchdog supervisor to report unhealthy and stop feeding,
+  producing the same 5-second hardware reset used by a real liveness failure.
+- At boot, the retained OTA marker directs this reset through the MCUboot
+  rollback path rather than ROM BOOTSEL.
 
 Safe GPIO names such as `GP13` are derived from the MCU pin number; the
 firmware allowlist keeps the connector note so users can map commands back to
