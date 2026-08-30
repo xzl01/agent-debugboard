@@ -1,0 +1,1 @@
+{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"watchdog","action":"status","watchdog":{"supported":true,"automatic":true,"healthy":true,"armed":true,"timeout_ms":5000,"bootloader_on_timeout":true,"fault_injection_available":false,"fault_injection_armed":false,"failing_service":""}}

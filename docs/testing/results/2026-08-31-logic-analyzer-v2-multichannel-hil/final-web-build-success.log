@@ -1,0 +1,26 @@
+npm warn Unknown user config "lockfile". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> radxa-linkr-debugger-web@0.3.0 build
+> tsc -b && vite build --config vite.config.ts && node scripts/build-decoder-wasm.mjs
+
+vite v8.1.4 building client environment for production...
+[2Ktransforming...✓ 1661 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                    1.54 kB │ gzip:   0.67 kB
+dist/assets/app.css               59.68 kB │ gzip:  11.62 kB
+dist/assets/rolldown-runtime.js    0.95 kB │ gzip:   0.56 kB
+dist/assets/addon-fit.js           1.20 kB │ gzip:   0.49 kB
+dist/assets/WorkflowComposer.js   68.35 kB │ gzip:  15.59 kB
+dist/assets/jszip.min.js          95.87 kB │ gzip:  28.44 kB
+dist/assets/xterm.js             338.63 kB │ gzip:  85.75 kB
+dist/assets/app.js               746.12 kB │ gzip: 213.83 kB
+
+✓ built in 1.23s
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+   Compiling radxa-logic-decoder v0.3.0 (<WORKSPACE>/web/decoder)
+    Finished `release` profile [optimized] target(s) in 0.81s

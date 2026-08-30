@@ -1,0 +1,4 @@
+fast8-zero convert=33.134 e2e=32.726
+fast8-random convert=33.057 e2e=33.035
+wide11-zero convert=23.600 e2e=23.068
+wide11-random convert=23.445 e2e=22.728

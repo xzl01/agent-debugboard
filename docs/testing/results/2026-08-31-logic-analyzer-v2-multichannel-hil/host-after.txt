@@ -1,0 +1,5 @@
+sink=383397749
+fast8-zero convert=69656.046 e2e=2630.776
+fast8-random convert=129272.287 e2e=5012.652
+wide11-zero convert=1181.156 e2e=552.490
+wide11-random convert=1175.934 e2e=474.030

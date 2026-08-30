@@ -1,0 +1,417 @@
+{
+  "dry_run": false,
+  "generated_at": "2026-08-30T13:52:56.592953+00:00",
+  "overall_pass": false,
+  "plan": {
+    "bounded_triggers": [
+      {
+        "channel": 0,
+        "name": "none",
+        "type": 0
+      }
+    ],
+    "continuous_trigger_note": "continuous matrices always use TRIGGER_NONE and report effective receive-rate diagnostics only",
+    "dry_run": false,
+    "high_rate_capability_flags": {
+      "config_v2": 1,
+      "generic_packed_burst": 2,
+      "required_mask": 3
+    },
+    "http_base": "http://172.29.203.1",
+    "matrices": [
+      {
+        "cases": [
+          [
+            "WIDE11",
+            300,
+            5.0
+          ]
+        ],
+        "name": "sigrok_ws_continuous_duration"
+      }
+    ],
+    "modes": {
+      "WIDE11": {
+        "channel_mask": 2047,
+        "pins": [
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ]
+      }
+    },
+    "tcp": {
+      "host": "172.29.203.1",
+      "port": 5556
+    },
+    "timeout_s": 8.0,
+    "uart_stimulus": null,
+    "wide11_gp10_uart_low_others_physical_prerequisite": "Reduced single-wire setup: connect /dev/ttyACM1 TX to GP10 and share ground; leave GP11-GP20 externally low. This validates only GP10 DATA bit0 activity and absence of high/crosstalk on bits1..10. It does not validate independent high-state mapping for GP11-GP20.",
+    "wide11_mapping_physical_prerequisite": "External 3.3V-compatible pattern generator required: connect generator D0->GP10 (captured bit0 and trigger channel 0), D1->GP11 (bit1), D2->GP18 (bit8), D3->GP20 (bit10), and generator ground to Linkr Debugger ground. Hold the initial idle state with GP10 low before arming, then emit the declared repeating nibble pattern with each nibble held for --wide11-map-hold-samples 100MHz sample ticks. Do not use HTTP safe-GPIO outputs as stimulus: WIDE11 PIO preparation configures GP10-GP20 as inputs for capture."
+  },
+  "results": [
+    {
+      "active_stream_chunk_samples": 1024,
+      "board_http_health_after": {
+        "arena_telemetry": {
+          "current_pressure": {
+            "available": true,
+            "coverage": "system_heap_and_network",
+            "limiting_component": "system_heap",
+            "limiting_name": "system_heap",
+            "pressure_pct_x100": 0,
+            "reason": "",
+            "tie_count": 5
+          },
+          "memory_available": true,
+          "peak_pressure": {
+            "available": true,
+            "coverage": "system_heap_network_and_stacks",
+            "limiting_component": "system_heap",
+            "limiting_name": "system_heap",
+            "pressure_pct_x100": 9931,
+            "reason": "",
+            "since": "boot",
+            "tie_count": 1
+          }
+        },
+        "board_monitoring": {
+          "cpu": {
+            "active_pct_x100": 1261,
+            "available": true,
+            "busy_cycles_delta": 79662551,
+            "reason": "",
+            "total_cycles_delta": 631606482,
+            "window_ms": 4225
+          },
+          "heap": {
+            "allocated_bytes": 0,
+            "available": true,
+            "free_bytes": 49156,
+            "max_allocated_bytes": 48820,
+            "reason": "",
+            "source": "system_heap",
+            "total_bytes": 49156
+          },
+          "memory": {
+            "available": true,
+            "coverage": "heap_and_stacks",
+            "current_pressure": {
+              "available": true,
+              "coverage": "system_heap_and_network",
+              "limiting_component": "system_heap",
+              "limiting_name": "system_heap",
+              "pressure_pct_x100": 0,
+              "reason": "",
+              "tie_count": 5
+            },
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "peak_pressure": {
+              "available": true,
+              "coverage": "system_heap_network_and_stacks",
+              "limiting_component": "system_heap",
+              "limiting_name": "system_heap",
+              "pressure_pct_x100": 9931,
+              "reason": "",
+              "since": "boot",
+              "tie_count": 1
+            },
+            "physical": {
+              "image_reserved_bytes": 469232,
+              "reserved_pct_x100": 8812,
+              "total_bytes": 532480
+            },
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "source": "zephyr",
+            "stacks": {
+              "error_count": 0,
+              "max_pressure_pct_x100": 8416,
+              "max_pressure_thread": "net_socket_service",
+              "measured_count": 18,
+              "thread_count": 18,
+              "total_bytes": 27984,
+              "used_high_water_bytes": 13528
+            },
+            "system_heap_pressure_pct_x100": 0
+          },
+          "runtime": {
+            "available": true,
+            "reason": "",
+            "uptime_ms": 1183611,
+            "uptime_seconds": 1183
+          },
+          "temperature": {
+            "available": true,
+            "celsius": {
+              "val1": 39,
+              "val2": 783265
+            },
+            "reason": "",
+            "source": "dietemp"
+          }
+        },
+        "board_monitoring_available": true,
+        "elapsed_s": 0.032843766995938495,
+        "error": null,
+        "http_status": 200,
+        "ok": true
+      },
+      "bounded_target_met_before_stop": false,
+      "capacity_stop_before_data": false,
+      "capture_semantics": "continuous_rate_diagnostics",
+      "case": "sigrok_ws_continuous_duration",
+      "channel_mask": 2047,
+      "client_stop_sent": false,
+      "client_stopped": false,
+      "config_ack": {
+        "actual_rate_khz": 300,
+        "session_id": 1,
+        "state": 1
+      },
+      "config_encoding": "v1",
+      "config_frame_type": 5,
+      "config_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "continuous_data_observed": true,
+      "continuous_minimum_sample_count": 1425000,
+      "continuous_sample_count_met": false,
+      "duration_s": 5.0,
+      "elapsed_s": 1.5557790400052909,
+      "events": 2,
+      "handshake": {
+        "caps_payload_bytes": 17,
+        "caps_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "hello": {
+          "expected_high_rate_flags": 3,
+          "expected_high_rate_flags_present": true,
+          "max_payload_len": 4104,
+          "mode_count": 2,
+          "protocol_version": 2,
+          "server_flags": 3,
+          "supports_config_v2": true,
+          "supports_generic_packed_burst": true
+        },
+        "hello_payload_bytes": 5,
+        "hello_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        }
+      },
+      "immediate_restart": {
+        "config_ack": {
+          "actual_rate_khz": 300,
+          "session_id": 1,
+          "state": 1
+        },
+        "config_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "fresh_session": true,
+        "handshake": {
+          "caps_payload_bytes": 17,
+          "caps_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          },
+          "hello_payload_bytes": 5,
+          "hello_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          }
+        },
+        "ok": true,
+        "reason": "ok",
+        "start_ack": {
+          "actual_rate_khz": 300,
+          "session_id": 1,
+          "state": 3
+        },
+        "start_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "stats": {
+          "activity_analyzed_samples": 0,
+          "channel_mask_mismatch_frames": 0,
+          "compression_frame_counts": {
+            "1": 1
+          },
+          "data_decode_error_frames": 0,
+          "data_frames": 1,
+          "disconnects": 0,
+          "error_events": 0,
+          "event_records": [
+            {
+              "sample_index": 0,
+              "type_detail": 3
+            }
+          ],
+          "first_data_sample_indices": [
+            0
+          ],
+          "first_decode_error_records": [],
+          "first_gap_records": [],
+          "first_payload_budget_records": [],
+          "first_sample_index": 0,
+          "invalid_sample_count_frames": 0,
+          "last_activity_sample": null,
+          "last_sample_index": 0,
+          "overrun_events": 0,
+          "payload_bytes": 2,
+          "payload_over_budget_frames": 0,
+          "received_sample_count": 1,
+          "sample_index_gaps": 0,
+          "sample_value_and": null,
+          "sample_value_or": 0,
+          "sample_value_transitions": 0,
+          "stopped_events": 0,
+          "trigger_sample_index": null,
+          "triggered_events": 0
+        },
+        "stop_response": {
+          "ack": {
+            "actual_rate_khz": 300,
+            "session_id": 1,
+            "state": 1
+          },
+          "frame_type": 10,
+          "received": true,
+          "sent": true,
+          "skipped_data_frames": 0,
+          "skipped_events": 1
+        },
+        "transport": "websocket",
+        "ws_url": "ws://172.29.203.1:80/api/v1/ws/0"
+      },
+      "mode": "WIDE11",
+      "mode_id": 2,
+      "pass": false,
+      "reason": "continuous data window duration not met",
+      "requested_pre_post_met": true,
+      "requested_pre_post_samples": null,
+      "requested_samplerate_khz": 300,
+      "sample_bytes": 2,
+      "server_auto_stopped": true,
+      "sigrok_post_samples": 0,
+      "sigrok_post_zero_unlimited": true,
+      "sigrok_pre_samples": 0,
+      "start_ack": {
+        "actual_rate_khz": 300,
+        "session_id": 1,
+        "state": 3
+      },
+      "start_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "stats": {
+        "activity_analyzed_samples": 65536,
+        "channel_mask_mismatch_frames": 0,
+        "compression_frame_counts": {
+          "1": 59
+        },
+        "data_decode_error_frames": 0,
+        "data_frames": 59,
+        "disconnects": 0,
+        "effective_receive_bytes_per_s": 498951.0768714425,
+        "effective_receive_samples_per_s": 249475.53843572125,
+        "error_events": 0,
+        "event_records": [
+          {
+            "sample_index": 0,
+            "type_detail": 3
+          },
+          {
+            "sample_index": 118836,
+            "type_detail": 5
+          }
+        ],
+        "first_data_sample_indices": [
+          0,
+          2048,
+          4096,
+          6144,
+          8192,
+          10240,
+          12288,
+          14336,
+          16384,
+          18432,
+          20480,
+          22528,
+          24576,
+          26624,
+          28672,
+          30720
+        ],
+        "first_decode_error_records": [],
+        "first_gap_records": [],
+        "first_payload_budget_records": [],
+        "first_sample_index": 0,
+        "invalid_sample_count_frames": 0,
+        "last_activity_sample": 0,
+        "last_sample_index": 118835,
+        "overrun_events": 1,
+        "payload_bytes": 237672,
+        "payload_over_budget_frames": 0,
+        "received_sample_count": 118836,
+        "sample_index_gaps": 0,
+        "sample_value_and": 0,
+        "sample_value_or": 64,
+        "sample_value_transitions": 65502,
+        "stopped_events": 0,
+        "trigger_sample_index": null,
+        "triggered_events": 0
+      },
+      "stop_response": {
+        "reason": "not sent",
+        "received": false,
+        "sent": false
+      },
+      "stream_elapsed_s": 0.47634329499851447,
+      "terminal_event": {
+        "sample_index": 118836,
+        "session_id": 1,
+        "type_detail": 5
+      },
+      "terminal_reason": "server_overrun",
+      "transport": "websocket",
+      "transport_note": "Effective receive rate is host transport throughput, not hardware samplerate.",
+      "trigger_channel": 0,
+      "trigger_event_received": false,
+      "trigger_name": "none",
+      "trigger_required": false,
+      "trigger_sample_index": null,
+      "trigger_sample_offset_samples": null,
+      "trigger_sample_offset_valid": false,
+      "trigger_type": 0,
+      "ws_url": "ws://172.29.203.1:80/api/v1/ws/0"
+    }
+  ],
+  "schema": "radxa-linkr-debugger.logic-analyzer-hil-perf.v1",
+  "uart_stimulus": null
+}

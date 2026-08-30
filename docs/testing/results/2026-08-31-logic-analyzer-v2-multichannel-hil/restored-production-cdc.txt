@@ -1,0 +1,32 @@
+[m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.039,000] [0m<inf> linkr_debugger_network: DHCPv4 server started from 172.29.203.10[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> radxa_linkr_debugger: radxa-linkr-debugger controller ready over NCM HTTP with CDC ACM fallback[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> radxa_linkr_debugger: firmware build id v0.2.1-208-gc72104d89ca1-dirty at Jan  1 1980 00:00:00[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> linkr_debugger_usb_net: usb event: Device suspended[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=41[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=41 uptime_seconds=0[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=-1 core_age_ms=0 cmd_age_ms=1 grace_remaining_ms=14999 uptime_ms=41[0m
+[1;32mlinkr-debugger:~$ [muname
+Zephyr 
+[1;32mlinkr-debugger:~$ [m[18D[J[1;31m[1;31m--- 1173 messages dropped ---
+[0m[m[00:00:00.515,000] [0m<inf> linkr_debugger_usb_net: usb event: Bus reset[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.541,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=541[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.541,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=541 uptime_seconds=0[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.541,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=0 cmd_age_ms=0 grace_remaining_ms=14499 uptime_ms=541[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.591,000] [0m<inf> linkr_debugger_usb_net: usb event: Bus reset[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.693,000] [0m<inf> linkr_debugger_usb_net: usb event: New device configuration[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.693,000] [0m<inf> linkr_debugger_usb_net: usb event: CDC ACM line coding[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:01.042,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=1042[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:01.042,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=1042 uptime_seconds=1[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[00:03:08.631,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=188631[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:03:08.631,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=188631 uptime_seconds=188[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:03:08.631,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=15 cmd_age_ms=53 grace_remaining_ms=0 uptime_ms=188631[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:03:08.750,000] [0m<inf> linkr_debugger_usb_net: usb event: CDC ACM control line state[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:03:08.751,000] [0m<inf> linkr_debugger_usb_net: usb event: CDC ACM line coding[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[00:03:09.132,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=189132[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:03:09.132,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=189132 uptime_seconds=189[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:03:09.132,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=16 cmd_age_ms=54 grace_remaining_ms=0 uptime_ms=189132[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:03:09.632,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=189632[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:03:09.632,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=189632 uptime_seconds=189[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:03:09.632,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=15 cmd_age_ms=54 grace_remaining_ms=0 uptime_ms=189632[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m

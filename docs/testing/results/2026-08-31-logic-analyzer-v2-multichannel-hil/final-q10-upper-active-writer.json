@@ -1,0 +1,9 @@
+{
+  "device": "/dev/ttyACM1",
+  "baud": 921600,
+  "format": "8N1",
+  "pattern_hex": "55",
+  "bytes_written": 3235840,
+  "elapsed_s": 35.04374125300092,
+  "effective_bytes_per_s": 92337.17303864934
+}

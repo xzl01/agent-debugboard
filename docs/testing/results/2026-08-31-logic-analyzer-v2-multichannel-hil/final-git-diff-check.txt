@@ -1,0 +1,10 @@
+scope: candidate-source.patch source/contract paths only; byte-exact HIL logs and embedded patch artifacts excluded
+tracked_path_count: 25
+tracked_command: git diff --check -- <tracked candidate-source paths>
+tracked_exit_code: 0
+tracked_stdout: empty
+new_path_count: 1
+new_command: git diff --no-index --check /dev/null <new candidate-source path>
+new_exit_code: 1 (expected because the file is new; empty output means no whitespace diagnostics)
+new_stdout: empty
+result: PASS

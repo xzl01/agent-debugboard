@@ -1,0 +1,54 @@
+{
+  "bootsel": false,
+  "build": {
+    "image_version": "0.3.0+0",
+    "profile": "production"
+  },
+  "config": {
+    "available": true,
+    "pending_count": 0,
+    "reason": "ready",
+    "saved_count": 6
+  },
+  "fault_http": 404,
+  "heap": {
+    "allocated_bytes": 0,
+    "available": true,
+    "free_bytes": 49156,
+    "max_allocated_bytes": 0,
+    "reason": "",
+    "source": "system_heap",
+    "total_bytes": 49156
+  },
+  "image_reserved": 469432,
+  "ota": {
+    "command": "ota",
+    "current_image_confirmed": true,
+    "expected_size": 0,
+    "max_size": 0,
+    "metadata": {
+      "sha256_header": "X-Linkr-Ota-Sha256",
+      "size_header": "X-Linkr-Ota-Size"
+    },
+    "ok": true,
+    "schema": "radxa-linkr-debugger.v1",
+    "state": "idle",
+    "swap_type": 1,
+    "test_marker_present": false,
+    "upload_area_id": 255,
+    "written_size": 0
+  },
+  "rustty": false,
+  "ttyACM1_owners": [],
+  "watchdog": {
+    "armed": true,
+    "automatic": true,
+    "bootloader_on_timeout": true,
+    "failing_service": "",
+    "fault_injection_armed": false,
+    "fault_injection_available": false,
+    "healthy": true,
+    "supported": true,
+    "timeout_ms": 5000
+  }
+}

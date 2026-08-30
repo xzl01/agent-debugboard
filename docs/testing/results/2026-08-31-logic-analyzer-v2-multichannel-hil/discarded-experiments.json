@@ -1,0 +1,45 @@
+{
+  "experiments": [
+    {
+      "decision": "rejected",
+      "name": "fixed_tcp_pool",
+      "reason": "No throughput gain before skew root cause was fixed; dynamic queue with a measured cap is smaller and retained."
+    },
+    {
+      "decision": "rejected",
+      "name": "tcp_qdepth_6",
+      "reason": "Safe but unnecessary throughput loss.",
+      "result": "WIDE11 active 875 kHz; heap peak 24792 B"
+    },
+    {
+      "decision": "rejected",
+      "name": "tcp_qdepth_8",
+      "reason": "qdepth 10 remained stable and recovered 25 kHz.",
+      "result": "WIDE11 active 925 kHz 10/10; heap peak 33056 B"
+    },
+    {
+      "decision": "rejected",
+      "name": "tcp_qdepth_11",
+      "reason": "A subsequent FAST8 static matrix permanently stuck TCP teardown on run 8.",
+      "result": "WIDE11 active 975 kHz 10/10; heap peak 45452 B"
+    },
+    {
+      "decision": "rejected",
+      "name": "effective_qdepth_12_or_heap_limit",
+      "reason": "Only 300 B remained and fresh connections permanently stalled.",
+      "result": "heap peak 48856 / 49156 B"
+    },
+    {
+      "decision": "retained",
+      "name": "tcp_qdepth_10",
+      "result": "WIDE11 active 950 kHz 10/10; long mixed matrices and fresh restart remained healthy."
+    },
+    {
+      "decision": "replaced",
+      "name": "palette2_memcmp_per_sample",
+      "reason": "uint16 byte loads removed repeated memcmp/memcpy and raised every boundary while saving flash.",
+      "result": "FAST8 WS/TCP 750/800 kHz; WIDE11 WS/TCP 550/600 kHz"
+    }
+  ],
+  "schema": "radxa-linkr-debugger.logic-analyzer.discarded-experiments.v1"
+}

@@ -1,0 +1,19 @@
+{
+  "build_id": "v0.2.1-217-ge6c40e92344b",
+  "combined_uf2": {
+    "bytes": 1596416,
+    "path": "detached review build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2",
+    "sha256": "9dd57fd658e84896cfdb36de2c5f7bc3a9ffdef3fac87551963674dc5d45d248"
+  },
+  "commit": "e6c40e92344b562651214a38f5713e444ac704ab",
+  "flash_bytes": 772128,
+  "log": "review-exact-make-firmware.log",
+  "make_firmware_exit_code": 0,
+  "ota": {
+    "bytes": 772168,
+    "path": "detached review build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-ota.bin",
+    "sha256": "dfaa3b63eb679440679a73417cb6ff1c209df2c9fedebd7265f53045734a7624"
+  },
+  "ram_bytes": 469232,
+  "schema": "logic-analyzer-exact-build.v1"
+}

@@ -1,0 +1,3689 @@
+{
+  "dry_run": false,
+  "generated_at": "2026-08-30T15:17:57.483246+00:00",
+  "overall_pass": true,
+  "plan": {
+    "bounded_triggers": [
+      {
+        "channel": 0,
+        "name": "none",
+        "type": 0
+      }
+    ],
+    "continuous_trigger_note": "continuous matrices always use TRIGGER_NONE and report effective receive-rate diagnostics only",
+    "dry_run": false,
+    "high_rate_capability_flags": {
+      "config_v2": 1,
+      "generic_packed_burst": 2,
+      "required_mask": 3
+    },
+    "http_base": "http://172.29.203.1",
+    "matrices": [
+      {
+        "cases": [
+          [
+            "WIDE11",
+            950,
+            5.0
+          ],
+          [
+            "WIDE11",
+            950,
+            5.0
+          ],
+          [
+            "WIDE11",
+            950,
+            5.0
+          ],
+          [
+            "WIDE11",
+            950,
+            5.0
+          ],
+          [
+            "WIDE11",
+            950,
+            5.0
+          ],
+          [
+            "WIDE11",
+            950,
+            5.0
+          ],
+          [
+            "WIDE11",
+            950,
+            5.0
+          ],
+          [
+            "WIDE11",
+            950,
+            5.0
+          ],
+          [
+            "WIDE11",
+            950,
+            5.0
+          ],
+          [
+            "WIDE11",
+            950,
+            5.0
+          ]
+        ],
+        "name": "sigrok_tcp_continuous_duration"
+      }
+    ],
+    "modes": {
+      "WIDE11": {
+        "channel_mask": 2047,
+        "pins": [
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ]
+      }
+    },
+    "tcp": {
+      "host": "172.29.203.1",
+      "port": 5556
+    },
+    "timeout_s": 8.0,
+    "uart_stimulus": null,
+    "wide11_gp10_uart_low_others_physical_prerequisite": "Reduced single-wire setup: connect /dev/ttyACM1 TX to GP10 and share ground; leave GP11-GP20 externally low. This validates only GP10 DATA bit0 activity and absence of high/crosstalk on bits1..10. It does not validate independent high-state mapping for GP11-GP20.",
+    "wide11_mapping_physical_prerequisite": "External 3.3V-compatible pattern generator required: connect generator D0->GP10 (captured bit0 and trigger channel 0), D1->GP11 (bit1), D2->GP18 (bit8), D3->GP20 (bit10), and generator ground to Linkr Debugger ground. Hold the initial idle state with GP10 low before arming, then emit the declared repeating nibble pattern with each nibble held for --wide11-map-hold-samples 100MHz sample ticks. Do not use HTTP safe-GPIO outputs as stimulus: WIDE11 PIO preparation configures GP10-GP20 as inputs for capture."
+  },
+  "results": [
+    {
+      "active_stream_chunk_samples": 1024,
+      "board_http_health_after": {
+        "arena_telemetry": {
+          "current_pressure": {
+            "available": true,
+            "coverage": "system_heap_and_network",
+            "limiting_component": "system_heap",
+            "limiting_name": "system_heap",
+            "pressure_pct_x100": 0,
+            "reason": "",
+            "tie_count": 5
+          },
+          "memory_available": true,
+          "peak_pressure": {
+            "available": true,
+            "coverage": "system_heap_network_and_stacks",
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "since": "boot",
+            "tie_count": 1
+          }
+        },
+        "board_monitoring": {
+          "cpu": {
+            "active_pct_x100": 659,
+            "available": true,
+            "busy_cycles_delta": 818622655,
+            "reason": "",
+            "total_cycles_delta": 12409262881,
+            "window_ms": 82781
+          },
+          "heap": {
+            "allocated_bytes": 0,
+            "available": true,
+            "free_bytes": 49156,
+            "max_allocated_bytes": 41320,
+            "reason": "",
+            "source": "system_heap",
+            "total_bytes": 49156
+          },
+          "memory": {
+            "available": true,
+            "coverage": "heap_and_stacks",
+            "current_pressure": {
+              "available": true,
+              "coverage": "system_heap_and_network",
+              "limiting_component": "system_heap",
+              "limiting_name": "system_heap",
+              "pressure_pct_x100": 0,
+              "reason": "",
+              "tie_count": 5
+            },
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "peak_pressure": {
+              "available": true,
+              "coverage": "system_heap_network_and_stacks",
+              "limiting_component": "thread_stack",
+              "limiting_name": "net_socket_service",
+              "pressure_pct_x100": 8416,
+              "reason": "",
+              "since": "boot",
+              "tie_count": 1
+            },
+            "physical": {
+              "image_reserved_bytes": 469232,
+              "reserved_pct_x100": 8812,
+              "total_bytes": 532480
+            },
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "source": "zephyr",
+            "stacks": {
+              "error_count": 0,
+              "max_pressure_pct_x100": 8416,
+              "max_pressure_thread": "net_socket_service",
+              "measured_count": 18,
+              "thread_count": 18,
+              "total_bytes": 27984,
+              "used_high_water_bytes": 13320
+            },
+            "system_heap_pressure_pct_x100": 0
+          },
+          "runtime": {
+            "available": true,
+            "reason": "",
+            "uptime_ms": 127217,
+            "uptime_seconds": 127
+          },
+          "temperature": {
+            "available": true,
+            "celsius": {
+              "val1": 39,
+              "val2": 202208
+            },
+            "reason": "",
+            "source": "dietemp"
+          }
+        },
+        "board_monitoring_available": true,
+        "elapsed_s": 0.04644517300766893,
+        "error": null,
+        "http_status": 200,
+        "ok": true
+      },
+      "bounded_target_met_before_stop": false,
+      "capacity_stop_before_data": false,
+      "capture_semantics": "continuous_rate_diagnostics",
+      "case": "sigrok_tcp_continuous_duration",
+      "channel_mask": 2047,
+      "client_stop_sent": true,
+      "client_stopped": true,
+      "config_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 1
+      },
+      "config_encoding": "v1",
+      "config_frame_type": 5,
+      "config_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "continuous_data_observed": true,
+      "continuous_minimum_sample_count": 4512500,
+      "continuous_sample_count_met": true,
+      "duration_s": 5.0,
+      "elapsed_s": 5.392910883005243,
+      "events": 1,
+      "handshake": {
+        "caps_payload_bytes": 17,
+        "caps_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "hello": {
+          "expected_high_rate_flags": 3,
+          "expected_high_rate_flags_present": true,
+          "max_payload_len": 4104,
+          "mode_count": 2,
+          "protocol_version": 2,
+          "server_flags": 3,
+          "supports_config_v2": true,
+          "supports_generic_packed_burst": true
+        },
+        "hello_payload_bytes": 5,
+        "hello_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        }
+      },
+      "immediate_restart": {
+        "config_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "config_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "fresh_connection": true,
+        "handshake": {
+          "caps_payload_bytes": 17,
+          "caps_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          },
+          "hello": {
+            "expected_high_rate_flags": 3,
+            "expected_high_rate_flags_present": true,
+            "max_payload_len": 4104,
+            "mode_count": 2,
+            "protocol_version": 2,
+            "server_flags": 3,
+            "supports_config_v2": true,
+            "supports_generic_packed_burst": true
+          },
+          "hello_payload_bytes": 5,
+          "hello_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          }
+        },
+        "ok": true,
+        "reason": "ok",
+        "start_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 3
+        },
+        "start_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "stats": {
+          "activity_analyzed_samples": 0,
+          "channel_mask_mismatch_frames": 0,
+          "compression_frame_counts": {
+            "1": 1
+          },
+          "data_decode_error_frames": 0,
+          "data_frames": 1,
+          "disconnects": 0,
+          "error_events": 0,
+          "event_records": [
+            {
+              "sample_index": 0,
+              "type_detail": 3
+            }
+          ],
+          "first_data_sample_indices": [
+            0
+          ],
+          "first_decode_error_records": [],
+          "first_gap_records": [],
+          "first_payload_budget_records": [],
+          "first_sample_index": 0,
+          "invalid_sample_count_frames": 0,
+          "last_activity_sample": null,
+          "last_sample_index": 0,
+          "overrun_events": 0,
+          "payload_bytes": 2,
+          "payload_over_budget_frames": 0,
+          "received_sample_count": 1,
+          "sample_index_gaps": 0,
+          "sample_value_and": null,
+          "sample_value_or": 0,
+          "sample_value_transitions": 0,
+          "stopped_events": 0,
+          "trigger_sample_index": null,
+          "triggered_events": 0
+        },
+        "stop_response": {
+          "ack": {
+            "actual_rate_khz": 950,
+            "session_id": 1,
+            "state": 1
+          },
+          "frame_type": 10,
+          "received": true,
+          "sent": true,
+          "skipped_data_frames": 0,
+          "skipped_events": 1
+        },
+        "transport": "tcp"
+      },
+      "mode": "WIDE11",
+      "mode_id": 2,
+      "pass": true,
+      "reason": "ok",
+      "requested_pre_post_met": true,
+      "requested_pre_post_samples": null,
+      "requested_samplerate_khz": 950,
+      "sample_bytes": 2,
+      "server_auto_stopped": false,
+      "sigrok_post_samples": 0,
+      "sigrok_post_zero_unlimited": true,
+      "sigrok_pre_samples": 0,
+      "start_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 3
+      },
+      "start_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "stats": {
+        "activity_analyzed_samples": 65536,
+        "channel_mask_mismatch_frames": 0,
+        "compression_frame_counts": {
+          "6": 2322
+        },
+        "data_decode_error_frames": 0,
+        "data_frames": 2322,
+        "disconnects": 0,
+        "effective_receive_bytes_per_s": 120524.34520054089,
+        "effective_receive_samples_per_s": 949360.9960411837,
+        "error_events": 0,
+        "event_records": [
+          {
+            "sample_index": 0,
+            "type_detail": 3
+          }
+        ],
+        "first_data_sample_indices": [
+          0,
+          2048,
+          4096,
+          6144,
+          8192,
+          10240,
+          12288,
+          14336,
+          16384,
+          18432,
+          20480,
+          22528,
+          24576,
+          26624,
+          28672,
+          30720
+        ],
+        "first_decode_error_records": [],
+        "first_gap_records": [],
+        "first_payload_budget_records": [],
+        "first_sample_index": 0,
+        "invalid_sample_count_frames": 0,
+        "last_activity_sample": 0,
+        "last_sample_index": 4755455,
+        "overrun_events": 0,
+        "payload_bytes": 603720,
+        "payload_over_budget_frames": 0,
+        "received_sample_count": 4755456,
+        "sample_index_gaps": 0,
+        "sample_value_and": 0,
+        "sample_value_or": 64,
+        "sample_value_transitions": 63640,
+        "stopped_events": 0,
+        "trigger_sample_index": null,
+        "triggered_events": 0
+      },
+      "stop_response": {
+        "ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "frame_type": 10,
+        "received": true,
+        "sent": true,
+        "skipped_data_frames": 9,
+        "skipped_events": 0
+      },
+      "stream_elapsed_s": 5.009112465995713,
+      "terminal_reason": null,
+      "transport_note": "Effective receive rate is host transport throughput, not hardware samplerate.",
+      "trigger_channel": 0,
+      "trigger_event_received": false,
+      "trigger_name": "none",
+      "trigger_required": false,
+      "trigger_sample_index": null,
+      "trigger_sample_offset_samples": null,
+      "trigger_sample_offset_valid": false,
+      "trigger_type": 0
+    },
+    {
+      "active_stream_chunk_samples": 1024,
+      "board_http_health_after": {
+        "arena_telemetry": {
+          "current_pressure": {
+            "available": true,
+            "coverage": "system_heap_and_network",
+            "limiting_component": "system_heap",
+            "limiting_name": "system_heap",
+            "pressure_pct_x100": 0,
+            "reason": "",
+            "tie_count": 5
+          },
+          "memory_available": true,
+          "peak_pressure": {
+            "available": true,
+            "coverage": "system_heap_network_and_stacks",
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "since": "boot",
+            "tie_count": 1
+          }
+        },
+        "board_monitoring": {
+          "cpu": {
+            "active_pct_x100": 9483,
+            "available": true,
+            "busy_cycles_delta": 765341671,
+            "reason": "",
+            "total_cycles_delta": 807013017,
+            "window_ms": 5422
+          },
+          "heap": {
+            "allocated_bytes": 0,
+            "available": true,
+            "free_bytes": 49156,
+            "max_allocated_bytes": 41320,
+            "reason": "",
+            "source": "system_heap",
+            "total_bytes": 49156
+          },
+          "memory": {
+            "available": true,
+            "coverage": "heap_and_stacks",
+            "current_pressure": {
+              "available": true,
+              "coverage": "system_heap_and_network",
+              "limiting_component": "system_heap",
+              "limiting_name": "system_heap",
+              "pressure_pct_x100": 0,
+              "reason": "",
+              "tie_count": 5
+            },
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "peak_pressure": {
+              "available": true,
+              "coverage": "system_heap_network_and_stacks",
+              "limiting_component": "thread_stack",
+              "limiting_name": "net_socket_service",
+              "pressure_pct_x100": 8416,
+              "reason": "",
+              "since": "boot",
+              "tie_count": 1
+            },
+            "physical": {
+              "image_reserved_bytes": 469232,
+              "reserved_pct_x100": 8812,
+              "total_bytes": 532480
+            },
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "source": "zephyr",
+            "stacks": {
+              "error_count": 0,
+              "max_pressure_pct_x100": 8416,
+              "max_pressure_thread": "net_socket_service",
+              "measured_count": 18,
+              "thread_count": 18,
+              "total_bytes": 27984,
+              "used_high_water_bytes": 13328
+            },
+            "system_heap_pressure_pct_x100": 0
+          },
+          "runtime": {
+            "available": true,
+            "reason": "",
+            "uptime_ms": 132639,
+            "uptime_seconds": 132
+          },
+          "temperature": {
+            "available": true,
+            "celsius": {
+              "val1": 39,
+              "val2": 202208
+            },
+            "reason": "",
+            "source": "dietemp"
+          }
+        },
+        "board_monitoring_available": true,
+        "elapsed_s": 0.03313831701234449,
+        "error": null,
+        "http_status": 200,
+        "ok": true
+      },
+      "bounded_target_met_before_stop": false,
+      "capacity_stop_before_data": false,
+      "capture_semantics": "continuous_rate_diagnostics",
+      "case": "sigrok_tcp_continuous_duration",
+      "channel_mask": 2047,
+      "client_stop_sent": true,
+      "client_stopped": true,
+      "config_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 1
+      },
+      "config_encoding": "v1",
+      "config_frame_type": 5,
+      "config_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "continuous_data_observed": true,
+      "continuous_minimum_sample_count": 4512500,
+      "continuous_sample_count_met": true,
+      "duration_s": 5.0,
+      "elapsed_s": 5.392673094989732,
+      "events": 1,
+      "handshake": {
+        "caps_payload_bytes": 17,
+        "caps_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "hello": {
+          "expected_high_rate_flags": 3,
+          "expected_high_rate_flags_present": true,
+          "max_payload_len": 4104,
+          "mode_count": 2,
+          "protocol_version": 2,
+          "server_flags": 3,
+          "supports_config_v2": true,
+          "supports_generic_packed_burst": true
+        },
+        "hello_payload_bytes": 5,
+        "hello_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        }
+      },
+      "immediate_restart": {
+        "config_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "config_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "fresh_connection": true,
+        "handshake": {
+          "caps_payload_bytes": 17,
+          "caps_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          },
+          "hello": {
+            "expected_high_rate_flags": 3,
+            "expected_high_rate_flags_present": true,
+            "max_payload_len": 4104,
+            "mode_count": 2,
+            "protocol_version": 2,
+            "server_flags": 3,
+            "supports_config_v2": true,
+            "supports_generic_packed_burst": true
+          },
+          "hello_payload_bytes": 5,
+          "hello_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          }
+        },
+        "ok": true,
+        "reason": "ok",
+        "start_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 3
+        },
+        "start_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "stats": {
+          "activity_analyzed_samples": 0,
+          "channel_mask_mismatch_frames": 0,
+          "compression_frame_counts": {
+            "1": 1
+          },
+          "data_decode_error_frames": 0,
+          "data_frames": 1,
+          "disconnects": 0,
+          "error_events": 0,
+          "event_records": [
+            {
+              "sample_index": 0,
+              "type_detail": 3
+            }
+          ],
+          "first_data_sample_indices": [
+            0
+          ],
+          "first_decode_error_records": [],
+          "first_gap_records": [],
+          "first_payload_budget_records": [],
+          "first_sample_index": 0,
+          "invalid_sample_count_frames": 0,
+          "last_activity_sample": null,
+          "last_sample_index": 0,
+          "overrun_events": 0,
+          "payload_bytes": 2,
+          "payload_over_budget_frames": 0,
+          "received_sample_count": 1,
+          "sample_index_gaps": 0,
+          "sample_value_and": null,
+          "sample_value_or": 0,
+          "sample_value_transitions": 0,
+          "stopped_events": 0,
+          "trigger_sample_index": null,
+          "triggered_events": 0
+        },
+        "stop_response": {
+          "ack": {
+            "actual_rate_khz": 950,
+            "session_id": 1,
+            "state": 1
+          },
+          "frame_type": 10,
+          "received": true,
+          "sent": true,
+          "skipped_data_frames": 0,
+          "skipped_events": 1
+        },
+        "transport": "tcp"
+      },
+      "mode": "WIDE11",
+      "mode_id": 2,
+      "pass": true,
+      "reason": "ok",
+      "requested_pre_post_met": true,
+      "requested_pre_post_samples": null,
+      "requested_samplerate_khz": 950,
+      "sample_bytes": 2,
+      "server_auto_stopped": false,
+      "sigrok_post_samples": 0,
+      "sigrok_post_zero_unlimited": true,
+      "sigrok_pre_samples": 0,
+      "start_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 3
+      },
+      "start_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "stats": {
+        "activity_analyzed_samples": 65536,
+        "channel_mask_mismatch_frames": 0,
+        "compression_frame_counts": {
+          "6": 2323
+        },
+        "data_decode_error_frames": 0,
+        "data_frames": 2323,
+        "disconnects": 0,
+        "effective_receive_bytes_per_s": 120511.75783455335,
+        "effective_receive_samples_per_s": 949261.8463275587,
+        "error_events": 0,
+        "event_records": [
+          {
+            "sample_index": 0,
+            "type_detail": 3
+          }
+        ],
+        "first_data_sample_indices": [
+          0,
+          2048,
+          4096,
+          6144,
+          8192,
+          10240,
+          12288,
+          14336,
+          16384,
+          18432,
+          20480,
+          22528,
+          24576,
+          26624,
+          28672,
+          30720
+        ],
+        "first_decode_error_records": [],
+        "first_gap_records": [],
+        "first_payload_budget_records": [],
+        "first_sample_index": 0,
+        "invalid_sample_count_frames": 0,
+        "last_activity_sample": 0,
+        "last_sample_index": 4757503,
+        "overrun_events": 0,
+        "payload_bytes": 603980,
+        "payload_over_budget_frames": 0,
+        "received_sample_count": 4757504,
+        "sample_index_gaps": 0,
+        "sample_value_and": 0,
+        "sample_value_or": 64,
+        "sample_value_transitions": 63638,
+        "stopped_events": 0,
+        "trigger_sample_index": null,
+        "triggered_events": 0
+      },
+      "stop_response": {
+        "ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "frame_type": 10,
+        "received": true,
+        "sent": true,
+        "skipped_data_frames": 9,
+        "skipped_events": 0
+      },
+      "stream_elapsed_s": 5.011793130004662,
+      "terminal_reason": null,
+      "transport_note": "Effective receive rate is host transport throughput, not hardware samplerate.",
+      "trigger_channel": 0,
+      "trigger_event_received": false,
+      "trigger_name": "none",
+      "trigger_required": false,
+      "trigger_sample_index": null,
+      "trigger_sample_offset_samples": null,
+      "trigger_sample_offset_valid": false,
+      "trigger_type": 0
+    },
+    {
+      "active_stream_chunk_samples": 1024,
+      "board_http_health_after": {
+        "arena_telemetry": {
+          "current_pressure": {
+            "available": true,
+            "coverage": "system_heap_and_network",
+            "limiting_component": "system_heap",
+            "limiting_name": "system_heap",
+            "pressure_pct_x100": 0,
+            "reason": "",
+            "tie_count": 5
+          },
+          "memory_available": true,
+          "peak_pressure": {
+            "available": true,
+            "coverage": "system_heap_network_and_stacks",
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "since": "boot",
+            "tie_count": 1
+          }
+        },
+        "board_monitoring": {
+          "cpu": {
+            "active_pct_x100": 9481,
+            "available": true,
+            "busy_cycles_delta": 764667337,
+            "reason": "",
+            "total_cycles_delta": 806462332,
+            "window_ms": 5417
+          },
+          "heap": {
+            "allocated_bytes": 0,
+            "available": true,
+            "free_bytes": 49156,
+            "max_allocated_bytes": 41320,
+            "reason": "",
+            "source": "system_heap",
+            "total_bytes": 49156
+          },
+          "memory": {
+            "available": true,
+            "coverage": "heap_and_stacks",
+            "current_pressure": {
+              "available": true,
+              "coverage": "system_heap_and_network",
+              "limiting_component": "system_heap",
+              "limiting_name": "system_heap",
+              "pressure_pct_x100": 0,
+              "reason": "",
+              "tie_count": 5
+            },
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "peak_pressure": {
+              "available": true,
+              "coverage": "system_heap_network_and_stacks",
+              "limiting_component": "thread_stack",
+              "limiting_name": "net_socket_service",
+              "pressure_pct_x100": 8416,
+              "reason": "",
+              "since": "boot",
+              "tie_count": 1
+            },
+            "physical": {
+              "image_reserved_bytes": 469232,
+              "reserved_pct_x100": 8812,
+              "total_bytes": 532480
+            },
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "source": "zephyr",
+            "stacks": {
+              "error_count": 0,
+              "max_pressure_pct_x100": 8416,
+              "max_pressure_thread": "net_socket_service",
+              "measured_count": 18,
+              "thread_count": 18,
+              "total_bytes": 27984,
+              "used_high_water_bytes": 13344
+            },
+            "system_heap_pressure_pct_x100": 0
+          },
+          "runtime": {
+            "available": true,
+            "reason": "",
+            "uptime_ms": 138056,
+            "uptime_seconds": 138
+          },
+          "temperature": {
+            "available": true,
+            "celsius": {
+              "val1": 38,
+              "val2": 621150
+            },
+            "reason": "",
+            "source": "dietemp"
+          }
+        },
+        "board_monitoring_available": true,
+        "elapsed_s": 0.03372338801273145,
+        "error": null,
+        "http_status": 200,
+        "ok": true
+      },
+      "bounded_target_met_before_stop": false,
+      "capacity_stop_before_data": false,
+      "capture_semantics": "continuous_rate_diagnostics",
+      "case": "sigrok_tcp_continuous_duration",
+      "channel_mask": 2047,
+      "client_stop_sent": true,
+      "client_stopped": true,
+      "config_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 1
+      },
+      "config_encoding": "v1",
+      "config_frame_type": 5,
+      "config_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "continuous_data_observed": true,
+      "continuous_minimum_sample_count": 4512500,
+      "continuous_sample_count_met": true,
+      "duration_s": 5.0,
+      "elapsed_s": 5.3874950089957565,
+      "events": 1,
+      "handshake": {
+        "caps_payload_bytes": 17,
+        "caps_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "hello": {
+          "expected_high_rate_flags": 3,
+          "expected_high_rate_flags_present": true,
+          "max_payload_len": 4104,
+          "mode_count": 2,
+          "protocol_version": 2,
+          "server_flags": 3,
+          "supports_config_v2": true,
+          "supports_generic_packed_burst": true
+        },
+        "hello_payload_bytes": 5,
+        "hello_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        }
+      },
+      "immediate_restart": {
+        "config_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "config_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "fresh_connection": true,
+        "handshake": {
+          "caps_payload_bytes": 17,
+          "caps_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          },
+          "hello": {
+            "expected_high_rate_flags": 3,
+            "expected_high_rate_flags_present": true,
+            "max_payload_len": 4104,
+            "mode_count": 2,
+            "protocol_version": 2,
+            "server_flags": 3,
+            "supports_config_v2": true,
+            "supports_generic_packed_burst": true
+          },
+          "hello_payload_bytes": 5,
+          "hello_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          }
+        },
+        "ok": true,
+        "reason": "ok",
+        "start_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 3
+        },
+        "start_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "stats": {
+          "activity_analyzed_samples": 0,
+          "channel_mask_mismatch_frames": 0,
+          "compression_frame_counts": {
+            "1": 1
+          },
+          "data_decode_error_frames": 0,
+          "data_frames": 1,
+          "disconnects": 0,
+          "error_events": 0,
+          "event_records": [
+            {
+              "sample_index": 0,
+              "type_detail": 3
+            }
+          ],
+          "first_data_sample_indices": [
+            0
+          ],
+          "first_decode_error_records": [],
+          "first_gap_records": [],
+          "first_payload_budget_records": [],
+          "first_sample_index": 0,
+          "invalid_sample_count_frames": 0,
+          "last_activity_sample": null,
+          "last_sample_index": 0,
+          "overrun_events": 0,
+          "payload_bytes": 2,
+          "payload_over_budget_frames": 0,
+          "received_sample_count": 1,
+          "sample_index_gaps": 0,
+          "sample_value_and": null,
+          "sample_value_or": 0,
+          "sample_value_transitions": 0,
+          "stopped_events": 0,
+          "trigger_sample_index": null,
+          "triggered_events": 0
+        },
+        "stop_response": {
+          "ack": {
+            "actual_rate_khz": 950,
+            "session_id": 1,
+            "state": 1
+          },
+          "frame_type": 10,
+          "received": true,
+          "sent": true,
+          "skipped_data_frames": 0,
+          "skipped_events": 1
+        },
+        "transport": "tcp"
+      },
+      "mode": "WIDE11",
+      "mode_id": 2,
+      "pass": true,
+      "reason": "ok",
+      "requested_pre_post_met": true,
+      "requested_pre_post_samples": null,
+      "requested_samplerate_khz": 950,
+      "sample_bytes": 2,
+      "server_auto_stopped": false,
+      "sigrok_post_samples": 0,
+      "sigrok_post_zero_unlimited": true,
+      "sigrok_pre_samples": 0,
+      "start_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 3
+      },
+      "start_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "stats": {
+        "activity_analyzed_samples": 65536,
+        "channel_mask_mismatch_frames": 0,
+        "compression_frame_counts": {
+          "6": 2321
+        },
+        "data_decode_error_frames": 0,
+        "data_frames": 2321,
+        "disconnects": 0,
+        "effective_receive_bytes_per_s": 120554.1518005454,
+        "effective_receive_samples_per_s": 949595.7803366038,
+        "error_events": 0,
+        "event_records": [
+          {
+            "sample_index": 0,
+            "type_detail": 3
+          }
+        ],
+        "first_data_sample_indices": [
+          0,
+          2048,
+          4096,
+          6144,
+          8192,
+          10240,
+          12288,
+          14336,
+          16384,
+          18432,
+          20480,
+          22528,
+          24576,
+          26624,
+          28672,
+          30720
+        ],
+        "first_decode_error_records": [],
+        "first_gap_records": [],
+        "first_payload_budget_records": [],
+        "first_sample_index": 0,
+        "invalid_sample_count_frames": 0,
+        "last_activity_sample": 64,
+        "last_sample_index": 4753407,
+        "overrun_events": 0,
+        "payload_bytes": 603460,
+        "payload_over_budget_frames": 0,
+        "received_sample_count": 4753408,
+        "sample_index_gaps": 0,
+        "sample_value_and": 0,
+        "sample_value_or": 64,
+        "sample_value_transitions": 63634,
+        "stopped_events": 0,
+        "trigger_sample_index": null,
+        "triggered_events": 0
+      },
+      "stop_response": {
+        "ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "frame_type": 10,
+        "received": true,
+        "sent": true,
+        "skipped_data_frames": 8,
+        "skipped_events": 0
+      },
+      "stream_elapsed_s": 5.00571727300121,
+      "terminal_reason": null,
+      "transport_note": "Effective receive rate is host transport throughput, not hardware samplerate.",
+      "trigger_channel": 0,
+      "trigger_event_received": false,
+      "trigger_name": "none",
+      "trigger_required": false,
+      "trigger_sample_index": null,
+      "trigger_sample_offset_samples": null,
+      "trigger_sample_offset_valid": false,
+      "trigger_type": 0
+    },
+    {
+      "active_stream_chunk_samples": 1024,
+      "board_http_health_after": {
+        "arena_telemetry": {
+          "current_pressure": {
+            "available": true,
+            "coverage": "system_heap_and_network",
+            "limiting_component": "system_heap",
+            "limiting_name": "system_heap",
+            "pressure_pct_x100": 0,
+            "reason": "",
+            "tie_count": 5
+          },
+          "memory_available": true,
+          "peak_pressure": {
+            "available": true,
+            "coverage": "system_heap_network_and_stacks",
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "since": "boot",
+            "tie_count": 1
+          }
+        },
+        "board_monitoring": {
+          "cpu": {
+            "active_pct_x100": 9453,
+            "available": true,
+            "busy_cycles_delta": 763725644,
+            "reason": "",
+            "total_cycles_delta": 807836765,
+            "window_ms": 5427
+          },
+          "heap": {
+            "allocated_bytes": 0,
+            "available": true,
+            "free_bytes": 49156,
+            "max_allocated_bytes": 41320,
+            "reason": "",
+            "source": "system_heap",
+            "total_bytes": 49156
+          },
+          "memory": {
+            "available": true,
+            "coverage": "heap_and_stacks",
+            "current_pressure": {
+              "available": true,
+              "coverage": "system_heap_and_network",
+              "limiting_component": "system_heap",
+              "limiting_name": "system_heap",
+              "pressure_pct_x100": 0,
+              "reason": "",
+              "tie_count": 5
+            },
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "peak_pressure": {
+              "available": true,
+              "coverage": "system_heap_network_and_stacks",
+              "limiting_component": "thread_stack",
+              "limiting_name": "net_socket_service",
+              "pressure_pct_x100": 8416,
+              "reason": "",
+              "since": "boot",
+              "tie_count": 1
+            },
+            "physical": {
+              "image_reserved_bytes": 469232,
+              "reserved_pct_x100": 8812,
+              "total_bytes": 532480
+            },
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "source": "zephyr",
+            "stacks": {
+              "error_count": 0,
+              "max_pressure_pct_x100": 8416,
+              "max_pressure_thread": "net_socket_service",
+              "measured_count": 18,
+              "thread_count": 18,
+              "total_bytes": 27984,
+              "used_high_water_bytes": 13344
+            },
+            "system_heap_pressure_pct_x100": 0
+          },
+          "runtime": {
+            "available": true,
+            "reason": "",
+            "uptime_ms": 143483,
+            "uptime_seconds": 143
+          },
+          "temperature": {
+            "available": true,
+            "celsius": {
+              "val1": 38,
+              "val2": 40092
+            },
+            "reason": "",
+            "source": "dietemp"
+          }
+        },
+        "board_monitoring_available": true,
+        "elapsed_s": 0.03305257100146264,
+        "error": null,
+        "http_status": 200,
+        "ok": true
+      },
+      "bounded_target_met_before_stop": false,
+      "capacity_stop_before_data": false,
+      "capture_semantics": "continuous_rate_diagnostics",
+      "case": "sigrok_tcp_continuous_duration",
+      "channel_mask": 2047,
+      "client_stop_sent": true,
+      "client_stopped": true,
+      "config_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 1
+      },
+      "config_encoding": "v1",
+      "config_frame_type": 5,
+      "config_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "continuous_data_observed": true,
+      "continuous_minimum_sample_count": 4512500,
+      "continuous_sample_count_met": true,
+      "duration_s": 5.0,
+      "elapsed_s": 5.39719603699632,
+      "events": 1,
+      "handshake": {
+        "caps_payload_bytes": 17,
+        "caps_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "hello": {
+          "expected_high_rate_flags": 3,
+          "expected_high_rate_flags_present": true,
+          "max_payload_len": 4104,
+          "mode_count": 2,
+          "protocol_version": 2,
+          "server_flags": 3,
+          "supports_config_v2": true,
+          "supports_generic_packed_burst": true
+        },
+        "hello_payload_bytes": 5,
+        "hello_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        }
+      },
+      "immediate_restart": {
+        "config_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "config_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "fresh_connection": true,
+        "handshake": {
+          "caps_payload_bytes": 17,
+          "caps_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          },
+          "hello": {
+            "expected_high_rate_flags": 3,
+            "expected_high_rate_flags_present": true,
+            "max_payload_len": 4104,
+            "mode_count": 2,
+            "protocol_version": 2,
+            "server_flags": 3,
+            "supports_config_v2": true,
+            "supports_generic_packed_burst": true
+          },
+          "hello_payload_bytes": 5,
+          "hello_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          }
+        },
+        "ok": true,
+        "reason": "ok",
+        "start_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 3
+        },
+        "start_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "stats": {
+          "activity_analyzed_samples": 0,
+          "channel_mask_mismatch_frames": 0,
+          "compression_frame_counts": {
+            "1": 1
+          },
+          "data_decode_error_frames": 0,
+          "data_frames": 1,
+          "disconnects": 0,
+          "error_events": 0,
+          "event_records": [
+            {
+              "sample_index": 0,
+              "type_detail": 3
+            }
+          ],
+          "first_data_sample_indices": [
+            0
+          ],
+          "first_decode_error_records": [],
+          "first_gap_records": [],
+          "first_payload_budget_records": [],
+          "first_sample_index": 0,
+          "invalid_sample_count_frames": 0,
+          "last_activity_sample": null,
+          "last_sample_index": 0,
+          "overrun_events": 0,
+          "payload_bytes": 2,
+          "payload_over_budget_frames": 0,
+          "received_sample_count": 1,
+          "sample_index_gaps": 0,
+          "sample_value_and": null,
+          "sample_value_or": 0,
+          "sample_value_transitions": 0,
+          "stopped_events": 0,
+          "trigger_sample_index": null,
+          "triggered_events": 0
+        },
+        "stop_response": {
+          "ack": {
+            "actual_rate_khz": 950,
+            "session_id": 1,
+            "state": 1
+          },
+          "frame_type": 10,
+          "received": true,
+          "sent": true,
+          "skipped_data_frames": 0,
+          "skipped_events": 1
+        },
+        "transport": "tcp"
+      },
+      "mode": "WIDE11",
+      "mode_id": 2,
+      "pass": true,
+      "reason": "ok",
+      "requested_pre_post_met": true,
+      "requested_pre_post_samples": null,
+      "requested_samplerate_khz": 950,
+      "sample_bytes": 2,
+      "server_auto_stopped": false,
+      "sigrok_post_samples": 0,
+      "sigrok_post_zero_unlimited": true,
+      "sigrok_pre_samples": 0,
+      "start_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 3
+      },
+      "start_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "stats": {
+        "activity_analyzed_samples": 65536,
+        "channel_mask_mismatch_frames": 0,
+        "compression_frame_counts": {
+          "6": 2322
+        },
+        "data_decode_error_frames": 0,
+        "data_frames": 2322,
+        "disconnects": 0,
+        "effective_receive_bytes_per_s": 120707.54028736506,
+        "effective_receive_samples_per_s": 950804.0096481678,
+        "error_events": 0,
+        "event_records": [
+          {
+            "sample_index": 0,
+            "type_detail": 3
+          }
+        ],
+        "first_data_sample_indices": [
+          0,
+          2048,
+          4096,
+          6144,
+          8192,
+          10240,
+          12288,
+          14336,
+          16384,
+          18432,
+          20480,
+          22528,
+          24576,
+          26624,
+          28672,
+          30720
+        ],
+        "first_decode_error_records": [],
+        "first_gap_records": [],
+        "first_payload_budget_records": [],
+        "first_sample_index": 0,
+        "invalid_sample_count_frames": 0,
+        "last_activity_sample": 64,
+        "last_sample_index": 4755455,
+        "overrun_events": 0,
+        "payload_bytes": 603720,
+        "payload_over_budget_frames": 0,
+        "received_sample_count": 4755456,
+        "sample_index_gaps": 0,
+        "sample_value_and": 0,
+        "sample_value_or": 64,
+        "sample_value_transitions": 63641,
+        "stopped_events": 0,
+        "trigger_sample_index": null,
+        "triggered_events": 0
+      },
+      "stop_response": {
+        "ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "frame_type": 10,
+        "received": true,
+        "sent": true,
+        "skipped_data_frames": 3,
+        "skipped_events": 0
+      },
+      "stream_elapsed_s": 5.001510250003776,
+      "terminal_reason": null,
+      "transport_note": "Effective receive rate is host transport throughput, not hardware samplerate.",
+      "trigger_channel": 0,
+      "trigger_event_received": false,
+      "trigger_name": "none",
+      "trigger_required": false,
+      "trigger_sample_index": null,
+      "trigger_sample_offset_samples": null,
+      "trigger_sample_offset_valid": false,
+      "trigger_type": 0
+    },
+    {
+      "active_stream_chunk_samples": 1024,
+      "board_http_health_after": {
+        "arena_telemetry": {
+          "current_pressure": {
+            "available": true,
+            "coverage": "system_heap_and_network",
+            "limiting_component": "system_heap",
+            "limiting_name": "system_heap",
+            "pressure_pct_x100": 0,
+            "reason": "",
+            "tie_count": 5
+          },
+          "memory_available": true,
+          "peak_pressure": {
+            "available": true,
+            "coverage": "system_heap_network_and_stacks",
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "since": "boot",
+            "tie_count": 1
+          }
+        },
+        "board_monitoring": {
+          "cpu": {
+            "active_pct_x100": 9473,
+            "available": true,
+            "busy_cycles_delta": 765562073,
+            "reason": "",
+            "total_cycles_delta": 808105176,
+            "window_ms": 5428
+          },
+          "heap": {
+            "allocated_bytes": 0,
+            "available": true,
+            "free_bytes": 49156,
+            "max_allocated_bytes": 41320,
+            "reason": "",
+            "source": "system_heap",
+            "total_bytes": 49156
+          },
+          "memory": {
+            "available": true,
+            "coverage": "heap_and_stacks",
+            "current_pressure": {
+              "available": true,
+              "coverage": "system_heap_and_network",
+              "limiting_component": "system_heap",
+              "limiting_name": "system_heap",
+              "pressure_pct_x100": 0,
+              "reason": "",
+              "tie_count": 5
+            },
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "peak_pressure": {
+              "available": true,
+              "coverage": "system_heap_network_and_stacks",
+              "limiting_component": "thread_stack",
+              "limiting_name": "net_socket_service",
+              "pressure_pct_x100": 8416,
+              "reason": "",
+              "since": "boot",
+              "tie_count": 1
+            },
+            "physical": {
+              "image_reserved_bytes": 469232,
+              "reserved_pct_x100": 8812,
+              "total_bytes": 532480
+            },
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "source": "zephyr",
+            "stacks": {
+              "error_count": 0,
+              "max_pressure_pct_x100": 8416,
+              "max_pressure_thread": "net_socket_service",
+              "measured_count": 18,
+              "thread_count": 18,
+              "total_bytes": 27984,
+              "used_high_water_bytes": 13344
+            },
+            "system_heap_pressure_pct_x100": 0
+          },
+          "runtime": {
+            "available": true,
+            "reason": "",
+            "uptime_ms": 148911,
+            "uptime_seconds": 148
+          },
+          "temperature": {
+            "available": true,
+            "celsius": {
+              "val1": 39,
+              "val2": 202208
+            },
+            "reason": "",
+            "source": "dietemp"
+          }
+        },
+        "board_monitoring_available": true,
+        "elapsed_s": 0.03389822199824266,
+        "error": null,
+        "http_status": 200,
+        "ok": true
+      },
+      "bounded_target_met_before_stop": false,
+      "capacity_stop_before_data": false,
+      "capture_semantics": "continuous_rate_diagnostics",
+      "case": "sigrok_tcp_continuous_duration",
+      "channel_mask": 2047,
+      "client_stop_sent": true,
+      "client_stopped": true,
+      "config_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 1
+      },
+      "config_encoding": "v1",
+      "config_frame_type": 5,
+      "config_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "continuous_data_observed": true,
+      "continuous_minimum_sample_count": 4512500,
+      "continuous_sample_count_met": true,
+      "duration_s": 5.0,
+      "elapsed_s": 5.399009398010094,
+      "events": 1,
+      "handshake": {
+        "caps_payload_bytes": 17,
+        "caps_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "hello": {
+          "expected_high_rate_flags": 3,
+          "expected_high_rate_flags_present": true,
+          "max_payload_len": 4104,
+          "mode_count": 2,
+          "protocol_version": 2,
+          "server_flags": 3,
+          "supports_config_v2": true,
+          "supports_generic_packed_burst": true
+        },
+        "hello_payload_bytes": 5,
+        "hello_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        }
+      },
+      "immediate_restart": {
+        "config_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "config_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "fresh_connection": true,
+        "handshake": {
+          "caps_payload_bytes": 17,
+          "caps_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          },
+          "hello": {
+            "expected_high_rate_flags": 3,
+            "expected_high_rate_flags_present": true,
+            "max_payload_len": 4104,
+            "mode_count": 2,
+            "protocol_version": 2,
+            "server_flags": 3,
+            "supports_config_v2": true,
+            "supports_generic_packed_burst": true
+          },
+          "hello_payload_bytes": 5,
+          "hello_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          }
+        },
+        "ok": true,
+        "reason": "ok",
+        "start_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 3
+        },
+        "start_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "stats": {
+          "activity_analyzed_samples": 0,
+          "channel_mask_mismatch_frames": 0,
+          "compression_frame_counts": {
+            "1": 1
+          },
+          "data_decode_error_frames": 0,
+          "data_frames": 1,
+          "disconnects": 0,
+          "error_events": 0,
+          "event_records": [
+            {
+              "sample_index": 0,
+              "type_detail": 3
+            }
+          ],
+          "first_data_sample_indices": [
+            0
+          ],
+          "first_decode_error_records": [],
+          "first_gap_records": [],
+          "first_payload_budget_records": [],
+          "first_sample_index": 0,
+          "invalid_sample_count_frames": 0,
+          "last_activity_sample": null,
+          "last_sample_index": 0,
+          "overrun_events": 0,
+          "payload_bytes": 2,
+          "payload_over_budget_frames": 0,
+          "received_sample_count": 1,
+          "sample_index_gaps": 0,
+          "sample_value_and": null,
+          "sample_value_or": 0,
+          "sample_value_transitions": 0,
+          "stopped_events": 0,
+          "trigger_sample_index": null,
+          "triggered_events": 0
+        },
+        "stop_response": {
+          "ack": {
+            "actual_rate_khz": 950,
+            "session_id": 1,
+            "state": 1
+          },
+          "frame_type": 10,
+          "received": true,
+          "sent": true,
+          "skipped_data_frames": 0,
+          "skipped_events": 1
+        },
+        "transport": "tcp"
+      },
+      "mode": "WIDE11",
+      "mode_id": 2,
+      "pass": true,
+      "reason": "ok",
+      "requested_pre_post_met": true,
+      "requested_pre_post_samples": null,
+      "requested_samplerate_khz": 950,
+      "sample_bytes": 2,
+      "server_auto_stopped": false,
+      "sigrok_post_samples": 0,
+      "sigrok_post_zero_unlimited": true,
+      "sigrok_pre_samples": 0,
+      "start_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 3
+      },
+      "start_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "stats": {
+        "activity_analyzed_samples": 65536,
+        "channel_mask_mismatch_frames": 0,
+        "compression_frame_counts": {
+          "6": 2325
+        },
+        "data_decode_error_frames": 0,
+        "data_frames": 2325,
+        "disconnects": 0,
+        "effective_receive_bytes_per_s": 120537.45486836603,
+        "effective_receive_samples_per_s": 949464.2598862062,
+        "error_events": 0,
+        "event_records": [
+          {
+            "sample_index": 0,
+            "type_detail": 3
+          }
+        ],
+        "first_data_sample_indices": [
+          0,
+          2048,
+          4096,
+          6144,
+          8192,
+          10240,
+          12288,
+          14336,
+          16384,
+          18432,
+          20480,
+          22528,
+          24576,
+          26624,
+          28672,
+          30720
+        ],
+        "first_decode_error_records": [],
+        "first_gap_records": [],
+        "first_payload_budget_records": [],
+        "first_sample_index": 0,
+        "invalid_sample_count_frames": 0,
+        "last_activity_sample": 0,
+        "last_sample_index": 4761599,
+        "overrun_events": 0,
+        "payload_bytes": 604500,
+        "payload_over_budget_frames": 0,
+        "received_sample_count": 4761600,
+        "sample_index_gaps": 0,
+        "sample_value_and": 0,
+        "sample_value_or": 64,
+        "sample_value_transitions": 63637,
+        "stopped_events": 0,
+        "trigger_sample_index": null,
+        "triggered_events": 0
+      },
+      "stop_response": {
+        "ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "frame_type": 10,
+        "received": true,
+        "sent": true,
+        "skipped_data_frames": 9,
+        "skipped_events": 0
+      },
+      "stream_elapsed_s": 5.015038691999507,
+      "terminal_reason": null,
+      "transport_note": "Effective receive rate is host transport throughput, not hardware samplerate.",
+      "trigger_channel": 0,
+      "trigger_event_received": false,
+      "trigger_name": "none",
+      "trigger_required": false,
+      "trigger_sample_index": null,
+      "trigger_sample_offset_samples": null,
+      "trigger_sample_offset_valid": false,
+      "trigger_type": 0
+    },
+    {
+      "active_stream_chunk_samples": 1024,
+      "board_http_health_after": {
+        "arena_telemetry": {
+          "current_pressure": {
+            "available": true,
+            "coverage": "system_heap_and_network",
+            "limiting_component": "system_heap",
+            "limiting_name": "system_heap",
+            "pressure_pct_x100": 0,
+            "reason": "",
+            "tie_count": 5
+          },
+          "memory_available": true,
+          "peak_pressure": {
+            "available": true,
+            "coverage": "system_heap_network_and_stacks",
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "since": "boot",
+            "tie_count": 1
+          }
+        },
+        "board_monitoring": {
+          "cpu": {
+            "active_pct_x100": 9475,
+            "available": true,
+            "busy_cycles_delta": 764635893,
+            "reason": "",
+            "total_cycles_delta": 806943542,
+            "window_ms": 5421
+          },
+          "heap": {
+            "allocated_bytes": 0,
+            "available": true,
+            "free_bytes": 49156,
+            "max_allocated_bytes": 41320,
+            "reason": "",
+            "source": "system_heap",
+            "total_bytes": 49156
+          },
+          "memory": {
+            "available": true,
+            "coverage": "heap_and_stacks",
+            "current_pressure": {
+              "available": true,
+              "coverage": "system_heap_and_network",
+              "limiting_component": "system_heap",
+              "limiting_name": "system_heap",
+              "pressure_pct_x100": 0,
+              "reason": "",
+              "tie_count": 5
+            },
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "peak_pressure": {
+              "available": true,
+              "coverage": "system_heap_network_and_stacks",
+              "limiting_component": "thread_stack",
+              "limiting_name": "net_socket_service",
+              "pressure_pct_x100": 8416,
+              "reason": "",
+              "since": "boot",
+              "tie_count": 1
+            },
+            "physical": {
+              "image_reserved_bytes": 469232,
+              "reserved_pct_x100": 8812,
+              "total_bytes": 532480
+            },
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "source": "zephyr",
+            "stacks": {
+              "error_count": 0,
+              "max_pressure_pct_x100": 8416,
+              "max_pressure_thread": "net_socket_service",
+              "measured_count": 18,
+              "thread_count": 18,
+              "total_bytes": 27984,
+              "used_high_water_bytes": 13344
+            },
+            "system_heap_pressure_pct_x100": 0
+          },
+          "runtime": {
+            "available": true,
+            "reason": "",
+            "uptime_ms": 154332,
+            "uptime_seconds": 154
+          },
+          "temperature": {
+            "available": true,
+            "celsius": {
+              "val1": 38,
+              "val2": 621150
+            },
+            "reason": "",
+            "source": "dietemp"
+          }
+        },
+        "board_monitoring_available": true,
+        "elapsed_s": 0.032906262000324205,
+        "error": null,
+        "http_status": 200,
+        "ok": true
+      },
+      "bounded_target_met_before_stop": false,
+      "capacity_stop_before_data": false,
+      "capture_semantics": "continuous_rate_diagnostics",
+      "case": "sigrok_tcp_continuous_duration",
+      "channel_mask": 2047,
+      "client_stop_sent": true,
+      "client_stopped": true,
+      "config_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 1
+      },
+      "config_encoding": "v1",
+      "config_frame_type": 5,
+      "config_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "continuous_data_observed": true,
+      "continuous_minimum_sample_count": 4512500,
+      "continuous_sample_count_met": true,
+      "duration_s": 5.0,
+      "elapsed_s": 5.390880727005424,
+      "events": 1,
+      "handshake": {
+        "caps_payload_bytes": 17,
+        "caps_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "hello": {
+          "expected_high_rate_flags": 3,
+          "expected_high_rate_flags_present": true,
+          "max_payload_len": 4104,
+          "mode_count": 2,
+          "protocol_version": 2,
+          "server_flags": 3,
+          "supports_config_v2": true,
+          "supports_generic_packed_burst": true
+        },
+        "hello_payload_bytes": 5,
+        "hello_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        }
+      },
+      "immediate_restart": {
+        "config_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "config_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "fresh_connection": true,
+        "handshake": {
+          "caps_payload_bytes": 17,
+          "caps_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          },
+          "hello": {
+            "expected_high_rate_flags": 3,
+            "expected_high_rate_flags_present": true,
+            "max_payload_len": 4104,
+            "mode_count": 2,
+            "protocol_version": 2,
+            "server_flags": 3,
+            "supports_config_v2": true,
+            "supports_generic_packed_burst": true
+          },
+          "hello_payload_bytes": 5,
+          "hello_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          }
+        },
+        "ok": true,
+        "reason": "ok",
+        "start_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 3
+        },
+        "start_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "stats": {
+          "activity_analyzed_samples": 0,
+          "channel_mask_mismatch_frames": 0,
+          "compression_frame_counts": {
+            "1": 1
+          },
+          "data_decode_error_frames": 0,
+          "data_frames": 1,
+          "disconnects": 0,
+          "error_events": 0,
+          "event_records": [
+            {
+              "sample_index": 0,
+              "type_detail": 3
+            }
+          ],
+          "first_data_sample_indices": [
+            0
+          ],
+          "first_decode_error_records": [],
+          "first_gap_records": [],
+          "first_payload_budget_records": [],
+          "first_sample_index": 0,
+          "invalid_sample_count_frames": 0,
+          "last_activity_sample": null,
+          "last_sample_index": 0,
+          "overrun_events": 0,
+          "payload_bytes": 2,
+          "payload_over_budget_frames": 0,
+          "received_sample_count": 1,
+          "sample_index_gaps": 0,
+          "sample_value_and": null,
+          "sample_value_or": 0,
+          "sample_value_transitions": 0,
+          "stopped_events": 0,
+          "trigger_sample_index": null,
+          "triggered_events": 0
+        },
+        "stop_response": {
+          "ack": {
+            "actual_rate_khz": 950,
+            "session_id": 1,
+            "state": 1
+          },
+          "frame_type": 10,
+          "received": true,
+          "sent": true,
+          "skipped_data_frames": 0,
+          "skipped_events": 1
+        },
+        "transport": "tcp"
+      },
+      "mode": "WIDE11",
+      "mode_id": 2,
+      "pass": true,
+      "reason": "ok",
+      "requested_pre_post_met": true,
+      "requested_pre_post_samples": null,
+      "requested_samplerate_khz": 950,
+      "sample_bytes": 2,
+      "server_auto_stopped": false,
+      "sigrok_post_samples": 0,
+      "sigrok_post_zero_unlimited": true,
+      "sigrok_pre_samples": 0,
+      "start_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 3
+      },
+      "start_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "stats": {
+        "activity_analyzed_samples": 65536,
+        "channel_mask_mismatch_frames": 0,
+        "compression_frame_counts": {
+          "6": 2322
+        },
+        "data_decode_error_frames": 0,
+        "data_frames": 2322,
+        "disconnects": 0,
+        "effective_receive_bytes_per_s": 120540.72395611937,
+        "effective_receive_samples_per_s": 949490.010238971,
+        "error_events": 0,
+        "event_records": [
+          {
+            "sample_index": 0,
+            "type_detail": 3
+          }
+        ],
+        "first_data_sample_indices": [
+          0,
+          2048,
+          4096,
+          6144,
+          8192,
+          10240,
+          12288,
+          14336,
+          16384,
+          18432,
+          20480,
+          22528,
+          24576,
+          26624,
+          28672,
+          30720
+        ],
+        "first_decode_error_records": [],
+        "first_gap_records": [],
+        "first_payload_budget_records": [],
+        "first_sample_index": 0,
+        "invalid_sample_count_frames": 0,
+        "last_activity_sample": 0,
+        "last_sample_index": 4755455,
+        "overrun_events": 0,
+        "payload_bytes": 603720,
+        "payload_over_budget_frames": 0,
+        "received_sample_count": 4755456,
+        "sample_index_gaps": 0,
+        "sample_value_and": 0,
+        "sample_value_or": 64,
+        "sample_value_transitions": 63646,
+        "stopped_events": 0,
+        "trigger_sample_index": null,
+        "triggered_events": 0
+      },
+      "stop_response": {
+        "ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "frame_type": 10,
+        "received": true,
+        "sent": true,
+        "skipped_data_frames": 9,
+        "skipped_events": 0
+      },
+      "stream_elapsed_s": 5.008431841008132,
+      "terminal_reason": null,
+      "transport_note": "Effective receive rate is host transport throughput, not hardware samplerate.",
+      "trigger_channel": 0,
+      "trigger_event_received": false,
+      "trigger_name": "none",
+      "trigger_required": false,
+      "trigger_sample_index": null,
+      "trigger_sample_offset_samples": null,
+      "trigger_sample_offset_valid": false,
+      "trigger_type": 0
+    },
+    {
+      "active_stream_chunk_samples": 1024,
+      "board_http_health_after": {
+        "arena_telemetry": {
+          "current_pressure": {
+            "available": true,
+            "coverage": "system_heap_and_network",
+            "limiting_component": "system_heap",
+            "limiting_name": "system_heap",
+            "pressure_pct_x100": 0,
+            "reason": "",
+            "tie_count": 5
+          },
+          "memory_available": true,
+          "peak_pressure": {
+            "available": true,
+            "coverage": "system_heap_network_and_stacks",
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "since": "boot",
+            "tie_count": 1
+          }
+        },
+        "board_monitoring": {
+          "cpu": {
+            "active_pct_x100": 9480,
+            "available": true,
+            "busy_cycles_delta": 764198318,
+            "reason": "",
+            "total_cycles_delta": 806096729,
+            "window_ms": 5415
+          },
+          "heap": {
+            "allocated_bytes": 0,
+            "available": true,
+            "free_bytes": 49156,
+            "max_allocated_bytes": 41320,
+            "reason": "",
+            "source": "system_heap",
+            "total_bytes": 49156
+          },
+          "memory": {
+            "available": true,
+            "coverage": "heap_and_stacks",
+            "current_pressure": {
+              "available": true,
+              "coverage": "system_heap_and_network",
+              "limiting_component": "system_heap",
+              "limiting_name": "system_heap",
+              "pressure_pct_x100": 0,
+              "reason": "",
+              "tie_count": 5
+            },
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "peak_pressure": {
+              "available": true,
+              "coverage": "system_heap_network_and_stacks",
+              "limiting_component": "thread_stack",
+              "limiting_name": "net_socket_service",
+              "pressure_pct_x100": 8416,
+              "reason": "",
+              "since": "boot",
+              "tie_count": 1
+            },
+            "physical": {
+              "image_reserved_bytes": 469232,
+              "reserved_pct_x100": 8812,
+              "total_bytes": 532480
+            },
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "source": "zephyr",
+            "stacks": {
+              "error_count": 0,
+              "max_pressure_pct_x100": 8416,
+              "max_pressure_thread": "net_socket_service",
+              "measured_count": 18,
+              "thread_count": 18,
+              "total_bytes": 27984,
+              "used_high_water_bytes": 13344
+            },
+            "system_heap_pressure_pct_x100": 0
+          },
+          "runtime": {
+            "available": true,
+            "reason": "",
+            "uptime_ms": 159747,
+            "uptime_seconds": 159
+          },
+          "temperature": {
+            "available": true,
+            "celsius": {
+              "val1": 39,
+              "val2": 202208
+            },
+            "reason": "",
+            "source": "dietemp"
+          }
+        },
+        "board_monitoring_available": true,
+        "elapsed_s": 0.032756122993305326,
+        "error": null,
+        "http_status": 200,
+        "ok": true
+      },
+      "bounded_target_met_before_stop": false,
+      "capacity_stop_before_data": false,
+      "capture_semantics": "continuous_rate_diagnostics",
+      "case": "sigrok_tcp_continuous_duration",
+      "channel_mask": 2047,
+      "client_stop_sent": true,
+      "client_stopped": true,
+      "config_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 1
+      },
+      "config_encoding": "v1",
+      "config_frame_type": 5,
+      "config_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "continuous_data_observed": true,
+      "continuous_minimum_sample_count": 4512500,
+      "continuous_sample_count_met": true,
+      "duration_s": 5.0,
+      "elapsed_s": 5.38604739800212,
+      "events": 1,
+      "handshake": {
+        "caps_payload_bytes": 17,
+        "caps_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "hello": {
+          "expected_high_rate_flags": 3,
+          "expected_high_rate_flags_present": true,
+          "max_payload_len": 4104,
+          "mode_count": 2,
+          "protocol_version": 2,
+          "server_flags": 3,
+          "supports_config_v2": true,
+          "supports_generic_packed_burst": true
+        },
+        "hello_payload_bytes": 5,
+        "hello_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        }
+      },
+      "immediate_restart": {
+        "config_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "config_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "fresh_connection": true,
+        "handshake": {
+          "caps_payload_bytes": 17,
+          "caps_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          },
+          "hello": {
+            "expected_high_rate_flags": 3,
+            "expected_high_rate_flags_present": true,
+            "max_payload_len": 4104,
+            "mode_count": 2,
+            "protocol_version": 2,
+            "server_flags": 3,
+            "supports_config_v2": true,
+            "supports_generic_packed_burst": true
+          },
+          "hello_payload_bytes": 5,
+          "hello_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          }
+        },
+        "ok": true,
+        "reason": "ok",
+        "start_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 3
+        },
+        "start_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "stats": {
+          "activity_analyzed_samples": 0,
+          "channel_mask_mismatch_frames": 0,
+          "compression_frame_counts": {
+            "1": 1
+          },
+          "data_decode_error_frames": 0,
+          "data_frames": 1,
+          "disconnects": 0,
+          "error_events": 0,
+          "event_records": [
+            {
+              "sample_index": 0,
+              "type_detail": 3
+            }
+          ],
+          "first_data_sample_indices": [
+            0
+          ],
+          "first_decode_error_records": [],
+          "first_gap_records": [],
+          "first_payload_budget_records": [],
+          "first_sample_index": 0,
+          "invalid_sample_count_frames": 0,
+          "last_activity_sample": null,
+          "last_sample_index": 0,
+          "overrun_events": 0,
+          "payload_bytes": 2,
+          "payload_over_budget_frames": 0,
+          "received_sample_count": 1,
+          "sample_index_gaps": 0,
+          "sample_value_and": null,
+          "sample_value_or": 0,
+          "sample_value_transitions": 0,
+          "stopped_events": 0,
+          "trigger_sample_index": null,
+          "triggered_events": 0
+        },
+        "stop_response": {
+          "ack": {
+            "actual_rate_khz": 950,
+            "session_id": 1,
+            "state": 1
+          },
+          "frame_type": 10,
+          "received": true,
+          "sent": true,
+          "skipped_data_frames": 0,
+          "skipped_events": 1
+        },
+        "transport": "tcp"
+      },
+      "mode": "WIDE11",
+      "mode_id": 2,
+      "pass": true,
+      "reason": "ok",
+      "requested_pre_post_met": true,
+      "requested_pre_post_samples": null,
+      "requested_samplerate_khz": 950,
+      "sample_bytes": 2,
+      "server_auto_stopped": false,
+      "sigrok_post_samples": 0,
+      "sigrok_post_zero_unlimited": true,
+      "sigrok_pre_samples": 0,
+      "start_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 3
+      },
+      "start_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "stats": {
+        "activity_analyzed_samples": 65536,
+        "channel_mask_mismatch_frames": 0,
+        "compression_frame_counts": {
+          "6": 2322
+        },
+        "data_decode_error_frames": 0,
+        "data_frames": 2322,
+        "disconnects": 0,
+        "effective_receive_bytes_per_s": 120646.59985238695,
+        "effective_receive_samples_per_s": 950323.9865295711,
+        "error_events": 0,
+        "event_records": [
+          {
+            "sample_index": 0,
+            "type_detail": 3
+          }
+        ],
+        "first_data_sample_indices": [
+          0,
+          2048,
+          4096,
+          6144,
+          8192,
+          10240,
+          12288,
+          14336,
+          16384,
+          18432,
+          20480,
+          22528,
+          24576,
+          26624,
+          28672,
+          30720
+        ],
+        "first_decode_error_records": [],
+        "first_gap_records": [],
+        "first_payload_budget_records": [],
+        "first_sample_index": 0,
+        "invalid_sample_count_frames": 0,
+        "last_activity_sample": 0,
+        "last_sample_index": 4755455,
+        "overrun_events": 0,
+        "payload_bytes": 603720,
+        "payload_over_budget_frames": 0,
+        "received_sample_count": 4755456,
+        "sample_index_gaps": 0,
+        "sample_value_and": 0,
+        "sample_value_or": 64,
+        "sample_value_transitions": 63633,
+        "stopped_events": 0,
+        "trigger_sample_index": null,
+        "triggered_events": 0
+      },
+      "stop_response": {
+        "ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "frame_type": 10,
+        "received": true,
+        "sent": true,
+        "skipped_data_frames": 6,
+        "skipped_events": 0
+      },
+      "stream_elapsed_s": 5.004036589001771,
+      "terminal_reason": null,
+      "transport_note": "Effective receive rate is host transport throughput, not hardware samplerate.",
+      "trigger_channel": 0,
+      "trigger_event_received": false,
+      "trigger_name": "none",
+      "trigger_required": false,
+      "trigger_sample_index": null,
+      "trigger_sample_offset_samples": null,
+      "trigger_sample_offset_valid": false,
+      "trigger_type": 0
+    },
+    {
+      "active_stream_chunk_samples": 1024,
+      "board_http_health_after": {
+        "arena_telemetry": {
+          "current_pressure": {
+            "available": true,
+            "coverage": "system_heap_and_network",
+            "limiting_component": "system_heap",
+            "limiting_name": "system_heap",
+            "pressure_pct_x100": 0,
+            "reason": "",
+            "tie_count": 5
+          },
+          "memory_available": true,
+          "peak_pressure": {
+            "available": true,
+            "coverage": "system_heap_network_and_stacks",
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "since": "boot",
+            "tie_count": 1
+          }
+        },
+        "board_monitoring": {
+          "cpu": {
+            "active_pct_x100": 9482,
+            "available": true,
+            "busy_cycles_delta": 763625199,
+            "reason": "",
+            "total_cycles_delta": 805303132,
+            "window_ms": 5410
+          },
+          "heap": {
+            "allocated_bytes": 0,
+            "available": true,
+            "free_bytes": 49156,
+            "max_allocated_bytes": 41320,
+            "reason": "",
+            "source": "system_heap",
+            "total_bytes": 49156
+          },
+          "memory": {
+            "available": true,
+            "coverage": "heap_and_stacks",
+            "current_pressure": {
+              "available": true,
+              "coverage": "system_heap_and_network",
+              "limiting_component": "system_heap",
+              "limiting_name": "system_heap",
+              "pressure_pct_x100": 0,
+              "reason": "",
+              "tie_count": 5
+            },
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "peak_pressure": {
+              "available": true,
+              "coverage": "system_heap_network_and_stacks",
+              "limiting_component": "thread_stack",
+              "limiting_name": "net_socket_service",
+              "pressure_pct_x100": 8416,
+              "reason": "",
+              "since": "boot",
+              "tie_count": 1
+            },
+            "physical": {
+              "image_reserved_bytes": 469232,
+              "reserved_pct_x100": 8812,
+              "total_bytes": 532480
+            },
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "source": "zephyr",
+            "stacks": {
+              "error_count": 0,
+              "max_pressure_pct_x100": 8416,
+              "max_pressure_thread": "net_socket_service",
+              "measured_count": 18,
+              "thread_count": 18,
+              "total_bytes": 27984,
+              "used_high_water_bytes": 13344
+            },
+            "system_heap_pressure_pct_x100": 0
+          },
+          "runtime": {
+            "available": true,
+            "reason": "",
+            "uptime_ms": 165157,
+            "uptime_seconds": 165
+          },
+          "temperature": {
+            "available": true,
+            "celsius": {
+              "val1": 38,
+              "val2": 621150
+            },
+            "reason": "",
+            "source": "dietemp"
+          }
+        },
+        "board_monitoring_available": true,
+        "elapsed_s": 0.03273254900705069,
+        "error": null,
+        "http_status": 200,
+        "ok": true
+      },
+      "bounded_target_met_before_stop": false,
+      "capacity_stop_before_data": false,
+      "capture_semantics": "continuous_rate_diagnostics",
+      "case": "sigrok_tcp_continuous_duration",
+      "channel_mask": 2047,
+      "client_stop_sent": true,
+      "client_stopped": true,
+      "config_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 1
+      },
+      "config_encoding": "v1",
+      "config_frame_type": 5,
+      "config_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "continuous_data_observed": true,
+      "continuous_minimum_sample_count": 4512500,
+      "continuous_sample_count_met": true,
+      "duration_s": 5.0,
+      "elapsed_s": 5.380998727996484,
+      "events": 1,
+      "handshake": {
+        "caps_payload_bytes": 17,
+        "caps_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "hello": {
+          "expected_high_rate_flags": 3,
+          "expected_high_rate_flags_present": true,
+          "max_payload_len": 4104,
+          "mode_count": 2,
+          "protocol_version": 2,
+          "server_flags": 3,
+          "supports_config_v2": true,
+          "supports_generic_packed_burst": true
+        },
+        "hello_payload_bytes": 5,
+        "hello_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        }
+      },
+      "immediate_restart": {
+        "config_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "config_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "fresh_connection": true,
+        "handshake": {
+          "caps_payload_bytes": 17,
+          "caps_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          },
+          "hello": {
+            "expected_high_rate_flags": 3,
+            "expected_high_rate_flags_present": true,
+            "max_payload_len": 4104,
+            "mode_count": 2,
+            "protocol_version": 2,
+            "server_flags": 3,
+            "supports_config_v2": true,
+            "supports_generic_packed_burst": true
+          },
+          "hello_payload_bytes": 5,
+          "hello_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          }
+        },
+        "ok": true,
+        "reason": "ok",
+        "start_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 3
+        },
+        "start_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "stats": {
+          "activity_analyzed_samples": 0,
+          "channel_mask_mismatch_frames": 0,
+          "compression_frame_counts": {
+            "1": 1
+          },
+          "data_decode_error_frames": 0,
+          "data_frames": 1,
+          "disconnects": 0,
+          "error_events": 0,
+          "event_records": [
+            {
+              "sample_index": 0,
+              "type_detail": 3
+            }
+          ],
+          "first_data_sample_indices": [
+            0
+          ],
+          "first_decode_error_records": [],
+          "first_gap_records": [],
+          "first_payload_budget_records": [],
+          "first_sample_index": 0,
+          "invalid_sample_count_frames": 0,
+          "last_activity_sample": null,
+          "last_sample_index": 0,
+          "overrun_events": 0,
+          "payload_bytes": 2,
+          "payload_over_budget_frames": 0,
+          "received_sample_count": 1,
+          "sample_index_gaps": 0,
+          "sample_value_and": null,
+          "sample_value_or": 0,
+          "sample_value_transitions": 0,
+          "stopped_events": 0,
+          "trigger_sample_index": null,
+          "triggered_events": 0
+        },
+        "stop_response": {
+          "ack": {
+            "actual_rate_khz": 950,
+            "session_id": 1,
+            "state": 1
+          },
+          "frame_type": 10,
+          "received": true,
+          "sent": true,
+          "skipped_data_frames": 0,
+          "skipped_events": 1
+        },
+        "transport": "tcp"
+      },
+      "mode": "WIDE11",
+      "mode_id": 2,
+      "pass": true,
+      "reason": "ok",
+      "requested_pre_post_met": true,
+      "requested_pre_post_samples": null,
+      "requested_samplerate_khz": 950,
+      "sample_bytes": 2,
+      "server_auto_stopped": false,
+      "sigrok_post_samples": 0,
+      "sigrok_post_zero_unlimited": true,
+      "sigrok_pre_samples": 0,
+      "start_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 3
+      },
+      "start_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "stats": {
+        "activity_analyzed_samples": 65536,
+        "channel_mask_mismatch_frames": 0,
+        "compression_frame_counts": {
+          "6": 2322
+        },
+        "data_decode_error_frames": 0,
+        "data_frames": 2322,
+        "disconnects": 0,
+        "effective_receive_bytes_per_s": 120738.28695387933,
+        "effective_receive_samples_per_s": 951046.1987751726,
+        "error_events": 0,
+        "event_records": [
+          {
+            "sample_index": 0,
+            "type_detail": 3
+          }
+        ],
+        "first_data_sample_indices": [
+          0,
+          2048,
+          4096,
+          6144,
+          8192,
+          10240,
+          12288,
+          14336,
+          16384,
+          18432,
+          20480,
+          22528,
+          24576,
+          26624,
+          28672,
+          30720
+        ],
+        "first_decode_error_records": [],
+        "first_gap_records": [],
+        "first_payload_budget_records": [],
+        "first_sample_index": 0,
+        "invalid_sample_count_frames": 0,
+        "last_activity_sample": 0,
+        "last_sample_index": 4755455,
+        "overrun_events": 0,
+        "payload_bytes": 603720,
+        "payload_over_budget_frames": 0,
+        "received_sample_count": 4755456,
+        "sample_index_gaps": 0,
+        "sample_value_and": 0,
+        "sample_value_or": 64,
+        "sample_value_transitions": 63629,
+        "stopped_events": 0,
+        "trigger_sample_index": null,
+        "triggered_events": 0
+      },
+      "stop_response": {
+        "ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "frame_type": 10,
+        "received": true,
+        "sent": true,
+        "skipped_data_frames": 4,
+        "skipped_events": 0
+      },
+      "stream_elapsed_s": 5.0002365880063735,
+      "terminal_reason": null,
+      "transport_note": "Effective receive rate is host transport throughput, not hardware samplerate.",
+      "trigger_channel": 0,
+      "trigger_event_received": false,
+      "trigger_name": "none",
+      "trigger_required": false,
+      "trigger_sample_index": null,
+      "trigger_sample_offset_samples": null,
+      "trigger_sample_offset_valid": false,
+      "trigger_type": 0
+    },
+    {
+      "active_stream_chunk_samples": 1024,
+      "board_http_health_after": {
+        "arena_telemetry": {
+          "current_pressure": {
+            "available": true,
+            "coverage": "system_heap_and_network",
+            "limiting_component": "system_heap",
+            "limiting_name": "system_heap",
+            "pressure_pct_x100": 0,
+            "reason": "",
+            "tie_count": 5
+          },
+          "memory_available": true,
+          "peak_pressure": {
+            "available": true,
+            "coverage": "system_heap_network_and_stacks",
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "since": "boot",
+            "tie_count": 1
+          }
+        },
+        "board_monitoring": {
+          "cpu": {
+            "active_pct_x100": 9474,
+            "available": true,
+            "busy_cycles_delta": 765371923,
+            "reason": "",
+            "total_cycles_delta": 807830591,
+            "window_ms": 5426
+          },
+          "heap": {
+            "allocated_bytes": 0,
+            "available": true,
+            "free_bytes": 49156,
+            "max_allocated_bytes": 41320,
+            "reason": "",
+            "source": "system_heap",
+            "total_bytes": 49156
+          },
+          "memory": {
+            "available": true,
+            "coverage": "heap_and_stacks",
+            "current_pressure": {
+              "available": true,
+              "coverage": "system_heap_and_network",
+              "limiting_component": "system_heap",
+              "limiting_name": "system_heap",
+              "pressure_pct_x100": 0,
+              "reason": "",
+              "tie_count": 5
+            },
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "peak_pressure": {
+              "available": true,
+              "coverage": "system_heap_network_and_stacks",
+              "limiting_component": "thread_stack",
+              "limiting_name": "net_socket_service",
+              "pressure_pct_x100": 8416,
+              "reason": "",
+              "since": "boot",
+              "tie_count": 1
+            },
+            "physical": {
+              "image_reserved_bytes": 469232,
+              "reserved_pct_x100": 8812,
+              "total_bytes": 532480
+            },
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "source": "zephyr",
+            "stacks": {
+              "error_count": 0,
+              "max_pressure_pct_x100": 8416,
+              "max_pressure_thread": "net_socket_service",
+              "measured_count": 18,
+              "thread_count": 18,
+              "total_bytes": 27984,
+              "used_high_water_bytes": 13344
+            },
+            "system_heap_pressure_pct_x100": 0
+          },
+          "runtime": {
+            "available": true,
+            "reason": "",
+            "uptime_ms": 170583,
+            "uptime_seconds": 170
+          },
+          "temperature": {
+            "available": true,
+            "celsius": {
+              "val1": 39,
+              "val2": 202208
+            },
+            "reason": "",
+            "source": "dietemp"
+          }
+        },
+        "board_monitoring_available": true,
+        "elapsed_s": 0.03316395801084582,
+        "error": null,
+        "http_status": 200,
+        "ok": true
+      },
+      "bounded_target_met_before_stop": false,
+      "capacity_stop_before_data": false,
+      "capture_semantics": "continuous_rate_diagnostics",
+      "case": "sigrok_tcp_continuous_duration",
+      "channel_mask": 2047,
+      "client_stop_sent": true,
+      "client_stopped": true,
+      "config_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 1
+      },
+      "config_encoding": "v1",
+      "config_frame_type": 5,
+      "config_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "continuous_data_observed": true,
+      "continuous_minimum_sample_count": 4512500,
+      "continuous_sample_count_met": true,
+      "duration_s": 5.0,
+      "elapsed_s": 5.39711204500054,
+      "events": 1,
+      "handshake": {
+        "caps_payload_bytes": 17,
+        "caps_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "hello": {
+          "expected_high_rate_flags": 3,
+          "expected_high_rate_flags_present": true,
+          "max_payload_len": 4104,
+          "mode_count": 2,
+          "protocol_version": 2,
+          "server_flags": 3,
+          "supports_config_v2": true,
+          "supports_generic_packed_burst": true
+        },
+        "hello_payload_bytes": 5,
+        "hello_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        }
+      },
+      "immediate_restart": {
+        "config_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "config_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "fresh_connection": true,
+        "handshake": {
+          "caps_payload_bytes": 17,
+          "caps_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          },
+          "hello": {
+            "expected_high_rate_flags": 3,
+            "expected_high_rate_flags_present": true,
+            "max_payload_len": 4104,
+            "mode_count": 2,
+            "protocol_version": 2,
+            "server_flags": 3,
+            "supports_config_v2": true,
+            "supports_generic_packed_burst": true
+          },
+          "hello_payload_bytes": 5,
+          "hello_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          }
+        },
+        "ok": true,
+        "reason": "ok",
+        "start_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 3
+        },
+        "start_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "stats": {
+          "activity_analyzed_samples": 0,
+          "channel_mask_mismatch_frames": 0,
+          "compression_frame_counts": {
+            "1": 1
+          },
+          "data_decode_error_frames": 0,
+          "data_frames": 1,
+          "disconnects": 0,
+          "error_events": 0,
+          "event_records": [
+            {
+              "sample_index": 0,
+              "type_detail": 3
+            }
+          ],
+          "first_data_sample_indices": [
+            0
+          ],
+          "first_decode_error_records": [],
+          "first_gap_records": [],
+          "first_payload_budget_records": [],
+          "first_sample_index": 0,
+          "invalid_sample_count_frames": 0,
+          "last_activity_sample": null,
+          "last_sample_index": 0,
+          "overrun_events": 0,
+          "payload_bytes": 2,
+          "payload_over_budget_frames": 0,
+          "received_sample_count": 1,
+          "sample_index_gaps": 0,
+          "sample_value_and": null,
+          "sample_value_or": 0,
+          "sample_value_transitions": 0,
+          "stopped_events": 0,
+          "trigger_sample_index": null,
+          "triggered_events": 0
+        },
+        "stop_response": {
+          "ack": {
+            "actual_rate_khz": 950,
+            "session_id": 1,
+            "state": 1
+          },
+          "frame_type": 10,
+          "received": true,
+          "sent": true,
+          "skipped_data_frames": 0,
+          "skipped_events": 1
+        },
+        "transport": "tcp"
+      },
+      "mode": "WIDE11",
+      "mode_id": 2,
+      "pass": true,
+      "reason": "ok",
+      "requested_pre_post_met": true,
+      "requested_pre_post_samples": null,
+      "requested_samplerate_khz": 950,
+      "sample_bytes": 2,
+      "server_auto_stopped": false,
+      "sigrok_post_samples": 0,
+      "sigrok_post_zero_unlimited": true,
+      "sigrok_pre_samples": 0,
+      "start_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 3
+      },
+      "start_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "stats": {
+        "activity_analyzed_samples": 65536,
+        "channel_mask_mismatch_frames": 0,
+        "compression_frame_counts": {
+          "6": 2324
+        },
+        "data_decode_error_frames": 0,
+        "data_frames": 2324,
+        "disconnects": 0,
+        "effective_receive_bytes_per_s": 120527.84821656358,
+        "effective_receive_samples_per_s": 949388.5890289316,
+        "error_events": 0,
+        "event_records": [
+          {
+            "sample_index": 0,
+            "type_detail": 3
+          }
+        ],
+        "first_data_sample_indices": [
+          0,
+          2048,
+          4096,
+          6144,
+          8192,
+          10240,
+          12288,
+          14336,
+          16384,
+          18432,
+          20480,
+          22528,
+          24576,
+          26624,
+          28672,
+          30720
+        ],
+        "first_decode_error_records": [],
+        "first_gap_records": [],
+        "first_payload_budget_records": [],
+        "first_sample_index": 0,
+        "invalid_sample_count_frames": 0,
+        "last_activity_sample": 0,
+        "last_sample_index": 4759551,
+        "overrun_events": 0,
+        "payload_bytes": 604240,
+        "payload_over_budget_frames": 0,
+        "received_sample_count": 4759552,
+        "sample_index_gaps": 0,
+        "sample_value_and": 0,
+        "sample_value_or": 64,
+        "sample_value_transitions": 63627,
+        "stopped_events": 0,
+        "trigger_sample_index": null,
+        "triggered_events": 0
+      },
+      "stop_response": {
+        "ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "frame_type": 10,
+        "received": true,
+        "sent": true,
+        "skipped_data_frames": 9,
+        "skipped_events": 0
+      },
+      "stream_elapsed_s": 5.013281236999319,
+      "terminal_reason": null,
+      "transport_note": "Effective receive rate is host transport throughput, not hardware samplerate.",
+      "trigger_channel": 0,
+      "trigger_event_received": false,
+      "trigger_name": "none",
+      "trigger_required": false,
+      "trigger_sample_index": null,
+      "trigger_sample_offset_samples": null,
+      "trigger_sample_offset_valid": false,
+      "trigger_type": 0
+    },
+    {
+      "active_stream_chunk_samples": 1024,
+      "board_http_health_after": {
+        "arena_telemetry": {
+          "current_pressure": {
+            "available": true,
+            "coverage": "system_heap_and_network",
+            "limiting_component": "system_heap",
+            "limiting_name": "system_heap",
+            "pressure_pct_x100": 0,
+            "reason": "",
+            "tie_count": 5
+          },
+          "memory_available": true,
+          "peak_pressure": {
+            "available": true,
+            "coverage": "system_heap_network_and_stacks",
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "since": "boot",
+            "tie_count": 1
+          }
+        },
+        "board_monitoring": {
+          "cpu": {
+            "active_pct_x100": 9455,
+            "available": true,
+            "busy_cycles_delta": 763503261,
+            "reason": "",
+            "total_cycles_delta": 807471632,
+            "window_ms": 5424
+          },
+          "heap": {
+            "allocated_bytes": 0,
+            "available": true,
+            "free_bytes": 49156,
+            "max_allocated_bytes": 41320,
+            "reason": "",
+            "source": "system_heap",
+            "total_bytes": 49156
+          },
+          "memory": {
+            "available": true,
+            "coverage": "heap_and_stacks",
+            "current_pressure": {
+              "available": true,
+              "coverage": "system_heap_and_network",
+              "limiting_component": "system_heap",
+              "limiting_name": "system_heap",
+              "pressure_pct_x100": 0,
+              "reason": "",
+              "tie_count": 5
+            },
+            "limiting_component": "thread_stack",
+            "limiting_name": "net_socket_service",
+            "peak_pressure": {
+              "available": true,
+              "coverage": "system_heap_network_and_stacks",
+              "limiting_component": "thread_stack",
+              "limiting_name": "net_socket_service",
+              "pressure_pct_x100": 8416,
+              "reason": "",
+              "since": "boot",
+              "tie_count": 1
+            },
+            "physical": {
+              "image_reserved_bytes": 469232,
+              "reserved_pct_x100": 8812,
+              "total_bytes": 532480
+            },
+            "pressure_pct_x100": 8416,
+            "reason": "",
+            "source": "zephyr",
+            "stacks": {
+              "error_count": 0,
+              "max_pressure_pct_x100": 8416,
+              "max_pressure_thread": "net_socket_service",
+              "measured_count": 18,
+              "thread_count": 18,
+              "total_bytes": 27984,
+              "used_high_water_bytes": 13344
+            },
+            "system_heap_pressure_pct_x100": 0
+          },
+          "runtime": {
+            "available": true,
+            "reason": "",
+            "uptime_ms": 176007,
+            "uptime_seconds": 176
+          },
+          "temperature": {
+            "available": true,
+            "celsius": {
+              "val1": 38,
+              "val2": 621150
+            },
+            "reason": "",
+            "source": "dietemp"
+          }
+        },
+        "board_monitoring_available": true,
+        "elapsed_s": 0.03311593399848789,
+        "error": null,
+        "http_status": 200,
+        "ok": true
+      },
+      "bounded_target_met_before_stop": false,
+      "capacity_stop_before_data": false,
+      "capture_semantics": "continuous_rate_diagnostics",
+      "case": "sigrok_tcp_continuous_duration",
+      "channel_mask": 2047,
+      "client_stop_sent": true,
+      "client_stopped": true,
+      "config_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 1
+      },
+      "config_encoding": "v1",
+      "config_frame_type": 5,
+      "config_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "continuous_data_observed": true,
+      "continuous_minimum_sample_count": 4512500,
+      "continuous_sample_count_met": true,
+      "duration_s": 5.0,
+      "elapsed_s": 5.395013532994199,
+      "events": 1,
+      "handshake": {
+        "caps_payload_bytes": 17,
+        "caps_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "hello": {
+          "expected_high_rate_flags": 3,
+          "expected_high_rate_flags_present": true,
+          "max_payload_len": 4104,
+          "mode_count": 2,
+          "protocol_version": 2,
+          "server_flags": 3,
+          "supports_config_v2": true,
+          "supports_generic_packed_burst": true
+        },
+        "hello_payload_bytes": 5,
+        "hello_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        }
+      },
+      "immediate_restart": {
+        "config_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "config_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "fresh_connection": true,
+        "handshake": {
+          "caps_payload_bytes": 17,
+          "caps_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          },
+          "hello": {
+            "expected_high_rate_flags": 3,
+            "expected_high_rate_flags_present": true,
+            "max_payload_len": 4104,
+            "mode_count": 2,
+            "protocol_version": 2,
+            "server_flags": 3,
+            "supports_config_v2": true,
+            "supports_generic_packed_burst": true
+          },
+          "hello_payload_bytes": 5,
+          "hello_wait": {
+            "skipped_data_frames": 0,
+            "skipped_events": 0,
+            "skipped_other_frames": 0
+          }
+        },
+        "ok": true,
+        "reason": "ok",
+        "start_ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 3
+        },
+        "start_wait": {
+          "skipped_data_frames": 0,
+          "skipped_events": 0,
+          "skipped_other_frames": 0
+        },
+        "stats": {
+          "activity_analyzed_samples": 0,
+          "channel_mask_mismatch_frames": 0,
+          "compression_frame_counts": {
+            "1": 1
+          },
+          "data_decode_error_frames": 0,
+          "data_frames": 1,
+          "disconnects": 0,
+          "error_events": 0,
+          "event_records": [
+            {
+              "sample_index": 0,
+              "type_detail": 3
+            }
+          ],
+          "first_data_sample_indices": [
+            0
+          ],
+          "first_decode_error_records": [],
+          "first_gap_records": [],
+          "first_payload_budget_records": [],
+          "first_sample_index": 0,
+          "invalid_sample_count_frames": 0,
+          "last_activity_sample": null,
+          "last_sample_index": 0,
+          "overrun_events": 0,
+          "payload_bytes": 2,
+          "payload_over_budget_frames": 0,
+          "received_sample_count": 1,
+          "sample_index_gaps": 0,
+          "sample_value_and": null,
+          "sample_value_or": 0,
+          "sample_value_transitions": 0,
+          "stopped_events": 0,
+          "trigger_sample_index": null,
+          "triggered_events": 0
+        },
+        "stop_response": {
+          "ack": {
+            "actual_rate_khz": 950,
+            "session_id": 1,
+            "state": 1
+          },
+          "frame_type": 10,
+          "received": true,
+          "sent": true,
+          "skipped_data_frames": 0,
+          "skipped_events": 1
+        },
+        "transport": "tcp"
+      },
+      "mode": "WIDE11",
+      "mode_id": 2,
+      "pass": true,
+      "reason": "ok",
+      "requested_pre_post_met": true,
+      "requested_pre_post_samples": null,
+      "requested_samplerate_khz": 950,
+      "sample_bytes": 2,
+      "server_auto_stopped": false,
+      "sigrok_post_samples": 0,
+      "sigrok_post_zero_unlimited": true,
+      "sigrok_pre_samples": 0,
+      "start_ack": {
+        "actual_rate_khz": 950,
+        "session_id": 1,
+        "state": 3
+      },
+      "start_wait": {
+        "skipped_data_frames": 0,
+        "skipped_events": 0,
+        "skipped_other_frames": 0
+      },
+      "stats": {
+        "activity_analyzed_samples": 65536,
+        "channel_mask_mismatch_frames": 0,
+        "compression_frame_counts": {
+          "6": 2324
+        },
+        "data_decode_error_frames": 0,
+        "data_frames": 2324,
+        "disconnects": 0,
+        "effective_receive_bytes_per_s": 120544.69130620129,
+        "effective_receive_samples_per_s": 949521.2607503856,
+        "error_events": 0,
+        "event_records": [
+          {
+            "sample_index": 0,
+            "type_detail": 3
+          }
+        ],
+        "first_data_sample_indices": [
+          0,
+          2048,
+          4096,
+          6144,
+          8192,
+          10240,
+          12288,
+          14336,
+          16384,
+          18432,
+          20480,
+          22528,
+          24576,
+          26624,
+          28672,
+          30720
+        ],
+        "first_decode_error_records": [],
+        "first_gap_records": [],
+        "first_payload_budget_records": [],
+        "first_sample_index": 0,
+        "invalid_sample_count_frames": 0,
+        "last_activity_sample": 64,
+        "last_sample_index": 4759551,
+        "overrun_events": 0,
+        "payload_bytes": 604240,
+        "payload_over_budget_frames": 0,
+        "received_sample_count": 4759552,
+        "sample_index_gaps": 0,
+        "sample_value_and": 0,
+        "sample_value_or": 64,
+        "sample_value_transitions": 63643,
+        "stopped_events": 0,
+        "trigger_sample_index": null,
+        "triggered_events": 0
+      },
+      "stop_response": {
+        "ack": {
+          "actual_rate_khz": 950,
+          "session_id": 1,
+          "state": 1
+        },
+        "frame_type": 10,
+        "received": true,
+        "sent": true,
+        "skipped_data_frames": 8,
+        "skipped_events": 0
+      },
+      "stream_elapsed_s": 5.012580757000251,
+      "terminal_reason": null,
+      "transport_note": "Effective receive rate is host transport throughput, not hardware samplerate.",
+      "trigger_channel": 0,
+      "trigger_event_received": false,
+      "trigger_name": "none",
+      "trigger_required": false,
+      "trigger_sample_index": null,
+      "trigger_sample_offset_samples": null,
+      "trigger_sample_offset_valid": false,
+      "trigger_type": 0
+    }
+  ],
+  "schema": "radxa-linkr-debugger.logic-analyzer-hil-perf.v1",
+  "uart_stimulus": null
+}

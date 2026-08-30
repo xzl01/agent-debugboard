@@ -1,0 +1,208 @@
+{
+  "candidate": {
+    "capture_arena_bytes": 148856,
+    "combined_uf2_sha256": "72bdcfb61f1ae4aab5362f2eb58597f7293d3c5bf752c09a71d3205da522a91b",
+    "flash_bytes_total": 847832,
+    "flash_bytes_used": 773876,
+    "ota_sha256": "a6c1640e67a0c3ca26d8c7fa9e310a81f73fee893166a86d378d5c108eeafd5f",
+    "ram_bytes_total": 532480,
+    "ram_bytes_used": 469232,
+    "tcp_queue_depth": 10
+  },
+  "date": "2026-08-31",
+  "final_adjacent_active_failures": {
+    "fast8_tcp_khz": 1400,
+    "fast8_ws_khz": 1225,
+    "wide11_tcp_khz": 975,
+    "wide11_ws_khz": 875
+  },
+  "final_operating_points": {
+    "active_fast8_tcp_1375": {
+      "activity_transitions_min": 43954,
+      "decode_errors": 0,
+      "effective_rate_median": 1366236.6730040386,
+      "effective_rate_min": 1365435.1811069946,
+      "overruns": 0,
+      "passes": 10,
+      "received_samples_min": 6832128,
+      "runs": 10,
+      "sample_index_gaps": 0
+    },
+    "active_fast8_ws_1200": {
+      "activity_transitions_min": 50368,
+      "decode_errors": 0,
+      "effective_rate_median": 1194695.1718705366,
+      "effective_rate_min": 1194369.826567148,
+      "overruns": 0,
+      "passes": 10,
+      "received_samples_min": 5976064,
+      "runs": 10,
+      "sample_index_gaps": 0
+    },
+    "active_wide11_tcp_950": {
+      "activity_transitions_min": 63627,
+      "decode_errors": 0,
+      "effective_rate_median": 949505.6354946783,
+      "effective_rate_min": 949261.8463275587,
+      "overruns": 0,
+      "passes": 10,
+      "received_samples_min": 4753408,
+      "runs": 10,
+      "sample_index_gaps": 0
+    },
+    "active_wide11_ws_850": {
+      "activity_transitions_min": 59841,
+      "decode_errors": 0,
+      "effective_rate_median": 845896.613090649,
+      "effective_rate_min": 845475.9770495883,
+      "overruns": 0,
+      "passes": 10,
+      "received_samples_min": 4229120,
+      "runs": 10,
+      "sample_index_gaps": 0
+    },
+    "static_fast8_tcp_2600": {
+      "activity_transitions_min": 0,
+      "decode_errors": 0,
+      "effective_rate_median": 2617368.255968431,
+      "effective_rate_min": 2615053.072717651,
+      "overruns": 0,
+      "passes": 10,
+      "received_samples_min": 13082624,
+      "runs": 10,
+      "sample_index_gaps": 0
+    },
+    "static_fast8_ws_2600": {
+      "activity_transitions_min": 0,
+      "decode_errors": 0,
+      "effective_rate_median": 2595642.165327253,
+      "effective_rate_min": 2595268.804247285,
+      "overruns": 0,
+      "passes": 10,
+      "received_samples_min": 12980224,
+      "runs": 10,
+      "sample_index_gaps": 0
+    },
+    "static_wide11_tcp_1175": {
+      "activity_transitions_min": 0,
+      "decode_errors": 0,
+      "effective_rate_median": 1181361.2940187454,
+      "effective_rate_min": 1179843.9604039947,
+      "overruns": 0,
+      "passes": 10,
+      "received_samples_min": 5902336,
+      "runs": 10,
+      "sample_index_gaps": 0
+    },
+    "static_wide11_ws_1050": {
+      "activity_transitions_min": 0,
+      "decode_errors": 0,
+      "effective_rate_median": 1047565.6435834605,
+      "effective_rate_min": 1047447.6167324357,
+      "overruns": 0,
+      "passes": 10,
+      "received_samples_min": 5238784,
+      "runs": 10,
+      "sample_index_gaps": 0
+    }
+  },
+  "host_ab": {
+    "after": {
+      "fast8_msamples_s": 129272.287,
+      "wide11_msamples_s": 1175.934
+    },
+    "before": {
+      "fast8_msamples_s": 33.057,
+      "wide11_msamples_s": 23.445
+    },
+    "note": "7-run median on cache-resident host model; use only as decoder CPU A/B, not a board transport claim"
+  },
+  "limits": [
+    "GP16 activity proves one transition-rich line inside the full channel set, not independent entropy on all channels",
+    "SINGLE high-transition is verified at 1 MHz; the separate 16 MHz result remains static/low-transition and is not an incompressible-input claim",
+    "No watchdog fault injection was run"
+  ],
+  "production_restore": {
+    "bootsel_disk_present": false,
+    "combined_uf2_sha256": "8d0bc34dfdbcdbe91fa4e5902772965751fbddd626c3c964f3aad5bd7fa0219d",
+    "current_image_confirmed": true,
+    "fault_http_status": 404,
+    "firmware_build_id": "v0.2.1-208-gc72104d89ca1-dirty",
+    "heap_allocated_bytes": 0,
+    "ota_state": "idle",
+    "pending_config_count": 0,
+    "protocol_v1_smoke_pass": true,
+    "saved_config_count": 6,
+    "test_marker_present": false,
+    "watchdog_armed": true,
+    "watchdog_healthy": true
+  },
+  "protocol_version": 2,
+  "raw_active_baseline": {
+    "fast8": {
+      "fail_khz": 550,
+      "pass_khz": 500,
+      "transports": [
+        "ws",
+        "tcp"
+      ]
+    },
+    "stimulus": "GP16 UART 0x55, UART baud equal to sample rate, BIT_PACK frames, near-per-sample bit6 transitions",
+    "wide11": {
+      "fail_khz": 300,
+      "pass_khz": 250,
+      "transports": [
+        "ws",
+        "tcp"
+      ]
+    }
+  },
+  "review_exact_snapshot": {
+    "build_id": "v0.2.1-217-ge6c40e92344b",
+    "combined_uf2_sha256": "9dd57fd658e84896cfdb36de2c5f7bc3a9ffdef3fac87551963674dc5d45d248",
+    "commit": "e6c40e92344b562651214a38f5713e444ac704ab",
+    "flash_bytes_used": 772128,
+    "make_firmware": "pass",
+    "ota_sha256": "dfaa3b63eb679440679a73417cb6ff1c209df2c9fedebd7265f53045734a7624",
+    "ram_bytes_used": 469232,
+    "single_gp16_active_1000_khz": {
+      "tcp": {
+        "activity_transitions_min": 60441,
+        "compression": 4,
+        "decode_errors": 0,
+        "effective_rate_median": 1001887.3073548309,
+        "effective_rate_min": 1001468.2969719312,
+        "overruns": 0,
+        "passes": 10,
+        "received_samples_min": 5013504,
+        "runs": 10,
+        "sample_index_gaps": 0,
+        "stop_restart_health_all": true
+      },
+      "websocket": {
+        "activity_transitions_min": 60448,
+        "compression": 4,
+        "decode_errors": 0,
+        "effective_rate_median": 996258.1194904491,
+        "effective_rate_min": 995885.8835279611,
+        "overruns": 0,
+        "passes": 10,
+        "received_samples_min": 4980736,
+        "runs": 10,
+        "sample_index_gaps": 0,
+        "stop_restart_health_all": true
+      }
+    },
+    "web_build": "pass",
+    "web_tests": "pass, Node 373 pass and 1 skip; Vitest 59 files / 433 tests"
+  },
+  "schema": "radxa-linkr-debugger.logic-analyzer.multichannel-hil.v1",
+  "validation": {
+    "firmware_unit_runner": "pass, 95 Python tests plus all C host models",
+    "git_diff_check": "pass for source/contract paths; byte-exact raw HIL logs and embedded patches excluded",
+    "make_firmware": "pass",
+    "make_gates": "pass, 295 contract tests and all live checkers",
+    "web_build": "pass",
+    "web_tests": "pass, Node 375 and Vitest 440"
+  }
+}

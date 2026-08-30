@@ -1,0 +1,36 @@
+[m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.039,000] [0m<inf> linkr_debugger_network: DHCPv4 server started from 172.29.203.10[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> radxa_linkr_debugger: radxa-linkr-debugger controller ready over NCM HTTP with CDC ACM fallback[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> radxa_linkr_debugger: firmware build id v0.2.1-215-g96d2aa896e31-dirty at Jan  1 1980 00:00:00[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> linkr_debugger_usb_net: usb event: Device suspended[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=41[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=41 uptime_seconds=0[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=-1 core_age_ms=0 cmd_age_ms=0 grace_remaining_ms=14999 uptime_ms=41[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;31m[1;31m--- 443 messages dropped ---
+[0m[m[00:00:00.339,000] [0m<inf> linkr_debugger_usb_net: usb event: Bus reset[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.413,000] [0m<inf> linkr_debugger_usb_net: usb event: Bus reset[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.514,000] [0m<inf> linkr_debugger_usb_net: usb event: New device configuration[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.515,000] [0m<inf> linkr_debugger_usb_net: usb event: CDC ACM line coding[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.541,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=541[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.541,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=541 uptime_seconds=0[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.542,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=0 cmd_age_ms=0 grace_remaining_ms=14499 uptime_ms=541[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.666,000] [1;31m<err> net_arp: Gateway not set for iface 1, could not send ARP request for 192.168.2.237[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.939,000] [1;31m<err> net_arp: Gateway not set for iface 1, could not send ARP request for 192.168.2.237[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:05.510,000] [1;33m<wrn> net_if: Skipped 16 messages[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[00:01:02.604,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=45452 uptime_ms=62604[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:01:02.604,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=62604 uptime_seconds=62[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:01:02.604,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=30 cmd_age_ms=49 grace_remaining_ms=0 uptime_ms=62604[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:01:02.852,000] [0m<inf> linkr_debugger_usb_net: usb event: CDC ACM control line state[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:01:02.853,000] [0m<inf> linkr_debugger_usb_net: usb event: CDC ACM line coding[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[00:01:03.105,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=45452 uptime_ms=63105[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:01:03.105,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=63105 uptime_seconds=63[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:01:03.105,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=31 cmd_age_ms=49 grace_remaining_ms=0 uptime_ms=63105[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:01:03.605,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=8264 heap_free=40884 heap_total=49148 heap_peak=45452 uptime_ms=63605[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:01:03.606,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=63605 uptime_seconds=63[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:01:03.606,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=30 cmd_age_ms=49 grace_remaining_ms=0 uptime_ms=63605[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:01:03.869,000] [1;33m<wrn> linkr_debugger_la: la ring observe terminal: result=2 gen=33 cur_gen=33 dma_a=0 dma_b=1 hw_a=1324 hw_b=538 produced=2706 skew=84 emitted=329728 errors=1[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[00:01:03.875,000] [1;33m<wrn> linkr_debugger_la: la ring terminal: status=2 seq=163 active=1 gen=33 cur_gen=33 dma=0 hw=0 writer=332976 reader=332976 emitted=332976 errors=1 max_gap_us=5800 max_unread=5240 max_emit_us=0 fill_compact_max_us=0 fill_compact_total_us=0 commit_callback_max_us=0 commit_callback_total_us=0 consume_total_us=0 consume_chunks=0 consumer_gap_max_us=0 yield_resume_max_us=0 legacy_yields=0 sink_handoff_req=0 sink_handoff_exec=0 sink_handoff_skip_backlog=0 sink=1[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:01:04.106,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=45452 uptime_ms=64106[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:01:04.106,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=64106 uptime_seconds=64[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:01:04.106,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=31 cmd_age_ms=50 grace_remaining_ms=0 uptime_ms=64106[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m
