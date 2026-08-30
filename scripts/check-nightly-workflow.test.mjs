@@ -8,8 +8,6 @@ import { checkNightlyWorkflow, formatFailures } from "./check-nightly-workflow.m
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WORKFLOW_PATH = ".github/workflows/nightly.yml";
-const PAYLOADS = ["radxa-linkr-debugger-rp2350.uf2", "radxa-linkr-debugger-rp2350-ota.bin", "radxa-linkr-debugger-rp2350.elf", "radxa-linkr-debugger-rp2350.map", "radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz", "radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz", "radxa-linkr-debuggerctl-rust_windows_amd64.zip", "skills-radxa-linkr-debugger.tar.gz"];
-const ASSETS = [...PAYLOADS, "SHA256SUMS.txt"];
 const LEGACY_SCHEDULE_MANUAL_TRIGGER = `on:
   schedule:
     - cron: "0 3 * * *"
@@ -47,10 +45,10 @@ const DEV_AND_MAIN_PUSH_TRIGGER = `on:
       - dev
       - main
 `;
-const MANIFEST = `expected_assets=(${ASSETS.join(" ")})`;
 const CANONICAL_UF2_COPY = "cp build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 release-assets/radxa-linkr-debugger-rp2350.uf2";
 const UF2_PROVENANCE_CMP = "cmp ../build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 dist/release/radxa-linkr-debugger-rp2350.uf2";
 const BASELINE = await readFile(path.join(ROOT, WORKFLOW_PATH), "utf8");
+const RELEASE_BASELINE = await readFile(path.join(ROOT, ".github/workflows/release.yml"), "utf8");
 const CRLF_BASELINE = BASELINE.replace(/\n/g, "\r\n");
 
 function pureLoc(source) {
@@ -96,6 +94,12 @@ async function withRepo(workflow, operation) {
     await rm(root, { recursive: true, force: true });
   }
 }
+
+test("tagged and nightly releases share the native package workflow", () => {
+  for (const workflow of [RELEASE_BASELINE, BASELINE]) {
+    assert.ok(workflow.includes("    uses: ./.github/workflows/native-packages.yml"));
+  }
+});
 
 test("guard 1/4: checker modules stay within the source-size contract", async () => {
   for (const relativePath of ["scripts/check-nightly-workflow.mjs", "scripts/check-nightly-workflow.test.mjs"]) assert.ok(pureLoc(await readFile(path.join(ROOT, relativePath), "utf8")) <= 250, relativePath);
@@ -158,9 +162,13 @@ const MUTATIONS = [
   ["rejects a non-draft candidate release", "W10", "-F draft=true", "-F draft=false"],
   ["rejects deleting the public nightly during candidate preparation", "W10", "          CANDIDATE_TAG=\"nightly-candidate-$GITHUB_RUN_ID\"\n          candidate_rows=", "          CANDIDATE_TAG=\"nightly-candidate-$GITHUB_RUN_ID\"\n          gh release delete nightly --repo \"$GITHUB_REPOSITORY\" --yes --cleanup-tag\n          candidate_rows="],
   ["rejects missing remote checksum verification", "W10", "          (cd \"$verify_dir\" && sha256sum -c SHA256SUMS.txt)\n", ""],
-  ["rejects missing remote manifest", "W08", `          ${MANIFEST}\n          gh release upload \"$CANDIDATE_TAG\"`, "          gh release upload \"$CANDIDATE_TAG\""],
-  ["rejects omitted first payload upload", "W10", `bundle/release/${PAYLOADS[0]}`, ""],
-  ["rejects incomplete final-readback manifest", "W10", `test "$tag_sha" = "$GITHUB_SHA"\n          ${MANIFEST}\n          final_state=`, `test "$tag_sha" = "$GITHUB_SHA"\n          expected_assets=(${ASSETS.slice(0, -1).join(" ")})\n          final_state=`],
+  ["rejects bypassing the shared native package workflow", "W04", "    uses: ./.github/workflows/native-packages.yml", "    uses: ./.github/workflows/other-native-packages.yml"],
+  ["rejects a missing native package artifact", "W16", "          name: native-release-packages\n          path: native-package-assets", "          name: missing-native-packages\n          path: native-package-assets"],
+  ["rejects a missing Arch firmware checksum", "W08", "            radxa-linkr-debugger-firmware-*.pkg.tar.zst \\\n            radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz", "            radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz"],
+  ["rejects a wrong native payload count", "W08", `      - name: Verify nightly release assets\n        working-directory: app/dist/release\n        run: |\n          set -euo pipefail\n          shopt -s nullglob\n          native_payloads=(agent-debugboard-*.tar.gz radxa-linkr-debuggerctl_*.deb radxa-linkr-debugger-firmware_*.deb radxa-linkr-debuggerctl-*.rpm radxa-linkr-debugger-firmware-*.rpm radxa-linkr-debuggerctl-*.pkg.tar.zst radxa-linkr-debugger-firmware-*.pkg.tar.zst)\n          test "\${#native_payloads[@]}" -eq 7`, `      - name: Verify nightly release assets\n        working-directory: app/dist/release\n        run: |\n          set -euo pipefail\n          shopt -s nullglob\n          native_payloads=(agent-debugboard-*.tar.gz radxa-linkr-debuggerctl_*.deb radxa-linkr-debugger-firmware_*.deb radxa-linkr-debuggerctl-*.rpm radxa-linkr-debugger-firmware-*.rpm radxa-linkr-debuggerctl-*.pkg.tar.zst radxa-linkr-debugger-firmware-*.pkg.tar.zst)\n          test "\${#native_payloads[@]}" -eq 6`],
+  ["rejects missing remote manifest", "W08", `      - name: Upload and verify staged nightly assets\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: |\n          set -euo pipefail\n          mapfile -t payloads < <(awk '{print $2}' bundle/release/SHA256SUMS.txt)`, `      - name: Upload and verify staged nightly assets\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: |\n          set -euo pipefail`],
+  ["rejects omitted payload upload loop", "W10", `            gh release upload "$CANDIDATE_TAG" "bundle/release/$payload" --repo "$GITHUB_REPOSITORY"\n`, ""],
+  ["rejects incomplete final-readback manifest", "W08", `          test "$tag_sha" = "$GITHUB_SHA"\n          mapfile -t payloads < <(awk '{print $2}' bundle/release/SHA256SUMS.txt)`, `          test "$tag_sha" = "$GITHUB_SHA"`],
   ["rejects incomplete checksum generation", "W08", "skills-radxa-linkr-debugger.tar.gz > SHA256SUMS.txt", "> SHA256SUMS.txt"],
   ["rejects gh api process substitutions", "W10", "candidate_rows=\"$(gh api --paginate \"repos/$GITHUB_REPOSITORY/releases?per_page=100\" --jq \".[] | select(.tag_name == \\\"$CANDIDATE_TAG\\\")", "mapfile -t candidate_rows < <(gh api --paginate \"repos/$GITHUB_REPOSITORY/releases?per_page=100\" --jq \".[] | select(.tag_name == \\\"$CANDIDATE_TAG\\\")"],
   ["rejects deleting nightly before candidate verification", "W10", "          remote_asset_rows=", "          gh release delete nightly --repo \"$GITHUB_REPOSITORY\" --yes --cleanup-tag\n          remote_asset_rows="],
@@ -171,9 +179,7 @@ const MUTATIONS = [
   ["rejects direct tag SHA assignment", "W10", `tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha)"`, "tag_sha=\"$GITHUB_SHA\""],
   ["rejects git-ref final-state readback", "W10", `final_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/$CANDIDATE_RELEASE_ID")"`, `final_state="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly")"`],
   ["rejects release-level asset download", "W10", "repos/$GITHUB_REPOSITORY/releases/assets/${asset_ids[$expected]}", "repos/$GITHUB_REPOSITORY/releases/$NIGHTLY_RELEASE_ID"],
-  ["rejects clobber on staged upload", "W11", `            --repo "$GITHUB_REPOSITORY"
-          gh release upload "$CANDIDATE_TAG" bundle/release/SHA256SUMS.txt`, `            --clobber --repo "$GITHUB_REPOSITORY"
-          gh release upload "$CANDIDATE_TAG" bundle/release/SHA256SUMS.txt`],
+  ["rejects clobber on staged upload", "W11", `gh release upload "$CANDIDATE_TAG" "bundle/release/$payload" --repo "$GITHUB_REPOSITORY"`, `gh release upload "$CANDIDATE_TAG" "bundle/release/$payload" --clobber --repo "$GITHUB_REPOSITORY"`],
   ["rejects disabled candidate duplicate rejection", "W12", "if [[ \"$candidate_rows\" == *$'\\n'* ]]; then\n            printf 'duplicate nightly candidate releases", "if false; then\n            printf 'duplicate nightly candidate releases"],
 ];
 

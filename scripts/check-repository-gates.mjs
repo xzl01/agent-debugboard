@@ -9,6 +9,7 @@ export const POLICY_FILES = Object.freeze([
   ".github/workflows/pages.yml",
   ".github/workflows/release.yml",
   ".github/workflows/nightly.yml",
+  ".github/workflows/native-packages.yml",
   ".github/workflows/version-bump.yml",
   "AGENTS.md",
   "apps/radxa_linkr_debugger/CMakeLists.txt",
@@ -162,7 +163,7 @@ function firmwareMemoryCaptureContract({
     && /Local\s+unit tests and CI gates are not HIL/.test(docsIndex);
 }
 
-function nativePackageReleaseContract({ release, debianControl, debianRules, rpmSpec, pkgbuild }) {
+function nativePackageReleaseContract({ release, nightly, nativePackages, debianControl, debianRules, rpmSpec, pkgbuild }) {
   const firmwareFiles = [
     "radxa-linkr-debugger-rp2350.uf2",
     "radxa-linkr-debugger-rp2350-ota.bin",
@@ -175,17 +176,17 @@ function nativePackageReleaseContract({ release, debianControl, debianRules, rpm
   const payloads = recipes.every((recipe) => firmwareFiles.every((name) => recipe.includes(name)))
     && recipes.every((recipe) => /test ! -e .*zephyr[.]uf2/.test(recipe));
   const noDesktopPayload = recipes.every((recipe) => !/(?:web[/]dist|linkr-host|linkr-tray|radxa-linkr-debugger[.]desktop)/.test(recipe));
-  const nativeTools = release.includes("dpkg-buildpackage --build=binary --no-sign")
-    && release.includes("rpmbuild -bb")
-    && release.includes("makepkg --cleanbuild --noconfirm");
-  const compatibilityBaselines = /debian:bookworm@sha256:[0-9a-f]{64}/.test(release)
-    && /almalinux:9@sha256:[0-9a-f]{64}/.test(release)
-    && /archlinux:latest@sha256:[0-9a-f]{64}/.test(release);
+  const nativeTools = nativePackages.includes("dpkg-buildpackage --build=binary --no-sign")
+    && nativePackages.includes("rpmbuild -bb")
+    && nativePackages.includes("makepkg --cleanbuild --noconfirm");
+  const compatibilityBaselines = /debian:bookworm@sha256:[0-9a-f]{64}/.test(nativePackages)
+    && /almalinux:9@sha256:[0-9a-f]{64}/.test(nativePackages)
+    && /archlinux:latest@sha256:[0-9a-f]{64}/.test(nativePackages);
   const sourceNaming = rpmSpec.includes("agent-debugboard-%{upstream_version}.tar.gz")
-    && release.includes("native-package-sources/agent-debugboard-$version.tar.gz")
-    && release.includes("agent-debugboard-*.tar.gz");
-  const archiveStart = release.indexOf("git -C app archive --format=tar.gz");
-  const archiveRevision = release.indexOf('"$RESOLVED_SHA"', archiveStart);
+    && nativePackages.includes("native-package-sources/agent-debugboard-$version.tar.gz")
+    && [release, nightly].every((workflow) => workflow.includes("agent-debugboard-*.tar.gz"));
+  const archiveStart = nativePackages.indexOf("git -C app archive --format=tar.gz");
+  const archiveRevision = nativePackages.indexOf('"$SOURCE_SHA"', archiveStart);
   const sourceLineage = archiveStart >= 0 && archiveRevision > archiveStart
     && archiveRevision - archiveStart < 300;
   const checksumVariables = [
@@ -195,20 +196,24 @@ function nativePackageReleaseContract({ release, debianControl, debianRules, rpm
     "AGENT_DEBUGBOARD_OTA_SHA256",
   ];
   const sourceChecksums = !pkgbuild.includes("SKIP")
-    && checksumVariables.every((name) => pkgbuild.includes(name) && release.includes(name));
+    && checksumVariables.every((name) => pkgbuild.includes(name) && nativePackages.includes(name));
   const exactArchOutputs = pkgbuild.includes("options=('!debug')")
-    && release.includes("find /home/builder/package -maxdepth 1 -name '*.pkg.tar.zst'");
-  const releaseAssets = [
+    && nativePackages.includes("find /home/builder/package -maxdepth 1 -name '*.pkg.tar.zst'");
+  const releasePatterns = [
     "radxa-linkr-debuggerctl_*.deb",
     "radxa-linkr-debugger-firmware_*.deb",
     "radxa-linkr-debuggerctl-*.rpm",
     "radxa-linkr-debugger-firmware-*.rpm",
     "radxa-linkr-debuggerctl-*.pkg.tar.zst",
     "radxa-linkr-debugger-firmware-*.pkg.tar.zst",
-  ].every((pattern) => release.includes(pattern));
+  ];
+  const releaseAssets = [release, nightly].every((workflow) => releasePatterns.every((pattern) => workflow.includes(pattern)));
+  const sharedArtifact = /name:\s*native-release-packages/.test(nativePackages)
+    && [release, nightly].every((workflow) => /name:\s*native-release-packages/.test(workflow)
+      && /path:\s*native-package-assets/.test(workflow));
   return twoPackages && payloads && noDesktopPayload && nativeTools
     && compatibilityBaselines && sourceNaming && sourceLineage
-    && sourceChecksums && exactArchOutputs && releaseAssets;
+    && sourceChecksums && exactArchOutputs && releaseAssets && sharedArtifact;
 }
 
 export function checkRepositoryGateContents(contents) {
@@ -217,6 +222,7 @@ export function checkRepositoryGateContents(contents) {
   const pages = contents.get(".github/workflows/pages.yml") ?? "";
   const release = contents.get(".github/workflows/release.yml") ?? "";
   const nightly = contents.get(".github/workflows/nightly.yml") ?? "";
+  const nativePackages = contents.get(".github/workflows/native-packages.yml") ?? "";
   const versionBump = contents.get(".github/workflows/version-bump.yml") ?? "";
   const agents = contents.get("AGENTS.md") ?? "";
   const makefile = contents.get("Makefile") ?? "";
@@ -268,16 +274,25 @@ export function checkRepositoryGateContents(contents) {
       || !exact(needs(job(pages, "deploy")), ["build"])) {
     fail(failures, "G04", ".github/workflows/pages.yml", "Pages must validate, build, then deploy in order");
   }
+  const releaseNative = job(release, "native-packages");
   if (!reusableValidation(release) || !needs(job(release, "rust-cli-release")).includes("validation")
       || !needs(job(release, "host-desktop-release")).includes("validation")
+      || !needs(releaseNative).includes("validation") || !needs(releaseNative).includes("rust-cli-release")
+      || !/^    uses:\s*\.\/\.github\/workflows\/native-packages\.yml\s*$/m.test(releaseNative)
+      || !releaseNative.includes("source_sha: ${{ needs.resolve.outputs.resolved_sha }}")
       || !needs(job(release, "release")).includes("rust-cli-release")
-      || !needs(job(release, "release")).includes("host-desktop-release")) {
-    fail(failures, "G05", ".github/workflows/release.yml", "release publication must transitively depend on validation");
+      || !needs(job(release, "release")).includes("host-desktop-release")
+      || !needs(job(release, "release")).includes("native-packages")) {
+    fail(failures, "G05", ".github/workflows/release.yml", "release publication must transitively depend on validation and the shared native package workflow");
   }
+  const nightlyNative = job(nightly, "native-packages");
   if (!reusableValidation(nightly) || !exact(needs(job(nightly, "rust-cli-release")), ["validation"])
-      || !exact(needs(job(nightly, "nightly-assets")), ["rust-cli-release"])
+      || !exact(needs(nightlyNative), ["validation", "rust-cli-release"])
+      || !/^    uses:\s*\.\/\.github\/workflows\/native-packages\.yml\s*$/m.test(nightlyNative)
+      || !nightlyNative.includes("source_sha: ${{ github.sha }}")
+      || !exact(needs(job(nightly, "nightly-assets")), ["native-packages"])
       || !exact(needs(job(nightly, "publish-nightly")), ["nightly-assets"])) {
-    fail(failures, "G06", ".github/workflows/nightly.yml", "nightly publication must follow the validated job chain");
+    fail(failures, "G06", ".github/workflows/nightly.yml", "nightly publication must follow validation and the same native package workflow as tagged releases");
   }
   if (!/both `main` and `dev`[\s\S]*must require pull requests[\s\S]*reject direct pushes[\s\S]*`Required repository gate`/.test(agents)
       || !/block force pushes and branch\s+deletion/.test(agents)) {
@@ -349,8 +364,8 @@ export function checkRepositoryGateContents(contents) {
       || !persistentDocs.includes("node scripts/check-persistent-configuration-docs.mjs --root .")) {
     fail(failures, "G11", "Makefile", "persistent-configuration-docs must run its contract test and checker");
   }
-  if (!checkWorkflowContracts({ build, release, pages, versionBump, makefile })) {
-    fail(failures, "G12", ".github/workflows/{build,release,pages,version-bump}.yml + Makefile", "source selection, release lineage, action pins, and permanent gates must be immutable");
+  if (!checkWorkflowContracts({ build, release, nativePackages, pages, versionBump, makefile })) {
+    fail(failures, "G12", ".github/workflows/{build,native-packages,release,pages,version-bump}.yml + Makefile", "source selection, release lineage, action pins, and permanent gates must be immutable");
   }
   if (!flakeOverlayContract(buildEn, buildZh)) {
     fail(failures, "G13", "docs/developer/build.{md,zh-CN.md}", "bilingual docs must use the flake inputs/outputs pattern and forbid the legacy import expression");
@@ -375,8 +390,8 @@ export function checkRepositoryGateContents(contents) {
   })) {
     fail(failures, "G18", "apps/radxa_linkr_debugger/{CMakeLists.txt,sections-ram.ld,prj.conf,src/*} + docs/{README.md,reference/logic-analyzer.md}", "firmware memory and capture layout must retain approved capacities, pre-capture NOBITS initialization, stack targets, disabled features, and non-HIL documentation");
   }
-  if (!nativePackageReleaseContract({ release, debianControl, debianRules, rpmSpec, pkgbuild })) {
-    fail(failures, "G19", "debian/ + packaging/{redhat,archlinux}/ + .github/workflows/release.yml", "each native packager must emit separate CLI and safe complete-firmware packages, exclude desktop/Web payloads, and publish all six package families");
+  if (!nativePackageReleaseContract({ release, nightly, nativePackages, debianControl, debianRules, rpmSpec, pkgbuild })) {
+    fail(failures, "G19", "debian/ + packaging/{redhat,archlinux}/ + .github/workflows/{native-packages,release,nightly}.yml", "each native packager must emit separate CLI and safe complete-firmware packages, exclude desktop/Web payloads, and publish all six package families");
   }
   if (!/release_notes="docs\/releases\/\$\{RELEASE_TAG%%-\*\}\.md"/.test(release)
       || !/release_flags=\(\)/.test(release)

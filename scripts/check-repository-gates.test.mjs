@@ -14,6 +14,8 @@ const OTA_HIL = "docs/testing/scripts/web-ota-hil.sh";
 const BUILD_WORKFLOW = ".github/workflows/build.yml";
 const PAGES_WORKFLOW = ".github/workflows/pages.yml";
 const RELEASE_WORKFLOW = ".github/workflows/release.yml";
+const NIGHTLY_WORKFLOW = ".github/workflows/nightly.yml";
+const NATIVE_PACKAGES_WORKFLOW = ".github/workflows/native-packages.yml";
 const DEBIAN_CONTROL = "debian/control";
 const DEBIAN_RULES = "debian/rules";
 const RPM_SPEC = "packaging/redhat/radxa-linkr-debugger.spec";
@@ -258,6 +260,9 @@ test("rejects immutable source selection and action pin regressions", async (t) 
     ["release mutable action", RELEASE_WORKFLOW, "uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0", "uses: actions/download-artifact@v6 # v6.0.0"],
     ["release wrong action pin", RELEASE_WORKFLOW, "uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable", "uses: dtolnay/rust-toolchain@d23441a48e516b6c34aea4fa41551a30e30af803 # stable"],
     ["release wrong action comment", RELEASE_WORKFLOW, "uses: zephyrproject-rtos/action-zephyr-setup@be8136a8bba01580485d98b7ad2d32477c36a49a # v1", "uses: zephyrproject-rtos/action-zephyr-setup@be8136a8bba01580485d98b7ad2d32477c36a49a # v2"],
+    ["native package mutable action", NATIVE_PACKAGES_WORKFLOW, "uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0", "uses: actions/checkout@v6 # v6.1.0"],
+    ["native package wrong action pin", NATIVE_PACKAGES_WORKFLOW, "uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0", "uses: actions/download-artifact@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.0"],
+    ["native package wrong action comment", NATIVE_PACKAGES_WORKFLOW, "uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0", "uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v5.0.0"],
   ];
 
   for (const [name, relative, replace, replacement] of cases) {
@@ -284,6 +289,14 @@ test("rejects mutable, wrong, and missing action pins in every governed workflow
     {
       name: "release",
       relative: RELEASE_WORKFLOW,
+      action: "actions/checkout",
+      sha: "d23441a48e516b6c34aea4fa41551a30e30af803",
+      tag: "v6",
+      comment: "v6.1.0",
+    },
+    {
+      name: "native packages",
+      relative: NATIVE_PACKAGES_WORKFLOW,
       action: "actions/checkout",
       sha: "d23441a48e516b6c34aea4fa41551a30e30af803",
       tag: "v6",
@@ -327,8 +340,9 @@ test("rejects mutable, wrong, and missing action pins in every governed workflow
   }
 });
 
-test("loads the Version Bump workflow for action pin validation", () => {
+test("loads auxiliary workflows for action pin validation", () => {
   assert.ok(POLICY_FILES.includes(VERSION_BUMP_WORKFLOW));
+  assert.ok(POLICY_FILES.includes(NATIVE_PACKAGES_WORKFLOW));
 });
 
 test("rejects a Pages validation source SHA override", async () => {
@@ -524,6 +538,12 @@ test("rejects every publication and branch-policy bypass", async (t) => {
     ["remote tag peel", ".github/workflows/release.yml", '          while [[ "$object_type" == "tag" ]]; do', "          while false; do", "G12"],
     ["remote SHA comparison", ".github/workflows/release.yml", '          [[ "$object_sha" == "$RESOLVED_SHA" ]]\n', "", "G12"],
     ["write permission scope", ".github/workflows/release.yml", "  contents: read\n", "  contents: write\n", "G12"],
+    ["native workflow source input", NATIVE_PACKAGES_WORKFLOW, "        required: true\n        type: string\n", "        required: false\n        type: string\n", "G12"],
+    ["native workflow checkout SHA", NATIVE_PACKAGES_WORKFLOW, "          ref: ${{ inputs.source_sha }}\n", "          ref: ${{ github.sha }}\n", "G12"],
+    ["native workflow credential persistence", NATIVE_PACKAGES_WORKFLOW, "          persist-credentials: false\n", "          persist-credentials: true\n", "G12"],
+    ["native workflow source verification", NATIVE_PACKAGES_WORKFLOW, '          test "$(git -C app rev-parse HEAD)" = "$SOURCE_SHA"\n', "          true\n", "G12"],
+    ["native workflow permission scope", NATIVE_PACKAGES_WORKFLOW, "permissions:\n  contents: read\n\njobs:\n", "permissions:\n  contents: read\n  id-token: write\n\njobs:\n", "G12"],
+    ["release native workflow source binding", RELEASE_WORKFLOW, "    uses: ./.github/workflows/native-packages.yml\n    with:\n      source_sha: ${{ needs.resolve.outputs.resolved_sha }}\n", "    uses: ./.github/workflows/native-packages.yml\n    with:\n      source_sha: ${{ github.sha }}\n", "G12"],
     ["English flake input", "docs/developer/build.md", '    agent-debugboard.url = "github:xzl01/agent-debugboard";\n', "", "G13"],
     ["Chinese flake input", "docs/developer/build.zh-CN.md", '    agent-debugboard.url = "github:xzl01/agent-debugboard";\n', "", "G13"],
     ["legacy import expression", "docs/developer/build.md", '        overlays = [ agent-debugboard.overlays.default ];\n', '        overlays = [ (import github:xzl01/agent-debugboard).overlays.default ];\n', "G13"],
@@ -560,17 +580,21 @@ test("requires native CLI and complete-firmware release packages", async (t) => 
     ["Debian combined UF2", DEBIAN_RULES, "radxa-linkr-debugger-rp2350.uf2", "zephyr.uf2", true],
     ["RPM firmware subpackage", RPM_SPEC, "%package -n radxa-linkr-debugger-firmware", "%package -n removed-firmware"],
     ["Arch split packages", PKGBUILD, "pkgname=('radxa-linkr-debuggerctl' 'radxa-linkr-debugger-firmware')", "pkgname=('radxa-linkr-debuggerctl')"],
-    ["Debian native packager", RELEASE_WORKFLOW, "dpkg-buildpackage --build=binary --no-sign", "true"],
-    ["RPM native packager", RELEASE_WORKFLOW, "rpmbuild -bb", "true"],
-    ["Arch native packager", RELEASE_WORKFLOW, "makepkg --cleanbuild --noconfirm", "true"],
-    ["Debian 12 baseline", RELEASE_WORKFLOW, "debian:bookworm", "debian:trixie"],
-    ["RHEL 9 baseline", RELEASE_WORKFLOW, "almalinux:9", "fedora:44", true],
+    ["Debian native packager", NATIVE_PACKAGES_WORKFLOW, "dpkg-buildpackage --build=binary --no-sign", "true"],
+    ["RPM native packager", NATIVE_PACKAGES_WORKFLOW, "rpmbuild -bb", "true"],
+    ["Arch native packager", NATIVE_PACKAGES_WORKFLOW, "makepkg --cleanbuild --noconfirm", "true"],
+    ["Debian 12 baseline", NATIVE_PACKAGES_WORKFLOW, "debian:bookworm", "debian:trixie"],
+    ["RHEL 9 baseline", NATIVE_PACKAGES_WORKFLOW, "almalinux:9", "fedora:44", true],
     ["RPM source archive name", RPM_SPEC, "agent-debugboard-%{upstream_version}.tar.gz", "v%{upstream_version}.tar.gz"],
     ["Arch source checksums", PKGBUILD, '"$AGENT_DEBUGBOARD_UF2_SHA256"', "'SKIP'"],
     ["Arch debug package disabled", PKGBUILD, "options=('!debug')", "options=('debug')"],
-    ["Arch exact output count", RELEASE_WORKFLOW, "find /home/builder/package -maxdepth 1 -name '*.pkg.tar.zst'", "printf extra-package"],
+    ["Arch exact output count", NATIVE_PACKAGES_WORKFLOW, "find /home/builder/package -maxdepth 1 -name '*.pkg.tar.zst'", "printf extra-package"],
+    ["Shared package artifact", NATIVE_PACKAGES_WORKFLOW, "name: native-release-packages", "name: removed-native-packages"],
     ["Release source archive", RELEASE_WORKFLOW, "agent-debugboard-*.tar.gz", "removed-source.tar.gz", true],
-    ["Release source SHA lineage", RELEASE_WORKFLOW, '            "$RESOLVED_SHA"\n', '            "$GITHUB_SHA"\n'],
+    ["Nightly source archive", NIGHTLY_WORKFLOW, "agent-debugboard-*.tar.gz", "removed-source.tar.gz", true],
+    ["Release native package download", RELEASE_WORKFLOW, "name: native-release-packages", "name: removed-native-packages"],
+    ["Nightly native package download", NIGHTLY_WORKFLOW, "name: native-release-packages", "name: removed-native-packages"],
+    ["Package source SHA lineage", NATIVE_PACKAGES_WORKFLOW, '            "$SOURCE_SHA"\n', '            "$GITHUB_SHA"\n'],
   ];
 
   for (const [name, relative, replace, replacement, all] of cases) {

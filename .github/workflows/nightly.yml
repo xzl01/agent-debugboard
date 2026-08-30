@@ -113,9 +113,20 @@ jobs:
           path: rust-release/${{ matrix.asset_name }}
           if-no-files-found: error
 
+  native-packages:
+    name: Build distro-native nightly packages
+    needs:
+      - validation
+      - rust-cli-release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/native-packages.yml
+    with:
+      source_sha: ${{ github.sha }}
+
   nightly-assets:
     name: Build nightly release assets
-    needs: rust-cli-release
+    needs: native-packages
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -175,6 +186,11 @@ jobs:
           pattern: rust-release-*
           path: rust-release-downloads
           merge-multiple: true
+      - name: Download native release packages
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: native-release-packages
+          path: native-package-assets
       - name: Package skill bundle
         working-directory: app
         run: |
@@ -193,13 +209,21 @@ jobs:
           cp ../rust-release-downloads/radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz dist/release/
           cp ../rust-release-downloads/radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz dist/release/
           cp ../rust-release-downloads/radxa-linkr-debuggerctl-rust_windows_amd64.zip dist/release/
+          cp ../native-package-assets/* dist/release/
           cp dist/skill-bundle/skills-radxa-linkr-debugger.tar.gz dist/release/
           cd dist/release
           sha256sum \
+            agent-debugboard-*.tar.gz \
             radxa-linkr-debugger-rp2350.uf2 \
             radxa-linkr-debugger-rp2350-ota.bin \
             radxa-linkr-debugger-rp2350.elf \
             radxa-linkr-debugger-rp2350.map \
+            radxa-linkr-debuggerctl_*.deb \
+            radxa-linkr-debugger-firmware_*.deb \
+            radxa-linkr-debuggerctl-*.rpm \
+            radxa-linkr-debugger-firmware-*.rpm \
+            radxa-linkr-debuggerctl-*.pkg.tar.zst \
+            radxa-linkr-debugger-firmware-*.pkg.tar.zst \
             radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz \
             radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz \
             radxa-linkr-debuggerctl-rust_windows_amd64.zip \
@@ -208,9 +232,13 @@ jobs:
         working-directory: app/dist/release
         run: |
           set -euo pipefail
-          payloads=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz)
-          expected_assets=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz SHA256SUMS.txt)
+          shopt -s nullglob
+          native_payloads=(agent-debugboard-*.tar.gz radxa-linkr-debuggerctl_*.deb radxa-linkr-debugger-firmware_*.deb radxa-linkr-debuggerctl-*.rpm radxa-linkr-debugger-firmware-*.rpm radxa-linkr-debuggerctl-*.pkg.tar.zst radxa-linkr-debugger-firmware-*.pkg.tar.zst)
+          test "${#native_payloads[@]}" -eq 7
+          payloads=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz "${native_payloads[@]}")
+          expected_assets=("${payloads[@]}" SHA256SUMS.txt)
           actual_assets=(*)
+          test "${#payloads[@]}" -eq 15
           test "${#actual_assets[@]}" -eq "${#expected_assets[@]}"
           for expected in "${expected_assets[@]}"; do test -f "$expected"; done
           for actual in "${actual_assets[@]}"; do case " ${expected_assets[*]} " in *" $actual "*) ;; *) printf 'unexpected release asset: %s\n' "$actual" >&2; exit 1 ;; esac; done
@@ -232,6 +260,8 @@ jobs:
           Included assets:
           - RP2350 firmware: combined initial/recovery UF2, OTA BIN, ELF, and MAP
           - Primary Rust host CLI/TUI archives: radxa-linkr-debuggerctl-rust_{os}_{arch}
+          - Native Linux packages: Debian 12 DEB, RHEL 9 RPM, and Arch Linux packages
+          - Exact source archive used by the native package builders
           - Agent skill bundle: skills-radxa-linkr-debugger.tar.gz
           - SHA256SUMS.txt for release asset verification
           EOF
@@ -259,9 +289,13 @@ jobs:
         run: |
           set -euo pipefail
           cd bundle/release
-          payloads=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz)
-          expected_assets=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz SHA256SUMS.txt)
+          shopt -s nullglob
+          native_payloads=(agent-debugboard-*.tar.gz radxa-linkr-debuggerctl_*.deb radxa-linkr-debugger-firmware_*.deb radxa-linkr-debuggerctl-*.rpm radxa-linkr-debugger-firmware-*.rpm radxa-linkr-debuggerctl-*.pkg.tar.zst radxa-linkr-debugger-firmware-*.pkg.tar.zst)
+          test "${#native_payloads[@]}" -eq 7
+          payloads=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz "${native_payloads[@]}")
+          expected_assets=("${payloads[@]}" SHA256SUMS.txt)
           actual_assets=(*)
+          test "${#payloads[@]}" -eq 15
           test "${#actual_assets[@]}" -eq "${#expected_assets[@]}"
           for expected in "${expected_assets[@]}"; do test -f "$expected"; done
           for actual in "${actual_assets[@]}"; do case " ${expected_assets[*]} " in *" $actual "*) ;; *) printf 'unexpected release asset: %s\n' "$actual" >&2; exit 1 ;; esac; done
@@ -298,17 +332,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          expected_assets=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz SHA256SUMS.txt)
-          gh release upload "$CANDIDATE_TAG" \
-            bundle/release/radxa-linkr-debugger-rp2350.uf2 \
-            bundle/release/radxa-linkr-debugger-rp2350-ota.bin \
-            bundle/release/radxa-linkr-debugger-rp2350.elf \
-            bundle/release/radxa-linkr-debugger-rp2350.map \
-            bundle/release/radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz \
-            bundle/release/radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz \
-            bundle/release/radxa-linkr-debuggerctl-rust_windows_amd64.zip \
-            bundle/release/skills-radxa-linkr-debugger.tar.gz \
-            --repo "$GITHUB_REPOSITORY"
+          mapfile -t payloads < <(awk '{print $2}' bundle/release/SHA256SUMS.txt)
+          test "${#payloads[@]}" -eq 15
+          expected_assets=("${payloads[@]}" SHA256SUMS.txt)
+          for payload in "${payloads[@]}"; do
+            [[ "$payload" != */* && "$payload" != -* ]]
+            gh release upload "$CANDIDATE_TAG" "bundle/release/$payload" --repo "$GITHUB_REPOSITORY"
+          done
           gh release upload "$CANDIDATE_TAG" bundle/release/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY"
           remote_asset_rows="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$CANDIDATE_RELEASE_ID/assets?per_page=100" --jq '.[] | [.id, .name, .size] | @tsv')"
           test -n "$remote_asset_rows"
@@ -345,7 +375,9 @@ jobs:
           gh release edit "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --tag nightly --target "$GITHUB_SHA" --title nightly --notes-file bundle/release-notes.md --prerelease --latest=false --draft=false
           tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha)"
           test "$tag_sha" = "$GITHUB_SHA"
-          expected_assets=(radxa-linkr-debugger-rp2350.uf2 radxa-linkr-debugger-rp2350-ota.bin radxa-linkr-debugger-rp2350.elf radxa-linkr-debugger-rp2350.map radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz radxa-linkr-debuggerctl-rust_windows_amd64.zip skills-radxa-linkr-debugger.tar.gz SHA256SUMS.txt)
+          mapfile -t payloads < <(awk '{print $2}' bundle/release/SHA256SUMS.txt)
+          test "${#payloads[@]}" -eq 15
+          expected_assets=("${payloads[@]}" SHA256SUMS.txt)
           final_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/$CANDIDATE_RELEASE_ID")"
           test "$(jq -r .tag_name <<< "$final_state")" = nightly
           test "$(jq -r .draft <<< "$final_state")" = false

@@ -4,9 +4,12 @@ import { fileURLToPath } from "node:url";
 
 const WORKFLOW = ".github/workflows/nightly.yml";
 const ACTIONS = Object.freeze({ "actions/checkout": "d23441a48e516b6c34aea4fa41551a30e30af803", "actions/upload-artifact": "b7c566a772e6b6bfb58ed0dc250532a479d7789f", "actions/download-artifact": "018cc2cf5baa6db3ef3c5f8a56943fffe632ef53", "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1", "actions/setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020", "Swatinem/rust-cache": "e18b497796c12c097a38f9edb9d0641fb99eee32", "dtolnay/rust-toolchain": "4cda84d5c5c54efe2404f9d843567869ab1699d4", "zephyrproject-rtos/action-zephyr-setup": "66a907961072acaa85313d2e064e9f071141265a" });
-const JOBS = ["validation", "rust-cli-release", "nightly-assets", "publish-nightly"];
-const PAYLOADS = ["radxa-linkr-debugger-rp2350.uf2", "radxa-linkr-debugger-rp2350-ota.bin", "radxa-linkr-debugger-rp2350.elf", "radxa-linkr-debugger-rp2350.map", "radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz", "radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz", "radxa-linkr-debuggerctl-rust_windows_amd64.zip", "skills-radxa-linkr-debugger.tar.gz"];
-const ASSETS = [...PAYLOADS, "SHA256SUMS.txt"];
+const JOBS = ["validation", "rust-cli-release", "native-packages", "nightly-assets", "publish-nightly"];
+const FIXED_PAYLOADS = ["radxa-linkr-debugger-rp2350.uf2", "radxa-linkr-debugger-rp2350-ota.bin", "radxa-linkr-debugger-rp2350.elf", "radxa-linkr-debugger-rp2350.map", "radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz", "radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz", "radxa-linkr-debuggerctl-rust_windows_amd64.zip", "skills-radxa-linkr-debugger.tar.gz"];
+const NATIVE_PAYLOADS = ["agent-debugboard-*.tar.gz", "radxa-linkr-debuggerctl_*.deb", "radxa-linkr-debugger-firmware_*.deb", "radxa-linkr-debuggerctl-*.rpm", "radxa-linkr-debugger-firmware-*.rpm", "radxa-linkr-debuggerctl-*.pkg.tar.zst", "radxa-linkr-debugger-firmware-*.pkg.tar.zst"];
+const CHECKSUM_PAYLOADS = [...FIXED_PAYLOADS, ...NATIVE_PAYLOADS];
+const PAYLOAD_ARRAY = [...FIXED_PAYLOADS, '"${native_payloads[@]}"'];
+const ASSET_ARRAY = ['"${payloads[@]}"', "SHA256SUMS.txt"];
 const DEV_ONLY_TRIGGER = normalized(`on:
   push:
     branches:
@@ -33,7 +36,7 @@ function step(job, name) {
   const end = body.slice(marker.length).search(/^      - /m);
   return end < 0 ? body : body.slice(0, marker.length + end);
 }
-function arrays(text, name) { return [...text.matchAll(new RegExp(`${name}=\\(([\\s\\S]*?)\\)`, "g"))].map((entry) => entry[1]); }
+function arrays(text, name) { return [...text.matchAll(new RegExp(`^\\s*${name}=\\(([\\s\\S]*?)\\)`, "gm"))].map((entry) => entry[1]); }
 function sole(text, name, expected) { const values = arrays(text, name); return values.length === 1 && exact(values[0], expected); }
 function soleLine(text, expected) { return normalized(text).split("\n").map((line) => line.trim()).filter((line) => line === expected).length === 1; }
 function ordered(text, markers) { const positions = markers.map((marker) => text.indexOf(marker)); return positions.every((position, index) => position >= 0 && (!index || positions[index - 1] < position)); }
@@ -54,19 +57,26 @@ function checkRoot(workflow, failures) {
 }
 function checkJobs(workflow, failures) {
   const map = jobs(workflow);
-  const [validation, rust, assets, publish] = JOBS.map((name) => map.get(name) ?? "");
-  const permissions = [[validation, "read"], [rust, "read"], [assets, "read"], [publish, "write"]];
-  const chain = /^    uses:\s*\.\/\.github\/workflows\/build\.yml\s*$/m.test(validation) && /^    needs:\s*validation\s*$/m.test(rust) && /^    needs:\s*rust-cli-release\s*$/m.test(assets) && /^    needs:\s*nightly-assets\s*$/m.test(publish);
-  if (map.size !== JOBS.length || JOBS.some((name) => !map.has(name)) || !chain || permissions.some(([job, level]) => !new RegExp(`^    permissions:\\s*\\n      contents:\\s*${level}\\s*$`, "m").test(job))) fail(failures, "W04", "requires the complete validation -> rust-cli-release -> nightly-assets -> publish-nightly chain");
+  const [validation, rust, native, assets, publish] = JOBS.map((name) => map.get(name) ?? "");
+  const permissions = [[validation, "read"], [rust, "read"], [native, "read"], [assets, "read"], [publish, "write"]];
+  const nativeNeeds = /^    needs:\s*\n      - validation\s*\n      - rust-cli-release\s*$/m.test(native);
+  const chain = /^    uses:\s*\.\/\.github\/workflows\/build\.yml\s*$/m.test(validation)
+    && /^    needs:\s*validation\s*$/m.test(rust) && nativeNeeds
+    && /^    uses:\s*\.\/\.github\/workflows\/native-packages\.yml\s*$/m.test(native)
+    && /^      source_sha:\s*\$\{\{ github\.sha \}\}\s*$/m.test(native)
+    && /^    needs:\s*native-packages\s*$/m.test(assets) && /^    needs:\s*nightly-assets\s*$/m.test(publish);
+  if (map.size !== JOBS.length || JOBS.some((name) => !map.has(name)) || !chain || permissions.some(([job, level]) => !new RegExp(`^    permissions:\\s*\\n      contents:\\s*${level}\\s*$`, "m").test(job))) fail(failures, "W04", "requires validation -> Rust CLI -> shared native packages -> nightly assets -> publisher");
   const uses = [...workflow.matchAll(/^\s*(?:-\s*)?uses:\s*([^\s#]+)(?:\s+#\s*([^\n]+))?$/gm)];
-  if (uses.some((entry) => { if (entry[1].startsWith("./")) return entry[1] !== "./.github/workflows/build.yml"; const [action, sha] = entry[1].split("@"); return !/^[a-f0-9]{40}$/.test(sha ?? "") || ACTIONS[action] !== sha || !/^(?:v\d|stable)/.test(entry[2] ?? ""); })) fail(failures, "W05", "every action must use its approved immutable SHA and version comment");
-  if ([rust, assets].some((job) => job.split(/(?=^      - )/m).some((entry) => entry.includes("actions/checkout@") && !/persist-credentials:\s*false/.test(entry)))) fail(failures, "W06", "each checkout must disable credential persistence");
+  const localWorkflows = new Set(["./.github/workflows/build.yml", "./.github/workflows/native-packages.yml"]);
+  if (uses.some((entry) => { if (entry[1].startsWith("./")) return !localWorkflows.has(entry[1]); const [action, sha] = entry[1].split("@"); return !/^[a-f0-9]{40}$/.test(sha ?? "") || ACTIONS[action] !== sha || !/^(?:v\d|stable)/.test(entry[2] ?? ""); })) fail(failures, "W05", "every action must use its approved immutable SHA and version comment");
+  if ([rust, assets].some((body) => body.split(/(?=^      - )/m).some((entry) => entry.includes("actions/checkout@") && !/persist-credentials:\s*false/.test(entry)))) fail(failures, "W06", "each checkout must disable credential persistence");
   if (publish.includes("actions/checkout@")) fail(failures, "W07", "publisher must not check out source");
   if (!/x86_64-unknown-linux-musl/.test(rust) || !/cargo zigbuild --locked --release/.test(rust) || !/must not have dynamic library dependencies/.test(rust) || !/cargo build --locked --release/.test(rust)) fail(failures, "W14", "Linux nightly CLI must be locked, static musl while other platforms also use the lockfile");
   checkArtifacts(assets, publish, failures);
 }
 function checkArtifacts(assets, publish, failures) {
   const firmware = step(assets, "Build RP2350 firmware");
+  const downloadNative = step(assets, "Download native release packages");
   const prepare = step(assets, "Prepare nightly release assets");
   const verifyAssets = step(assets, "Verify nightly release assets");
   const writeNotes = step(assets, "Write nightly release notes");
@@ -94,18 +104,24 @@ function checkArtifacts(assets, publish, failures) {
   const provenanceCmp = "cmp ../build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 dist/release/radxa-linkr-debugger-rp2350.uf2";
   const provenanceOk = soleLine(writeNotes, provenanceCmp) && writeNotes.trim().endsWith(provenanceCmp) && assets.includes(`${provenanceCmp}\n      - name: Upload nightly release bundle`);
   const checksum = prepare.match(/sha256sum\s+([\s\S]*?)>\s*SHA256SUMS\.txt/)?.[1] ?? "";
+  const strictManifest = (body) => sole(body, "native_payloads", NATIVE_PAYLOADS) && sole(body, "payloads", PAYLOAD_ARRAY)
+    && sole(body, "expected_assets", ASSET_ARRAY) && /test "\$\{#native_payloads\[@\]\}" -eq 7/.test(body)
+    && /test "\$\{#payloads\[@\]\}" -eq 15/.test(body);
   if (!soleLine(firmware, canonicalUf2Copy) || !releaseAssetsOk || !provenanceOk || /\bZEPHYR_BASE\b|mergehex\.py|uf2conv\.py|\bzephyr\.uf2\b/.test(assets)) fail(failures, "W15", "firmware packaging must copy and preserve the canonical combined UF2");
-  if (!exact(checksum, PAYLOADS) || !sole(verifyAssets, "payloads", PAYLOADS) || !sole(verifyAssets, "expected_assets", ASSETS) || !sole(verifyBundle, "payloads", PAYLOADS) || !sole(verifyBundle, "expected_assets", ASSETS) || !sole(remote, "expected_assets", ASSETS)) fail(failures, "W08", "requires exact checksum inputs and named-step manifests");
+  if (!/name:\s*native-release-packages/.test(downloadNative) || !/^          path:\s*native-package-assets\s*$/m.test(downloadNative) || !/cp \.\.\/native-package-assets\/\* dist\/release\//.test(prepare)) fail(failures, "W16", "nightly must download and stage the shared native package artifact");
+  const derivedRemoteManifest = (body) => /mapfile -t payloads < <\(awk '\{print \$2\}' bundle\/release\/SHA256SUMS\.txt\)/.test(body)
+    && /test "\$\{#payloads\[@\]\}" -eq 15/.test(body) && sole(body, "expected_assets", ASSET_ARRAY);
+  if (!exact(checksum, CHECKSUM_PAYLOADS) || !strictManifest(verifyAssets) || !strictManifest(verifyBundle) || !derivedRemoteManifest(remote) || !derivedRemoteManifest(final)) fail(failures, "W08", "requires checksums and strict manifests for eight fixed payloads, a source tar, and six native packages");
   if (!/name:\s*nightly-release-bundle/.test(upload) || !/^          path:\s*app\/dist\s*$/m.test(upload) || !/name:\s*nightly-release-bundle/.test(download) || !/^          path:\s*bundle\s*$/m.test(download) || !/cd bundle\/release/.test(verifyBundle) || !/bundle\/release-notes\.md/.test(final)) fail(failures, "W09", "requires app/dist artifact root and bundle/release layout");
-  const uploaded = remote.match(/gh release upload "\$CANDIDATE_TAG"\s+([\s\S]*?)\s+--repo/)?.[1].replaceAll("bundle/release/", "") ?? "";
+  const uploadLoop = /for payload in "\$\{payloads\[@\]\}"; do[\s\S]*?gh release upload "\$CANDIDATE_TAG" "bundle\/release\/\$payload" --repo "\$GITHUB_REPOSITORY"[\s\S]*?done/.test(remote);
   const draftOk = /CANDIDATE_TAG="nightly-candidate-\$GITHUB_RUN_ID"/.test(draft) && /candidate_rows="\$\(gh api --paginate/.test(draft) && /-F draft=true/.test(draft) && /candidate_asset_ids="\$\(gh api/.test(draft) && !/gh release (?:delete|edit) nightly/.test(draft);
-  const remoteOk = !/< <\(gh api/.test(`${draft}\n${remote}`) && /remote_asset_rows="\$\(gh api[\s\S]*CANDIDATE_RELEASE_ID/.test(remote) && /mapfile -t remote_assets <<</.test(remote) && exact(uploaded, PAYLOADS) && /gh release upload "\$CANDIDATE_TAG" bundle\/release\/SHA256SUMS\.txt/.test(remote) && soleLine(remote, assetDownload) && /\(cd "\$verify_dir" && sha256sum -c SHA256SUMS\.txt\)/.test(remote) && !/gh release delete nightly/.test(remote);
+  const remoteOk = !/< <\(gh api/.test(`${draft}\n${remote}`) && /remote_asset_rows="\$\(gh api[\s\S]*CANDIDATE_RELEASE_ID/.test(remote) && /mapfile -t remote_assets <<< /.test(remote) && uploadLoop && /gh release upload "\$CANDIDATE_TAG" bundle\/release\/SHA256SUMS\.txt/.test(remote) && soleLine(remote, assetDownload) && /\(cd "\$verify_dir" && sha256sum -c SHA256SUMS\.txt\)/.test(remote) && !/gh release delete nightly/.test(remote);
   const promotion = /gh release delete nightly[^\n]*--cleanup-tag/.test(final) && /gh release edit "\$CANDIDATE_TAG"[^\n]*--tag nightly[^\n]*--draft=false/.test(final);
-  const finalOrder = ordered(final, ["existing_rows=", "gh release edit \"$CANDIDATE_TAG\"", "tag_sha=", "test \"$tag_sha\" = \"$GITHUB_SHA\"", "expected_assets=", "final_state=", "final_asset_rows=", "mapfile -t final_assets", "for expected in \"${expected_assets[@]}\""]);
-  const finalOk = promotion && finalOrder && sole(final, "expected_assets", ASSETS) && soleLine(final, tagReadback) && soleLine(final, releaseReadback) && /final_asset_rows="\$\(jq/.test(final) && /mapfile -t final_assets <<</.test(final) && /for expected in "\$\{expected_assets\[@\]\}"/.test(final);
+  const finalOrder = ordered(final, ["existing_rows=", "gh release edit \"$CANDIDATE_TAG\"", "tag_sha=", "test \"$tag_sha\" = \"$GITHUB_SHA\"", "mapfile -t payloads", "expected_assets=", "final_state=", "final_asset_rows=", "mapfile -t final_assets", "for expected in \"${expected_assets[@]}\""]);
+  const finalOk = promotion && finalOrder && soleLine(final, tagReadback) && soleLine(final, releaseReadback) && /final_asset_rows="\$\(jq/.test(final) && /mapfile -t final_assets <<< /.test(final) && /for expected in "\$\{expected_assets\[@\]\}"/.test(final);
   const cleanupOk = /if:\s*\$\{\{\s*always\(\)\s*\}\}/.test(cleanup) && /candidate_tag="\$\{CANDIDATE_TAG:-nightly-candidate-\$GITHUB_RUN_ID\}"/.test(cleanup) && /select\(\.tag_name == \\"\$candidate_tag\\"\)/.test(cleanup) && /\[\.id, \.draft\]/.test(cleanup) && /if \[ "\$candidate_draft" != true \]; then/.test(cleanup) && /--method DELETE "repos\/\$GITHUB_REPOSITORY\/releases\/\$candidate_id"/.test(cleanup) && /--method DELETE "repos\/\$GITHUB_REPOSITORY\/git\/refs\/tags\/\$candidate_tag"/.test(cleanup) && !/gh release (?:delete|edit) nightly/.test(cleanup);
   if (!draftOk || !remoteOk || !finalOk || !cleanupOk || !ordered(publish, ["Prepare staged nightly draft", "Upload and verify staged nightly assets", "Promote staged nightly release", "Clean up abandoned nightly candidate"])) fail(failures, "W10", "requires staged remote verification, promotion, and draft-only candidate cleanup");
-  if (/--clobber\b/.test(publish) || /gh release upload nightly[\s\S]*?\*/.test(publish)) fail(failures, "W11", "publisher must not use wildcard or clobber uploads");
+  if (/--clobber\b/.test(publish) || /gh release upload "\$CANDIDATE_TAG"[^\n]*bundle\/release\/\*/.test(publish)) fail(failures, "W11", "publisher must not use wildcard or clobber uploads");
   if (!/\[\[ "\$candidate_rows" == \*\$'\\n'\* \]\]/.test(draft) || !/\[\[ "\$existing_rows" == \*\$'\\n'\* \]\]/.test(final)) fail(failures, "W12", "must reject duplicate candidate and nightly releases");
 }
 function checkReadme(text, failures, surface) {

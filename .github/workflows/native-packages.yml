@@ -1,0 +1,194 @@
+name: Native release packages
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: "Immutable application commit to package"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  native-packages:
+    name: Build Debian, RHEL and Arch Linux packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: app
+          persist-credentials: false
+
+      - name: Verify immutable package source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git -C app rev-parse HEAD)" = "$SOURCE_SHA"
+          python3 app/scripts/version_sync.py check
+
+      - name: Download Linux CLI archive
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          pattern: rust-release-*
+          path: rust-release-downloads
+          merge-multiple: true
+
+      - name: Download validated firmware
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: radxa-linkr-debugger-firmware
+          path: release-assets
+
+      - name: Stage native package inputs
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          version="$(cat app/VERSION)"
+          input="$GITHUB_WORKSPACE/app/dist/native-package-input"
+          sources="$GITHUB_WORKSPACE/native-package-sources"
+          mkdir -p "$input" "$sources"
+          tar -xzf rust-release-downloads/radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz \
+            -C "$input" radxa-linkr-debuggerctl
+          install -m 0644 release-assets/radxa-linkr-debugger-rp2350.uf2 \
+            "$input/radxa-linkr-debugger-rp2350.uf2"
+          install -m 0644 release-assets/radxa-linkr-debugger-rp2350-ota.bin \
+            "$input/radxa-linkr-debugger-rp2350-ota.bin"
+          test ! -e "$input/zephyr.uf2"
+          "$input/radxa-linkr-debuggerctl" --version
+          git -C app archive --format=tar.gz \
+            --prefix="agent-debugboard-$version/" \
+            --output="$sources/agent-debugboard-$version.tar.gz" \
+            "$SOURCE_SHA"
+          cp rust-release-downloads/radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz \
+            "$sources/"
+          cp release-assets/radxa-linkr-debugger-rp2350.uf2 \
+            release-assets/radxa-linkr-debugger-rp2350-ota.bin \
+            "$sources/"
+
+      - name: Build distro-native packages
+        run: |
+          set -euo pipefail
+          version="$(cat app/VERSION)"
+          output="$GITHUB_WORKSPACE/app/dist/native-packages"
+          mkdir -p "$output"
+
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work/app \
+            debian:bookworm@sha256:6ebd97fa83deb272194a2cf015b3d26a4d538e9ad3a7a79d544c8af5b0a01443 sh -exc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends build-essential ca-certificates debhelper dpkg-dev
+              dpkg-buildpackage --build=binary --no-sign
+            '
+          cp radxa-linkr-debuggerctl_*.deb \
+            radxa-linkr-debugger-firmware_*.deb \
+            "$output/"
+
+          rpmroot="$GITHUB_WORKSPACE/native-rpm"
+          mkdir -p "$rpmroot"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+          cp app/packaging/redhat/radxa-linkr-debugger.spec "$rpmroot/SPECS/"
+          cp "native-package-sources/agent-debugboard-$version.tar.gz" \
+            native-package-sources/radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz \
+            native-package-sources/radxa-linkr-debugger-rp2350.uf2 \
+            native-package-sources/radxa-linkr-debugger-rp2350-ota.bin \
+            "$rpmroot/SOURCES/"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" \
+            almalinux:9@sha256:28db580abb508f7ccbc0ac6d53e1d8da9d42a26c77fa3dcc26ac2726673fbe3e sh -exc '
+              dnf -qy install rpm-build
+              rpmbuild -bb --define "_topdir /work/native-rpm" \
+                /work/native-rpm/SPECS/radxa-linkr-debugger.spec
+            '
+          cp native-rpm/RPMS/*/radxa-linkr-debuggerctl-*.rpm \
+            native-rpm/RPMS/*/radxa-linkr-debugger-firmware-*.rpm \
+            "$output/"
+
+          archroot="$GITHUB_WORKSPACE/native-arch"
+          mkdir -p "$archroot"
+          cp app/packaging/archlinux/PKGBUILD "$archroot/"
+          cp "native-package-sources/agent-debugboard-$version.tar.gz" \
+            native-package-sources/radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz \
+            native-package-sources/radxa-linkr-debugger-rp2350.uf2 \
+            native-package-sources/radxa-linkr-debugger-rp2350-ota.bin \
+            "$archroot/"
+          source_sha256="$(sha256sum "$archroot/agent-debugboard-$version.tar.gz" | cut -d' ' -f1)"
+          cli_sha256="$(sha256sum "$archroot/radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz" | cut -d' ' -f1)"
+          uf2_sha256="$(sha256sum "$archroot/radxa-linkr-debugger-rp2350.uf2" | cut -d' ' -f1)"
+          ota_sha256="$(sha256sum "$archroot/radxa-linkr-debugger-rp2350-ota.bin" | cut -d' ' -f1)"
+          docker run --rm \
+            -e AGENT_DEBUGBOARD_SOURCE_SHA256="$source_sha256" \
+            -e AGENT_DEBUGBOARD_CLI_SHA256="$cli_sha256" \
+            -e AGENT_DEBUGBOARD_UF2_SHA256="$uf2_sha256" \
+            -e AGENT_DEBUGBOARD_OTA_SHA256="$ota_sha256" \
+            -v "$GITHUB_WORKSPACE:/work" \
+            archlinux:latest@sha256:c9dc8b5d1b06d8d50ace6d42b2c93fbb1e34c9e1332d1a2102936e497d3187ae sh -exc '
+              pacman -Syu --needed --noconfirm base-devel ca-certificates
+              useradd -m builder
+              cp -a /work/native-arch /home/builder/package
+              chown -R builder:builder /home/builder/package
+              su builder -c "cd /home/builder/package && SRCDEST=/home/builder/package makepkg --cleanbuild --noconfirm"
+              test "$(find /home/builder/package -maxdepth 1 -name '*.pkg.tar.zst' | wc -l)" -eq 2
+              cp /home/builder/package/radxa-linkr-debuggerctl-*.pkg.tar.zst \
+                /home/builder/package/radxa-linkr-debugger-firmware-*.pkg.tar.zst \
+                /work/app/dist/native-packages/
+            '
+
+      - name: Verify distro-native package contents
+        working-directory: app
+        run: |
+          set -euo pipefail
+          packages=dist/native-packages
+          test "$(find "$packages" -maxdepth 1 -name '*.deb' | wc -l)" -eq 2
+          test "$(find "$packages" -maxdepth 1 -name '*.rpm' | wc -l)" -eq 2
+          test "$(find "$packages" -maxdepth 1 -name '*.pkg.tar.zst' | wc -l)" -eq 2
+          listings="$RUNNER_TEMP/native-package-files.txt"
+          {
+            dpkg-deb -c "$packages"/radxa-linkr-debuggerctl_*.deb
+            dpkg-deb -c "$packages"/radxa-linkr-debugger-firmware_*.deb
+            docker run --rm -v "$GITHUB_WORKSPACE:/work" almalinux:9@sha256:28db580abb508f7ccbc0ac6d53e1d8da9d42a26c77fa3dcc26ac2726673fbe3e sh -ec '
+              rpm -qpl /work/app/dist/native-packages/radxa-linkr-debuggerctl-*.rpm
+              rpm -qpl /work/app/dist/native-packages/radxa-linkr-debugger-firmware-*.rpm
+            '
+            docker run --rm -v "$GITHUB_WORKSPACE:/work" archlinux:latest@sha256:c9dc8b5d1b06d8d50ace6d42b2c93fbb1e34c9e1332d1a2102936e497d3187ae sh -ec '
+              bsdtar -tf /work/app/dist/native-packages/radxa-linkr-debuggerctl-*.pkg.tar.zst
+              bsdtar -tf /work/app/dist/native-packages/radxa-linkr-debugger-firmware-*.pkg.tar.zst
+            '
+          } > "$listings"
+          grep -q 'usr/bin/radxa-linkr-debuggerctl' "$listings"
+          grep -q 'radxa-linkr-debugger-rp2350.uf2' "$listings"
+          grep -q 'radxa-linkr-debugger-rp2350-ota.bin' "$listings"
+          ! grep -E '(web/|zephyr[.]uf2)' "$listings"
+
+      - name: Stage native release package artifact
+        run: |
+          set -euo pipefail
+          version="$(cat app/VERSION)"
+          release="$GITHUB_WORKSPACE/app/dist/native-release-packages"
+          mkdir -p "$release"
+          cp "native-package-sources/agent-debugboard-$version.tar.gz" \
+            app/dist/native-packages/radxa-linkr-debuggerctl_*.deb \
+            app/dist/native-packages/radxa-linkr-debugger-firmware_*.deb \
+            app/dist/native-packages/radxa-linkr-debuggerctl-*.rpm \
+            app/dist/native-packages/radxa-linkr-debugger-firmware-*.rpm \
+            app/dist/native-packages/radxa-linkr-debuggerctl-*.pkg.tar.zst \
+            app/dist/native-packages/radxa-linkr-debugger-firmware-*.pkg.tar.zst \
+            "$release/"
+          test "$(find "$release" -maxdepth 1 -type f | wc -l)" -eq 7
+
+      - name: Upload native release packages
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: native-release-packages
+          path: app/dist/native-release-packages/
+          if-no-files-found: error

@@ -140,6 +140,25 @@ function sourceGateContract(build) {
     && needs(gate).includes("source");
 }
 
+function nativePackageSourceContract(nativePackages) {
+  const nativeJobs = jobs(nativePackages);
+  const build = job(nativePackages, "native-packages");
+  const checkout = steps(build).find((step) => step.startsWith("      - name: Checkout application\n")) ?? "";
+  const verify = steps(build).find((step) => step.startsWith("      - name: Verify immutable package source\n")) ?? "";
+  const sourceInput = /^  workflow_call:\s*\n    inputs:\s*\n      source_sha:\s*\n        description:.+\n        required:\s*true\s*\n        type:\s*string\s*$/m.test(nativePackages);
+  const checkoutBinding = /^          ref:\s*\$\{\{ inputs\.source_sha \}\}\s*$/m.test(checkout)
+    && /^          path:\s*app\s*$/m.test(checkout)
+    && /^          persist-credentials:\s*false\s*$/m.test(checkout);
+  const sourceVerification = verify.includes("SOURCE_SHA: ${{ inputs.source_sha }}")
+    && verify.includes('[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]')
+    && verify.includes('test "$(git -C app rev-parse HEAD)" = "$SOURCE_SHA"')
+    && verify.includes("python3 app/scripts/version_sync.py check");
+  const root = nativePackages.slice(0, Math.max(0, nativePackages.search(/^jobs:\s*$/m)));
+  const permissions = onlyContents(permissionEntries(root, ""), "read")
+    && [...nativeJobs.values()].every((body) => onlyContents(permissionEntries(body, "    "), "read"));
+  return nativeJobs.size === 1 && sourceInput && checkoutBinding && sourceVerification && permissions;
+}
+
 function releaseSourceContract(release) {
   const releaseJobs = jobs(release);
   const resolve = job(release, "resolve");
@@ -147,6 +166,7 @@ function releaseSourceContract(release) {
   const version = job(release, "version-gate");
   const rust = job(release, "rust-cli-release");
   const desktop = job(release, "host-desktop-release");
+  const native = job(release, "native-packages");
   const publish = job(release, "release");
   const resolver = /normalized_tag:\s*\$\{\{ steps\.resolve\.outputs\.normalized_tag \}\}/.test(resolve)
     && /resolved_sha:\s*\$\{\{ steps\.resolve\.outputs\.resolved_sha \}\}/.test(resolve)
@@ -165,8 +185,10 @@ function releaseSourceContract(release) {
   });
   const dependencies = needs(validation).includes("resolve") && needs(version).includes("resolve")
     && needs(rust).includes("resolve") && needs(desktop).includes("resolve")
-    && needs(publish).includes("resolve");
+    && needs(native).includes("resolve") && needs(publish).includes("resolve");
   const validationBinding = validation.includes("source_sha: ${{ needs.resolve.outputs.resolved_sha }}");
+  const nativeBinding = /^    uses:\s*\.\/\.github\/workflows\/native-packages\.yml\s*$/m.test(native)
+    && native.includes("source_sha: ${{ needs.resolve.outputs.resolved_sha }}");
   const remoteReadback = publish.includes('gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG"')
     && publish.includes('while [[ "$object_type" == "tag" ]]')
     && publish.includes('gh api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha"')
@@ -178,12 +200,12 @@ function releaseSourceContract(release) {
       const entries = permissionEntries(body, "    ");
       return name === "release" ? onlyContents(entries, "write") : entries === null || onlyContents(entries, "read");
     });
-  return resolver && checkouts && dependencies && validationBinding && remoteReadback && permissions;
+  return resolver && checkouts && dependencies && validationBinding && nativeBinding && remoteReadback && permissions;
 }
 
-export function checkWorkflowContracts({ build, release, pages, versionBump, makefile }) {
-  return sourceGateContract(build) && releaseSourceContract(release)
-    && externalActionsArePinned(build) && externalActionsArePinned(release)
+export function checkWorkflowContracts({ build, release, nativePackages, pages, versionBump, makefile }) {
+  return sourceGateContract(build) && releaseSourceContract(release) && nativePackageSourceContract(nativePackages)
+    && externalActionsArePinned(build) && externalActionsArePinned(release) && externalActionsArePinned(nativePackages)
     && externalActionsArePinned(pages) && externalActionsArePinned(versionBump)
     && permanentGateContract(build, makefile);
 }
