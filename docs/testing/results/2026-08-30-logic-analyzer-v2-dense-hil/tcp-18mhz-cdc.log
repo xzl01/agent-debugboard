@@ -1,0 +1,71 @@
+[m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.039,000] [0m<inf> linkr_debugger_network: DHCPv4 server started from 172.29.203.10[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> radxa_linkr_debugger: radxa-linkr-debugger controller ready over NCM HTTP with CDC ACM fallback[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> radxa_linkr_debugger: firmware build id v0.2.1-215-g96d2aa896e31-dirty at Jan  1 1980 00:00:00[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> linkr_debugger_usb_net: usb event: Device suspended[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=41[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=41 uptime_seconds=0[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.041,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=-1 core_age_ms=0 cmd_age_ms=0 grace_remaining_ms=15000 uptime_ms=41[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;31m[1;31m--- 166 messages dropped ---
+[0m[m[00:00:00.489,000] [0m<inf> linkr_debugger_usb_net: usb event: Bus reset[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.542,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=542[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.542,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=542 uptime_seconds=0[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.542,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=1 cmd_age_ms=1 grace_remaining_ms=14499 uptime_ms=542[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.565,000] [0m<inf> linkr_debugger_usb_net: usb event: Bus reset[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.668,000] [0m<inf> linkr_debugger_usb_net: usb event: New device configuration[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:00.668,000] [0m<inf> linkr_debugger_usb_net: usb event: CDC ACM line coding[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:01.042,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=1042[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:01.042,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=1042 uptime_seconds=1[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[00:00:16.020,000] [1;31m<err> net_arp: Gateway not set for iface 1, could not send ARP request for 198.18.0.1[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:16.056,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=16056[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:16.056,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=16056 uptime_seconds=16[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:16.056,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=6 cmd_age_ms=12 grace_remaining_ms=0 uptime_ms=16056[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:16.556,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=16556[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:16.556,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=16556 uptime_seconds=16[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:16.557,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=6 cmd_age_ms=12 grace_remaining_ms=0 uptime_ms=16556[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:16.868,000] [0m<inf> linkr_debugger_usb_net: usb event: CDC ACM control line state[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:16.868,000] [0m<inf> linkr_debugger_usb_net: usb event: CDC ACM line coding[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[00:00:17.057,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=17057[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:17.057,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=17057 uptime_seconds=17[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:17.057,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=7 cmd_age_ms=12 grace_remaining_ms=0 uptime_ms=17057[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[00:00:17.558,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=2084 heap_free=47068 heap_total=49152 heap_peak=16672 uptime_ms=17558[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:17.558,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=17558 uptime_seconds=17[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:17.558,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=7 cmd_age_ms=13 grace_remaining_ms=0 uptime_ms=17558[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:18.058,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=16672 uptime_ms=18058[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:18.059,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=18058 uptime_seconds=18[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:18.059,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=7 cmd_age_ms=13 grace_remaining_ms=0 uptime_ms=18058[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:18.065,000] [1;31m<err> net_arp: Gateway not set for iface 1, could not send ARP request for 198.18.0.1[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:18.065,000] [1;33m<wrn> net_if: Skipped 9 messages[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:18.065,000] [1;33m<wrn> net_if: iface 1 pkt 0x20071260 send failure status -22[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[00:00:18.559,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=16672 uptime_ms=18559[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:18.559,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=18559 uptime_seconds=18[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:18.559,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=8 cmd_age_ms=14 grace_remaining_ms=0 uptime_ms=18559[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[00:00:19.061,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=2084 heap_free=47068 heap_total=49152 heap_peak=16672 uptime_ms=19061[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:19.061,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=19061 uptime_seconds=19[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:19.061,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=9 cmd_age_ms=16 grace_remaining_ms=0 uptime_ms=19061[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:19.087,000] [1;31m<err> net_arp: Gateway not set for iface 1, could not send ARP request for 198.18.0.1[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:19.087,000] [1;31m<err> net_arp: Gateway not set for iface 1, could not send ARP request for 198.18.0.1[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:19.562,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=16672 uptime_ms=19561[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:19.562,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=19561 uptime_seconds=19[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:19.562,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=9 cmd_age_ms=16 grace_remaining_ms=0 uptime_ms=19561[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:19.599,000] [1;31m<err> net_arp: Gateway not set for iface 1, could not send ARP request for 198.18.0.1[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[00:00:20.062,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=16672 uptime_ms=20062[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:20.062,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=20062 uptime_seconds=20[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:20.063,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=10 cmd_age_ms=17 grace_remaining_ms=0 uptime_ms=20062[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:20.565,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=16672 uptime_ms=20563[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:20.565,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=20565 uptime_seconds=20[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:20.566,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=11 cmd_age_ms=18 grace_remaining_ms=0 uptime_ms=20563[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[00:00:21.066,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=6252 heap_free=42888 heap_total=49140 heap_peak=35428 uptime_ms=21066[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:21.066,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=21066 uptime_seconds=21[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:21.066,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=13 cmd_age_ms=21 grace_remaining_ms=0 uptime_ms=21066[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:21.567,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=2084 heap_free=47068 heap_total=49152 heap_peak=35428 uptime_ms=21566[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:21.567,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=21567 uptime_seconds=21[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:21.567,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=13 cmd_age_ms=20 grace_remaining_ms=0 uptime_ms=21566[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[1;32mlinkr-debugger:~$ [m[18D[J[00:00:22.067,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=35428 uptime_ms=22067[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:22.067,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=22067 uptime_seconds=22[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:22.067,000] [0m<inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=14 cmd_age_ms=21 grace_remaining_ms=0 uptime_ms=22067[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:22.298,000] [1;33m<wrn> linkr_debugger_la: la stream stop: writer=90901728 reader=90800128 emitted=90800128 hw=0 rate_hz=18002812[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:22.450,000] [1;33m<wrn> linkr_debugger_la: la stream stop: writer=90901728 reader=90800128 emitted=90800128 hw=0 rate_hz=18002812[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:22.568,000] [0m<inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=35428 uptime_ms=22568[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:22.568,000] [0m<inf> linkr_debugger_control: runtime diagnostics: uptime_ms=22568 uptime_seconds=22[0m
+[1;32mlinkr-debugger:~$ [m[18D[J[00:00:22.568,000] [0m<inf> linkr_debu

@@ -1,0 +1,83 @@
+{
+  "bounded_post_65535": {
+    "tcp_pass": true,
+    "ws_pass": true
+  },
+  "candidate": {
+    "bytes": 1595392,
+    "flash_total": 847832,
+    "flash_used": 771588,
+    "ram_total": 532480,
+    "ram_used": 469424,
+    "sha256": "789dab21b162dcd5b69750cde2e2a1e51cf334b7b70a62943d9f9d18c8b7e272"
+  },
+  "exact_final_uf2_smoke": {
+    "embedded_webui_16mhz": true,
+    "tcp": {
+      "effective_samples_per_s": 15959726.10392638,
+      "pass": true,
+      "protocol_version": 2,
+      "samples": 79806464
+    },
+    "ws": {
+      "effective_samples_per_s": 15971922.773939045,
+      "pass": true,
+      "protocol_version": 2,
+      "samples": 79872000
+    }
+  },
+  "high_transition": {
+    "reason": "user-owned /dev/ttyACM1 rustty session",
+    "status": "blocked"
+  },
+  "protocol_version": 2,
+  "restoration": {
+    "build_id": "v0.2.1-208-gc72104d89ca1-dirty",
+    "fault_http_status": 404,
+    "image_version": "0.3.0+0",
+    "ota_idle_confirmed": true,
+    "production_sha256": "8d0bc34dfdbcdbe91fa4e5902772965751fbddd626c3c964f3aad5bd7fa0219d",
+    "production_v1_ws_smoke": true,
+    "profile": "production",
+    "saved_config_count": 6,
+    "user_rustty_untouched": true,
+    "watchdog_armed": true,
+    "watchdog_healthy": true
+  },
+  "tcp_16mhz_10x": {
+    "effective_samples_per_s": {
+      "max": 15986497.902054306,
+      "min": 15451398.255090227
+    },
+    "passes": 10,
+    "runs": 10,
+    "samples": {
+      "max": 79937536,
+      "min": 77266944
+    }
+  },
+  "tcp_18_002mhz": {
+    "minimum": 85509500,
+    "pass": false,
+    "reason": "continuous sample count below negotiated rate",
+    "samples": 78413824
+  },
+  "ws_16mhz_10x": {
+    "effective_samples_per_s": {
+      "max": 15969318.813880606,
+      "min": 15600122.695286749
+    },
+    "passes": 10,
+    "runs": 10,
+    "samples": {
+      "max": 79855616,
+      "min": 78004224
+    }
+  },
+  "ws_18_002mhz": {
+    "minimum": 85509500,
+    "pass": false,
+    "reason": "continuous sample count below negotiated rate",
+    "samples": 83542016
+  }
+}

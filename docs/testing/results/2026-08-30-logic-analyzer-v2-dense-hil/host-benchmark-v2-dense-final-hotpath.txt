@@ -1,0 +1,3 @@
+zeros old_convert=2190.438 dense_convert=976796.705 gain=445.94x old_e2e=1241.887 dense_e2e=53827.085 gain=43.34x
+alternating old_convert=2174.201 dense_convert=975065.223 gain=448.47x old_e2e=1502.970 dense_e2e=53379.455 gain=35.52x
+random old_convert=2192.935 dense_convert=969837.332 gain=442.26x old_e2e=412.005 dense_e2e=38003.782 gain=92.24x

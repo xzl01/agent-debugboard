@@ -1,0 +1,4 @@
+in_place_alternating len=64 compression=1 payload_matches=false
+zeros convert_median_msps=1637.144 end_to_end_median_msps=1033.308
+alternating convert_median_msps=1641.165 end_to_end_median_msps=1260.972
+mixed convert_median_msps=1645.086 end_to_end_median_msps=376.433

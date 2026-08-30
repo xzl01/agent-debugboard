@@ -1,0 +1,292 @@
+[
+  {
+    "file": "ws-10mhz-10x.json",
+    "label": "pre-backpressure WS 10 MHz",
+    "overall_pass": false,
+    "rows": [
+      {
+        "effective_samples_per_s": 9953082.427625608,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 10000,
+        "samples": 34573984
+      },
+      {
+        "effective_samples_per_s": 9980425.479260763,
+        "overruns": 0,
+        "pass": true,
+        "reason": "ok",
+        "requested_khz": 10000,
+        "samples": 49905664
+      },
+      {
+        "effective_samples_per_s": 9965181.219735298,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 10000,
+        "samples": 45106400
+      },
+      {
+        "effective_samples_per_s": 9980576.461798938,
+        "overruns": 0,
+        "pass": true,
+        "reason": "ok",
+        "requested_khz": 10000,
+        "samples": 49922048
+      },
+      {
+        "effective_samples_per_s": 9928678.482514668,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 10000,
+        "samples": 22676576
+      },
+      {
+        "effective_samples_per_s": 9938505.683683062,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 10000,
+        "samples": 34116896
+      },
+      {
+        "effective_samples_per_s": 9980158.611871378,
+        "overruns": 0,
+        "pass": true,
+        "reason": "ok",
+        "requested_khz": 10000,
+        "samples": 49938432
+      },
+      {
+        "effective_samples_per_s": 9962945.869802792,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 10000,
+        "samples": 44239680
+      },
+      {
+        "effective_samples_per_s": 9919489.81117349,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 10000,
+        "samples": 20121312
+      },
+      {
+        "effective_samples_per_s": 9953642.750274576,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 10000,
+        "samples": 35248640
+      }
+    ]
+  },
+  {
+    "file": "tcp-32k-25mhz-5x.json",
+    "label": "32k TCP chunk before final hotpath cleanup",
+    "overall_pass": false,
+    "rows": [
+      {
+        "effective_samples_per_s": 12254697.130270028,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 25000,
+        "samples": 19700288
+      },
+      {
+        "effective_samples_per_s": 13458855.96882059,
+        "overruns": 0,
+        "pass": false,
+        "reason": "STOP_RESP not received",
+        "requested_khz": 25000,
+        "samples": 67305472
+      },
+      {
+        "effective_samples_per_s": 14547278.417411251,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 25000,
+        "samples": 33540096
+      },
+      {
+        "effective_samples_per_s": 15884952.699197551,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 25000,
+        "samples": 67177216
+      },
+      {
+        "effective_samples_per_s": 15459747.28471768,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 25000,
+        "samples": 52121664
+      }
+    ]
+  },
+  {
+    "file": "tcp32k-final-boundary.json",
+    "label": "32k TCP chunk final A/B",
+    "overall_pass": false,
+    "rows": [
+      {
+        "effective_samples_per_s": 16354843.32771603,
+        "overruns": 0,
+        "pass": false,
+        "reason": "continuous sample count below negotiated rate",
+        "requested_khz": 18000,
+        "samples": 81788928
+      },
+      {
+        "effective_samples_per_s": 16156371.806436662,
+        "overruns": 0,
+        "pass": false,
+        "reason": "continuous sample count below negotiated rate",
+        "requested_khz": 20000,
+        "samples": 80805888
+      },
+      {
+        "effective_samples_per_s": 15964310.987738596,
+        "overruns": 0,
+        "pass": false,
+        "reason": "continuous sample count below negotiated rate",
+        "requested_khz": 25000,
+        "samples": 79822848
+      },
+      {
+        "effective_samples_per_s": 15657236.26569215,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 50000,
+        "samples": 2395872
+      }
+    ]
+  },
+  {
+    "file": "tcp-sendmsg-boundary.json",
+    "label": "TCP sendmsg batching",
+    "overall_pass": false,
+    "rows": [
+      {
+        "effective_samples_per_s": 16701393.341315176,
+        "overruns": 0,
+        "pass": false,
+        "reason": "continuous sample count below negotiated rate",
+        "requested_khz": 18000,
+        "samples": 83509248
+      },
+      {
+        "effective_samples_per_s": 16327610.181699794,
+        "overruns": 0,
+        "pass": false,
+        "reason": "continuous sample count below negotiated rate",
+        "requested_khz": 20000,
+        "samples": 81641472
+      },
+      {
+        "effective_samples_per_s": 14909559.70073312,
+        "overruns": 0,
+        "pass": false,
+        "reason": "continuous sample count below negotiated rate",
+        "requested_khz": 25000,
+        "samples": 74563584
+      },
+      {
+        "effective_samples_per_s": 16060991.69500357,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 50000,
+        "samples": 2920288
+      }
+    ]
+  },
+  {
+    "file": "tcp-busy-poll-boundary.json",
+    "label": "TCP zero-timeout busy poll",
+    "overall_pass": false,
+    "rows": [
+      {
+        "effective_samples_per_s": 11148357.612041531,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 18000,
+        "samples": 290400
+      },
+      {
+        "effective_samples_per_s": 8020752.812859042,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 20000,
+        "samples": 322784
+      },
+      {
+        "effective_samples_per_s": 11576264.934713483,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 25000,
+        "samples": 279936
+      },
+      {
+        "effective_samples_per_s": 13189609.08293471,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 50000,
+        "samples": 308928
+      }
+    ]
+  },
+  {
+    "file": "tcp-yield-poll-boundary.json",
+    "label": "TCP zero-timeout plus yield",
+    "overall_pass": false,
+    "rows": [
+      {
+        "effective_samples_per_s": 16663115.033311537,
+        "overruns": 0,
+        "pass": false,
+        "reason": "continuous sample count below negotiated rate",
+        "requested_khz": 18000,
+        "samples": 83329024
+      },
+      {
+        "effective_samples_per_s": 15416766.638994275,
+        "overruns": 0,
+        "pass": false,
+        "reason": "continuous sample count below negotiated rate",
+        "requested_khz": 20000,
+        "samples": 77086720
+      },
+      {
+        "effective_samples_per_s": 15919646.969744176,
+        "overruns": 0,
+        "pass": false,
+        "reason": "continuous sample count below negotiated rate",
+        "requested_khz": 25000,
+        "samples": 79609856
+      },
+      {
+        "effective_samples_per_s": 16368858.012602946,
+        "overruns": 1,
+        "pass": false,
+        "reason": "continuous data window duration not met",
+        "requested_khz": 50000,
+        "samples": 4098400
+      }
+    ]
+  }
+]
