@@ -1,5 +1,15 @@
 # Agent Development Notes
 
+## Early-development compatibility policy
+
+This project is in early development and has no released legacy compatibility
+contract. Do not spend MCU flash, RAM, CPU time, protocol complexity, or
+maintenance code on compatibility with older unpublished firmware, protocol,
+configuration, host, or Web UI versions. Replace or remove obsolete paths and
+update all in-repository producers, consumers, tests, and documentation together.
+Only preserve a legacy contract when the user explicitly identifies it as an
+external or released compatibility requirement.
+
 ## Board hardware description ownership
 
 Keep board-level hardware descriptions in Device Tree whenever Zephyr bindings
