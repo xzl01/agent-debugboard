@@ -1,0 +1,67 @@
+{
+  "dry_run": true,
+  "generated_at": "2026-08-30T00:46:27.426989+00:00",
+  "overall_pass": true,
+  "plan": {
+    "bounded_triggers": [
+      {
+        "channel": 0,
+        "name": "none",
+        "type": 0
+      }
+    ],
+    "continuous_trigger_note": "continuous matrices always use TRIGGER_NONE and report effective receive-rate diagnostics only",
+    "dry_run": true,
+    "high_rate_capability_flags": {
+      "config_v2": 1,
+      "generic_packed_burst": 2,
+      "required_mask": 3
+    },
+    "http_base": "http://172.29.203.1",
+    "matrices": [
+      {
+        "cases": [
+          [
+            "SINGLE",
+            300,
+            5.0
+          ],
+          [
+            "SINGLE",
+            400,
+            5.0
+          ],
+          [
+            "SINGLE",
+            500,
+            5.0
+          ],
+          [
+            "SINGLE",
+            1000,
+            5.0
+          ]
+        ],
+        "name": "sigrok_ws_continuous_duration"
+      }
+    ],
+    "modes": {
+      "SINGLE": {
+        "channel_mask": 1,
+        "pins": [
+          10
+        ]
+      }
+    },
+    "tcp": {
+      "host": "172.29.203.1",
+      "port": 5556
+    },
+    "timeout_s": 8.0,
+    "uart_stimulus": null,
+    "wide11_gp10_uart_low_others_physical_prerequisite": "Reduced single-wire setup: connect /dev/ttyACM1 TX to GP10 and share ground; leave GP11-GP20 externally low. This validates only GP10 DATA bit0 activity and absence of high/crosstalk on bits1..10. It does not validate independent high-state mapping for GP11-GP20.",
+    "wide11_mapping_physical_prerequisite": "External 3.3V-compatible pattern generator required: connect generator D0->GP10 (captured bit0 and trigger channel 0), D1->GP11 (bit1), D2->GP18 (bit8), D3->GP20 (bit10), and generator ground to Linkr Debugger ground. Hold the initial idle state with GP10 low before arming, then emit the declared repeating nibble pattern with each nibble held for --wide11-map-hold-samples 100MHz sample ticks. Do not use HTTP safe-GPIO outputs as stimulus: WIDE11 PIO preparation configures GP10-GP20 as inputs for capture."
+  },
+  "results": [],
+  "schema": "radxa-linkr-debugger.logic-analyzer-hil-perf.v1"
+}

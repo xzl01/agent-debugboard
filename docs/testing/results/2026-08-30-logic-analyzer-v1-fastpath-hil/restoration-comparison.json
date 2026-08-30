@@ -1,0 +1,45 @@
+{
+  "build": {
+    "archived_equals_post": true,
+    "pre_equals_post": true
+  },
+  "config_saved_count": {
+    "post": 6,
+    "pre": 6
+  },
+  "mcu": {
+    "archived_equals_post": true,
+    "pre_equals_post": true
+  },
+  "power_outputs": {
+    "archived_equals_post": true,
+    "pre_equals_post": true
+  },
+  "restored_heap": {
+    "allocated_bytes": 0,
+    "available": true,
+    "free_bytes": 49156,
+    "max_allocated_bytes": 0,
+    "reason": "",
+    "source": "system_heap",
+    "total_bytes": 49156
+  },
+  "restored_runtime": {
+    "available": true,
+    "reason": "",
+    "uptime_ms": 118163,
+    "uptime_seconds": 118
+  },
+  "switches": {
+    "archived_equals_post": true,
+    "pre_equals_post": true
+  },
+  "usb": {
+    "archived_equals_post": true,
+    "pre_equals_post": true
+  },
+  "watchdog": {
+    "archived_equals_post": true,
+    "pre_equals_post": true
+  }
+}

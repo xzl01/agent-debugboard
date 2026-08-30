@@ -1,0 +1,206 @@
+diff --git a/apps/radxa_linkr_debugger/src/linkr_debugger_logic_analyzer.c b/apps/radxa_linkr_debugger/src/linkr_debugger_logic_analyzer.c
+index e185b02..d5012a8 100644
+--- a/apps/radxa_linkr_debugger/src/linkr_debugger_logic_analyzer.c
++++ b/apps/radxa_linkr_debugger/src/linkr_debugger_logic_analyzer.c
+@@ -66,7 +66,7 @@ static const struct device *const la_dma_dev = DEVICE_DT_GET(DT_NODELABEL(dma));
+  * priority consumer; websocket_send_msg is not called from it.
+  */
+ #define LINKR_DEBUGGER_LA_STREAM_THREAD_PRIORITY K_PRIO_PREEMPT(1)
+-#define LINKR_DEBUGGER_LA_STREAM_CONSUMER_SINK_PRIORITY K_PRIO_PREEMPT(7)
++#define LINKR_DEBUGGER_LA_STREAM_CONSUMER_SINK_PRIORITY K_PRIO_PREEMPT(8)
+ #define LINKR_DEBUGGER_LA_STREAM_CONSUMER_PRIORITY K_PRIO_PREEMPT(8)
+ #define LINKR_DEBUGGER_LA_WIDE11_BURST_CHUNK_SAMPLES 1024U
+ #define LINKR_DEBUGGER_LA_WIDE11_BURST_DMA_A_DONE BIT(0)
+@@ -885,6 +885,7 @@ int linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(
+ 	uint16_t *values_or,
+ 	uint16_t *values_and)
+ {
++	const struct linkr_debugger_la_packed_ring_lane *single_lane;
+ 	uint16_t or_acc = 0U;
+ 	uint16_t and_acc = 0xffffU;
+ 	size_t needed;
+@@ -906,6 +907,38 @@ int linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(
+ 		return -ENOSPC;
+ 	}
+ 
++	single_lane = &plan->lanes[0];
++	/* SINGLE is already one chronological bit per sample in the DMA ring. */
++	if (plan->kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED &&
++	    plan->lane_count == 1U && plan->selected_pin_count == 1U &&
++	    plan->bytes_per_sample == 1U && single_lane->bits_per_sample == 1U &&
++	    single_lane->autopush_bits == 32U && single_lane->samples_per_word == 32U &&
++	    single_lane->sample_capacity == plan->sample_capacity &&
++	    single_lane->sample_capacity > 0U &&
++	    (single_lane->sample_capacity & (single_lane->sample_capacity - 1U)) == 0U &&
++	    single_lane->word_count == single_lane->sample_capacity / 32U &&
++	    lane_words[0] != NULL && lane_word_counts[0] == single_lane->word_count) {
++		uint32_t ring_mask = single_lane->sample_capacity - 1U;
++		uint32_t ring_index = (uint32_t)(first_sample & ring_mask);
++
++		for (uint32_t i = 0U; i < sample_count; i++) {
++			uint8_t sample = (uint8_t)((lane_words[0][ring_index >> 5U] >>
++				(ring_index & 31U)) & 1U);
++
++			payload[i] = sample;
++			or_acc |= sample;
++			and_acc &= sample;
++			ring_index = (ring_index + 1U) & ring_mask;
++		}
++		if (values_or != NULL) {
++			*values_or = or_acc;
++		}
++		if (values_and != NULL) {
++			*values_and = and_acc;
++		}
++		return 0;
++	}
++
+ 	ret = linkr_debugger_logic_analyzer_decode_packed_ring_span(plan, lane_words,
+ 		lane_word_counts, first_sample, payload, needed, sample_count);
+ 	if (ret < 0) {
+diff --git a/apps/radxa_linkr_debugger/src/linkr_debugger_sigrok_linkr.c b/apps/radxa_linkr_debugger/src/linkr_debugger_sigrok_linkr.c
+index 2b941d4..feab6c0 100644
+--- a/apps/radxa_linkr_debugger/src/linkr_debugger_sigrok_linkr.c
++++ b/apps/radxa_linkr_debugger/src/linkr_debugger_sigrok_linkr.c
+@@ -671,6 +671,7 @@ static int sigrok_linkr_stream_sink_commit(
+ 	struct linkr_debugger_sigrok_linkr_session *session;
+ 	struct sigrok_linkr_stream_queue_item *item;
+ 	uint16_t channel_mask;
++	uint32_t qdepth;
+ 	size_t frame_capacity;
+ 	size_t frame_len;
+ 
+@@ -709,7 +710,8 @@ static int sigrok_linkr_stream_sink_commit(
+ 	session->emitted_samples += commit->sample_count;
+ 	session->sample_index = linkr_debugger_sigrok_linkr_advance_sample_index(
+ 		session->sample_index, commit->sample_count);
+-	return 0;
++	qdepth = (uint32_t)atomic_get(&runtime->stream_qdepth);
++	return linkr_debugger_sigrok_linkr_stream_sink_handoff_requested(qdepth) ? 1 : 0;
+ }
+ 
+ static void sigrok_linkr_stream_sink_abort(void *token, void *user_data)
+diff --git a/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_logic_analyzer.c b/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_logic_analyzer.c
+index 0934bc6..0cfdaac 100644
+--- a/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_logic_analyzer.c
++++ b/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_logic_analyzer.c
+@@ -1159,6 +1159,11 @@ static void test_stream_sink_single_fast_path_rejects_invalid_offsets(void)
+ 	free(lane_words);
+ }
+ 
++static void test_stream_sink_consumer_can_yield_to_transport_thread(void)
++{
++	assert(linkr_debugger_logic_analyzer_stream_consumer_priority(true) == 8);
++}
++
+ static void test_stream_sink_helpers_do_not_change_callback_protocol_gate(void)
+ {
+ 	assert(LINKR_DEBUGGER_LA_STREAM_HANDOFF_UNREAD_SAMPLES ==
+@@ -1169,7 +1174,7 @@ static void test_stream_sink_helpers_do_not_change_callback_protocol_gate(void)
+ 	assert(linkr_debugger_logic_analyzer_stream_callback_should_yield_after_chunk(true, 1U));
+ 	assert(!linkr_debugger_logic_analyzer_stream_callback_should_yield_after_chunk(true, 0U));
+ 	assert(!linkr_debugger_logic_analyzer_stream_callback_should_yield_after_chunk(false, 1U));
+-	assert(linkr_debugger_logic_analyzer_stream_consumer_priority(true) == 7);
++	assert(linkr_debugger_logic_analyzer_stream_consumer_priority(true) == 8);
+ 	assert(linkr_debugger_logic_analyzer_stream_consumer_priority(false) == 8);
+ 	assert(!linkr_debugger_logic_analyzer_stream_sink_should_yield_for_handoff(false, 0U));
+ 	assert(linkr_debugger_logic_analyzer_stream_sink_should_yield_for_handoff(true, 0U));
+@@ -2865,6 +2870,7 @@ int main(void)
+ 	test_stream_sink_wrap_batch_matches_decode_span_two_bytes();
+ 	test_stream_sink_single_fast_path_default_selection_matches_generic();
+ 	test_stream_sink_single_fast_path_rejects_invalid_offsets();
++	test_stream_sink_consumer_can_yield_to_transport_thread();
+ 	test_stream_sink_helpers_do_not_change_callback_protocol_gate();
+ 	test_validation();
+ 	test_stream_validation_allows_unlimited_and_uint16_bounded();
+diff --git a/docs/reference/logic-analyzer.md b/docs/reference/logic-analyzer.md
+index 293bcc0..5ada354 100644
+--- a/docs/reference/logic-analyzer.md
++++ b/docs/reference/logic-analyzer.md
+@@ -329,10 +329,11 @@ inside the same 32768B slice, with a common capacity of 16384 samples and a safe
+ Usable capacities are SINGLE 260096, FAST8 30720, and WIDE11 14336 samples. The WIDE11 writer
+ enforces minimum lane sequence and stops when greater than 20 sample skew is detected. A
+ protocol-neutral LA sink feeds consumer work items through a pool of 8 DATA slots
+-plus 1 terminal slot. Each WS SINGLE DATA slot carries up to 2048 packed samples;
+-the sink consumer runs at priority 7 and blocks naturally on full chunks. Legacy
+-callback paths, TCP transport, and non-SINGLE sample paths run at priority 8 with
+-yield. The sender applies one-byte RLE with BIT_PACK fallback. A 6144-byte
++plus 1 terminal slot. Each WS SINGLE DATA slot carries up to 2048 packed samples.
++SINGLE expands the one-bit DMA ring directly into byte-aligned v1 samples while
++aggregating OR/AND in the same pass. The sink consumer and WS/TCP senders run at
++priority 8, so queue-depth handoffs can release transport slots. The sender applies
++one-byte RLE with BIT_PACK fallback. A 6144-byte
+ coalescing buffer aggregates complete frames before transmission. The terminal
+ condition fires on buffer pressure or explicit stop; the implementation does not
+ silently drop samples (lossless-or-stop). When the writer is frozen on a terminal
+diff --git a/docs/reference/sigrok-linkr-v1.md b/docs/reference/sigrok-linkr-v1.md
+index 268cec5..9c1dcdc 100644
+--- a/docs/reference/sigrok-linkr-v1.md
++++ b/docs/reference/sigrok-linkr-v1.md
+@@ -626,8 +626,9 @@ backing allocation
+   WS SINGLE emits up to 2048 packed samples per fixed DATA slot (protocol frame
+   remains standard 8-byte DATA meta plus RLE or BIT_PACK payload; this is an
+   implementation fact, not a wire requirement, and does not imply TCP must use
+-  2048-sample chunks); sink consumer runs at priority 7 and blocks naturally on
+-  full chunks; legacy callback/TCP/non-SINGLE paths run at priority 8 with yield;
++  2048-sample chunks); SINGLE expands the one-bit DMA ring directly into byte-aligned
++  v1 samples while aggregating OR/AND in the same pass; sink consumer and WS/TCP
++  senders run at priority 8, so queue-depth handoffs can release transport slots;
+   sender-side one-byte RLE with BIT_PACK fallback; 6144-byte coalescing buffer;
+   explicit terminal on buffer pressure; no silent sample drops (lossless-or-stop);
+   terminal-freeze policy freezes the trigger SM, the sampler SM(s), and the ring
+diff --git a/web/src/lib/logicAnalyzer.test.ts b/web/src/lib/logicAnalyzer.test.ts
+index a76d466..ee33226 100644
+--- a/web/src/lib/logicAnalyzer.test.ts
++++ b/web/src/lib/logicAnalyzer.test.ts
+@@ -136,6 +136,7 @@ test("normalizes sample rates into the firmware-supported MHz set", () => {
+   assert.equal(LOGIC_ANALYZER_MIN_SAMPLE_RATE_HZ, 100000);
+   assert.deepEqual(LOGIC_ANALYZER_SAMPLE_RATES_HZ, [
+     100000,
++    300000,
+     500000,
+     1000000,
+     2000000,
+@@ -151,11 +152,19 @@ test("normalizes sample rates into the firmware-supported MHz set", () => {
+ test("publishes bounded sample-rate options including sub-1MHz presets", () => {
+   assert.deepEqual(
+     SAMPLE_RATES.map((rate) => rate.value),
+-    [100000, 500000, 1000000, 2000000, 5000000, 10000000, 25000000, 50000000, 100000000, 125000000]
++    [100000, 300000, 500000, 1000000, 2000000, 5000000, 10000000, 25000000, 50000000, 100000000, 125000000]
+   );
+   assert.deepEqual(
+-    SAMPLE_RATES.slice(0, 4).map((rate) => rate.label),
+-    ["100 kHz", "500 kHz", "1 MHz", "2 MHz"]
++    SAMPLE_RATES.slice(0, 5).map((rate) => rate.label),
++    ["100 kHz", "300 kHz", "500 kHz", "1 MHz", "2 MHz"]
++  );
++});
++
++test("publishes the proven 300 kHz WebSocket operating point", () => {
++  assert.equal(LOGIC_ANALYZER_SAMPLE_RATES_HZ.includes(300000), true);
++  assert.deepEqual(
++    SAMPLE_RATES.find((rate) => rate.value === 300000),
++    { value: 300000, label: "300 kHz" }
+   );
+ });
+ 
+diff --git a/web/src/lib/logicAnalyzer.ts b/web/src/lib/logicAnalyzer.ts
+index 49abd15..eb3adc1 100644
+--- a/web/src/lib/logicAnalyzer.ts
++++ b/web/src/lib/logicAnalyzer.ts
+@@ -40,6 +40,7 @@ export const LOGIC_ANALYZER_PRE_TRIGGER_WIDE11_USABLE_SAMPLES = 14336;
+ const LOGIC_ANALYZER_PRE_TRIGGER_MINIMUM_POLL_INTERVALS = 2;
+ export const LOGIC_ANALYZER_SAMPLE_RATES_HZ = [
+   100000,
++  300000,
+   500000,
+   1000000,
+   2000000,
+@@ -1047,6 +1048,7 @@ export const AVAILABLE_PINS = [
+ 
+ export const SAMPLE_RATES = [
+   { value: 100000, label: "100 kHz" },
++  { value: 300000, label: "300 kHz" },
+   { value: 500000, label: "500 kHz" },
+   { value: 1000000, label: "1 MHz" },
+   { value: 2000000, label: "2 MHz" },

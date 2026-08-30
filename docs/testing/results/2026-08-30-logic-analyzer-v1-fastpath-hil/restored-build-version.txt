@@ -1,0 +1,29 @@
+18D[00:00:51.575,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=51575
+linkr-debugger:~$ [00:00:51.575,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=51575 uptime_seconds=51
+linkr-debugger:~$ [00:00:51.575,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=13 cmd_age_ms=24 grace_remaining_ms=0 uptime_ms=51575
+linkr-debugger:~$ [00:00:52.075,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=52075
+linkr-debugger:~$ [00:00:52.075,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=52075 uptime_seconds=52
+linkr-debugger:~$ [00:00:52.075,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=13 cmd_age_ms=24 grace_remaining_ms=0 uptime_ms=52075
+linkr-debugger:~$ app build-version
+v0.2.1-208-gc72104d89ca1
+linkr-debugger:~$ [00:00:52.140,000] <inf> linkr_debugger_usb_net: usb event: CDC ACM control line state
+linkr-debugger:~$ [00:00:52.576,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=52576
+linkr-debugger:~$ [00:00:52.576,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=52576 uptime_seconds=52
+linkr-debugger:~$ [00:00:52.576,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=14 cmd_age_ms=25 grace_remaining_ms=0 uptime_ms=52576
+linkr-debugger:~$ [00:00:52.816,000] <inf> linkr_debugger_usb_net: usb event: CDC ACM control line state
+linkr-debugger:~$ [00:00:53.076,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=53076
+linkr-debugger:~$ [00:00:53.076,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=53076 uptime_seconds=53
+linkr-debugger:~$ [00:00:53.076,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=14 cmd_age_ms=25 grace_remaining_ms=0 uptime_ms=53076
+linkr-debugger:~$ linkr-debugger:~$ [00:00:53.577,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=53577
+linkr-debugger:~$ [00:00:53.577,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=53577 uptime_seconds=53
+linkr-debugger:~$ [00:00:53.577,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=14 cmd_age_ms=26 grace_remaining_ms=0 uptime_ms=53577
+linkr-debugger:~$ [00:00:54.077,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=54077
+linkr-debugger:~$ [00:00:54.077,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=54077 uptime_seconds=54
+linkr-debugger:~$ [00:00:54.077,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=14 cmd_age_ms=26 grace_remaining_ms=0 uptime_ms=54077
+linkr-debugger:~$ linkr-debugger:~$ [00:00:54.578,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=54578
+linkr-debugger:~$ [00:00:54.578,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=54578 uptime_seconds=54
+linkr-debugger:~$ [00:00:54.578,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=15 cmd_age_ms=26 grace_remaining_ms=0 uptime_ms=54578
+linkr-debugger:~$ [00:00:55.078,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=55078
+linkr-debugger:~$ [00:00:55.078,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=55078 uptime_seconds=55
+linkr-debugger:~$ [00:00:55.078,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=15 cmd_age_ms=26 grace_remaining_ms=0 uptime_ms=55078
+linkr-debugger:~$ linkr-debugger:~$ 

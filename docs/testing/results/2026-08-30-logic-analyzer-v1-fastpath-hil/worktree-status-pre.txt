@@ -1,0 +1,18 @@
+ M apps/radxa_linkr_debugger/src/linkr_debugger_logic_analyzer.c
+ M apps/radxa_linkr_debugger/src/linkr_debugger_sigrok_linkr.c
+ M apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_logic_analyzer.c
+ M cmd-ng/README.md
+ M cmd-ng/src/app.rs
+ M cmd-ng/src/cli.rs
+ M cmd-ng/src/main.rs
+ M docs/reference/logic-analyzer.md
+ M docs/reference/sigrok-linkr-v1.md
+ M docs/user/cli.md
+ M docs/user/cli.zh-CN.md
+ M docs/user/install.md
+ M docs/user/install.zh-CN.md
+ M host-tools/src/bin/linkr-tray.rs
+ M shell.nix
+ M web/src/lib/logicAnalyzer.test.ts
+ M web/src/lib/logicAnalyzer.ts
+?? cmd-ng/src/desktop.rs

@@ -1,0 +1,2 @@
+attempt=1 Error looking up object for device /dev/sdc1
+continuation_attempt=1 Mounted /dev/sdc1 at <REMOVABLE_MEDIA>/RP2350

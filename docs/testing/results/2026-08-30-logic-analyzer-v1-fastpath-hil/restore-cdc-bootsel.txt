@@ -1,0 +1,26 @@
+[00:00:41.071,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=41071
+linkr-debugger:~$ [00:00:41.071,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=41071 uptime_seconds=41
+linkr-debugger:~$ [00:00:41.071,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=14 cmd_age_ms=22 grace_remaining_ms=0 uptime_ms=41071
+linkr-debugger:~$ [00:00:41.571,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=41571
+linkr-debugger:~$ [00:00:41.571,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=41571 uptime_seconds=41
+linkr-debugger:~$ [00:00:41.571,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=14 cmd_age_ms=22 grace_remaining_ms=0 uptime_ms=41571
+linkr-debugger:~$ bootloader
+Entering rp2350 BOOTSEL in 250 ms...
+linkr-debugger:~$ --- 3237 messages dropped ---
+[00:00:41.696,000] <inf> linkr_debugger_usb_net: usb event: CDC ACM control line state
+linkr-debugger:~$ [00:00:42.024,000] <inf> linkr_debugger_usb_net: usb event: CDC ACM control line state
+linkr-debugger:~$ [00:00:42.072,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=42072
+linkr-debugger:~$ [00:00:42.072,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=42072 uptime_seconds=42
+linkr-debugger:~$ [00:00:42.072,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=14 cmd_age_ms=23 grace_remaining_ms=0 uptime_ms=42072
+linkr-debugger:~$ [00:00:42.573,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=0 uptime_ms=42573
+linkr-debugger:~$ [00:00:42.573,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=42573 uptime_seconds=42
+linkr-debugger:~$ [00:00:42.573,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=15 cmd_age_ms=24 grace_remaining_ms=0 uptime_ms=42573
+linkr-debugger:~$ linkr-debugger:~$ [00:09:41.923,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=10420 uptime_ms=581923
+linkr-debugger:~$ [00:09:41.923,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=581923 uptime_seconds=581
+linkr-debugger:~$ [00:09:41.923,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=132 cmd_age_ms=181 grace_remaining_ms=0 uptime_ms=581923
+linkr-debugger:~$ [00:09:42.413,000] <inf> linkr_debugger_usb_net: usb event: CDC ACM control line state
+linkr-debugger:~$ [00:09:42.424,000] <inf> linkr_debugger_control: memory diagnostics: heap_allocated=0 heap_free=49156 heap_total=49156 heap_peak=10420 uptime_ms=582424
+linkr-debugger:~$ [00:09:42.424,000] <inf> linkr_debugger_control: runtime diagnostics: uptime_ms=582424 uptime_seconds=582
+linkr-debugger:~$ [00:09:42.424,000] <inf> linkr_debugger_control: watchdog trace: supervisor=alive feed=ok healthy=1 blocker=none armed=1 listener_fd=4 core_age_ms=133 cmd_age_ms=182 grace_remaining_ms=0 uptime_ms=582424
+linkr-debugger:~$ linkr-debugger:~$ 
+SERIAL_DISCONNECT: device reports readiness to read but returned no data (device disconnected or multiple access on port?)

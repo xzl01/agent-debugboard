@@ -1,0 +1,6 @@
+High-transition 1MHz stimulus was not executed.
+Reason: /dev/ttyACM1 is exclusively owned by a user-started rustty session; HIL did not kill, interrupt, or inject into it.
+    PID    PPID ELAPSED STAT CMD
+1118991    4527   28734 Sl+  Documents/GitHub/rustty/target/debug/rustty -b 115200 /dev/ttyACM1
+lrwx------ 1 chen users 64 Aug 30 08:27 /proc/1118991/fd/3 -> /dev/ttyACM1
+lrwx------ 1 chen users 64 Aug 30 08:27 /proc/1118991/fd/4 -> /dev/ttyACM1
