@@ -1,0 +1,2 @@
+# This is user-flashed RP2350 firmware, not Linux kernel firmware.
+radxa-linkr-debugger-firmware: wrong-section-according-to-package-name electronics => kernel

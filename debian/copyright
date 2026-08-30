@@ -1,0 +1,15 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Radxa Linkr Debugger
+Source: https://github.com/xzl01/agent-debugboard
+
+Files: *
+Copyright: 2025-2026 Radxa Computer (Shenzhen) Co., Ltd.
+           2025-2026 Jiali Chen <chenjiali@radxa.com>
+License: LGPL-3+
+ This package is free software: you can redistribute it and/or modify it under
+ the terms of the GNU Lesser General Public License as published by the Free
+ Software Foundation, either version 3 of the License, or (at your option) any
+ later version.
+ .
+ On Debian systems, the complete text of the GNU Lesser General Public License
+ version 3 can be found in /usr/share/common-licenses/LGPL-3.

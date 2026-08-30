@@ -79,6 +79,19 @@ class VersionSyncTest(unittest.TestCase):
             "nix/package.nix",
             f'let\n  version = "{version}";\nin\n{{ inherit version; }}\n',
         )
+        debian_version = version.replace("-", "~", 1)
+        self.write(
+            "debian/changelog",
+            f"radxa-linkr-debugger ({debian_version}-1) unstable; urgency=medium\n",
+        )
+        self.write(
+            "packaging/redhat/radxa-linkr-debugger.spec",
+            f"%global upstream_version {version}\n",
+        )
+        self.write(
+            "packaging/archlinux/PKGBUILD",
+            f"_upstream_version={version}\n",
+        )
         if "-" in version:
             base, extra = version.split("-", 1)
         else:
@@ -117,6 +130,13 @@ class VersionSyncTest(unittest.TestCase):
         self.assertIn("web/package.json:version", stderr)
         self.assertIn("release tag", stderr)
         self.assertIn("expected 'v0.2.0'", stderr)
+        self.write(
+            "packaging/archlinux/PKGBUILD",
+            "_upstream_version=0.1.0\n",
+        )
+        result, _, stderr = self.run_main("check")
+        self.assertEqual(result, 1)
+        self.assertIn("packaging/archlinux/PKGBUILD:_upstream_version", stderr)
 
     def test_set_updates_every_managed_version(self) -> None:
         result, stdout, stderr = self.run_main("set", "0.3.0-rc.1")
@@ -129,12 +149,28 @@ class VersionSyncTest(unittest.TestCase):
                 encoding="utf-8"
             ),
         )
+        self.assertIn(
+            "radxa-linkr-debugger (0.3.0~rc.1-1)",
+            (self.root / "debian/changelog").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "%global upstream_version 0.3.0-rc.1",
+            (
+                self.root / "packaging/redhat/radxa-linkr-debugger.spec"
+            ).read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "_upstream_version=0.3.0-rc.1",
+            (self.root / "packaging/archlinux/PKGBUILD").read_text(
+                encoding="utf-8"
+            ),
+        )
 
         result, stdout, stderr = self.run_main(
             "check", "--tag", "v0.3.0-rc.1"
         )
         self.assertEqual(result, 0)
-        self.assertIn("across 11 fields", stdout)
+        self.assertIn("across 14 fields", stdout)
         self.assertEqual(stderr, "")
 
     def test_set_rejects_leading_v_without_writing(self) -> None:

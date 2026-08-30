@@ -36,6 +36,10 @@ export const POLICY_FILES = Object.freeze([
   "web/package-lock.json",
   "docs/developer/build.md",
   "docs/developer/build.zh-CN.md",
+  "debian/control",
+  "debian/rules",
+  "packaging/redhat/radxa-linkr-debugger.spec",
+  "packaging/archlinux/PKGBUILD",
 ]);
 
 const REQUIRED_GATE_NEEDS = Object.freeze([
@@ -158,6 +162,55 @@ function firmwareMemoryCaptureContract({
     && /Local\s+unit tests and CI gates are not HIL/.test(docsIndex);
 }
 
+function nativePackageReleaseContract({ release, debianControl, debianRules, rpmSpec, pkgbuild }) {
+  const firmwareFiles = [
+    "radxa-linkr-debugger-rp2350.uf2",
+    "radxa-linkr-debugger-rp2350-ota.bin",
+  ];
+  const recipes = [debianRules, rpmSpec, pkgbuild];
+  const twoPackages = debianControl.includes("Package: radxa-linkr-debuggerctl")
+    && debianControl.includes("Package: radxa-linkr-debugger-firmware")
+    && rpmSpec.includes("%package -n radxa-linkr-debugger-firmware")
+    && pkgbuild.includes("pkgname=('radxa-linkr-debuggerctl' 'radxa-linkr-debugger-firmware')");
+  const payloads = recipes.every((recipe) => firmwareFiles.every((name) => recipe.includes(name)))
+    && recipes.every((recipe) => /test ! -e .*zephyr[.]uf2/.test(recipe));
+  const noDesktopPayload = recipes.every((recipe) => !/(?:web[/]dist|linkr-host|linkr-tray|radxa-linkr-debugger[.]desktop)/.test(recipe));
+  const nativeTools = release.includes("dpkg-buildpackage --build=binary --no-sign")
+    && release.includes("rpmbuild -bb")
+    && release.includes("makepkg --cleanbuild --noconfirm");
+  const compatibilityBaselines = /debian:bookworm@sha256:[0-9a-f]{64}/.test(release)
+    && /almalinux:9@sha256:[0-9a-f]{64}/.test(release)
+    && /archlinux:latest@sha256:[0-9a-f]{64}/.test(release);
+  const sourceNaming = rpmSpec.includes("agent-debugboard-%{upstream_version}.tar.gz")
+    && release.includes("native-package-sources/agent-debugboard-$version.tar.gz")
+    && release.includes("agent-debugboard-*.tar.gz");
+  const archiveStart = release.indexOf("git -C app archive --format=tar.gz");
+  const archiveRevision = release.indexOf('"$RESOLVED_SHA"', archiveStart);
+  const sourceLineage = archiveStart >= 0 && archiveRevision > archiveStart
+    && archiveRevision - archiveStart < 300;
+  const checksumVariables = [
+    "AGENT_DEBUGBOARD_SOURCE_SHA256",
+    "AGENT_DEBUGBOARD_CLI_SHA256",
+    "AGENT_DEBUGBOARD_UF2_SHA256",
+    "AGENT_DEBUGBOARD_OTA_SHA256",
+  ];
+  const sourceChecksums = !pkgbuild.includes("SKIP")
+    && checksumVariables.every((name) => pkgbuild.includes(name) && release.includes(name));
+  const exactArchOutputs = pkgbuild.includes("options=('!debug')")
+    && release.includes("find /home/builder/package -maxdepth 1 -name '*.pkg.tar.zst'");
+  const releaseAssets = [
+    "radxa-linkr-debuggerctl_*.deb",
+    "radxa-linkr-debugger-firmware_*.deb",
+    "radxa-linkr-debuggerctl-*.rpm",
+    "radxa-linkr-debugger-firmware-*.rpm",
+    "radxa-linkr-debuggerctl-*.pkg.tar.zst",
+    "radxa-linkr-debugger-firmware-*.pkg.tar.zst",
+  ].every((pattern) => release.includes(pattern));
+  return twoPackages && payloads && noDesktopPayload && nativeTools
+    && compatibilityBaselines && sourceNaming && sourceLineage
+    && sourceChecksums && exactArchOutputs && releaseAssets;
+}
+
 export function checkRepositoryGateContents(contents) {
   const failures = [];
   const build = contents.get(".github/workflows/build.yml") ?? "";
@@ -191,6 +244,10 @@ export function checkRepositoryGateContents(contents) {
   const hilSpec = contents.get("docs/testing/hil-functional-test-spec.md") ?? "";
   const prjConfig = contents.get("apps/radxa_linkr_debugger/prj.conf") ?? "";
   const webOtaHil = contents.get("docs/testing/scripts/web-ota-hil.sh") ?? "";
+  const debianControl = contents.get("debian/control") ?? "";
+  const debianRules = contents.get("debian/rules") ?? "";
+  const rpmSpec = contents.get("packaging/redhat/radxa-linkr-debugger.spec") ?? "";
+  const pkgbuild = contents.get("packaging/archlinux/PKGBUILD") ?? "";
 
   if (!/^  pull_request:\s*$/m.test(build) || !/^  workflow_call:\s*$/m.test(build)) {
     fail(failures, "G01", ".github/workflows/build.yml", "complete validation must support pull_request and workflow_call");
@@ -317,6 +374,9 @@ export function checkRepositoryGateContents(contents) {
     wsSource, prjConfig, docsIndex,
   })) {
     fail(failures, "G18", "apps/radxa_linkr_debugger/{CMakeLists.txt,sections-ram.ld,prj.conf,src/*} + docs/{README.md,reference/logic-analyzer.md}", "firmware memory and capture layout must retain approved capacities, pre-capture NOBITS initialization, stack targets, disabled features, and non-HIL documentation");
+  }
+  if (!nativePackageReleaseContract({ release, debianControl, debianRules, rpmSpec, pkgbuild })) {
+    fail(failures, "G19", "debian/ + packaging/{redhat,archlinux}/ + .github/workflows/release.yml", "each native packager must emit separate CLI and safe complete-firmware packages, exclude desktop/Web payloads, and publish all six package families");
   }
   if (!/release_notes="docs\/releases\/\$\{RELEASE_TAG%%-\*\}\.md"/.test(release)
       || !/release_flags=\(\)/.test(release)

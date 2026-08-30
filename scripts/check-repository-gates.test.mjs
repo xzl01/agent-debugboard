@@ -14,6 +14,10 @@ const OTA_HIL = "docs/testing/scripts/web-ota-hil.sh";
 const BUILD_WORKFLOW = ".github/workflows/build.yml";
 const PAGES_WORKFLOW = ".github/workflows/pages.yml";
 const RELEASE_WORKFLOW = ".github/workflows/release.yml";
+const DEBIAN_CONTROL = "debian/control";
+const DEBIAN_RULES = "debian/rules";
+const RPM_SPEC = "packaging/redhat/radxa-linkr-debugger.spec";
+const PKGBUILD = "packaging/archlinux/PKGBUILD";
 const VERSION_BUMP_WORKFLOW = ".github/workflows/version-bump.yml";
 const APP_CMAKE = "apps/radxa_linkr_debugger/CMakeLists.txt";
 const RAM_SECTIONS = "apps/radxa_linkr_debugger/sections-ram.ld";
@@ -541,6 +545,66 @@ test("rejects every publication and branch-policy bypass", async (t) => {
       const result = checkRepositoryGateContents(mutation(baseline, relative, replace, replacement));
       assert.equal(result.ok, false);
       assert.ok(result.failures.some((failure) => failure.code === code));
+    });
+  }
+});
+
+test("requires native CLI and complete-firmware release packages", async (t) => {
+  const baseline = await repositoryContents();
+  assert.equal(
+    checkRepositoryGateContents(baseline).failures.some((failure) => failure.code === "G19"),
+    false,
+  );
+  const cases = [
+    ["Debian firmware package", DEBIAN_CONTROL, "Package: radxa-linkr-debugger-firmware", "Package: removed-firmware"],
+    ["Debian combined UF2", DEBIAN_RULES, "radxa-linkr-debugger-rp2350.uf2", "zephyr.uf2", true],
+    ["RPM firmware subpackage", RPM_SPEC, "%package -n radxa-linkr-debugger-firmware", "%package -n removed-firmware"],
+    ["Arch split packages", PKGBUILD, "pkgname=('radxa-linkr-debuggerctl' 'radxa-linkr-debugger-firmware')", "pkgname=('radxa-linkr-debuggerctl')"],
+    ["Debian native packager", RELEASE_WORKFLOW, "dpkg-buildpackage --build=binary --no-sign", "true"],
+    ["RPM native packager", RELEASE_WORKFLOW, "rpmbuild -bb", "true"],
+    ["Arch native packager", RELEASE_WORKFLOW, "makepkg --cleanbuild --noconfirm", "true"],
+    ["Debian 12 baseline", RELEASE_WORKFLOW, "debian:bookworm", "debian:trixie"],
+    ["RHEL 9 baseline", RELEASE_WORKFLOW, "almalinux:9", "fedora:44", true],
+    ["RPM source archive name", RPM_SPEC, "agent-debugboard-%{upstream_version}.tar.gz", "v%{upstream_version}.tar.gz"],
+    ["Arch source checksums", PKGBUILD, '"$AGENT_DEBUGBOARD_UF2_SHA256"', "'SKIP'"],
+    ["Arch debug package disabled", PKGBUILD, "options=('!debug')", "options=('debug')"],
+    ["Arch exact output count", RELEASE_WORKFLOW, "find /home/builder/package -maxdepth 1 -name '*.pkg.tar.zst'", "printf extra-package"],
+    ["Release source archive", RELEASE_WORKFLOW, "agent-debugboard-*.tar.gz", "removed-source.tar.gz", true],
+    ["Release source SHA lineage", RELEASE_WORKFLOW, '            "$RESOLVED_SHA"\n', '            "$GITHUB_SHA"\n'],
+  ];
+
+  for (const [name, relative, replace, replacement, all] of cases) {
+    await t.test(name, () => {
+      const applyMutation = all ? mutationAll : mutation;
+      const result = checkRepositoryGateContents(applyMutation(baseline, relative, replace, replacement));
+      assert.equal(result.ok, false);
+      assert.ok(result.failures.some((failure) => failure.code === "G19"));
+    });
+  }
+});
+
+test("Arch pkgver normalizes every prerelease separator", async (t) => {
+  const template = await readFile(path.join(ROOT, PKGBUILD), "utf8");
+  const root = await mkdtemp(path.join(tmpdir(), "linkr-pkgver-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const hashes = Object.fromEntries([
+    "SOURCE", "CLI", "UF2", "OTA",
+  ].map((name) => [`AGENT_DEBUGBOARD_${name}_SHA256`, "0".repeat(64)]));
+  const cases = [
+    ["0.3.0", "0.3.0"],
+    ["0.3.0-rc-1", "0.3.0_rc_1"],
+  ];
+
+  for (const [version, expected] of cases) {
+    await t.test(version, async () => {
+      const pkgbuild = path.join(root, `PKGBUILD-${version}`);
+      await writeFile(pkgbuild, template.replace("_upstream_version=0.3.0", `_upstream_version=${version}`));
+      const result = spawnSync("bash", ["-c", 'source "$1"; printf "%s\\n" "$pkgver"', "bash", pkgbuild], {
+        encoding: "utf8",
+        env: { ...process.env, ...hashes, CARCH: "x86_64" },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.trim(), expected);
     });
   }
 });

@@ -1,0 +1,74 @@
+# Maintainer: Jiali Chen <chenjiali@radxa.com>
+
+pkgbase=radxa-linkr-debugger
+pkgname=('radxa-linkr-debuggerctl' 'radxa-linkr-debugger-firmware')
+_upstream_version=0.3.0
+pkgver=${_upstream_version//-/_}
+pkgrel=1
+arch=('x86_64' 'aarch64')
+url='https://github.com/xzl01/agent-debugboard'
+license=('LGPL-3.0-or-later')
+depends=('ca-certificates')
+options=('!debug')
+
+case $CARCH in
+    x86_64) _release_arch=amd64 ;;
+    aarch64) _release_arch=arm64 ;;
+    *) return 1 ;;
+esac
+
+source=(
+    "agent-debugboard-${_upstream_version}.tar.gz::${url}/releases/download/v${_upstream_version}/agent-debugboard-${_upstream_version}.tar.gz"
+    "radxa-linkr-debuggerctl-rust_linux_${_release_arch}.tar.gz::${url}/releases/download/v${_upstream_version}/radxa-linkr-debuggerctl-rust_linux_${_release_arch}.tar.gz"
+    "radxa-linkr-debugger-rp2350.uf2::${url}/releases/download/v${_upstream_version}/radxa-linkr-debugger-rp2350.uf2"
+    "radxa-linkr-debugger-rp2350-ota.bin::${url}/releases/download/v${_upstream_version}/radxa-linkr-debugger-rp2350-ota.bin"
+)
+: "${AGENT_DEBUGBOARD_SOURCE_SHA256:?set source archive SHA256}"
+: "${AGENT_DEBUGBOARD_CLI_SHA256:?set CLI archive SHA256}"
+: "${AGENT_DEBUGBOARD_UF2_SHA256:?set combined UF2 SHA256}"
+: "${AGENT_DEBUGBOARD_OTA_SHA256:?set OTA image SHA256}"
+sha256sums=(
+    "$AGENT_DEBUGBOARD_SOURCE_SHA256"
+    "$AGENT_DEBUGBOARD_CLI_SHA256"
+    "$AGENT_DEBUGBOARD_UF2_SHA256"
+    "$AGENT_DEBUGBOARD_OTA_SHA256"
+)
+
+check() {
+    test "$($srcdir/radxa-linkr-debuggerctl --version)" = \
+        "radxa-linkr-debuggerctl ${_upstream_version}"
+    "$srcdir/radxa-linkr-debuggerctl" --help >/dev/null
+    test -s "$srcdir/radxa-linkr-debugger-rp2350.uf2"
+    test -s "$srcdir/radxa-linkr-debugger-rp2350-ota.bin"
+    test ! -e "$srcdir/zephyr.uf2"
+}
+
+package_radxa-linkr-debuggerctl() {
+    pkgdesc='Command-line tools for Radxa Linkr Debugger'
+    optdepends=('radxa-linkr-debugger-firmware: ROM BOOTSEL and OTA images')
+    install -Dm755 "$srcdir/radxa-linkr-debuggerctl" \
+        "$pkgdir/usr/bin/radxa-linkr-debuggerctl"
+    ln -s radxa-linkr-debuggerctl "$pkgdir/usr/bin/rdb"
+    install -Dm644 "$srcdir/agent-debugboard-${_upstream_version}/LICENSE" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 "$srcdir/agent-debugboard-${_upstream_version}/COPYING" \
+        "$pkgdir/usr/share/licenses/$pkgname/COPYING"
+    install -Dm644 "$srcdir/agent-debugboard-${_upstream_version}/COPYING.LESSER" \
+        "$pkgdir/usr/share/licenses/$pkgname/COPYING.LESSER"
+}
+
+package_radxa-linkr-debugger-firmware() {
+    pkgdesc='Flashable firmware for Radxa Linkr Debugger'
+    arch=('any')
+    optdepends=('radxa-linkr-debuggerctl: firmware upload and OTA control')
+    install -Dm644 "$srcdir/radxa-linkr-debugger-rp2350.uf2" \
+        "$pkgdir/usr/share/radxa-linkr-debugger/firmware/radxa-linkr-debugger-rp2350.uf2"
+    install -Dm644 "$srcdir/radxa-linkr-debugger-rp2350-ota.bin" \
+        "$pkgdir/usr/share/radxa-linkr-debugger/firmware/radxa-linkr-debugger-rp2350-ota.bin"
+    install -Dm644 "$srcdir/agent-debugboard-${_upstream_version}/LICENSE" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 "$srcdir/agent-debugboard-${_upstream_version}/COPYING" \
+        "$pkgdir/usr/share/licenses/$pkgname/COPYING"
+    install -Dm644 "$srcdir/agent-debugboard-${_upstream_version}/COPYING.LESSER" \
+        "$pkgdir/usr/share/licenses/$pkgname/COPYING.LESSER"
+}

@@ -240,6 +240,51 @@ def update_nix_version(path: Path, version: str) -> str:
     return updated
 
 
+def prefixed_version(path: Path, prefix: str) -> str:
+    matches = re.findall(
+        rf"(?m)^{re.escape(prefix)}([^\s]+)\s*$", read_text(path)
+    )
+    if len(matches) != 1:
+        raise VersionSyncError(f"{path}: expected one {prefix.strip()} assignment")
+    return matches[0]
+
+
+def update_prefixed_version(path: Path, prefix: str, version: str) -> str:
+    text = read_text(path)
+    updated, count = re.subn(
+        rf"(?m)^({re.escape(prefix)})[^\s]+(\s*)$",
+        lambda match: f"{match.group(1)}{version}{match.group(2)}",
+        text,
+    )
+    if count != 1:
+        raise VersionSyncError(f"{path}: expected one {prefix.strip()} assignment")
+    return updated
+
+
+def debian_changelog_version(path: Path) -> str:
+    match = re.match(r"radxa-linkr-debugger \(([^)]+)\) ", read_text(path))
+    if match is None:
+        raise VersionSyncError(f"{path}: missing first package version")
+    upstream, separator, revision = match.group(1).rpartition("-")
+    if separator != "-" or revision != "1":
+        raise VersionSyncError(f"{path}: expected Debian revision 1")
+    return upstream.replace("~", "-", 1)
+
+
+def update_debian_changelog(path: Path, version: str) -> str:
+    text = read_text(path)
+    package_version = f"{version.replace('-', '~', 1)}-1"
+    updated, count = re.subn(
+        r"\A(radxa-linkr-debugger \()[^)]+(\) )",
+        lambda match: f"{match.group(1)}{package_version}{match.group(2)}",
+        text,
+        count=1,
+    )
+    if count != 1:
+        raise VersionSyncError(f"{path}: missing first package version")
+    return updated
+
+
 def expected_version(root: Path) -> str:
     version = read_text(root / "VERSION").strip()
     return validate_version(version)
@@ -283,6 +328,24 @@ def managed_versions(root: Path) -> list[tuple[str, str]]:
                 ),
             ),
             ("nix/package.nix:version", nix_version(root / "nix/package.nix")),
+            (
+                "debian/changelog:version",
+                debian_changelog_version(root / "debian/changelog"),
+            ),
+            (
+                "packaging/redhat/radxa-linkr-debugger.spec:upstream_version",
+                prefixed_version(
+                    root / "packaging/redhat/radxa-linkr-debugger.spec",
+                    "%global upstream_version ",
+                ),
+            ),
+            (
+                "packaging/archlinux/PKGBUILD:_upstream_version",
+                prefixed_version(
+                    root / "packaging/archlinux/PKGBUILD",
+                    "_upstream_version=",
+                ),
+            ),
             (
                 "apps/radxa_linkr_debugger/VERSION:APP_VERSION_STRING",
                 zephyr_app_version(root / "apps/radxa_linkr_debugger/VERSION"),
@@ -346,6 +409,19 @@ def version_updates(root: Path, version: str) -> dict[Path, str]:
         ),
         root / "nix/package.nix": update_nix_version(
             root / "nix/package.nix", version
+        ),
+        root / "debian/changelog": update_debian_changelog(
+            root / "debian/changelog", version
+        ),
+        root / "packaging/redhat/radxa-linkr-debugger.spec": update_prefixed_version(
+            root / "packaging/redhat/radxa-linkr-debugger.spec",
+            "%global upstream_version ",
+            version,
+        ),
+        root / "packaging/archlinux/PKGBUILD": update_prefixed_version(
+            root / "packaging/archlinux/PKGBUILD",
+            "_upstream_version=",
+            version,
         ),
         root / "apps/radxa_linkr_debugger/VERSION": zephyr_app_version_file(
             version

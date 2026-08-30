@@ -1,0 +1,2 @@
+# The validated Linux release CLI is intentionally static for distro portability.
+radxa-linkr-debuggerctl: statically-linked-binary [usr/bin/radxa-linkr-debuggerctl]

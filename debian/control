@@ -1,0 +1,24 @@
+Source: radxa-linkr-debugger
+Section: electronics
+Priority: optional
+Maintainer: Jiali Chen <chenjiali@radxa.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2.0
+Homepage: https://github.com/xzl01/agent-debugboard
+Rules-Requires-Root: no
+
+Package: radxa-linkr-debuggerctl
+Architecture: any
+Depends: ${misc:Depends}, ca-certificates
+Suggests: radxa-linkr-debugger-firmware
+Description: command-line tools for Radxa Linkr Debugger
+ Provides the standalone CLI/TUI and its short rdb command alias for controlling
+ Radxa Linkr Debugger hardware.
+
+Package: radxa-linkr-debugger-firmware
+Architecture: all
+Depends: ${misc:Depends}
+Suggests: radxa-linkr-debuggerctl
+Description: flashable firmware for Radxa Linkr Debugger
+ Provides the combined MCUboot and application UF2 for ROM BOOTSEL recovery and
+ the unsigned MCUboot-format application image for OTA updates.

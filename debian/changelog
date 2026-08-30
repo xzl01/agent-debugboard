@@ -1,0 +1,5 @@
+radxa-linkr-debugger (0.3.0-1) unstable; urgency=medium
+
+  * Package the standalone CLI and safe flashable firmware separately.
+
+ -- Jiali Chen <chenjiali@radxa.com>  Sun, 30 Aug 2026 09:03:00 +0800

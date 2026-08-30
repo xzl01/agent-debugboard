@@ -1,0 +1,35 @@
+#!/usr/bin/make -f
+
+INPUT_DIR ?= $(CURDIR)/dist/native-package-input
+PACKAGE_VERSION := $(shell cat VERSION)
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	dh_clean
+
+override_dh_auto_build:
+	test -x "$(INPUT_DIR)/radxa-linkr-debuggerctl"
+	test "$$($(INPUT_DIR)/radxa-linkr-debuggerctl --version)" = \
+		"radxa-linkr-debuggerctl $(PACKAGE_VERSION)"
+	test -s "$(INPUT_DIR)/radxa-linkr-debugger-rp2350.uf2"
+	test -s "$(INPUT_DIR)/radxa-linkr-debugger-rp2350-ota.bin"
+	test ! -e "$(INPUT_DIR)/zephyr.uf2"
+
+override_dh_auto_test:
+	"$(INPUT_DIR)/radxa-linkr-debuggerctl" --help >/dev/null
+
+override_dh_auto_install:
+	install -Dm755 "$(INPUT_DIR)/radxa-linkr-debuggerctl" \
+		"$(CURDIR)/debian/radxa-linkr-debuggerctl/usr/bin/radxa-linkr-debuggerctl"
+	ln -s radxa-linkr-debuggerctl \
+		"$(CURDIR)/debian/radxa-linkr-debuggerctl/usr/bin/rdb"
+	install -Dm644 "$(INPUT_DIR)/radxa-linkr-debugger-rp2350.uf2" \
+		"$(CURDIR)/debian/radxa-linkr-debugger-firmware/usr/share/radxa-linkr-debugger/firmware/radxa-linkr-debugger-rp2350.uf2"
+	install -Dm644 "$(INPUT_DIR)/radxa-linkr-debugger-rp2350-ota.bin" \
+		"$(CURDIR)/debian/radxa-linkr-debugger-firmware/usr/share/radxa-linkr-debugger/firmware/radxa-linkr-debugger-rp2350-ota.bin"
+
+override_dh_dwz:
+
+override_dh_strip:
