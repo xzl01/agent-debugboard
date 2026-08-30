@@ -20,6 +20,10 @@
 #define LINKR_DEBUGGER_LA_STREAM_HALF_SAMPLES 1024
 #define LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES \
 	(2U * LINKR_DEBUGGER_LA_STREAM_HALF_SAMPLES)
+#define LINKR_DEBUGGER_LA_STREAM_MAX_PACKED_CHUNK_SAMPLES \
+	(4U * LINKR_DEBUGGER_LA_STREAM_HALF_SAMPLES)
+#define LINKR_DEBUGGER_LA_STREAM_MAX_SINGLE_BITS_CHUNK_SAMPLES \
+	(8U * LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES)
 #define LINKR_DEBUGGER_LA_STREAM_HANDOFF_UNREAD_SAMPLES \
 	LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES
 #define LINKR_DEBUGGER_LA_MIN_SAMPLE_RATE_HZ 100000U
@@ -241,6 +245,7 @@ typedef void (*linkr_debugger_la_stream_callback_t)(
 
 enum linkr_debugger_la_stream_payload_format {
 	LINKR_DEBUGGER_LA_STREAM_PAYLOAD_PACKED_LE_BYTES = 1,
+	LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS = 2,
 };
 
 struct linkr_debugger_la_stream_sink_lease {
@@ -251,9 +256,7 @@ struct linkr_debugger_la_stream_sink_lease {
 
 struct linkr_debugger_la_stream_sink_commit {
 	void *token;
-	uint32_t sequence;
 	uint32_t sample_count;
-	uint64_t timestamp_us;
 	uint8_t bytes_per_sample;
 	size_t payload_len;
 };
@@ -509,6 +512,21 @@ int linkr_debugger_logic_analyzer_stream_sink_lease_payload(
 	const struct linkr_debugger_la_stream_sink *sink,
 	uint32_t sample_count,
 	struct linkr_debugger_la_stream_sink_lease *lease);
+size_t linkr_debugger_logic_analyzer_stream_payload_len(
+	enum linkr_debugger_la_stream_payload_format format,
+	uint32_t sample_count,
+	uint8_t bytes_per_sample);
+int linkr_debugger_logic_analyzer_stream_sink_write_payload(
+	const struct linkr_debugger_la_stream_sink *sink,
+	const struct linkr_debugger_la_packed_ring_plan *plan,
+	const uint32_t * const lane_words[],
+	const uint32_t lane_word_counts[],
+	uint64_t first_sample,
+	uint32_t sample_count,
+	uint8_t *payload,
+	size_t payload_capacity,
+	uint16_t *values_or,
+	uint16_t *values_and);
 int linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(
 	const struct linkr_debugger_la_packed_ring_plan *plan,
 	const uint32_t * const lane_words[],
@@ -533,36 +551,12 @@ void linkr_debugger_logic_analyzer_stream_sink_notify_terminal(
 bool linkr_debugger_logic_analyzer_stream_sink_allows_protocol_update(
 	bool generation_current, uint32_t committed_samples);
 
-struct linkr_debugger_la_debug {
-	uint32_t stream_irqs;
-	uint32_t stream_chunks;
-	uint64_t stream_ring_max_emit_us;
-	uint64_t stream_ring_max_compact_us;
-	uint64_t stream_ring_total_compact_us;
-	uint64_t stream_ring_max_callback_us;
-	uint64_t stream_ring_total_callback_us;
-	uint64_t stream_ring_total_consume_us;
-	uint32_t stream_ring_consume_chunks;
-	uint32_t pre_write_index;
-	uint32_t pre_post_remaining;
-	uint64_t stream_ring_max_poll_gap_us;
-	uint64_t stream_ring_max_unread_samples;
-	uint16_t stream_values_or;
-	uint16_t stream_values_and;
-	bool pre_active;
-	bool pre_triggered;
-	bool stream_active;
-};
-
-void linkr_debugger_logic_analyzer_get_debug(struct linkr_debugger_la_debug *out);
-
 bool linkr_debugger_logic_analyzer_is_stream_triggered(void);
 
 #define LINKR_DEBUGGER_LA_RING_BUFFER_BYTES (32768U)
 #define LINKR_DEBUGGER_LA_RING_SIZE_BITS 15U
 #define LINKR_DEBUGGER_LA_RING_SAMPLES (LINKR_DEBUGGER_LA_RING_BUFFER_BYTES / sizeof(uint32_t))
 #define LINKR_DEBUGGER_LA_RING_SAFETY_SAMPLES 2048U
-#define LINKR_DEBUGGER_LA_RING_MAX_SKEW_SAMPLES 20U
 #define LINKR_DEBUGGER_LA_RING_POLL_INTERVAL_MIN_MS 1U
 #define LINKR_DEBUGGER_LA_RING_POLL_INTERVAL_MAX_MS 4U
 #define LINKR_DEBUGGER_LA_RING_HALF_SAMPLES 2048U
@@ -629,6 +623,7 @@ enum linkr_debugger_la_ring_poll_result linkr_debugger_logic_analyzer_packed_rin
 	uint32_t actual_rate_hz,
 	uint32_t consumed_samples,
 	const struct linkr_debugger_la_packed_ring_plan *plan,
+	bool rx_fifo_stalled,
 	uint32_t *produced_samples,
 	uint32_t *skew_samples);
 uint32_t linkr_debugger_logic_analyzer_ring_next_emit_count(
@@ -669,6 +664,7 @@ bool linkr_debugger_logic_analyzer_stream_callback_allows_protocol_update(
 	bool generation_current, uint32_t emitted_samples);
 bool linkr_debugger_logic_analyzer_stream_callback_should_yield_after_chunk(
 	bool generation_current, uint32_t emitted_samples);
+bool linkr_debugger_logic_analyzer_stream_sink_backpressure_retryable(int ret);
 bool linkr_debugger_logic_analyzer_stream_sink_should_yield_for_handoff(
 	bool handoff_requested, uint64_t unread_samples);
 bool linkr_debugger_logic_analyzer_stream_sink_should_explicit_yield(

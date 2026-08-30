@@ -75,14 +75,14 @@ BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_QBYTES_LIMIT == (36U * 1024U),
 	"Sigrok WS allocated queue byte cap must stay bounded for the 65 KiB heap");
 BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_BYTES <= LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
 	"Sigrok WS coalesce cap must fit in the client tx buffer");
-BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_COUNT == 8U,
-	"Stage A WS Sigrok pool must have exactly eight DATA slots");
+BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_COUNT == 4U,
+	"Stage A WS Sigrok pool must have exactly four DATA slots");
 BUILD_ASSERT(LINKR_DEBUGGER_SIGROK_LINKR_WS_TERMINAL_SLOT_COUNT == 1U,
 	"Stage A WS Sigrok pool must have exactly one terminal slot");
 BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_BYTES ==
 	(LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
-	 LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + 2048U),
-	"Sigrok WS DATA slot must fit 9-byte header, 8-byte metadata, and WIDE12 payload");
+	 LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + 4096U),
+	"Sigrok WS DATA slot must fit one maximum packed protocol frame");
 BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_BYTES <=
 	LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_BYTES,
 	"A maximum Sigrok WS DATA slot must be independently sendable by the coalescer");
@@ -1912,19 +1912,16 @@ static size_t sigrok_ws_stream_qbytes(const struct linkr_debugger_ws_client *cli
 enum sigrok_ws_stream_item_kind {
 	SIGROK_WS_STREAM_ITEM_FREE = 0,
 	SIGROK_WS_STREAM_ITEM_PREFRAMED,
-	SIGROK_WS_STREAM_ITEM_PACKED_DATA,
 };
 
-#define SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES 12U
-#define SIGROK_WS_STREAM_PACKED_SLOT_SAMPLE_INDEX_OFFSET 0U
-#define SIGROK_WS_STREAM_PACKED_SLOT_SAMPLE_COUNT_OFFSET 4U
-#define SIGROK_WS_STREAM_PACKED_SLOT_CHANNEL_MASK_OFFSET 6U
-#define SIGROK_WS_STREAM_PACKED_SLOT_BYTES_PER_SAMPLE_OFFSET 8U
+#define SIGROK_WS_STREAM_PAYLOAD_OFFSET \
+	(LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + \
+	 LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES)
 
-BUILD_ASSERT(SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES +
-	LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES <=
+BUILD_ASSERT(SIGROK_WS_STREAM_PAYLOAD_OFFSET +
+	LINKR_DEBUGGER_LA_STREAM_MAX_PACKED_CHUNK_SAMPLES <=
 	LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_BYTES,
-	"Sigrok WS packed SINGLE payload must fit in an existing DATA slot");
+	"Sigrok WS packed or dense SINGLE payload must fit in an existing DATA slot");
 
 static void sigrok_ws_release_capture_if_held(struct linkr_debugger_ws_client *client)
 {
@@ -2015,90 +2012,19 @@ static size_t sigrok_ws_stream_event_item_bytes(void)
 	return LINKR_DEBUGGER_WS_SIGROK_TERMINAL_SLOT_BYTES;
 }
 
-static void sigrok_ws_stream_store_le16(uint8_t *dst, uint16_t value)
+static uint8_t *sigrok_ws_stream_payload(struct sigrok_ws_stream_queue_item *item)
 {
-	dst[0] = (uint8_t)(value & 0xffU);
-	dst[1] = (uint8_t)((value >> 8) & 0xffU);
-}
-
-static void sigrok_ws_stream_store_le32(uint8_t *dst, uint32_t value)
-{
-	dst[0] = (uint8_t)(value & 0xffU);
-	dst[1] = (uint8_t)((value >> 8) & 0xffU);
-	dst[2] = (uint8_t)((value >> 16) & 0xffU);
-	dst[3] = (uint8_t)((value >> 24) & 0xffU);
-}
-
-static uint16_t sigrok_ws_stream_load_le16(const uint8_t *src)
-{
-	return (uint16_t)src[0] | ((uint16_t)src[1] << 8);
-}
-
-static uint32_t sigrok_ws_stream_load_le32(const uint8_t *src)
-{
-	return (uint32_t)src[0] |
-		((uint32_t)src[1] << 8) |
-		((uint32_t)src[2] << 16) |
-		((uint32_t)src[3] << 24);
-}
-
-static uint8_t *sigrok_ws_stream_packed_payload(struct sigrok_ws_stream_queue_item *item)
-{
-	if (item == NULL || item->capacity <= SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES) {
+	if (item == NULL || item->capacity <= SIGROK_WS_STREAM_PAYLOAD_OFFSET) {
 		return NULL;
 	}
-
-	return item->data + SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES;
+	return item->data + SIGROK_WS_STREAM_PAYLOAD_OFFSET;
 }
 
-static size_t sigrok_ws_stream_packed_payload_capacity(
+static size_t sigrok_ws_stream_payload_capacity(
 	const struct sigrok_ws_stream_queue_item *item)
 {
-	return item == NULL || item->capacity <= SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES ?
-		0U : item->capacity - SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES;
-}
-
-static void sigrok_ws_stream_store_packed_meta(struct sigrok_ws_stream_queue_item *item,
-	uint32_t sample_index, uint16_t sample_count, uint16_t channel_mask,
-	uint8_t bytes_per_sample)
-{
-	uint8_t *meta = item->data;
-
-	sigrok_ws_stream_store_le32(meta + SIGROK_WS_STREAM_PACKED_SLOT_SAMPLE_INDEX_OFFSET,
-		sample_index);
-	sigrok_ws_stream_store_le16(meta + SIGROK_WS_STREAM_PACKED_SLOT_SAMPLE_COUNT_OFFSET,
-		sample_count);
-	sigrok_ws_stream_store_le16(meta + SIGROK_WS_STREAM_PACKED_SLOT_CHANNEL_MASK_OFFSET,
-		channel_mask);
-	meta[SIGROK_WS_STREAM_PACKED_SLOT_BYTES_PER_SAMPLE_OFFSET] = bytes_per_sample;
-	memset(meta + SIGROK_WS_STREAM_PACKED_SLOT_BYTES_PER_SAMPLE_OFFSET + 1U, 0,
-		SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES -
-		SIGROK_WS_STREAM_PACKED_SLOT_BYTES_PER_SAMPLE_OFFSET - 1U);
-}
-
-static bool sigrok_ws_stream_load_packed_meta(
-	const struct sigrok_ws_stream_queue_item *item,
-	uint32_t *sample_index,
-	uint16_t *sample_count,
-	uint16_t *channel_mask,
-	uint8_t *bytes_per_sample)
-{
-	const uint8_t *meta;
-
-	if (item == NULL || item->kind != SIGROK_WS_STREAM_ITEM_PACKED_DATA ||
-	    item->capacity < SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES) {
-		return false;
-	}
-
-	meta = item->data;
-	*sample_index = sigrok_ws_stream_load_le32(
-		meta + SIGROK_WS_STREAM_PACKED_SLOT_SAMPLE_INDEX_OFFSET);
-	*sample_count = sigrok_ws_stream_load_le16(
-		meta + SIGROK_WS_STREAM_PACKED_SLOT_SAMPLE_COUNT_OFFSET);
-	*channel_mask = sigrok_ws_stream_load_le16(
-		meta + SIGROK_WS_STREAM_PACKED_SLOT_CHANNEL_MASK_OFFSET);
-	*bytes_per_sample = meta[SIGROK_WS_STREAM_PACKED_SLOT_BYTES_PER_SAMPLE_OFFSET];
-	return true;
+	return item == NULL || item->capacity <= SIGROK_WS_STREAM_PAYLOAD_OFFSET ?
+		0U : item->capacity - SIGROK_WS_STREAM_PAYLOAD_OFFSET;
 }
 
 static size_t sigrok_ws_stream_encode_item(
@@ -2106,37 +2032,12 @@ static size_t sigrok_ws_stream_encode_item(
 	uint8_t *out,
 	size_t out_len)
 {
-	uint32_t sample_index;
-	uint16_t sample_count;
-	uint16_t channel_mask;
-	uint8_t bytes_per_sample;
-	size_t payload_len;
-
-	if (item == NULL || out == NULL) {
+	if (item == NULL || out == NULL || item->kind != SIGROK_WS_STREAM_ITEM_PREFRAMED ||
+	    item->len == 0U || item->len > out_len) {
 		return 0U;
 	}
-
-	if (item->kind == SIGROK_WS_STREAM_ITEM_PREFRAMED) {
-		if (item->len == 0U || item->len > out_len) {
-			return 0U;
-		}
-		memcpy(out, item->data, item->len);
-		return item->len;
-	}
-
-	if (!sigrok_ws_stream_load_packed_meta(item, &sample_index, &sample_count,
-	    &channel_mask, &bytes_per_sample)) {
-		return 0U;
-	}
-	payload_len = (size_t)sample_count * bytes_per_sample;
-	if (payload_len == 0U || payload_len > sigrok_ws_stream_packed_payload_capacity(item)) {
-		return 0U;
-	}
-
-	return linkr_debugger_sigrok_linkr_encode_packed_data_frame(sample_index,
-		sample_count, channel_mask,
-		item->data + SIGROK_WS_STREAM_PACKED_SLOT_META_BYTES, payload_len, true,
-		out, out_len);
+	memcpy(out, item->data, item->len);
+	return item->len;
 }
 
 static void sigrok_ws_stream_pool_init_locked(void)
@@ -3195,13 +3096,20 @@ static int linkr_debugger_ws_handle_sigrok_binary(struct linkr_debugger_ws_clien
 			uint8_t bytes_per_sample = packed_burst ? burst_plan.bytes_per_sample :
 				linkr_debugger_sigrok_linkr_bytes_per_sample(
 					client->sigrok_session.config.channel_mask);
+			enum linkr_debugger_la_stream_payload_format format = packed_burst ?
+				LINKR_DEBUGGER_LA_STREAM_PAYLOAD_PACKED_LE_BYTES :
+				linkr_debugger_sigrok_linkr_stream_payload_format(
+					client->sigrok_session.config.channel_mask);
 			struct linkr_debugger_la_stream_sink sink = {
-				.format = LINKR_DEBUGGER_LA_STREAM_PAYLOAD_PACKED_LE_BYTES,
+				.format = format,
 				.bytes_per_sample = bytes_per_sample,
 				.max_chunk_samples = packed_burst ?
 					linkr_debugger_sigrok_linkr_packed_burst_max_chunk_samples(
 						bytes_per_sample) :
-					LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES,
+					(format == LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS ?
+					 LINKR_DEBUGGER_LA_STREAM_MAX_SINGLE_BITS_CHUNK_SAMPLES :
+					 LINKR_DEBUGGER_SIGROK_LINKR_MAX_DATA_BYTES /
+					 bytes_per_sample),
 				.lease = sigrok_ws_stream_sink_lease,
 				.commit = sigrok_ws_stream_sink_commit,
 				.abort = sigrok_ws_stream_sink_abort,
@@ -3372,6 +3280,20 @@ static bool sigrok_ws_queue_event(struct linkr_debugger_ws_client *client,
 		client->sigrok_session.sample_index);
 }
 
+static enum linkr_debugger_la_stream_payload_format
+sigrok_ws_stream_sink_payload_format(
+	const struct linkr_debugger_sigrok_linkr_session *session)
+{
+	struct linkr_debugger_la_packed_burst_plan burst_plan;
+
+	if (session != NULL &&
+	    linkr_debugger_sigrok_linkr_packed_burst_plan(&session->config, &burst_plan) == 0) {
+		return LINKR_DEBUGGER_LA_STREAM_PAYLOAD_PACKED_LE_BYTES;
+	}
+	return session == NULL ? LINKR_DEBUGGER_LA_STREAM_PAYLOAD_PACKED_LE_BYTES :
+		linkr_debugger_sigrok_linkr_stream_payload_format(session->config.channel_mask);
+}
+
 static bool sigrok_ws_stream_sink_final_chunk(
 	const struct linkr_debugger_sigrok_linkr_session *session,
 	uint32_t sample_count)
@@ -3427,14 +3349,14 @@ static int sigrok_ws_stream_sink_lease(uint32_t sample_count,
 		atomic_inc(&client->sigrok_stream_dropped);
 		return -ENOSPC;
 	}
-	payload = sigrok_ws_stream_packed_payload(item);
-	if (payload == NULL || sigrok_ws_stream_packed_payload_capacity(item) == 0U) {
+	payload = sigrok_ws_stream_payload(item);
+	if (payload == NULL || sigrok_ws_stream_payload_capacity(item) == 0U) {
 		sigrok_ws_stream_slot_release(item);
 		return -ENOSPC;
 	}
 
 	lease->payload = payload;
-	lease->capacity = sigrok_ws_stream_packed_payload_capacity(item);
+	lease->capacity = sigrok_ws_stream_payload_capacity(item);
 	lease->token = item;
 	return 0;
 }
@@ -3445,6 +3367,7 @@ static int sigrok_ws_stream_sink_commit(
 	struct linkr_debugger_ws_client *client = (struct linkr_debugger_ws_client *)user_data;
 	struct linkr_debugger_sigrok_linkr_session *session;
 	struct sigrok_ws_stream_queue_item *item;
+	enum linkr_debugger_la_stream_payload_format format;
 	uint16_t channel_mask;
 	bool final_chunk;
 	uint32_t qdepth;
@@ -3461,26 +3384,28 @@ static int sigrok_ws_stream_sink_commit(
 
 	session = &client->sigrok_session;
 	channel_mask = session->config.channel_mask;
+	format = sigrok_ws_stream_sink_payload_format(session);
 	item = (struct sigrok_ws_stream_queue_item *)commit->token;
 	if (session->state != LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING ||
 	    linkr_debugger_sigrok_linkr_bytes_per_sample(channel_mask) !=
 	    commit->bytes_per_sample ||
-	    commit->payload_len != (size_t)commit->sample_count * commit->bytes_per_sample ||
-	    commit->payload_len > sigrok_ws_stream_packed_payload_capacity(item)) {
+	    commit->payload_len != linkr_debugger_logic_analyzer_stream_payload_len(
+		format, commit->sample_count, commit->bytes_per_sample) ||
+	    commit->payload_len > sigrok_ws_stream_payload_capacity(item)) {
 		return -EINVAL;
 	}
 
-	total_len = LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
-		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + commit->payload_len;
-	if (total_len > item->capacity) {
+	total_len = linkr_debugger_sigrok_linkr_encode_stream_data_frame(format,
+		session->sample_index, (uint16_t)commit->sample_count, channel_mask,
+		sigrok_ws_stream_payload(item), commit->payload_len, true,
+		item->data, item->capacity);
+	if (total_len == 0U) {
 		return -EMSGSIZE;
 	}
 
 	final_chunk = sigrok_ws_stream_sink_final_chunk(session, commit->sample_count);
-	item->kind = SIGROK_WS_STREAM_ITEM_PACKED_DATA;
+	item->kind = SIGROK_WS_STREAM_ITEM_PREFRAMED;
 	item->len = total_len;
-	sigrok_ws_stream_store_packed_meta(item, session->sample_index,
-		(uint16_t)commit->sample_count, channel_mask, commit->bytes_per_sample);
 	if (!linkr_debugger_sigrok_linkr_stream_queue_bytes_has_capacity(
 	    sigrok_ws_stream_qbytes(client), item->len,
 	    LINKR_DEBUGGER_WS_SIGROK_QBYTES_LIMIT, final_chunk,

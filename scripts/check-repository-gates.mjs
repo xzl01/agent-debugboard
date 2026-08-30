@@ -126,11 +126,11 @@ function firmwareMemoryCaptureContract({
   const captureArena = /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_ALIGN\s+32768U\b/.test(captureArenaHeader)
     && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_WS_SAMPLE_RING_BYTES\s+30720U\b/.test(captureArenaHeader)
     && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_POWER_CAPTURE_BYTES\s+65672U\b/.test(captureArenaHeader)
-    && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_SIGROK_WS_POOL_BYTES\s+16816U\b/.test(captureArenaHeader)
+    && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_SIGROK_WS_POOL_BYTES\s+16624U\b/.test(captureArenaHeader)
     && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_BURST_TOTAL_BYTES\s+144184U\b/.test(captureArenaHeader)
     && /LINKR_DEBUGGER_CAPTURE_ARENA_BYTES\s*\\?[\s\S]*LINKR_DEBUGGER_CAPTURE_ARENA_NORMAL_BYTES/.test(captureArenaHeader)
     && /static\s+uint8_t\s+linkr_debugger_capture_arena\s*\[\s*LINKR_DEBUGGER_CAPTURE_ARENA_BYTES\s*\]\s*__aligned\(\s*LINKR_DEBUGGER_CAPTURE_ARENA_ALIGN\s*\)/.test(captureArenaSource)
-    && /max\(normal,\s*burst\)=149048 B/.test(logicAnalyzerDoc);
+    && /max\(normal,\s*burst\)=148856 B/.test(logicAnalyzerDoc);
   const linker = /zephyr_linker_sources\(\s*RAM_SECTIONS\s+SORT_KEY\s+0\s+sections-ram\.ld\s*\)/.test(appCmake)
     && /SECTION_PROLOGUE\(\s*\.bss\.pre_capture\s*,\s*\(\s*NOLOAD\s*\)[\s\S]*?KEEP\(\s*\*\(\s*\.bss\.pre_capture\.sigrok_runtime\s*\)\s*\)[\s\S]*?KEEP\(\s*\*\(\s*\.bss\.pre_capture\.ws_clients\s*\)\s*\)[\s\S]*?GROUP_NOLOAD_LINK_IN\(\s*RAMABLE_REGION\s*,\s*RAMABLE_REGION\s*\)[\s\S]*?ASSERT\(\s*SIZEOF\(\s*\.bss\.pre_capture\s*\)\s*==\s*0xDA40/.test(sectionsRam)
     && /ASSERT\(\s*__data_region_end\s*<=\s*0x20010000/.test(sectionsRam)
@@ -138,10 +138,13 @@ function firmwareMemoryCaptureContract({
     && /ASSERT\(\s*\(\s*__bss_start\s*&\s*0x7fff\s*\)\s*==\s*0/.test(sectionsRam);
   const sigrok = /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_RING_BUFFER_BYTES\s+32768U\b/.test(sigrokHeader)
     && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_STREAM_QDEPTH_LIMIT\s+32U\b/.test(sigrokHeader)
-    && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_WS_DATA_SLOT_COUNT\s+8U\b/.test(sigrokHeader)
+    && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_WS_DATA_SLOT_COUNT\s+4U\b/.test(sigrokHeader)
+    && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_WS_DATA_PAYLOAD_BYTES\s*\\?[\s\S]{0,80}LINKR_DEBUGGER_SIGROK_LINKR_MAX_DATA_BYTES/.test(sigrokHeader)
     && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_WS_TERMINAL_SLOT_COUNT\s+1U\b/.test(sigrokHeader)
     && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_SLOT_COUNT\s+12U\b/.test(sigrokHeader)
     && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_RAW_BURST_QUEUE_MEMORY_LIMIT_BYTES\s+49152U\b/.test(sigrokHeader)
+    && /LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_PACKED_PALETTE2\s*=\s*6\b/.test(sigrokHeader)
+    && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_TCP_STREAM_QDEPTH_LIMIT\s+10U\b/.test(sigrokSource)
     && /Z_GENERIC_SECTION\(\s*\.bss\.pre_capture\.sigrok_runtime\s*\)/.test(sigrokSource)
     && !/section\(\s*"\.bss\.pre_capture\.sigrok_runtime"\s*\)/.test(sigrokSource)
     && /BUILD_ASSERT\(\s*sizeof\(\s*linkr_debugger_sigrok_linkr_runtime\s*\)\s*==\s*27168U\s*\)/.test(sigrokSource)

@@ -30,7 +30,7 @@ RP2354 硬件需要完成专用 board 定义和 HIL 验证后才能声明支持�
 | 持久化配置 | [一份由固件持有的显式快照](docs/reference/persistent-configuration.md)；安全值在启动时恢复，危险值需要确认，清除快照不会改变实时硬件 |
 | 强制门户 | DHCP option 114/HTTP 自动打开 Web UI |
 
-WIDE11 使用 144184 B 硬件切片和 30720 B WS 遥测环，共享 149048 B 总后备分配。
+WIDE11 使用 144184 B 硬件切片和 30720 B WS 遥测环，共享 148856 B 总后备分配。当前严格 10/10 连续流工作点为：FAST8 静态 2.600 MHz、GP16 活动输入 WS 1.200 MHz / TCP 1.375 MHz；WIDE11 静态 WS 1.050 MHz / TCP 1.175 MHz、GP16 活动输入 WS 850 kHz / TCP 950 kHz。这些是传输工作点，不是 125 MHz 连续流声明。
 
 ADC3 契约、wire shape 和 GP29 所有权规则见
 [docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md)；[2026-07-31 ADC3 telemetry HIL 报告](docs/testing/results/2026-07-31-adc3-telemetry-hil.md)

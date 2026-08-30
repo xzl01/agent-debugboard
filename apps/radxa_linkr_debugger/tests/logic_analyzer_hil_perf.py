@@ -26,7 +26,7 @@ from typing import Any, cast
 
 
 SIGROK_MAGIC = 0x72
-SIGROK_PROTOCOL_VERSION = 1
+SIGROK_PROTOCOL_VERSION = 2
 SIGROK_HEADER_BYTES = 9
 SIGROK_DATA_META_BYTES = 8
 SIGROK_SAMPLE_INDEX_MODULO = 1 << 24
@@ -35,6 +35,9 @@ COMPRESSION_NONE = 0
 COMPRESSION_BIT_PACK = 1
 COMPRESSION_RLE = 2
 COMPRESSION_BIT_PACK_RLE = 3
+COMPRESSION_SINGLE_BITS = 4
+COMPRESSION_SINGLE_BITS_RLE = 5
+COMPRESSION_PACKED_PALETTE2 = 6
 
 FRAME_HELLO_REQ = 0x01
 FRAME_HELLO_RESP = 0x02
@@ -110,6 +113,7 @@ TELEMETRY_ISOLATION_DEFAULT_POST_RELEASE_SAMPLES = 2
 TELEMETRY_ISOLATION_GRACE_S = 0.05
 STREAM_CHUNK_SAMPLES = 1024
 MAX_STREAM_DIAGNOSTIC_RECORDS = 16
+MAX_ACTIVITY_ANALYSIS_SAMPLES = 65536
 EVENT_TRIGGERED = 2
 EVENT_STOPPED = 4
 EVENT_OVERRUN = 5
@@ -193,6 +197,12 @@ class StreamStats:
     event_records: list[SigrokEventRecord] = field(default_factory=list)
     first_payload_budget_records: list[dict[str, int]] = field(default_factory=list)
     first_decode_error_records: list[dict[str, str]] = field(default_factory=list)
+    compression_frame_counts: dict[str, int] = field(default_factory=dict)
+    activity_analyzed_samples: int = 0
+    sample_value_or: int = 0
+    sample_value_and: int | None = None
+    sample_value_transitions: int = 0
+    last_activity_sample: int | None = None
 
     def observe_data(
         self,
@@ -201,6 +211,7 @@ class StreamStats:
         *,
         expected_channel_mask: int | None = None,
         sample_bytes: int | None = None,
+        decoded_payload: bytes | None = None,
     ) -> None:
         if meta.sample_count <= 0:
             self.invalid_sample_count_frames += 1
@@ -227,6 +238,27 @@ class StreamStats:
         self.data_frames += 1
         self.received_sample_count += meta.sample_count
         self.payload_bytes += sample_payload_len
+        compression_key = str(meta.compression)
+        self.compression_frame_counts[compression_key] = self.compression_frame_counts.get(
+            compression_key,
+            0,
+        ) + 1
+        if decoded_payload is not None and sample_bytes is not None and sample_bytes > 0:
+            remaining = MAX_ACTIVITY_ANALYSIS_SAMPLES - self.activity_analyzed_samples
+            available = len(decoded_payload) // sample_bytes
+            analyze_count = min(meta.sample_count, available, max(0, remaining))
+            for sample_index in range(analyze_count):
+                offset = sample_index * sample_bytes
+                sample = int.from_bytes(decoded_payload[offset:offset + sample_bytes], "little")
+                self.sample_value_or |= sample
+                if self.sample_value_and is None:
+                    self.sample_value_and = sample
+                else:
+                    self.sample_value_and &= sample
+                if self.last_activity_sample is not None and sample != self.last_activity_sample:
+                    self.sample_value_transitions += 1
+                self.last_activity_sample = sample
+            self.activity_analyzed_samples += analyze_count
 
     def observe_decode_error(self, meta: SigrokDataMeta, error: Exception) -> None:
         self.data_decode_error_frames += 1
@@ -497,6 +529,73 @@ def sigrok_bytes_per_sample(channel_mask: int) -> int:
     return (channel_count + 7) // 8
 
 
+def _decode_rle_units(
+    sample_payload: bytes,
+    unit_count: int,
+    unit_bytes: int,
+    compression_name: str,
+) -> bytes:
+    tuple_len = unit_bytes + 2
+    if len(sample_payload) == 0 or len(sample_payload) % tuple_len != 0:
+        raise ValueError(f"{compression_name} payload has truncated tuple")
+    out = bytearray()
+    pos = 0
+    expanded_count = 0
+    while pos < len(sample_payload):
+        value = sample_payload[pos:pos + unit_bytes]
+        run_pos = pos + unit_bytes
+        run_count = sample_payload[run_pos] | (sample_payload[run_pos + 1] << 8)
+        if run_count == 0:
+            raise ValueError(f"{compression_name} run_count must be non-zero")
+        if expanded_count + run_count > unit_count:
+            raise ValueError(f"{compression_name} expanded unit count overflows metadata")
+        out.extend(value * run_count)
+        expanded_count += run_count
+        pos += tuple_len
+    if expanded_count != unit_count or len(out) != unit_count * unit_bytes:
+        raise ValueError(f"{compression_name} expanded output does not match metadata")
+    return bytes(out)
+
+
+def _decode_packed_palette2(
+    sample_payload: bytes,
+    sample_count: int,
+    bytes_per_sample: int,
+) -> bytes:
+    selector_len = (sample_count + 7) // 8
+    palette_bytes = bytes_per_sample * 2
+    if len(sample_payload) != palette_bytes + selector_len:
+        raise ValueError("PACKED_PALETTE2 payload length does not match metadata")
+    palette0 = sample_payload[:bytes_per_sample]
+    palette1 = sample_payload[bytes_per_sample:palette_bytes]
+    if palette0 == palette1:
+        raise ValueError("PACKED_PALETTE2 palette values must be distinct")
+    selectors = sample_payload[palette_bytes:]
+    trailing_bits = sample_count % 8
+    if trailing_bits and selectors[-1] & ~((1 << trailing_bits) - 1):
+        raise ValueError("PACKED_PALETTE2 selector tail padding is non-zero")
+    out = bytearray()
+    for sample_index in range(sample_count):
+        selector = selectors[sample_index >> 3]
+        out.extend(palette1 if selector & (1 << (sample_index & 7)) else palette0)
+    return bytes(out)
+
+
+def _decode_single_bits(sample_payload: bytes, sample_count: int, channel_mask: int) -> bytes:
+    if int(channel_mask & 0xFFFF).bit_count() != 1:
+        raise ValueError("SINGLE_BITS requires exactly one active channel")
+    expected_len = (sample_count + 7) // 8
+    if len(sample_payload) != expected_len:
+        raise ValueError(f"SINGLE_BITS payload length {len(sample_payload)} != expected {expected_len}")
+    trailing_bits = sample_count % 8
+    if trailing_bits and sample_payload[-1] & ~((1 << trailing_bits) - 1):
+        raise ValueError("SINGLE_BITS payload has non-zero tail padding")
+    return bytes(
+        (sample_payload[sample_index >> 3] >> (sample_index & 7)) & 1
+        for sample_index in range(sample_count)
+    )
+
+
 def decode_sigrok_data_payload(meta: SigrokDataMeta, sample_payload: bytes) -> bytes:
     if meta.sample_count <= 0:
         raise ValueError("DATA sample_count must be non-zero")
@@ -509,30 +608,25 @@ def decode_sigrok_data_payload(meta: SigrokDataMeta, sample_payload: bytes) -> b
             raise ValueError(f"BIT_PACK payload length {len(sample_payload)} != expected {expected_len}")
         return sample_payload
     if meta.compression == COMPRESSION_BIT_PACK_RLE:
-        tuple_len = bytes_per_sample + 2
-        if len(sample_payload) == 0 or len(sample_payload) % tuple_len != 0:
-            raise ValueError("BIT_PACK_RLE payload has truncated tuple")
-        out = bytearray()
-        pos = 0
-        expanded_count = 0
-        while pos < len(sample_payload):
-            value = sample_payload[pos:pos + bytes_per_sample]
-            run_pos = pos + bytes_per_sample
-            if run_pos + 2 > len(sample_payload):
-                raise ValueError("BIT_PACK_RLE tuple missing run_count")
-            run_count = sample_payload[run_pos] | (sample_payload[run_pos + 1] << 8)
-            if run_count == 0:
-                raise ValueError("BIT_PACK_RLE run_count must be non-zero")
-            if expanded_count + run_count > meta.sample_count:
-                raise ValueError("BIT_PACK_RLE expanded sample count overflows metadata")
-            out.extend(value * run_count)
-            expanded_count += run_count
-            pos += tuple_len
-        if expanded_count != meta.sample_count:
-            raise ValueError("BIT_PACK_RLE expanded sample count does not match metadata")
-        if len(out) != expected_len:
-            raise ValueError("BIT_PACK_RLE expanded byte length does not match metadata")
-        return bytes(out)
+        return _decode_rle_units(
+            sample_payload,
+            meta.sample_count,
+            bytes_per_sample,
+            "BIT_PACK_RLE",
+        )
+    if meta.compression == COMPRESSION_SINGLE_BITS:
+        return _decode_single_bits(sample_payload, meta.sample_count, meta.channel_mask)
+    if meta.compression == COMPRESSION_SINGLE_BITS_RLE:
+        dense_byte_count = (meta.sample_count + 7) // 8
+        dense = _decode_rle_units(
+            sample_payload,
+            dense_byte_count,
+            1,
+            "SINGLE_BITS_RLE",
+        )
+        return _decode_single_bits(dense, meta.sample_count, meta.channel_mask)
+    if meta.compression == COMPRESSION_PACKED_PALETTE2:
+        return _decode_packed_palette2(sample_payload, meta.sample_count, bytes_per_sample)
     if meta.compression == COMPRESSION_RLE:
         raise ValueError("standalone RLE is not valid for the current DATA sample decoder")
     raise ValueError(f"unsupported DATA compression {meta.compression}")
@@ -547,8 +641,9 @@ def observe_sigrok_data_payload(
     sample_bytes: int | None = None,
 ) -> None:
     sample_payload = frame_payload[SIGROK_DATA_META_BYTES:]
+    decoded_payload: bytes | None = None
     try:
-        _ = decode_sigrok_data_payload(meta, sample_payload)
+        decoded_payload = decode_sigrok_data_payload(meta, sample_payload)
     except ValueError as exc:
         stats.observe_decode_error(meta, exc)
     stats.observe_data(
@@ -556,6 +651,7 @@ def observe_sigrok_data_payload(
         len(sample_payload),
         expected_channel_mask=expected_channel_mask,
         sample_bytes=sample_bytes,
+        decoded_payload=decoded_payload,
     )
 
 
@@ -1637,6 +1733,15 @@ def ws_sigrok_fresh_restart_probe(http_base: str, websocket_module: object, mode
                 pass
 
 
+def continuous_minimum_sample_count(
+    actual_rate_khz: int | None,
+    requested_duration_s: float | None,
+) -> int | None:
+    if actual_rate_khz is None or actual_rate_khz <= 0 or requested_duration_s is None:
+        return None
+    return int(actual_rate_khz * 1000 * requested_duration_s * 0.95)
+
+
 def evaluate_sigrok_pass(
     *,
     bounded: bool,
@@ -1649,9 +1754,15 @@ def evaluate_sigrok_pass(
     immediate_restart: Mapping[str, object],
     board_health_after: Mapping[str, object],
     terminal_reason: str | None = None,
+    actual_rate_khz: int | None = None,
 ) -> tuple[bool, str]:
     requested_met = True if requested_samples is None else stats.received_sample_count >= requested_samples
     duration_met = True if bounded else requested_duration_s is not None and stream_elapsed_s >= requested_duration_s * 0.95
+    minimum_continuous_samples = continuous_minimum_sample_count(actual_rate_khz, requested_duration_s)
+    continuous_samples_met = bounded or (
+        minimum_continuous_samples is not None
+        and stats.received_sample_count >= minimum_continuous_samples
+    )
     terminal_accepts_completion = terminal_reason in (TERMINAL_REASON_SERVER_STOPPED, TERMINAL_REASON_SERVER_OVERRUN)
     data_observed_or_capacity_stop = stats.data_frames > 0 or (
         not bounded and terminal_reason == TERMINAL_REASON_SERVER_OVERRUN
@@ -1675,6 +1786,7 @@ def evaluate_sigrok_pass(
         (bool(board_health_after.get("ok")), "board HTTP health is not ok"),
         (requested_met, "requested pre+post sample count not met"),
         (duration_met, "continuous data window duration not met"),
+        (continuous_samples_met, "continuous sample count below negotiated rate"),
     ]
     for passed, reason in checks:
         if not passed:
@@ -1725,6 +1837,7 @@ def sigrok_capture_case(
     stream_started = 0.0
     stream_ended = 0.0
     terminal_reason: str | None = None
+    actual_rate_khz = 0
     try:
         with socket.create_connection((host, port), timeout=timeout_s) as sock:
             sock.settimeout(timeout_s)
@@ -1757,6 +1870,7 @@ def sigrok_capture_case(
                 result.update({"pass": False, "reason": f"START returned 0x{header.frame_type:02x}", "error": error})
                 return result
             result["start_ack"] = parse_ack(payload)
+            actual_rate_khz = int(cast(Mapping[str, object], result["start_ack"])["actual_rate_khz"])
             start_wait_reason = strict_start_wait_failure_reason(start_wait)
             if start_wait_reason is not None:
                 stop_response = sigrok_stop(sock, timeout_s, 5)
@@ -1830,6 +1944,7 @@ def sigrok_capture_case(
         immediate_restart=immediate_restart,
         board_health_after=board_health_after,
         terminal_reason=terminal_reason,
+        actual_rate_khz=actual_rate_khz,
     )
     result.update({
         "pass": passed,
@@ -1843,6 +1958,16 @@ def sigrok_capture_case(
         "trigger_sample_offset_valid": stats.trigger_sample_offset_valid(),
         "requested_pre_post_samples": requested_samples,
         "requested_pre_post_met": requested_pre_post_met,
+        "continuous_minimum_sample_count": continuous_minimum_sample_count(
+            actual_rate_khz, duration_s
+        ) if not bounded else None,
+        "continuous_sample_count_met": bounded or (
+            stats.received_sample_count >= (
+                continuous_minimum_sample_count(
+                    actual_rate_khz, duration_s
+                ) or 1
+            )
+        ),
         "bounded_target_met_before_stop": bounded and requested_pre_post_met,
         "client_stop_sent": bool(stop_response.get("sent")),
         "client_stopped": bool(stop_response.get("received")) and stop_response.get("frame_type") == FRAME_STOP_RESP,
@@ -2105,6 +2230,7 @@ def sigrok_ws_capture_case(
     stream_started = 0.0
     stream_ended = 0.0
     terminal_reason: str | None = None
+    actual_rate_khz = 0
     try:
         ws_url = create_live_session_ws_url(http_base, timeout_s)
         result["ws_url"] = ws_url
@@ -2152,6 +2278,7 @@ def sigrok_ws_capture_case(
                 result.update({"pass": False, "reason": f"START returned 0x{header.frame_type:02x}", "error": error})
                 return result
             result["start_ack"] = parse_ack(payload)
+            actual_rate_khz = int(cast(Mapping[str, object], result["start_ack"])["actual_rate_khz"])
             start_wait_reason = strict_start_wait_failure_reason(start_wait)
             if start_wait_reason is not None:
                 stop_response = ws_sigrok_stop(ws_conn, websocket_module, timeout_s, 5)
@@ -2226,6 +2353,7 @@ def sigrok_ws_capture_case(
         immediate_restart=immediate_restart,
         board_health_after=board_health_after,
         terminal_reason=terminal_reason,
+        actual_rate_khz=actual_rate_khz,
     )
     result.update({
         "pass": passed,
@@ -2239,6 +2367,16 @@ def sigrok_ws_capture_case(
         "trigger_sample_offset_valid": stats.trigger_sample_offset_valid(),
         "requested_pre_post_samples": requested_samples,
         "requested_pre_post_met": requested_pre_post_met,
+        "continuous_minimum_sample_count": continuous_minimum_sample_count(
+            actual_rate_khz, duration_s
+        ) if not bounded else None,
+        "continuous_sample_count_met": bounded or (
+            stats.received_sample_count >= (
+                continuous_minimum_sample_count(
+                    actual_rate_khz, duration_s
+                ) or 1
+            )
+        ),
         "bounded_target_met_before_stop": bounded and requested_pre_post_met,
         "client_stop_sent": bool(stop_response.get("sent")),
         "client_stopped": bool(stop_response.get("received")) and stop_response.get("frame_type") == FRAME_STOP_RESP,

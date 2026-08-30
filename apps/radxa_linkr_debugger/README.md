@@ -619,14 +619,14 @@ or 3 (RUNNING for NONE), then EVENT armed (rising/falling/either only), then EVE
 triggered, then DATA, then EVENT stopped.
 
 All modes use the common packed arena. WIDE11 is the current dual-lane
-implementation: its 144184 B hardware burst slice overlays the 149048 B total
+implementation: its 144184 B hardware burst slice overlays the 148856 B total
 backing allocation, which is also shared with the 30720 B WebSocket telemetry
-ring. The allocation is sized to `max(normal, burst)=149048 B`; WIDE11 does not
+ring. The allocation is sized to `max(normal, burst)=148856 B`; WIDE11 does not
 extend it, and WIDE12 is historical only. GP29 is excluded from WIDE11 because
 it is owned by ADC3 and input-only; see [GP29 ADC3 ownership](#gp29-adc3-ownership).
 See the
 [authoritative logic-analyzer architecture and matrices](../../docs/reference/logic-analyzer.md)
-and the [dated WIDE11 HIL evidence](../../docs/testing/results/2026-07-27-logic-analyzer-generic-packed-burst-hil.md).
+and the [current multichannel HIL evidence](../../docs/testing/results/2026-08-31-logic-analyzer-v2-multichannel-hil.md).
 The dated 2026-07-27 report is historical `pre=0` evidence and does not validate
 the later pre-trigger implementation.
 CDC ACM shell BOOTSEL and combined-UF2 HTTP BOOTSEL recovery were both

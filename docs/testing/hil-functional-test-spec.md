@@ -1348,12 +1348,12 @@ Verify stream mode behavior. With `GENERIC_PACKED_BURST`, post=0 at the
 high rates documented in section 8b.4.1 (100 MHz or 125 MHz SINGLE/FAST8,
 100 MHz WIDE11) captures exactly 100000 samples losslessly then auto-STOPs
 and drains; WIDE11 at 125 MHz is rejected by START (INVALID_CONFIG).
-At lower non-packed rates, post=0 runs until the client stops. The
-continuous 1 MHz stream case is **not** a sustained PASS on the current
-architecture; see section 8b.4 for the strict duration contract and the
-current WS 1 MHz boundary diagnostic (`server_overrun` at ~0.119 s,
-43,232 samples, zero gaps/disconnects, restart and HTTP health,
-`pass=false` because duration was not met).
+At lower non-packed rates, post=0 runs until the client stops. Protocol-v2
+SINGLE passes the strict five-second contract at 16 MHz over both WS and TCP for
+the measured static/low-transition input. Each 16,384-sample chunk uses a
+2,048-byte chronological bitstream and compresses to three payload bytes for the
+observed repeated value. This does not prove high-transition or incompressible
+16 MHz capacity; see section 8b.4.
 
 #### 8b.4 Continuous Operating Points and Sustained Stability
 
@@ -1361,6 +1361,7 @@ Sustained-duration validation is governed by a strict semantics contract. A
 continuous run is `pass=true` only when it meets **all** of the following:
 
 - At least 95% of the requested duration is reached
+- At least 95% of negotiated samplerate × requested duration samples are received
 - `stop_response.received: true`
 - Zero sample-index gaps
 - Zero disconnects
@@ -1377,26 +1378,40 @@ Validated operating points and boundary diagnostics under the strict contract:
 
 | Transport | Mode | Rate | Expected |
 |-----------|------|------|----------|
-| WebSocket | SINGLE continuous | 300 kHz | 5-second sustained PASS: exactly 1,499,136 samples in 5.012458 s, zero gaps/disconnects/overruns, STOP, restart, HTTP health |
-| WebSocket | SINGLE continuous | 400 kHz | Boundary diagnostic: explicit `server_overrun` at ~0.084 s, zero gaps/disconnects, restart and HTTP health; `pass=false` because duration was not met |
-| TCP | SINGLE continuous | 350 kHz | 5-second sustained PASS: exactly 1,755,136 samples in 5.008183 s, zero gaps/disconnects/overruns, STOP, restart, HTTP health |
-| TCP | SINGLE continuous | 400 kHz | Boundary diagnostic: explicit `server_overrun` at ~0.116 s, zero gaps/disconnects, restart and HTTP health; `pass=false` because duration was not met |
-| WebSocket | FAST8 continuous | 240 kHz | 5-second no-gap |
-| WebSocket | FAST8 continuous | 241 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
-| WebSocket | WIDE11 continuous | 149 kHz | 5-second no-gap |
-| WebSocket | WIDE11 continuous | 150 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
-| TCP | FAST8 continuous | 241 kHz | 5-second no-gap |
-| TCP | FAST8 continuous | 242 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
-| TCP | WIDE11 continuous | 147 kHz | 5-second no-gap |
-| TCP | WIDE11 continuous | 148 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
+| WebSocket | SINGLE continuous | 16 MHz | 10/10 strict 5-second PASS; 78,004,224–79,855,616 samples, 15.600–15.969 Msamples/s, zero gaps/errors/overruns, STOP, restart, HTTP health |
+| TCP | SINGLE continuous | 16 MHz | 10/10 strict 5-second PASS; 77,266,944–79,937,536 samples, 15.451–15.986 Msamples/s, zero gaps/errors/overruns, STOP, restart, HTTP health |
+| WebSocket | SINGLE continuous | 18.002 MHz actual | Boundary failure: 83,542,016 samples below the 85,509,500 strict minimum; clean STOP/restart/health, zero gaps/overruns |
+| TCP | SINGLE continuous | 18.002 MHz actual | Boundary failure: 78,413,824 samples below the 85,509,500 strict minimum; clean STOP/restart/health, zero gaps/overruns |
+| WebSocket | FAST8 static/low-transition | 2.600 MHz | 10/10 strict PASS; adjacent 2.800 MHz fails |
+| TCP | FAST8 static/low-transition | 2.600 MHz | 10/10 strict PASS; 2.700 MHz passes only 7/10 |
+| WebSocket | WIDE11 static/low-transition | 1.050 MHz | 10/10 strict PASS; adjacent 1.100 MHz fails |
+| TCP | WIDE11 static/low-transition | 1.175 MHz | 10/10 strict PASS; 1.200 MHz passes only 8/10 |
+| WebSocket | FAST8 GP16-active PALETTE2 | 1.200 MHz | 10/10 strict PASS; adjacent 1.225 MHz fails |
+| TCP | FAST8 GP16-active PALETTE2 | 1.375 MHz | 10/10 strict PASS; adjacent 1.400 MHz fails |
+| WebSocket | WIDE11 GP16-active PALETTE2 | 850 kHz | 10/10 strict PASS; adjacent 875 kHz fails |
+| TCP | WIDE11 GP16-active PALETTE2 | 950 kHz | 10/10 strict PASS; adjacent 975 kHz fails |
 
-The 300 kHz (WS) and 350 kHz (TCP) rows are proven sustained-duration
-operating points on the representative HIL setup under the strict
-contract. The 400 kHz WS/TCP and 1 MHz WS rows bracket the boundary where
-the runner still records an explicit lossless `server_overrun` with zero
-gaps/disconnects, but the requested 5 s duration is not met and the runner
-reports `pass=false`. They are recorded as boundary diagnostics, not
-sustained PASS, and they are not exact absolute ceilings.
+Both current 16 MHz rows require 95% duration and 95% of the negotiated sample
+count, in addition to zero gaps, disconnects, protocol errors, and overruns plus
+STOP_RESP, immediate restart, and HTTP health. Duration alone is no longer a
+throughput PASS. The adjacent 18.002 MHz rows retain clean transport semantics
+but fail because their sample totals miss the negotiated-rate threshold.
+
+The SINGLE input was static or low-transition. SINGLE_BITS_RLE reduced each
+16,384-sample chunk to three payload bytes, so high-transition/incompressible 16 MHz SINGLE
+remains unverified. Multichannel active-input validation uses a separate GP16 profile:
+
+- Connect /dev/ttyACM1 TX to GP16 and share ground; confirm no user process owns ttyACM1.
+- Continuously transmit UART 0x55, 8N1, at 921600 baud for the complete matrix.
+- Require activity_analyzed_samples=65536, bit6 present in sample_value_or and absent from
+  sample_value_and, and non-zero sample_value_transitions for every PASS row.
+- PACKED_PALETTE2 rows must report compression_frame_counts key 6. Raw pre-palette baseline rows
+  use UART baud equal to sample rate and require key 1 plus near-per-sample transitions.
+- This proves one transition-rich GP16 line in the full FAST8/WIDE11 channel set. It does not
+  prove simultaneous independent entropy on all channels or cross-lane high-state mapping.
+
+See docs/testing/results/2026-08-30-logic-analyzer-v2-dense-hil.md and
+docs/testing/results/2026-08-31-logic-analyzer-v2-multichannel-hil.md.
 
 Bounded pre=0 and post=1..512 HIL results (exact finite engine). post=513 to 65535 uses packed ring streaming.
 post=65536 is not a valid uint16; use CONFIG_V2 with u32LE pre/post for >65535 captures.
@@ -1416,7 +1431,6 @@ post=65536 is not a valid uint16; use CONFIG_V2 with u32LE pre/post for >65535 c
 | WS | SINGLE | falling | 100 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
 | WS | SINGLE | either | 100 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
 | TCP | SINGLE | rising | 100 MHz | 512 | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
-| WS | SINGLE | continuous (historical) | 1 MHz | 0 | Historical pre-transport-cleanup evidence: 4,997,120 samples, 999,340.8 samples/s, zero sample-index gaps, zero disconnects. Not a current sustained PASS under the strict 95% duration contract; current WS 1 MHz ends in explicit `server_overrun` at ~0.119 s (43,232 samples), zero gaps/disconnects, restart and HTTP health. |
 
 Bounded post=65535 results (packed ring streaming, user-stop):
 
@@ -1480,7 +1494,7 @@ The 2026-07-27 WIDE11 HIL verified the then-current target at 100 MHz with
 `pre=0` and both `post=100000` and high-rate `post=0`. Accepted deep bursts
 delivered exactly 100000 samples in 98 DATA frames with zero sample-index gaps.
 WIDE11 uses two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B
-(GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B shared burst slice (overlays the 149048 B total backing allocation).
+(GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B shared burst slice (overlays the 148856 B total backing allocation).
 GP29 is excluded from WIDE11 LA and remains input-only while used by ADC3. NONE deep burst uses
 two capture SMs; triggered deep burst adds a third SM running the 3-instruction trigger
 program. Two-phase START prepares ownership and quiesce before the response. NONE sends
@@ -1495,7 +1509,7 @@ ARMED state followed by the ARMED event. GO then synchronously enables the sampl
 | WS | WIDE11 high-rate capacity burst | NONE | 100 MHz | PASS — post=0 produced exactly 100000 samples and auto-STOPPED |
 | TCP | WIDE11 high-rate capacity burst | NONE | 100 MHz | PASS — post=0 produced exactly 100000 samples and auto-STOPPED |
 
-After each deep burst run, verify HTTP health and restart capability. The 144184 B shared burst slice (overlaying the 149048 B total backing allocation)
+After each deep burst run, verify HTTP health and restart capability. The 144184 B shared burst slice (overlaying the 148856 B total backing allocation)
 restores ADC telemetry, power capture, and normal Sigrok pool after drain;
 confirm these services are functional after the capture completes.
 
@@ -1585,7 +1599,7 @@ The executable two-client regression is `--matrix wide11-telemetry-isolation` in
 normal JSON WebSocket ADC telemetry client stays connected but pauses while a second
 client holds the WIDE11 shared burst-slice lease through raw-TCP sigrok deep burst.
 WIDE11 uses two packed capture SMs and two DMA channels in the 144184-byte
-shared burst slice (overlays the 149048 B total backing allocation); triggered capture adds a third trigger-only SM.
+shared burst slice (overlays the 148856 B total backing allocation); triggered capture adds a third trigger-only SM.
 
 Run with 5-second bounded operations:
 
@@ -2380,14 +2394,25 @@ The current bounded pre-trigger and UART sample-0 decoder results are recorded i
 canonical footprint, HTTP and CDC BOOTSEL recovery, WebSocket protocol evidence,
 browser decode evidence, and visual QA.
 
-The current sustained-duration evidence under the strict 95% duration contract
-is recorded in `docs/testing/results/2026-08-24-firmware-memory-optimization-hil.md`.
-That report is the authoritative source for the WS 300 kHz and TCP 350 kHz
-sustained operating points, the WS 400 kHz / WS 1 MHz / TCP 400 kHz boundary
-diagnostics, the 62/62 high-rate matrix, the stack high-water values, and
-the combined-UF2 HTTP + CDC BOOTSEL dual recovery. It also establishes that
-the optimized and clean detached HEAD control images share the same
-pre-existing high-rate continuous limitation.
+The current SINGLE sustained-duration evidence under the strict duration and
+negotiated-sample-count contract is recorded in
+docs/testing/results/2026-08-30-logic-analyzer-v2-dense-hil.md. It is the
+authoritative source for protocol version 2, SINGLE_BITS/SINGLE_BITS_RLE,
+WS/TCP 16 MHz ten-run operating points, 18.002 MHz adjacent failures, bounded
+post=65535 regression, host A/B benchmarks, UART limitation, dual BOOTSEL use,
+and final production restoration.
+
+The current multichannel sustained-duration, activity-qualified, DMA RXSTALL, palette
+compression, chunk-size, queue-depth, and resource evidence is recorded in
+docs/testing/results/2026-08-31-logic-analyzer-v2-multichannel-hil.md. It is authoritative for
+FAST8/WIDE11 protocol-v2 operating points, raw active-input baselines, adjacent failures, and
+final production restoration. It does not supersede the separate 16 MHz SINGLE report.
+
+The 2026-08-30 v1 fast-path report remains authoritative historical evidence for
+the byte-per-sample 300 kHz through 1 MHz matrix and its restoration. The
+2026-08-24 report remains historical evidence for the earlier 300/350 kHz
+operating points, overrun diagnostics, high-rate matrix, stack high-water values,
+and clean detached-HEAD A/B. Their dated observations remain unchanged.
 
 The following historical results were obtained from earlier post-fix HIL runs.
 They are not rewritten as current sustained PASS claims and they are not
@@ -2397,15 +2422,12 @@ Full logic analyzer finite HIL evidence report (2026-07-25):
 `docs/testing/results/2026-07-25-logic-analyzer-finite-hil.md`
 
 ### Historical WS SINGLE 1MHz Continuous (`/tmp/linkr-final-ws-1mhz.json`)
-Historical, pre-transport-cleanup-patch evidence. Overall pass on the
-then-current architecture, 4,995,072 samples, 998,963.5 samples/s effective
-rate, zero sample-index gaps, zero disconnects, STOP response received,
-immediate restart and HTTP health confirmed. The current architecture
-does not achieve this sustained rate; the current WS 1 MHz ends in explicit
-`server_overrun` at ~0.119 s (43,232 samples) with zero gaps/disconnects,
-restart and HTTP health retained, but the requested 5 s duration is not
-met and the strict runner reports `pass=false`. Treat this row as
-historical/different-pipeline evidence, not a current operating point.
+Historical, pre-transport-cleanup evidence. The then-current pipeline received
+approximately 4.995 million samples near 999 ksample/s with zero gaps and clean
+STOP/restart/health. A later v1 pipeline regressed, then the 2026-08-30 v1 fast
+path restored 1 MHz for compressible input. Protocol v2 now supersedes all of
+those runtime contracts and passes the current strict rule at 16 MHz. This row
+is retained only as historical context.
 
 ### GP10 UART Trigger Validation (`/tmp/linkr-final-gp10-*.json`)
 Six isolated bounded captures at 1 MHz and 2 MHz, rising/falling/either trigger types,
@@ -2423,9 +2445,9 @@ sample-index gaps, stop response received, immediate restart and HTTP health con
 
 These historical results demonstrate the bounded/triggered implementation
 against the reference smoke test criteria. They are not projections or
-estimates. The historical WS SINGLE 1 MHz continuous row is preserved for
-context only; the authoritative sustained-duration evidence for the current
-architecture is in the 2026-08-24 report cited above.
+estimates. The historical WS SINGLE 1 MHz row is context only; the authoritative
+current SINGLE sustained-duration evidence is the protocol-v2 dense HIL report
+cited above.
 
 ## 参考来源
 

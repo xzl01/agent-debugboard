@@ -125,7 +125,7 @@ function checkArtifacts(assets, publish, failures) {
   if (!/\[\[ "\$candidate_rows" == \*\$'\\n'\* \]\]/.test(draft) || !/\[\[ "\$existing_rows" == \*\$'\\n'\* \]\]/.test(final)) fail(failures, "W12", "must reject duplicate candidate and nightly releases");
 }
 function checkReadme(text, failures, surface) {
-  if (!/WIDE11[\s\S]{0,180}144184 B[\s\S]{0,180}(?:hardware slice|硬件切片)[\s\S]{0,180}30720 B[\s\S]{0,180}(?:WS telemetry ring|WS 遥测环)[\s\S]{0,180}149048 B[\s\S]{0,180}(?:total backing allocation|总后备分配)/i.test(text)) fail(failures, "W13", "requires the WIDE11 144184 B slice, 30720 B telemetry ring, and 149048 B allocation", surface);
+  if (!/WIDE11[\s\S]{0,180}144184 B[\s\S]{0,180}(?:hardware slice|硬件切片)[\s\S]{0,180}30720 B[\s\S]{0,180}(?:WS telemetry ring|WS 遥测环)[\s\S]{0,180}148856 B[\s\S]{0,180}(?:total backing allocation|总后备分配)/i.test(text)) fail(failures, "W13", "requires the WIDE11 144184 B slice, 30720 B telemetry ring, and 148856 B allocation", surface);
 }
 export function formatFailures(failures) { return ["nightly workflow contract failed:", ...failures.map(({ code, surface, detail }) => `- [${code}] ${surface}: ${detail}`)].join("\n"); }
 export async function checkNightlyWorkflow(repositoryRoot) {

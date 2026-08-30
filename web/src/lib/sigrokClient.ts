@@ -1,5 +1,5 @@
 export const SIGROK_MAGIC = 0x72;
-export const SIGROK_PROTOCOL_VERSION = 1;
+export const SIGROK_PROTOCOL_VERSION = 2;
 export const SIGROK_HEADER_BYTES = 9;
 export const SIGROK_SAMPLE_INDEX_BITS = 24;
 export const SIGROK_SAMPLE_INDEX_MODULO = 1 << SIGROK_SAMPLE_INDEX_BITS;
@@ -103,6 +103,9 @@ export const SigrokCompression = {
   BIT_PACK: 1,
   RLE: 2,
   BIT_PACK_RLE: 3,
+  SINGLE_BITS: 4,
+  SINGLE_BITS_RLE: 5,
+  PACKED_PALETTE2: 6,
 } as const;
 
 export type SigrokCompression = typeof SigrokCompression[keyof typeof SigrokCompression];
@@ -312,11 +315,73 @@ function decodeBitPackSamples(
   return packed;
 }
 
+function decodeSingleBitsSamples(
+  packed: Uint8Array,
+  sampleCount: number,
+  channelMask: number
+): Uint8Array {
+  const { activeChannelCount } = getPackedSampleWidth(channelMask);
+  if (activeChannelCount !== 1) {
+    throw new Error("SINGLE_BITS DATA frame requires exactly one active channel");
+  }
+  const expectedPackedBytes = Math.ceil(sampleCount / 8);
+  if (packed.length !== expectedPackedBytes) {
+    throw new Error("SINGLE_BITS DATA frame length does not match sampleCount");
+  }
+  const trailingBits = sampleCount % 8;
+  if (
+    trailingBits !== 0 &&
+    (packed[packed.length - 1] & ~((1 << trailingBits) - 1)) !== 0
+  ) {
+    throw new Error("SINGLE_BITS DATA frame has non-zero tail padding");
+  }
+
+  const decoded = new Uint8Array(sampleCount);
+  for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+    decoded[sampleIndex] = (packed[sampleIndex >>> 3] >>> (sampleIndex & 7)) & 1;
+  }
+  return decoded;
+}
+
+function decodePackedPalette2Samples(
+  packed: Uint8Array,
+  sampleCount: number,
+  channelMask: number
+): Uint8Array {
+  const { bytesPerSample } = getPackedSampleWidth(channelMask);
+  const selectorLength = Math.ceil(sampleCount / 8);
+  const paletteBytes = bytesPerSample * 2;
+  if (packed.length !== paletteBytes + selectorLength) {
+    throw new Error("PACKED_PALETTE2 DATA frame length does not match sampleCount");
+  }
+  const palette0 = packed.subarray(0, bytesPerSample);
+  const palette1 = packed.subarray(bytesPerSample, paletteBytes);
+  if (palette0.every((value, index) => value === palette1[index])) {
+    throw new Error("PACKED_PALETTE2 DATA frame palette values must be distinct");
+  }
+  const selectors = packed.subarray(paletteBytes);
+  const trailingBits = sampleCount % 8;
+  if (
+    trailingBits !== 0 &&
+    (selectors[selectors.length - 1] & ~((1 << trailingBits) - 1)) !== 0
+  ) {
+    throw new Error("PACKED_PALETTE2 DATA frame has non-zero selector tail padding");
+  }
+
+  const decoded = new Uint8Array(sampleCount * bytesPerSample);
+  for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+    const selector = selectors[sampleIndex >>> 3];
+    const palette = (selector & (1 << (sampleIndex & 7))) !== 0 ? palette1 : palette0;
+    decoded.set(palette, sampleIndex * bytesPerSample);
+  }
+  return decoded;
+}
+
 function decodeRleSamples(
   packed: Uint8Array,
   sampleCount: number,
   channelMask: number,
-  compressionName: "RLE" | "BIT_PACK_RLE"
+  compressionName: "RLE" | "BIT_PACK_RLE" | "SINGLE_BITS_RLE"
 ): Uint8Array {
   const { bytesPerSample } = getPackedSampleWidth(channelMask);
   const tupleWidth = bytesPerSample + 2;
@@ -369,6 +434,15 @@ function decodeSigrokDataSamples(meta: SigrokDataMeta, packed: Uint8Array): Uint
       return decodeRleSamples(packed, meta.sampleCount, meta.channelMask, "RLE");
     case SigrokCompression.BIT_PACK_RLE:
       return decodeRleSamples(packed, meta.sampleCount, meta.channelMask, "BIT_PACK_RLE");
+    case SigrokCompression.SINGLE_BITS:
+      return decodeSingleBitsSamples(packed, meta.sampleCount, meta.channelMask);
+    case SigrokCompression.SINGLE_BITS_RLE: {
+      const denseByteCount = Math.ceil(meta.sampleCount / 8);
+      const dense = decodeRleSamples(packed, denseByteCount, 0x0001, "SINGLE_BITS_RLE");
+      return decodeSingleBitsSamples(dense, meta.sampleCount, meta.channelMask);
+    }
+    case SigrokCompression.PACKED_PALETTE2:
+      return decodePackedPalette2Samples(packed, meta.sampleCount, meta.channelMask);
     default:
       throw new Error(`Unsupported DATA compression ${meta.compression}`);
   }

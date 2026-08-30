@@ -219,6 +219,7 @@ static void test_sample_capacity_and_ring_constants(void)
 	assert(LINKR_DEBUGGER_LA_RING_SAFETY_SAMPLES == 2048U);
 	assert(LINKR_DEBUGGER_LA_STREAM_HALF_SAMPLES == 1024U);
 	assert(LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES == 2048U);
+	assert(LINKR_DEBUGGER_LA_STREAM_MAX_PACKED_CHUNK_SAMPLES == 4096U);
 }
 
 static void test_wide11_burst_plan_counts_and_overflow(void)
@@ -645,9 +646,9 @@ static void test_stream_sink_validate_rejects_unsupported_shapes(void)
 	assert(linkr_debugger_logic_analyzer_stream_sink_validate(&config, &sink) == 0);
 	sink.max_chunk_samples = LINKR_DEBUGGER_LA_STREAM_HALF_SAMPLES;
 	assert(linkr_debugger_logic_analyzer_stream_sink_validate(&config, &sink) == 0);
-	sink.max_chunk_samples = LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES;
+	sink.max_chunk_samples = LINKR_DEBUGGER_LA_STREAM_MAX_PACKED_CHUNK_SAMPLES;
 	assert(linkr_debugger_logic_analyzer_stream_sink_validate(&config, &sink) == 0);
-	sink.max_chunk_samples = LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES + 1U;
+	sink.max_chunk_samples = LINKR_DEBUGGER_LA_STREAM_MAX_PACKED_CHUNK_SAMPLES + 1U;
 	assert(linkr_debugger_logic_analyzer_stream_sink_validate(&config, &sink) == -EINVAL);
 
 	sink = sink_for_context(&ctx);
@@ -713,9 +714,7 @@ static void test_stream_sink_success_lifecycle_advances_after_payload_complete(v
 
 	memset(&commit, 0, sizeof(commit));
 	commit.token = lease.token;
-	commit.sequence = 9U;
 	commit.sample_count = 4U;
-	commit.timestamp_us = 123U;
 	commit.bytes_per_sample = 1U;
 	commit.payload_len = 4U;
 	assert(linkr_debugger_logic_analyzer_stream_sink_commit_payload(&sink, &commit) == 0);
@@ -844,7 +843,6 @@ static void test_stream_sink_commit_failure_aborts_after_reader_advance(void)
 	assert(progress.reader_seq == 4U);
 	memset(&commit, 0, sizeof(commit));
 	commit.token = lease.token;
-	commit.sequence = 1U;
 	commit.sample_count = 4U;
 	commit.bytes_per_sample = 1U;
 	commit.payload_len = 4U;
@@ -866,7 +864,6 @@ static void test_stream_sink_commit_positive_return_requests_handoff(void)
 	sink = sink_for_context(&ctx);
 	memset(&commit, 0, sizeof(commit));
 	commit.token = &ctx;
-	commit.sequence = 2U;
 	commit.sample_count = 4U;
 	commit.bytes_per_sample = 1U;
 	commit.payload_len = 4U;
@@ -968,24 +965,26 @@ static void assert_sink_matches_decoded_span(
 	uint32_t first_sample,
 	uint32_t sample_count)
 {
-	uint8_t out[16];
-	uint8_t expected[16];
 	uint16_t values_or;
 	uint16_t values_and;
 	uint16_t expected_or = 0U;
 	uint16_t expected_and = 0xffffU;
 	uint8_t bytes_per_sample = plan->bytes_per_sample;
+	size_t payload_len = (size_t)sample_count * bytes_per_sample;
+	uint8_t *out = malloc(payload_len);
+	uint8_t *expected = malloc(payload_len);
 
-	assert((size_t)sample_count * bytes_per_sample <= sizeof(out));
-	memset(out, 0xa5, sizeof(out));
-	memset(expected, 0x5a, sizeof(expected));
+	assert(payload_len > 0U);
+	assert(out != NULL);
+	assert(expected != NULL);
+	memset(out, 0xa5, payload_len);
+	memset(expected, 0x5a, payload_len);
 	assert(linkr_debugger_logic_analyzer_decode_packed_ring_span(plan, lane_ptrs,
-		lane_counts, first_sample, expected,
-		(size_t)sample_count * bytes_per_sample, sample_count) == 0);
+		lane_counts, first_sample, expected, payload_len, sample_count) == 0);
 	assert(linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(plan,
 		lane_ptrs, lane_counts, first_sample, sample_count, bytes_per_sample, out,
-		(size_t)sample_count * bytes_per_sample, &values_or, &values_and) == 0);
-	assert(memcmp(out, expected, (size_t)sample_count * bytes_per_sample) == 0);
+		payload_len, &values_or, &values_and) == 0);
+	assert(memcmp(out, expected, payload_len) == 0);
 
 	for (uint32_t i = 0U; i < sample_count; i++) {
 		uint16_t sample = expected[(size_t)i * bytes_per_sample];
@@ -999,6 +998,101 @@ static void assert_sink_matches_decoded_span(
 
 	assert(values_or == expected_or);
 	assert(values_and == expected_and);
+	free(expected);
+	free(out);
+}
+
+static void test_stream_sink_single_bits_payload_wraps_and_masks_tail(void)
+{
+	struct linkr_debugger_la_config config = single_plan_config(0U);
+	struct linkr_debugger_la_packed_ring_plan plan;
+	struct sink_test_context ctx;
+	struct linkr_debugger_la_stream_sink sink;
+	uint32_t *lane_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	const uint8_t samples[] = {
+		1U, 0U, 1U, 1U, 0U, 0U, 1U, 0U,
+		1U, 1U, 1U, 0U, 0U, 1U, 0U, 1U,
+		1U, 0U, 1U,
+	};
+	uint8_t expected[(sizeof(samples) + 7U) / 8U] = {0};
+	uint8_t out[sizeof(expected)];
+	uint16_t values_or;
+	uint16_t values_and;
+	uint32_t first_sample;
+
+	memset(&ctx, 0, sizeof(ctx));
+	sink = sink_for_context(&ctx);
+	sink.format = LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS;
+	sink.max_chunk_samples = LINKR_DEBUGGER_LA_STREAM_MAX_SINGLE_BITS_CHUNK_SAMPLES;
+	assert(linkr_debugger_logic_analyzer_stream_sink_validate(&config, &sink) == 0);
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_words = alloc_lane_words(plan.lanes[0].word_count);
+	first_sample = plan.sample_capacity - 5U;
+	for (size_t i = 0U; i < sizeof(samples); i++) {
+		packed_ring_lane_store(&plan.lanes[0], lane_words,
+			(first_sample + (uint32_t)i) % plan.sample_capacity, samples[i]);
+		expected[i >> 3U] |= (uint8_t)(samples[i] << (i & 7U));
+	}
+	lane_ptrs[0] = lane_words;
+	lane_counts[0] = plan.lanes[0].word_count;
+	memset(out, 0xff, sizeof(out));
+	assert(linkr_debugger_logic_analyzer_stream_sink_write_payload(&sink, &plan,
+		lane_ptrs, lane_counts, first_sample, (uint32_t)sizeof(samples), out,
+		sizeof(out), &values_or, &values_and) == 0);
+	assert(memcmp(out, expected, sizeof(out)) == 0);
+	assert((out[sizeof(out) - 1U] & 0xf8U) == 0U);
+	assert(values_or == 1U);
+	assert(values_and == 0U);
+	free(lane_words);
+}
+
+static void test_stream_sink_single_bits_all_high_and_chunk_contract(void)
+{
+	struct linkr_debugger_la_config config = single_plan_config(0U);
+	struct linkr_debugger_la_packed_ring_plan plan;
+	struct sink_test_context ctx;
+	struct linkr_debugger_la_stream_sink sink;
+	uint32_t *lane_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint8_t *out;
+	uint16_t values_or;
+	uint16_t values_and;
+	size_t payload_len;
+
+	memset(&ctx, 0, sizeof(ctx));
+	sink = sink_for_context(&ctx);
+	sink.format = LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS;
+	sink.max_chunk_samples = LINKR_DEBUGGER_LA_STREAM_MAX_SINGLE_BITS_CHUNK_SAMPLES;
+	assert(linkr_debugger_logic_analyzer_stream_sink_validate(&config, &sink) == 0);
+	sink.max_chunk_samples++;
+	assert(linkr_debugger_logic_analyzer_stream_sink_validate(&config, &sink) == -EINVAL);
+	sink.max_chunk_samples--;
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	lane_words = alloc_lane_words(plan.lanes[0].word_count);
+	for (uint32_t i = 0U; i < plan.lanes[0].word_count; i++) {
+		lane_words[i] = UINT32_MAX;
+	}
+	lane_ptrs[0] = lane_words;
+	lane_counts[0] = plan.lanes[0].word_count;
+	payload_len = linkr_debugger_logic_analyzer_stream_payload_len(sink.format,
+		LINKR_DEBUGGER_LA_STREAM_MAX_SINGLE_BITS_CHUNK_SAMPLES, 1U);
+	assert(payload_len == LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES);
+	out = malloc(payload_len);
+	assert(out != NULL);
+	assert(linkr_debugger_logic_analyzer_stream_sink_write_payload(&sink, &plan,
+		lane_ptrs, lane_counts, 0U,
+		LINKR_DEBUGGER_LA_STREAM_MAX_SINGLE_BITS_CHUNK_SAMPLES, out,
+		payload_len, &values_or, &values_and) == 0);
+	for (size_t i = 0U; i < payload_len; i++) {
+		assert(out[i] == 0xffU);
+	}
+	assert(values_or == 1U);
+	assert(values_and == 1U);
+	free(out);
+	free(lane_words);
 }
 
 static void test_stream_sink_single_fast_path_matches_generic_patterns(void)
@@ -1121,6 +1215,87 @@ static void test_stream_sink_wrap_batch_matches_decode_span_two_bytes(void)
 	free(lane_b_words);
 }
 
+static void test_stream_sink_fast8_large_random_wrap_matches_generic(void)
+{
+	struct linkr_debugger_la_config config = fast8_plan_config(0U);
+	struct linkr_debugger_la_packed_ring_plan plan;
+	uint32_t *lane_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED);
+	assert(plan.selected_pin_count == 8U);
+	lane_words = alloc_lane_words(plan.lanes[0].word_count);
+	for (uint32_t i = 0U; i < plan.lanes[0].word_count; i++) {
+		lane_words[i] = (i * 2654435761U) ^ (i >> 3U) ^ 0xa5c39e71U;
+	}
+	lane_ptrs[0] = lane_words;
+	lane_counts[0] = plan.lanes[0].word_count;
+	assert_sink_matches_decoded_span(&plan, lane_ptrs, lane_counts,
+		plan.sample_capacity - 1023U, 2048U);
+	free(lane_words);
+}
+
+static void test_stream_sink_wide11_large_random_lane_wraps_match_generic(void)
+{
+	struct linkr_debugger_la_config config = wide11_exact_config();
+	struct linkr_debugger_la_packed_ring_plan plan;
+	uint32_t *lane_a_words;
+	uint32_t *lane_b_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+
+	config.post_samples = 0U;
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_WIDE11_SPLIT_PACKED);
+	assert(plan.selected_pin_count == 11U);
+	assert(plan.lanes[1].sample_capacity > plan.sample_capacity);
+	lane_a_words = alloc_lane_words(plan.lanes[0].word_count);
+	lane_b_words = alloc_lane_words(plan.lanes[1].word_count);
+	for (uint32_t i = 0U; i < plan.lanes[0].word_count; i++) {
+		lane_a_words[i] = (i * 2246822519U) ^ (i >> 5U) ^ 0x6d2b79f5U;
+	}
+	for (uint32_t i = 0U; i < plan.lanes[1].word_count; i++) {
+		lane_b_words[i] = (i * 3266489917U) ^ (i >> 7U) ^ 0x9e3779b9U;
+	}
+	lane_ptrs[0] = lane_a_words;
+	lane_ptrs[1] = lane_b_words;
+	lane_counts[0] = plan.lanes[0].word_count;
+	lane_counts[1] = plan.lanes[1].word_count;
+	assert_sink_matches_decoded_span(&plan, lane_ptrs, lane_counts,
+		plan.sample_capacity - 513U, 1024U);
+	assert_sink_matches_decoded_span(&plan, lane_ptrs, lane_counts,
+		plan.lanes[1].sample_capacity - 129U, 257U);
+	free(lane_a_words);
+	free(lane_b_words);
+}
+
+static void test_stream_sink_sparse_fast8_selection_keeps_generic_order(void)
+{
+	static const uint8_t pins[] = { 17U, 10U, 14U, 12U };
+	struct linkr_debugger_la_config config = fast8_plan_config(0U);
+	struct linkr_debugger_la_packed_ring_plan plan;
+	uint32_t *lane_words;
+	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+
+	memcpy(config.selected_pins, pins, sizeof(pins));
+	config.selected_pin_count = (uint8_t)(sizeof(pins) / sizeof(pins[0]));
+	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
+	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED);
+	assert(plan.selected_pin_count == 4U);
+	lane_words = alloc_lane_words(plan.lanes[0].word_count);
+	for (uint32_t i = 0U; i < plan.lanes[0].word_count; i++) {
+		lane_words[i] = (i * 2654435761U) ^ 0x13579bdfU;
+	}
+	lane_ptrs[0] = lane_words;
+	lane_counts[0] = plan.lanes[0].word_count;
+	assert_sink_matches_decoded_span(&plan, lane_ptrs, lane_counts,
+		plan.sample_capacity - 31U, 64U);
+	free(lane_words);
+}
+
 static void test_stream_sink_single_fast_path_default_selection_matches_generic(void)
 {
 	struct linkr_debugger_la_config config;
@@ -1159,6 +1334,21 @@ static void test_stream_sink_single_fast_path_rejects_invalid_offsets(void)
 	free(lane_words);
 }
 
+static void test_stream_sink_retries_only_precommit_backpressure_errors(void)
+{
+	assert(linkr_debugger_logic_analyzer_stream_sink_backpressure_retryable(-ENOSPC));
+	assert(linkr_debugger_logic_analyzer_stream_sink_backpressure_retryable(-ENOMEM));
+	assert(linkr_debugger_logic_analyzer_stream_sink_backpressure_retryable(-EAGAIN));
+	assert(!linkr_debugger_logic_analyzer_stream_sink_backpressure_retryable(-EINVAL));
+	assert(!linkr_debugger_logic_analyzer_stream_sink_backpressure_retryable(-ENOTCONN));
+	assert(!linkr_debugger_logic_analyzer_stream_sink_backpressure_retryable(-EIO));
+}
+
+static void test_stream_sink_consumer_can_yield_to_transport_thread(void)
+{
+	assert(linkr_debugger_logic_analyzer_stream_consumer_priority(true) == 8);
+}
+
 static void test_stream_sink_helpers_do_not_change_callback_protocol_gate(void)
 {
 	assert(LINKR_DEBUGGER_LA_STREAM_HANDOFF_UNREAD_SAMPLES ==
@@ -1169,7 +1359,7 @@ static void test_stream_sink_helpers_do_not_change_callback_protocol_gate(void)
 	assert(linkr_debugger_logic_analyzer_stream_callback_should_yield_after_chunk(true, 1U));
 	assert(!linkr_debugger_logic_analyzer_stream_callback_should_yield_after_chunk(true, 0U));
 	assert(!linkr_debugger_logic_analyzer_stream_callback_should_yield_after_chunk(false, 1U));
-	assert(linkr_debugger_logic_analyzer_stream_consumer_priority(true) == 7);
+	assert(linkr_debugger_logic_analyzer_stream_consumer_priority(true) == 8);
 	assert(linkr_debugger_logic_analyzer_stream_consumer_priority(false) == 8);
 	assert(!linkr_debugger_logic_analyzer_stream_sink_should_yield_for_handoff(false, 0U));
 	assert(linkr_debugger_logic_analyzer_stream_sink_should_yield_for_handoff(true, 0U));
@@ -1962,14 +2152,14 @@ static void test_packed_ring_observe_dual_lane_min_seq_and_skew(void)
 	progress.generation = 42U;
 	assert(linkr_debugger_logic_analyzer_packed_ring_observe(&progress,
 		lane_last_hw_indices, lane_writer_seqs, hw_indices, 0U, 1000000U, 0U,
-		&plan, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_OK);
+		&plan, false, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_OK);
 	assert(produced == 0U);
 
 	hw_indices[0] = 4U;
 	hw_indices[1] = 1U;
 	assert(linkr_debugger_logic_analyzer_packed_ring_observe(&progress,
 		lane_last_hw_indices, lane_writer_seqs, hw_indices, 100U, 1000000U, 0U,
-		&plan, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_OK);
+		&plan, false, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_OK);
 	assert(produced == 10U);
 	assert(progress.writer_seq == 10U);
 	assert(skew == 6U);
@@ -1978,18 +2168,40 @@ static void test_packed_ring_observe_dual_lane_min_seq_and_skew(void)
 	hw_indices[1] = 3U;
 	assert(linkr_debugger_logic_analyzer_packed_ring_observe(&progress,
 		lane_last_hw_indices, lane_writer_seqs, hw_indices, 200U, 1000000U, 10U,
-		&plan, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_OK);
+		&plan, false, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_OK);
 	assert(progress.reader_seq == 10U);
 	assert(produced == 20U);
 	assert(progress.writer_seq == 30U);
 	assert(skew <= 20U);
 
-	hw_indices[0] = 19U;
+	hw_indices[0] = 27U;
 	hw_indices[1] = 4U;
 	assert(linkr_debugger_logic_analyzer_packed_ring_observe(&progress,
 		lane_last_hw_indices, lane_writer_seqs, hw_indices, 300U, 1000000U, 0U,
-		&plan, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_DEFINITE_OVERRUN);
-	assert(skew > 20U);
+		&plan, false, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_OK);
+	assert(produced == 10U);
+	assert(progress.writer_seq == 40U);
+	assert(skew == 68U);
+
+	hw_indices[0] = 31U;
+	assert(linkr_debugger_logic_analyzer_packed_ring_observe(&progress,
+		lane_last_hw_indices, lane_writer_seqs, hw_indices, 400U, 1000000U, 0U,
+		&plan, false, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_OK);
+	assert(produced == 0U);
+	assert(progress.writer_seq == 40U);
+	assert(skew == 84U);
+
+	hw_indices[0] = 36U;
+	assert(linkr_debugger_logic_analyzer_packed_ring_observe(&progress,
+		lane_last_hw_indices, lane_writer_seqs, hw_indices, 500U, 1000000U, 0U,
+		&plan, false, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_OK);
+	assert(produced == 0U);
+	assert(progress.writer_seq == 40U);
+	assert(skew == 104U);
+
+	assert(linkr_debugger_logic_analyzer_packed_ring_observe(&progress,
+		lane_last_hw_indices, lane_writer_seqs, hw_indices, 600U, 1000000U, 0U,
+		&plan, true, &produced, &skew) == LINKR_DEBUGGER_LA_RING_POLL_DEFINITE_OVERRUN);
 }
 
 static void test_session_contract_trigger_gate_and_stop_policy(void)
@@ -2859,12 +3071,19 @@ int main(void)
 	test_stream_sink_commit_failure_aborts_after_reader_advance();
 	test_stream_sink_commit_positive_return_requests_handoff();
 	test_stream_sink_single_packed_output_wraps_packed_ring_words();
+	test_stream_sink_single_bits_payload_wraps_and_masks_tail();
+	test_stream_sink_single_bits_all_high_and_chunk_contract();
 	test_stream_sink_single_fast_path_matches_generic_patterns();
 	test_stream_sink_single_fast_path_span_boundaries_match_generic();
 	test_stream_sink_wrap_batch_matches_decode_span_single_byte();
 	test_stream_sink_wrap_batch_matches_decode_span_two_bytes();
+	test_stream_sink_fast8_large_random_wrap_matches_generic();
+	test_stream_sink_wide11_large_random_lane_wraps_match_generic();
+	test_stream_sink_sparse_fast8_selection_keeps_generic_order();
 	test_stream_sink_single_fast_path_default_selection_matches_generic();
 	test_stream_sink_single_fast_path_rejects_invalid_offsets();
+	test_stream_sink_retries_only_precommit_backpressure_errors();
+	test_stream_sink_consumer_can_yield_to_transport_thread();
 	test_stream_sink_helpers_do_not_change_callback_protocol_gate();
 	test_validation();
 	test_stream_validation_allows_unlimited_and_uint16_bounded();

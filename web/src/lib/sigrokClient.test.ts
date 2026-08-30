@@ -11,6 +11,7 @@ import {
   SIGROK_PROTOCOL_VERSION,
   SIGROK_SAMPLE_INDEX_MODULO,
   SigrokClient,
+  SigrokCompression,
   SigrokEventCode,
   SigrokFrameType,
   SigrokModeId,
@@ -313,6 +314,142 @@ describe("sigrok frame helpers", () => {
     );
 
     assert.throws(() => parseFrameData(data), /BIT_PACK DATA frame length does not match sampleCount and channelMask/);
+  });
+
+  it("decodes SINGLE_BITS DATA into byte-aligned samples", () => {
+    const data = buildSigrokFrame(
+      18,
+      SigrokFrameType.DATA,
+      buildDataFramePayload({
+        sampleIndex: 21,
+        sampleCount: 10,
+        compression: SigrokCompression.SINGLE_BITS,
+        channelMask: 0x0040,
+        samples: [0x4d, 0x03],
+      })
+    );
+
+    const frame = parseFrameData(data);
+
+    assert.deepEqual(frame, {
+      type: SigrokFrameType.DATA,
+      id: 18,
+      meta: {
+        sampleIndex: 21,
+        sampleCount: 10,
+        compression: SigrokCompression.SINGLE_BITS,
+        channelMask: 0x0040,
+      },
+      samples: Uint8Array.from([1, 0, 1, 1, 0, 0, 1, 0, 1, 1]),
+    });
+  });
+
+  it("decodes SINGLE_BITS_RLE over dense bytes", () => {
+    const data = buildSigrokFrame(
+      19,
+      SigrokFrameType.DATA,
+      buildDataFramePayload({
+        sampleIndex: 0,
+        sampleCount: 16,
+        compression: SigrokCompression.SINGLE_BITS_RLE,
+        channelMask: 0x0001,
+        samples: [0x55, 0x02, 0x00],
+      })
+    );
+
+    const frame = parseFrameData(data);
+
+    assert.deepEqual(frame.samples, Uint8Array.from([
+      1, 0, 1, 0, 1, 0, 1, 0,
+      1, 0, 1, 0, 1, 0, 1, 0,
+    ]));
+  });
+
+  it("rejects invalid SINGLE_BITS shape and tail padding", () => {
+    const multiChannel = buildSigrokFrame(
+      20,
+      SigrokFrameType.DATA,
+      buildDataFramePayload({
+        sampleIndex: 0,
+        sampleCount: 8,
+        compression: SigrokCompression.SINGLE_BITS,
+        channelMask: 0x0003,
+        samples: [0x00],
+      })
+    );
+    const nonZeroTail = buildSigrokFrame(
+      21,
+      SigrokFrameType.DATA,
+      buildDataFramePayload({
+        sampleIndex: 0,
+        sampleCount: 9,
+        compression: SigrokCompression.SINGLE_BITS,
+        channelMask: 0x0001,
+        samples: [0x00, 0x80],
+      })
+    );
+
+    assert.throws(
+      () => parseFrameData(multiChannel),
+      /SINGLE_BITS DATA frame requires exactly one active channel/
+    );
+    assert.throws(
+      () => parseFrameData(nonZeroTail),
+      /SINGLE_BITS DATA frame has non-zero tail padding/
+    );
+  });
+
+  it("decodes PACKED_PALETTE2 DATA selectors LSB-first", () => {
+    const data = buildSigrokFrame(
+      20,
+      SigrokFrameType.DATA,
+      buildDataFramePayload({
+        sampleIndex: 0,
+        sampleCount: 16,
+        compression: SigrokCompression.PACKED_PALETTE2,
+        channelMask: 0x00ff,
+        samples: [0x00, 0x40, 0xaa, 0xaa],
+      })
+    );
+
+    const frame = parseFrameData(data);
+
+    assert.deepEqual(frame, {
+      type: SigrokFrameType.DATA,
+      id: 20,
+      meta: {
+        sampleIndex: 0,
+        sampleCount: 16,
+        compression: SigrokCompression.PACKED_PALETTE2,
+        channelMask: 0x00ff,
+      },
+      samples: Uint8Array.from([
+        0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40,
+        0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40,
+      ]),
+    });
+  });
+
+  it("rejects malformed PACKED_PALETTE2 DATA", () => {
+    const invalidPayloads = [
+      [0x00, 0x40, 0x00],
+      [0x00, 0x00, 0x00, 0x00],
+      [0x00, 0x40, 0x00, 0x80],
+    ];
+    for (const samples of invalidPayloads) {
+      const data = buildSigrokFrame(
+        21,
+        SigrokFrameType.DATA,
+        buildDataFramePayload({
+          sampleIndex: 0,
+          sampleCount: 9,
+          compression: SigrokCompression.PACKED_PALETTE2,
+          channelMask: 0x00ff,
+          samples,
+        })
+      );
+      assert.throws(() => parseFrameData(data), /PACKED_PALETTE2 DATA frame/);
+    }
   });
 
   it("decodes BIT_PACK_RLE DATA with 1-byte UART-style runs", () => {

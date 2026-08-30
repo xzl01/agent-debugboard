@@ -157,8 +157,8 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertEqual(len(payload), 12)
 
     def test_parse_hello_resp_exposes_config_v2_flag(self) -> None:
-        hello = runner.parse_hello_resp(bytes([1, runner.SERVER_FLAG_CONFIG_V2, 2, 0x00, 0x40]))
-        self.assertEqual(hello["protocol_version"], 1)
+        hello = runner.parse_hello_resp(bytes([runner.SIGROK_PROTOCOL_VERSION, runner.SERVER_FLAG_CONFIG_V2, 2, 0x00, 0x40]))
+        self.assertEqual(hello["protocol_version"], runner.SIGROK_PROTOCOL_VERSION)
         self.assertEqual(hello["server_flags"], runner.SERVER_FLAG_CONFIG_V2)
         self.assertTrue(hello["supports_config_v2"])
         self.assertFalse(hello["supports_generic_packed_burst"])
@@ -167,7 +167,7 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
 
     def test_parse_hello_resp_exposes_generic_packed_burst_flag(self) -> None:
         flags = runner.SERVER_FLAG_CONFIG_V2 | runner.SERVER_FLAG_GENERIC_PACKED_BURST
-        hello = runner.parse_hello_resp(bytes([1, flags, 2, 0x00, 0x40]))
+        hello = runner.parse_hello_resp(bytes([runner.SIGROK_PROTOCOL_VERSION, flags, 2, 0x00, 0x40]))
         self.assertEqual(hello["server_flags"], flags)
         self.assertTrue(hello["supports_config_v2"])
         self.assertTrue(hello["supports_generic_packed_burst"])
@@ -312,6 +312,71 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
             bytes([0x01, 0x08, 0x01, 0x08, 0x01, 0x08, 0x01, 0x00, 0x01, 0x00]),
         )
 
+    def test_decode_single_bits_and_dense_rle(self) -> None:
+        dense_meta = runner.SigrokDataMeta(0, 10, runner.COMPRESSION_SINGLE_BITS, runner.MASK_SINGLE)
+        self.assertEqual(
+            runner.decode_sigrok_data_payload(dense_meta, bytes([0x4D, 0x03])),
+            bytes([1, 0, 1, 1, 0, 0, 1, 0, 1, 1]),
+        )
+        rle_meta = runner.SigrokDataMeta(0, 16, runner.COMPRESSION_SINGLE_BITS_RLE, runner.MASK_SINGLE)
+        self.assertEqual(
+            runner.decode_sigrok_data_payload(rle_meta, bytes([0x55, 0x02, 0x00])),
+            bytes([1, 0, 1, 0, 1, 0, 1, 0] * 2),
+        )
+
+    def test_decode_single_bits_rejects_invalid_shape_and_tail(self) -> None:
+        with self.assertRaises(ValueError):
+            runner.decode_sigrok_data_payload(
+                runner.SigrokDataMeta(0, 8, runner.COMPRESSION_SINGLE_BITS, runner.MASK_FAST8),
+                b"\x00",
+            )
+        with self.assertRaises(ValueError):
+            runner.decode_sigrok_data_payload(
+                runner.SigrokDataMeta(0, 9, runner.COMPRESSION_SINGLE_BITS, runner.MASK_SINGLE),
+                b"\x00\x80",
+            )
+
+    def test_decode_packed_palette2_fast8_and_wide11(self) -> None:
+        fast_meta = runner.SigrokDataMeta(
+            0,
+            16,
+            runner.COMPRESSION_PACKED_PALETTE2,
+            runner.MASK_FAST8,
+        )
+        self.assertEqual(
+            runner.decode_sigrok_data_payload(fast_meta, bytes([0x00, 0x40, 0xAA, 0xAA])),
+            bytes([0x00, 0x40] * 8),
+        )
+        wide_meta = runner.SigrokDataMeta(
+            0,
+            16,
+            runner.COMPRESSION_PACKED_PALETTE2,
+            runner.MASK_WIDE11,
+        )
+        self.assertEqual(
+            runner.decode_sigrok_data_payload(
+                wide_meta,
+                bytes([0x00, 0x00, 0x40, 0x00, 0xAA, 0xAA]),
+            ),
+            bytes([0x00, 0x00, 0x40, 0x00] * 8),
+        )
+
+    def test_decode_packed_palette2_rejects_invalid_shape_palette_and_tail(self) -> None:
+        meta = runner.SigrokDataMeta(
+            0,
+            9,
+            runner.COMPRESSION_PACKED_PALETTE2,
+            runner.MASK_FAST8,
+        )
+        malformed_payloads = [
+            bytes([0x00, 0x40, 0x00]),
+            bytes([0x00, 0x00, 0x00, 0x00]),
+            bytes([0x00, 0x40, 0x00, 0x80]),
+        ]
+        for payload in malformed_payloads:
+            with self.assertRaises(ValueError):
+                runner.decode_sigrok_data_payload(meta, payload)
+
     def test_decode_bit_pack_rle_rejects_malformed_inputs(self) -> None:
         meta = runner.SigrokDataMeta(0, 4, runner.COMPRESSION_BIT_PACK_RLE, runner.MASK_FAST8)
         malformed_payloads = [
@@ -331,6 +396,44 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         runner.observe_sigrok_data_payload(stats, meta, payload, expected_channel_mask=runner.MASK_SINGLE, sample_bytes=1)
         self.assertEqual(stats.data_decode_error_frames, 1)
         self.assertEqual(stats.data_frames, 1)
+
+    def test_stream_stats_record_bounded_decoded_activity_and_compression(self) -> None:
+        stats = runner.StreamStats()
+        first_payload = self.data_payload(
+            sample_count=10,
+            channel_mask=runner.MASK_FAST8,
+            compression=runner.COMPRESSION_BIT_PACK_RLE,
+            sample_payload=bytes([0x00, 0x02, 0x00, 0x40, 0x06, 0x00, 0x00, 0x02, 0x00]),
+        )
+        first_meta = runner.parse_data_meta(first_payload)
+        runner.observe_sigrok_data_payload(
+            stats,
+            first_meta,
+            first_payload,
+            expected_channel_mask=runner.MASK_FAST8,
+            sample_bytes=1,
+        )
+        second_payload = self.data_payload(
+            sample_index=10,
+            sample_count=2,
+            channel_mask=runner.MASK_FAST8,
+            compression=runner.COMPRESSION_BIT_PACK,
+            sample_payload=bytes([0x40, 0x00]),
+        )
+        second_meta = runner.parse_data_meta(second_payload)
+        runner.observe_sigrok_data_payload(
+            stats,
+            second_meta,
+            second_payload,
+            expected_channel_mask=runner.MASK_FAST8,
+            sample_bytes=1,
+        )
+
+        self.assertEqual(stats.compression_frame_counts, {"1": 1, "3": 1})
+        self.assertEqual(stats.activity_analyzed_samples, 12)
+        self.assertEqual(stats.sample_value_or, 0x40)
+        self.assertEqual(stats.sample_value_and, 0x00)
+        self.assertEqual(stats.sample_value_transitions, 4)
 
     def test_dry_run_plan_has_all_mandatory_matrices(self) -> None:
         args = runner.parse_args(["--dry-run"])
@@ -955,6 +1058,7 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
             immediate_restart=restart,
             board_health_after=health,
             terminal_reason="server_overrun",
+            actual_rate_khz=400,
         )
         self.assertTrue(passed, reason)
 
@@ -1366,6 +1470,40 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         )
         self.assertFalse(passed)
         self.assertEqual(reason, "trigger event not received")
+
+    def test_continuous_pass_requires_samples_matching_negotiated_rate(self) -> None:
+        stop = {"received": True, "frame_type": runner.FRAME_STOP_RESP}
+        restart = {"ok": True}
+        health = {"ok": True}
+        stats = runner.StreamStats(data_frames=1, received_sample_count=80_000_000)
+        passed, reason = runner.evaluate_sigrok_pass(
+            bounded=False,
+            trigger_required=False,
+            stats=stats,
+            requested_samples=None,
+            requested_duration_s=5.0,
+            stream_elapsed_s=5.0,
+            stop_response=stop,
+            immediate_restart=restart,
+            board_health_after=health,
+            actual_rate_khz=25_000,
+        )
+        self.assertFalse(passed)
+        self.assertEqual(reason, "continuous sample count below negotiated rate")
+        stats.received_sample_count = 118_750_000
+        passed, reason = runner.evaluate_sigrok_pass(
+            bounded=False,
+            trigger_required=False,
+            stats=stats,
+            requested_samples=None,
+            requested_duration_s=5.0,
+            stream_elapsed_s=5.0,
+            stop_response=stop,
+            immediate_restart=restart,
+            board_health_after=health,
+            actual_rate_khz=25_000,
+        )
+        self.assertTrue(passed, reason)
 
     def test_sigrok_result_field_names_do_not_claim_auto_stop_for_client_stop(self) -> None:
         stop = {"received": True, "sent": True, "frame_type": runner.FRAME_STOP_RESP}

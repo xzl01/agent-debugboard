@@ -66,7 +66,7 @@ static const struct device *const la_dma_dev = DEVICE_DT_GET(DT_NODELABEL(dma));
  * priority consumer; websocket_send_msg is not called from it.
  */
 #define LINKR_DEBUGGER_LA_STREAM_THREAD_PRIORITY K_PRIO_PREEMPT(1)
-#define LINKR_DEBUGGER_LA_STREAM_CONSUMER_SINK_PRIORITY K_PRIO_PREEMPT(7)
+#define LINKR_DEBUGGER_LA_STREAM_CONSUMER_SINK_PRIORITY K_PRIO_PREEMPT(8)
 #define LINKR_DEBUGGER_LA_STREAM_CONSUMER_PRIORITY K_PRIO_PREEMPT(8)
 #define LINKR_DEBUGGER_LA_WIDE11_BURST_CHUNK_SAMPLES 1024U
 #define LINKR_DEBUGGER_LA_WIDE11_BURST_DMA_A_DONE BIT(0)
@@ -525,6 +525,7 @@ enum linkr_debugger_la_ring_poll_result linkr_debugger_logic_analyzer_packed_rin
 	uint32_t actual_rate_hz,
 	uint32_t consumed_samples,
 	const struct linkr_debugger_la_packed_ring_plan *plan,
+	bool rx_fifo_stalled,
 	uint32_t *produced_samples,
 	uint32_t *skew_samples)
 {
@@ -599,7 +600,7 @@ enum linkr_debugger_la_ring_poll_result linkr_debugger_logic_analyzer_packed_rin
 	if (skew_samples != NULL) {
 		*skew_samples = (uint32_t)(max_writer_seq - min_writer_seq);
 	}
-	if (max_writer_seq - min_writer_seq > LINKR_DEBUGGER_LA_RING_MAX_SKEW_SAMPLES) {
+	if (rx_fifo_stalled) {
 		return LINKR_DEBUGGER_LA_RING_POLL_DEFINITE_OVERRUN;
 	}
 	if (linkr_debugger_logic_analyzer_ring_should_freeze_before_overwrite(
@@ -828,6 +829,23 @@ static void la_write_sample_le(uint16_t sample, uint8_t bytes_per_sample,
 	}
 }
 
+size_t linkr_debugger_logic_analyzer_stream_payload_len(
+	enum linkr_debugger_la_stream_payload_format format,
+	uint32_t sample_count,
+	uint8_t bytes_per_sample)
+{
+	if (sample_count == 0U || bytes_per_sample == 0U) {
+		return 0U;
+	}
+	if (format == LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS) {
+		return bytes_per_sample == 1U ? ((size_t)sample_count + 7U) / 8U : 0U;
+	}
+	if (format == LINKR_DEBUGGER_LA_STREAM_PAYLOAD_PACKED_LE_BYTES) {
+		return (size_t)sample_count * bytes_per_sample;
+	}
+	return 0U;
+}
+
 int linkr_debugger_logic_analyzer_stream_sink_validate(
 	const struct linkr_debugger_la_config *config,
 	const struct linkr_debugger_la_stream_sink *sink)
@@ -839,7 +857,8 @@ int linkr_debugger_logic_analyzer_stream_sink_validate(
 	    sink->abort == NULL || sink->terminal == NULL) {
 		return -EINVAL;
 	}
-	if (sink->format != LINKR_DEBUGGER_LA_STREAM_PAYLOAD_PACKED_LE_BYTES) {
+	if (sink->format != LINKR_DEBUGGER_LA_STREAM_PAYLOAD_PACKED_LE_BYTES &&
+	    sink->format != LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS) {
 		return -ENOTSUP;
 	}
 
@@ -852,7 +871,14 @@ int linkr_debugger_logic_analyzer_stream_sink_validate(
 	    sink->bytes_per_sample != expected_bytes_per_sample) {
 		return -EINVAL;
 	}
-	if (sink->max_chunk_samples > LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES) {
+	if (sink->format == LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS) {
+		if (active_pin_count != 1U ||
+		    sink->max_chunk_samples >
+		    LINKR_DEBUGGER_LA_STREAM_MAX_SINGLE_BITS_CHUNK_SAMPLES) {
+			return -EINVAL;
+		}
+	} else if (sink->max_chunk_samples >
+		   LINKR_DEBUGGER_LA_STREAM_MAX_PACKED_CHUNK_SAMPLES) {
 		return -EINVAL;
 	}
 
@@ -873,6 +899,165 @@ int linkr_debugger_logic_analyzer_stream_sink_lease_payload(
 	return sink->lease(sample_count, sink->bytes_per_sample, sink->user_data, lease);
 }
 
+static bool la_stream_selected_pins_match(
+	const struct linkr_debugger_la_packed_ring_plan *plan,
+	uint8_t first_pin,
+	uint8_t pin_count)
+{
+	if (plan == NULL || plan->selected_pin_count != pin_count) {
+		return false;
+	}
+	for (uint8_t i = 0U; i < pin_count; i++) {
+		if (plan->selected_pins[i] != (uint8_t)(first_pin + i)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static int la_stream_sink_write_fast8_payload(
+	const struct linkr_debugger_la_packed_ring_plan *plan,
+	const uint32_t * const lane_words[],
+	const uint32_t lane_word_counts[],
+	uint64_t first_sample,
+	uint32_t sample_count,
+	uint8_t *payload,
+	uint16_t *values_or,
+	uint16_t *values_and)
+{
+	const struct linkr_debugger_la_packed_ring_lane *lane = &plan->lanes[0];
+
+	if (plan->kind != LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED ||
+	    plan->lane_count != 1U || plan->bytes_per_sample != 1U ||
+	    !la_stream_selected_pins_match(plan, 10U, 8U) ||
+	    lane->pin_base != 10U || lane->pin_count != 8U ||
+	    lane->bits_per_sample != 8U || lane->autopush_bits != 32U ||
+	    lane->samples_per_word != 4U || lane->sample_capacity == 0U ||
+	    sample_count > lane->sample_capacity ||
+	    lane->sample_capacity != plan->sample_capacity ||
+	    lane->word_count != lane->sample_capacity / 4U ||
+	    lane_words[0] == NULL || lane_word_counts[0] != lane->word_count) {
+		return -ENOTSUP;
+	}
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	const uint8_t *ring = (const uint8_t *)lane_words[0];
+	uint32_t ring_index = (uint32_t)(first_sample % lane->sample_capacity);
+	size_t first_len = sample_count < lane->sample_capacity - ring_index ?
+		sample_count : lane->sample_capacity - ring_index;
+
+	memcpy(payload, ring + ring_index, first_len);
+	if (first_len < sample_count) {
+		memcpy(payload + first_len, ring, sample_count - first_len);
+	}
+#else
+	return -ENOTSUP;
+#endif
+	if (values_or != NULL || values_and != NULL) {
+		uint16_t or_acc = 0U;
+		uint16_t and_acc = 0xffffU;
+
+		for (uint32_t i = 0U; i < sample_count; i++) {
+			or_acc |= payload[i];
+			and_acc &= payload[i];
+		}
+		if (values_or != NULL) {
+			*values_or = or_acc;
+		}
+		if (values_and != NULL) {
+			*values_and = and_acc;
+		}
+	}
+	return 0;
+}
+
+static int la_stream_sink_write_wide11_payload(
+	const struct linkr_debugger_la_packed_ring_plan *plan,
+	const uint32_t * const lane_words[],
+	const uint32_t lane_word_counts[],
+	uint64_t first_sample,
+	uint32_t sample_count,
+	uint8_t *payload,
+	uint16_t *values_or,
+	uint16_t *values_and)
+{
+	const struct linkr_debugger_la_packed_ring_lane *lane_a = &plan->lanes[0];
+	const struct linkr_debugger_la_packed_ring_lane *lane_b = &plan->lanes[1];
+	uint32_t sample_a;
+	uint32_t sample_b;
+	uint32_t word_a_index;
+	uint32_t word_b_index;
+	uint8_t in_a;
+	uint8_t in_b;
+	uint32_t word_a;
+	uint32_t word_b;
+	uint16_t or_acc = 0U;
+	uint16_t and_acc = 0xffffU;
+
+	if (plan->kind != LINKR_DEBUGGER_LA_HARDWARE_PLAN_WIDE11_SPLIT_PACKED ||
+	    plan->lane_count != 2U || plan->bytes_per_sample != 2U ||
+	    !la_stream_selected_pins_match(plan, 10U, 11U) ||
+	    lane_a->pin_base != 10U || lane_a->pin_count != 8U ||
+	    lane_a->bits_per_sample != 8U || lane_a->autopush_bits != 32U ||
+	    lane_a->samples_per_word != 4U || lane_a->sample_capacity == 0U ||
+	    lane_a->word_count != lane_a->sample_capacity / 4U ||
+	    lane_b->pin_base != 18U || lane_b->pin_count != 3U ||
+	    lane_b->bits_per_sample != 3U || lane_b->autopush_bits != 30U ||
+	    lane_b->samples_per_word != 10U || lane_b->sample_capacity == 0U ||
+	    lane_b->word_count != lane_b->sample_capacity / 10U ||
+	    lane_words[0] == NULL || lane_words[1] == NULL ||
+	    lane_word_counts[0] != lane_a->word_count ||
+	    lane_word_counts[1] != lane_b->word_count) {
+		return -ENOTSUP;
+	}
+
+	sample_a = (uint32_t)(first_sample % lane_a->sample_capacity);
+	sample_b = (uint32_t)(first_sample % lane_b->sample_capacity);
+	word_a_index = sample_a / 4U;
+	word_b_index = sample_b / 10U;
+	in_a = (uint8_t)(sample_a % 4U);
+	in_b = (uint8_t)(sample_b % 10U);
+	word_a = lane_words[0][word_a_index];
+	word_b = lane_words[1][word_b_index];
+
+	for (uint32_t i = 0U; i < sample_count; i++) {
+		uint16_t sample = (uint16_t)((word_a >> ((uint32_t)in_a * 8U)) & 0xffU) |
+			(uint16_t)(((word_b >> (2U + ((uint32_t)in_b * 3U))) & 0x07U) << 8U);
+
+		payload[(size_t)i * 2U] = (uint8_t)sample;
+		payload[((size_t)i * 2U) + 1U] = (uint8_t)(sample >> 8U);
+		if (values_or != NULL || values_and != NULL) {
+			or_acc |= sample;
+			and_acc &= sample;
+		}
+
+		in_a++;
+		if (in_a == 4U) {
+			in_a = 0U;
+			word_a_index++;
+			if (word_a_index == lane_a->word_count) {
+				word_a_index = 0U;
+			}
+			word_a = lane_words[0][word_a_index];
+		}
+		in_b++;
+		if (in_b == 10U) {
+			in_b = 0U;
+			word_b_index++;
+			if (word_b_index == lane_b->word_count) {
+				word_b_index = 0U;
+			}
+			word_b = lane_words[1][word_b_index];
+		}
+	}
+	if (values_or != NULL) {
+		*values_or = or_acc;
+	}
+	if (values_and != NULL) {
+		*values_and = and_acc;
+	}
+	return 0;
+}
+
 int linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(
 	const struct linkr_debugger_la_packed_ring_plan *plan,
 	const uint32_t * const lane_words[],
@@ -885,6 +1070,7 @@ int linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(
 	uint16_t *values_or,
 	uint16_t *values_and)
 {
+	const struct linkr_debugger_la_packed_ring_lane *single_lane;
 	uint16_t or_acc = 0U;
 	uint16_t and_acc = 0xffffU;
 	size_t needed;
@@ -906,22 +1092,73 @@ int linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(
 		return -ENOSPC;
 	}
 
+	single_lane = &plan->lanes[0];
+	/* SINGLE is already one chronological bit per sample in the DMA ring. */
+	if (plan->kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED &&
+	    plan->lane_count == 1U && plan->selected_pin_count == 1U &&
+	    plan->bytes_per_sample == 1U && single_lane->bits_per_sample == 1U &&
+	    single_lane->autopush_bits == 32U && single_lane->samples_per_word == 32U &&
+	    single_lane->sample_capacity == plan->sample_capacity &&
+	    single_lane->sample_capacity > 0U &&
+	    (single_lane->sample_capacity & (single_lane->sample_capacity - 1U)) == 0U &&
+	    single_lane->word_count == single_lane->sample_capacity / 32U &&
+	    lane_words[0] != NULL && lane_word_counts[0] == single_lane->word_count) {
+		uint32_t ring_mask = single_lane->sample_capacity - 1U;
+		uint32_t ring_index = (uint32_t)(first_sample & ring_mask);
+
+		for (uint32_t i = 0U; i < sample_count; i++) {
+			uint8_t sample = (uint8_t)((lane_words[0][ring_index >> 5U] >>
+				(ring_index & 31U)) & 1U);
+
+			payload[i] = sample;
+			if (values_or != NULL || values_and != NULL) {
+				or_acc |= sample;
+				and_acc &= sample;
+			}
+			ring_index = (ring_index + 1U) & ring_mask;
+		}
+		if (values_or != NULL) {
+			*values_or = or_acc;
+		}
+		if (values_and != NULL) {
+			*values_and = and_acc;
+		}
+		return 0;
+	}
+
+	if (plan->kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED) {
+		ret = la_stream_sink_write_fast8_payload(plan, lane_words, lane_word_counts,
+			first_sample, sample_count, payload, values_or, values_and);
+		if (ret != -ENOTSUP) {
+			return ret;
+		}
+	}
+	if (plan->kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_WIDE11_SPLIT_PACKED) {
+		ret = la_stream_sink_write_wide11_payload(plan, lane_words, lane_word_counts,
+			first_sample, sample_count, payload, values_or, values_and);
+		if (ret != -ENOTSUP) {
+			return ret;
+		}
+	}
+
 	ret = linkr_debugger_logic_analyzer_decode_packed_ring_span(plan, lane_words,
 		lane_word_counts, first_sample, payload, needed, sample_count);
 	if (ret < 0) {
 		return ret;
 	}
 
-	for (uint32_t i = 0U; i < sample_count; i++) {
-		uint8_t *src = &payload[(size_t)i * bytes_per_sample];
-		uint16_t sample = src[0];
+	if (values_or != NULL || values_and != NULL) {
+		for (uint32_t i = 0U; i < sample_count; i++) {
+			uint8_t *src = &payload[(size_t)i * bytes_per_sample];
+			uint16_t sample = src[0];
 
-		if (bytes_per_sample > 1U) {
-			sample |= (uint16_t)src[1] << 8U;
+			if (bytes_per_sample > 1U) {
+				sample |= (uint16_t)src[1] << 8U;
+			}
+
+			or_acc |= sample;
+			and_acc &= sample;
 		}
-
-		or_acc |= sample;
-		and_acc &= sample;
 	}
 
 	if (values_or != NULL) {
@@ -931,6 +1168,137 @@ int linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(
 		*values_and = and_acc;
 	}
 	return 0;
+}
+
+static int la_stream_sink_write_single_bits_payload(
+	const struct linkr_debugger_la_packed_ring_plan *plan,
+	const uint32_t * const lane_words[],
+	const uint32_t lane_word_counts[],
+	uint64_t first_sample,
+	uint32_t sample_count,
+	uint8_t *payload,
+	size_t payload_capacity,
+	uint16_t *values_or,
+	uint16_t *values_and)
+{
+	const struct linkr_debugger_la_packed_ring_lane *lane;
+	uint32_t ring_mask;
+	uint32_t ring_index;
+	size_t payload_len;
+	uint8_t tail_mask;
+	bool any_high = false;
+	bool all_high = true;
+
+	if (values_or != NULL) {
+		*values_or = 0U;
+	}
+	if (values_and != NULL) {
+		*values_and = 0xffffU;
+	}
+	if (plan == NULL || lane_words == NULL || lane_word_counts == NULL ||
+	    payload == NULL || sample_count == 0U ||
+	    plan->kind != LINKR_DEBUGGER_LA_HARDWARE_PLAN_SINGLE_PACKED ||
+	    plan->lane_count != 1U || plan->selected_pin_count != 1U ||
+	    plan->bytes_per_sample != 1U) {
+		return -EINVAL;
+	}
+	lane = &plan->lanes[0];
+	if (lane->bits_per_sample != 1U || lane->autopush_bits != 32U ||
+	    lane->samples_per_word != 32U || lane->sample_capacity == 0U ||
+	    lane->sample_capacity != plan->sample_capacity ||
+	    (lane->sample_capacity & (lane->sample_capacity - 1U)) != 0U ||
+	    lane->word_count != lane->sample_capacity / 32U || lane_words[0] == NULL ||
+	    lane_word_counts[0] != lane->word_count) {
+		return -EINVAL;
+	}
+	payload_len = linkr_debugger_logic_analyzer_stream_payload_len(
+		LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS, sample_count, 1U);
+	if (payload_len == 0U || payload_len > payload_capacity) {
+		return -ENOSPC;
+	}
+
+	ring_mask = lane->sample_capacity - 1U;
+	ring_index = (uint32_t)(first_sample & ring_mask);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	if ((ring_index & 7U) == 0U) {
+		const uint8_t *ring_bytes = (const uint8_t *)lane_words[0];
+		size_t ring_byte_count = lane->sample_capacity / 8U;
+		size_t ring_byte_index = ring_index / 8U;
+		size_t first_len = payload_len < ring_byte_count - ring_byte_index ?
+			payload_len : ring_byte_count - ring_byte_index;
+
+		memcpy(payload, ring_bytes + ring_byte_index, first_len);
+		if (first_len < payload_len) {
+			memcpy(payload + first_len, ring_bytes, payload_len - first_len);
+		}
+	} else
+#endif
+	{
+		for (size_t out_pos = 0U; out_pos < payload_len; out_pos++) {
+			uint32_t word_index = ring_index >> 5U;
+			uint32_t bit_offset = ring_index & 31U;
+			uint32_t bits = lane_words[0][word_index] >> bit_offset;
+			uint8_t valid_bits = (uint8_t)((sample_count - (uint32_t)(out_pos * 8U)) >= 8U ?
+				8U : sample_count - (uint32_t)(out_pos * 8U));
+
+			if (bit_offset > 24U) {
+				uint32_t next_word = word_index + 1U;
+
+				if (next_word == lane->word_count) {
+					next_word = 0U;
+				}
+				bits |= lane_words[0][next_word] << (32U - bit_offset);
+			}
+			payload[out_pos] = (uint8_t)bits;
+			ring_index = (ring_index + valid_bits) & ring_mask;
+		}
+	}
+	tail_mask = (sample_count & 7U) == 0U ? 0xffU :
+		(uint8_t)((1U << (sample_count & 7U)) - 1U);
+	payload[payload_len - 1U] &= tail_mask;
+	if (values_or != NULL || values_and != NULL) {
+		for (size_t i = 0U; i < payload_len; i++) {
+			uint8_t valid_mask = i + 1U == payload_len ? tail_mask : 0xffU;
+
+			any_high = any_high || payload[i] != 0U;
+			all_high = all_high && payload[i] == valid_mask;
+		}
+		if (values_or != NULL) {
+			*values_or = any_high ? 1U : 0U;
+		}
+		if (values_and != NULL) {
+			*values_and = all_high ? 1U : 0U;
+		}
+	}
+	return 0;
+}
+
+int linkr_debugger_logic_analyzer_stream_sink_write_payload(
+	const struct linkr_debugger_la_stream_sink *sink,
+	const struct linkr_debugger_la_packed_ring_plan *plan,
+	const uint32_t * const lane_words[],
+	const uint32_t lane_word_counts[],
+	uint64_t first_sample,
+	uint32_t sample_count,
+	uint8_t *payload,
+	size_t payload_capacity,
+	uint16_t *values_or,
+	uint16_t *values_and)
+{
+	if (sink == NULL) {
+		return -EINVAL;
+	}
+	if (sink->format == LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS) {
+		return la_stream_sink_write_single_bits_payload(plan, lane_words,
+			lane_word_counts, first_sample, sample_count, payload,
+			payload_capacity, values_or, values_and);
+	}
+	if (sink->format != LINKR_DEBUGGER_LA_STREAM_PAYLOAD_PACKED_LE_BYTES) {
+		return -ENOTSUP;
+	}
+	return linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(plan,
+		lane_words, lane_word_counts, first_sample, sample_count,
+		sink->bytes_per_sample, payload, payload_capacity, values_or, values_and);
 }
 
 int linkr_debugger_logic_analyzer_stream_sink_commit_payload(
@@ -2517,11 +2885,7 @@ static uint8_t la_pre_trigger_prev_level;
 static bool la_pre_trigger_have_prev;
 static struct linkr_debugger_la_config la_pre_trigger_config;
 static struct k_work la_pre_trigger_finalize_work;
-static volatile uint32_t la_stream_irq_count;
-static volatile uint32_t la_stream_chunk_count;
 static volatile bool la_stream_triggered;
-static volatile uint16_t la_stream_values_or;
-static volatile uint16_t la_stream_values_and;
 
 static int la_arm_pre_trigger_locked(const struct linkr_debugger_la_config *config);
 static void la_cleanup_locked(void);
@@ -2804,7 +3168,6 @@ static enum linkr_debugger_la_ring_poll_result la_packed_burst_emit_sink(
 	uint32_t lane_word_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
 	const struct linkr_debugger_la_packed_burst_plan *plan = &la_packed_burst_plan_active;
 	uint32_t emitted = 0U;
-	uint32_t sequence = 0U;
 
 	for (uint8_t lane = 0U; lane < plan->lane_count; lane++) {
 		lane_word_counts[lane] = plan->lanes[lane].word_count;
@@ -2837,9 +3200,7 @@ static enum linkr_debugger_la_ring_poll_result la_packed_burst_emit_sink(
 		}
 		memset(&commit, 0, sizeof(commit));
 		commit.token = lease.token;
-		commit.sequence = sequence;
 		commit.sample_count = chunk;
-		commit.timestamp_us = (uint64_t)emitted * la_capture.sample_period_ps / 1000000ULL;
 		commit.bytes_per_sample = plan->bytes_per_sample;
 		commit.payload_len = (size_t)chunk * plan->bytes_per_sample;
 		ret = linkr_debugger_logic_analyzer_stream_sink_commit_payload(sink, &commit);
@@ -2848,7 +3209,6 @@ static enum linkr_debugger_la_ring_poll_result la_packed_burst_emit_sink(
 			return LINKR_DEBUGGER_LA_RING_POLL_DEFINITE_OVERRUN;
 		}
 		emitted += chunk;
-		sequence++;
 	}
 
 	return LINKR_DEBUGGER_LA_RING_POLL_OK;
@@ -3529,14 +3889,13 @@ bool linkr_debugger_logic_analyzer_is_streaming(void)
 	return false;
 }
 
-void linkr_debugger_logic_analyzer_get_debug(struct linkr_debugger_la_debug *out)
-{
-	if (out != NULL) {
-		memset(out, 0, sizeof(*out));
-	}
-}
 
 #endif
+
+bool linkr_debugger_logic_analyzer_stream_sink_backpressure_retryable(int ret)
+{
+	return ret == -ENOSPC || ret == -ENOMEM || ret == -EAGAIN;
+}
 
 bool linkr_debugger_logic_analyzer_stream_sink_should_yield_for_handoff(
 	bool handoff_requested, uint64_t unread_samples)
@@ -3831,8 +4190,6 @@ static int la_prepare_stream_common_locked(
 	}
 	la_stream_sequence = 0U;
 	la_stream_triggered = (config->trigger == LINKR_DEBUGGER_LA_TRIGGER_NONE);
-	la_stream_values_or = 0U;
-	la_stream_values_and = 0xffffU;
 	la_stream_ring_emitted_samples = 0U;
 	la_stream_ring_error_count = 0U;
 	memset(&la_stream_ring_metrics, 0, sizeof(la_stream_ring_metrics));
@@ -3884,6 +4241,7 @@ static void la_start_prepared_stream_go_locked(void)
 	if (la_stream_ring_plan.lane_count > 1U) {
 		sampler_mask |= BIT(la_packed_sm_b);
 	}
+	pio->fdebug = sampler_mask << PIO_FDEBUG_RXSTALL_LSB;
 	pio_enable_sm_mask_in_sync(pio, sampler_mask);
 	if (la_trigger_sm_claimed) {
 		pio_sm_set_enabled(pio, (uint)la_trigger_sm, true);
@@ -4741,6 +5099,17 @@ static void la_stream_ring_hw_indices(uint32_t hw_word_indices[LINKR_DEBUGGER_LA
 	}
 }
 
+static bool la_stream_ring_rx_fifo_stalled(void)
+{
+	PIO pio = pio_rpi_pico_get_pio(la_pio_dev);
+	uint32_t sampler_mask = BIT(la_packed_sm_a);
+
+	if (la_stream_ring_plan.lane_count > 1U) {
+		sampler_mask |= BIT(la_packed_sm_b);
+	}
+	return (pio->fdebug & (sampler_mask << PIO_FDEBUG_RXSTALL_LSB)) != 0U;
+}
+
 static enum linkr_debugger_la_ring_poll_result la_stream_ring_refresh_progress(
 	uint64_t *writer_sequence)
 {
@@ -4763,7 +5132,8 @@ static enum linkr_debugger_la_ring_poll_result la_stream_ring_refresh_progress(
 	result = linkr_debugger_logic_analyzer_packed_ring_observe(&la_stream_ring_progress,
 		la_stream_ring_lane_last_hw_index, la_stream_ring_lane_writer_seq,
 		hw_word_indices, now_us, la_capture.actual_sample_rate_hz, 0U,
-		&la_stream_ring_plan, &produced, &skew_samples);
+		&la_stream_ring_plan, la_stream_ring_rx_fifo_stalled(),
+		&produced, &skew_samples);
 	unread_samples = la_stream_ring_progress.writer_seq - la_stream_ring_progress.reader_seq;
 	linkr_debugger_logic_analyzer_ring_metrics_update(&la_stream_ring_metrics,
 		poll_gap_us, unread_samples, 0U);
@@ -4974,8 +5344,6 @@ static bool la_stream_ring_prepare_emit(uint64_t first_seq, uint32_t count,
 	uint64_t period_ps = la_stream_config.sample_rate_hz > 0U
 		? (1000000000000ULL / la_stream_config.sample_rate_hz)
 		: 1000000ULL;
-	uint16_t or_acc = 0U;
-	uint16_t and_acc = 0xffffU;
 
 	if (chunk == NULL || emit_start_us == NULL || count == 0U ||
 	    count > LINKR_DEBUGGER_LA_STREAM_HALF_SAMPLES ||
@@ -5004,20 +5372,11 @@ static bool la_stream_ring_prepare_emit(uint64_t first_seq, uint32_t count,
 			la_stream_ring_values[i] = la_stream_scratch[i];
 		}
 	}
-
-	for (uint32_t i = 0U; i < count; i++) {
-		or_acc |= la_stream_ring_values[i];
-		and_acc &= la_stream_ring_values[i];
-	}
-
-	la_stream_values_or |= or_acc;
-	la_stream_values_and &= and_acc;
 	chunk->sequence = la_stream_sequence++;
 	chunk->sample_count = count;
 	chunk->timestamp_us = (first_seq * period_ps) / 1000000ULL;
 	chunk->values = la_stream_ring_values;
 	chunk->status = LINKR_DEBUGGER_LA_RING_POLL_OK;
-	la_stream_chunk_count++;
 	return true;
 }
 
@@ -5040,7 +5399,6 @@ enum la_stream_ring_consume_action {
 
 struct la_stream_ring_consume_result {
 	enum la_stream_ring_consume_action action;
-	bool sink_handoff;
 };
 
 static struct la_stream_ring_consume_result la_stream_ring_consume_result(
@@ -5051,15 +5409,9 @@ static struct la_stream_ring_consume_result la_stream_ring_consume_result(
 	return result;
 }
 
-static struct la_stream_ring_consume_result la_stream_ring_consume_yield_result(
-	bool sink_handoff)
+static struct la_stream_ring_consume_result la_stream_ring_consume_yield_result(void)
 {
-	struct la_stream_ring_consume_result result = {
-		.action = LA_STREAM_RING_CONSUME_YIELD_CONTINUE,
-		.sink_handoff = sink_handoff,
-	};
-
-	return result;
+	return la_stream_ring_consume_result(LA_STREAM_RING_CONSUME_YIELD_CONTINUE);
 }
 
 static void la_stream_ring_record_consume_start(uint64_t start_us)
@@ -5085,24 +5437,6 @@ static void la_stream_ring_clear_consumer_gap(void)
 	k_spinlock_key_t key = k_spin_lock(&la_stream_ring_progress_lock);
 
 	linkr_debugger_logic_analyzer_ring_metrics_clear_consumer_gap(&la_stream_ring_metrics);
-	k_spin_unlock(&la_stream_ring_progress_lock, key);
-}
-
-static void la_stream_ring_record_yield_resume(uint64_t duration_us, bool sink_handoff)
-{
-	k_spinlock_key_t key = k_spin_lock(&la_stream_ring_progress_lock);
-
-	linkr_debugger_logic_analyzer_ring_metrics_update_yield_resume(
-		&la_stream_ring_metrics, duration_us, sink_handoff);
-	k_spin_unlock(&la_stream_ring_progress_lock, key);
-}
-
-static void la_stream_ring_record_sink_handoff(bool requested, bool executed)
-{
-	k_spinlock_key_t key = k_spin_lock(&la_stream_ring_progress_lock);
-
-	linkr_debugger_logic_analyzer_ring_metrics_update_sink_handoff(
-		&la_stream_ring_metrics, requested, executed);
 	k_spin_unlock(&la_stream_ring_progress_lock, key);
 }
 
@@ -5163,22 +5497,13 @@ static struct la_stream_ring_consume_result la_stream_ring_consume_sink_failure(
 }
 
 static struct la_stream_ring_consume_result la_stream_ring_consume_sink_once(uint32_t generation,
-									     uint64_t reader_seq, uint32_t emit_count)
+										     uint64_t reader_seq, uint32_t emit_count)
 {
 	struct linkr_debugger_la_stream_sink sink;
 	struct linkr_debugger_la_stream_sink_lease lease;
 	struct linkr_debugger_la_stream_sink_commit commit;
 	const uint32_t *lane_words[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
 	uint32_t lane_word_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
-	uint64_t period_ps = la_stream_config.sample_rate_hz > 0U
-		? (1000000000000ULL / la_stream_config.sample_rate_hz)
-		: 1000000ULL;
-	uint64_t consume_start_us;
-	uint64_t fill_end_us;
-	uint64_t commit_start_us;
-	uint64_t commit_end_us;
-	uint16_t values_or = 0U;
-	uint16_t values_and = 0xffffU;
 	k_spinlock_key_t key;
 	bool current;
 	bool reader_advanced;
@@ -5197,15 +5522,13 @@ static struct la_stream_ring_consume_result la_stream_ring_consume_sink_once(uin
 	sink = la_stream_sink;
 	k_mutex_unlock(&la_mutex);
 
-	consume_start_us = k_ticks_to_us_floor64(k_uptime_ticks());
-	la_stream_ring_record_consume_start(consume_start_us);
 	ret = linkr_debugger_logic_analyzer_stream_sink_lease_payload(&sink,
 		emit_count, &lease);
 	if (ret < 0) {
-		fill_end_us = k_ticks_to_us_floor64(k_uptime_ticks());
-		la_stream_ring_record_consume_elapsed(
-			fill_end_us >= consume_start_us ? fill_end_us - consume_start_us : 0U,
-			0U, fill_end_us >= consume_start_us ? fill_end_us - consume_start_us : 0U);
+		if (linkr_debugger_logic_analyzer_stream_sink_backpressure_retryable(ret)) {
+			la_stream_ring_sink_stall_since_us = 0U;
+			return la_stream_ring_consume_yield_result();
+		}
 		return la_stream_ring_consume_sink_failure(generation);
 	}
 	lease_active = true;
@@ -5214,16 +5537,12 @@ static struct la_stream_ring_consume_result la_stream_ring_consume_sink_once(uin
 		lane_word_counts[lane] = la_stream_ring_plan.lanes[lane].word_count;
 	}
 
-	ret = linkr_debugger_logic_analyzer_stream_sink_write_packed_payload(
+	ret = linkr_debugger_logic_analyzer_stream_sink_write_payload(&sink,
 		&la_stream_ring_plan, lane_words, lane_word_counts,
-		reader_seq, emit_count, sink.bytes_per_sample, lease.payload,
-		lease.capacity, &values_or, &values_and);
-	fill_end_us = k_ticks_to_us_floor64(k_uptime_ticks());
+		reader_seq, emit_count, lease.payload, lease.capacity,
+		NULL, NULL);
 	if (ret < 0) {
 		la_stream_ring_abort_lease_once(&sink, &lease, &lease_active);
-		la_stream_ring_record_consume_elapsed(
-			fill_end_us >= consume_start_us ? fill_end_us - consume_start_us : 0U,
-			0U, fill_end_us >= consume_start_us ? fill_end_us - consume_start_us : 0U);
 		return la_stream_ring_consume_sink_failure(generation);
 	}
 
@@ -5232,34 +5551,24 @@ static struct la_stream_ring_consume_result la_stream_ring_consume_sink_once(uin
 		la_stream_ring_active, generation, la_generation);
 	key = k_spin_lock(&la_stream_ring_progress_lock);
 	reader_advanced = linkr_debugger_logic_analyzer_stream_copy_complete_advance_reader(
-		&la_stream_ring_progress, &la_stream_ring_metrics, current, generation,
+		&la_stream_ring_progress, NULL, current, generation,
 		reader_seq, emit_count);
 	k_spin_unlock(&la_stream_ring_progress_lock, key);
 	k_mutex_unlock(&la_mutex);
 	if (!reader_advanced) {
 		la_stream_ring_abort_lease_once(&sink, &lease, &lease_active);
-		la_stream_ring_record_consume_elapsed(
-			fill_end_us >= consume_start_us ? fill_end_us - consume_start_us : 0U,
-			0U, fill_end_us >= consume_start_us ? fill_end_us - consume_start_us : 0U);
 		return la_stream_ring_consume_result(LA_STREAM_RING_CONSUME_STOP);
 	}
 
 	memset(&commit, 0, sizeof(commit));
 	commit.token = lease.token;
-	commit.sequence = la_stream_sequence;
 	commit.sample_count = emit_count;
-	commit.timestamp_us = (reader_seq * period_ps) / 1000000ULL;
 	commit.bytes_per_sample = sink.bytes_per_sample;
-	commit.payload_len = (size_t)emit_count * sink.bytes_per_sample;
-	commit_start_us = k_ticks_to_us_floor64(k_uptime_ticks());
+	commit.payload_len = linkr_debugger_logic_analyzer_stream_payload_len(
+		sink.format, emit_count, sink.bytes_per_sample);
 	ret = linkr_debugger_logic_analyzer_stream_sink_commit_payload(&sink, &commit);
-	commit_end_us = k_ticks_to_us_floor64(k_uptime_ticks());
 	if (ret < 0) {
 		la_stream_ring_abort_lease_once(&sink, &lease, &lease_active);
-		la_stream_ring_record_consume_elapsed(
-			fill_end_us >= consume_start_us ? fill_end_us - consume_start_us : 0U,
-			commit_end_us >= commit_start_us ? commit_end_us - commit_start_us : 0U,
-			commit_end_us >= consume_start_us ? commit_end_us - consume_start_us : 0U);
 		return la_stream_ring_consume_sink_failure(generation);
 	}
 	handoff_requested = ret > 0;
@@ -5269,20 +5578,11 @@ static struct la_stream_ring_consume_result la_stream_ring_consume_sink_once(uin
 	unread_samples = la_stream_ring_progress.writer_seq - la_stream_ring_progress.reader_seq;
 	k_spin_unlock(&la_stream_ring_progress_lock, key);
 
-	la_stream_ring_record_consume_elapsed(
-		fill_end_us >= consume_start_us ? fill_end_us - consume_start_us : 0U,
-		commit_end_us >= commit_start_us ? commit_end_us - commit_start_us : 0U,
-		commit_end_us >= consume_start_us ? commit_end_us - consume_start_us : 0U);
-
 	current = la_stream_ring_current(generation);
 	if (!linkr_debugger_logic_analyzer_stream_sink_allows_protocol_update(
 	    current, emit_count)) {
 		return la_stream_ring_consume_result(LA_STREAM_RING_CONSUME_STOP);
 	}
-
-	la_stream_values_or |= values_or;
-	la_stream_values_and &= values_and;
-	la_stream_chunk_count++;
 	la_stream_sequence++;
 	la_stream_ring_emitted_samples += emit_count;
 	if (la_stream_ring_bounded_target() > 0U &&
@@ -5291,12 +5591,8 @@ static struct la_stream_ring_consume_result la_stream_ring_consume_sink_once(uin
 	}
 	explicit_yield = linkr_debugger_logic_analyzer_stream_sink_should_explicit_yield(
 		handoff_requested, unread_samples);
-	la_stream_ring_record_sink_handoff(handoff_requested, explicit_yield);
-	la_stream_ring_record_chunk_complete(commit_end_us);
-	if (explicit_yield) {
-		return la_stream_ring_consume_yield_result(true);
-	}
-	return la_stream_ring_consume_result(LA_STREAM_RING_CONSUME_CONTINUE);
+	return explicit_yield ? la_stream_ring_consume_yield_result() :
+		la_stream_ring_consume_result(LA_STREAM_RING_CONSUME_CONTINUE);
 }
 
 static uint32_t la_stream_ring_poll_once(uint32_t generation)
@@ -5334,7 +5630,8 @@ static uint32_t la_stream_ring_poll_once(uint32_t generation)
 	result = linkr_debugger_logic_analyzer_packed_ring_observe(&la_stream_ring_progress,
 		la_stream_ring_lane_last_hw_index, la_stream_ring_lane_writer_seq,
 		hw_word_indices, now_us, la_capture.actual_sample_rate_hz, 0U,
-		&la_stream_ring_plan, &produced, &skew_samples);
+		&la_stream_ring_plan, la_stream_ring_rx_fifo_stalled(),
+		&produced, &skew_samples);
 	if (result == LINKR_DEBUGGER_LA_RING_POLL_OK && !la_stream_pre_trigger.enabled &&
 	    !la_stream_triggered) {
 		la_stream_ring_progress.reader_seq = la_stream_ring_progress.writer_seq;
@@ -5436,8 +5733,7 @@ static struct la_stream_ring_consume_result la_stream_ring_consume_once(uint32_t
 		la_stream_ring_active, generation, la_generation);
 	sink_active_for_emit = current && la_stream_sink_active;
 	chunk_limit = la_stream_ring_plan.chunk_samples;
-	if (sink_active_for_emit && la_stream_sink.max_chunk_samples > 0U &&
-	    la_stream_sink.max_chunk_samples < chunk_limit) {
+	if (sink_active_for_emit && la_stream_sink.max_chunk_samples > 0U) {
 		chunk_limit = la_stream_sink.max_chunk_samples;
 	}
 	k_mutex_unlock(&la_mutex);
@@ -5513,7 +5809,7 @@ static struct la_stream_ring_consume_result la_stream_ring_consume_once(uint32_t
 		la_stream_ring_request_terminal(LINKR_DEBUGGER_LA_RING_POLL_OK, generation);
 	}
 	la_stream_ring_record_chunk_complete(callback_end_us);
-	return la_stream_ring_consume_yield_result(false);
+	return la_stream_ring_consume_yield_result();
 }
 
 static void la_stream_ring_thread_fn(void *p1, void *p2, void *p3)
@@ -5592,15 +5888,8 @@ static void la_stream_ring_consumer_thread_fn(void *p1, void *p2, void *p3)
 				break;
 			}
 			if (consume_result.action == LA_STREAM_RING_CONSUME_YIELD_CONTINUE) {
-				int64_t yield_start_ticks = k_uptime_ticks();
-
-				/* Equal-priority handoff point for legacy WS/TCP callback senders,
-				 * and bounded handoff point for sink transports that explicitly ask.
-				 */
+				/* Equal-priority handoff lets WS/TCP return queue capacity. */
 				k_yield();
-				la_stream_ring_record_yield_resume(
-					k_ticks_to_us_floor64(k_uptime_ticks() - yield_start_ticks),
-					consume_result.sink_handoff);
 			}
 		}
 	}
@@ -5792,40 +6081,6 @@ bool linkr_debugger_logic_analyzer_is_streaming(void)
 	return la_stream_active;
 }
 
-void linkr_debugger_logic_analyzer_get_debug(struct linkr_debugger_la_debug *out)
-{
-	if (out == NULL) {
-		return;
-	}
-
-	k_mutex_lock(&la_mutex, K_FOREVER);
-	out->stream_irqs = la_stream_irq_count;
-	out->stream_chunks = la_stream_chunk_count;
-	{
-		struct linkr_debugger_la_ring_metrics metrics;
-		k_spinlock_key_t key = k_spin_lock(&la_stream_ring_progress_lock);
-
-		metrics = la_stream_ring_metrics;
-		k_spin_unlock(&la_stream_ring_progress_lock, key);
-		out->stream_ring_max_poll_gap_us = metrics.max_poll_gap_us;
-		out->stream_ring_max_unread_samples = metrics.max_unread_samples;
-		out->stream_ring_max_emit_us = metrics.max_emit_us;
-		out->stream_ring_max_compact_us = metrics.max_compact_us;
-		out->stream_ring_total_compact_us = metrics.total_compact_us;
-		out->stream_ring_max_callback_us = metrics.max_callback_us;
-		out->stream_ring_total_callback_us = metrics.total_callback_us;
-		out->stream_ring_total_consume_us = metrics.total_consume_us;
-		out->stream_ring_consume_chunks = metrics.consume_chunk_count;
-	}
-	out->pre_write_index = la_pre_trigger_write_index;
-	out->pre_post_remaining = la_pre_trigger_post_remaining;
-	out->stream_values_or = la_stream_values_or;
-	out->stream_values_and = la_stream_values_and;
-	out->pre_active = la_pre_trigger_active;
-	out->pre_triggered = la_pre_trigger_triggered;
-	out->stream_active = la_stream_active;
-	k_mutex_unlock(&la_mutex);
-}
 
 bool linkr_debugger_logic_analyzer_is_stream_triggered(void)
 {

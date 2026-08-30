@@ -77,13 +77,15 @@ or new buffer is used. Existing deep post behavior remains when pre=0. See the
 The capture engine uses two engines: packed finite DMA and packed DMA ring.
 SINGLE/FAST8 uses one 32768B packed wrap ring; WIDE11 uses lane A 16384B plus lane B 8192B
 inside the same 32768B slice, with a common capacity of 16384 samples and a safety margin of 2048.
-Usable capacities are SINGLE 260096, FAST8 30720, and WIDE11 14336 samples. The WIDE11 writer
-enforces minimum lane sequence and stops when greater than 20 sample skew is detected.
+Usable capacities are SINGLE 260096, FAST8 30720, and WIDE11 14336 samples. The WIDE11 writer advances only to the minimum completed lane sequence. DMA
+write-pointer skew remains diagnostic because joined RX FIFOs, partial autopush words, and
+in-flight DMA make the two snapshots non-atomic. The sticky PIO RXSTALL flag is cleared at arm
+and is the authoritative lane-stall signal; RXSTALL or ring overwrite terminates lossless-or-stop.
 DATA metadata is 8 bytes. Sample indices are modulo 24 bits; wrap is not a terminal condition.
 
 On overrun, possible overrun, transport backpressure, or bounded-capture completion,
 the firmware emits a terminal event and stops rather than silently continuing (lossless-or-stop).
-The packed ring reuses the 149048 B total backing allocation (sized to max(normal, burst)=149048 B); the WIDE11 144184 B hardware slice and the 30720 B WS telemetry ring share that allocation.
+The packed ring reuses the 148856 B total backing allocation (sized to max(normal, burst)=148856 B); the WIDE11 144184 B hardware slice and the 30720 B WS telemetry ring share that allocation.
 
 Arena pause/resume is a lossless, generation-scoped handshake. The ADC sampler
 atomically consumes preposted CONFIG/RESUME events, and an old generation's
@@ -158,25 +160,16 @@ On the representative HIL setup:
 
 | Scenario | Rate | Result |
 |----------|------|--------|
-| WS bounded SINGLE 100 kHz, post=65535 | 100 kHz | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
-| WS bounded FAST8 100 kHz, post=65535 | 100 kHz | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
-| WS bounded WIDE11 100 kHz, post=65535 | 100 kHz | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
-| TCP bounded SINGLE 100 kHz, post=65535 | 100 kHz | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
-| TCP bounded FAST8 100 kHz, post=65535 | 100 kHz | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
-| TCP bounded WIDE11 100 kHz, post=65535 | 100 kHz | Exactly 65535 samples, 0 gaps, restart true, HTTP health true |
-| WS continuous SINGLE | 300 kHz | 5.012458 s, 1,499,136 samples, ~299,082 samples/s, zero sample-index gaps, zero disconnects, zero overruns, STOP response, restart and HTTP health |
-| TCP continuous SINGLE | 350 kHz | 5.008183 s, 1,755,136 samples, ~350,454 samples/s, zero sample-index gaps, zero disconnects, zero overruns, STOP response, restart and HTTP health |
-| WS continuous SINGLE | 400 kHz | 0.084225 s, 27,392 samples, explicit `server_overrun`, zero gaps, zero disconnects, restart and HTTP health; `pass=false` because duration was not met (boundary diagnostic, not sustained PASS) |
-| WS continuous SINGLE | 1 MHz | 0.119245 s, 43,232 samples, explicit `server_overrun`, zero gaps, zero disconnects, restart and HTTP health; `pass=false` because duration was not met (boundary diagnostic, not sustained PASS) |
-| TCP continuous SINGLE | 400 kHz | 0.116484 s, 57,344 samples, explicit `server_overrun`, zero gaps, zero disconnects, restart and HTTP health; `pass=false` because duration was not met (boundary diagnostic, not sustained PASS) |
-| WS continuous FAST8 | 240 kHz | 5-second no-gap ceiling |
-| WS continuous FAST8 | 241 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
-| WS continuous WIDE11 | 149 kHz | 5-second no-gap ceiling |
-| WS continuous WIDE11 | 150 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
-| TCP continuous FAST8 | 241 kHz | 5-second no-gap ceiling |
-| TCP continuous FAST8 | 242 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
-| TCP continuous WIDE11 | 147 kHz | 5-second no-gap ceiling |
-| TCP continuous WIDE11 | 148 kHz | Adjacent failure, explicit terminal, restart and HTTP health retained |
+| WS bounded SINGLE 100 kHz, post=65535 | 100 kHz | Exactly 65,535 samples in 32 protocol-v2 DATA frames, 0 gaps/errors/overruns, STOP, restart, HTTP health |
+| TCP bounded SINGLE 100 kHz, post=65535 | 100 kHz | Exactly 65,535 samples in 32 protocol-v2 DATA frames, 0 gaps/errors/overruns, STOP, restart, HTTP health |
+| WS continuous SINGLE | 16 MHz | 10/10 strict 5-second PASS; 78,004,224–79,855,616 samples, 15.600–15.969 Msamples/s, 0 gaps/errors/overruns, STOP, restart, HTTP health |
+| TCP continuous SINGLE | 16 MHz | 10/10 strict 5-second PASS; 77,266,944–79,937,536 samples, 15.451–15.986 Msamples/s, 0 gaps/errors/overruns, STOP, restart, HTTP health |
+| WS continuous SINGLE | 18.002 MHz actual | Boundary failure: 83,542,016 samples, below 85,509,500 strict minimum; clean STOP/restart/health and no gaps/overruns |
+| TCP continuous SINGLE | 18.002 MHz actual | Boundary failure: 78,413,824 samples, below 85,509,500 strict minimum; clean STOP/restart/health and no gaps/overruns |
+| Historical WS continuous FAST8 | 240 kHz | Prior post-ring reference; not re-run on protocol v2 |
+| Historical WS continuous WIDE11 | 149 kHz | Prior post-ring reference; not re-run on protocol v2 |
+| Historical TCP continuous FAST8 | 241 kHz | Prior post-ring reference; not re-run on protocol v2 |
+| Historical TCP continuous WIDE11 | 147 kHz | Prior post-ring reference; not re-run on protocol v2 |
 | WS bounded SINGLE NONE post=1 | actual 125.081 MHz | Exactly 1 sample, 0 gaps, restart true, HTTP health true |
 | TCP bounded SINGLE NONE post=1 | actual 125.081 MHz | Exactly 1 sample, 0 gaps, restart true, HTTP health true |
 | WS bounded SINGLE rising post=512 | 5 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
@@ -191,33 +184,37 @@ On the representative HIL setup:
 | WS bounded SINGLE either post=512 | 100 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
 | TCP bounded SINGLE rising post=512 | 100 MHz | Exactly 512 samples, 0 gaps, restart true, HTTP health true |
 
-The 300 kHz (WS) and 350 kHz (TCP) rows above are proven sustained-duration
-operating points under the strict 95% duration + STOP_RESP contract on the
-representative HIL setup; the 400 kHz WS/TCP and 1 MHz WS rows bracket the
-boundary where the strict runner still records an explicit lossless
-`server_overrun` with zero gaps/disconnects, but the requested 5 s duration
-is not met and the runner reports `pass=false`. They are recorded as
-boundary diagnostics, not sustained PASS, and they are not exact absolute
-ceilings. Adjacent WS SINGLE failure was not measured under the final
-architecture. The 50 MHz and 125 MHz bounded-trigger rows are short
-single-shot bursts; the firmware does not claim sustained streaming at
-those rates.
+Protocol v2 and the dense SINGLE path remove the remaining byte expansion:
+aligned 16,384-sample chunks copy 2,048 chronological packed bytes directly from
+the DMA ring, then emit SINGLE_BITS or SINGLE_BITS_RLE. The sink and transport
+threads remain equal-priority, and a temporary full WS slot pool yields and
+retries while the hardware ring still retains the data. No queue or arena RAM
+was added.
 
-The historical `WS continuous SINGLE 1 MHz` ~999 ksps claim (10 consecutive
-5-second runs of ~4.991M-4.997M samples each, plus the 4,997,120-sample
-single run) and the historical `TCP continuous SINGLE 443 kHz` 5-second
-no-gap ceiling are pre-transport-cleanup or otherwise different-pipeline
-evidence from earlier 2026-07-25/26 dated reports. They are not current
-operating points; the current architecture exhibits the same pre-existing
-high-rate continuous limitation regardless of whether the firmware is the
-final optimized image or the clean detached HEAD control image. The
-2026-07-31 full-functional HIL already recorded ten
-41,344 to 42,976-sample overrun windows on WS SINGLE 1 MHz with the same
-shape. See the [2026-08-24 firmware memory optimization HIL](../testing/results/2026-08-24-firmware-memory-optimization-hil.md)
-for the head-to-head proof that the optimization did not change the
-pre-existing 1 MHz/TCP 443 kHz continuous limitation, and the
-historical 2026-07-25/26/27 reports for the original sources of those
-older claims.
+The strict continuous rule now requires both 95% requested duration and at least
+95% of the negotiated sample count. This prevents a five-second connection with
+a growing unsent tail from being mislabeled as a throughput PASS. Under that
+rule, both transports pass 16 MHz ten consecutive times and fail cleanly at the
+adjacent measured 18.002 MHz point. See the
+[2026-08-30 protocol-v2 dense HIL](../testing/results/2026-08-30-logic-analyzer-v2-dense-hil.md).
+
+Those SINGLE results use static or low-transition GP10; 16 MHz incompressible SINGLE remains
+unverified. Multichannel protocol-v2 HIL now separates static/low-transition input from a
+transition-rich GP16 workload:
+
+| Input profile | FAST8 WS | FAST8 TCP | WIDE11 WS | WIDE11 TCP |
+|---------------|----------|-----------|-----------|------------|
+| Static/low-transition, 10/10 | 2.600 MHz | 2.600 MHz | 1.050 MHz | 1.175 MHz |
+| GP16 low/high with PACKED_PALETTE2, 10/10 | 1.200 MHz | 1.375 MHz | 850 kHz | 950 kHz |
+
+The active profile sends continuous UART 0x55 at 921600 baud into GP16 and verifies bit6 low,
+high, and tens of thousands of transitions in each analyzed 65,536-sample window. It proves one
+active line inside the full multichannel capture, not simultaneous independent entropy on all
+selected channels. Raw matched-baud BIT_PACK before palette compression passed FAST8 at 500 kHz
+and WIDE11 at 250 kHz on both transports. See the
+[2026-08-31 multichannel HIL](../testing/results/2026-08-31-logic-analyzer-v2-multichannel-hil.md).
+The 50/125 MHz bounded-trigger rows remain short single-shot bursts. Earlier dated v1 reports
+remain historical evidence and are not rewritten.
 
 ### Generic Packed Burst (CONFIG_V2)
 
@@ -225,7 +222,7 @@ The generic packed-burst architecture uses a common packed arena for deep captur
 SINGLE and FAST8 use one capture SM; WIDE11 uses two capture SMs.
 HELLO server_flags bit 0 advertises CONFIG_V2 and bit 1 advertises GENERIC_PACKED_BURST;
 clients must use frame0x0b with 16-byte payload (u32LE pre/post) only for
-bounded post > 65535. The v1 frame0x05 (12B) remains for bounded captures with
+bounded post > 65535. Frame 0x05 (12B) remains for bounded captures with
 post <= 65535 and the post=0 stream sentinel; bit1 determines whether supported
 high-rate post=0 captures exactly 100000 samples and then auto-STOP/drains.
 Bounded `post=65536..100000` is rate-neutral within the otherwise supported
@@ -236,7 +233,7 @@ The three physical capture plans:
   12500 B source at 100 MHz (100000 samples × 1 bit). A FAST8 physical plan, not a separate Sigrok wire mode.
 - **FAST8**: one 8-bit lane (GP10-GP17), autopush32, 4 samples per 32-bit word,
   100000 B source at 100 MHz (100000 samples × 8 bits)
-- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 149048 B total backing allocation); triggered deep burst adds a third trigger-only SM
+- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 148856 B total backing allocation); triggered deep burst adds a third trigger-only SM
 
 GP29 is excluded from WIDE11 LA (ADC3 voltage monitor; ADC3-owned and input-only). WIDE11 verification is
 covered by the historical 2026-07-27 freeze-final HIL matrices below.
@@ -326,27 +323,35 @@ bounded pre-trigger. Post>512 bounded uses packed ring streaming.
 The LA backend uses two capture engines: packed finite DMA and packed DMA ring.
 SINGLE/FAST8 uses one 32768B packed wrap ring; WIDE11 uses lane A 16384B plus lane B 8192B
 inside the same 32768B slice, with a common capacity of 16384 samples and a safety margin of 2048.
-Usable capacities are SINGLE 260096, FAST8 30720, and WIDE11 14336 samples. The WIDE11 writer
-enforces minimum lane sequence and stops when greater than 20 sample skew is detected. A
-protocol-neutral LA sink feeds consumer work items through a pool of 8 DATA slots
-plus 1 terminal slot. Each WS SINGLE DATA slot carries up to 2048 packed samples;
-the sink consumer runs at priority 7 and blocks naturally on full chunks. Legacy
-callback paths, TCP transport, and non-SINGLE sample paths run at priority 8 with
-yield. The sender applies one-byte RLE with BIT_PACK fallback. A 6144-byte
-coalescing buffer aggregates complete frames before transmission. The terminal
-condition fires on buffer pressure or explicit stop; the implementation does not
-silently drop samples (lossless-or-stop). When the writer is frozen on a terminal
+Usable capacities are SINGLE 260096, FAST8 30720, and WIDE11 14336 samples. The WIDE11 writer advances only to the minimum completed lane sequence. DMA
+write-pointer skew remains diagnostic because joined RX FIFOs, partial autopush words, and
+in-flight DMA make the two snapshots non-atomic. The sticky PIO RXSTALL flag is cleared at arm
+and is the authoritative lane-stall signal; RXSTALL or ring overwrite terminates lossless-or-stop. A
+protocol-neutral LA sink feeds consumer work items through a pool of 4 DATA slots with
+4,096 payload bytes each plus 1 terminal slot. This replaces 8 x 2,048-byte slots while reducing
+the arena slice by 192 bytes. SINGLE uses 16,384-sample chunks represented by 2,048
+chronological packed bytes, so each chunk still fits an existing WS slot. Aligned
+spans copy directly from the one-bit DMA ring; wrapped or non-byte-aligned spans
+use the extraction fallback. Exact FAST8 copies the DMA byte ring directly; exact WIDE11
+combines its 8-bit and 3-bit lanes with running word counters, while sparse/reordered selections
+retain the generic decoder. Packed chunks are 4,096 FAST8 or 2,048 WIDE11 samples. Protocol v2
+uses BIT_PACK_RLE for one value, PACKED_PALETTE2 for two values when smaller than RLE, and
+BIT_PACK/RLE fallback for other chunks. WS pre-encodes in the leased slot; TCP encodes in place
+and caps its dynamic queue at 10 DATA frames plus terminal reserve. Sink and transport threads
+run at priority 8. Temporary slot exhaustion
+yields and retries without advancing the reader; true ring overwrite pressure
+retains the lossless-or-stop terminal behavior. When the writer is frozen on a terminal
 selection, the freeze policy (described under "Terminal selection freezes the
 writer" above) disables the trigger SM and the sampler SM(s) and aborts the ring
 DMA channel(s) without releasing the channels back to the pool, so the consumer
-can only drain already-committed ring data. The packed ring reuses the 149048 B total backing
-allocation (sized to max(normal, burst)=149048 B); the WIDE11 144184 B hardware slice and the
+can only drain already-committed ring data. The packed ring reuses the 148856 B total backing
+allocation (sized to max(normal, burst)=148856 B); the WIDE11 144184 B hardware slice and the
 30720 B WS telemetry ring share that backing allocation.
 
 The generic packed burst path uses a dual-SM packed arena: SM-A captures
 GP10-GP17 (8-bit autopush32, 100000 B source) and SM-B captures GP18-GP20 (3-bit
 autopush30, 40000 B source), with 140000 B total from two DMA channels and a
-144184 B burst slice (overlays the 149048 B total backing allocation). This is the WIDE11 architecture; GP29 is excluded from
+144184 B burst slice (overlays the 148856 B total backing allocation). This is the WIDE11 architecture; GP29 is excluded from
 WIDE11 LA. NONE deep burst uses two capture SMs; triggered deep burst adds a third SM
 running the 3-instruction trigger program. The three physical plans: SINGLE (one 1-bit lane, autopush32,
 32 samples/word, 12500 B at 100 MHz), FAST8 (one 8-bit lane, autopush32, 4 samples/word,
@@ -397,7 +402,7 @@ Native sigrok-cli and PulseView connect via raw-TCP on port 5556:
 sigrok-cli -d linkr-debugger:conn=tcp-raw/172.29.203.1/5556 --scan
 ```
 
-The protocol is the sigrok binary protocol (see `docs/reference/sigrok-linkr-v1.md`).
+The protocol is the sigrok binary protocol (see `docs/reference/sigrok-linkr-v2.md`).
 This is separate from the Web UI WebSocket path.
 
 ## File Reference

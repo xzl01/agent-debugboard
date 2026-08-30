@@ -2074,6 +2074,7 @@ static void test_caps_init(void)
 	struct linkr_debugger_sigrok_linkr_caps caps;
 
 	linkr_debugger_sigrok_linkr_caps_init(&caps);
+	assert(LINKR_DEBUGGER_SIGROK_LINKR_PROTOCOL_VERSION == 2U);
 	assert(LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES == 8U);
 	assert(LINKR_DEBUGGER_SIGROK_LINKR_MAX_DATA_BYTES == 4096U);
 	assert(LINKR_DEBUGGER_SIGROK_LINKR_MAX_PAYLOAD_BYTES ==
@@ -2097,11 +2098,20 @@ static void test_caps_init(void)
 	assert((caps.modes[0].mode_flags & LINKR_DEBUGGER_SIGROK_LINKR_MODE_FLAG_PRE_TRIGGER) != 0U);
 	assert(caps.modes[0].sample_bytes == 1U);
 	assert(caps.modes[0].max_samplerate_khz == 125000U);
+	assert(caps.modes[0].compression ==
+		(LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_BIT_PACK |
+		 LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_RLE |
+		 LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_SINGLE_BITS |
+		 LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_PALETTE2));
 	assert(caps.modes[1].mode_id == LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11);
 	assert(caps.modes[1].channel_count == 11U);
 	assert((caps.modes[1].mode_flags & LINKR_DEBUGGER_SIGROK_LINKR_MODE_FLAG_PRE_TRIGGER) != 0U);
 	assert(caps.modes[1].sample_bytes == 2U);
 	assert(caps.modes[1].max_samplerate_khz == 125000U);
+	assert(caps.modes[1].compression ==
+		(LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_BIT_PACK |
+		 LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_RLE |
+		 LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_PALETTE2));
 }
 
 static void test_bytes_per_sample_by_mode_width(void)
@@ -2119,6 +2129,60 @@ static void test_bytes_per_sample_by_mode_width(void)
 	assert(out[1] == 0x00U);
 	assert(out[2] == 0x01U);
 	assert(out[3] == 0x07U);
+}
+
+static void test_single_bits_stream_format_and_frame_encoding(void)
+{
+	uint8_t repeated[16];
+	uint8_t varied[] = {0x13U, 0x57U, 0x9bU, 0xdfU, 0x24U, 0x68U, 0xacU, 0xe0U};
+	uint8_t frame[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + sizeof(repeated)];
+	uint8_t in_place[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + sizeof(varied)];
+	uint8_t *in_place_payload = in_place + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES;
+	const uint8_t *meta;
+	const uint8_t *payload;
+	size_t len;
+
+	assert(linkr_debugger_sigrok_linkr_stream_payload_format(0x0001U) ==
+		LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS);
+	assert(linkr_debugger_sigrok_linkr_stream_payload_format(0x0040U) ==
+		LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS);
+	assert(linkr_debugger_sigrok_linkr_stream_payload_format(0x0003U) ==
+		LINKR_DEBUGGER_LA_STREAM_PAYLOAD_PACKED_LE_BYTES);
+	memset(repeated, 0x55, sizeof(repeated));
+	len = linkr_debugger_sigrok_linkr_encode_stream_data_frame(
+		LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS, 7U, 128U, 0x0001U,
+		repeated, sizeof(repeated), true, frame, sizeof(frame));
+	assert(len == LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + 3U);
+	meta = frame + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
+	assert(meta[5] == LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_SINGLE_BITS_RLE);
+	payload = meta + LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES;
+	assert(memcmp(payload, (uint8_t[]){0x55U, 0x10U, 0x00U}, 3U) == 0);
+
+	len = linkr_debugger_sigrok_linkr_encode_stream_data_frame(
+		LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS, 11U, 64U, 0x0001U,
+		varied, sizeof(varied), true, frame, sizeof(frame));
+	assert(len == LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + sizeof(varied));
+	meta = frame + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
+	assert(meta[5] == LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_SINGLE_BITS);
+	payload = meta + LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES;
+	assert(memcmp(payload, varied, sizeof(varied)) == 0);
+
+	memcpy(in_place_payload, varied, sizeof(varied));
+	len = linkr_debugger_sigrok_linkr_encode_stream_data_frame(
+		LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS, 11U, 64U, 0x0001U,
+		in_place_payload, sizeof(varied), true, in_place, sizeof(in_place));
+	assert(len == sizeof(in_place));
+	assert(in_place[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + 5U] ==
+		LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_SINGLE_BITS);
+	assert(memcmp(in_place_payload, varied, sizeof(varied)) == 0);
+	assert(linkr_debugger_sigrok_linkr_encode_stream_data_frame(
+		LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS, 0U, 64U, 0x0003U,
+		varied, sizeof(varied), true, frame, sizeof(frame)) == 0U);
 }
 
 static void test_bit_pack_single_fast_path_encodes_one_byte_per_sample(void)
@@ -2381,7 +2445,7 @@ static void test_packed_single_sender_rle_frame_decodes_to_original_bytes(void)
 
 static void test_packed_single_sender_fallback_frame_matches_bit_pack_bytes(void)
 {
-	uint8_t packed[] = {0U, 1U, 0U, 1U, 0U, 1U};
+	uint8_t packed[] = {0U, 1U, 2U, 0U, 1U, 2U};
 	uint8_t frame[64];
 	struct linkr_debugger_sigrok_linkr_header header;
 	size_t len;
@@ -2398,6 +2462,88 @@ static void test_packed_single_sender_fallback_frame_matches_bit_pack_bytes(void
 	assert(meta[5] == LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_BIT_PACK);
 	payload = meta + LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES;
 	assert(memcmp(payload, packed, sizeof(packed)) == 0);
+}
+
+static void test_packed_sender_palette2_in_place_packs_fast8_and_wide11(void)
+{
+	uint8_t fast_frame[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + 16U];
+	uint8_t wide_frame[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + 32U];
+	uint8_t *fast = fast_frame + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES;
+	uint8_t *wide = wide_frame + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES;
+	const uint8_t *meta;
+	size_t len;
+
+	for (size_t i = 0U; i < 16U; i++) {
+		fast[i] = (i & 1U) == 0U ? 0x00U : 0x40U;
+		wide[i * 2U] = fast[i];
+		wide[(i * 2U) + 1U] = 0x00U;
+	}
+	len = linkr_debugger_sigrok_linkr_encode_packed_data_frame(0U,
+		16U, 0x00ffU, fast, 16U, true, fast_frame, sizeof(fast_frame));
+	assert(len == LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + 4U);
+	meta = fast_frame + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
+	assert(meta[5] == LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_PACKED_PALETTE2);
+	assert(memcmp(meta + LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES,
+		(uint8_t[]){ 0x00U, 0x40U, 0xaaU, 0xaaU }, 4U) == 0);
+
+	len = linkr_debugger_sigrok_linkr_encode_packed_data_frame(0U,
+		16U, 0x07ffU, wide, 32U, true, wide_frame, sizeof(wide_frame));
+	assert(len == LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + 6U);
+	meta = wide_frame + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
+	assert(meta[5] == LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_PACKED_PALETTE2);
+	assert(memcmp(meta + LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES,
+		(uint8_t[]){ 0x00U, 0x00U, 0x40U, 0x00U, 0xaaU, 0xaaU }, 6U) == 0);
+}
+
+static void test_packed_sender_uniform_wide_in_place_uses_one_rle_record(void)
+{
+	uint8_t frame[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + 64U];
+	uint8_t *packed = frame + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES;
+	const uint8_t *meta;
+	size_t len;
+
+	for (size_t i = 0U; i < 32U; i++) {
+		packed[i * 2U] = 0x5aU;
+		packed[(i * 2U) + 1U] = 0x05U;
+	}
+	len = linkr_debugger_sigrok_linkr_encode_packed_data_frame(0U,
+		32U, 0x07ffU, packed, 64U, true, frame, sizeof(frame));
+	assert(len == LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + 4U);
+	meta = frame + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES;
+	assert(meta[5] == LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_BIT_PACK_RLE);
+	assert(memcmp(meta + LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES,
+		(uint8_t[]){ 0x5aU, 0x05U, 0x20U, 0x00U }, 4U) == 0);
+}
+
+static void test_packed_single_sender_in_place_fallback_preserves_samples(void)
+{
+	uint8_t expected[64];
+	uint8_t frame[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES + sizeof(expected)];
+	uint8_t *packed = frame + LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
+		LINKR_DEBUGGER_SIGROK_LINKR_DATA_META_BYTES;
+	size_t len;
+
+	for (size_t i = 0U; i < sizeof(expected); i++) {
+		expected[i] = (uint8_t)(i % 3U);
+	}
+	memcpy(packed, expected, sizeof(expected));
+	len = linkr_debugger_sigrok_linkr_encode_packed_data_frame(0U,
+		(uint16_t)sizeof(expected), 0x0001U, packed, sizeof(expected), true,
+		frame, sizeof(frame));
+	assert(len == sizeof(frame));
+	assert(frame[LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES + 5U] ==
+		LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_BIT_PACK);
+	assert(memcmp(packed, expected, sizeof(expected)) == 0);
 }
 
 static void test_packed_sender_rle_helper_falls_back_before_growth(void)
@@ -2497,10 +2643,10 @@ static void test_packed_sender_multiple_deferred_frames_fit_tx_buffer(void)
 
 	memset(zeros, 0, sizeof(zeros));
 	for (size_t i = 0U; i < sizeof(alternating); i++) {
-		alternating[i] = (uint8_t)(i & 1U);
+		alternating[i] = (uint8_t)(i % 3U);
 	}
 	for (size_t i = 0U; i < sizeof(wide_alternating); i++) {
-		wide_alternating[i] = (uint8_t)(i & 1U);
+		wide_alternating[i] = (uint8_t)(i % 3U);
 	}
 
 	for (uint8_t i = 0U; i < 16U; i++) {
@@ -2544,23 +2690,23 @@ static void test_packed_sender_multiple_deferred_frames_fit_tx_buffer(void)
 		single_2048_frame, tx_buffer, 2U, 16U));
 }
 
-static void test_packed_sender_2048_single_frame_capacity_boundary(void)
+static void test_packed_sender_4096_single_frame_capacity_boundary(void)
 {
-	uint8_t packed[LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES + 1U];
+	uint8_t packed[LINKR_DEBUGGER_LA_STREAM_MAX_PACKED_CHUNK_SAMPLES + 1U];
 	uint8_t frame[LINKR_DEBUGGER_SIGROK_LINKR_WS_MAX_FRAME_BYTES];
 	size_t len;
 
 	for (size_t i = 0U; i < sizeof(packed); i++) {
-		packed[i] = (uint8_t)(i & 1U);
+		packed[i] = (uint8_t)(i % 3U);
 	}
 	len = linkr_debugger_sigrok_linkr_encode_packed_data_frame(0U,
-		LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES, 0x0001U,
-		packed, LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES, true,
+		LINKR_DEBUGGER_LA_STREAM_MAX_PACKED_CHUNK_SAMPLES, 0x0001U,
+		packed, LINKR_DEBUGGER_LA_STREAM_MAX_PACKED_CHUNK_SAMPLES, true,
 		frame, sizeof(frame));
 	assert(len == LINKR_DEBUGGER_SIGROK_LINKR_WS_MAX_FRAME_BYTES);
 	assert(linkr_debugger_sigrok_linkr_encode_packed_data_frame(0U,
-		LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES + 1U, 0x0001U,
-		packed, LINKR_DEBUGGER_LA_STREAM_MAX_SINK_CHUNK_SAMPLES + 1U, true,
+		LINKR_DEBUGGER_LA_STREAM_MAX_PACKED_CHUNK_SAMPLES + 1U, 0x0001U,
+		packed, LINKR_DEBUGGER_LA_STREAM_MAX_PACKED_CHUNK_SAMPLES + 1U, true,
 		frame, sizeof(frame)) == 0U);
 }
 
@@ -2589,25 +2735,29 @@ static void test_packed_sender_sparse_fast8_1696_tail_frame_encodes(void)
 static void test_stream_queue_capacity_reserves_terminal_slot(void)
 {
 	assert(LINKR_DEBUGGER_SIGROK_LINKR_STREAM_QDEPTH_LIMIT == 32U);
-	assert(linkr_debugger_sigrok_linkr_stream_queue_has_capacity(0U, false));
-	assert(linkr_debugger_sigrok_linkr_stream_queue_has_capacity(31U, false));
-	assert(!linkr_debugger_sigrok_linkr_stream_queue_has_capacity(32U, false));
-	assert(linkr_debugger_sigrok_linkr_stream_queue_has_capacity(30U, true));
-	assert(!linkr_debugger_sigrok_linkr_stream_queue_has_capacity(31U, true));
-	assert(!linkr_debugger_sigrok_linkr_stream_queue_has_capacity(32U, true));
+	assert(linkr_debugger_sigrok_linkr_stream_queue_has_capacity(0U, 32U, false));
+	assert(linkr_debugger_sigrok_linkr_stream_queue_has_capacity(31U, 32U, false));
+	assert(!linkr_debugger_sigrok_linkr_stream_queue_has_capacity(32U, 32U, false));
+	assert(linkr_debugger_sigrok_linkr_stream_queue_has_capacity(30U, 32U, true));
+	assert(!linkr_debugger_sigrok_linkr_stream_queue_has_capacity(31U, 32U, true));
+	assert(linkr_debugger_sigrok_linkr_stream_queue_has_capacity(5U, 6U, false));
+	assert(!linkr_debugger_sigrok_linkr_stream_queue_has_capacity(6U, 6U, false));
+	assert(linkr_debugger_sigrok_linkr_stream_queue_has_capacity(4U, 6U, true));
+	assert(!linkr_debugger_sigrok_linkr_stream_queue_has_capacity(5U, 6U, true));
+	assert(!linkr_debugger_sigrok_linkr_stream_queue_has_capacity(0U, 1U, true));
 }
 
-static void test_ws_fixed_pool_capacity_has_8_data_plus_terminal_reserve(void)
+static void test_ws_fixed_pool_capacity_has_4_data_plus_terminal_reserve(void)
 {
-	assert(LINKR_DEBUGGER_SIGROK_LINKR_WS_DATA_SLOT_COUNT == 8U);
+	assert(LINKR_DEBUGGER_SIGROK_LINKR_WS_DATA_SLOT_COUNT == 4U);
 	assert(LINKR_DEBUGGER_SIGROK_LINKR_WS_TERMINAL_SLOT_COUNT == 1U);
-	assert(LINKR_DEBUGGER_SIGROK_LINKR_WS_WIDE11_PAYLOAD_BYTES == 2048U);
-	assert(LINKR_DEBUGGER_SIGROK_LINKR_WS_MAX_FRAME_BYTES == 2065U);
+	assert(LINKR_DEBUGGER_SIGROK_LINKR_WS_DATA_PAYLOAD_BYTES == 4096U);
+	assert(LINKR_DEBUGGER_SIGROK_LINKR_WS_MAX_FRAME_BYTES == 4113U);
 	assert(linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(0U, false));
-	assert(linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(7U, false));
-	assert(!linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(8U, false));
-	assert(linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(6U, true));
-	assert(!linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(7U, true));
+	assert(linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(3U, false));
+	assert(!linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(4U, false));
+	assert(linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(2U, true));
+	assert(!linkr_debugger_sigrok_linkr_ws_pool_data_has_capacity(3U, true));
 	assert(linkr_debugger_sigrok_linkr_ws_pool_terminal_has_capacity(false));
 	assert(!linkr_debugger_sigrok_linkr_ws_pool_terminal_has_capacity(true));
 }
@@ -3139,7 +3289,7 @@ static void test_coalesce_helper_limits_count_and_buffer_capacity(void)
 	const size_t max_frame = LINKR_DEBUGGER_SIGROK_LINKR_WS_MAX_FRAME_BYTES;
 
 	assert(single_frame == 1041U);
-	assert(max_frame == 2065U);
+	assert(max_frame == 4113U);
 	assert(linkr_debugger_sigrok_linkr_coalesce_can_append(0U, single_frame,
 		tx_buffer, 0U, 16U));
 	assert(linkr_debugger_sigrok_linkr_coalesce_can_append(single_frame * 4U,
@@ -3148,7 +3298,7 @@ static void test_coalesce_helper_limits_count_and_buffer_capacity(void)
 		single_frame, tx_buffer, 5U, 16U));
 	assert(linkr_debugger_sigrok_linkr_coalesce_can_append(0U, max_frame,
 		tx_buffer, 0U, 16U));
-	assert(linkr_debugger_sigrok_linkr_coalesce_can_append(max_frame, max_frame,
+	assert(!linkr_debugger_sigrok_linkr_coalesce_can_append(max_frame, max_frame,
 		tx_buffer, 1U, 16U));
 	assert(!linkr_debugger_sigrok_linkr_coalesce_can_append(max_frame * 2U,
 		max_frame, tx_buffer, 2U, 16U));
@@ -3241,6 +3391,7 @@ int main(void)
 	test_session_reset();
 	test_caps_init();
 	test_bytes_per_sample_by_mode_width();
+	test_single_bits_stream_format_and_frame_encoding();
 	test_bit_pack_single_fast_path_encodes_one_byte_per_sample();
 	test_packed_data_len_is_exact_by_channel_width();
 	test_bit_pack_rle_encodes_idle_1_byte_units();
@@ -3253,15 +3404,18 @@ int main(void)
 	test_packed_wide11_sender_prefers_bit_pack_rle_when_smaller();
 	test_packed_single_sender_rle_frame_decodes_to_original_bytes();
 	test_packed_single_sender_fallback_frame_matches_bit_pack_bytes();
+	test_packed_sender_palette2_in_place_packs_fast8_and_wide11();
+	test_packed_sender_uniform_wide_in_place_uses_one_rle_record();
+	test_packed_single_sender_in_place_fallback_preserves_samples();
 	test_packed_sender_rle_helper_falls_back_before_growth();
 	test_packed_sender_rle_single_fast_path_matches_reference_patterns();
 	test_packed_sender_rle_single_fast_path_splits_uint16_runs();
 	test_packed_sender_rle_single_fast_path_matches_reference_randomized();
 	test_packed_sender_multiple_deferred_frames_fit_tx_buffer();
-	test_packed_sender_2048_single_frame_capacity_boundary();
+	test_packed_sender_4096_single_frame_capacity_boundary();
 	test_packed_sender_sparse_fast8_1696_tail_frame_encodes();
 	test_stream_queue_capacity_reserves_terminal_slot();
-	test_ws_fixed_pool_capacity_has_8_data_plus_terminal_reserve();
+	test_ws_fixed_pool_capacity_has_4_data_plus_terminal_reserve();
 	test_raw_burst_queue_capacity_and_backpressure_wake_model();
 	test_raw_burst_exact_98_frame_accounting();
 	test_ws_burst_reused_slots_deliver_2048_tail_before_stopped_model();

@@ -10,9 +10,9 @@
 
 **Historical Baseline** (pre-ring): SINGLE 300 kHz / FAST8 235 kHz / WIDE12 135 kHz 5-second no-gap; adjacent failures at 400 kHz, 236 kHz, 136 kHz.
 
-**Post-ring HIL Verified**: On the representative HIL setup with the final architecture and official RP2350 ENDLESS, the 32 KiB hardware ring achieved bounded 100 kHz / post=65535 for SINGLE, FAST8, and WIDE12 (each exactly 65535 samples, 0 gaps, restart true, HTTP health true). Continuous 5-second no-gap results: WebSocket SINGLE 1MHz verified (10 consecutive runs, ~4.991M-4.997M samples each, 998.16-998.70 ksps effective, zero sample-index gaps, zero disconnects, STOP response, immediate restart and HTTP health; 1MHz is a verified operating point, not a claimed absolute ceiling; adjacent WS failure not measured under the final architecture), FAST8 240 kHz, WIDE12 149 kHz; historical/reference raw-TCP SINGLE 443 kHz, FAST8 241 kHz, WIDE12 147 kHz. Adjacent or upper requests not measured under the final architecture; bounded captures at 100 kHz with post=65535 delivered exactly 65535 samples with zero gaps for all modes and transports.
+**Post-ring HIL Verified**: On the representative HIL setup with official RP2350 ENDLESS, protocol-v2 SINGLE bounded 100 kHz / post=65535 delivered exactly 65,535 samples on WS and TCP with zero gaps/errors/overruns. Continuous SINGLE 16 MHz passed 10/10 on each transport under both the 95% duration and 95% negotiated-sample-count rules. Final multichannel 10/10 operating points are FAST8 static 2.600 MHz on WS/TCP and GP16-active 1.200/1.375 MHz on WS/TCP; WIDE11 static 1.050/1.175 MHz and GP16-active 850/950 kHz. Every operating point includes STOP, fresh restart, and HTTP health.
 
-**Not Claimed**: 125 MHz continuous streaming, watchdog fault-injection or automatic recovery validation. 125 MHz remains a finite hardware samplerate/burst capability, not a sustained network transport promise.
+**Not Claimed**: Incompressible/high-transition 16 MHz SINGLE, simultaneous independent entropy on every FAST8/WIDE11 channel, 125 MHz continuous streaming, watchdog fault injection, or automatic recovery validation. SINGLE 16 MHz used static/low-transition input. The GP16-active profile verifies one line with tens of thousands of decoded transitions and PACKED_PALETTE2; three-or-more-value and raw BIT_PACK fallback remain lossless but have lower measured transport ceilings. 125 MHz remains a finite hardware samplerate/burst capability.
 
 ---
 
@@ -163,17 +163,21 @@ adjacent failures, HTTP BOOTSEL, and CDC ACM BOOTSEL.
 
 ## Final Post-Ring HIL Results (Final Architecture)
 
-On the measured representative HIL setup, canonical sysbuild passed with FLASH
-`655472/847832` (`77.31%`), RAM `511768/532480` (`96.11%`), and combined UF2
-generated at `build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2`.
+On the measured representative HIL setup, the current canonical sysbuild used
+FLASH 773876/847832 and RAM 469232/532480; the combined UF2 is generated at
+build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2.
 
 | Area | Verified Result |
 |------|----------------|
 | Combined UF2 / HTTP BOOTSEL | HTTP BOOTSEL flashing with combined UF2 and normal startup passed; HTTP BOOTSEL path repeatedly verified |
 | WS bounded 100 kHz, post=65535 | SINGLE, FAST8, WIDE12 each received exactly 65535 samples, 0 gaps, restart true, HTTP health true, current CONFIG/START actual-rate ACKs correct |
 | TCP bounded 100 kHz, post=65535 | SINGLE, FAST8, WIDE12 each received exactly 65535 samples, 0 gaps, restart true, HTTP health true |
-| WS continuous 5 s no-gap operating points | WebSocket SINGLE 1MHz verified (10 consecutive 5-second runs, ~4.991M-4.997M samples each, 998.16-998.70 ksps effective, zero sample-index gaps, zero disconnects, STOP response, immediate restart and HTTP health; adjacent failure not measured under the final architecture); FAST8 240 kHz, WIDE12 149 kHz |
-| Historical/reference TCP continuous 5 s no-gap ceilings | TCP SINGLE 443 kHz, FAST8 241 kHz, WIDE12 147 kHz |
+| Current SINGLE continuous 5 s | Protocol-v2 WS and TCP 16 MHz each passed 10/10 with at least 95% negotiated samples, zero gaps/errors/overruns, STOP, restart, and HTTP health; static/low-transition input only |
+| Adjacent SINGLE boundary | WS and TCP 18.002 MHz both miss the strict sample-count minimum without gaps/overruns; clean STOP, restart, and HTTP health retained |
+| Current FAST8 continuous | Static WS/TCP 2.600 MHz 10/10; GP16-active WS 1.200 MHz and TCP 1.375 MHz 10/10 |
+| Current WIDE11 continuous | Static WS 1.050 MHz and TCP 1.175 MHz 10/10; GP16-active WS 850 kHz and TCP 950 kHz 10/10 |
+| Raw active-input baseline | Before PACKED_PALETTE2, matched UART/sample-rate BIT_PACK passed FAST8 500 kHz and WIDE11 250 kHz on both transports |
+| Historical post-ring FAST8/WIDE12 references | WS FAST8 240 kHz, WS WIDE12 149 kHz, TCP FAST8 241 kHz, TCP WIDE12 147 kHz; retained only as historical evidence |
 | CDC ACM BOOTSEL fallback | `/dev/ttyACM2` `bootloader` entered ROM BOOTSEL as `/dev/sdc1` RP2350; reflashing combined UF2 recovered HTTP in 2 seconds |
 
 These results are post-ring HIL facts for the final measured build. They do
