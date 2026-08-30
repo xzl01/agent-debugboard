@@ -265,8 +265,9 @@ deep-burst path on the representative HIL setup. They are not evidence for the
   `data_decode_error_frames=0`, `invalid_sample_count_frames=0`, `stopped_events=1`,
   `last_sample_index=99999`, and the terminal is `server_stopped`; this server
   auto-completion does not send a client STOP_REQ or receive STOP_RESP. Each successful WIDE11 deep burst in the high-rate matrix drives 98
-  DATA frames (100000 samples × 11 bits / 8 ≈ 1024 samples per frame at the project
-  ceiling of 1024 samples per DATA frame).
+  DATA frames (100000 samples × 11 bits / 8 ≈ 1024 samples per frame at the dedicated
+  raw deep-burst item ceiling of 1024 samples per DATA frame; this is historical
+  deep-burst evidence, not the continuous-stream chunk contract).
 - **Mapping** (`logic-analyzer-wide11-mapping-freeze-final-sequential.json`): the WIDE11
   mapping HIL drives GP10 with a UART stimulus and holds GP11–GP20 low. The full
   pass was `tcp` WIDE11 at `channel_mask=0x07FF` (11 bits), 100 MHz, post=100000,

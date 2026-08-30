@@ -348,8 +348,9 @@ capture SMs. For WIDE11:
 - **SM-A** (capture): GP10-GP17, 8-bit autopush32, 100000 B source buffer
 - **SM-B** (capture): GP18-GP20, 3-bit autopush30, 40000 B source buffer
 - **Shared burst slice**: 144184 B; overlays the 148856 B total backing allocation (sized to max(normal, burst)=148856 B); temporarily removes ADC telemetry, power capture, and normal Sigrok pool resources for the lease lifetime; restores after drain
-- **Post-capture transport**: up to 98 DATA frames, maximum 1024 samples per frame,
-  140000 B total payload
+- **Post-capture deep-burst transport**: up to 98 DATA frames, with the dedicated
+  raw-burst item ceiling of 1024 samples per frame and 140000 B total payload; this
+  item ceiling is independent of continuous-stream chunk sizing
 - **Two-phase START**: ownership and quiesce are ready before the response. NONE
   sends START_RESP in RUNNING state with no ARMED event; triggered captures send
   START_RESP in ARMED state followed by the ARMED event. GO then synchronously
@@ -434,8 +435,9 @@ deep-burst path on the representative HIL setup. They are not evidence for the
   and the terminal is `server_stopped`; this server auto-completion does not send
   a client STOP_REQ or receive STOP_RESP. Each
   successful WIDE11 deep burst drives 98 DATA frames (100000 samples × 11 bits /
-  8 ≈ 1024 samples per frame at the project ceiling of 1024 samples per DATA
-  frame).
+  8 ≈ 1024 samples per frame at the dedicated raw deep-burst item ceiling of
+  1024 samples per DATA frame; this is historical deep-burst evidence, not the
+  continuous-stream chunk contract).
 - **Mapping** (`logic-analyzer-wide11-mapping-freeze-final-sequential.json`): the WIDE11
   mapping HIL drives GP10 with a UART stimulus and holds GP11–GP20 low. The
   full pass was `tcp` WIDE11 at `channel_mask=0x07FF` (11 bits), 100 MHz,
