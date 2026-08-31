@@ -1,0 +1,63 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Raspberry Pi Pico 2 test build:
+ *   UART0 (GP0 TX / GP1 RX) -> cdc_acm_uart0
+ *   UART1 (GP4 TX / GP5 RX) -> cdc_acm_uart1
+ *   SWD: SWCLK GP12, SWDIO GP14 (direct 3.3 V target connection)
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/pinctrl/rpi-pico-rp2350a-pinctrl.h>
+
+/ {
+	uart-bridge0 {
+		compatible = "zephyr,uart-bridge";
+		peers = <&cdc_acm_uart0 &uart0>;
+	};
+
+	uart-bridge1 {
+		compatible = "zephyr,uart-bridge";
+		peers = <&cdc_acm_uart1 &uart1>;
+	};
+
+	dp0 {
+		compatible = "zephyr,swdp-gpio";
+		status = "okay";
+		clk-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+		dio-gpios = <&gpio0 14 GPIO_PULL_UP>;
+		port-write-cycles = <1>;
+	};
+};
+
+&pinctrl {
+	uart1_default: uart1_default {
+		group1 {
+			pinmux = <UART1_TX_P4>;
+		};
+
+		group2 {
+			pinmux = <UART1_RX_P5>;
+			input-enable;
+		};
+	};
+};
+
+&uart1 {
+	current-speed = <115200>;
+	status = "okay";
+	pinctrl-0 = <&uart1_default>;
+	pinctrl-names = "default";
+};
+
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "Pico2 UART0 bridge";
+	};
+
+	cdc_acm_uart1: cdc_acm_uart1 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "Pico2 UART1 bridge";
+	};
+};
