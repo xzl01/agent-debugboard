@@ -15,11 +15,16 @@ BOARD := rpi_pico2/rp2350a/m33/mcuboot
 APP := apps/radxa_linkr_debugger
 BUILD_DIR := build/radxa_linkr_debugger
 
-.PHONY: help firmware workspace unit-tests cli cli-test cli-clippy cli-fmt web web-test web-build gates persistent-configuration-docs check all clean
+PICO2_TEST_BOARD := rpi_pico2/rp2350a/m33
+PICO2_TEST_APP := apps/pico2_uart_swd_test
+PICO2_TEST_BUILD_DIR := build/pico2_uart_swd_test
+
+.PHONY: help firmware pico2-uart-swd-test pico2-test workspace unit-tests cli cli-test cli-clippy cli-fmt web web-test web-build gates persistent-configuration-docs check all clean
 
 help: ## Show this help
 	@echo "Radxa Linkr Debugger build targets (run inside nix-shell):"
 	@echo "  make firmware      full canonical firmware build (west + sysbuild)"
+	@echo "  make pico2-test      Pico 2 bare board 2x UART bridge + CMSIS-DAP SWD test build"
 	@echo "  make workspace     update the west workspace to the pinned manifest (once)"
 	@echo "  make unit-tests    firmware host-model unit tests"
 	@echo "  make cli           build the Rust host CLI"
@@ -35,6 +40,11 @@ help: ## Show this help
 
 firmware: ## Full canonical firmware build into $(BUILD_DIR)
 	$(NIX) "west build -p always -b $(BOARD) --sysbuild $(APP) -d $(BUILD_DIR)"
+
+pico2-uart-swd-test: ## Bare Pico 2 UART bridges + CMSIS-DAP SWD test firmware
+	$(NIX) "west build -p always -b $(PICO2_TEST_BOARD) $(PICO2_TEST_APP) -d $(PICO2_TEST_BUILD_DIR)"
+
+pico2-test: pico2-uart-swd-test ## Alias for the Pico 2 test firmware
 
 workspace: ## Update the west workspace to the pinned manifest (once)
 	$(NIX) "west update --narrow -o=--depth=1"
