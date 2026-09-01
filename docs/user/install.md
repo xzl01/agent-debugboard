@@ -43,8 +43,17 @@ Resident endpoints:
 - UART archive status: <http://127.0.0.1:8787/host/api/v1/serial-logging/status>
 
 The Linux desktop archive requires GTK 3 and Ayatana AppIndicator 3 runtime
-libraries. On a headless machine without a system tray, run the installed
-`linkr-host serve` directly.
+libraries for its graphical icon. On a headless machine, the CLI/TUI and `-d` /
+`--desktop` start the same `linkr-tray` daemon with `--headless`; the Host stays
+in that one process and does not construct AppIndicator UI. The same fallback
+is used when GTK loads but an AppIndicator implementation is unavailable. The
+Linux tray executable remains GTK-linked; minimal installations without GTK use
+`linkr-host serve`, and standalone CLI/TUI commands continue without a desktop
+daemon.
+When a graphical session becomes available later, the next CLI or `-d` launch
+gracefully replaces the headless daemon with one graphical Tray daemon. The
+daemon remains alive after the CLI exits. You can still run the installed
+`linkr-host serve` directly for an explicit standalone Host.
 
 To install the same stack from a source checkout:
 

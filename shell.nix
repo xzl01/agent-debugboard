@@ -61,6 +61,9 @@ pkgs.mkShell {
     pkgs.rustc
     pkgs.clippy
     pkgs.rustfmt
+    pkgs.libayatana-appindicator
+    pkgs.glib.dev
+    pkgs.gtk3.dev
     pkgs.clang
     pkgs.lld
     pkgs.wasm-bindgen-cli
@@ -71,6 +74,8 @@ pkgs.mkShell {
   ];
 
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "clang";
+
+  LD_LIBRARY_PATH = "${pkgs.libayatana-appindicator}/lib";
 
   shellHook = ''
     # The Zephyr build system locates the toolchain via ZEPHYR_SDK_INSTALL_DIR

@@ -364,12 +364,15 @@ function decoderSignalPins(
   };
 }
 
+// allow: SIZE_OK — one logic-analyzer state machine owns capture, stream, decode, and cleanup.
 export function LogicAnalyzerCard({
   boardGpios,
   workspaceTabs,
+  onActivityChange,
 }: {
   boardGpios?: SafeGpio[];
   workspaceTabs?: ReactNode;
+  onActivityChange?: (active: boolean) => void;
 }) {
   const { t } = useI18n();
   const [workspaceMode, setWorkspaceMode] = useState<LogicAnalyzerMode>("capture");
@@ -624,6 +627,11 @@ export function LogicAnalyzerCard({
       const ack = await sigrokConfigure(sigrokRequest);
       const actualRate = ack.actualRateKhz * 1000;
       await sigrokStart();
+      if (boundedCancelRef.current) {
+        await stopAndCloseSigrok("capture startup cancelled");
+        return;
+      }
+      onActivityChange?.(true);
       setState(hasTrigger ? "armed" : "capturing");
 
       const dataFrames: Array<{ meta: { sampleIndex: number; sampleCount: number; channelMask: number }; samples: Uint8Array }> = [];
@@ -750,8 +758,9 @@ export function LogicAnalyzerCard({
       if (captureOperationRef.current === "bounded") captureOperationRef.current = null;
       boundedCancelRef.current = false;
       setIsArming(false);
+      onActivityChange?.(false);
     }
-  }, [assembleBoundedSigrokCapture, normalizedConfig, sigrokConfigure, sigrokEnsureConnected, sigrokGetServerCapabilities, sigrokReadCaptureFrame, sigrokStart, stopAndCloseSigrok]);
+  }, [assembleBoundedSigrokCapture, normalizedConfig, onActivityChange, sigrokConfigure, sigrokEnsureConnected, sigrokGetServerCapabilities, sigrokReadCaptureFrame, sigrokStart, stopAndCloseSigrok]);
 
   const handleCancel = useCallback(async () => {
     boundedCancelRef.current = true;
@@ -759,14 +768,16 @@ export function LogicAnalyzerCard({
     setStreamNotice(null);
     await stopAndCloseSigrok("manual cancel");
     setState("idle");
-  }, [stopAndCloseSigrok]);
+    onActivityChange?.(false);
+  }, [onActivityChange, stopAndCloseSigrok]);
 
   const stopStream = useCallback(async () => {
     manualStreamStopRef.current = true;
     streamingRef.current = false;
     setStreaming(false);
     await stopAndCloseSigrok("stream stop");
-  }, [stopAndCloseSigrok]);
+    onActivityChange?.(false);
+  }, [onActivityChange, stopAndCloseSigrok]);
 
   const startStream = useCallback(async () => {
     if (
@@ -791,6 +802,11 @@ export function LogicAnalyzerCard({
       const sigrokRequest = buildSigrokCaptureRequest(cfg, { ...sigrokGetServerCapabilities(), stream: true });
       const ack = await sigrokConfigure(sigrokRequest);
       await sigrokStart();
+      if (boundedCancelRef.current) {
+        await stopAndCloseSigrok("stream startup cancelled");
+        return;
+      }
+      onActivityChange?.(true);
       setActiveStreamConfig({ ...cfg, selectedPins: [...cfg.selectedPins] });
       setActiveStreamRate(ack.actualRateKhz * 1000);
       manualStreamStopRef.current = false;
@@ -866,6 +882,7 @@ export function LogicAnalyzerCard({
           await stopAndCloseSigrok("stream completion cleanup");
           setActiveStreamConfig(null);
           setActiveStreamRate(null);
+          onActivityChange?.(false);
         }
       })();
     } catch (err) {
@@ -873,12 +890,14 @@ export function LogicAnalyzerCard({
       await stopAndCloseSigrok("stream setup cleanup");
       setActiveStreamConfig(null);
       setActiveStreamRate(null);
+      onActivityChange?.(false);
     } finally {
       if (captureOperationRef.current === "stream") captureOperationRef.current = null;
       setStreamStarting(false);
     }
   }, [
     normalizedConfig,
+    onActivityChange,
     sigrokConfigure,
     sigrokEnsureConnected,
     sigrokGetServerCapabilities,
@@ -897,6 +916,7 @@ export function LogicAnalyzerCard({
     return () => {
       boundedCancelRef.current = true;
       streamingRef.current = false;
+      onActivityChange?.(false);
       if (captureOperationRef.current != null) {
         void stopAndCloseSigrok("component cleanup");
         return;
@@ -907,7 +927,7 @@ export function LogicAnalyzerCard({
         warnSigrokCleanup("component cleanup close", cleanupError);
       }
     };
-  }, [sigrokClose, stopAndCloseSigrok]);
+  }, [onActivityChange, sigrokClose, stopAndCloseSigrok]);
 
   const handleClear = useCallback(() => {
     setCapture(null);

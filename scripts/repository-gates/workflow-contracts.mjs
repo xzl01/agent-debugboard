@@ -21,6 +21,7 @@ const DURABLE_GATE_COMMANDS = Object.freeze([
   ["scripts/check-test-registration.test.mjs", "node scripts/check-test-registration.mjs --root ."],
   ["scripts/check-doc-layout.test.mjs", "node scripts/check-doc-layout.mjs --root ."],
   ["scripts/check-skill-boundary.test.mjs", "node scripts/check-skill-boundary.mjs --root ."],
+  ["scripts/install-host.test.mjs"],
 ]);
 const PERSISTENT_DOCS_COMMANDS = Object.freeze([
   "scripts/check-persistent-configuration-docs.test.mjs",

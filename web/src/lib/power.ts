@@ -1,4 +1,4 @@
-import type { CurrentAdcReading } from "./types";
+import type { CurrentAdcReading, PowerOutput } from "./types";
 
 export type PowerMetric = "current" | "power";
 
@@ -8,6 +8,10 @@ export const USER_POWER_RAILS = ["5v_out", "12v_out", "20v_out"] as const;
 // USER_POWER_RAILS: vdd_5v (schematic VDD_5V) is controllable but has no
 // current-sense channel, so it must not appear in ADC/capture rail lists.
 export const POWER_SWITCH_RAILS = [...USER_POWER_RAILS, "vdd_5v"] as const;
+
+export function powerOutputIsOn(output?: PowerOutput): boolean {
+  return output?.state === "on" || output?.value === 1;
+}
 
 export function powerRailLabel(name: string): string {
   const voltage = nominalVoltage(name);

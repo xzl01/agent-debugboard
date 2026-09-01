@@ -38,8 +38,15 @@ Windows PowerShell：
 - 状态：<http://127.0.0.1:8787/host/api/v1/status>
 - UART 归档状态：<http://127.0.0.1:8787/host/api/v1/serial-logging/status>
 
-Linux 桌面包需要系统提供 GTK 3 和 Ayatana AppIndicator 3 运行库。无桌面托盘的
-服务器环境可直接运行安装目录中的 `linkr-host serve`。
+Linux 桌面包的图形图标需要系统提供 GTK 3 和 Ayatana AppIndicator 3 运行库。
+无桌面托盘的服务器环境中，CLI/TUI 与 `-d` / `--desktop` 会把同一个
+`linkr-tray` 守护改以 `--headless` 启动；Host 保持在该单一进程中，且不会构造
+AppIndicator UI。若 GTK 可加载但缺少 AppIndicator 实现，也采用同一退化路径。
+Linux 的 Tray 可执行文件本身仍链接 GTK；完全未安装 GTK 的最小系统应使用
+`linkr-host serve`，standalone CLI/TUI 则在没有桌面守护时继续工作。后台
+图形环境之后恢复时，再运行 CLI 或 `-d` 会让 headless 守护优雅退出并由单个图形
+Tray 守护接管。后台守护会在 CLI 退出后继续运行。需要显式独立 Host 时，仍可直接运行安装目录中的
+`linkr-host serve`。
 
 从源码 checkout 安装同一套内容：
 

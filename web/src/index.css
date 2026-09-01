@@ -8,6 +8,7 @@
   --c-panel2: 244 247 250;
   --c-line: 214 222 232;
   --c-brand: 37 99 235;
+  --c-identity: 116 188 31;
   --c-ok: 5 150 105;
   --c-warn: 180 83 9;
   --c-danger: 220 38 38;
@@ -182,6 +183,131 @@ button {
   animation: fade-up 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+@keyframes linkr-logo-chase {
+  0%,
+  24.99% {
+    opacity: 1;
+  }
+  25%,
+  100% {
+    opacity: 0.24;
+  }
+}
+
+@keyframes linkr-logo-alert {
+  0%,
+  49.99% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0.24;
+  }
+}
+
+@keyframes linkr-logo-heartbeat {
+  0%,
+  18%,
+  35%,
+  100% { opacity: 0.35; }
+  8%,
+  27% { opacity: 1; }
+}
+
+@keyframes linkr-logo-uart-heartbeat {
+  0%,
+  100% { opacity: 0.55; }
+  35% { opacity: 1; }
+}
+
+@keyframes linkr-logo-logic-spin {
+  to { transform: rotate(360deg); }
+}
+
+[data-linkr-backplate] {
+  fill: rgb(var(--c-panel2));
+  stroke: rgb(var(--c-line));
+  stroke-width: 2;
+}
+
+[data-testid="linkr-logo"][data-state="connecting"] [data-linkr-backplate] {
+  fill: rgb(var(--c-warn));
+  stroke: rgb(var(--c-warn));
+}
+
+[data-testid="linkr-logo"][data-state="offline"] [data-linkr-backplate] {
+  fill: rgb(var(--c-danger));
+  stroke: rgb(var(--c-danger));
+}
+
+[data-testid="linkr-logo"] [data-linkr-heartbeat] {
+  color: rgb(var(--c-ok));
+  opacity: 0;
+}
+
+[data-testid="linkr-logo"][data-state="ready"] [data-linkr-heartbeat] {
+  animation: linkr-logo-heartbeat 800ms ease-in-out infinite;
+}
+
+[data-testid="linkr-logo"][data-state="ready"] [data-linkr-arm] {
+  color: rgb(var(--c-ink-dim));
+  opacity: 0.38;
+}
+
+[data-testid="linkr-logo"][data-state="ready"]
+  [data-indicator="5v_out"][data-active="true"],
+[data-testid="linkr-logo"][data-state="ready"]
+  [data-indicator="12v_out"][data-active="true"],
+[data-testid="linkr-logo"][data-state="ready"]
+  [data-indicator="20v_out"][data-active="true"] {
+  color: rgb(var(--c-identity));
+  opacity: 1;
+}
+
+[data-testid="linkr-logo"][data-state="ready"]
+  [data-indicator="uart_bridge"][data-active="true"] {
+  color: rgb(var(--c-brand));
+  animation: linkr-logo-uart-heartbeat 800ms ease-in-out infinite;
+}
+
+[data-testid="linkr-logo"][data-state="ready"][data-logic-analyzer-active="true"]
+  [data-linkr-rotor] {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: linkr-logo-logic-spin 480ms linear infinite;
+}
+
+[data-testid="linkr-logo"][data-state="ready"][data-logic-analyzer-active="true"]
+  [data-linkr-arm] {
+  color: rgb(var(--c-identity));
+  opacity: 1;
+  animation: none;
+}
+
+[data-testid="linkr-logo"][data-state="connecting"] [data-linkr-arm] {
+  color: rgb(var(--c-gpio-on-level));
+  opacity: 0.24;
+  animation: linkr-logo-chase 1.2s steps(1, end) infinite;
+}
+
+[data-testid="linkr-logo"][data-state="connecting"] [data-indicator="12v_out"] {
+  animation-delay: 0.3s;
+}
+
+[data-testid="linkr-logo"][data-state="connecting"] [data-indicator="uart_bridge"] {
+  animation-delay: 0.6s;
+}
+
+[data-testid="linkr-logo"][data-state="connecting"] [data-indicator="20v_out"] {
+  animation-delay: 0.9s;
+}
+
+[data-testid="linkr-logo"][data-state="offline"] [data-linkr-arm] {
+  color: rgb(var(--c-gpio-on-level));
+  opacity: 1;
+  animation: linkr-logo-alert 1.2s steps(1, end) infinite;
+}
+
 @keyframes drawer-enter {
   from {
     transform: translateX(20px);
@@ -242,6 +368,20 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  [data-testid="linkr-logo"] [data-linkr-rotor],
+  [data-testid="linkr-logo"] [data-linkr-heartbeat],
+  [data-testid="linkr-logo"] [data-indicator="uart_bridge"] {
+    animation: none !important;
+  }
+
+  [data-testid="linkr-logo"][data-state="ready"] [data-linkr-heartbeat],
+  [data-testid="linkr-logo"][data-state="ready"]
+    [data-indicator="uart_bridge"][data-active="true"],
+  [data-testid="linkr-logo"][data-state="connecting"] [data-linkr-arm],
+  [data-testid="linkr-logo"][data-state="offline"] [data-linkr-arm] {
+    opacity: 1;
+  }
+
   *,
   *::before,
   *::after {

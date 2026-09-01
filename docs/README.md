@@ -43,7 +43,7 @@ shapes, persistence, capture behavior, and inter-service protocols.
 - [Capture Trigger Architecture](reference/capture-trigger-architecture.md)
 - [MCP Server](reference/mcp-server.md)
 - [Serial Broker](reference/serial-broker.md)
-- [Sigrok Linkr v1](reference/sigrok-linkr-v1.md)
+- [Sigrok Linkr v2](reference/sigrok-linkr-v2.md)
 - [Power Analyzer](reference/power-analyzer.md)
 - [Ring Buffer Gap Analysis](reference/ring-buffer-gap-analysis.md)
 - [Web UI Sigrok Bridge](reference/webui-sigrok-bridge.md)

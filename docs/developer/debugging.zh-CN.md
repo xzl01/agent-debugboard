@@ -69,4 +69,4 @@ MCP 和 Web UI 共用串口基础设施。游标过期、共享订阅、独占�
 - [版本与发布门禁](versioning.zh-CN.md) 负责版本和发布流程。
 - [持久配置](../reference/persistent-configuration.md) 负责快照格式与恢复语义。
 - [Power Analyzer](../reference/power-analyzer.md) 和
-  [Sigrok Linkr v1](../reference/sigrok-linkr-v1.md) 负责各自的协议细节。
+  [Sigrok Linkr v2](../reference/sigrok-linkr-v2.md) 负责各自的协议细节。

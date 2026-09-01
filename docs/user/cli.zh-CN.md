@@ -7,6 +7,23 @@
 DHCPv4 server，主机会自动获取兼容地址。默认设备 URL 为
 `http://172.29.203.1`，仅在需要覆盖时才传 `--url`。
 
+安装统一桌面栈后，运行 CLI/TUI 只会在后台启动一个 `linkr-tray` 守护；
+Tray 与 Host 服务位于同一进程。使用 `-d` / `--desktop` 可只启动桌面启动器
+和后台守护后退出，CLI 退出后守护仍常驻。没有 `DISPLAY` /
+`WAYLAND_DISPLAY`，或 GTK 已加载但 Tray 找不到 AppIndicator 实现时，CLI
+会把同一二进制改以 `--headless` 模式启动。Linux 的 `linkr-tray` 可执行文件
+本身仍依赖 GTK loader；完全未安装 GTK 的最小系统应直接运行 `linkr-host serve`。
+桌面组件缺失时普通 CLI/TUI 仍继续工作，只有显式 `-d` 把启动失败视为错误。
+仅在明确不需要尝试任何后台 Host 时设置 `LINKR_SKIP_DESKTOP=1`。之后恢复图形环境时，再运行 CLI/TUI 或 `-d`
+会让 headless 守护优雅退出并由单个图形 Tray 守护接管，不会同时保留两套进程。
+桌面栈启动失败时，CLI 会把守护与 Host 的
+启动输出写入并指向
+`$XDG_DATA_HOME/radxa-linkr-debugger/host.log`；Linux 默认路径为
+`~/.local/share/radxa-linkr-debugger/host.log`。在 NixOS 源码树中直接运行
+图形 debug 二进制时，应从 `nix-shell` 内启动，以提供 Tray 所需的
+GTK 与 `libayatana-appindicator3`；headless 模式不会构造 AppIndicator UI，
+但 Linux 二进制仍需 GTK loader。
+
 ```sh
 # 检查连接和板子健康状态
 radxa-linkr-debuggerctl doctor

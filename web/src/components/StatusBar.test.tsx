@@ -31,7 +31,11 @@ const emptySnapshot: BoardSnapshot = {
   adc: [],
 };
 
-function render(snapshot: BoardSnapshot): { readonly host: HTMLDivElement; readonly close: () => void } {
+function render(
+  snapshot: BoardSnapshot,
+  connected = true,
+  loading = false,
+): { readonly host: HTMLDivElement; readonly close: () => void } {
   localStorage.setItem("theme", "light");
   localStorage.setItem("lang", "en");
   const host = document.createElement("div");
@@ -43,13 +47,15 @@ function render(snapshot: BoardSnapshot): { readonly host: HTMLDivElement; reado
         <LanguageProvider>
           <StatusBar
             snapshot={snapshot}
-            connected
-            loading={false}
+            connected={connected}
+            loading={loading}
             auto
             setAuto={vi.fn()}
             live={false}
             setLive={vi.fn()}
             onRefresh={vi.fn()}
+            logicAnalyzerActive={false}
+            uartBridgeActive={false}
           />
         </LanguageProvider>
       </ThemeProvider>
@@ -82,6 +88,40 @@ describe("StatusBar Lighthouse regressions", () => {
     view.close();
   });
 
+  it("keeps the product name accessible when rendering the Linkr lockup", () => {
+    const view = render(emptySnapshot);
+    const heading = view.host.querySelector("h1");
+    const logo = view.host.querySelector<SVGSVGElement>('[data-testid="linkr-logo"]');
+
+    expect(heading?.textContent).toBe("Linkr Debugger");
+    expect(heading?.classList.contains("sr-only")).toBe(true);
+    expect(logo?.getAttribute("aria-hidden")).toBe("true");
+    expect(logo?.getAttribute("width")).toBe("158");
+    expect(logo?.getAttribute("height")).toBe("36");
+    view.close();
+  });
+
+  it("drives all four connection arms from the real connection state", () => {
+    const connecting = render(emptySnapshot, false, true);
+    const connectingLogo = connecting.host.querySelector('[data-testid="linkr-logo"]');
+    expect(connectingLogo?.getAttribute("data-state")).toBe("connecting");
+    expect(connectingLogo?.querySelectorAll("[data-linkr-arm]")).toHaveLength(4);
+    expect(connectingLogo?.querySelector("[data-radxa-x]")?.getAttribute("viewBox")).toBe(
+      "292 94 122 113",
+    );
+    expect(connectingLogo?.querySelector("[data-radxa-x] circle")).toBeNull();
+    connecting.close();
+
+    const ready = render(emptySnapshot, true, false);
+    expect(ready.host.querySelector('[data-testid="linkr-logo"]')?.getAttribute("data-state")).toBe("ready");
+    ready.close();
+
+    const offline = render(emptySnapshot, false, false);
+    expect(offline.host.querySelector('[data-testid="linkr-logo"]')?.getAttribute("data-state")).toBe("offline");
+    offline.close();
+  });
+
+
   it("keeps a fixed USB slot before and after transport data arrives", () => {
     const initial = render(emptySnapshot);
     const placeholder = initial.host.querySelector('[data-testid="status-usb"]');
@@ -100,7 +140,8 @@ describe("StatusBar Lighthouse regressions", () => {
     const online = view.host.querySelector('[data-testid="status-connection"]');
     const usb = view.host.querySelector('[data-testid="status-usb"]');
 
-    expect(online?.classList.contains("text-ok")).toBe(true);
+    expect(online?.classList.contains("text-ink")).toBe(true);
+    expect(online?.getAttribute("role")).toBe("status");
     expect(online?.querySelector("svg")).toBeNull();
     expect(usb?.textContent).toContain("mock-ncm");
     expect(usb?.querySelector("svg")).toBeNull();

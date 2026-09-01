@@ -74,6 +74,132 @@ describe("LogicAnalyzerCard stream startup", () => {
     act(() => root.unmount());
   });
 
+  it("reports stream activity only after START resolves and clears it on unmount", async () => {
+    const connection = deferred<void>();
+    const configuration = deferred<{ actualRateKhz: number }>();
+    const start = deferred<void>();
+    const frame = deferred<null>();
+    const onActivityChange = vi.fn();
+    sigrokMocks.ensureConnected.mockReturnValue(connection.promise);
+    sigrokMocks.configure.mockReturnValue(configuration.promise);
+    sigrokMocks.start.mockReturnValue(start.promise);
+    sigrokMocks.readCaptureFrame.mockReturnValue(frame.promise);
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    act(() => root.render(<LogicAnalyzerCard onActivityChange={onActivityChange} />));
+
+    const button = Array.from(host.querySelectorAll("button")).find((candidate) =>
+      candidate.textContent?.includes("logicAnalyzer.startStream")
+    );
+    await act(async () => {
+      button?.click();
+      await Promise.resolve();
+    });
+    expect(onActivityChange).not.toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      connection.resolve();
+      await Promise.resolve();
+    });
+    expect(onActivityChange).not.toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      configuration.resolve({ actualRateKhz: 1000 });
+      await Promise.resolve();
+    });
+    expect(onActivityChange).not.toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      start.resolve();
+      await Promise.resolve();
+    });
+    expect(onActivityChange).toHaveBeenLastCalledWith(true);
+
+    act(() => root.unmount());
+    expect(onActivityChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("reports bounded-capture activity only after START resolves and clears it on unmount", async () => {
+    const connection = deferred<void>();
+    const configuration = deferred<{ actualRateKhz: number }>();
+    const start = deferred<void>();
+    const frame = deferred<null>();
+    const onActivityChange = vi.fn();
+    sigrokMocks.ensureConnected.mockReturnValue(connection.promise);
+    sigrokMocks.configure.mockReturnValue(configuration.promise);
+    sigrokMocks.start.mockReturnValue(start.promise);
+    sigrokMocks.readCaptureFrame.mockReturnValue(frame.promise);
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    act(() => root.render(<LogicAnalyzerCard onActivityChange={onActivityChange} />));
+
+    const button = Array.from(host.querySelectorAll("button")).find((candidate) =>
+      candidate.textContent?.includes("logicAnalyzer.arm")
+    );
+    await act(async () => {
+      button?.click();
+      await Promise.resolve();
+    });
+    expect(onActivityChange).not.toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      connection.resolve();
+      await Promise.resolve();
+    });
+    expect(onActivityChange).not.toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      configuration.resolve({ actualRateKhz: 1000 });
+      await Promise.resolve();
+    });
+    expect(onActivityChange).not.toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      start.resolve();
+      await Promise.resolve();
+    });
+    expect(onActivityChange).toHaveBeenLastCalledWith(true);
+
+    act(() => root.unmount());
+    expect(onActivityChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it.each([
+    ["stream", "logicAnalyzer.startStream"],
+    ["bounded capture", "logicAnalyzer.arm"],
+  ])("does not revive %s activity when START resolves after unmount", async (_mode, label) => {
+    const start = deferred<void>();
+    const onActivityChange = vi.fn();
+    sigrokMocks.ensureConnected.mockResolvedValue(undefined);
+    sigrokMocks.configure.mockResolvedValue({ actualRateKhz: 1000 });
+    sigrokMocks.start.mockReturnValue(start.promise);
+    sigrokMocks.stop.mockResolvedValue(undefined);
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    act(() => root.render(<LogicAnalyzerCard onActivityChange={onActivityChange} />));
+
+    const button = Array.from(host.querySelectorAll("button")).find((candidate) =>
+      candidate.textContent?.includes(label)
+    );
+    await act(async () => {
+      button?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(sigrokMocks.start).toHaveBeenCalledOnce();
+
+    act(() => root.unmount());
+    expect(onActivityChange).toHaveBeenLastCalledWith(false);
+    await act(async () => {
+      start.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(onActivityChange).not.toHaveBeenCalledWith(true);
+    expect(onActivityChange).toHaveBeenLastCalledWith(false);
+  });
+
   it("starts in capture mode and explains why decode is unavailable", () => {
     const host = document.createElement("div");
     const root = createRoot(host);

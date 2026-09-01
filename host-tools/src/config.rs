@@ -53,8 +53,8 @@ pub struct ServeOptions {
     pub serial_idle_ms: u64,
 
     /// Persist raw UART RX bytes on this host. The tray enables this by default.
-    #[arg(long, env = "LINKR_SERIAL_LOG_MODE", value_enum, default_value = "off")]
-    pub serial_log_mode: SerialLogMode,
+    #[arg(long, env = "LINKR_SERIAL_LOG_MODE", value_enum)]
+    pub serial_log_mode: Option<SerialLogMode>,
 
     /// Root directory for host-managed UART archives.
     #[arg(long, env = "LINKR_SERIAL_LOG_DIR")]
@@ -82,11 +82,12 @@ impl Default for ServeOptions {
         Self {
             host: DEFAULT_HOST,
             port: DEFAULT_PORT,
+            // SAFE-EXPECT: DEFAULT_BOARD_URL is a compile-time HTTP URL.
             board_url: Url::parse(DEFAULT_BOARD_URL).expect("default board URL is valid"),
             web_root: None,
             trusted_origins: vec!["https://xzl01.github.io".to_owned()],
             serial_idle_ms: 30_000,
-            serial_log_mode: SerialLogMode::Off,
+            serial_log_mode: None,
             serial_log_dir: None,
             serial_log_segment_mib: 64,
             serial_log_total_mib: 2048,
@@ -144,7 +145,7 @@ impl HostConfig {
             trusted_origins: options.trusted_origins.into_iter().collect(),
             serial_idle_timeout: Duration::from_millis(options.serial_idle_ms.max(1_000)),
             serial_log: SerialLogConfig {
-                enabled: options.serial_log_mode == SerialLogMode::Rx,
+                enabled: options.serial_log_mode == Some(SerialLogMode::Rx),
                 root: options.serial_log_dir.unwrap_or_else(default_log_root),
                 segment_bytes: options.serial_log_segment_mib.saturating_mul(1024 * 1024),
                 total_bytes: options.serial_log_total_mib.saturating_mul(1024 * 1024),

@@ -27,6 +27,7 @@ class on `<html>` swaps the ramp; `color-scheme` follows the active theme.
 | `--c-panel2` | `244 247 250` | `30 41 59` | Inset surface (stats, segmented controls, hover) |
 | `--c-line` | `214 222 232` | `51 65 85` | Borders, dividers, toggle-off track |
 | `--c-brand` | `37 99 235` | `96 165 250` | Primary accent, focus rings, active tabs |
+| `--c-identity` | `116 188 31` | `116 188 31` | Fixed Radxa/Linkr product identity |
 | `--c-ok` | `5 150 105` | `52 211 153` | Success, toggle-on track, online state |
 | `--c-warn` | `180 83 9` | `251 191 36` | Warning accents (VIO control, pending risk) |
 | `--c-danger` | `220 38 38` | `248 113 113` | Errors, destructive actions, offline state |
@@ -153,6 +154,19 @@ Composition pattern: small prop-driven components merged with `cn()`
 
 Composite patterns outside `ui.tsx` that are part of the language:
 
+- Product identity lockup (`public/linkr-logo.svg`) and compact mark
+  (`public/linkr-mark.svg`): the Radxa wordmark supplied as the brand
+  reference contributes its rounded geometric construction, open terminals,
+  fixed `#74BC1F` identity green, and the four-path `x` mark. Linkr uses those
+  four original wedge paths unchanged inside a padded vector crop
+  (`viewBox="292 94 122 113"`) rather than reinterpreting or raster-cropping
+  their geometry. The full lockup places that original mark before the custom
+  `linkr` wordmark; the browser favicon reuses the
+  compact mark. The header renders the lockup as a dimensioned decorative SVG
+  while retaining the localized `app.title` in an `h1.sr-only`. These
+  self-contained external SVGs keep their fixed fill; the animated inline
+  lockup uses the fixed `--c-identity` token. Neither replaces the semantic
+  `brand`, `ok`, `warn`, or `danger` UI ramps.
 - Shared measurement sparkline (`PowerSparkline.tsx`): one reusable SVG/history
   implementation serves rail current/power and GPIO29/ADC3 voltage. It retains
   exactly 90 samples, uses the existing inset surface (`rounded-lg
@@ -214,6 +228,34 @@ Composite patterns outside `ui.tsx` that are part of the language:
   drawer enters in 200ms and theme swaps take 180ms. All animation is
   GPU-composited (`transform`, `opacity`) and operational feedback stays within
   the 150-200ms enterprise-tool range.
+- Header identity state follows the existing board connection boundary and
+  adapts the state-bound pulse mechanism from beui.dev `animated-badge`. The
+  rounded backplate is reserved for low-frequency availability, so it never
+  implies that power is enabled: Ready uses the neutral `panel2`/`line`
+  treatment, Starting/Reconnecting uses `warn`, and Offline uses `danger`.
+  `loading` keeps the four original `x` wedges chasing in 300ms steps (1.2s
+  cycle), while Offline flashes all four together on the same 1.2s cycle.
+- In Ready, the original wedge positions have fixed meanings. Upper-left is
+  `5v_out`, upper-right is `12v_out`, lower-left is `20v_out`, and lower-right
+  is Host Bridge UART. A main-rail wedge is identity green only while the
+  latest firmware snapshot reports that rail on; otherwise it stays dim
+  `ink-dim`. The UART wedge stays dim while disconnected and uses a repeating
+  `brand` heartbeat while either UART channel is connected through Host
+  Bridge. Direct Web Serial never drives that heartbeat.
+- The original X leaves a central diamond; that existing negative-space shape
+  is filled with `ok` and runs a 0.8s double heartbeat while the board is
+  Ready. It is static under reduced motion and absent while Starting or
+  Offline. No circle or raster overlay is introduced.
+- An active logic-analyzer capture/stream temporarily overrides the four
+  wedge meanings and rotates the complete original four-path rotor at one
+  revolution per 480ms. Web activity is taken directly from the analyzer
+  state machine; the resident Host counts binary Sigrok WebSocket sessions so
+  the tray observes the same Host-routed activity without a firmware protocol
+  extension. Connection state outranks analyzer state, and analyzer state
+  outranks the steady rail/UART mapping. Under `prefers-reduced-motion:
+  reduce`, the rotor stays static and fully identity green. The `linkr`
+  wordmark never animates, and the adjacent localized Online/Offline text
+  remains the connection-state authority.
 
 ## 6. Accessibility contract
 

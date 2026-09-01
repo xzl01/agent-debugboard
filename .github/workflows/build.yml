@@ -366,7 +366,7 @@ jobs:
 
       - name: Check CI contracts and test registration
         run: |
-          node --test scripts/check-nightly-workflow.test.mjs scripts/check-rdb-alias.test.mjs scripts/check-repository-gates.test.mjs scripts/check-test-registration.test.mjs scripts/check-doc-layout.test.mjs scripts/check-skill-boundary.test.mjs scripts/check-worktree-scope.test.mjs scripts/verify-frozen-evidence.test.mjs
+          node --test scripts/check-nightly-workflow.test.mjs scripts/check-rdb-alias.test.mjs scripts/check-repository-gates.test.mjs scripts/check-test-registration.test.mjs scripts/check-doc-layout.test.mjs scripts/check-skill-boundary.test.mjs scripts/check-worktree-scope.test.mjs scripts/install-host.test.mjs scripts/verify-frozen-evidence.test.mjs
           node scripts/check-nightly-workflow.mjs --root .
           node scripts/check-rdb-alias.mjs --root .
           node scripts/check-repository-gates.mjs --root .

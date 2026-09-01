@@ -4,6 +4,8 @@ import type { BoardSnapshot, MemoryPressureSnapshot } from "@/lib/types";
 import type { OtaStatus } from "@/lib/ota";
 import { cn, formatBytes, formatUptime } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { powerOutputIsOn, USER_POWER_RAILS } from "@/lib/power";
+import { LinkrLogo } from "./LinkrLogo";
 import { ThemeMenu } from "./ThemeMenu";
 
 const formatPctX100 = (value?: number): string =>
@@ -18,6 +20,7 @@ function ramMetricTone(pressurePctX100?: number): string {
 
 const formatSince = (value: MemoryPressureSnapshot["since"]): string | null => value ?? null;
 
+// allow: SIZE_OK — one system header owns the complete compact status surface.
 export function StatusBar({
   snapshot,
   connected,
@@ -29,6 +32,8 @@ export function StatusBar({
   setLive,
   onRefresh,
   ota,
+  logicAnalyzerActive,
+  uartBridgeActive,
 }: {
   snapshot: BoardSnapshot;
   connected: boolean;
@@ -40,8 +45,17 @@ export function StatusBar({
   setLive: (v: boolean) => void;
   onRefresh: () => void;
   ota?: OtaStatus | null;
+  logicAnalyzerActive: boolean;
+  uartBridgeActive: boolean;
 }) {
   const { t, lang, setLang } = useI18n();
+  const logoState = loading ? "connecting" : connected ? "ready" : "offline";
+  const outputs = new Map(snapshot.powerOutputs.map((output) => [output.name, output]));
+  const rails: readonly [boolean, boolean, boolean] = [
+    powerOutputIsOn(outputs.get(USER_POWER_RAILS[0])),
+    powerOutputIsOn(outputs.get(USER_POWER_RAILS[1])),
+    powerOutputIsOn(outputs.get(USER_POWER_RAILS[2])),
+  ];
 
   const { temperature: temp, cpu, heap, memory, runtime } = snapshot.monitoring;
   const uptime = runtime.uptime_seconds;
@@ -137,8 +151,14 @@ export function StatusBar({
   return (
     <header className="sticky top-0 z-30 border-b border-line/80 bg-panel/95">
       <div className="mx-auto flex min-h-14 max-w-[1440px] flex-wrap items-center gap-x-5 px-6 md:flex-nowrap">
-        <div className="order-1 flex min-w-0 shrink-0 items-baseline gap-3 md:w-[360px]">
-          <h1 className="truncate text-[17px] font-semibold tracking-[-0.02em] text-ink">{t("app.title")}</h1>
+        <div className="order-1 flex min-w-0 shrink-0 items-center gap-3 md:w-[360px]">
+          <h1 className="sr-only">{t("app.title")}</h1>
+          <LinkrLogo
+            state={logoState}
+            rails={rails}
+            logicAnalyzerActive={logicAnalyzerActive}
+            uartBridgeActive={uartBridgeActive}
+          />
           <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-panel2/70 px-2 py-1 text-[11px] text-ink-dim">
             <span data-testid="status-mcu">{snapshot.mcu?.toUpperCase() || "—"}</span>
             <span aria-hidden="true">·</span>
@@ -152,9 +172,10 @@ export function StatusBar({
         >
           <span
             data-testid="status-connection"
+            role="status"
             className={cn(
               "inline-flex min-h-7 items-center gap-1.5 rounded-lg border border-line/60 bg-panel2/45 px-2 font-medium",
-              connected ? "text-ok" : "text-danger",
+              connected ? "text-ink" : "text-danger",
             )}
           >
             <span aria-hidden="true" className={cn("h-1.5 w-1.5 rounded-full", connected ? "bg-ok" : "bg-danger")} />

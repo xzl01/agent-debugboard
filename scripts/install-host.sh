@@ -13,8 +13,8 @@ usage() {
 Usage: scripts/install-host.sh [--prefix DIR] [--no-start] [--no-autostart] [--dry-run]
 
 Builds and installs one per-user Radxa Linkr desktop stack:
-  - linkr-tray: login item, status icon and service supervisor
-  - linkr-host: Web UI, board gateway, Serial Broker and HTTP MCP endpoint
+  - linkr-tray: single desktop daemon with status icon and Host services
+  - linkr-host: standalone Web/gateway/Broker/MCP command
   - radxa-linkr-debuggerctl: CLI/TUI
 
 The installer writes only below the selected per-user prefix and the current
@@ -83,13 +83,15 @@ mcp_info="$PREFIX/mcp-endpoint.json"
 case "$os" in
   Darwin)
     autostart_path="${HOME:?}/Library/LaunchAgents/com.radxa.linkr-debugger.plist"
-    tray_lock="${HOME:?}/Library/Application Support/Radxa Linkr Debugger/tray.lock"
+    tray_data_dir="${HOME:?}/Library/Application Support/radxa-linkr-debugger"
     ;;
   Linux)
     autostart_path="${XDG_CONFIG_HOME:-${HOME:?}/.config}/autostart/radxa-linkr-debugger.desktop"
-    tray_lock="${XDG_DATA_HOME:-${HOME:?}/.local/share}/Radxa Linkr Debugger/tray.lock"
+    tray_data_dir="${XDG_DATA_HOME:-${HOME:?}/.local/share}/radxa-linkr-debugger"
     ;;
 esac
+tray_lock="$tray_data_dir/tray.lock"
+tray_shutdown_request="$tray_data_dir/shutdown.request"
 
 if [ "$DRY_RUN" -eq 1 ]; then
   cat <<EOF
@@ -101,7 +103,7 @@ host:         $bin_dir/linkr-host
 CLI:          $bin_dir/radxa-linkr-debuggerctl
 Web assets:   $web_dir
 MCP endpoint: http://127.0.0.1:8787/mcp
-UART archive: enabled by tray (64 MiB segments, 2 GiB quota, 30 days)
+UART archive: enabled by resident Host (64 MiB segments, 2 GiB quota, 30 days)
 autostart:    $(if [ "$AUTOSTART" -eq 1 ]; then echo "$autostart_path"; else echo disabled; fi)
 start now:    $(if [ "$START_NOW" -eq 1 ]; then echo yes; else echo no; fi)
 EOF
@@ -150,16 +152,18 @@ stop_existing_tray() {
     return 1
   }
   echo "Stopping the existing Radxa Linkr tray"
-  kill -TERM "$tray_pid"
+  printf 'installer\n' >"$tray_shutdown_request"
   attempts=0
   while kill -0 "$tray_pid" 2>/dev/null && [ "$attempts" -lt 120 ]; do
     sleep 0.1
     attempts=$((attempts + 1))
   done
   if kill -0 "$tray_pid" 2>/dev/null; then
+    rm -f "$tray_shutdown_request"
     echo "existing tray did not stop cleanly; installation aborted" >&2
     return 1
   fi
+  rm -f "$tray_shutdown_request"
 }
 
 stop_existing_tray
@@ -194,7 +198,7 @@ if [ "$AUTOSTART" -eq 1 ]; then
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.radxa.linkr-debugger</string>
-  <key>ProgramArguments</key><array><string>$bin_dir/linkr-tray</string></array>
+  <key>ProgramArguments</key><array><string>$bin_dir/radxa-linkr-debuggerctl</string><string>-d</string></array>
   <key>RunAtLoad</key><true/>
   <key>ProcessType</key><string>Interactive</string>
 </dict></plist>
@@ -205,7 +209,7 @@ EOF
 Type=Application
 Name=Radxa Linkr Debugger
 Comment=Run the Web, Serial Broker and MCP host with tray status
-Exec=$bin_dir/linkr-tray
+Exec=$bin_dir/radxa-linkr-debuggerctl -d
 Terminal=false
 X-GNOME-Autostart-enabled=true
 EOF
@@ -217,12 +221,12 @@ if [ "$START_NOW" -eq 1 ]; then
     launchctl bootout "gui/$(id -u)" "$autostart_path" >/dev/null 2>&1 || true
     launchctl bootstrap "gui/$(id -u)" "$autostart_path"
   else
-    nohup "$bin_dir/linkr-tray" >"$PREFIX/tray-launch.log" 2>&1 &
+    nohup "$bin_dir/radxa-linkr-debuggerctl" -d >"$PREFIX/tray-launch.log" 2>&1 &
   fi
 fi
 
 echo "Installed Radxa Linkr desktop stack to $PREFIX"
 echo "Web console: http://127.0.0.1:8787/"
 echo "MCP endpoint: http://127.0.0.1:8787/mcp"
-echo "UART archive: enabled by tray; manage it from the Web serial console"
+echo "UART archive: enabled by resident Host; manage it from the Web serial console"
 echo "CLI: $bin_dir/radxa-linkr-debuggerctl"

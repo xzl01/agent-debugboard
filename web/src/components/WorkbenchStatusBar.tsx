@@ -3,10 +3,9 @@ import { useI18n } from "@/lib/i18n";
 import { switchRouteLabel } from "@/lib/switches";
 import type { AutomationTaskOwner } from "@/lib/automationTask";
 import type { BoardSnapshot, PowerOutput } from "@/lib/types";
+import { powerOutputIsOn } from "@/lib/power";
 import { cn } from "@/lib/utils";
-import type { SerialChannelId } from "./SerialCard";
-
-export type SerialConnectionSummary = Record<SerialChannelId, boolean>;
+import type { SerialConnectionSummary } from "./SerialCard";
 
 const RAILS = [
   { name: "5v_out", label: "5V" },
@@ -19,7 +18,7 @@ type RailState = "on" | "off" | "unknown";
 
 function railState(output?: PowerOutput): RailState {
   if (!output) return "unknown";
-  if (output.state === "on" || output.value === 1) return "on";
+  if (powerOutputIsOn(output)) return "on";
   if (output.state === "off" || output.value === 0) return "off";
   return "unknown";
 }

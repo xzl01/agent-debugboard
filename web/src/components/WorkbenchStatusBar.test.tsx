@@ -42,6 +42,7 @@ const snapshot: BoardSnapshot = {
 };
 
 function render(options?: {
+  readonly snapshot?: BoardSnapshot;
   readonly connected?: boolean;
   readonly uart0?: boolean;
   readonly uart1?: boolean;
@@ -55,9 +56,13 @@ function render(options?: {
     root.render(
       <LanguageProvider>
         <WorkbenchStatusBar
-          snapshot={snapshot}
+          snapshot={options?.snapshot ?? snapshot}
           connected={options?.connected ?? true}
-          serialConnections={{ uart0: options?.uart0 ?? false, uart1: options?.uart1 ?? false }}
+          serialConnections={{
+            uart0: options?.uart0 ?? false,
+            uart1: options?.uart1 ?? false,
+            bridgeActive: false,
+          }}
           taskOwner={options?.taskOwner ?? null}
         />
       </LanguageProvider>,
@@ -113,6 +118,25 @@ describe("WorkbenchStatusBar", () => {
     expect(bar?.textContent).toContain("debugger offline");
     expect(bar?.querySelector(".bg-danger")).not.toBeNull();
     expect(bar?.textContent).toContain("5V on");
+    view.close();
+  });
+
+  it("keeps non-binary firmware rail states unknown", () => {
+    const view = render({
+      snapshot: {
+        ...snapshot,
+        powerOutputs: [
+          { name: "5v_out", controllable: true, state: "locked", value: null },
+        ],
+      },
+    });
+
+    expect(view.host.textContent).toContain("5V —");
+    expect(
+      view.host
+        .querySelector('[data-testid="status-rail-lamp-5v_out"]')
+        ?.classList.contains("bg-transparent"),
+    ).toBe(true);
     view.close();
   });
 });

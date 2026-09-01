@@ -40,11 +40,13 @@ export const LOGIC_ANALYZER_PRE_TRIGGER_WIDE11_USABLE_SAMPLES = 14336;
 const LOGIC_ANALYZER_PRE_TRIGGER_MINIMUM_POLL_INTERVALS = 2;
 export const LOGIC_ANALYZER_SAMPLE_RATES_HZ = [
   100000,
+  300000,
   500000,
   1000000,
   2000000,
   5000000,
   10000000,
+  16000000,
   25000000,
   50000000,
   100000000,
@@ -1047,11 +1049,13 @@ export const AVAILABLE_PINS = [
 
 export const SAMPLE_RATES = [
   { value: 100000, label: "100 kHz" },
+  { value: 300000, label: "300 kHz" },
   { value: 500000, label: "500 kHz" },
   { value: 1000000, label: "1 MHz" },
   { value: 2000000, label: "2 MHz" },
   { value: 5000000, label: "5 MHz" },
   { value: 10000000, label: "10 MHz" },
+  { value: 16000000, label: "16 MHz" },
   { value: 25000000, label: "25 MHz" },
   { value: 50000000, label: "50 MHz" },
   { value: 100000000, label: "100 MHz" },

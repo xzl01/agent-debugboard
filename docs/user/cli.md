@@ -8,6 +8,26 @@ accepts the same commands. The board runs a DHCPv4 server, so the host gets a
 compatible address automatically. The default device URL is
 `http://172.29.203.1`; pass `--url` only to override it.
 
+With the unified desktop stack installed, running the CLI/TUI also starts one
+`linkr-tray` daemon if it is not already running. The tray and Host services
+share that process. Use `-d` / `--desktop` to start only the desktop launcher
+and background daemon, then exit; the daemon remains alive after the CLI
+exits. If no `DISPLAY` / `WAYLAND_DISPLAY` is available, or the GTK-linked tray
+starts but cannot load an AppIndicator implementation, the CLI relaunches the
+same binary with `--headless`. The Linux tray executable still requires the GTK
+loader libraries; a minimal system without GTK should run `linkr-host serve`
+directly. Ordinary CLI/TUI commands continue when desktop components are absent;
+only explicit `-d` treats startup failure as fatal. Set `LINKR_SKIP_DESKTOP=1`
+only when no background Host should be attempted. When a graphical session becomes available
+later, the next CLI/TUI or `-d` launch gracefully replaces that headless daemon
+with one graphical Tray daemon instead of running both.
+On desktop startup failure, the CLI writes daemon and Host startup output
+to `$XDG_DATA_HOME/radxa-linkr-debugger/host.log` and names that path in the
+error; the Linux default is `~/.local/share/radxa-linkr-debugger/host.log`. When
+running a graphical debug binary directly from the source tree on NixOS,
+launch it inside `nix-shell` so `libayatana-appindicator3` is available to the
+Tray. Headless mode does not construct the AppIndicator UI.
+
 ```sh
 # Check connection and board health
 radxa-linkr-debuggerctl doctor

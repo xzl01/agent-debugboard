@@ -22,7 +22,7 @@ $binDir = Join-Path $Prefix "bin"
 $webDir = Join-Path $Prefix "share\radxa-linkr-debugger\web"
 $startupDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup)
 $startupScript = Join-Path $startupDir "RadxaLinkrDebugger.cmd"
-$trayDataDir = Join-Path $env:LOCALAPPDATA "Radxa Linkr Debugger"
+$trayDataDir = Join-Path $env:LOCALAPPDATA "radxa-linkr-debugger"
 $trayLock = Join-Path $trayDataDir "tray.lock"
 $trayShutdownRequest = Join-Path $trayDataDir "shutdown.request"
 
@@ -35,7 +35,7 @@ if ($DryRun) {
     Write-Host "CLI:          $(Join-Path $binDir 'radxa-linkr-debuggerctl.exe')"
     Write-Host "Web assets:   $webDir"
     Write-Host "MCP endpoint: http://127.0.0.1:8787/mcp"
-    Write-Host "UART archive: enabled by tray (64 MiB segments, 2 GiB quota, 30 days)"
+    Write-Host "UART archive: enabled by resident Host (64 MiB segments, 2 GiB quota, 30 days)"
     Write-Host "autostart:    $(if ($NoAutostart) { 'disabled' } else { $startupScript })"
     Write-Host "start now:    $(if ($NoStart) { 'no' } else { 'yes' })"
     exit 0
@@ -121,16 +121,16 @@ $mcpInfo | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $Prefix "mcp-endpoin
 
 if (-not $NoAutostart) {
     New-Item -ItemType Directory -Path $startupDir -Force | Out-Null
-    $trayPath = Join-Path $binDir "linkr-tray.exe"
-    "@start `"`" /B `"$trayPath`"" | Set-Content $startupScript -Encoding ASCII
+    $desktopPath = Join-Path $binDir "radxa-linkr-debuggerctl.exe"
+    "@start `"`" /B `"$desktopPath`" -d" | Set-Content $startupScript -Encoding ASCII
 }
 
 if (-not $NoStart) {
-    Start-Process -FilePath (Join-Path $binDir "linkr-tray.exe")
+    Start-Process -FilePath (Join-Path $binDir "radxa-linkr-debuggerctl.exe") -ArgumentList "-d"
 }
 
 Write-Host "Installed Radxa Linkr desktop stack to $Prefix"
 Write-Host "Web console: http://127.0.0.1:8787/"
 Write-Host "MCP endpoint: http://127.0.0.1:8787/mcp"
-Write-Host "UART archive: enabled by tray; manage it from the Web serial console"
+Write-Host "UART archive: enabled by resident Host; manage it from the Web serial console"
 Write-Host "CLI: $(Join-Path $binDir 'radxa-linkr-debuggerctl.exe')"

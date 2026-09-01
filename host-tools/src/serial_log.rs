@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
@@ -19,6 +21,94 @@ use uuid::Uuid;
 
 pub const SCHEMA: &str = "linkr-serial-log.v1";
 const DEFAULT_QUEUE_RECORDS: usize = 512;
+
+fn reject_symlink(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("refusing symlinked archive path {}", path.display()),
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
+    reject_symlink(path)?;
+    fs::create_dir_all(path)?;
+    reject_symlink(path)?;
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn harden_archive_permissions(root: &Path) -> std::io::Result<()> {
+    reject_symlink(root)?;
+    fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
+    for date in fs::read_dir(root)? {
+        let date = date?;
+        if !date.file_type()?.is_dir() {
+            continue;
+        }
+        fs::set_permissions(date.path(), fs::Permissions::from_mode(0o700))?;
+        for session in fs::read_dir(date.path())? {
+            let session = session?;
+            if !session.file_type()?.is_dir() {
+                continue;
+            }
+            fs::set_permissions(session.path(), fs::Permissions::from_mode(0o700))?;
+            for artifact in fs::read_dir(session.path())? {
+                let artifact = artifact?;
+                if artifact.file_type()?.is_file() {
+                    fs::set_permissions(artifact.path(), fs::Permissions::from_mode(0o600))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn harden_archive_permissions(_root: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn private_file_options() -> OpenOptions {
+    let mut options = OpenOptions::new();
+    options.create(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options
+}
+
+fn enforce_private_file(file: &File) -> std::io::Result<()> {
+    #[cfg(unix)]
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+fn open_private_append(path: &Path) -> std::io::Result<File> {
+    reject_symlink(path)?;
+    let file = private_file_options().append(true).open(path)?;
+    enforce_private_file(&file)?;
+    Ok(file)
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    reject_symlink(path)?;
+    let mut file = private_file_options().truncate(true).open(path)?;
+    enforce_private_file(&file)?;
+    file.write_all(bytes)
+}
+
+fn create_private_file(path: &Path) -> std::io::Result<File> {
+    reject_symlink(path)?;
+    let file = private_file_options().truncate(true).open(path)?;
+    enforce_private_file(&file)?;
+    Ok(file)
+}
 
 #[derive(Debug, Clone)]
 pub struct SerialLogConfig {
@@ -142,8 +232,12 @@ impl SerialLogService {
             });
         }
 
-        if let Err(error) = fs::create_dir_all(&config.root)
+        if let Err(error) = create_private_dir_all(&config.root)
             .with_context(|| format!("create serial log directory {}", config.root.display()))
+            .and_then(|()| {
+                harden_archive_permissions(&config.root)
+                    .context("harden existing serial log permissions")
+            })
             .and_then(|()| recover_interrupted(&config.root))
         {
             status.lock().expect("serial log status").last_error = Some(error.to_string());
@@ -344,7 +438,7 @@ impl SerialLogService {
         let marker = directory.join(".pinned");
         if pinned && !summary.manifest.pinned {
             let size = directory_size(&directory)?;
-            File::create(&marker).with_context(|| format!("create {}", marker.display()))?;
+            create_private_file(&marker).with_context(|| format!("create {}", marker.display()))?;
             subtract_atomic(&self.archive_bytes, size);
         } else if !pinned && summary.manifest.pinned && marker.exists() {
             fs::remove_file(&marker).with_context(|| format!("remove {}", marker.display()))?;
@@ -668,11 +762,11 @@ fn start_writer_session(
     started_at: OffsetDateTime,
 ) -> Result<()> {
     let date = started_at.date().to_string();
-    let directory = config
-        .root
-        .join(date)
-        .join(format!("{session_id}-{channel}"));
-    fs::create_dir_all(&directory)
+    let date_directory = config.root.join(date);
+    create_private_dir_all(&date_directory)
+        .with_context(|| format!("create serial log date {}", date_directory.display()))?;
+    let directory = date_directory.join(format!("{session_id}-{channel}"));
+    create_private_dir_all(&directory)
         .with_context(|| format!("create serial log session {}", directory.display()))?;
     let (raw, index) = open_segment(&directory, 1)?;
     let manifest = SerialLogManifest {
@@ -811,14 +905,8 @@ fn finish_writer_session(
 }
 
 fn open_segment(directory: &Path, segment: u32) -> Result<(BufWriter<File>, BufWriter<File>)> {
-    let raw = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(directory.join(format!("rx-{segment:06}.bin")))?;
-    let index = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(directory.join(format!("rx-{segment:06}.ndjson")))?;
+    let raw = open_private_append(&directory.join(format!("rx-{segment:06}.bin")))?;
+    let index = open_private_append(&directory.join(format!("rx-{segment:06}.ndjson")))?;
     Ok((BufWriter::new(raw), BufWriter::new(index)))
 }
 
@@ -826,7 +914,7 @@ fn write_manifest(directory: &Path, manifest: &SerialLogManifest) -> Result<()> 
     let path = directory.join("manifest.json");
     let temporary = directory.join("manifest.json.tmp");
     let bytes = serde_json::to_vec_pretty(manifest)?;
-    fs::write(&temporary, bytes)?;
+    write_private(&temporary, &bytes)?;
     fs::rename(&temporary, &path)?;
     Ok(())
 }
@@ -865,6 +953,7 @@ fn refresh_manifest_counts(directory: &Path, manifest: &mut SerialLogManifest) -
 
 fn list_manifests(root: &Path) -> Result<Vec<SerialLogSummary>> {
     let mut results = Vec::new();
+    reject_symlink(root)?;
     if !root.is_dir() {
         return Ok(results);
     }
@@ -879,13 +968,19 @@ fn list_manifests(root: &Path) -> Result<Vec<SerialLogSummary>> {
                 continue;
             }
             let manifest_path = session.path().join("manifest.json");
+            if !fs::symlink_metadata(&manifest_path)
+                .is_ok_and(|metadata| metadata.file_type().is_file())
+            {
+                continue;
+            }
             let Ok(bytes) = fs::read(&manifest_path) else {
                 continue;
             };
             let Ok(mut manifest) = serde_json::from_slice::<SerialLogManifest>(&bytes) else {
                 continue;
             };
-            manifest.pinned = session.path().join(".pinned").exists();
+            manifest.pinned = fs::symlink_metadata(session.path().join(".pinned"))
+                .is_ok_and(|metadata| metadata.file_type().is_file());
             let relative = session
                 .path()
                 .strip_prefix(root)
@@ -914,7 +1009,7 @@ fn read_matching(directory: &Path, prefix: &str, suffix: &str) -> Result<Vec<u8>
 fn matching_paths(directory: &Path, prefix: &str, suffix: &str) -> Result<Vec<PathBuf>> {
     let mut paths = fs::read_dir(directory)?
         .filter_map(Result::ok)
-        .map(|entry| entry.path())
+        .filter_map(|entry| entry.file_type().ok()?.is_file().then(|| entry.path()))
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
@@ -927,14 +1022,16 @@ fn matching_paths(directory: &Path, prefix: &str, suffix: &str) -> Result<Vec<Pa
 
 fn directory_size(root: &Path) -> Result<u64> {
     let mut total = 0_u64;
+    reject_symlink(root)?;
     if !root.is_dir() {
         return Ok(0);
     }
     for entry in fs::read_dir(root)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() {
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
             total = total.saturating_add(directory_size(&entry.path())?);
-        } else {
+        } else if file_type.is_file() {
             total = total.saturating_add(entry.metadata()?.len());
         }
     }
@@ -1003,7 +1100,7 @@ fn format_time(value: OffsetDateTime) -> String {
 pub fn default_log_root() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("Radxa Linkr Debugger")
+        .join("radxa-linkr-debugger")
         .join("serial-logs")
 }
 
@@ -1061,6 +1158,170 @@ mod tests {
         );
         let index = String::from_utf8(service.read_artifact(id, "ndjson").unwrap().0).unwrap();
         assert_eq!(index.lines().count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn archive_permissions_are_hardened_for_new_and_existing_sessions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("serial-logs");
+        fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        let service = SerialLogService::new(config(root.clone(), 1024))
+            .await
+            .unwrap();
+        let id = service
+            .start_session("uart0", "/dev/test", 115_200)
+            .unwrap();
+        service.record_rx(id, b"secret".to_vec());
+        service.finish_session(id, "done").await;
+        wait_until(|| {
+            service
+                .find(id)
+                .is_ok_and(|entry| entry.is_some_and(|entry| entry.manifest.status != "recording"))
+        })
+        .await;
+        service.set_pinned(id, true).unwrap();
+
+        assert_eq!(
+            fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let session = root.join(service.find(id).unwrap().unwrap().directory);
+        let date = session.parent().unwrap();
+        assert_eq!(
+            fs::metadata(date).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&session).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        for entry in fs::read_dir(&session).unwrap() {
+            let metadata = entry.unwrap().metadata().unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        }
+
+        service.shutdown().await;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(date, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&session, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(session.join("manifest.json.tmp"), b"stale").unwrap();
+        for entry in fs::read_dir(&session).unwrap() {
+            fs::set_permissions(entry.unwrap().path(), fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        drop(service);
+
+        let recovered = SerialLogService::new(config(root.clone(), 1024))
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(date).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&session).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        for entry in fs::read_dir(session).unwrap() {
+            let metadata = entry.unwrap().metadata().unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        }
+        recovered.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn archive_root_symlink_is_rejected_without_chmodding_its_target() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let directory = tempfile::tempdir().unwrap();
+        let outside = directory.path().join("outside");
+        let root = directory.path().join("serial-logs");
+        fs::create_dir(&outside).unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(&outside, &root).unwrap();
+
+        let service = SerialLogService::new(config(root, 1024)).await.unwrap();
+
+        assert_eq!(service.status().state, "degraded");
+        assert_eq!(
+            fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn archive_date_symlink_is_rejected_without_writing_outside_root() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("serial-logs");
+        let outside = directory.path().join("outside");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&outside).unwrap();
+        symlink(
+            &outside,
+            root.join(OffsetDateTime::now_utc().date().to_string()),
+        )
+        .unwrap();
+        let service = SerialLogService::new(config(root, 1024)).await.unwrap();
+
+        service
+            .start_session("uart0", "/dev/test", 115_200)
+            .unwrap();
+        wait_until(|| {
+            service.status().last_error.is_some()
+                || fs::read_dir(&outside).unwrap().next().is_some()
+        })
+        .await;
+
+        assert_eq!(service.status().state, "degraded");
+        assert!(fs::read_dir(outside).unwrap().next().is_none());
+        service.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn archive_download_ignores_symlinked_artifacts() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("serial-logs");
+        let outside = directory.path().join("outside.bin");
+        let service = SerialLogService::new(config(root.clone(), 1024))
+            .await
+            .unwrap();
+        let id = service
+            .start_session("uart0", "/dev/test", 115_200)
+            .unwrap();
+        service.record_rx(id, b"inside".to_vec());
+        service.finish_session(id, "done").await;
+        wait_until(|| {
+            service
+                .find(id)
+                .is_ok_and(|entry| entry.is_some_and(|entry| entry.manifest.status != "recording"))
+        })
+        .await;
+        let session = root.join(service.find(id).unwrap().unwrap().directory);
+        let raw = matching_paths(&session, "rx-", ".bin").unwrap().remove(0);
+        service.shutdown().await;
+        drop(service);
+        fs::write(&outside, b"outside secret").unwrap();
+        fs::remove_file(&raw).unwrap();
+        symlink(&outside, &raw).unwrap();
+
+        let recovered = SerialLogService::new(config(root, 1024)).await.unwrap();
+
+        assert!(recovered.read_artifact(id, "raw").unwrap().0.is_empty());
+        recovered.shutdown().await;
     }
 
     #[tokio::test]

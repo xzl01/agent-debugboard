@@ -445,8 +445,10 @@ test("requires durable CI and local gate registrations", async (t) => {
   const baseline = await repositoryContents();
   const cases = [
     ["CI rdb alias test", BUILD_WORKFLOW, "scripts/check-rdb-alias.test.mjs ", ""],
+    ["CI host installer test", BUILD_WORKFLOW, "scripts/install-host.test.mjs ", ""],
     ["CI test-registration checker", BUILD_WORKFLOW, "node scripts/check-test-registration.mjs --root .\n", ""],
     ["local nightly test", "Makefile", "scripts/check-nightly-workflow.test.mjs \\\n", ""],
+    ["local host installer test", "Makefile", "scripts/install-host.test.mjs \\\n", ""],
     ["local skill-boundary checker", "Makefile", "node scripts/check-skill-boundary.mjs --root .", ""],
   ];
 

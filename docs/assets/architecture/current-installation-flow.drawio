@@ -42,7 +42,7 @@
         <mxCell id="12" value="Per-user installation&#xa;linkr-tray + linkr-host + CLI/TUI&#xa;built Web assets + MCP metadata + UART archive" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="10">
           <mxGeometry x="45" y="165" width="350" height="100" as="geometry" />
         </mxCell>
-        <mxCell id="13" value="Login autostart launches linkr-tray&#xa;tray supervises Web + Broker + /mcp + raw RX archive&#xa;loopback-only 127.0.0.1:8787" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;" vertex="1" parent="10">
+        <mxCell id="13" value="Login autostart runs radxa-linkr-debuggerctl -d&#xa;one linkr-tray owns icon + in-process Host services&#xa;headless / graphical handoff; loopback-only :8787" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;" vertex="1" parent="10">
           <mxGeometry x="45" y="290" width="350" height="75" as="geometry" />
         </mxCell>
 
@@ -74,7 +74,7 @@
         <mxCell id="22" value="Ready" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=15;" vertex="1" parent="1">
           <mxGeometry x="660" y="920" width="200" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="23" value="Implemented desktop path: verify release → install CLI + Host + Web → register login autostart → tray supervises Web/Broker/MCP + raw RX archive → doctor → open interface." style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#f5f5f5;strokeColor=#999999;fontColor=#555555;fontSize=12;align=left;spacingLeft=10;" vertex="1" parent="1">
+        <mxCell id="23" value="Implemented desktop path: verify release → install CLI + Host + Web → autostart CLI -d → one Tray daemon runs Web/Broker/MCP + raw RX archive in-process → doctor → open interface." style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#f5f5f5;strokeColor=#999999;fontColor=#555555;fontSize=12;align=left;spacingLeft=10;" vertex="1" parent="1">
           <mxGeometry x="180" y="1040" width="1160" height="50" as="geometry" />
         </mxCell>
 

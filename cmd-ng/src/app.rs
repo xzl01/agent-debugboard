@@ -1174,7 +1174,7 @@ fn write_json<T: Serialize>(writer: &mut dyn Write, value: &T) -> Result<()> {
 }
 
 fn write_usage(writer: &mut dyn Write) -> Result<()> {
-    writeln!(writer, "usage: radxa-linkr-debuggerctl [--url URL] [--timeout 2s] [--json] [-v] [--version] <command> [args...]\n")?;
+    writeln!(writer, "usage: radxa-linkr-debuggerctl [--url URL] [--timeout 2s] [--json] [-v] [-d] [--version] <command> [args...]\n")?;
     writeln!(writer, "examples:")?;
     writeln!(writer, "  radxa-linkr-debuggerctl status")?;
     writeln!(writer, "  radxa-linkr-debuggerctl --json status")?;
@@ -1210,6 +1210,7 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
     writeln!(writer, "      --raw")?;
     writeln!(writer, "      --json")?;
     writeln!(writer, "  -v, --verbose")?;
+    writeln!(writer, "  -d, --desktop")?;
     writeln!(writer, "      --version")?;
     writeln!(writer, "  -h, --help")?;
     Ok(())

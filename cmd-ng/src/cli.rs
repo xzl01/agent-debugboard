@@ -26,6 +26,8 @@ pub struct Cli {
     pub json: bool,
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
+    #[arg(short = 'd', long = "desktop")]
+    pub desktop: bool,
     #[arg(long = "version")]
     pub version: bool,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -70,5 +72,12 @@ mod tests {
     fn keeps_trailing_args_raw() {
         let cli = Cli::parse_from(["cmd", "adc", "read", "-v", "5v_out"]);
         assert_eq!(cli.command_args, vec!["adc", "read", "-v", "5v_out"]);
+    }
+
+    #[test]
+    fn parses_desktop_flag() {
+        let cli = Cli::parse_from(["cmd", "-d"]);
+        assert!(cli.desktop);
+        assert!(cli.command_args.is_empty());
     }
 }

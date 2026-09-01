@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SerialCard } from "./SerialCard";
+import { SerialCard, type SerialConnectionSummary } from "./SerialCard";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -106,7 +106,7 @@ let view: View | null = null;
 
 function mount(
   onSetVin = vi.fn(async () => {}),
-  onConnectionChange?: (connections: { uart0: boolean; uart1: boolean }) => void,
+  onConnectionChange?: (connections: SerialConnectionSummary) => void,
 ): View {
   const host = document.createElement("div");
   document.body.append(host);
@@ -173,7 +173,27 @@ describe("SerialCard practical workspace", () => {
     mount(vi.fn(async () => {}), onConnectionChange);
     await flush();
 
-    expect(onConnectionChange).toHaveBeenLastCalledWith({ uart0: true, uart1: false });
+    expect(onConnectionChange).toHaveBeenLastCalledWith({
+      uart0: true,
+      uart1: false,
+      bridgeActive: false,
+    });
+  });
+
+  it("reports whether any connected channel uses Host Bridge", async () => {
+    Object.assign(serialMock.statuses.uart1, {
+      connected: true,
+      source: "bridge",
+    });
+    const onConnectionChange = vi.fn();
+    mount(vi.fn(async () => {}), onConnectionChange);
+    await flush();
+
+    expect(onConnectionChange).toHaveBeenLastCalledWith({
+      uart0: true,
+      uart1: true,
+      bridgeActive: true,
+    });
   });
 
   it("keeps the terminal primary and moves connections and Host archives into one drawer", async () => {

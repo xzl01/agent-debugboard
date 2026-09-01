@@ -38,6 +38,7 @@ use url::Url;
 
 use crate::{
     config::{is_allowed_origin, HostConfig},
+    host_activity::{HostActivity, LogicAnalyzerSession},
     mcp::LinkrMcpServer,
     serial_broker::{SerialBroker, PROTOCOL as SERIAL_PROTOCOL},
     serial_log::SerialLogService,
@@ -52,10 +53,28 @@ struct AppState {
     client: Client,
     serial: SerialBroker,
     serial_log: SerialLogService,
+    activity: HostActivity,
     shutdown: Arc<Notify>,
 }
 
+// allow: SIZE_OK — one Axum gateway boundary owns local routes and board proxying.
 pub async fn serve(config: HostConfig) -> Result<()> {
+    serve_with_shutdown(config, async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await
+}
+
+/// Runs a Host owned by another in-process lifecycle controller.
+pub async fn serve_managed(config: HostConfig) -> Result<()> {
+    serve_with_shutdown(config, std::future::pending()).await
+}
+
+/// Runs a Host until its owner-provided shutdown signal resolves.
+pub async fn serve_with_shutdown(
+    config: HostConfig,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
     let client = Client::builder()
         .pool_max_idle_per_host(1)
         .pool_idle_timeout(Duration::from_secs(90))
@@ -65,11 +84,13 @@ pub async fn serve(config: HostConfig) -> Result<()> {
     let serial_log = SerialLogService::new(config.serial_log.clone()).await?;
     let serial = SerialBroker::new(config.serial_idle_timeout, serial_log.clone());
     let shutdown = Arc::new(Notify::new());
+    let activity = HostActivity::default();
     let state = AppState {
         config: Arc::new(config),
         client,
         serial,
         serial_log,
+        activity,
         shutdown: shutdown.clone(),
     };
     let index = state.config.web_root.join("index.html");
@@ -128,7 +149,7 @@ pub async fn serve(config: HostConfig) -> Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
+                _ = shutdown_signal => {}
                 _ = shutdown.notified() => {}
             }
             shutdown_serial.shutdown().await;
@@ -145,7 +166,8 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
         "mcp_endpoint": "/mcp",
         "serial_protocol": SERIAL_PROTOCOL,
         "version": env!("CARGO_PKG_VERSION"),
-        "serial_logging": state.serial_log.status()
+        "serial_logging": state.serial_log.status(),
+        "activity": state.activity.snapshot()
     }))
 }
 
@@ -160,7 +182,8 @@ async fn host_status(State(state): State<AppState>) -> Json<Value> {
         "board_url": state.config.board_url.as_str(),
         "web_root": state.config.web_root.display().to_string(),
         "serial_protocol": SERIAL_PROTOCOL,
-        "serial_logging": state.serial_log.status()
+        "serial_logging": state.serial_log.status(),
+        "activity": state.activity.snapshot()
     }))
 }
 
@@ -326,7 +349,13 @@ async fn download_serial_log(
             "text/plain; charset=utf-8",
             "txt",
         ),
-        _ => unreachable!("artifact_paths accepts only supported formats"),
+        _ => {
+            return log_error(
+                StatusCode::BAD_REQUEST,
+                "unsupported_format",
+                "unsupported serial log download format",
+            )
+        }
     };
     let mut response = body.into_response();
     response
@@ -402,10 +431,9 @@ fn drain_lossy_utf8(pending: &mut Vec<u8>, eof: bool) -> Vec<u8> {
             Err(error) => {
                 let valid = error.valid_up_to();
                 if valid > 0 {
-                    output.push_str(
-                        std::str::from_utf8(&pending[consumed..consumed + valid])
-                            .expect("valid_up_to ends on a UTF-8 boundary"),
-                    );
+                    let valid_text = std::str::from_utf8(&pending[consumed..consumed + valid]);
+                    // SAFE-EXPECT: Utf8Error::valid_up_to identifies a valid UTF-8 prefix.
+                    output.push_str(valid_text.expect("valid_up_to ends on a UTF-8 boundary"));
                     consumed += valid;
                 }
                 if let Some(length) = error.error_len() {
@@ -525,7 +553,7 @@ async fn proxy_websocket_request(
             )
         }
     };
-    ws.on_upgrade(move |socket| proxy_websocket(socket, target))
+    ws.on_upgrade(move |socket| proxy_websocket(socket, target, state.activity))
 }
 
 async fn proxy_http_request(
@@ -609,7 +637,7 @@ async fn proxy_http(state: AppState, uri: axum::http::Uri, request: Request) -> 
     })
 }
 
-async fn proxy_websocket(client: WebSocket, target: Url) {
+async fn proxy_websocket(client: WebSocket, target: Url, activity: HostActivity) {
     let upstream =
         match tokio::time::timeout(Duration::from_secs(10), connect_async(target.as_str())).await {
             Ok(Ok((socket, _))) => socket,
@@ -624,11 +652,17 @@ async fn proxy_websocket(client: WebSocket, target: Url) {
         };
     let (mut client_sink, mut client_stream) = client.split();
     let (mut upstream_sink, mut upstream_stream) = upstream.split();
+    let mut logic_analyzer_session: Option<LogicAnalyzerSession> = None;
 
     loop {
         tokio::select! {
             message = client_stream.next() => match message {
                 Some(Ok(message)) => {
+                    track_logic_analyzer_binary(
+                        matches!(message, AxumMessage::Binary(_)),
+                        &activity,
+                        &mut logic_analyzer_session,
+                    );
                     let close = matches!(message, AxumMessage::Close(_));
                     if let Some(message) = axum_to_tungstenite(message) {
                         if upstream_sink.send(message).await.is_err() { break; }
@@ -639,6 +673,11 @@ async fn proxy_websocket(client: WebSocket, target: Url) {
             },
             message = upstream_stream.next() => match message {
                 Some(Ok(message)) => {
+                    track_logic_analyzer_binary(
+                        matches!(message, TungsteniteMessage::Binary(_)),
+                        &activity,
+                        &mut logic_analyzer_session,
+                    );
                     let close = matches!(message, TungsteniteMessage::Close(_));
                     if let Some(message) = tungstenite_to_axum(message) {
                         if client_sink.send(message).await.is_err() { break; }
@@ -653,13 +692,29 @@ async fn proxy_websocket(client: WebSocket, target: Url) {
     let _ = client_sink.close().await;
 }
 
+fn track_logic_analyzer_binary(
+    binary: bool,
+    activity: &HostActivity,
+    session: &mut Option<LogicAnalyzerSession>,
+) {
+    if binary && session.is_none() {
+        *session = Some(activity.begin_logic_analyzer());
+    }
+}
+
 fn board_ws_url(board: &Url, path: &str) -> Result<Url, url::ParseError> {
     let mut target = board.join(path)?;
     match target.scheme() {
-        "http" => target.set_scheme("ws").expect("ws is a valid replacement"),
-        "https" => target
-            .set_scheme("wss")
-            .expect("wss is a valid replacement"),
+        "http" => {
+            // SAFE-EXPECT: ws is a valid absolute URL scheme.
+            target.set_scheme("ws").expect("ws is a valid replacement")
+        }
+        "https" => {
+            target
+                .set_scheme("wss")
+                // SAFE-EXPECT: wss is a valid absolute URL scheme.
+                .expect("wss is a valid replacement")
+        }
         _ => {}
     }
     Ok(target)
@@ -777,6 +832,25 @@ mod tests {
         assert!(is_hop_by_hop(&header::CONNECTION));
         assert!(is_hop_by_hop(&header::UPGRADE));
         assert!(!is_hop_by_hop(&header::CONTENT_TYPE));
+    }
+
+    #[test]
+    fn binary_proxy_traffic_counts_one_session_until_the_guard_drops() {
+        let activity = HostActivity::default();
+        let mut session = None;
+        assert_eq!(activity.snapshot().logic_analyzer_sessions, 0);
+        assert!(!activity.snapshot().logic_analyzer_active);
+
+        track_logic_analyzer_binary(false, &activity, &mut session);
+        assert_eq!(activity.snapshot().logic_analyzer_sessions, 0);
+        track_logic_analyzer_binary(true, &activity, &mut session);
+        assert_eq!(activity.snapshot().logic_analyzer_sessions, 1);
+        assert!(activity.snapshot().logic_analyzer_active);
+        track_logic_analyzer_binary(true, &activity, &mut session);
+        assert_eq!(activity.snapshot().logic_analyzer_sessions, 1);
+        drop(session);
+        assert_eq!(activity.snapshot().logic_analyzer_sessions, 0);
+        assert!(activity.snapshot().logic_analyzer_active);
     }
 
     #[test]

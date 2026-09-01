@@ -28,14 +28,17 @@ import { PowerCard } from "./components/PowerCard";
 import { SwitchCard } from "./components/SwitchCard";
 import { GpioCard } from "./components/GpioCard";
 import { WatchdogCard } from "./components/WatchdogCard";
-import { SerialCard, type SerialAutomationHandle } from "./components/SerialCard";
+import {
+  SerialCard,
+  type SerialAutomationHandle,
+  type SerialConnectionSummary,
+} from "./components/SerialCard";
 import { PowerAnalysisWorkspace } from "./components/PowerAnalysisWorkspace";
 import { TestAutomation } from "./components/TestAutomation";
 import { LogicAnalyzerCard } from "./components/LogicAnalyzerCard";
 import { ConfigurationWorkspace } from "./components/ConfigurationWorkspace";
 import {
   WorkbenchStatusBar,
-  type SerialConnectionSummary,
 } from "./components/WorkbenchStatusBar";
 import { Button } from "./components/ui";
 import { useI18n } from "@/lib/i18n";
@@ -82,6 +85,7 @@ function writeStoredHardwareSection(section: HardwareSectionId): void {
   }
 }
 
+// allow: SIZE_OK — one app-shell orchestrator owns workspace routing and shared status.
 export default function App() {
   const board = useBoard();
   const [ota, setOta] = useState<OtaStatus | null>(null);
@@ -95,7 +99,9 @@ export default function App() {
   const [serialConnections, setSerialConnections] = useState<SerialConnectionSummary>({
     uart0: false,
     uart1: false,
+    bridgeActive: false,
   });
+  const [logicAnalyzerActive, setLogicAnalyzerActive] = useState(false);
   const automationTaskLockRef = useRef(createAutomationTaskLock());
   const [automationOwner, setAutomationOwner] = useState<AutomationTaskOwner | null>(null);
   const acquireAutomation = useCallback((owner: AutomationTaskOwner) => {
@@ -378,6 +384,8 @@ export default function App() {
         setLive={board.setLive}
         onRefresh={board.refresh}
         ota={ota}
+        logicAnalyzerActive={logicAnalyzerActive}
+        uartBridgeActive={serialConnections.bridgeActive}
       />
 
       <nav className="border-b border-line/80 bg-panel/95 md:sticky md:top-14 md:z-20 md:backdrop-blur-sm">
@@ -487,6 +495,7 @@ export default function App() {
                 >
                   <LogicAnalyzerCard
                     boardGpios={board.snapshot?.gpios}
+                    onActivityChange={setLogicAnalyzerActive}
                   />
                 </div>
 

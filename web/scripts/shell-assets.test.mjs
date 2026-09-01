@@ -17,3 +17,21 @@ test("public robots file permits the production dashboard", async () => {
   assert.match(robots, /^Allow:\s*\/$/m);
   assert.doesNotMatch(robots, /<!doctype html>/i);
 });
+
+test("logic rotor rotates around the painted X bounds", async () => {
+  const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
+  const rule = css.match(
+    /\[data-logic-analyzer-active="true"\]\s*\n\s*\[data-linkr-rotor\]\s*\{([^}]+)\}/,
+  )?.[1];
+
+  assert.ok(rule, "logic-active rotor rule must exist");
+  assert.match(rule, /transform-box:\s*fill-box;/);
+  assert.match(rule, /transform-origin:\s*center;/);
+});
+
+test("ready center heartbeat uses the faster independent cadence", async () => {
+  const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
+
+  assert.match(css, /animation:\s*linkr-logo-heartbeat\s+800ms\s+ease-in-out\s+infinite;/);
+  assert.match(css, /animation:\s*linkr-logo-uart-heartbeat\s+800ms\s+ease-in-out\s+infinite;/);
+});

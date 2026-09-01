@@ -136,11 +136,13 @@ test("normalizes sample rates into the firmware-supported MHz set", () => {
   assert.equal(LOGIC_ANALYZER_MIN_SAMPLE_RATE_HZ, 100000);
   assert.deepEqual(LOGIC_ANALYZER_SAMPLE_RATES_HZ, [
     100000,
+    300000,
     500000,
     1000000,
     2000000,
     5000000,
     10000000,
+    16000000,
     25000000,
     50000000,
     100000000,
@@ -151,11 +153,26 @@ test("normalizes sample rates into the firmware-supported MHz set", () => {
 test("publishes bounded sample-rate options including sub-1MHz presets", () => {
   assert.deepEqual(
     SAMPLE_RATES.map((rate) => rate.value),
-    [100000, 500000, 1000000, 2000000, 5000000, 10000000, 25000000, 50000000, 100000000, 125000000]
+    [100000, 300000, 500000, 1000000, 2000000, 5000000, 10000000, 16000000, 25000000, 50000000, 100000000, 125000000]
   );
   assert.deepEqual(
-    SAMPLE_RATES.slice(0, 4).map((rate) => rate.label),
-    ["100 kHz", "500 kHz", "1 MHz", "2 MHz"]
+    SAMPLE_RATES.slice(0, 5).map((rate) => rate.label),
+    ["100 kHz", "300 kHz", "500 kHz", "1 MHz", "2 MHz"]
+  );
+});
+
+test("publishes the proven 16 MHz protocol-v2 operating point", () => {
+  assert.deepEqual(
+    SAMPLE_RATES.find((rate) => rate.value === 16000000),
+    { value: 16000000, label: "16 MHz" }
+  );
+});
+
+test("publishes the proven 300 kHz WebSocket operating point", () => {
+  assert.equal(LOGIC_ANALYZER_SAMPLE_RATES_HZ.includes(300000), true);
+  assert.deepEqual(
+    SAMPLE_RATES.find((rate) => rate.value === 300000),
+    { value: 300000, label: "300 kHz" }
   );
 });
 

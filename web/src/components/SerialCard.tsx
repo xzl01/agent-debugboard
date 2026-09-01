@@ -64,6 +64,12 @@ const EMPTY_STATUS: SerialChannelStatus = {
 
 export type { SerialChannelId } from "./SerialTerminalPane";
 
+export interface SerialConnectionSummary {
+  readonly uart0: boolean;
+  readonly uart1: boolean;
+  readonly bridgeActive: boolean;
+}
+
 export interface SerialAutomationHandle {
   isConnected: (channel?: SerialChannelId) => boolean;
   connectedChannels: () => SerialChannelId[];
@@ -76,12 +82,13 @@ export interface SerialAutomationHandle {
   ) => () => void;
 }
 
+// allow: SIZE_OK — one dual-UART workspace state machine owns both persistent sessions.
 export const SerialCard = forwardRef<
   SerialAutomationHandle,
   {
     vinRoute?: string;
     onSetVin: (route: "1.8v" | "3.3v") => Promise<void>;
-    onConnectionChange?: (connections: Record<SerialChannelId, boolean>) => void;
+    onConnectionChange?: (connections: SerialConnectionSummary) => void;
   }
 >(function SerialCard({ vinRoute, onSetVin, onConnectionChange }, automationRef) {
   const { t } = useI18n();
@@ -104,6 +111,7 @@ export const SerialCard = forwardRef<
     uart0: EMPTY_STATUS,
     uart1: EMPTY_STATUS,
   });
+  const statusesRef = useRef(statuses);
 
   const activeChannelRef = useRef<SerialChannelId>("uart0");
   const uart0Ref = useRef<SerialChannelHandle>(null);
@@ -122,17 +130,19 @@ export const SerialCard = forwardRef<
   };
 
   const onStatus = useCallback((channel: SerialChannelId, status: SerialChannelStatus) => {
-    setStatuses((current) =>
-      current[channel] === status ? current : { ...current, [channel]: status }
-    );
-  }, []);
-
-  useEffect(() => {
+    const current = statusesRef.current;
+    if (current[channel] === status) return;
+    const next = { ...current, [channel]: status };
+    statusesRef.current = next;
+    setStatuses(next);
     onConnectionChange?.({
-      uart0: statuses.uart0.connected,
-      uart1: statuses.uart1.connected,
+      uart0: next.uart0.connected,
+      uart1: next.uart1.connected,
+      bridgeActive:
+        (next.uart0.connected && next.uart0.source === "bridge")
+        || (next.uart1.connected && next.uart1.source === "bridge"),
     });
-  }, [onConnectionChange, statuses.uart0.connected, statuses.uart1.connected]);
+  }, [onConnectionChange]);
 
   const requestPort = useCallback(
     async (channel: SerialChannelId) => {

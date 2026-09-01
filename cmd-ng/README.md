@@ -48,6 +48,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 - `watchdog` 仍只暴露 `status`，不提供 host 侧 feed/控制
 - 板内 `vdd_5v`（VDD_5V）电源轨随 `switch usb` 路由联动：切 `pc` 开、切 `target` 关；路由不变时仍可手动 `power set vdd_5v`，下次路由切换会重新强制。开机默认路由 `target` 下保持关闭；关闭它会切断 CH347 1.8V VIN 的 VDD_1V8 子电源轨
 - VIN 切换需要 `--confirm`（TUI 中为 Space/Enter 确认），因为电压切换有副作用；RP2350 的 GPIO1 VDD_5V 和 GPIO6 VDD_1V8 由固件 Device Tree 建模为常开，可选 CH347 VIO 电平由固件标准 `regulator-gpio` 节点建模并通过 Zephyr regulator API 切换。执行 1.8V 切换前必须确认目标支持该电平、连接 VIO 物理测量设备，并明确接受硬件副作用；默认验证只读取或保持 3.3V
+- 安装统一桌面栈后，`-d` / `--desktop` 会启动单个 `linkr-tray` 后台守护并立即退出；Tray 与 Host 服务运行在同一进程，普通 CLI/TUI 启动也会自动确保它已运行。无图形桌面或 GTK 已加载但 AppIndicator 实现不可用时，同一二进制会以 `--headless` 模式常驻；之后恢复完整图形环境再运行 CLI 或 `-d`，headless 守护会优雅交接为单个图形 Tray 守护。Linux 的 `linkr-tray` 本身仍链接 GTK；完全未安装 GTK 的最小系统应直接运行 `linkr-host serve`。普通 CLI/TUI 在桌面组件缺失时会继续工作，只有显式 `-d` 会把启动失败作为错误。仅在明确不需要尝试任何后台 Host 时设置 `LINKR_SKIP_DESKTOP=1`。
 
 ## Released 与 nightly 通道
 

@@ -85,4 +85,4 @@ them into skills or development troubleshooting notes.
 - [Persistent Configuration](../reference/persistent-configuration.md) owns
   snapshot format and restore semantics.
 - [Power Analyzer](../reference/power-analyzer.md) and
-  [Sigrok Linkr v1](../reference/sigrok-linkr-v1.md) own their protocol detail.
+  [Sigrok Linkr v2](../reference/sigrok-linkr-v2.md) own their protocol detail.
