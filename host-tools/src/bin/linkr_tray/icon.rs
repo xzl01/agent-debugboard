@@ -407,8 +407,10 @@ mod tests {
             .expect("build changed tray frame")
             .is_some());
         for (pixel_index, (before, after)) in before_heartbeat
-            .chunks_exact(4)
-            .zip(published.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(published.as_chunks::<4>().0)
             .enumerate()
         {
             if before != after {

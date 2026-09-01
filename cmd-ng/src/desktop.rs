@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use std::env;
+#[cfg(any(target_os = "linux", test))]
 use std::ffi::OsStr;
 use std::fs::{create_dir_all, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -71,6 +72,7 @@ pub fn ensure_desktop() -> Result<()> {
     })
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn graphical_session_available_from(
     display: Option<&OsStr>,
     wayland_display: Option<&OsStr>,
@@ -170,6 +172,7 @@ fn find_tool_binary(name: &str, override_variable: &str) -> Result<PathBuf> {
             candidates.push(dir.join(name.trim_end_matches(".exe")));
         }
     }
+    #[cfg(unix)]
     if let Some(home) = env::var_os("HOME") {
         let home = PathBuf::from(home);
         #[cfg(target_os = "macos")]

@@ -499,10 +499,10 @@ impl SerialBroker {
             }
         }
         if let Some(token) = request.observer_redaction_token.as_ref() {
-            if !state
+            if state
                 .owner
                 .as_ref()
-                .is_some_and(|(owner, _)| owner == peer_id)
+                .is_none_or(|(owner, _)| owner != peer_id)
             {
                 send_error(
                     sender,
