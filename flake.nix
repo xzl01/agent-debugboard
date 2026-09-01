@@ -84,6 +84,18 @@
             echo "creating check output" >&2
             touch "$out"
           '';
+          desktop-entry = pkgs.runCommand "radxa-linkr-debuggerctl-desktop-entry-check" { } ''
+            desktop="${pkgs.radxa-linkr-debuggerctl}/share/applications/radxa-linkr-debugger.desktop"
+            icon="${pkgs.radxa-linkr-debuggerctl}/share/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg"
+            test -f "$desktop"
+            test -f "$icon"
+            ${pkgs.desktop-file-utils}/bin/desktop-file-validate "$desktop"
+            grep -Fx "Exec=radxa-linkr-debuggerctl" "$desktop"
+            grep -Fx "TryExec=radxa-linkr-debuggerctl" "$desktop"
+            grep -Fx "Icon=radxa-linkr-debugger" "$desktop"
+            grep -Fx "Terminal=true" "$desktop"
+            touch "$out"
+          '';
           formatting = pkgs.runCommand "radxa-linkr-debugboard-flake-formatting-check" { } ''
             workdir="$TMPDIR/nix-format-check"
             mkdir -p "$workdir"

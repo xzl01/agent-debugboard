@@ -30,6 +30,7 @@ export const POLICY_FILES = Object.freeze([
   "docs/testing/scripts/web-ota-hil.sh",
   "Makefile",
   "flake.nix",
+  "nix/package.nix",
   "nix/openocd-latest.nix",
   "nix/overlay.nix",
   "shell.nix",
@@ -39,8 +40,10 @@ export const POLICY_FILES = Object.freeze([
   "docs/developer/build.zh-CN.md",
   "debian/control",
   "debian/rules",
+  "packaging/radxa-linkr-debugger.desktop",
   "packaging/redhat/radxa-linkr-debugger.spec",
   "packaging/archlinux/PKGBUILD",
+  "web/public/linkr-mark.svg",
 ]);
 
 const REQUIRED_GATE_NEEDS = Object.freeze([
@@ -166,7 +169,7 @@ function firmwareMemoryCaptureContract({
     && /Local\s+unit tests and CI gates are not HIL/.test(docsIndex);
 }
 
-function nativePackageReleaseContract({ release, nightly, nativePackages, debianControl, debianRules, rpmSpec, pkgbuild }) {
+function nativePackageReleaseContract({ release, nightly, nativePackages, nixPackage, desktopEntry, desktopIcon, debianControl, debianRules, rpmSpec, pkgbuild }) {
   const firmwareFiles = [
     "radxa-linkr-debugger-rp2350.uf2",
     "radxa-linkr-debugger-rp2350-ota.bin",
@@ -178,7 +181,7 @@ function nativePackageReleaseContract({ release, nightly, nativePackages, debian
     && pkgbuild.includes("pkgname=('radxa-linkr-debuggerctl' 'radxa-linkr-debugger-firmware')");
   const payloads = recipes.every((recipe) => firmwareFiles.every((name) => recipe.includes(name)))
     && recipes.every((recipe) => /test ! -e .*zephyr[.]uf2/.test(recipe));
-  const noDesktopPayload = recipes.every((recipe) => !/(?:web[/]dist|linkr-host|linkr-tray|radxa-linkr-debugger[.]desktop)/.test(recipe));
+  const noBundledDesktopRuntime = [...recipes, nixPackage].every((recipe) => !/(?:web[/]dist|linkr-host|linkr-tray)/.test(recipe));
   const nativeTools = nativePackages.includes("dpkg-buildpackage --build=binary --no-sign")
     && nativePackages.includes("rpmbuild -bb")
     && nativePackages.includes("makepkg --cleanbuild --noconfirm");
@@ -214,9 +217,45 @@ function nativePackageReleaseContract({ release, nightly, nativePackages, debian
   const sharedArtifact = /name:\s*native-release-packages/.test(nativePackages)
     && [release, nightly].every((workflow) => /name:\s*native-release-packages/.test(workflow)
       && /path:\s*native-package-assets/.test(workflow));
-  return twoPackages && payloads && noDesktopPayload && nativeTools
+  const desktopPackageVerification = [
+    "native-package-files-debian.txt",
+    "native-package-files-rpm.txt",
+    "native-package-files-arch.txt",
+    "usr/share/applications/radxa-linkr-debugger.desktop",
+    "usr/share/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg",
+  ].every((marker) => nativePackages.includes(marker));
+  const desktopFields = /^\[Desktop Entry\]$/m.test(desktopEntry)
+    && /^Type=Application$/m.test(desktopEntry)
+    && /^Name=Radxa Linkr Debugger$/m.test(desktopEntry)
+    && /^Exec=radxa-linkr-debuggerctl$/m.test(desktopEntry)
+    && /^TryExec=radxa-linkr-debuggerctl$/m.test(desktopEntry)
+    && /^Icon=radxa-linkr-debugger$/m.test(desktopEntry)
+    && /^Terminal=true$/m.test(desktopEntry)
+    && /^Categories=Development;$/m.test(desktopEntry)
+    && /<svg\b/.test(desktopIcon);
+  const desktopSources = [debianRules, rpmSpec, pkgbuild, nixPackage].every((recipe) =>
+    recipe.includes("packaging/radxa-linkr-debugger.desktop")
+      && recipe.includes("web/public/linkr-mark.svg"));
+  const debianDesktop = debianRules.includes("debian/radxa-linkr-debuggerctl/usr/share/applications/radxa-linkr-debugger.desktop")
+    && debianRules.includes("debian/radxa-linkr-debuggerctl/usr/share/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg");
+  const rpmMainFiles = rpmSpec.slice(rpmSpec.indexOf("%files\n"), rpmSpec.indexOf("%files -n radxa-linkr-debugger-firmware"));
+  const rpmDesktop = rpmMainFiles.includes("%{_datadir}/applications/radxa-linkr-debugger.desktop")
+    && rpmMainFiles.includes("%{_datadir}/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg")
+    && rpmSpec.includes("%{buildroot}%{_datadir}/applications/radxa-linkr-debugger.desktop")
+    && rpmSpec.includes("%{buildroot}%{_datadir}/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg");
+  const archCliStart = pkgbuild.indexOf("package_radxa-linkr-debuggerctl() {");
+  const archFirmwareStart = pkgbuild.indexOf("package_radxa-linkr-debugger-firmware() {");
+  const archCli = pkgbuild.slice(archCliStart, archFirmwareStart);
+  const archDesktop = archCliStart >= 0 && archFirmwareStart > archCliStart
+    && archCli.includes("$pkgdir/usr/share/applications/radxa-linkr-debugger.desktop")
+    && archCli.includes("$pkgdir/usr/share/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg");
+  const nixDesktop = nixPackage.includes("$out/share/applications/radxa-linkr-debugger.desktop")
+    && nixPackage.includes("$out/share/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg");
+  return twoPackages && payloads && noBundledDesktopRuntime && nativeTools
     && compatibilityBaselines && sourceNaming && sourceLineage
-    && sourceChecksums && exactArchOutputs && releaseAssets && sharedArtifact;
+    && sourceChecksums && exactArchOutputs && releaseAssets && sharedArtifact
+    && desktopPackageVerification && desktopFields && desktopSources
+    && debianDesktop && rpmDesktop && archDesktop && nixDesktop;
 }
 
 export function checkRepositoryGateContents(contents) {
@@ -230,6 +269,7 @@ export function checkRepositoryGateContents(contents) {
   const agents = contents.get("AGENTS.md") ?? "";
   const makefile = contents.get("Makefile") ?? "";
   const flake = contents.get("flake.nix") ?? "";
+  const nixPackage = contents.get("nix/package.nix") ?? "";
   const openocd = contents.get("nix/openocd-latest.nix") ?? "";
   const overlay = contents.get("nix/overlay.nix") ?? "";
   const shell = contents.get("shell.nix") ?? "";
@@ -255,6 +295,8 @@ export function checkRepositoryGateContents(contents) {
   const webOtaHil = contents.get("docs/testing/scripts/web-ota-hil.sh") ?? "";
   const debianControl = contents.get("debian/control") ?? "";
   const debianRules = contents.get("debian/rules") ?? "";
+  const desktopEntry = contents.get("packaging/radxa-linkr-debugger.desktop") ?? "";
+  const desktopIcon = contents.get("web/public/linkr-mark.svg") ?? "";
   const rpmSpec = contents.get("packaging/redhat/radxa-linkr-debugger.spec") ?? "";
   const pkgbuild = contents.get("packaging/archlinux/PKGBUILD") ?? "";
 
@@ -393,8 +435,8 @@ export function checkRepositoryGateContents(contents) {
   })) {
     fail(failures, "G18", "apps/radxa_linkr_debugger/{CMakeLists.txt,sections-ram.ld,prj.conf,src/*} + docs/{README.md,reference/logic-analyzer.md}", "firmware memory and capture layout must retain approved capacities, pre-capture NOBITS initialization, stack targets, disabled features, and non-HIL documentation");
   }
-  if (!nativePackageReleaseContract({ release, nightly, nativePackages, debianControl, debianRules, rpmSpec, pkgbuild })) {
-    fail(failures, "G19", "debian/ + packaging/{redhat,archlinux}/ + .github/workflows/{native-packages,release,nightly}.yml", "each native packager must emit separate CLI and safe complete-firmware packages, exclude desktop/Web payloads, and publish all six package families");
+  if (!nativePackageReleaseContract({ release, nightly, nativePackages, nixPackage, desktopEntry, desktopIcon, debianControl, debianRules, rpmSpec, pkgbuild })) {
+    fail(failures, "G19", "debian/ + nix/ + packaging/{redhat,archlinux}/ + .github/workflows/{native-packages,release,nightly}.yml", "each native packager must emit separate CLI and safe complete-firmware packages, install the shared CLI launcher, exclude Web/Host/tray payloads, and publish all six package families");
   }
   if (!/release_notes="docs\/releases\/\$\{RELEASE_TAG%%-\*\}\.md"/.test(release)
       || !/release_flags=\(\)/.test(release)

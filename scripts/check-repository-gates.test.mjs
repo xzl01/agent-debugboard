@@ -16,6 +16,8 @@ const PAGES_WORKFLOW = ".github/workflows/pages.yml";
 const RELEASE_WORKFLOW = ".github/workflows/release.yml";
 const NIGHTLY_WORKFLOW = ".github/workflows/nightly.yml";
 const NATIVE_PACKAGES_WORKFLOW = ".github/workflows/native-packages.yml";
+const NIX_PACKAGE = "nix/package.nix";
+const DESKTOP_ENTRY = "packaging/radxa-linkr-debugger.desktop";
 const DEBIAN_CONTROL = "debian/control";
 const DEBIAN_RULES = "debian/rules";
 const RPM_SPEC = "packaging/redhat/radxa-linkr-debugger.spec";
@@ -343,6 +345,8 @@ test("rejects mutable, wrong, and missing action pins in every governed workflow
 test("loads auxiliary workflows for action pin validation", () => {
   assert.ok(POLICY_FILES.includes(VERSION_BUMP_WORKFLOW));
   assert.ok(POLICY_FILES.includes(NATIVE_PACKAGES_WORKFLOW));
+  assert.ok(POLICY_FILES.includes(NIX_PACKAGE));
+  assert.ok(POLICY_FILES.includes(DESKTOP_ENTRY));
 });
 
 test("rejects a Pages validation source SHA override", async () => {
@@ -384,7 +388,7 @@ test("rejects per-step release checkout and permission-scope regressions", async
 
 test("includes every source that defines the exported OpenOCD contract", () => {
   assert.deepEqual(
-    POLICY_FILES.filter((relative) => relative.startsWith("nix/")).sort(),
+    POLICY_FILES.filter((relative) => relative.includes("openocd") || relative === "nix/overlay.nix").sort(),
     ["nix/openocd-latest.nix", "nix/overlay.nix"],
   );
   assert.ok(POLICY_FILES.includes("Makefile"));
@@ -597,6 +601,13 @@ test("requires native CLI and complete-firmware release packages", async (t) => 
     ["Release native package download", RELEASE_WORKFLOW, "name: native-release-packages", "name: removed-native-packages"],
     ["Nightly native package download", NIGHTLY_WORKFLOW, "name: native-release-packages", "name: removed-native-packages"],
     ["Package source SHA lineage", NATIVE_PACKAGES_WORKFLOW, '            "$SOURCE_SHA"\n', '            "$GITHUB_SHA"\n'],
+    ["Shared desktop Exec", DESKTOP_ENTRY, "Exec=radxa-linkr-debuggerctl", "Exec=false"],
+    ["Shared desktop terminal mode", DESKTOP_ENTRY, "Terminal=true", "Terminal=false"],
+    ["Debian desktop launcher", DEBIAN_RULES, "debian/radxa-linkr-debuggerctl/usr/share/applications/radxa-linkr-debugger.desktop", "debian/radxa-linkr-debugger-firmware/usr/share/applications/radxa-linkr-debugger.desktop"],
+    ["RPM desktop launcher", RPM_SPEC, "%{_datadir}/applications/radxa-linkr-debugger.desktop", "%{_datadir}/applications/removed.desktop", true],
+    ["Arch desktop launcher", PKGBUILD, "$pkgdir/usr/share/applications/radxa-linkr-debugger.desktop", "$pkgdir/usr/share/applications/removed.desktop"],
+    ["Nix desktop launcher", NIX_PACKAGE, "$out/share/applications/radxa-linkr-debugger.desktop", "$out/share/applications/removed.desktop"],
+    ["CI desktop package verification", NATIVE_PACKAGES_WORKFLOW, "native-package-files-arch.txt", "removed-arch-listing.txt"],
   ];
 
   for (const [name, relative, replace, replacement, all] of cases) {

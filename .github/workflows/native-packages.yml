@@ -152,23 +152,32 @@ jobs:
           test "$(find "$packages" -maxdepth 1 -name '*.deb' | wc -l)" -eq 2
           test "$(find "$packages" -maxdepth 1 -name '*.rpm' | wc -l)" -eq 2
           test "$(find "$packages" -maxdepth 1 -name '*.pkg.tar.zst' | wc -l)" -eq 2
-          listings="$RUNNER_TEMP/native-package-files.txt"
+          deb_listing="$RUNNER_TEMP/native-package-files-debian.txt"
+          rpm_listing="$RUNNER_TEMP/native-package-files-rpm.txt"
+          arch_listing="$RUNNER_TEMP/native-package-files-arch.txt"
           {
             dpkg-deb -c "$packages"/radxa-linkr-debuggerctl_*.deb
             dpkg-deb -c "$packages"/radxa-linkr-debugger-firmware_*.deb
-            docker run --rm -v "$GITHUB_WORKSPACE:/work" almalinux:9@sha256:28db580abb508f7ccbc0ac6d53e1d8da9d42a26c77fa3dcc26ac2726673fbe3e sh -ec '
-              rpm -qpl /work/app/dist/native-packages/radxa-linkr-debuggerctl-*.rpm
-              rpm -qpl /work/app/dist/native-packages/radxa-linkr-debugger-firmware-*.rpm
-            '
-            docker run --rm -v "$GITHUB_WORKSPACE:/work" archlinux:latest@sha256:c9dc8b5d1b06d8d50ace6d42b2c93fbb1e34c9e1332d1a2102936e497d3187ae sh -ec '
-              bsdtar -tf /work/app/dist/native-packages/radxa-linkr-debuggerctl-*.pkg.tar.zst
-              bsdtar -tf /work/app/dist/native-packages/radxa-linkr-debugger-firmware-*.pkg.tar.zst
-            '
-          } > "$listings"
-          grep -q 'usr/bin/radxa-linkr-debuggerctl' "$listings"
-          grep -q 'radxa-linkr-debugger-rp2350.uf2' "$listings"
-          grep -q 'radxa-linkr-debugger-rp2350-ota.bin' "$listings"
-          ! grep -E '(web/|zephyr[.]uf2)' "$listings"
+          } > "$deb_listing"
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" almalinux:9@sha256:28db580abb508f7ccbc0ac6d53e1d8da9d42a26c77fa3dcc26ac2726673fbe3e sh -ec '
+            rpm -qpl /work/app/dist/native-packages/radxa-linkr-debuggerctl-*.rpm
+            rpm -qpl /work/app/dist/native-packages/radxa-linkr-debugger-firmware-*.rpm
+          ' > "$rpm_listing"
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" archlinux:latest@sha256:c9dc8b5d1b06d8d50ace6d42b2c93fbb1e34c9e1332d1a2102936e497d3187ae sh -ec '
+            bsdtar -tf /work/app/dist/native-packages/radxa-linkr-debuggerctl-*.pkg.tar.zst
+            bsdtar -tf /work/app/dist/native-packages/radxa-linkr-debugger-firmware-*.pkg.tar.zst
+          ' > "$arch_listing"
+          for listing in "$deb_listing" "$rpm_listing" "$arch_listing"; do
+            grep -q 'usr/bin/radxa-linkr-debuggerctl' "$listing"
+            grep -q 'usr/share/applications/radxa-linkr-debugger.desktop' "$listing"
+            grep -q 'usr/share/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg' "$listing"
+            grep -q 'radxa-linkr-debugger-rp2350.uf2' "$listing"
+            grep -q 'radxa-linkr-debugger-rp2350-ota.bin' "$listing"
+            if grep -E '(web/|zephyr[.]uf2)' "$listing"; then
+              printf 'unexpected native package payload in %s\n' "$listing" >&2
+              exit 1
+            fi
+          done
 
       - name: Stage native release package artifact
         run: |
