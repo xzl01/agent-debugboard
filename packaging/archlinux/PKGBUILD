@@ -44,11 +44,15 @@ check() {
 }
 
 package_radxa-linkr-debuggerctl() {
-    pkgdesc='Command-line tools for Radxa Linkr Debugger'
+    pkgdesc='CLI/TUI and desktop launcher for Radxa Linkr Debugger'
     optdepends=('radxa-linkr-debugger-firmware: ROM BOOTSEL and OTA images')
     install -Dm755 "$srcdir/radxa-linkr-debuggerctl" \
         "$pkgdir/usr/bin/radxa-linkr-debuggerctl"
     ln -s radxa-linkr-debuggerctl "$pkgdir/usr/bin/rdb"
+    install -Dm644 "$srcdir/agent-debugboard-${_upstream_version}/packaging/radxa-linkr-debugger.desktop" \
+        "$pkgdir/usr/share/applications/radxa-linkr-debugger.desktop"
+    install -Dm644 "$srcdir/agent-debugboard-${_upstream_version}/web/public/linkr-mark.svg" \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg"
     install -Dm644 "$srcdir/agent-debugboard-${_upstream_version}/LICENSE" \
         "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 "$srcdir/agent-debugboard-${_upstream_version}/COPYING" \

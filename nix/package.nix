@@ -37,6 +37,10 @@ rustPlatform.buildRustPackage {
 
   postInstall = ''
     ln -s radxa-linkr-debuggerctl "$out/bin/rdb"
+    install -Dm644 packaging/radxa-linkr-debugger.desktop \
+      "$out/share/applications/radxa-linkr-debugger.desktop"
+    install -Dm644 web/public/linkr-mark.svg \
+      "$out/share/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg"
     install -Dm644 skills/radxa-linkr-debugger/SKILL.md \
       "$out/share/radxa-linkr-debugger/skills/radxa-linkr-debugger/SKILL.md"
     install -Dm755 skills/radxa-linkr-debugger/scripts/install.sh \
@@ -54,7 +58,7 @@ rustPlatform.buildRustPackage {
   '';
 
   meta = {
-    description = "Released Rust CLI/TUI for Radxa Linkr Debugger";
+    description = "Released Rust CLI/TUI and desktop launcher for Radxa Linkr Debugger";
     homepage = "https://github.com/xzl01/agent-debugboard";
     license = lib.licenses.lgpl3Plus;
     mainProgram = "radxa-linkr-debuggerctl";

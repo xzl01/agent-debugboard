@@ -11,7 +11,7 @@
 Name:           radxa-linkr-debuggerctl
 Version:        %{lua:print((rpm.expand("%{upstream_version}"):gsub("-", "~")))}
 Release:        1%{?dist}
-Summary:        Command-line tools for Radxa Linkr Debugger
+Summary:        CLI/TUI and desktop launcher for Radxa Linkr Debugger
 License:        LGPL-3.0-or-later
 URL:            https://github.com/xzl01/agent-debugboard
 ExclusiveArch:  x86_64 aarch64
@@ -23,7 +23,7 @@ Source2:        %{url}/releases/download/v%{upstream_version}/radxa-linkr-debugg
 Source3:        %{url}/releases/download/v%{upstream_version}/radxa-linkr-debugger-rp2350-ota.bin
 
 %description
-Standalone CLI/TUI for controlling Radxa Linkr Debugger hardware.
+Standalone CLI/TUI and desktop launcher for controlling Radxa Linkr Debugger hardware.
 
 %package -n radxa-linkr-debugger-firmware
 Summary:        Firmware images for Radxa Linkr Debugger
@@ -47,6 +47,10 @@ test ! -e .native-cli/zephyr.uf2
 install -Dm755 .native-cli/radxa-linkr-debuggerctl \
     %{buildroot}%{_bindir}/radxa-linkr-debuggerctl
 ln -s radxa-linkr-debuggerctl %{buildroot}%{_bindir}/rdb
+install -Dm644 packaging/radxa-linkr-debugger.desktop \
+    %{buildroot}%{_datadir}/applications/radxa-linkr-debugger.desktop
+install -Dm644 web/public/linkr-mark.svg \
+    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg
 install -Dm644 %{SOURCE2} \
     %{buildroot}%{_datadir}/radxa-linkr-debugger/firmware/radxa-linkr-debugger-rp2350.uf2
 install -Dm644 %{SOURCE3} \
@@ -65,6 +69,8 @@ test ! -e zephyr.uf2
 %doc README.md NOTICE docs/user/cli.md docs/user/cli.zh-CN.md
 %{_bindir}/radxa-linkr-debuggerctl
 %{_bindir}/rdb
+%{_datadir}/applications/radxa-linkr-debugger.desktop
+%{_datadir}/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg
 
 %files -n radxa-linkr-debugger-firmware
 %license LICENSE COPYING COPYING.LESSER

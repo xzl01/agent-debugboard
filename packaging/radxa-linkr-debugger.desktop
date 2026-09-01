@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Radxa Linkr Debugger
+GenericName=Hardware Debugger Control
+Comment=Control and monitor Radxa Linkr Debugger from its CLI/TUI
+Exec=radxa-linkr-debuggerctl
+TryExec=radxa-linkr-debuggerctl
+Icon=radxa-linkr-debugger
+Terminal=true
+Categories=Development;
+Keywords=Radxa;Linkr;Debugger;Embedded;
+StartupNotify=false

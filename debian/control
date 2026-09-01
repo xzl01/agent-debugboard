@@ -12,8 +12,8 @@ Architecture: any
 Depends: ${misc:Depends}, ca-certificates
 Suggests: radxa-linkr-debugger-firmware
 Description: command-line tools for Radxa Linkr Debugger
- Provides the standalone CLI/TUI and its short rdb command alias for controlling
- Radxa Linkr Debugger hardware.
+ Provides the standalone CLI/TUI, its short rdb command alias, and a desktop
+ launcher for controlling Radxa Linkr Debugger hardware.
 
 Package: radxa-linkr-debugger-firmware
 Architecture: all
