@@ -181,7 +181,7 @@ function nativePackageReleaseContract({ release, nightly, nativePackages, nixPac
     && pkgbuild.includes("pkgname=('radxa-linkr-debuggerctl' 'radxa-linkr-debugger-firmware')");
   const payloads = recipes.every((recipe) => firmwareFiles.every((name) => recipe.includes(name)))
     && recipes.every((recipe) => /test ! -e .*zephyr[.]uf2/.test(recipe));
-  const noBundledDesktopRuntime = [...recipes, nixPackage].every((recipe) => !/(?:web[/]dist|linkr-host|linkr-tray)/.test(recipe));
+  const noBundledDesktopRuntime = recipes.every((recipe) => !/(?:web[/]dist|linkr-host|linkr-tray)/.test(recipe));
   const nativeTools = nativePackages.includes("dpkg-buildpackage --build=binary --no-sign")
     && nativePackages.includes("rpmbuild -bb")
     && nativePackages.includes("makepkg --cleanbuild --noconfirm");
@@ -436,7 +436,7 @@ export function checkRepositoryGateContents(contents) {
     fail(failures, "G18", "apps/radxa_linkr_debugger/{CMakeLists.txt,sections-ram.ld,prj.conf,src/*} + docs/{README.md,reference/logic-analyzer.md}", "firmware memory and capture layout must retain approved capacities, pre-capture NOBITS initialization, stack targets, disabled features, and non-HIL documentation");
   }
   if (!nativePackageReleaseContract({ release, nightly, nativePackages, nixPackage, desktopEntry, desktopIcon, debianControl, debianRules, rpmSpec, pkgbuild })) {
-    fail(failures, "G19", "debian/ + nix/ + packaging/{redhat,archlinux}/ + .github/workflows/{native-packages,release,nightly}.yml", "each native packager must emit separate CLI and safe complete-firmware packages, install the shared CLI launcher, exclude Web/Host/tray payloads, and publish all six package families");
+    fail(failures, "G19", "debian/ + nix/ + packaging/{redhat,archlinux}/ + .github/workflows/{native-packages,release,nightly}.yml", "Debian/RPM/Arch must emit separate CLI and safe complete-firmware packages without Web/Host/tray payloads; Nix must install the shared launcher; release workflows must publish all six native package families");
   }
   if (!/release_notes="docs\/releases\/\$\{RELEASE_TAG%%-\*\}\.md"/.test(release)
       || !/release_flags=\(\)/.test(release)

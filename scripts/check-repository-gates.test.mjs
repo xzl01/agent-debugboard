@@ -575,8 +575,12 @@ test("rejects every publication and branch-policy bypass", async (t) => {
   }
 });
 
-test("requires native CLI and complete-firmware release packages", async (t) => {
+test("requires native packages without a desktop stack and allows the Nix desktop stack", async (t) => {
   const baseline = await repositoryContents();
+  const nixPackage = baseline.get(NIX_PACKAGE);
+  assert.match(nixPackage, /linkr-host/);
+  assert.match(nixPackage, /linkr-tray/);
+  assert.match(nixPackage, /radxa-linkr-debugger[/]web/);
   assert.equal(
     checkRepositoryGateContents(baseline).failures.some((failure) => failure.code === "G19"),
     false,
@@ -586,6 +590,9 @@ test("requires native CLI and complete-firmware release packages", async (t) => 
     ["Debian combined UF2", DEBIAN_RULES, "radxa-linkr-debugger-rp2350.uf2", "zephyr.uf2", true],
     ["RPM firmware subpackage", RPM_SPEC, "%package -n radxa-linkr-debugger-firmware", "%package -n removed-firmware"],
     ["Arch split packages", PKGBUILD, "pkgname=('radxa-linkr-debuggerctl' 'radxa-linkr-debugger-firmware')", "pkgname=('radxa-linkr-debuggerctl')"],
+    ["Debian desktop runtime exclusion", DEBIAN_RULES, "INPUT_DIR ?= $(CURDIR)/dist/native-package-input", "INPUT_DIR ?= $(CURDIR)/dist/native-package-input\n# linkr-host"],
+    ["RPM desktop runtime exclusion", RPM_SPEC, "Summary:        CLI/TUI and desktop launcher for Radxa Linkr Debugger", "Summary:        CLI/TUI and desktop launcher for Radxa Linkr Debugger\n# linkr-tray"],
+    ["Arch desktop runtime exclusion", PKGBUILD, "options=('!debug')", "options=('!debug')\n# web/dist"],
     ["Debian native packager", NATIVE_PACKAGES_WORKFLOW, "dpkg-buildpackage --build=binary --no-sign", "true"],
     ["RPM native packager", NATIVE_PACKAGES_WORKFLOW, "rpmbuild -bb", "true"],
     ["Arch native packager", NATIVE_PACKAGES_WORKFLOW, "makepkg --cleanbuild --noconfirm", "true"],
