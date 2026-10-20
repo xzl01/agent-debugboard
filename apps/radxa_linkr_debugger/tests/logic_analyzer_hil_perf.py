@@ -117,7 +117,7 @@ WIDE11_MAPPING_GP10_UART_PREREQUISITE = (
 WIDE11_MAPPING_READ_ONLY_CHECKS = (
     "Verify the fixture never drives GP19 or GP20 and leaves both high-impedance",
     "Verify capture leaves GP20=SCL/GP21=SDA PIO0 mux and direction unchanged",
-    "Correlate GP20 transitions and pulled-up idle with successful board-owned I2C traffic; static levels are not a dynamic mapping pass",
+    "Correlate GP20 transitions and the documented fixture's externally pulled idle-high level with successful board-owned I2C traffic; unknown/static levels are not a dynamic mapping pass",
     "Verify GP19 remains at its board-owned strap level without fixture contention",
 )
 WIDE11_BURST_EXPECTED_DATA_FRAMES = 98

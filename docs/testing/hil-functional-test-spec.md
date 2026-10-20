@@ -969,6 +969,29 @@ timeout 5s radxa-linkr-debuggerctl --json power set 20v_out off
 
 ### 4. ADC 电流监测
 
+四路 INA226 和 CH224A 共用的 GP20/GP21 I2C 总线在 x1.2 板上没有板载外置
+SCL/SDA 上拉，并跨越 VBUS/VHV、VCC_3V3 与外部 J8。执行本节或任何依赖该总线的
+HIL 前，必须先满足以下电气前置条件；缺少任一项时将 I2C/INA226 项标记为
+`[blocked]`，不得根据一次 idle-high 读数推断存在安全上拉：
+
+- 测试夹具必须提供并记录明确的外部上拉阻值、上拉电源和接线位置。绝不能启用
+  RP2350 内部 pull-up 来补救；固件和 Device Tree 必须保持 GP20/GP21
+  `bias-disable`。RP2350 internal RPU 为 32–86 kΩ，不满足 400 kHz 上升时间，
+  并会额外形成 VCC_3V3 到共享总线的通路。
+- 记录 VBUS/VHV、VCC_3V3 和 J8 外部连接的每个测试电源状态，验证上电/掉电时序，
+  或使用已确认 powered-off-safe 的隔离器。分别测量 idle 来源、反向电流/反灌，
+  不能把未知来源的高电平记作通过。CH224A CFG2/CFG3 虽有 7/10/15 kΩ internal
+  pull-up 并支持 400 kHz，但 datasheet 未说明上拉轨，也未给出 VHV=0 V 时的
+  powered-off Ioff，不能把它当作合格的跨域上拉。
+- INA226 SCL 的绝对最大值是 `VS + 0.3 V`；当 `VS = 0 V` 时，SCL 被拉到 3.3 V
+  明确违规。SDA 的绝对最大值虽为 6 V，但没有 powered-off Ioff 规格，仍须测量
+  反向电流。板上 ESD5451N 是 5 V TVS，不会把总线钳在 3.3 V，也不能作为掉电
+  隔离或反灌保护。200 kHz 默认频率本身不消除上述风险。
+- 生产 Device Tree 默认必须保持 200 kHz。只有明确外部上拉和跨域时序/隔离先通过，
+  且示波器测得 `tr <= 300 ns`、VOL/灌电流与反灌均满足器件边界后，才可用单独的
+  400 kHz 验证构建修改 `clock-frequency`。报告必须明确该构建不是生产默认；任一
+  条件失败都回退到 200 kHz 并把 400 kHz 标记为 `[blocked]`。
+
 ```sh
 timeout 5s radxa-linkr-debuggerctl --json adc read
 timeout 5s radxa-linkr-debuggerctl --json adc read 5v_out
@@ -1311,8 +1334,10 @@ failure.
 On x1.2, GP20 is the PIO I2C SCL and GP21 is SDA. The LA samples GP20 as a
 read-only tap without reconfiguring the pin. Never drive GP20 or hold it low
 from the fixture; that contends with the PIO0 I2C master. Verify the tap by
-observing SCL activity from the board's own I2C traffic and otherwise leave it
-at the pulled-up idle level. GP19 is the CH224A PD strap and must also remain
+observing SCL activity from the board's own I2C traffic. An idle-high assertion
+is valid only with the documented external pull-up and cross-domain electrical
+prerequisites from section 4; there is no board-mounted pull-up and an unknown
+high source is not a pass. GP19 is the CH224A PD strap and must also remain
 high-impedance.
 
 CONFIG v1 pre/post are uint16 for ordinary bounded and stream requests. Web
@@ -1619,9 +1644,11 @@ must not be compared against invented fixed levels.
 GP20 is accepted only as a read-only SCL tap. While the capture runs, generate
 board-owned I2C traffic (for example repeated `GET /api/v1/adc/read` requests or
 normal INA226 telemetry) and verify that the GP20 lane shows SCL transitions and
-returns to its pulled-up idle level. The LA must not change the GP20/GP21 pin
-mux or direction and must not disturb I2C transactions. If the capture window
-contains no I2C traffic, record GP20 as not exercised rather than passing it.
+returns to the externally pulled idle-high level established by section 4's
+documented fixture. The LA must not change the GP20/GP21 pin mux or direction
+and must not disturb I2C transactions. Without that external pull-up, or if the
+capture window contains no I2C traffic, record GP20 as blocked/not exercised
+rather than passing it. Never substitute the RP2350 internal pull-up.
 GP19 must read at its strap level (low through the board's 120 kOhm Rset) and
 must never be driven by the fixture.
 

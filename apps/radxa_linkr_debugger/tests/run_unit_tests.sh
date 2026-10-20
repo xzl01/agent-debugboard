@@ -475,6 +475,8 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 
 python3 "${ROOT}/apps/radxa_linkr_debugger/tests/test_logic_analyzer_hil_perf.py"
 
+python3 "${ROOT}/apps/radxa_linkr_debugger/tests/test_i2c_pio_timing.py"
+
 ${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_NET_SETTINGS_HOST_TEST=1 \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \

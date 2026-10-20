@@ -57,29 +57,59 @@ I2C0 pin functions and of the pico-examples `SCL = SDA + 1` layout, so the
 board drives the bus with a **PIO I2C master** whose two wait instructions
 are absolute `wait 1 gpio, 20` (SCL); SDA is sampled on GPIO21.
 
-- Clock: **200 kHz** by default with **2.2 kΩ to 3.3 V**. The former 1 kHz
+- Clock: **200 kHz by default**. The PIO data-bit loop is 34 state-machine
+  cycles: 18 low and 16 high. At the RP2350 150 MHz system clock, divider
+  `22 + 16/256` gives an effective default clock of approximately
+  **199.967 kHz**. The same 20-instruction program has a 400 kHz capability
+  ceiling: divider `11 + 8/256` gives approximately **399.933 kHz**, while its
+  shortest data/ACK low phase remains 18 cycles (approximately 1.324 us).
+  The default is intentionally not 400 kHz. Static timing capability does not
+  establish that the assembled board has a valid electrical pull-up network.
+- The x1.2 schematic has **no board-mounted external SCL/SDA pull-up**. These
+  nets join RP2354 GPIO20/21, CH224A pins in the VBUS/VHV-related domain, four
+  INA226 devices powered from VCC_3V3, and the external J8 header. The source
+  of any observed idle-high level is therefore unknown and must not be treated
+  as a board pull-up or as evidence of powered-off Ioff safety.
+  - CH224A documents selectable **7/10/15 kΩ internal pull-ups** on CFG2/CFG3
+    and support for 400 kHz, but does not identify the pull-up rail or specify
+    powered-off Ioff when VHV is 0 V. Those internal pulls are therefore not a
+    qualified cross-domain pull-up source.
+  - INA226 SCL has an absolute maximum of `VS + 0.3 V`; with `VS = 0 V`, a
+    3.3 V-high SCL is explicitly outside that limit. SDA has a 6 V absolute
+    maximum, but INA226 specifies no powered-off Ioff, so its lower clamp limit
+    alone does not establish reverse-current safety.
+  - RP2350 internal RPU is **32–86 kΩ**. It is too weak to establish 400 kHz
+    rise-time compliance and would create another VCC_3V3 current path into the
+    shared bus. Firmware must never enable it as a workaround: initialization
+    disables both internal pulls before pinctrl removes pad isolation, and the
+    Device Tree keeps `bias-disable` on both pins.
+  - The board's ESD5451N is a **5 V TVS**; it does not clamp the shared bus at
+    3.3 V and is not powered-off isolation or back-feed protection.
+- Keep 400 kHz disabled unless the test setup provides an explicit external
+  pull-up network and records its value and rail. Before changing the Device
+  Tree to 400 kHz, HIL must pass power sequencing or powered-off-safe isolation,
+  `tr <= 300 ns`, VOL/sink-current measurement, and reverse-current/back-power
+  measurement across VBUS/VHV, VCC_3V3, and J8-connected states. If any source
+  of the high level is unidentified, any domain can be unpowered unsafely, or
+  any measurement fails, keep the 200 kHz default and mark 400 kHz blocked.
+- Data and ACK high phases wait for physical SCL, so target clock stretching
+  only lengthens those phases. Each bus-clear level is duplicated; including
+  the parser's `OUT EXEC` and loop-jump overhead, recovery is 0.85 times the
+  configured data rate (approximately 169.972 kHz at the default). Its STOP
+  tail holds SCL low for 20 state-machine cycles and then holds SCL high with
+  SDA low for 20 cycles before releasing SDA. The recovery deadline accounts
+  for all 41 raw instructions plus the tBUF confirmation. The former 1 kHz
   bring-up setting exposed low-frequency timeout assumptions and is no longer
-  used. A future faster setting must remain within the PIO program's measured
-  timing limits; the current 32-cycle program is not Fast-mode compliant at a
-  nominal 400 kHz because its ACK low phase is too short. At 200 kHz the
-  shortest ACK low phase is approximately 2.34 us, above Fast-mode's 1.3 us
-  minimum, and the conservative bus-clear train runs at approximately 160 kHz.
-  For faster operation,
-  choose the pull-up from measured bus capacitance
-  and verify `tr <= 300 ns`: external 2.2/1.5/1.2 kΩ support approximately
-  161/236/295 pF respectively before accounting for CH224A's internal
-  7–15 kΩ pull-up. Do not make 1.2 kΩ the default: its worst-case sink current
-  approaches the 3 mA I2C VOL guarantee. Above roughly 250–300 pF, reduce
-  speed or isolate/buffer the bus instead of further lowering resistance.
+  used.
 - CH224A is on the same bus and is limited to 400 kHz, so the shared bus
   cannot use INA226 High-Speed mode (2.94 MHz) without a hardware
   bridge/isolator. The PIO master also implements Fast mode only.
 - CH224A VHV (PD VBUS) and INA226 VS (VCC_3V3) are separate power domains.
-  CH224A specifies no powered-off Ioff, and INA226 SCL has an absolute maximum
-  of `VS + 0.3 V`. Hardware validation must therefore cover both one-sided
-  power sequences; if VHV can be present while INA226 VS is absent, use a
-  powered-off-safe bus switch/isolator or enforce rail sequencing. Pull-up
-  resistance alone cannot remove this back-power risk.
+  Hardware validation must therefore cover both one-sided power sequences; if
+  VHV or any pull-up source can be present while INA226 VS is absent, use a
+  powered-off-safe bus switch/isolator or enforce rail sequencing. Running at
+  the 200 kHz default, changing pull-up resistance, or relying on the 5 V TVS
+  cannot remove this absolute-maximum and back-power risk.
 - CH224A CFG1 uses board R81 (120 kOhm to GND) as the single-resistor Rset,
   which enables its I2C interface on CFG2/SCL and CFG3/SDA. R97 is only the
   0-ohm series link from CFG1 to GPIO19; firmware keeps GPIO19 as a
@@ -98,11 +128,13 @@ are absolute `wait 1 gpio, 20` (SCL); SDA is sampled on GPIO21.
   `SC1_SD0/SC0_SD0/mov isr`; repeated START uses the five-instruction
   `SC0_SD1/SC1_SD1/SC1_SD0/SC0_SD0/mov isr` sequence.
 - The controller remains registered in a ready-but-paused state when startup
-  finds a non-idle electrical bus, so `i2c recover i2c` remains available.
-  Startup passively settles the lines and performs at most one automatic,
-  open-drain bus clear only for stable SCL-high/SDA-low. If INA226 device init
-  already failed before a later explicit recovery, run a software reboot after
-  recovery; Zephyr does not re-run a failed sensor device initializer in place.
+  finds a non-idle electrical bus. Startup passively settles the lines and
+  performs at most one automatic, open-drain bus clear only for stable
+  SCL-high/SDA-low; a later transfer can rearm only after both lines are stably
+  idle. The generic Zephyr I2C shell is disabled because its raw write command
+  can bypass CH224A power policy, so there is no production `i2c recover`
+  command. After correcting the electrical fault, reboot to retry any INA226
+  initializer that already failed; Zephyr does not re-run it in place.
 - GP20 is the I2C **SCL** and also the WIDE11 logic-analyzer lane 10. The LA
   leaves the PIO0 function and pad input enable untouched for GP20/GP21 and
   samples GP20 only as a read-only tap; it must not reconfigure those pins as
@@ -172,10 +204,15 @@ follows the `switch usb` boot route.
 ## Validation Status
 
 The BSP has been validated by the full firmware build and the host-model unit
-tests. Earlier on-hardware x1.2 bring-up at 1 kHz verified the four INA226
+tests. Static policy tests cover the 200 kHz production default, 150 MHz/
+400 kHz capability divider, generated PIO machine code, Fast-mode timing
+bounds, and recovery rate. Earlier on-hardware
+x1.2 bring-up at 1 kHz verified the four INA226
 addresses (`0x40/0x41/0x44/0x45`), manufacturer ID `0x5449`, configuration
-register `0x4127`, and idle SDA/SCL levels. CH224A (`0x22/0x23`) I2C,
-100/400 kHz operation with external pull-ups, rail current calibration,
-rail/LED polarity, the J4 UART bridge, INA226 telemetry while WIDE11
-captures the GP20/SCL tap, and the new reboot and physical BOOTSEL button
-paths remain HIL items.
+register `0x4127`, and line levels in that specific setup; those observed levels
+do not identify a pull-up source or prove cross-domain safety. CH224A
+(`0x22/0x23`) I2C, any 400 kHz enablement with explicit external pull-ups and
+the required rise-time/VOL/reverse-current evidence, rail current calibration,
+rail/LED polarity, the J4 UART bridge, INA226 telemetry while WIDE11 captures
+the GP20/SCL tap, and the new reboot and physical BOOTSEL button paths remain
+HIL items.

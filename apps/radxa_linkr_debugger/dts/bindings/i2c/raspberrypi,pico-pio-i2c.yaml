@@ -14,3 +14,5 @@ include: [i2c-controller.yaml, pinctrl-device.yaml]
 properties:
   clock-frequency:
     required: true
+    max: 400000
+    description: Bus frequency in Hz; this controller supports I2C Fast mode.

@@ -248,10 +248,13 @@ read-only tap: the LA does not reconfigure GP20/GP21 pins, so PIO0 keeps
 driving the INA226/CH224A bus while PIO2 samples the pad. The host still
 receives the same 11-lane mapping; the GP20 lane shows the I2C SCL. Acceptance
 must never drive or pull GP20 low: that contends with the I2C master. Verify the
-tap by observing SCL activity from the board's own I2C traffic, and leave GP20
-otherwise at its pulled-up idle level. GP19 is the CH224A PD strap and must be
-left high-impedance for the same reason. INA226 telemetry while WIDE11 is
-running remains a HIL item. WIDE11 verification is
+tap by observing SCL activity from the board's own I2C traffic. The x1.2 board
+has no board-mounted SCL/SDA pull-up, so an idle-high check is valid only when
+the HIL fixture documents an external pull-up and satisfies the cross-domain
+electrical prerequisites in the HIL specification. Never substitute the RP2350
+internal pull-up or treat an unknown high source as a pass. GP19 is the CH224A
+PD strap and must be left high-impedance for the same reason. INA226 telemetry
+while WIDE11 is running remains a HIL item. WIDE11 verification is
 covered by the historical 2026-07-27 freeze-final HIL matrices below.
 
 **Historical WIDE12 baseline (not current WIDE11; retained for context only)**:
