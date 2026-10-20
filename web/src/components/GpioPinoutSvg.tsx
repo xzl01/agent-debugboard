@@ -1,6 +1,6 @@
 import { useId } from "react";
-import type { SafeGpio } from "@/lib/types";
-import { groupGpioLayout, type GpioLayoutGroup } from "@/lib/gpioLayout";
+import type { GpioLayoutGroupMetadata, SafeGpio } from "@/lib/types";
+import { groupGpioLayout } from "@/lib/gpioLayout";
 import { useI18n } from "@/lib/i18n";
 import { GPIO_DIRECTION_STROKE, GPIO_FILL_HIGH, GPIO_FILL_LOW, type GpioAction } from "./GpioPin";
 import {
@@ -10,6 +10,7 @@ import {
   GpioPinoutGroup,
   STROKE_DEFAULT,
   STROKE_TRIGGER,
+  PINOUT_DISPLAY_SCALE,
   placeGroup,
   type GpioPinoutSvgVariant,
 } from "./GpioPinoutGroup";
@@ -18,6 +19,7 @@ export type { GpioPinoutSvgVariant };
 
 export interface GpioPinoutSvgProps {
   gpios: SafeGpio[];
+  layoutGroups?: readonly GpioLayoutGroupMetadata[];
   variant?: GpioPinoutSvgVariant;
   selectedPins?: readonly number[];
   triggerPin?: number | null;
@@ -32,6 +34,7 @@ export interface GpioPinoutSvgProps {
 
 export function GpioPinoutSvg({
   gpios,
+  layoutGroups,
   variant = "logic-analyzer",
   selectedPins,
   triggerPin,
@@ -45,12 +48,13 @@ export function GpioPinoutSvg({
 }: GpioPinoutSvgProps) {
   const { t } = useI18n();
   const titleId = useId();
-  const { groups: layoutGroups, fallback } = groupGpioLayout(gpios);
+  const descriptionId = useId();
+  const { groups: grouped, fallback } = groupGpioLayout(gpios, layoutGroups);
   const selectedSet = new Set(selectedPins ?? []);
   const disabledSet = new Set(disabledPins ?? []);
   const trigger = triggerPin ?? null;
 
-  const allGroups = fallback ? [...layoutGroups, fallback] : layoutGroups;
+  const allGroups = fallback ? [...grouped, fallback] : grouped;
   if (allGroups.length === 0) {
     return (
       <div className="rounded-lg border border-line/60 bg-panel2/30 p-4 text-xs text-ink-dim">
@@ -59,23 +63,30 @@ export function GpioPinoutSvg({
     );
   }
 
-  const groups: { group: GpioLayoutGroup; label: string }[] = allGroups.map((group) => ({
-    group: group.generic ? { ...group, label: t("logicAnalyzer.fallbackGroup") } : group,
-    label: group.generic ? t("logicAnalyzer.fallbackSubtitle") : "",
-  }));
+  const placed = allGroups.map((rawGroup) => {
+    const group = rawGroup.generic ? { ...rawGroup, label: t("logicAnalyzer.fallbackGroup") } : rawGroup;
+    return { group, ...placeGroup(group) };
+  });
+  const description = [
+    t("pinout.controllableOnly"),
+    allGroups.some((group) => group.edge === "right") ? t("pinout.rightEdge") : "",
+    allGroups.some((group) => !group.generic && group.edge !== "right") ? t("pinout.genericLayout") : "",
+    fallback ? t("logicAnalyzer.fallbackSubtitle") : "",
+  ].filter(Boolean).join(" ");
 
-  const placed = groups.map((g) => ({ ...g, ...placeGroup(g.group) }));
-  const gap = 8;
-  const totalWidth = placed.reduce(
-    (sum, g, idx) => sum + g.width + (idx === 0 ? 0 : gap),
-    0
-  );
-  const totalHeight = placed.reduce((max, g) => Math.max(max, g.height), 1);
-
-  let cursorX = 0;
-  const groupNodes = placed.map((g, idx) => {
-    const node = (
-      <g key={`g-${g.group.group}-${idx}`} transform={`translate(${cursorX}, 0)`}>
+  const groupNodes = placed.map((g, idx) => (
+    <div key={g.group.group} className="min-w-0 max-w-full overflow-x-auto">
+      <svg
+        role={variant === "gpio" ? "group" : "img"}
+        aria-labelledby={`${titleId}-${idx}`}
+        aria-describedby={descriptionId}
+        viewBox={`0 0 ${g.width} ${g.height}`}
+        className="block shrink-0"
+        style={{ width: Math.ceil(g.width * PINOUT_DISPLAY_SCALE), height: Math.ceil(g.height * PINOUT_DISPLAY_SCALE) }}
+      >
+        <title id={`${titleId}-${idx}`}>
+          {variant === "gpio" ? t("gpio.pinoutAria") : t("logicAnalyzer.pinoutAria")} — {g.group.label}
+        </title>
         <GpioPinoutGroup
           group={g.group}
           variant={variant}
@@ -88,29 +99,18 @@ export function GpioPinoutSvg({
           gpioPendingPin={gpioPendingPin}
           gpioInstructionsId={gpioInstructionsId}
           onGpioAction={onGpioAction}
-          label={g.label}
           t={t}
         />
-      </g>
-    );
-    cursorX += g.width + (idx === placed.length - 1 ? 0 : gap);
-    return node;
-  });
+      </svg>
+    </div>
+  ));
 
   return (
-    <div className="space-y-2">
-      <svg
-        role={variant === "gpio" ? "group" : "img"}
-        aria-labelledby={titleId}
-        viewBox={`0 0 ${totalWidth} ${totalHeight}`}
-        className="mx-auto w-full"
-        style={{ maxWidth: 224 }}
-      >
-        <title id={titleId}>
-          {variant === "gpio" ? t("gpio.pinoutAria") : t("logicAnalyzer.pinoutAria")}
-        </title>
+    <div className="min-w-0 space-y-2">
+      <div className="flex flex-wrap items-start justify-center gap-2">
         {groupNodes}
-      </svg>
+      </div>
+      <p id={descriptionId} className="text-[11px] leading-4 text-ink-dim">{description}</p>
       {variant === "gpio" ? (
         <div className="grid grid-cols-2 gap-1 border-t border-line/50 pt-2 text-[9px] leading-3 text-ink-dim">
           <span className="inline-flex items-center gap-1">

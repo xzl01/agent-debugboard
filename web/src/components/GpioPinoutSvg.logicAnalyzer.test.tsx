@@ -23,6 +23,7 @@ describe("GpioPinoutSvg logic-analyzer default variant", () => {
     const onSetTriggerPin = vi.fn();
     const view = renderSvg({
       gpios: [gpio(10), gpio(11), gpio(12)],
+      layoutGroups: [{ name: "J16", edge: "right", order: 0 }],
       selectedPins: [10, 11],
       triggerPin: 11,
       triggerActive: true,
@@ -44,6 +45,12 @@ describe("GpioPinoutSvg logic-analyzer default variant", () => {
     expect(visibleCircle(laPin(view.host, "GP10")).getAttribute("fill")).toBe(LA_FILL_SELECTED);
     expect(visibleCircle(laPin(view.host, "GP11")).getAttribute("fill")).toBe(LA_FILL_TRIGGER);
     expect(visibleCircle(laPin(view.host, "GP12")).getAttribute("fill")).toBe(LA_FILL_UNSELECTED);
+
+    const decoration = view.host.querySelector('[data-pinout-part="decoration"]')!;
+    click(decoration);
+    contextMenu(decoration);
+    expect(onSetTriggerPin).not.toHaveBeenCalled();
+    expect(onTogglePin).not.toHaveBeenCalled();
 
     click(laPin(view.host, "GP10"));
     expect(onSetTriggerPin).toHaveBeenLastCalledWith(10);

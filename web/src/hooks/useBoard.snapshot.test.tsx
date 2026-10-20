@@ -26,6 +26,7 @@ function richStatus() {
         layoutGroup: "g", layoutLabel: "l", layoutRow: 2, layoutColumn: 3,
       },
     ],
+    gpio_layout_groups: [{ name: "G", edge: "right", order: 0 }],
     switches: { tf: { route: "sd", routes: ["sd", "emmc"], requires_confirm: false } },
     watchdog: {
       supported: true, automatic: true, healthy: true, armed: true,
@@ -74,6 +75,7 @@ describe("useBoard board snapshot boundary", () => {
         layoutGroup: "g", layoutLabel: "l", layoutRow: 2, layoutColumn: 3,
       },
     ]);
+    expect(snapshot.gpioLayoutGroups).toEqual([{ name: "G", edge: "right", order: 0 }]);
     expect(snapshot.switches.tf).toEqual({
       route: "sd", routes: ["sd", "emmc"], requires_confirm: false,
     });
@@ -112,6 +114,7 @@ describe("useBoard board snapshot boundary", () => {
       { name: "", signal: undefined, gp: undefined, controllable: false, state: "", value: null },
     ]);
     expect(snapshot.gpios).toEqual([]);
+    expect(snapshot.gpioLayoutGroups).toEqual([]);
     expect(snapshot.switches).toEqual({});
     expect(snapshot.watchdog.supported).toBe(false);
     expect(snapshot.monitoring.temperature).toEqual({ available: false });
@@ -154,6 +157,7 @@ describe("useBoard board snapshot boundary", () => {
     const preserved = view.current().snapshot;
     expect(preserved.powerOutputs[0]?.signal).toBe("S_C_5V");
     expect(preserved.gpios[0]?.layoutRow).toBe(2);
+    expect(preserved.gpioLayoutGroups).toEqual([{ name: "G", edge: "right", order: 0 }]);
     expect(preserved.watchdog.timeout_ms).toBe(16000);
     expect(preserved.monitoring.heap?.free_bytes).toBe(1024);
     expect(preserved.powerCaptureProtocol).toBe("host-stream-v1");
@@ -161,7 +165,10 @@ describe("useBoard board snapshot boundary", () => {
 
     // When a later snapshot carries only GPIOs
     act(() => {
-      socket.emitMessage({ type: "snapshot", gpios: [{ name: "GP8", pin: 8 }] });
+      socket.emitMessage({
+        type: "snapshot", gpios: [{ name: "GP8", pin: 8 }],
+        gpio_layout_groups: [{ name: "NEXT", edge: "unknown", order: 1 }],
+      });
     });
 
     // Then GPIOs are replaced with per-field fallbacks and switches are kept
@@ -174,6 +181,7 @@ describe("useBoard board snapshot boundary", () => {
       },
     ]);
     expect(updated.switches.tf?.route).toBe("sd");
+    expect(updated.gpioLayoutGroups).toEqual([{ name: "NEXT", edge: "unknown", order: 1 }]);
     expect(updated.powerOutputs[0]?.state).toBe("on");
     view.close();
   });

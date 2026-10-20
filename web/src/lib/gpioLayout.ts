@@ -1,4 +1,4 @@
-import type { SafeGpio } from "./types";
+import type { GpioLayoutGroupMetadata, SafeGpio } from "./types";
 
 export interface GpioLayoutCell {
   pin: number;
@@ -19,6 +19,7 @@ export interface GpioLayoutGroup {
   rowCount: number;
   columnCount: number;
   generic: boolean;
+  edge?: "right";
 }
 
 // Presentation-safety bound only: coordinates beyond this are treated as
@@ -68,7 +69,7 @@ function emptyRow(columns: number): (GpioLayoutCell | null)[] {
 
 export const GPIO_FALLBACK_GROUP_ID = "__gpio_fallback__";
 
-export function groupGpioLayout(gpios: SafeGpio[]): {
+export function groupGpioLayout(gpios: SafeGpio[], metadata: readonly GpioLayoutGroupMetadata[] = []): {
   groups: GpioLayoutGroup[];
   fallback: GpioLayoutGroup | null;
 } {
@@ -102,6 +103,12 @@ export function groupGpioLayout(gpios: SafeGpio[]): {
   }
 
   const groups: GpioLayoutGroup[] = [];
+  const groupMetadata = new Map<string, GpioLayoutGroupMetadata>();
+  for (const entry of metadata) {
+    const name = entry.name.trim().toUpperCase();
+    if (!name || groupMetadata.has(name) || !Number.isSafeInteger(entry.order) || entry.order < 0) continue;
+    groupMetadata.set(name, entry);
+  }
   for (const [group, cells] of cellsByGroup) {
     let rowCount = 0;
     let columnCount = 0;
@@ -116,8 +123,17 @@ export function groupGpioLayout(gpios: SafeGpio[]): {
       rows.set(cell.layoutRow, row);
       row[cell.layoutColumn] = cell;
     }
-    groups.push({ group, label: group, rows, rowCount, columnCount, generic: false });
+    groups.push({
+      group, label: group, rows, rowCount, columnCount, generic: false,
+      edge: groupMetadata.get(group)?.edge === "right" ? "right" : undefined,
+    });
   }
+  groups.sort((a, b) => {
+    const aMeta = groupMetadata.get(a.group);
+    const bMeta = groupMetadata.get(b.group);
+    if (aMeta && bMeta) return aMeta.order - bMeta.order;
+    return aMeta ? -1 : bMeta ? 1 : 0;
+  });
 
   const fallback = fallbackCells.length
     ? {

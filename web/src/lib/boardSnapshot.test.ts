@@ -13,6 +13,7 @@ test("EMPTY_BOARD_SNAPSHOT carries the documented boot-time defaults", () => {
   assert.deepEqual(EMPTY_BOARD_SNAPSHOT.powerOutputs, []);
   assert.deepEqual(EMPTY_BOARD_SNAPSHOT.switches, {});
   assert.deepEqual(EMPTY_BOARD_SNAPSHOT.gpios, []);
+  assert.deepEqual(EMPTY_BOARD_SNAPSHOT.gpioLayoutGroups, []);
   assert.deepEqual(EMPTY_BOARD_SNAPSHOT.adc, []);
   assert.deepEqual(EMPTY_BOARD_SNAPSHOT.watchdog, {
     supported: false,
@@ -40,11 +41,53 @@ test("mapBoardStatus treats a non-record status as an empty payload", () => {
     const snapshot = mapBoardStatus(status, []);
     assert.deepEqual(snapshot.powerOutputs, []);
     assert.deepEqual(snapshot.gpios, []);
+    assert.deepEqual(snapshot.gpioLayoutGroups, []);
     assert.deepEqual(snapshot.switches, {});
     assert.deepEqual(snapshot.watchdog, EMPTY_BOARD_SNAPSHOT.watchdog);
     assert.deepEqual(snapshot.monitoring, EMPTY_BOARD_SNAPSHOT.monitoring);
     assert.equal(snapshot.config, undefined);
     assert.equal(snapshot.powerCaptureProtocol, undefined);
+  }
+});
+
+test("HTTP and WS parse connector metadata without deriving edges from names", () => {
+  const gpio_layout_groups = [
+    { name: "J13", edge: "right", order: 1 },
+    { name: "J8", edge: "right", order: 0 },
+    { name: " x1 ", edge: "future-edge", order: 2 },
+    { name: "HDR", order: 3 },
+    { name: "j8", edge: "left", order: 9 },
+    { name: "", edge: "right", order: 4 },
+    { name: "BAD", edge: "right", order: -1 },
+    { name: "BAD2", edge: "right", order: 0.5 },
+    { name: "BAD3", edge: "right", order: "0" },
+    { name: "BAD4", edge: "right", order: Infinity },
+    null,
+  ];
+  const expected = [
+    { name: "J13", edge: "right", order: 1 },
+    { name: "J8", edge: "right", order: 0 },
+    { name: "X1", edge: "future-edge", order: 2 },
+    { name: "HDR", edge: "", order: 3 },
+  ];
+  const gpios = [{ name: "GP8", pin: 8, layoutGroup: "J13", layoutRow: 0, layoutColumn: 1 }];
+  const http = mapBoardStatus({ gpio_layout_groups, gpios }, []);
+  const ws = mergeBoardWsSnapshot(EMPTY_BOARD_SNAPSHOT, { gpio_layout_groups, gpios });
+  assert.deepEqual(http.gpioLayoutGroups, expected);
+  assert.deepEqual(ws.gpioLayoutGroups, expected);
+  assert.deepEqual(ws.gpios, http.gpios);
+  assert.equal(http.gpios[0]?.layoutColumn, 1, "coordinates are never mirrored");
+});
+
+test("WS retains omitted connector metadata and replaces or clears explicit metadata", () => {
+  const seeded = mapBoardStatus({ gpio_layout_groups: [{ name: "X", edge: "right", order: 0 }] }, []);
+  assert.equal(mergeBoardWsSnapshot(seeded, {}).gpioLayoutGroups, seeded.gpioLayoutGroups);
+  assert.deepEqual(mergeBoardWsSnapshot(seeded, {
+    gpio_layout_groups: [{ name: "Y", edge: "unknown", order: 1 }],
+  }).gpioLayoutGroups, [{ name: "Y", edge: "unknown", order: 1 }]);
+  for (const raw of [[], null, "invalid"]) {
+    assert.deepEqual(mergeBoardWsSnapshot(seeded, { gpio_layout_groups: raw }).gpioLayoutGroups, []);
+    assert.deepEqual(mapBoardStatus({ gpio_layout_groups: raw }, []).gpioLayoutGroups, []);
   }
 });
 

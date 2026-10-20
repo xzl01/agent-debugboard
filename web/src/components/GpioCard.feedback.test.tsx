@@ -113,7 +113,7 @@ describe("GpioCard feedback", () => {
     const onSet = vi.fn().mockResolvedValue(undefined);
     const view = renderCard([gpio(10), gpio(11)], onSet);
 
-    const hint = view.host.querySelector("p[id]");
+    const hint = document.getElementById(pinButton(view.host, 10).getAttribute("aria-describedby")!);
     expect(hint?.textContent).toContain("Tap: output low");
     const hintId = hint?.getAttribute("id");
     expect(hintId).toBeTruthy();

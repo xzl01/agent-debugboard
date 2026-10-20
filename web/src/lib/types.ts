@@ -184,6 +184,13 @@ export interface SafeGpio {
   layoutColumn?: number;
 }
 
+export interface GpioLayoutGroupMetadata {
+  name: string;
+  // Unknown edges are retained at the boundary, but claim no board geometry.
+  edge: string;
+  order: number;
+}
+
 export interface WatchdogStatus {
   supported: boolean;
   automatic: boolean;
@@ -241,6 +248,7 @@ export interface BoardSnapshot {
   powerOutputs: PowerOutput[];
   switches: SwitchState;
   gpios: SafeGpio[];
+  gpioLayoutGroups: GpioLayoutGroupMetadata[];
   watchdog: WatchdogStatus;
   monitoring: BoardMonitoring;
   adc: readonly AdcReading[];

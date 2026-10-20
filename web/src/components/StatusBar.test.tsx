@@ -13,6 +13,7 @@ const emptySnapshot: BoardSnapshot = {
   powerOutputs: [],
   switches: {},
   gpios: [],
+  gpioLayoutGroups: [],
   watchdog: {
     supported: false,
     automatic: false,
@@ -35,9 +36,10 @@ function render(
   snapshot: BoardSnapshot,
   connected = true,
   loading = false,
+  lang = "en",
 ): { readonly host: HTMLDivElement; readonly close: () => void } {
   localStorage.setItem("theme", "light");
-  localStorage.setItem("lang", "en");
+  localStorage.setItem("lang", lang);
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -121,17 +123,66 @@ describe("StatusBar Lighthouse regressions", () => {
   });
 
 
-  it("keeps a fixed USB slot before and after transport data arrives", () => {
+  it("keeps a fixed desktop USB slot but lets it shrink on narrow screens", () => {
     const initial = render(emptySnapshot);
     const placeholder = initial.host.querySelector('[data-testid="status-usb"]');
 
     expect(placeholder?.textContent?.trim()).toBe("—");
-    expect(placeholder?.classList.contains("min-w-20")).toBe(true);
+    expect(placeholder?.classList.contains("min-w-0")).toBe(true);
+    expect(placeholder?.classList.contains("sm:min-w-20")).toBe(true);
+    expect(placeholder?.classList.contains("min-w-20")).toBe(false);
     initial.close();
 
     const loaded = render({ ...emptySnapshot, usb: "mock-ncm" });
     expect(loaded.host.querySelector('[data-testid="status-usb"]')?.textContent).toContain("mock-ncm");
     loaded.close();
+  });
+
+  it.each([
+    { width: 320, lang: "en", mcu: "rp2354", usb: "ncm-http" },
+    { width: 320, lang: "zh", mcu: "RP2354A", usb: "ncm-http" },
+    { width: 375, lang: "en", mcu: "RP2354A", usb: "ncm-http" },
+    { width: 375, lang: "zh", mcu: "rp2354", usb: "ncm-http" },
+  ])("bounds and wraps real board identity at $width px in $lang without clipping the brand or power control", ({ width, lang, mcu, usb }) => {
+    const view = render({ ...emptySnapshot, mcu, usb }, true, false, lang);
+    view.host.style.width = `${width}px`;
+    const identity = view.host.querySelector<HTMLElement>('[data-testid="status-identity"]')!;
+    const chip = view.host.querySelector<HTMLElement>('[data-testid="status-identity-chip"]')!;
+    const mcuText = view.host.querySelector<HTMLElement>('[data-testid="status-mcu"]')!;
+    const usbText = view.host.querySelector<HTMLElement>('[data-testid="status-usb"]')!;
+    const logo = view.host.querySelector('[data-testid="linkr-logo"]')!;
+    const toggle = view.host.querySelector('[data-testid="logo-vdd5v-toggle"]')!;
+    const badge = view.host.querySelector('[data-testid="logo-vdd5v-status"]')!;
+
+    // jsdom has no layout engine. Assert the sizing policy that fixes the
+    // measured 309.44px identity overflowing the 272px content width at 320px.
+    expect(identity.classList.contains("max-w-full")).toBe(true);
+    expect(identity.classList.contains("min-w-0")).toBe(true);
+    expect(identity.classList.contains("flex-wrap")).toBe(true);
+    expect(identity.classList.contains("gap-x-3")).toBe(true);
+    expect(identity.classList.contains("gap-y-1")).toBe(true);
+    expect(identity.classList.contains("md:w-[360px]")).toBe(true);
+    expect(identity.classList.contains("md:flex-nowrap")).toBe(true);
+    expect(chip.classList.contains("max-w-full")).toBe(true);
+    expect(chip.classList.contains("flex-wrap")).toBe(true);
+    expect(chip.classList.contains("whitespace-normal")).toBe(true);
+    expect(chip.classList.contains("[overflow-wrap:anywhere]")).toBe(true);
+    expect(chip.classList.contains("sm:flex-nowrap")).toBe(true);
+    expect(chip.classList.contains("sm:whitespace-nowrap")).toBe(true);
+    expect(mcuText.textContent).toBe(mcu.toUpperCase());
+    expect(usbText.textContent).toBe(usb);
+    expect(mcuText.classList.contains("min-w-0")).toBe(true);
+    expect(usbText.classList.contains("min-w-0")).toBe(true);
+    expect(usbText.classList.contains("sm:min-w-20")).toBe(true);
+    expect(logo.parentElement?.classList.contains("shrink-0")).toBe(true);
+    expect(toggle.className).toContain("absolute left-3 top-3 grid h-6 w-6");
+    expect(toggle.hasAttribute("title")).toBe(false);
+    expect(toggle.querySelector("span")).toBeNull();
+    expect(badge.parentElement?.getAttribute("data-testid")).toBe("status-details");
+    for (const element of [identity, chip, mcuText, usbText]) {
+      expect(element.className).not.toMatch(/overflow-hidden|truncate|\bhidden\b/);
+    }
+    view.close();
   });
 
   it("uses restrained status text instead of large semantic badges", () => {

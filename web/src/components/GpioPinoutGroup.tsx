@@ -15,7 +15,6 @@ export interface GpioPinoutGroupProps {
   readonly gpioPendingPin?: number | null;
   readonly gpioInstructionsId?: string;
   readonly onGpioAction?: ((pin: number, action: GpioAction) => void) | undefined;
-  readonly label: string;
   readonly t: (key: string, params?: Record<string, string | number>) => string;
 }
 
@@ -25,6 +24,10 @@ const ROW_GAP = 4;
 const PADDING = 6;
 const HEADER_HEIGHT = 14;
 const TOUCH_TARGET_RADIUS = 17;
+const SIDE_EXIT_LENGTH = 10;
+
+// Minimum scale for a 44 CSS-pixel r17 target, independent of group count.
+export const PINOUT_DISPLAY_SCALE = 22 / TOUCH_TARGET_RADIUS;
 
 export const FILL_UNSELECTED = "rgb(var(--c-panel))";
 export const FILL_SELECTED = "rgb(var(--c-brand) / 0.14)";
@@ -49,6 +52,7 @@ interface PlacedCell {
 
 export function placeGroup(group: GpioLayoutGroup): {
   width: number;
+  bodyWidth: number;
   height: number;
   cells: PlacedCell[];
 } {
@@ -69,7 +73,12 @@ export function placeGroup(group: GpioLayoutGroup): {
       cells.push({ cell, cx, cy });
     }
   }
-  return { width: groupWidth, height: groupHeight, cells };
+  return {
+    width: groupWidth + (group.edge === "right" ? SIDE_EXIT_LENGTH : 0),
+    bodyWidth: groupWidth,
+    height: groupHeight,
+    cells,
+  };
 }
 
 export function GpioPinoutGroup({
@@ -84,44 +93,60 @@ export function GpioPinoutGroup({
   gpioPendingPin = null,
   gpioInstructionsId,
   onGpioAction,
-  label,
   t,
 }: GpioPinoutGroupProps) {
-  const { width, height, cells } = placeGroup(group);
+  const { bodyWidth: width, height, cells } = placeGroup(group);
+  const sideExit = group.edge === "right";
   return (
-    <g key={group.group}>
-      <rect
-        x={0.5}
-        y={0.5}
-        width={width - 1}
-        height={height - 1}
-        rx={10}
-        ry={10}
-        fill="rgb(var(--c-panel2) / 0.45)"
-        stroke={CONNECTOR_OUTLINE}
-        strokeWidth={1}
-      />
-      <text
-        x={width / 2}
-        y={PADDING + 4}
-        textAnchor="middle"
-        fontFamily="monospace"
-        fontSize={10}
-        fontWeight={700}
-        fill={HEADER_TEXT}
-      >
-        {group.label}
-      </text>
-      <text
-        x={width / 2}
-        y={PADDING + 13}
-        textAnchor="middle"
-        fontFamily="monospace"
-        fontSize={8}
-        fill={LABEL_DIM}
-      >
-        {label}
-      </text>
+    <g data-layout-group={group.group} data-layout-edge={group.edge ?? "generic"}>
+      <g aria-hidden="true" pointerEvents="none" data-pinout-part="decoration">
+        {sideExit ? (
+          <>
+            <path
+              data-pinout-part="board-interior"
+              d={`M ${width - 0.5} 0.5 H 10.5 Q 0.5 0.5 0.5 10.5 V ${height - 10.5} Q 0.5 ${height - 0.5} 10.5 ${height - 0.5} H ${width - 0.5}`}
+              fill="rgb(var(--c-panel2) / 0.45)"
+              stroke={CONNECTOR_OUTLINE}
+              strokeWidth={1}
+            />
+            {Array.from(new Set(cells.map(({ cy }) => cy))).map((cy) => (
+              <line
+                key={cy}
+                data-pinout-part="contact"
+                x1={width - 4}
+                x2={width + SIDE_EXIT_LENGTH - 1}
+                y1={cy}
+                y2={cy}
+                stroke={LABEL_DIM}
+                strokeWidth={2}
+                strokeLinecap="round"
+              />
+            ))}
+          </>
+        ) : <rect
+            data-pinout-part="generic-frame"
+            x={0.5}
+            y={0.5}
+            width={width - 1}
+            height={height - 1}
+            rx={10}
+            ry={10}
+            fill="rgb(var(--c-panel2) / 0.45)"
+            stroke={CONNECTOR_OUTLINE}
+            strokeWidth={1}
+          />}
+        <text
+          x={sideExit ? PADDING : width / 2}
+          y={PADDING + 4}
+          textAnchor={sideExit ? "start" : "middle"}
+          fontFamily="monospace"
+          fontSize={10}
+          fontWeight={700}
+          fill={HEADER_TEXT}
+        >
+          {group.label}
+        </text>
+      </g>
       {cells.map(({ cell, cx, cy }) => {
         if (variant === "gpio") {
           return (

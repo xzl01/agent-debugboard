@@ -8,6 +8,7 @@ import type {
   MemoryPressureSnapshot,
   PowerOutput,
   SafeGpio,
+  GpioLayoutGroupMetadata,
   WatchdogStatus,
   PdStatus,
 } from "./types.ts";
@@ -17,6 +18,7 @@ export const EMPTY_BOARD_SNAPSHOT: BoardSnapshot = {
   powerOutputs: [],
   switches: {},
   gpios: [],
+  gpioLayoutGroups: [],
   watchdog: {
     supported: false,
     automatic: false,
@@ -38,6 +40,24 @@ export const EMPTY_BOARD_SNAPSHOT: BoardSnapshot = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function parseGpioLayoutGroups(raw: unknown): GpioLayoutGroupMetadata[] {
+  if (!Array.isArray(raw)) return [];
+  const groups: GpioLayoutGroupMetadata[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (!isRecord(entry) || typeof entry.name !== "string") continue;
+    const name = entry.name.trim().toUpperCase();
+    if (!name || seen.has(name) || typeof entry.order !== "number" || !Number.isSafeInteger(entry.order) || entry.order < 0) continue;
+    seen.add(name);
+    groups.push({
+      name,
+      edge: typeof entry.edge === "string" ? entry.edge.trim() : "",
+      order: entry.order,
+    });
+  }
+  return groups;
 }
 
 function mergeAvailability<T extends Availability>(
@@ -171,6 +191,7 @@ export function mapBoardStatus(status: unknown, adc: readonly AdcReading[], pd: 
     powerOutputs,
     switches,
     gpios,
+    gpioLayoutGroups: parseGpioLayoutGroups(record.gpio_layout_groups),
     watchdog: parseWatchdog(record.watchdog, EMPTY_BOARD_SNAPSHOT.watchdog),
     monitoring: parseMonitoring(record.board_monitoring, EMPTY_BOARD_SNAPSHOT.monitoring),
     adc,
@@ -220,6 +241,9 @@ export function mergeBoardWsSnapshot(prev: BoardSnapshot, msg: unknown): BoardSn
     powerOutputs,
     switches: parseSwitches(record.switches, prev.switches),
     gpios,
+    gpioLayoutGroups: record.gpio_layout_groups === undefined
+      ? prev.gpioLayoutGroups
+      : parseGpioLayoutGroups(record.gpio_layout_groups),
     watchdog: parseWatchdog(record.watchdog, prev.watchdog),
     monitoring: parseMonitoring(record.board_monitoring, prev.monitoring),
     pd: parsePdStatus(record.pd, prev.pd),

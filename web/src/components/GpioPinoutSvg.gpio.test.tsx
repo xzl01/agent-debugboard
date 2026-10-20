@@ -2,6 +2,7 @@ import { act } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { LanguageProvider } from "@/lib/i18n";
 import { GpioPinoutSvg } from "./GpioPinoutSvg";
+import { x12GpioStatusFixture } from "@/lib/gpioLayout.testFixtures";
 import {
   DIRECTION_RING_R,
   FOCUS_RING_R,
@@ -115,25 +116,27 @@ describe("GpioPinoutSvg gpio variant concentric geometry", () => {
     view.close();
   });
 
-  it("keeps the transparent r17 hit target rendered at >=44px in the supported layout", () => {
+  it("keeps every r17 target at least 44px without shrinking groups to fit the whole diagram", () => {
+    const status = x12GpioStatusFixture();
     const view = renderSvg({
       variant: "gpio",
-      gpios: [
-        gpio(7, { layoutGroup: "J13", layoutRow: 0, layoutColumn: 0 }),
-        gpio(8, { layoutGroup: "J13", layoutRow: 0, layoutColumn: 1 }),
-        gpio(10),
-      ],
+      gpios: status.gpios,
+      layoutGroups: status.gpio_layout_groups,
     });
 
-    expect(pinCircle(gpioPin(view.host, 10), HIT_TARGET_R).getAttribute("fill")).toBe(
+    expect(pinCircle(gpioPin(view.host, 12), HIT_TARGET_R).getAttribute("fill")).toBe(
       "transparent"
     );
-    const svg = view.host.querySelector("svg");
-    const viewBoxWidth = Number(svg?.getAttribute("viewBox")?.split(" ")[2]);
-    const maxWidth = Number.parseFloat(svg?.style.maxWidth ?? "");
-    expect(viewBoxWidth).toBeGreaterThan(0);
-    expect(maxWidth).toBeGreaterThan(0);
-    expect(2 * 17 * (maxWidth / viewBoxWidth)).toBeGreaterThanOrEqual(44);
+    const svgs = view.host.querySelectorAll("svg");
+    expect(svgs).toHaveLength(3);
+    for (const svg of svgs) {
+      const [, , width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
+      expect(34 * Number.parseFloat(svg.style.width) / width!).toBeGreaterThanOrEqual(44);
+      expect(34 * Number.parseFloat(svg.style.height) / height!).toBeGreaterThanOrEqual(44);
+      expect(svg.getAttribute("class")).toContain("shrink-0");
+      expect(svg.parentElement?.className).toContain("max-w-full overflow-x-auto");
+      expect(svg.parentElement?.parentElement?.className).toContain("flex-wrap");
+    }
     view.close();
   });
 
@@ -184,8 +187,8 @@ describe("GpioPinoutSvg gpio variant concentric geometry", () => {
 
     const svg = view.host.querySelector("svg");
     expect(svg?.getAttribute("role")).toBe("group");
-    expect(svg?.querySelector("title")?.textContent).toBe("Safe GPIO pinout");
-    const legend = svg?.parentElement?.querySelector(".grid.grid-cols-2");
+    expect(svg?.querySelector("title")?.textContent).toBe("Safe GPIO pinout — J16");
+    const legend = view.host.querySelector(".grid.grid-cols-2");
     expect(legend?.textContent).toContain("low");
     expect(legend?.textContent).toContain("high");
     expect(view.host.textContent).not.toContain("Selected for capture");

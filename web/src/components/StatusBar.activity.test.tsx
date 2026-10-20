@@ -12,6 +12,7 @@ const emptySnapshot: BoardSnapshot = {
   powerOutputs: [],
   switches: {},
   gpios: [],
+  gpioLayoutGroups: [],
   watchdog: {
     supported: false,
     automatic: false,

@@ -195,7 +195,10 @@ export function StatusBar({
   return (
     <header className="sticky top-0 z-30 border-b border-line/80 bg-panel/95">
       <div className="mx-auto flex min-h-14 max-w-[1440px] flex-wrap items-center gap-x-5 px-6 md:flex-nowrap">
-        <div className="order-1 flex min-w-0 shrink-0 items-center gap-3 md:w-[360px]">
+        <div
+          data-testid="status-identity"
+          className="order-1 flex min-w-0 max-w-full shrink-0 flex-wrap items-center gap-x-3 gap-y-1 md:w-[360px] md:flex-nowrap"
+        >
           <h1 className="sr-only">{t("app.title")}</h1>
           <LinkrLogo
             state={logoState}
@@ -210,10 +213,13 @@ export function StatusBar({
               onToggle: () => void toggleVdd5v(),
             }}
           />
-          <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-panel2/70 px-2 py-1 text-[11px] text-ink-dim">
-            <span data-testid="status-mcu">{snapshot.mcu?.toUpperCase() || "—"}</span>
+          <div
+            data-testid="status-identity-chip"
+            className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5 whitespace-normal rounded-lg bg-panel2/70 px-2 py-1 text-[11px] text-ink-dim [overflow-wrap:anywhere] sm:flex-nowrap sm:whitespace-nowrap"
+          >
+            <span data-testid="status-mcu" className="min-w-0">{snapshot.mcu?.toUpperCase() || "—"}</span>
             <span aria-hidden="true">·</span>
-            <span data-testid="status-usb" className="min-w-20">{snapshot.usb || "—"}</span>
+            <span data-testid="status-usb" className="min-w-0 sm:min-w-20">{snapshot.usb || "—"}</span>
           </div>
         </div>
 

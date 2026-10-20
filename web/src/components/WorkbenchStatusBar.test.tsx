@@ -23,6 +23,7 @@ const snapshot: BoardSnapshot = {
     vin: { route: "3.3v" },
   },
   gpios: [],
+  gpioLayoutGroups: [],
   watchdog: {
     supported: true,
     automatic: true,

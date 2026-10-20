@@ -104,6 +104,7 @@ vi.mock("@/hooks/useBoard", async () => {
       powerOutputs: boardMocks.powerOutputs,
       adc: [],
       gpios: [{ name: "GP10", pin: 10, note: "", value: 1, direction: "output" }],
+      gpioLayoutGroups: [{ name: "PORT", edge: "right", order: 0 }],
       switches: {},
     },
     captureState: "idle",
@@ -147,8 +148,11 @@ vi.mock("./SwitchCard", () => ({ SwitchCard: () => null }));
 vi.mock("./BootCard", () => ({ BootCard: () => null }));
 vi.mock("./NetworkCard", () => ({ NetworkCard: () => null }));
 vi.mock("./GpioCard", () => ({
-  GpioCard: ({ workspaceTabs }: { readonly workspaceTabs?: ReactNode }) => (
-    <div data-testid="gpio-card">{workspaceTabs}</div>
+  GpioCard: ({ workspaceTabs, layoutGroups }: {
+    readonly workspaceTabs?: ReactNode;
+    readonly layoutGroups?: readonly { readonly name: string }[];
+  }) => (
+    <div data-testid="gpio-card" data-layout-groups={layoutGroups?.map((group) => group.name).join(",")}>{workspaceTabs}</div>
   ),
 }));
 vi.mock("./WatchdogCard", () => ({ WatchdogCard: () => <div data-testid="watchdog-card" /> }));
@@ -221,12 +225,13 @@ vi.mock("./PowerAnalysisWorkspace", () => ({
 
 type LogicAnalyzerMockProps = {
   readonly boardGpios?: readonly { readonly name: string }[];
+  readonly gpioLayoutGroups?: readonly { readonly name: string }[];
   readonly workspaceTabs?: ReactNode;
 };
 
 vi.mock("./LogicAnalyzerCard", () => ({
-  LogicAnalyzerCard: ({ boardGpios, workspaceTabs }: LogicAnalyzerMockProps) => (
-    <div data-testid="logic-analyzer">
+  LogicAnalyzerCard: ({ boardGpios, gpioLayoutGroups, workspaceTabs }: LogicAnalyzerMockProps) => (
+    <div data-testid="logic-analyzer" data-layout-groups={gpioLayoutGroups?.map((group) => group.name).join(",")}>
       {workspaceTabs}
       {boardGpios?.map((gpio) => gpio.name).join(",")}
     </div>
@@ -487,6 +492,7 @@ describe("App workspace", () => {
     expect(terminalPanel.hidden).toBe(false);
     expect(logicPanel.hidden).toBe(true);
     expect(byTestId(host, "logic-analyzer").textContent).toBe("GP10");
+    expect(byTestId(host, "logic-analyzer").getAttribute("data-layout-groups")).toBe("PORT");
   });
 
   it("switches to the Logic Analyzer panel when its tab is clicked", () => {
@@ -699,6 +705,7 @@ describe("App workspace", () => {
     click(byTestId<HTMLButtonElement>(dialog, "hardware-section-tab-io"));
 
     expect(dialog.querySelector('[data-testid="gpio-card"]')).not.toBeNull();
+    expect(dialog.querySelector('[data-testid="gpio-card"]')?.getAttribute("data-layout-groups")).toBe("PORT");
     expect(dialog.querySelector('[data-testid="watchdog-card"]')).not.toBeNull();
     expect(dialog.querySelector('[data-testid="gpio-controls-anchor"]')).not.toBeNull();
   });

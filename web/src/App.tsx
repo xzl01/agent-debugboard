@@ -395,6 +395,7 @@ export default function App() {
       >
         <GpioCard
           gpios={board.snapshot.gpios}
+          layoutGroups={board.snapshot.gpioLayoutGroups}
           onSet={board.setGpio}
           disabled={!board.connected || automationOwner != null}
           stale={!board.connected}
@@ -539,6 +540,7 @@ export default function App() {
                 >
                   <LogicAnalyzerCard
                     boardGpios={board.snapshot?.gpios}
+                    gpioLayoutGroups={board.snapshot?.gpioLayoutGroups}
                     onActivityChange={setLogicAnalyzerActive}
                   />
                 </div>

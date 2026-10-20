@@ -2,7 +2,7 @@ import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useI18n } from "@/lib/i18n";
 import { GpioCard } from "./GpioCard";
-import { gpio, mount, renderCard } from "./GpioCard.testUtils";
+import { gpio, mount, pinButton, renderCard } from "./GpioCard.testUtils";
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -29,7 +29,7 @@ describe("GpioCard compact pinout", () => {
     const onSet = vi.fn().mockResolvedValue(undefined);
     const view = renderCard([gpio(10)], onSet);
 
-    const hint = view.host.querySelector("p[id]");
+    const hint = document.getElementById(pinButton(view.host, 10).getAttribute("aria-describedby")!);
     const chunks = Array.from(hint?.querySelectorAll("span.inline-block") ?? []);
     expect(chunks).toHaveLength(4);
     expect(chunks[0]?.textContent).toBe("Tap: output low");
@@ -51,22 +51,34 @@ describe("GpioCard compact pinout", () => {
     const view = mount(
       <>
         <LangProbe />
-        <GpioCard gpios={[gpio(10)]} onSet={onSet} />
+        <GpioCard
+          gpios={[gpio(10)]}
+          layoutGroups={[{ name: "J16", edge: "right", order: 0 }]}
+          onSet={onSet}
+        />
       </>
     );
+
+    const svg = view.host.querySelector('svg[role="group"]')!;
+    const description = document.getElementById(svg.getAttribute("aria-describedby")!)!;
+    const hintId = pinButton(view.host, 10).getAttribute("aria-describedby")!;
+    expect(description.textContent).toContain("Only controllable pins");
+    expect(description.textContent).toContain("Right-edge connectors exit sideways");
 
     act(() => {
       switchLang?.("zh");
     });
 
     const chunks = Array.from(
-      view.host.querySelector("p[id]")?.querySelectorAll("span.inline-block") ?? []
+      document.getElementById(hintId)?.querySelectorAll("span.inline-block") ?? []
     );
     expect(chunks).toHaveLength(4);
     expect(chunks[0]?.textContent).toBe("轻点：输出低电平");
     expect(chunks[1]?.textContent).toBe("双击：设为输入");
     expect(chunks[2]?.textContent).toBe("长按：输出高电平");
     expect(chunks[3]?.textContent).toBe("按键：Enter/Space/0 低电平，1 高电平，I 输入");
+    expect(description.textContent).toContain("仅显示可控引脚，并非完整连接器。");
+    expect(description.textContent).toContain("右边缘连接器从板侧向外伸出。");
     view.close();
   });
 
@@ -81,13 +93,14 @@ describe("GpioCard compact pinout", () => {
     view.close();
   });
 
-  it("constrains the pinout section to the compact left-pane width", () => {
+  it("bounds the pinout pane without shrinking or clipping the interactive diagram", () => {
     const onSet = vi.fn().mockResolvedValue(undefined);
     const view = renderCard([gpio(10)], onSet);
 
     const section = view.host.querySelector("section.min-w-0");
     expect(section?.classList.contains("w-full")).toBe(true);
-    expect(section?.classList.contains("max-w-[300px]")).toBe(true);
+    expect(section?.classList.contains("max-w-md")).toBe(true);
+    expect(section?.querySelector(".overflow-hidden")).toBeNull();
     view.close();
   });
 

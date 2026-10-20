@@ -369,14 +369,40 @@ and interaction behavior only; implementation lands with the card itself.
 The GPIO card (`GpioCard.tsx`) is a single compact pinout section: connector
 SVG, a 2x2 four-swatch legend, and a localized gesture hint. The pinout
 grouping is firmware-authoritative: `groupGpioLayout` (`gpioLayout.ts`)
-derives every connector group, its row/column extents, and its ordering
-solely from the `layoutGroup`/`layoutRow`/`layoutColumn` metadata in the
-latest `SafeGpio` snapshot. The host owns no connector names, dimensions,
-pin maps, or mirroring; group order follows first firmware occurrence and
-extents come from the reported nonnegative integer coordinates. Pins with
+derives connector groups and their row/column extents from the
+`layoutGroup`/`layoutRow`/`layoutColumn` metadata in the latest `SafeGpio`
+snapshot. Top-level HTTP/WS `gpio_layout_groups` entries (`name`, `edge`,
+`order`) provide group presentation: ascending `order`, with snapshot order
+breaking ties and unlisted groups following listed groups. Only the explicit
+`right` edge enables a right-edge side-exit illustration; missing or unknown
+edges keep the neutral generic container. No connector name is special-cased.
+The host owns no connector dimensions, pin maps, or mirroring; extents come
+from the reported nonnegative integer coordinates. Pins with
 missing, invalid, or duplicate-cell metadata are never dropped: they render
 in a generic single-column fallback group (labeled `logicAnalyzer.fallbackGroup`)
 in snapshot order, presented as a plain list that claims no board geometry.
+Every illustration shows only allowlisted controllable pins, never a complete
+physical header. Unreported cells remain blank and inert, not inferred power
+or ground pins. Right-edge groups replace the closed frame with a muted
+`panel2` board-interior fill, an open-right outline, and short horizontal
+`ink-dim` contacts extending 10 SVG units beyond the existing group width.
+The group name stays on the board-interior side. All this decoration is
+`aria-hidden` and `pointer-events="none"`; pin centers, labels, and hit radii
+are unchanged. Localized visible and accessible descriptions explain both
+the side exit (only where reported) and the controllable-pin subset.
+
+The test-only x1.2 snapshot (`gpioLayout.testFixtures.ts`) follows the confirmed
+J8 numbering: left top-to-bottom 10..1 and right 20..11. Its controllable J8
+subset occupies only left-column rows 4..9; the top four rows remain empty,
+and no right column is invented. J13 shows USER at top-left, RSET at top-right,
+and MASKROM at bottom-left; its physical pin4 GND stays an empty, inert cell.
+GP17/GP18 remain in the GPIO catalog but have no connector group, so they
+appear in the generic fallback, not on J8. These are representative test
+inputs, not host-side mapping rules. The long J8 viewBox preserves the
+firmware coordinates and leading blank rows; do not crop, mirror, or compact
+them implicitly. Any future empty-row folding needs an explicit gap marker
+and a separate design decision, never changed physical coordinates.
+
 The legend maps
 level and direction independently: a LOW disc, a HIGH disc, a dashed ring
 labeled input, and a solid ring labeled output, all reusing the existing
@@ -435,9 +461,14 @@ the direction boundary at any scale:
   (white), matching the existing white-on-danger `Button variant="danger"`
   precedent.
 - The transparent hit-target circle (`r = 17`) stays the outermost interactive
-  layer; in the supported card layout (SVG `max-width: 224px` over the
-  firmware-reported connector groups viewBox) the rendered hit target is at
-  least 44px.
+  layer. Each group has an independent SVG at a minimum `22 / 17` CSS-pixel
+  scale, rounding viewport dimensions up to whole CSS pixels so subpixel
+  layout cannot reduce the 44px hit diameter. Pin centers stay unchanged. Groups wrap
+  using `gap-2` instead of shrinking the whole diagram at 320/375px. A
+  `max-w-full overflow-x-auto` viewport contains unusually wide, arbitrary
+  firmware groups without causing horizontal page overflow. Normal two-column
+  groups need no horizontal scrolling. The GPIO inset may use `max-w-md`;
+  the logic-analyzer sidebar keeps its existing 300px layout.
 
 Timing constants (GPIO variant only) — shared by every pointer path:
 

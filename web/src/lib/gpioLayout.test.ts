@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { SafeGpio } from "./types.ts";
 import { GPIO_LAYOUT_MAX_EXTENT, groupGpioLayout } from "./gpioLayout.ts";
+import { mapBoardStatus } from "./boardSnapshot.ts";
+import { x12GpioStatusFixture } from "./gpioLayout.testFixtures.ts";
 
 function pin(pin: number, group: string, row: number, col: number): SafeGpio {
   return {
@@ -34,40 +36,70 @@ function memberPins(result: ReturnType<typeof groupGpioLayout>): number[] {
   return pins;
 }
 
-test("groupGpioLayout preserves firmware physical layout without host mirroring", () => {
-  const gpios: SafeGpio[] = [
-    pin(8, "J13", 0, 0),
-    pin(9, "J13", 0, 1),
-    pin(7, "J13", 1, 1),
-    pin(15, "J16", 0, 0),
-    pin(29, "J16", 0, 1),
-    pin(10, "J16", 5, 0),
-    pin(16, "J16", 5, 1),
-  ];
-  const result = groupGpioLayout(gpios);
+test("groupGpioLayout preserves the x1.2 J8, J13 and fallback pins without mirroring", () => {
+  const snapshot = mapBoardStatus(x12GpioStatusFixture(), []);
+  const result = groupGpioLayout(snapshot.gpios, snapshot.gpioLayoutGroups);
   assert.equal(result.groups.length, 2);
-  const j13 = result.groups[0]!;
-  const j16 = result.groups[1]!;
+  const j8 = result.groups[0]!;
+  const j13 = result.groups[1]!;
+  assert.equal(j8.group, "J8");
   assert.equal(j13.group, "J13");
-  assert.equal(j16.group, "J16");
-  assert.equal(j13.rows.get(0)?.[0]?.pin, 8);
-  assert.equal(j13.rows.get(0)?.[1]?.pin, 9);
-  assert.equal(j13.rows.get(1)?.[1]?.pin, 7);
-  assert.equal(j13.rows.get(1)?.[0], null);
-  assert.equal(j16.rows.get(0)?.[0]?.pin, 15);
-  assert.equal(j16.rows.get(0)?.[1]?.pin, 29);
-  assert.equal(j16.rows.get(5)?.[0]?.pin, 10);
-  assert.equal(j16.rows.get(5)?.[1]?.pin, 16);
-  assert.equal(result.fallback, null);
+  assert.equal(j8.edge, "right");
+  assert.equal(j13.edge, "right");
+  assert.equal(j8.rowCount, 10);
+  assert.equal(j8.columnCount, 1, "do not invent the unreported right column");
+  for (const [row, pin, note] of [
+    [9, 12, "J8_PIN1"], [8, 13, "J8_PIN2"], [7, 14, "J8_PIN3"],
+    [6, 15, "J8_PIN4"], [5, 16, "J8_PIN5"], [4, 29, "J8_PIN6"],
+  ] as const) {
+    assert.equal(j8.rows.get(row)?.[0]?.pin, pin);
+    assert.equal(j8.rows.get(row)?.[0]?.note, note);
+  }
+  for (let row = 0; row < 4; row++) assert.deepEqual(j8.rows.get(row), [null]);
+  assert.equal(j13.rows.get(0)?.[0]?.pin, 9);
+  assert.equal(j13.rows.get(0)?.[1]?.pin, 8);
+  assert.equal(j13.rows.get(1)?.[0]?.pin, 7);
+  assert.equal(j13.rows.get(1)?.[1], null, "J13 pin4 GND is not a GPIO control");
+  assert.ok(result.fallback?.generic);
+  assert.deepEqual(memberPins({ groups: [], fallback: result.fallback }), [17, 18]);
+  assert.deepEqual(memberPins(result).sort((a, b) => a - b), snapshot.gpios.map((pin) => pin.pin).sort((a, b) => a - b));
 });
 
 test("groupGpioLayout derives group order from first firmware occurrence", () => {
-  const gpios: SafeGpio[] = [pin(10, "J16", 0, 0), pin(8, "J13", 0, 0), pin(11, "J16", 1, 0)];
+  const gpios: SafeGpio[] = [pin(10, "J16", 0, 0), pin(8, "J13", 0, 1), pin(11, "J16", 1, 0)];
   const result = groupGpioLayout(gpios);
   assert.deepEqual(
     result.groups.map((g) => g.group),
     ["J16", "J13"]
   );
+});
+
+test("groupGpioLayout applies explicit group order and edge to arbitrary names", () => {
+  const gpios = [pin(1, "UNLISTED", 0, 0), pin(2, "J13", 0, 0), pin(3, "J8", 0, 1), pin(4, "PORT", 1, 0)];
+  const result = groupGpioLayout(gpios, [
+    { name: "J13", edge: "right", order: 1 },
+    { name: "J8", edge: "right", order: 0 },
+    { name: " port ", edge: "right", order: 2 },
+    { name: "ABSENT", edge: "right", order: 3 },
+  ]);
+  assert.deepEqual(result.groups.map((group) => group.group), ["J8", "J13", "PORT", "UNLISTED"]);
+  assert.deepEqual(result.groups.map((group) => group.edge), ["right", "right", "right", undefined]);
+  assert.equal(result.groups[0]?.rows.get(0)?.[0], null);
+  assert.equal(result.groups[0]?.rows.get(0)?.[1]?.pin, 3);
+  assert.equal(result.groups[2]?.rowCount, 2, "metadata never supplies full connector dimensions");
+});
+
+test("groupGpioLayout keeps missing or unknown edges generic and ties stable", () => {
+  const gpios = [pin(1, "J13", 0, 0), pin(2, "J8", 0, 0), pin(3, "OTHER", 0, 0)];
+  assert.ok(groupGpioLayout(gpios).groups.every((group) => group.edge === undefined));
+  const result = groupGpioLayout(gpios, [
+    { name: "J13", edge: "future", order: 0 },
+    { name: "J8", edge: "", order: 0 },
+    { name: "OTHER", edge: "right", order: -1 },
+  ]);
+  assert.deepEqual(result.groups.map((group) => group.group), ["J13", "J8", "OTHER"]);
+  assert.ok(result.groups.every((group) => group.edge === undefined));
+  assert.deepEqual(memberPins(result), [1, 2, 3]);
 });
 
 test("groupGpioLayout accepts arbitrary connector names and dimensions", () => {
@@ -117,7 +149,7 @@ test("groupGpioLayout keeps duplicate-cell colliding pins visible in fallback", 
 
 test("groupGpioLayout never drops a firmware-reported pin", () => {
   const gpios: SafeGpio[] = [
-    pin(7, "J13", 1, 1),
+    pin(7, "J13", 1, 0),
     pin(15, "J16", 0, 0),
     pin(16, "J16", 0, 0),
     barePin(29),

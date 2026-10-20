@@ -27,6 +27,7 @@ import type {
   LogicAnalyzerState,
   LogicAnalyzerTriggerType,
   SafeGpio,
+  GpioLayoutGroupMetadata,
 } from "@/lib/types";
 import {
   AVAILABLE_PINS,
@@ -367,10 +368,12 @@ function decoderSignalPins(
 // allow: SIZE_OK — one logic-analyzer state machine owns capture, stream, decode, and cleanup.
 export function LogicAnalyzerCard({
   boardGpios,
+  gpioLayoutGroups,
   workspaceTabs,
   onActivityChange,
 }: {
   boardGpios?: SafeGpio[];
+  gpioLayoutGroups?: readonly GpioLayoutGroupMetadata[];
   workspaceTabs?: ReactNode;
   onActivityChange?: (active: boolean) => void;
 }) {
@@ -1342,6 +1345,7 @@ export function LogicAnalyzerCard({
             <div className="mt-3">
               <GpioPinoutSvg
                 gpios={boardGpios}
+                layoutGroups={gpioLayoutGroups}
                 selectedPins={config.selectedPins}
                 disabledPins={LOGIC_ANALYZER_SIGROK_DISABLED_PINS}
                 triggerPin={

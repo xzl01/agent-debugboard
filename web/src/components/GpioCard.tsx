@@ -3,7 +3,7 @@ import { Pin } from "lucide-react";
 import { Badge, Button, Card, Toggle } from "./ui";
 import { GpioPinoutSvg } from "./GpioPinoutSvg";
 import type { GpioAction } from "./useGpioPinGesture";
-import type { SafeGpio } from "@/lib/types";
+import type { GpioLayoutGroupMetadata, SafeGpio } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
 
 type GpioDirection = "input" | "output";
@@ -79,6 +79,7 @@ function GpioRow({
 
 export function GpioCard({
   gpios,
+  layoutGroups,
   onSet,
   disabled = false,
   stale = false,
@@ -88,6 +89,7 @@ export function GpioCard({
   workspaceTabs,
 }: {
   gpios: SafeGpio[];
+  layoutGroups?: readonly GpioLayoutGroupMetadata[];
   onSet: (identifier: string, direction: GpioDirection, value?: number) => Promise<void>;
   disabled?: boolean;
   stale?: boolean;
@@ -215,10 +217,11 @@ export function GpioCard({
       {gpios.length === 0 ? (
         <p className="text-sm text-ink-dim">{t("gpio.none")}</p>
       ) : (
-        <section className="min-w-0 w-full max-w-[300px] rounded-xl border border-line/60 bg-panel2/35 p-3">
-          <div className="overflow-hidden rounded-lg border border-line/50 bg-panel/70">
+        <section className="min-w-0 w-full max-w-md rounded-xl border border-line/60 bg-panel2/35 p-3">
+          <div className="min-w-0 rounded-lg border border-line/50 bg-panel/70 p-2">
             <GpioPinoutSvg
               gpios={gpios}
+              layoutGroups={layoutGroups}
               variant="gpio"
               gpioPendingPin={pendingPin}
               gpioInstructionsId={instructionsId}
