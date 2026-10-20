@@ -1553,7 +1553,6 @@ final_cleanup() {
     plan "PUT /switch/usb" "restore USB target route"
     plan "PUT /switch/sd" "restore SD target route"
     plan "PUT /switch/tf_wp" "restore TF-WP writable route"
-    plan "GET /switch/vin" "check final VIN safe state"
     plan "GET /power" "enumerate firmware power outputs"
     plan "PUT /power/<firmware-name>" "set each controllable on output to off"
     plan "GET /power" "prove every controllable output is off"
@@ -1569,7 +1568,6 @@ final_cleanup() {
   switch_route usb target
   switch_route sd target
   switch_route tf_wp writable
-  switch_get vin 3.3v
   enumerated_power_cleanup
   enumerated_gpio_cleanup
   config_get

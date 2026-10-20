@@ -122,18 +122,18 @@ function firmwareMemoryCaptureContract({
     ["CONFIG_HEAP_MEM_POOL_SIZE", "49152"],
     ["CONFIG_NET_SOCKETS_SERVICE_STACK_SIZE", "2400"],
     ["CONFIG_NET_IPV6", "n"],
-    ["CONFIG_I2C", "n"],
+    ["CONFIG_I2C", "y"],
     ["CONFIG_SPI", "n"],
     ["CONFIG_MAIN_STACK_SIZE", "2048"],
   ];
   const captureArena = /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_ALIGN\s+32768U\b/.test(captureArenaHeader)
-    && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_WS_SAMPLE_RING_BYTES\s+30720U\b/.test(captureArenaHeader)
+    && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_WS_SAMPLE_RING_BYTES\s+43008U\b/.test(captureArenaHeader)
     && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_POWER_CAPTURE_BYTES\s+65672U\b/.test(captureArenaHeader)
     && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_SIGROK_WS_POOL_BYTES\s+16624U\b/.test(captureArenaHeader)
     && /#define\s+LINKR_DEBUGGER_CAPTURE_ARENA_BURST_TOTAL_BYTES\s+144184U\b/.test(captureArenaHeader)
     && /LINKR_DEBUGGER_CAPTURE_ARENA_BYTES\s*\\?[\s\S]*LINKR_DEBUGGER_CAPTURE_ARENA_NORMAL_BYTES/.test(captureArenaHeader)
     && /static\s+uint8_t\s+linkr_debugger_capture_arena\s*\[\s*LINKR_DEBUGGER_CAPTURE_ARENA_BYTES\s*\]\s*__aligned\(\s*LINKR_DEBUGGER_CAPTURE_ARENA_ALIGN\s*\)/.test(captureArenaSource)
-    && /max\(normal,\s*burst\)=148856 B/.test(logicAnalyzerDoc);
+    && /max\(normal,\s*burst\)=161144 B/.test(logicAnalyzerDoc);
   const linker = /zephyr_linker_sources\(\s*RAM_SECTIONS\s+SORT_KEY\s+0\s+sections-ram\.ld\s*\)/.test(appCmake)
     && /SECTION_PROLOGUE\(\s*\.bss\.pre_capture\s*,\s*\(\s*NOLOAD\s*\)[\s\S]*?KEEP\(\s*\*\(\s*\.bss\.pre_capture\.sigrok_runtime\s*\)\s*\)[\s\S]*?KEEP\(\s*\*\(\s*\.bss\.pre_capture\.ws_clients\s*\)\s*\)[\s\S]*?GROUP_NOLOAD_LINK_IN\(\s*RAMABLE_REGION\s*,\s*RAMABLE_REGION\s*\)[\s\S]*?ASSERT\(\s*SIZEOF\(\s*\.bss\.pre_capture\s*\)\s*==\s*0xDA40/.test(sectionsRam)
     && /ASSERT\(\s*__data_region_end\s*<=\s*0x20010000/.test(sectionsRam)

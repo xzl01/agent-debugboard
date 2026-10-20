@@ -8,7 +8,7 @@
 
 - RP2350 固件逻辑改动
 - 主机 CLI/TUI 真实控制逻辑改动
-- 电源输出、switch 路由、ADC 电流监测、safe GPIO、watchdog、BOOTSEL 相关改动
+- 电源输出、switch 路由、ADC 电流监测、safe GPIO、watchdog、reboot、物理 BOOTSEL 按键、BOOTSEL 相关改动
 - OTA 路径相关改动（MCUboot OTA 是 RP2350 专用功能）
 - 任何新增面向硬件的功能
 
@@ -26,7 +26,7 @@
 2. 实机烧录并确认正常启动
 3. 验证 HTTP/WS 控制通路
 4. 验证 USB CDC ACM 串口 fallback 路径（USB CDC ACM serial fallback path）
-5. 验证 BOOTSEL 进入能力（BOOTSEL entry path）
+5. 验证 reboot 是正常冷重启，以及 BOOTSEL 进入能力（HTTP/CDC/物理按键，BOOTSEL entry path）
 6. OTA 路径相关改动必须验证上传、测试启动、手动确认基本流程
 7. 新增功能补对应 functional test（可行时）
 
@@ -61,6 +61,23 @@ build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2
 
 Linux 下免 root 烧录必须按本规范第 9 节通过 VENDOR 为 `RPI` 发现实际磁盘和分区，
 再用 `udisksctl` 挂载；不得固定假设 `/dev/sdX1`。只复制 combined initial-install/recovery UF2。
+
+RP2350 BOOTSEL 的 MSC 在收到 UF2 最后一个 block 后会立即复位。先 `cp` 再
+`sync` 存在竞态：内核 page cache 可能尚未回写，板子已经启动，造成镜像不完整。
+优先使用上面的 `picotool load -v -x`。若必须挂载复制，使用同步挂载，或直接写：
+
+```sh
+udisksctl mount -b /dev/sdd1 -o sync
+# 或
+MP=$(findmnt -n -o TARGET /dev/sdd1)
+dd if=build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 \
+   of="$MP/radxa-linkr-debugger-rp2350.uf2" bs=512 conv=fsync oflag=direct
+```
+
+复制完成后等待板子自行复位。复制末尾出现 I/O error、`device offline` 或设备
+消失是 bootloader 复位的正常现象，不能据此判定失败；也不能依赖随后的 `sync`。
+HIL 记录必须注明使用 `picotool` 还是同步复制，以及是否出现
+`lost async page write`。
 
 ## 标准 HIL 验证 checklist
 
@@ -371,14 +388,14 @@ PY
 高频 batch 路径还必须执行：
 
 ```sh
-rm -f /tmp/linkr-hil-1000.ndjson
-timeout 5s radxa-linkr-debuggerctl adc record /tmp/linkr-hil-1000.ndjson 1000 --rate-hz 1000
+rm -f /tmp/linkr-hil-adc-max.ndjson
+timeout 5s radxa-linkr-debuggerctl adc record /tmp/linkr-hil-adc-max.ndjson 250 --rate-hz 250
 python3 - <<'PY'
 import json
 from pathlib import Path
 
-rows = [json.loads(line) for line in Path('/tmp/linkr-hil-1000.ndjson').read_text().splitlines()]
-assert len(rows) == 1000, f'expected 1000 telemetry records, got {len(rows)}'
+rows = [json.loads(line) for line in Path('/tmp/linkr-hil-adc-max.ndjson').read_text().splitlines()]
+assert len(rows) == 250, f'expected 250 telemetry records, got {len(rows)}'
 for index, row in enumerate(rows):
     timing = row.get('metadata', {}).get('device_timing', {})
     for field in ('sample_sequence', 'device_t_mono_us', 'uptime_us'):
@@ -386,11 +403,13 @@ for index, row in enumerate(rows):
     dropped = row.get('metadata', {}).get('dropped_samples')
     if dropped is not None:
         assert isinstance(dropped, int) and dropped > 0, f'row {index} invalid dropped_samples: {dropped}'
-print('batch telemetry timing aliases passed')
+print('batch telemetry timing aliases passed at the 250 Hz limit')
 PY
 ```
 
-用连续记录的 `sequence`、`metadata.device_timing.sample_sequence` 和
+`rate_hz` 的当前验收范围是 `1..250`。`251` 及以上必须返回 `invalid_rate`，
+不得 clamp；HIL 记录应明确写出 251 被拒绝的观测结果，而不是只测 250 Hz
+成功。用连续记录的 `sequence`、`metadata.device_timing.sample_sequence` 和
 `metadata.device_timing.device_t_mono_us` 计算实际采样间隔；紧凑 batch 在线路上只提供
 `sequence` 与 `uptime_us` 时，Rust recorder 必须归一化出前述别名。不得用 WebSocket 帧数代替样本数。固件支持最多四个并发客户端，四路并发测试必须确认每个
 输出文件都持续增长，且任一客户端退出不会中断其他客户端。
@@ -598,7 +617,7 @@ node --test scripts/check-persistent-configuration-docs.test.mjs
 ```
 
 `checkPersistentConfigurationDocs(repositoryRoot).ok === true` 通过即代表
-Todo 14 文档验收完成，与硬件状态无关。Todo 14 不接触任何电源轨、VIN
+Todo 14 文档验收完成，与硬件状态无关。Todo 14 不接触任何电源轨、路由
 1.8V 切换、输出 GPIO 或 BOOTSEL 入口。
 
 <!-- persistent-config-example: hil-todo16-runner-dry-run -->
@@ -666,8 +685,8 @@ firmware/HTTP host-model 测试与 offline shell fixture 覆盖。ROM BOOTSEL
 
 #### 危险项 pending 与固件确认
 
-危险项必须精确选择非启动默认值 `switch/usb=pc`，而不是给电源轨上电、
-选择 VIN 1.8V 或驱动输出 GPIO。host/client 不得自行推断危险性或跳过确认。
+危险项必须精确选择非启动默认值 `switch/usb=pc`，而不是给电源轨上电
+或驱动输出 GPIO。host/client 不得自行推断危险性或跳过确认。
 危险提示与拦截只发生在 Save 请求时；写入存储的快照已经获得授权，启动时
 全量重放，不存在第二次确认门。
 
@@ -739,8 +758,8 @@ HTTP/CDC 两条路径在 BOOTSEL 切换后都能恢复。
 #### 最终安全清理
 
 Todo 16 实机 HIL 在结束前必须由 HTTP 与普通端点逐项断言最终状态：没有 snapshot，
-`switch/usb=target`、`switch/sd=target`、`switch/tf_wp=writable`、
-`switch/vin=3.3v`，所有测试过的 GPIO 都为 input，所有测试过的 power output 都为
+`switch/usb=target`、`switch/sd=target`、`switch/tf_wp=writable`，
+所有测试过的 GPIO 都为 input，所有测试过的 power output 都为
 off。还必须解除 NCM DHCP 占用、恢复开始前记录的默认路由/DNS，并释放 terminal、
 刷写工具和 CDC device 句柄。清理步骤缺失任意一项即视为本次 HIL `[blocked]`，
 不可被记录为 pass。
@@ -784,8 +803,8 @@ docs/testing/results/<YYYY-MM-DD>-persistent-config-hil.SHA256SUMS
 
 - 常态区域不得出现外框或空白分隔行；确认浮层是唯一允许带边框的区域。顶部状态
   固定两行；无 ADC 数据时遥测占零行，有数据时示波器固定七行（一行表头、六行
-  图形）。三路电流必须按确定性列宽并排显示：80 列为 26/26/26，零基 gutter
-  位于 26、53；120 列为 40/39/39，零基 gutter 位于 40、80。每路按可见峰值和
+  图形）。四路电流必须按确定性列宽并排显示：80 列为 20/19/19/19，零基 gutter
+  位于 20、40、60；120 列为 30/29/29/29，零基 gutter 位于 30、60、90。每路按可见峰值和
   最新值的 `ceil(max(..., 1) * 5 / 4)` 独立缩放，
   不得使用固定 5000 mA 量程。
 - Controls、Saved Config、Status 三页页签和当前页表头各固定一行，Tab/Shift+Tab
@@ -841,9 +860,8 @@ docs/testing/results/<YYYY-MM-DD>-persistent-config-hil.SHA256SUMS
   - `tui_switch_pointer_tf_wp_first_click_zero_put_then_fresh_confirm_routes_once`
   这两条 case 必须以 `switch/sd` 与 `switch/tf_wp` 为唯一产品名锚点；
   任何新增的 firmware-advertised switch 都按同一策略自动进入 TUI 确认门控，
-  不再为本策略硬编码任何生产 switch 名称或路由值。VIO HIL 仍只打开并取消
-  确认框、保持 `3.3v`，实际切换 `1.8v` 仍须满足第 6 节的目标兼容性与物理
-  测量前置条件。
+  不再为本策略硬编码任何生产 switch 名称或路由值。x1.2 不再提供 VIN/VIO
+  路由，因此不执行旧版 VIO 确认框或电压切换用例。
 - 上述命名 TUI switch case 与所有 2b 节其它 mouse / confirm / GPIO HIL 都
   必须在与运行 HIL 的用户无关的环境中执行：runner 不允许假定任何固定
   user PID、`HOME` 路径、shell 启动文件、tmux server 名称或
@@ -879,11 +897,10 @@ docs/testing/results/<YYYY-MM-DD>-persistent-config-hil.SHA256SUMS
   `--json status` 返回相同退出状态与输出；Unix 必须是指向主程序的相对符号链接，
   Windows 两个 `.exe` 必须为同一硬链接或具有相同 SHA256。
 
-结束前把所有测试过的 GPIO 恢复为 input、Power 恢复为测试前 HTTP 权威基线、VIN
-保持 `3.3v`，并
+结束前把所有测试过的 GPIO 恢复为 input、Power 恢复为测试前 HTTP 权威基线，并
 按本规范验证 HTTP/WS、CDC fallback、HTTP BOOTSEL 与 CDC BOOTSEL。证据写入
 `docs/testing/results/<YYYY-MM-DD>-cmd-ng-tui-controls-hil.md`，并保存 80x24/120x32
-三页、带三通道示波器的 Controls、GPIO 双 cell 选择态及确认态终端截图，明确区分
+三页、带四通道示波器的 Controls、GPIO 双 cell 选择态及确认态终端截图，明确区分
 真实板卡 HIL 和 TestBackend/mock-board 本地 QA。
 
 ### 2c. 固件目录自动化任务
@@ -916,7 +933,7 @@ MASKROM/EDL 来自固件拥有的不可变目录 `GET /api/v1/tasks/catalog`，h
   `[blocked]`。
 
 HIL 前后逐字节保存并恢复 `/api/v1/tasks` blob，记录全部 Power/GPIO/Switch 基线；
-结束时把 `CON_MAS` 恢复 input、VIN 保持 `3.3v`，其余硬件状态恢复基线。证据写入
+结束时把 `CON_MAS` 恢复 input，其余硬件状态恢复基线。证据写入
 `docs/testing/results/<YYYY-MM-DD>-builtin-automation-tasks-hil.md`。
 
 ### 3. 电源输出 get/set
@@ -944,7 +961,7 @@ timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v   # 期望 off
 timeout 5s radxa-linkr-debuggerctl --json switch route usb target --confirm
 timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v   # 期望 off（联动强制）
 
-# 注意：vdd_5v 关闭期间 CH347 1.8V VIN（VDD_1V8 子电源轨）会断电。
+# 注意：vdd_5v 是 USB hub 的辅助 5 V 域；关闭会使 hub 及其下游设备断电。
 
 timeout 5s radxa-linkr-debuggerctl --json power set 20v_out on
 timeout 5s radxa-linkr-debuggerctl --json power set 20v_out off
@@ -957,49 +974,59 @@ timeout 5s radxa-linkr-debuggerctl --json adc read
 timeout 5s radxa-linkr-debuggerctl --json adc read 5v_out
 timeout 5s radxa-linkr-debuggerctl --json adc read 12v_out
 timeout 5s radxa-linkr-debuggerctl --json adc read 20v_out
+timeout 5s radxa-linkr-debuggerctl --json adc read vdd_5v
+timeout 5s radxa-linkr-debuggerctl --json adc read adc3
 ```
 
 验证：
 
-- 返回字段合理
-- `raw / mv / current_ua / sensor_value` 可解析
+- 返回恰好五个 descriptor，顺序固定为
+  `5v_out`、`12v_out`、`20v_out`、`vdd_5v`、`adc3`。
+- 前四个是 INA226 电流通道，`adc3` 是 ADC3 电压通道；`adc3` 没有
+  `power_enabled`。
+- `raw / mv / current_ua / sensor_value` 可解析，host 不做校准或零点修正。
 
 ### 4b. ADC3 Compact Telemetry & GP29 Ownership
 
 本节与第 4 节组合形成 ADC 验收表面。完整合约以
 [docs/reference/adc-telemetry.md](../reference/adc-telemetry.md) 为准；这里只列出 HIL
-要确认的最小集合。4b.1、4b.2、4b.3、4b.4 中 ADC3 90-point /
-render / responsive 直接观测子集，以及 4b.5 的 GP29 直接所有权
-子项已经在 2026-07-31 真实板卡 HIL 中通过，证据见
-[日期报告](results/2026-07-31-adc3-telemetry-hil.md)；4b.4 中三路
-电流 row 的 90-point 视觉行为由 post-HIL 本地 production-build 视觉
-QA 验证（不属于板卡 HIL），任何依赖硬件电流通道响应性的电流 row 声明
-仍 `pending`，因为本会话未发生 post-token firmware reflash/HIL。
-4b.5 中历史 v1 snapshot 兼容子项仍为 `pending`，等待未来真实板卡
-HIL 验证。rolling nightly 检查（第 12h 节）独立于本节，不在本报告
-范围内。
+要确认的最小集合。当前固件固定上报五个 descriptor，顺序为
+`5v_out`、`12v_out`、`20v_out`、`vdd_5v`、`adc3`：前四个是 INA226 电流通道，
+`adc3` 是 ADC3 纯监测电压通道。
 
-**4b.1 HTTP rich read shape (`required`, `[passed]` by 2026-07-31 HIL)**
+2026-07-31 的板卡 HIL 只覆盖旧的四个 descriptor（三路 INA226 加 ADC3），
+不能作为当前五 descriptor / 四路 INA226 形状的证据。因此 4b.1、4b.2、4b.3
+的当前五 descriptor 验收，以及 4b.4 中新增 `vdd_5v` 电流 row 的断言，均保持
+`pending`，需要未来真实板卡 HIL 重新执行。4b.4 的 ADC3 90-point /
+render / responsive 子集和 4b.5 的 GP29 直接所有权子项仍由历史
+[2026-07-31 报告](results/2026-07-31-adc3-telemetry-hil.md)覆盖；历史报告中的
+三路电流结论不外推到 `vdd_5v`。`capture_arm` / `subscribe` 的 `rate_hz`
+范围为 `1..250`，250 Hz 是当前上限；超过 250 必须返回 `invalid_rate`，不得
+静默 clamp。rolling nightly 检查（第 12h 节）独立于本节，不在本报告范围内。
+
+**4b.1 HTTP rich read shape (`required`, current five-descriptor shape `pending`)**
 
 ```text
 timeout 5s curl -fsS http://172.29.203.1/api/v1/adc/read
 timeout 5s curl -fsS 'http://172.29.203.1/api/v1/adc/read?channel=adc3'
 timeout 5s curl -fsS 'http://172.29.203.1/api/v1/adc/read?channel=5v_out'
+timeout 5s curl -fsS 'http://172.29.203.1/api/v1/adc/read?channel=vdd_5v'
 ```
 
 验证（运行时断言）：
 
-- readings 数组恰好四个条目（顺序固定：`5v_out`、`12v_out`、
-  `20v_out`、`adc3`），且 name 与 schema 一致。
-- `5v_out` / `12v_out` / `20v_out` 的 `sensor_channel` 为 `current`，
-  `unit` 为 `A`，`current_ua` 是 signed integer µA，`power_enabled` 是
-  bool。
+- readings 数组恰好五个条目（顺序固定：`5v_out`、`12v_out`、
+  `20v_out`、`vdd_5v`、`adc3`），且 name 与 schema 一致。
+- `5v_out` / `12v_out` / `20v_out` / `vdd_5v` 的 `sensor_channel` 为
+  `current`，`unit` 为 `A`，`current_ua` 是 signed integer µA，
+  `power_enabled` 是 bool；`voltage_valid=true` 时 `voltage_uv` 是同一
+  INA226 样本的总线电压。
 - `adc3` 的 `sensor_channel` 为 `voltage`，`unit` 为 `V`，`sensor_value`
   存在且客户端据此重建 signed integer µV；**没有** `value`、
   `current_ua` 或 `power_enabled`。`raw` / `mv` / `sensor_value` 仍存在。
 - host 不做 ADC 校准或零点修正；值即为固件直读。
 
-**4b.2 WebSocket compact single-sample shape (`required`, `[passed]` by 2026-07-31 HIL)**
+**4b.2 WebSocket compact single-sample shape (`required`, current five-descriptor shape `pending`)**
 
 ```text
 timeout 5s node <<'NODE'
@@ -1018,17 +1045,17 @@ await new Promise((resolve, reject) => {
   const ws = new WebSocket(wsUrl);
   const timer = setTimeout(() => reject(new Error('ADC3 single frame timeout')), 5000);
   ws.addEventListener('open', () => {
-    ws.send(JSON.stringify({ type: 'subscribe', topic: 'live', rate_hz: 10, id: 'adc3-single' }));
+    ws.send(JSON.stringify({ type: 'subscribe', topic: 'live', rate_hz: 250, id: 'adc3-single' }));
   });
   ws.addEventListener('message', (event) => {
     const data = JSON.parse(event.data);
     if (data.type !== 'telemetry') return;
-    if (!Array.isArray(data.readings) || data.readings.length !== 4) {
-      reject(new Error('single frame must carry four readings'));
+    if (!Array.isArray(data.readings) || data.readings.length !== 5) {
+      reject(new Error('single frame must carry five readings'));
       return;
     }
     const names = data.readings.map((r) => r.name);
-    if (names.join(',') !== '5v_out,12v_out,20v_out,adc3') {
+    if (names.join(',') !== '5v_out,12v_out,20v_out,vdd_5v,adc3') {
       reject(new Error(`unexpected reading order: ${names.join(',')}`));
       return;
     }
@@ -1057,7 +1084,14 @@ await new Promise((resolve, reject) => {
         reject(new Error('adc3 must not carry power_enabled'));
         return;
       }
-      for (const forbidden of ['raw', 'mv', 'current_ua', 'sensor_value']) {
+      if (reading.kind === 'current' &&
+          (!Number.isInteger(reading.current_ua) ||
+           typeof reading.voltage_valid !== 'boolean' ||
+           !Number.isInteger(reading.voltage_uv))) {
+        reject(new Error(`current reading missing dual telemetry: ${reading.name}`));
+        return;
+      }
+      for (const forbidden of ['raw', 'mv', 'sensor_value']) {
         if (forbidden in reading) {
           reject(new Error(`compact frame must not carry ${forbidden} on ${reading.name}`));
           return;
@@ -1074,10 +1108,12 @@ console.log('ADC3 compact single-sample frame accepted');
 NODE
 ```
 
-记号含义：紧凑单样本帧没有任何 `raw`/`mv`/`current_ua`/`sensor_value`。
-外部 WS 客户端以前如果按这些字段解析，必须迁移；没有 dual-emission shim。
+记号含义：紧凑单样本帧没有 `raw`/`mv`/`sensor_value`；电流通道携带
+`current_ua`、`voltage_valid`、`voltage_uv` 双遥测。`rate_hz` 的验收上限是
+250；251 及以上必须返回 `invalid_rate`，不得 clamp。外部 WS 客户端以前如果按
+旧四 descriptor 或旧字段解析，必须迁移；没有 dual-emission shim。
 
-**4b.3 WebSocket compact batch shape (`required`, `[passed]` by 2026-07-31 HIL)**
+**4b.3 WebSocket compact batch shape (`required`, current five-descriptor shape `pending`)**
 
 ```text
 timeout 5s node <<'NODE'
@@ -1098,14 +1134,14 @@ await new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error('ADC3 batch timeout')), 5000);
   ws.addEventListener('open', () => {
     ws.send(JSON.stringify({
-      type: 'subscribe', topic: 'live', rate_hz: 100, batch_size: 10, id: 'adc3-batch',
+      type: 'subscribe', topic: 'live', rate_hz: 250, batch_size: 10, id: 'adc3-batch',
     }));
   });
   ws.addEventListener('message', (event) => {
     const data = JSON.parse(event.data);
     if (data.type !== 'telemetry-batch') return;
-    if (!Array.isArray(data.channels) || data.channels.length !== 4) {
-      reject(new Error('batch channels must be 4'));
+    if (!Array.isArray(data.channels) || data.channels.length !== 5) {
+      reject(new Error('batch channels must be 5'));
       return;
     }
     const adc3Idx = data.channels.findIndex((c) => c.name === 'adc3');
@@ -1114,8 +1150,14 @@ await new Promise((resolve, reject) => {
       return;
     }
     for (const sample of data.samples ?? []) {
-      if (!Array.isArray(sample.values) || sample.values.length !== 4) {
+      if (!Array.isArray(sample.values) || sample.values.length !== 5) {
         reject(new Error('sample values length mismatch'));
+        return;
+      }
+      if (!Array.isArray(sample.voltages_uv) ||
+          sample.voltages_uv.length !== 4 ||
+          !Number.isInteger(sample.voltage_valid_mask)) {
+        reject(new Error('batch missing four-channel INA226 voltage telemetry'));
         return;
       }
       const voltage = sample.values[adc3Idx];
@@ -1138,25 +1180,24 @@ console.log('ADC3 compact batch frame accepted');
 NODE
 ```
 
-**4b.4 Web sparkline 10 Hz / 90-sample (`required`, ADC3 90-point/render/responsive subcase `[passed]` by 2026-07-31 HIL; current-row 90-point visual subcase `[passed]` by post-HIL local production-build visual QA; board-HIL-specific current-row claim remains `pending` because no post-token firmware reflash/HIL occurred)**
+**4b.4 Web sparkline 10 Hz / 90-sample (`required`, ADC3 90-point/render/responsive subcase `[passed]` by 2026-07-31 HIL; four-current-row layout including `vdd_5v` `pending`)**
 
 用 Playwright 打开板载页面 `http://172.29.203.1/`，在 Power & measurements 卡片内
-断言：每路电流 row 与可选 ADC3 区块的 SVG 历史长度都不超过 90 个采样点，且在
-稳定供电下两个方向各能保持 ~9 秒（`±1 秒`）的窗口宽度。ADC3 区段只在固件
-出现 `adc3` 读数时渲染，且使用固定 0..3,300,000 µV Y 轴；不得擅自 host-side
-重新标定。Web 自动化节点使用既有的 `web/` 项目脚手架。
+断言：四路电流 row（`5v_out`、`12v_out`、`20v_out`、`vdd_5v`）与可选 ADC3 区块的
+SVG 历史长度都不超过 90 个采样点，且在稳定供电下两个方向各能保持 ~9 秒
+（`±1 秒`）的窗口宽度。ADC3 区段只在固件出现 `adc3` 读数时渲染，且使用固定
+0..3,300,000 µV Y 轴；不得擅自 host-side 重新标定。Web 自动化节点使用既有的
+`web/` 项目脚手架。
 
 本次真实板卡 HIL 仅覆盖 ADC3 90-point / render / responsive 直接观测
 子集：live ADC3 在 1280 px 与 375 px 两个 viewport 下，rolling window
-充满后 SVG 历史恰好 90 点，零水平溢出，无浏览器 console error。三路
-电流 row 的视觉 90-point 行为由 post-HIL 本地 production-build 视觉
-QA 验证：mocked API/WS 环境下，三路电流 row 与 ADC3 row 共四路
-sparkline 在 375/768/1280 px 三个 viewport 下各自维持 90 点，endpoint
-与 footer 字体 11 px，无 overlap/clipping/overflow/console error，也无
-对板卡的请求。本地验证不属于板卡 HIL；任何依赖硬件电流通道响应性的
-电流 row 声明仍 `pending`，因为本会话未发生 post-token firmware
-reflash/HIL。不得用本次本地视觉 QA 替代板卡 HIL，也不得反过来用本次
-板卡 HIL 主张电流 row 的 90-point 视觉行为。
+充满后 SVG 历史恰好 90 点，零水平溢出，无浏览器 console error。历史
+post-HIL 本地 production-build 视觉 QA 只覆盖旧的三路电流 row 加 ADC3
+（共四路 sparkline）；它不覆盖新增的 `vdd_5v` row，也不覆盖当前五路
+sparkline 布局。本地验证不属于板卡 HIL；当前四路电流 row 的 90-point
+行为仍 `pending`，需要未来真实板卡 HIL 或针对新布局的独立 production-build
+视觉 QA。不得用历史三路 QA 替代当前四路电流 row 的板卡 HIL，也不得反过来
+用 ADC3 的板卡 HIL 主张电流 row 的视觉行为。
 
 **4b.5 GP29 ADC3 ownership (`required`, direct ownership subcase `[passed]` by 2026-07-31 HIL; v1 snapshot compatibility subcases `pending`)**
 
@@ -1179,18 +1220,16 @@ timeout 5s curl -fsS -X PUT -H 'Content-Type: application/json' \
 
 **4b.6 HIL 边界**
 
-2026-07-31 真实板卡 HIL 通过的子集为 4b.1、4b.2、4b.3、4b.4 中
-ADC3 90-point / render / responsive 直接观测子集，以及 4b.5 中
+2026-07-31 真实板卡 HIL 通过的子集是旧四 descriptor 形状下的 4b.1、4b.2、
+4b.3、4b.4 中 ADC3 90-point / render / responsive 直接观测子集，以及 4b.5 中
 GP29 直接所有权子项（HTTP GPIO 列表保留 GP29、`PUT direction=output`
-被固件层拒绝、`PUT direction=input` 幂等）。4b.4 中三路电流 row
-的 90-point 视觉行为由 post-HIL 本地 production-build 视觉 QA 验证
-（mocked API/WS、375/768/1280 px 四路 sparkline 各自 90 点、endpoint
-与 footer 字体 11 px、无 overlap/clipping/overflow/console error、无
-板卡请求），该 QA 不属于板卡 HIL。任何依赖硬件电流通道响应性的
-电流 row 声明仍 `pending`，因为本会话未发生 post-token firmware
-reflash/HIL；不得用本地视觉 QA 替代板卡 HIL，也不得反过来用本次
-板卡 HIL 主张电流 row 的视觉行为。4b.5 中 v1 输入快照继续
-解码并在 firmware-defaults 之后自动恢复、v1 输出快照在重放命中
+被固件层拒绝、`PUT direction=input` 幂等）。该旧形状只有三路 INA226 电流
+descriptor；当前固件固定上报四路 INA226 电流加 ADC3，共五个 descriptor，
+因此 4b.1、4b.2、4b.3 的当前形状验收和 4b.4 的四路电流 row 布局断言
+均为 `pending`，必须在当前固件上重新执行。历史 post-HIL 本地
+production-build 视觉 QA 只覆盖旧三路电流 row 加 ADC3，不能外推到
+`vdd_5v` row 或五路 sparkline 布局；该 QA 不属于板卡 HIL。4b.5 中 v1 输入
+快照继续解码并在 firmware-defaults 之后自动恢复、v1 输出快照在重放命中
 GP29 时停在第一个硬件失败、GP29 `apply_state="failed"`
 而后续 GPIO output 仍 `pending` 这两个历史 v1 snapshot 兼容子项仍
 `pending`，等待未来真实板卡 HIL。rolling nightly 检查（第 12h 节）
@@ -1227,38 +1266,12 @@ timeout 5s radxa-linkr-debuggerctl --json switch get tf_wp
 - 优先顺序验证，避免并行反向测试干扰
 - `tf_wp` 启动默认必须是 `writable`（switch 关闭，GPIO22 驱动 Q12 将 GL3224 SD_WP 拉低）；`protected` 时 onboard USB 读卡器应表现为只读；GL3224 在插卡时采样 SD_WP，WP 变更需重新插卡或将 `switch sd` 切走再切回后生效
 
-### 6. VIN 控制（G3 专用）
+### 6. x1.2 已移除 VIN 路由
 
-默认 HIL 只确认 VIN 保持在安全默认值 3.3V，不执行 1.8V 切换：
-
-```sh
-timeout 5s radxa-linkr-debuggerctl --json switch get vin
-# 物理验证：测量目标板 VIO 引脚电压是否为 ~3.3V
-```
-
-验证：
-
-- `route` 字段回读为 `3.3v`
-- 物理测量确认 VIO 电压约为 3.3V
-
-只有同时满足以下条件时，才允许扩展执行 1.8V 切换测试：
-
-- 已明确确认外接目标和 CH347 侧器件均支持 1.8V
-- 已连接物理测量设备并能在切换后立即确认 VIO 电压
-- 操作者已接受切换的硬件副作用
-
-满足上述条件后，严格按顺序执行，并在结束时恢复 3.3V：
-
-```sh
-timeout 5s radxa-linkr-debuggerctl --json switch route vin 1.8v --confirm
-sleep 5
-timeout 5s radxa-linkr-debuggerctl --json switch get vin
-# 物理验证：测量目标板 VIO 引脚电压是否为 ~1.8V
-timeout 5s radxa-linkr-debuggerctl --json switch route vin 3.3v --confirm
-sleep 5
-timeout 5s radxa-linkr-debuggerctl --json switch get vin
-# 物理验证：测量目标板 VIO 引脚电压是否为 ~3.3V
-```
+x1.2 没有可切换的 VIN/VIO 1.8V/3.3V 电路，HTTP、CLI、CDC 和持久化目录
+均不再提供 VIN 控制。不得执行旧版 `switch vin` / CDC `vin` 步骤，也不再
+把 VIN 回读或恢复 3.3V 作为 HIL 清理条件；其它电源、路由、GPIO 和主机网络
+清理要求不变。硬件事实见 [x1.2 BSP](../reference/hardware-x1.2.md)。
 
 ### 7. safe GPIO
 
@@ -1285,6 +1298,22 @@ bound 到 5 秒以内（足够看到 2-3 次完整周期）。
 The logic analyzer uses RP2350 PIO2+DMA for high-speed GPIO capture. The sigrok
 binary protocol runs over two transports: Web UI uses `/api/v1/live-sessions` then
 `/api/v1/ws/<slot>` binary Sigrok; native sigrok/PulseView uses raw-TCP port 5556.
+
+Pin ownership is part of the HIL contract. FAST8/WIDE11 take over both J4
+UART1 pins (TX GP10 and RX GP11) through PIO2; a SINGLE capture on GP10 takes
+TX only. While the capture holds a pin, the J4 CDC ACM bridge cannot use that
+UART path and serial traffic must not be expected. After STOP or terminal
+cleanup the firmware restores `GPIO_FUNC_UART_AUX` on the configured GP10/GP11
+pins, so J4 works again without a reboot. Verify J4 loopback/serial before and
+after a capture; do not treat the expected mid-capture silence as a bridge
+failure.
+
+On x1.2, GP20 is the PIO I2C SCL and GP21 is SDA. The LA samples GP20 as a
+read-only tap without reconfiguring the pin. Never drive GP20 or hold it low
+from the fixture; that contends with the PIO0 I2C master. Verify the tap by
+observing SCL activity from the board's own I2C traffic and otherwise leave it
+at the pulled-up idle level. GP19 is the CH224A PD strap and must also remain
+high-impedance.
 
 CONFIG v1 pre/post are uint16 for ordinary bounded and stream requests. Web
 bounded pre-trigger supports rising, falling, and either only: `pre_samples >= 1`,
@@ -1494,7 +1523,7 @@ The 2026-07-27 WIDE11 HIL verified the then-current target at 100 MHz with
 `pre=0` and both `post=100000` and high-rate `post=0`. Accepted deep bursts
 delivered exactly 100000 samples in 98 DATA frames with zero sample-index gaps.
 WIDE11 uses two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B
-(GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B shared burst slice (overlays the 148856 B total backing allocation).
+(GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B shared burst slice (overlays the 161144 B total backing allocation).
 GP29 is excluded from WIDE11 LA and remains input-only while used by ADC3. NONE deep burst uses
 two capture SMs; triggered deep burst adds a third SM running the 3-instruction trigger
 program. Two-phase START prepares ownership and quiesce before the response. NONE sends
@@ -1509,7 +1538,7 @@ ARMED state followed by the ARMED event. GO then synchronously enables the sampl
 | WS | WIDE11 high-rate capacity burst | NONE | 100 MHz | PASS — post=0 produced exactly 100000 samples and auto-STOPPED |
 | TCP | WIDE11 high-rate capacity burst | NONE | 100 MHz | PASS — post=0 produced exactly 100000 samples and auto-STOPPED |
 
-After each deep burst run, verify HTTP health and restart capability. The 144184 B shared burst slice (overlaying the 148856 B total backing allocation)
+After each deep burst run, verify HTTP health and restart capability. The 144184 B shared burst slice (overlaying the 161144 B total backing allocation)
 restores ADC telemetry, power capture, and normal Sigrok pool after drain;
 confirm these services are functional after the capture completes.
 
@@ -1527,34 +1556,47 @@ The executable pin-mapping HIL is `--matrix wide11-mapping` in
 `apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py`. It must capture the
 exact WIDE11 deep-burst mode (`100 MHz`, `pre=0`, `post=100000`, CONFIG_V2), decode
 DATA payload as little-endian 11-bit samples (GP10=bit0 through GP20=bit10), and
-clearly identify which stimulus profile was used. The full external-generator profile
-verifies these independent bit mappings:
+clearly identify which stimulus profile was used.
 
-| Physical pin | DATA bit |
-|--------------|----------|
-| GP10 | bit0 |
-| GP11 | bit1 |
-| ... | ... |
-| GP20 | bit10 |
+On x1.2, GP20 is the PIO I2C **SCL**, not a free GPIO. It is sampled as a
+read-only tap: the LA leaves the PIO0 function and pad input enable untouched, so
+PIO0 keeps driving the INA226/CH224A bus while PIO2 samples the pad. GP19 is the
+CH224A PD strap and must remain high-impedance. The only fixture-driven pins are
+therefore GP10, GP11, and GP18:
+
+| Physical pin | DATA bit | Fixture |
+|--------------|----------|---------|
+| GP10 | bit0 | External generator D0 (also trigger channel 0) |
+| GP11 | bit1 | External generator D1 |
+| GP18 | bit8 | External generator D2 |
+| GP19 | bit9 | No connection; CH224A PD strap, read-only |
+| GP20 | bit10 | No connection; PIO I2C SCL, read-only tap |
 
 GP29 / ADC3 is excluded from WIDE11 LA and remains input-only.
 
 Do not use HTTP safe-GPIO outputs as the stimulus source for this case. WIDE11 PIO
-preparation configures GP10-GP20 as inputs (`gpio_pin_configure(...,
-GPIO_INPUT)`, `pio_gpio_init(...)`, and PIO input pindirs), so any same-pin HTTP
+preparation takes over the fixture-driven pins as PIO2 inputs, while GP19 stays
+high-impedance and GP20 retains its PIO0 I2C configuration. Any same-pin HTTP
 safe-GPIO output would be overridden or conflict with the capture ownership model.
 
-Full external 4-bit prerequisite for a valid `external_4bit` pass:
+Full external-generator prerequisite for a valid mapping pass:
 
-- External 3.3 V-compatible pattern generator D0 -> GP10 (DATA bit0 and trigger
-  channel 0)
-- External generator D1 -> GP11 (DATA bit1)
-- External generator D2 -> GP20 (DATA bit10)
+- External 3.3 V-compatible pattern generator D0 -> at least 1 kΩ series
+  resistor -> GP10 (DATA bit0 and trigger channel 0)
+- External generator D1 -> at least 1 kΩ series resistor -> GP11 (DATA bit1)
+- External generator D2 -> at least 1 kΩ series resistor -> GP18 (DATA bit8)
 - External generator GND -> Linkr Debugger GND
-- Hold the idle state with GP10 low before arming; after START/armed state, emit the
-  declared repeating nibble pattern. Nibble bit0 drives GP10, bit1 drives GP11,
-  bit2 drives GP20. The default pattern holds each nibble for
-  64 samples at 100 MHz and is intentionally transition-rich enough to reject a
+- Leave GP19 and GP20 unconnected. Do not drive them, pull them low, or attach a
+  probe that loads the I2C bus. A run that drives GP20 is invalid and must not be
+  reported as a pass.
+- Keep all generator outputs high-impedance until the START response confirms capture
+  ownership; then emit the declared repeating pattern. Return every output to
+  high-impedance before STOP or automatic cleanup can restore UART1 TX/RX on GP10/GP11.
+  The series resistors are mandatory contention protection if handoff timing is
+  imperfect. Pattern bit0 drives GP10, bit1 drives GP11, bit2
+  drives GP18; pattern values must be `0..0x7` (no fourth driven bit). The default
+  sequence is `0x1,0x3,0x2,0x6,0x4,0x5,0x7,0x0`, holding each value for
+  64 samples at 100 MHz, and is intentionally transition-rich enough to reject a
   one-sample SM-A/SM-B skew.
 
 Run the full external-generator case with a 5-second operation bound only after wiring
@@ -1571,11 +1613,30 @@ The case is blocked, not passed, unless `--wide11-map-external-generator` is pro
 Passing criteria include CONFIG_V2 use, exact mode/rate/pre/post, no DATA decode
 errors, no sample-index gaps, at least 100000 received samples, successful STOP_RESP
 cleanup, HTTP health after cleanup, and exact expected-pattern matching for bits
-0/1/10/11 across the configured check window.
+0/1/8 (`pattern_mask=0x0103`) across the configured check window. Other lanes
+must not be compared against invented fixed levels.
+
+GP20 is accepted only as a read-only SCL tap. While the capture runs, generate
+board-owned I2C traffic (for example repeated `GET /api/v1/adc/read` requests or
+normal INA226 telemetry) and verify that the GP20 lane shows SCL transitions and
+returns to its pulled-up idle level. The LA must not change the GP20/GP21 pin
+mux or direction and must not disturb I2C transactions. If the capture window
+contains no I2C traffic, record GP20 as not exercised rather than passing it.
+GP19 must read at its strap level (low through the board's 120 kOhm Rset) and
+must never be driven by the fixture.
+
+The runner reports passive GP19/GP20 level/transition observations only. It cannot
+correlate GP20 transitions with board-owned I2C transactions or inspect the pin mux,
+and therefore always leaves `dynamic_scl_mapping_validated` and
+`read_only_no_contention_verified` false. A three-driven-bit mapping pass alone is
+not full WIDE11 acceptance: separately record the read-only/no-contention checks
+above, or mark them `[blocked]` / not exercised. Static high or low SCL is not
+evidence of a dynamic SCL mapping pass.
 
 Reduced single-wire setup for remote validation is explicitly separate and must not be
-reported as the full external 4-bit mapping test. Use it only when `/dev/ttyACM1` TX is
-wired to GP10 and GP11, GP20, and GP29 remain externally low:
+reported as the full external mapping test. Use it only when `/dev/ttyACM1` TX is
+wired through at least a 1 kΩ series resistor to GP10 and all other selected pins are
+left unconnected:
 
 ```sh
 timeout 5s python3 apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py \
@@ -1584,13 +1645,19 @@ timeout 5s python3 apps/radxa_linkr_debugger/tests/logic_analyzer_hil_perf.py \
   --timeout 5
 ```
 
-The reduced case uses `stimulus_profile: "gp10_uart_low_others"` and sends the UART
-stimulus only after START_RESP, which is the trigger-safe barrier. It verifies GP10
-DATA bit0 sees both low and high runs, and that the zero mask `0x0c02` remains clear
-for every checked sample: GP11(bit1) and GP20(bit10) must stay low.
-Any high sample on bits1/10 is a failure and should be reported as unexpected
-high/crosstalk. This reduced case does **not** validate independent high-state mapping
-for GP11 or GP20. GP29 is excluded from WIDE11 LA and remains input-only while used by ADC3.
+The reduced case sends the UART stimulus only after START_RESP, which is the
+trigger-safe barrier. It verifies GP10 DATA bit0 sees both low and high runs. It
+does **not** validate independent high-state mapping for GP11, GP18, GP19, or
+GP20, and it must not assert that GP20 stays low: GP20 is SCL and its level is
+owned by the I2C bus. Report unconnected lanes as unverified, not as zero-mask
+passes (`zero_mask=0x0000`; the retained CLI flag name does not require low levels).
+GP29 is excluded from WIDE11 LA and remains input-only while used by ADC3.
+
+The older 2026-07-27 reduced profile that held GP11-GP20 low is x1.1 historical
+evidence. It is not an x1.2 acceptance procedure, and its fixed-low zero masks must
+not be reused on x1.2. Likewise, an `external_generator` run that still drives
+D3 into GP20 is not acceptable x1.2 evidence; the runner must implement the
+three driven bits plus the read-only GP20 tap described above.
 
 #### 8b.4.3 WIDE11 Shared-Arena Telemetry Isolation HIL
 
@@ -1599,7 +1666,7 @@ The executable two-client regression is `--matrix wide11-telemetry-isolation` in
 normal JSON WebSocket ADC telemetry client stays connected but pauses while a second
 client holds the WIDE11 shared burst-slice lease through raw-TCP sigrok deep burst.
 WIDE11 uses two packed capture SMs and two DMA channels in the 144184-byte
-shared burst slice (overlays the 148856 B total backing allocation); triggered capture adds a third trigger-only SM.
+shared burst slice (overlays the 161144 B total backing allocation); triggered capture adds a third trigger-only SM.
 
 Run with 5-second bounded operations:
 
@@ -1666,6 +1733,16 @@ Prerequisites:
 - `/dev/ttyACM1` is the WCH CH347 serial port; verify with `fuser` or `ls -la /dev/ttyACM*`
 - `/dev/ttyACM2` is the firmware CDC ACM port
 - No terminal program is attached to `/dev/ttyACM1`
+- `/dev/ttyACM1` TX reaches GP10 through at least a 1 kΩ series resistor. Direct
+  output-to-output wiring is forbidden because firmware restores UART1 TX immediately
+  after capture, possibly before a short bounded UART stimulus has finished.
+
+The stimulus UART and the J4 UART are different paths. `/dev/ttyACM1` drives
+GP10 externally as the test fixture, while J4 is the firmware UART1 bridge on
+GP10/GP11. During FAST8/WIDE11 (and SINGLE on GP10) the LA owns those pins, so
+J4 must be silent; after cleanup the firmware restores `GPIO_FUNC_UART_AUX` and
+J4 works again without a reboot. Do not use J4 as the stimulus source for this
+case and do not leave a terminal attached to J4 during the capture.
 
 UART stimulus may be sent immediately after START_RESP is received and must trigger:
 because START_RESP is the trigger-safe barrier — it is emitted only after the firmware has
@@ -1861,7 +1938,140 @@ print("Decoder JS/WASM headers, gzip decoding, glue reference, and WASM magic ar
 PY
 ```
 
+### 8c. Reboot 与物理 BOOTSEL 按钮
+
+`reboot` 是正常冷重启，`bootloader` 是 ROM BOOTSEL。二者不是别名，任何
+reboot 通过都不能替代第 9、10 节的 ROM BOOTSEL 证据，反之亦然。
+
+#### 每次启动后的电源前置状态
+
+冷启动后 `5v_out`、`12v_out`、`20v_out` 全部回到 Device Tree 的
+`regulator-boot-off`，`vdd_5v` 跟随 `switch usb` 启动路由。如果存在持久化
+v1 配置快照，启动重放可能再次打开其中保存的电源轨；因此 reboot 测试前必须
+确认没有会恢复这些电源轨的 snapshot。若存在，先记录并按持久化配置流程清除，
+或把它作为单独用例，不能把重放后的 `on` 状态当作 boot-off 证据。
+
+每次上电或启动（包括初次烧录后的启动）、reboot、ROM BOOTSEL 返回或
+watchdog 复位后，HIL 都必须先重新建立测试前置电源并验证，再继续任何依赖
+目标供电的步骤：
+
+```sh
+BOARD_URL=http://172.29.203.1
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"state":"on"}' "$BOARD_URL/api/v1/power/5v_out"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"mode":0,"voltage_mv":20000}' "$BOARD_URL/api/v1/pd"
+curl -fsS "$BOARD_URL/api/v1/power/5v_out"
+curl -fsS "$BOARD_URL/api/v1/pd"
+```
+
+要求 `5v_out` 为 `on`，PD 返回 `available=true`、`mode=0`（fixed）且
+`voltage_mv=20000`。PD 源必须实际广告 20 V；源不提供 20 V 时该步骤记为
+`[blocked]`，不得用 5 V 结果冒充通过。每次 reboot 测试迭代和每次 BOOTSEL
+恢复后都重复这条前置检查。如果后续步骤还需要 `12v_out` 或 `20v_out`，也必须
+重新设置并逐项验证；不得复用复位前的电源状态。
+
+#### 四个客户端的正常 reboot
+
+在同一固件上分别验证以下四个协议客户端（CDC ACM、HTTP、WebSocket、CLI）：
+
+| 客户端 | 操作 |
+| --- | --- |
+| CDC ACM shell | `reboot` |
+| HTTP | `curl -fsS -X POST "$BOARD_URL/api/v1/reboot"` |
+| WebSocket | `{"type":"command","command":"reboot","id":"reboot-ws"}` |
+| CLI | `radxa-linkr-debuggerctl reboot` |
+
+WebSocket 使用 `/api/v1/live-sessions` 返回的 slot；预期先收到
+`{"type":"result","schema":"radxa-linkr-debugger.v1","command":"reboot","id":"reboot-ws","ok":true,"status":"ok"}`，
+再等待 250 ms 重启。每次迭代都要检查：
+
+- 请求在复位前返回成功；HTTP 为 2xx，CLI/WS 为 `ok:true`。
+- 250 ms 后 USB NCM 断开并重新枚举，板子在既有 bounded retry 内恢复 HTTP。
+- 10 秒内 `lsblk` 不出现 VENDOR 严格等于 `RPI` 的设备，即没有进入
+  `RPI-RP2`，也没有 bootloader 枚举。
+- 恢复后先执行上一节的 `5v_out=on` + PD 20 V 前置恢复与验证。
+- `GET /api/v1/watchdog` 返回 `supported=true`、`automatic=true`、
+  `healthy=true`、`armed=true`、`bootloader_on_timeout=true`，且
+  `failing_service` 为空。
+
+TUI 与 Web UI 复用同一个 HTTP 端点，不另算第五个传输：TUI 的
+**System / Reboot** 行和 Web 的 **Restart** 各执行一次，二者都必须只触发正常
+重启，且不出现 `RPI-RP2`。TUI 不提供 BOOTSEL 行；另需确认 CLI `bootloader`
+与 Web 的 **Enter BOOTSEL** 仍走独立 bootloader 动作。正常重启测试不得从这两个
+入口发起，它们的 ROM BOOTSEL 路径按第 9 节验证。
+
+#### 非 POST 请求
+
+`/api/v1/reboot` 受支持的变更方法是 POST。依次发送 GET、PUT、DELETE：
+
+```sh
+for method in GET PUT DELETE; do
+  code=$(timeout 5s curl -sS -o "/tmp/reboot-$method.json" -w '%{http_code}' \
+    -X "$method" "$BOARD_URL/api/v1/reboot")
+  [ "$code" = 405 ] || { echo "$method expected 405, got $code"; exit 1; }
+  grep -q 'method_not_allowed' "/tmp/reboot-$method.json" || {
+    echo "$method missing method_not_allowed"; exit 1;
+  }
+done
+```
+
+每个响应必须是 HTTP 405 且 `error.code=method_not_allowed`。等待至少 1 秒后
+`GET /api/v1/status` 仍应成功，`board_monitoring.uptime_ms` 继续增长，证明
+这些请求没有调度复位。
+
+#### 重复 pending
+
+在同一个 250 ms 窗口内连续发送两次 `POST /api/v1/reboot`。第一次成功响应后，
+第二次应返回 HTTP 409、`error.code=reboot_pending`，不得再调度第二次或更早的复位。只允许观察到一次
+USB 断开/重新枚举；恢复后仍不得出现 `RPI-RP2`。若第二次恰好在设备已复位后
+发出，其 transport error 只能记为时序边界，不能算作幂等通过，必须重跑本项。
+
+#### 无 RPI-RP2
+
+正常 reboot 测试期间不得按住物理按键。持续 10 秒轮询，任何时刻出现 `RPI`
+vendor 磁盘都判失败；若按住按键跨越复位，ROM 进入 BOOTSEL 属于物理按键
+用例的预期，不能记到本项。
+
+```sh
+for _ in $(seq 1 10); do
+  RPI_DISK=$(timeout 5s lsblk -dpno NAME,VENDOR | awk '$2 == "RPI" { print $1; exit }')
+  [ -z "$RPI_DISK" ] || { echo "unexpected ROM BOOTSEL device: $RPI_DISK"; exit 1; }
+  sleep 1
+done
+```
+
+#### 物理 BOOTSEL 按钮
+
+物理按键测试需要人工计时。每一项开始前记录 `uptime_ms`，结束后再次读取，
+以区分“没有复位”和“已经重启”：
+
+| 手势 | 预期 |
+| --- | --- |
+| 短按后立即释放（小于 3 秒） | 不动作；`uptime_ms` 连续增长，USB/HTTP 不中断，不出现 `RPI-RP2` |
+| 运行中按住 3 秒，再继续按住至少 2 秒 | 按住期间不复位；`uptime_ms` 继续增长，HTTP 仍可响应 |
+| 上一步按住 3 秒后释放 | 执行正常冷重启；不出现 `RPI-RP2`，恢复后先做 5 V + PD 20 V 前置检查 |
+| 一直按住 10 秒不释放 | 按住期间不复位；释放后按长按处理，执行正常冷重启 |
+| 按住按键的同时上电或触发复位 | 由 RP2350 ROM 采样进入 ROM BOOTSEL；释放后出现 `RPI-RP2`，仅用合成完整 UF2 恢复 |
+
+最后一项是破坏性恢复测试，必须使用合成完整
+`radxa-linkr-debugger-rp2350.uf2`；绝不能把应用产物
+`build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.uf2`
+写入 RPI-RP2。
+
+物理按键由固件线程轮询，不运行在 ISR 中，也不由硬件直接复位。核心完全卡死
+时线程无法执行长按动作；这是设计边界，不要把长按当作卡死恢复路径。该故障
+模式仍由硬件 watchdog 兜底：普通 watchdog 超时复位通过 recovery marker 进入
+ROM BOOTSEL；如果存在 OTA test marker，同一次复位走 MCUboot 回滚路径，按
+第 11g 节单独验证，二者不能混用。正常启动后确认 `healthy` 恢复为 `true`。
+
+以上 reboot 与物理按键项在没有对应日期报告和真实返回值摘要之前只能记为
+`pending`，不能标为 `[passed]`。
+
 ### 9. BOOTSEL Entry
+
+> 本节只验证显式 ROM BOOTSEL。正常 `reboot` 的证据见第 8c 节，不能拿来
+> 替代本节。
 
 ```sh
 timeout 5s curl -fsS -X POST http://172.29.203.1/api/v1/bootloader || true
@@ -1952,12 +2162,11 @@ HTTP BOOTSEL 与 CDC BOOTSEL 两条路径的成功证据，恢复均仅使用合
 CDC ACM shell 验证（G3 固件）：
 
 ```text
-linkr-debugger:~$ vin get
+linkr-debugger:~$ config show
 linkr-debugger:~$ bootloader
 ```
 
-默认 CDC fallback 验证不切换 VIN。`vin set 1.8v` / `vin set 3.3v` 只允许在满足
-第 6 节的目标兼容性、物理测量和副作用确认条件后执行。
+CDC fallback 用 `config show` 验证只读状态路径；x1.2 不提供旧版 `vin` 命令。
 
 **CDC + combined-UF2 dual BOOTSEL (`required`, `[passed]` by 2026-07-31 HIL)**: 与第 9 节配套，
 CDC ACM shell 的 `bootloader` 命令必须经过与 HTTP `POST /api/v1/bootloader`
@@ -2362,7 +2571,7 @@ HIL 报告。
 
 ## 最短 HIL smoke test
 
-时间紧张时，至少验证以下 6 项：
+时间紧张时，至少验证以下 7 项：
 
 1. `--json doctor`
 2. `--json status`
@@ -2370,10 +2579,12 @@ HIL 报告。
 4. `adc read`
 5. `switch route/get`
 6. `bootloader`
+7. `reboot`（正常冷重启；恢复后先做 5 V + PD 20 V 前置检查，且不得出现
+   `RPI-RP2`）
 
-额外验证：7. `ota status`（确认 state=idle，不上传不测试）
+额外验证：8. `ota status`（确认 state=idle，不上传不测试）
 
-VIN 1.8V 切换不属于默认 smoke test 范围；它需要目标板电压兼容确认和物理测量验证，属于条件限定的可选步骤，详见上方第 6 节。OTA 上传/测试/确认流程属于可选的延长 HIL 项，不在最短 smoke test 范围内。
+x1.2 不执行已删除的 VIN 路由用例。OTA 上传/测试/确认流程属于可选的延长 HIL 项，不在最短 smoke test 范围内。
 
 ## 验证结果记录建议
 
@@ -2385,6 +2596,9 @@ VIN 1.8V 切换不属于默认 smoke test 范围；它需要目标板电压兼�
 - 烧录方式
 - 实测命令与返回值摘要
 - 是否通过 BOOTSEL 与 CDC ACM fallback
+- reboot 是否保持正常启动且未出现 RPI-RP2
+- 物理 BOOTSEL 长按/短按/按住复位的结果
+- 每次启动后的 `5v_out` + PD 20 V 前置检查结果
 - 失败项与风险说明
 
 ## Final Post-Fix HIL Evidence

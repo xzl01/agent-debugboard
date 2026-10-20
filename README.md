@@ -6,10 +6,10 @@ RP2350-series firmware for **Radxa Linkr Debugger**, a USB-controlled hardware
 bridge that lets a PC-side Agent/AI operate target-board power, boot-mode,
 TF/SD routing, current-monitor ADC channels, and a small safe GPIO surface.
 
-The actively supported hardware is G3 with RP2350A. G2/RP2040 support is
-retired: it receives no firmware builds, release artifacts, compatibility
-fixes, or hardware validation. RP2354 hardware requires a dedicated board
-definition and HIL validation before it can be declared supported.
+The current BSP targets [x1.2 / RP2354A](docs/reference/hardware-x1.2.md)
+using the RP2350A-compatible build target. G2/RP2040 support is retired: it
+receives no firmware builds, release artifacts, compatibility fixes, or hardware
+validation. Historical HIL evidence does not establish x1.2 acceptance.
 
 ![Radxa Linkr Debugger promo](docs/assets/marketing/radxa-linkr-debugger-promo.png)
 
@@ -23,15 +23,15 @@ definition and HIL validation before it can be declared supported.
 | Logic analyzer | PIO2+DMA, 100 kHz–125 MHz, WebSocket/raw-TCP Sigrok with a [common packed arena and current WIDE11 capture](docs/reference/logic-analyzer.md) |
 | Power analyzer | Triggered capture with ring buffer, CSV/NDJSON export |
 | Power outputs | `12v_out`, `5v_out`, `20v_out`, `vdd_5v` |
-| ADC monitor | Current readings for `5v_out`, `12v_out`, and `20v_out` plus GP29/ADC3 voltage telemetry; see [docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md) |
-| Switch routes | Firmware-advertised TF/SD, USB hub mux, TF write-protect (`writable`/`protected`), VIN (1.8V/3.3V) |
-| GPIO | `GP7`–`GP20`; `GP29` remains cataloged but is input-only while owned by `adc3` (see [GP29 ownership](docs/reference/adc-telemetry.md#gp29-ownership)) |
+| ADC monitor | Current readings for `5v_out`, `12v_out`, `20v_out`, and `vdd_5v` plus GP29/ADC3 voltage telemetry; see [docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md) |
+| Switch routes | Firmware-advertised TF/SD, USB hub mux, TF write-protect (`writable`/`protected`) |
+| GPIO | `GP7`–`GP9`, `GP12`–`GP18`; `GP29` remains cataloged but is input-only while owned by `adc3` (see [GP29 ownership](docs/reference/adc-telemetry.md#gp29-ownership)) |
 | OTA update | MCUboot unsigned OTA |
 | Watchdog | Autonomous recovery to BOOTSEL |
 | Persistent configuration | [One explicit firmware-owned snapshot](docs/reference/persistent-configuration.md); safe values restore at boot, dangerous values require confirmation, and clear leaves live hardware unchanged |
 | Captive portal | DHCP option 114/HTTP auto-open for Web UI |
 
-WIDE11 uses a 144184 B hardware slice and a 30720 B WS telemetry ring within the 148856 B total backing allocation. Current strict 10/10 continuous points are FAST8 static 2.600 MHz and GP16-active 1.200 MHz WS / 1.375 MHz TCP; WIDE11 static 1.050 MHz WS / 1.175 MHz TCP and GP16-active 850 kHz WS / 950 kHz TCP. These are transport operating points, not 125 MHz continuous claims.
+WIDE11 uses a 144184 B hardware slice and a 43008 B WS telemetry ring within the 161144 B total backing allocation. Historical strict 10/10 continuous points are FAST8 static 2.600 MHz and GP16-active 1.200 MHz WS / 1.375 MHz TCP; WIDE11 static 1.050 MHz WS / 1.175 MHz TCP and GP16-active 850 kHz WS / 950 kHz TCP. These are transport operating points, not 125 MHz continuous claims or x1.2 revalidation.
 
 ADC3 contract, wire shapes, and GP29 ownership rules live in
 [docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md); the dated
@@ -73,7 +73,7 @@ Future local tests remain distinct from board HIL.
 | `snapshot` | `linkr/config/snapshot;v1;one` |
 | `explicit-save` | `ordinary-setters-volatile;explicit-save-only` |
 | `boot-restore` | `defaults-first;v1-full-restore` |
-| `header` | `12B-header;byte4-version=1;byte7-zero;max-104B` |
+| `header` | `12B-header;byte4-version=1;byte7-zero;max-84B` |
 | `firmware-confirmation` | `firmware-owned-confirmation;save-time-only` |
 | `save` | `persists-and-applies;failed-retry-via-resave` |
 | `clear` | `settings_delete;hardware-unchanged` |

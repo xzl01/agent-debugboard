@@ -6,10 +6,13 @@ the firmware remember selected power, switch, and safe-GPIO values across
 boots, restore them on startup, and save plus apply them in one operation
 through the HTTP, WebSocket, CDC ACM, and embedded Web surfaces.
 
-The default device URL is `http://172.29.203.1`. The feature is owned by the
-firmware: the host CLI/TUI, Web UI, and CDC ACM shell only render and forward
-state. They do not derive confirmation policy, hold profiles, or keep their own
-copy of saved values.
+The default device URL is `http://172.29.203.1`. Each board can persist its own
+USB-NCM subnet octet, so a second board can use a different
+`http://172.29.<subnet>.1` address on the same host; see
+[`network.md`](network.md) for the address plan and the HTTP, shell, and CLI
+surfaces. The feature is owned by the firmware: the host CLI/TUI, Web UI, and
+CDC ACM shell only render and forward state. They do not derive confirmation
+policy, hold profiles, or keep their own copy of saved values.
 
 ## Scope And Non-Goals
 
@@ -102,10 +105,12 @@ bytes; byte 4 version 1 is the only accepted version and byte 7 zero is the
 only accepted restore padding. The header also carries the magic `LRCF`,
 the entry size, the entry count, and the total encoded size. Each entry is
 four bytes: domain, item id, value, and a padding byte. The maximum encoded
-size is 104 bytes for the 12-byte header and 23 entries of 4 bytes each.
-The catalog is exactly 23 items: 4 power outputs, 4 switches, and 15 safe
-GPIOs (`gpio/GP7` through `gpio/GP20` plus `gpio/GP29`). There is exactly
-one wire definition, so no version dispatch exists anywhere in the service.
+size is 84 bytes for the 12-byte header and 18 entries of 4 bytes each.
+The catalog is exactly 18 items: 4 power outputs, 3 switches, and 11 safe
+GPIOs (`gpio/GP7` through `gpio/GP18` except `gpio/GP10` and `gpio/GP11`,
+plus `gpio/GP29`). `GP20` is PIO I2C SCL and `GP21` is SDA on the J8
+external connector; neither is part of the GPIO catalog. There is exactly one
+wire definition, so no version dispatch exists anywhere in the service.
 
 The codec rejects non-conforming headers as follows:
 
@@ -141,21 +146,21 @@ firmware does not auto-format, auto-erase, or auto-delete the snapshot.
 
 ## Firmware-Owned Catalog And Risk
 
-The catalog is owned by the firmware. The 23 items are exactly:
+The catalog is owned by the firmware. The 18 items are exactly:
 
 - Power: `power/12v_out`, `power/5v_out`, `power/vdd_5v`, `power/20v_out`.
 - Switch: `switch/sd` (target | usb-reader), `switch/usb` (pc | target),
-  `switch/tf_wp` (writable | protected), `switch/vin` (1.8v | 3.3v).
-- GPIO: `gpio/GP7` through `gpio/GP20` and `gpio/GP29`.
+  `switch/tf_wp` (writable | protected).
+- GPIO: `gpio/GP7` through `gpio/GP18` except `gpio/GP10`/`gpio/GP11`, plus
+  `gpio/GP29`. `GP20` (SCL) / `GP21` (SDA) form the external J8 I2C bus,
+  not GPIO items.
 
 The firmware classifies each saved entry as safe or dangerous through
 `linkr_debugger_config_classify_entry`:
 
-- Dangerous: any power `on` value; `switch/usb` (both routes); `switch/vin`
-  with value `1.8v`; any GPIO output value (the GPIO entry's value byte has
-  the output bit set).
-- Safe: power `off`; `switch/sd`; `switch/tf_wp`; `switch/vin` with value
-  `3.3v`; any GPIO input value.
+- Dangerous: any power `on` value; `switch/usb` (both routes); any GPIO
+  output value (the GPIO entry's value byte has the output bit set).
+- Safe: power `off`; `switch/sd`; `switch/tf_wp`; any GPIO input value.
 
 The `requires_confirm` flag on each catalog row is computed by the firmware
 from the catalog row's current value or saved value. The host never overrides
@@ -172,15 +177,15 @@ boot.
 
 Boot restores defaults first. Power outputs are off, `switch sd` is
 `target`, `switch usb` is `target`, `switch tf_wp` is `writable`,
-`switch vin` is `3.3v`, and the allowlisted GPIOs are in input mode. The
+and the allowlisted GPIOs are in input mode. The
 persistent-configuration service then loads the snapshot from
 `linkr/config/snapshot`. A corrupt, unsupported, missing, or
 backend-unavailable snapshot does not block startup; the boot path reports
-the reason and continues with the defaults. Every structurally valid v1 snapshot replays every saved entry, including dangerous values, on every normal boot through the shared ten-stage order; `pending` stays zero after
+the reason and continues with the defaults. Every structurally valid v1 snapshot replays every saved entry, including dangerous values, on every normal boot through the shared nine-stage order; `pending` stays zero after
 a successful boot replay, `current` matches the saved value, and
 `apply_state` is `applied` for every replayed row.
 
-Save and boot share the same replay engine and the same ten-stage order,
+Save and boot share the same replay engine and the same nine-stage order,
 enforced by `linkr_debugger_config_replay_order_snapshot`:
 
 1. Safe GPIO inputs (GPIOs in input mode).
@@ -191,8 +196,7 @@ enforced by `linkr_debugger_config_replay_order_snapshot`:
 6. `power 12v_out`.
 7. `power 5v_out`.
 8. `power 20v_out`.
-9. `switch vin`.
-10. Saved GPIO outputs (GPIOs in output mode).
+9. Saved GPIO outputs (GPIOs in output mode).
 
 A USB route change is applied before any explicit `vdd_5v` override so the
 coupled rail matches the route; omitting `vdd_5v` from the snapshot
@@ -660,7 +664,7 @@ Firmware implementation:
   service mutex, capture/flash owner acquisition and reverse release, save
   (persist plus replay), boot restore, and clear entry points.
 - [apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c):
-  ten-stage replay order shared by Save and boot restore, and
+  nine-stage replay order shared by Save and boot restore, and
   stop-first-failure replay.
 - [apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c):
   catalog, magic `LRCF`, version `1`, entry format, encode and decode

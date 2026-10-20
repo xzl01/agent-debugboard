@@ -6,9 +6,10 @@ RP2350 系列固件，用于 **Radxa Linkr Debugger** —— 一块 USB 控制�
 让 PC 侧 Agent/AI 可以直接操作目标板供电、刷机模式、TF/SD 路由、
 电流监测 ADC 和一组安全 GPIO。
 
-当前正式支持的硬件为 G3 / RP2350A。G2 / RP2040 已停止支持：
+当前 BSP 面向 [x1.2 / RP2354A](docs/reference/hardware-x1.2.md)，使用兼容的
+RP2350A 构建目标。G2 / RP2040 已停止支持：
 不再为其构建固件、发布产物、修复兼容性问题或执行硬件验证。
-RP2354 硬件需要完成专用 board 定义和 HIL 验证后才能声明支持。
+历史 HIL 证据不代表 x1.2 已完成验收。
 
 ![Radxa Linkr Debugger 宣传图](docs/assets/marketing/radxa-linkr-debugger-promo.png)
 
@@ -22,15 +23,15 @@ RP2354 硬件需要完成专用 board 定义和 HIL 验证后才能声明支持�
 | 逻辑分析仪 | PIO2+DMA，100 kHz–125 MHz，WebSocket/raw-TCP Sigrok，[共用 packed arena 与当前 WIDE11 捕获](docs/reference/logic-analyzer.md) |
 | 功率分析仪 | 触发式采集，环形缓冲，CSV/NDJSON 导出 |
 | 电源输出 | `12v_out`、`5v_out`、`20v_out`、`vdd_5v` |
-| ADC 监测 | `5v_out`、`12v_out`、`20v_out` 电流读数及 GP29/ADC3 电压遥测；详见 [docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md) |
-| 路由切换 | 固件上报的 TF/SD、USB hub mux、TF 写保护（`writable`/`protected`）、VIN（1.8V/3.3V） |
-| GPIO | `GP7`–`GP20`；`GP29` 仍保留在目录中，但在 `adc3` 拥有时仅可输入（见 [GP29 ownership](docs/reference/adc-telemetry.md#gp29-ownership)） |
+| ADC 监测 | `5v_out`、`12v_out`、`20v_out`、`vdd_5v` 电流读数及 GP29/ADC3 电压遥测；详见 [docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md) |
+| 路由切换 | 固件上报的 TF/SD、USB hub mux、TF 写保护（`writable`/`protected`） |
+| GPIO | `GP7`–`GP9`、`GP12`–`GP18`；`GP29` 仍保留在目录中，但在 `adc3` 拥有时仅可输入（见 [GP29 ownership](docs/reference/adc-telemetry.md#gp29-ownership)） |
 | OTA 更新 | MCUboot 无签名 OTA |
 | 看门狗 | 自主恢复至 BOOTSEL |
 | 持久化配置 | [一份由固件持有的显式快照](docs/reference/persistent-configuration.md)；安全值在启动时恢复，危险值需要确认，清除快照不会改变实时硬件 |
 | 强制门户 | DHCP option 114/HTTP 自动打开 Web UI |
 
-WIDE11 使用 144184 B 硬件切片和 30720 B WS 遥测环，共享 148856 B 总后备分配。当前严格 10/10 连续流工作点为：FAST8 静态 2.600 MHz、GP16 活动输入 WS 1.200 MHz / TCP 1.375 MHz；WIDE11 静态 WS 1.050 MHz / TCP 1.175 MHz、GP16 活动输入 WS 850 kHz / TCP 950 kHz。这些是传输工作点，不是 125 MHz 连续流声明。
+WIDE11 使用 144184 B 硬件切片和 43008 B WS 遥测环，共享 161144 B 总后备分配。历史严格 10/10 连续流工作点为：FAST8 静态 2.600 MHz、GP16 活动输入 WS 1.200 MHz / TCP 1.375 MHz；WIDE11 静态 WS 1.050 MHz / TCP 1.175 MHz、GP16 活动输入 WS 850 kHz / TCP 950 kHz。这些是传输工作点，不是 125 MHz 连续流声明，也不代表 x1.2 重新验收。
 
 ADC3 契约、wire shape 和 GP29 所有权规则见
 [docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md)；[2026-07-31 ADC3 telemetry HIL 报告](docs/testing/results/2026-07-31-adc3-telemetry-hil.md)
@@ -52,7 +53,7 @@ ADC3 契约、wire shape 和 GP29 所有权规则见
 | `snapshot` | `linkr/config/snapshot;v1;one` |
 | `explicit-save` | `ordinary-setters-volatile;explicit-save-only` |
 | `boot-restore` | `defaults-first;v1-full-restore` |
-| `header` | `12B-header;byte4-version=1;byte7-zero;max-104B` |
+| `header` | `12B-header;byte4-version=1;byte7-zero;max-84B` |
 | `firmware-confirmation` | `firmware-owned-confirmation;save-time-only` |
 | `save` | `persists-and-applies;failed-retry-via-resave` |
 | `clear` | `settings_delete;hardware-unchanged` |

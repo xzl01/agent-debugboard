@@ -42,7 +42,7 @@ export const FROZEN_SUMMARY = Object.freeze([
   ["snapshot", "linkr/config/snapshot;v1;one"],
   ["explicit-save", "ordinary-setters-volatile;explicit-save-only"],
   ["boot-restore", "defaults-first;v1-full-restore"],
-  ["header", "12B-header;byte4-version=1;byte7-zero;max-104B"],
+  ["header", "12B-header;byte4-version=1;byte7-zero;max-84B"],
   ["firmware-confirmation", "firmware-owned-confirmation;save-time-only"],
   ["save", "persists-and-applies;failed-retry-via-resave"],
   ["clear", "settings_delete;hardware-unchanged"],

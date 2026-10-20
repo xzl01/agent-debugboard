@@ -43,7 +43,7 @@ Ordinary setters are volatile; explicit save is the only persistence operation, 
 The existing \`storage_partition\` stores one explicit snapshot at \`linkr/config/snapshot\` through \`Settings+NVS\`. It does not introduce a \`storage_partition\` Device Tree node. Corrupt or unsupported storage falls back safely without formatting. Missing key means absent and defaults. Corrupt or unsupported storage surfaces its reason and defaults. Storage recovery does not auto-format, erase, or delete; storage read and write failures remain errors. Save does not gate on the service reason and can replace a corrupt or unsupported snapshot, then sets the reason to \`ready\`. Clear is the explicit
 deletion/recovery path, but it is not the only possible replacement path.
 
-The snapshot header is exactly 12 bytes. byte 4 version 1 is the only accepted version and byte 7 zero is the only accepted restore padding. A version byte other than 1 is reported as \`unsupported_version\` and is never replayed, migrated, or auto-cleared; a v1 blob with a nonzero byte 7 is reported as \`invalid_snapshot\`. Every successful Save writes the v1 header. The maximum encoded size is 104 bytes (12-byte header + 23 entries of 4 bytes each).
+The snapshot header is exactly 12 bytes. byte 4 version 1 is the only accepted version and byte 7 zero is the only accepted restore padding. A version byte other than 1 is reported as \`unsupported_version\` and is never replayed, migrated, or auto-cleared; a v1 blob with a nonzero byte 7 is reported as \`invalid_snapshot\`. Every successful Save writes the v1 header. The maximum encoded size is 84 bytes (12-byte header + 18 entries of 4 bytes each).
 
 ## Firmware-Owned Catalog And Risk
 
@@ -51,7 +51,7 @@ The firmware owns item IDs and risk. Dangerous values require explicit firmware 
 
 ## Boot Restore
 
-Boot restores defaults first. Every structurally valid v1 snapshot replays every saved entry, including dangerous values, on every normal boot; the confirmation given at Save time is the only danger gate, so v1 full restore needs no second authorization. Save captures live values, persists the v1 snapshot, and then replays those values in the same shared order, so a confirmed Save persists and applies in one operation. Replay stops at the first hardware failure without hidden rollback: earlier rows stay applied, the failed row is reported failed, and the remaining saved rows stay pending. There is no auto-retry; retrying means repeating the confirmed Save, and capturing from live values makes the retry replay the same intended values, so failed retry via repeated save is the only retry path. A failed Save still persists the snapshot, so the next boot replays it again. An encoded snapshot \`entry_count=0\` is rejected as \`empty_selection\`. A successful save owns the complete control snapshot and clear owns the complete store deletion. 10. Saved GPIO outputs (GPIOs in output mode). The service acquires the
+Boot restores defaults first. Every structurally valid v1 snapshot replays every saved entry, including dangerous values, on every normal boot; the confirmation given at Save time is the only danger gate, so v1 full restore needs no second authorization. Save captures live values, persists the v1 snapshot, and then replays those values in the same shared order, so a confirmed Save persists and applies in one operation. Replay stops at the first hardware failure without hidden rollback: earlier rows stay applied, the failed row is reported failed, and the remaining saved rows stay pending. There is no auto-retry; retrying means repeating the confirmed Save, and capturing from live values makes the retry replay the same intended values, so failed retry via repeated save is the only retry path. A failed Save still persists the snapshot, so the next boot replays it again. An encoded snapshot \`entry_count=0\` is rejected as \`empty_selection\`. A successful save owns the complete control snapshot and clear owns the complete store deletion. The nine-stage order ends with 9. Saved GPIO outputs (GPIOs in output mode). The service acquires the
 capture owner and then the flash owner once before persisting and replaying. GET never acquires owners.
 
 ## HTTP API
@@ -154,7 +154,7 @@ ${currentSyncMarkerBlock(SKILL_CURRENT_SYNC_CONTRACT)}
       "#### Clear 不改变硬件", "#### Capture/OTA busy 排斥", "逻辑分析仪或 sigrok capture arbiter; activity=capture; activity=ota. GET 从不获取 owner。Active capture and active OTA each make save and clear return busy with `activity=capture` or `activity=ota`. Each OTA upload uses --limit-rate 64K. 每个已准备状态记录",
       "准确且有界的 HTTP 结果。",
       "#### OTA 与 combined-UF2 保留", "#### CDC config 与 BOOTSEL fallback", "#### 最终安全清理",
-      "switch/vin=3.3v; GPIO 都为 input; power output 都为", "off. Enumerate controllable power outputs to off and output GPIOs to input, then GET-validate both.", "#### 证据与报告", "", "### 3. 电源输出 get/set",
+       "GPIO 都为 input; power output 都为", "off. Enumerate controllable power outputs to off and output GPIOs to input, then GET-validate both.", "#### 证据与报告", "", "### 3. 电源输出 get/set",
     ].join("\n"),
     [HIL_REPORT_PATH]: "# 2026-08-05 Persistent Configuration v1 Save HIL\n\nPASS\n",
     "docs/testing/results/2026-07-30-persistent-config-hil.md": "# 2026-07-30 Persistent Configuration HIL\n\nPASS\n",

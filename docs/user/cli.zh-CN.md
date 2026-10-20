@@ -57,7 +57,8 @@ radxa-linkr-debuggerctl --json gpio list
 
 ## 电源
 
-三条可控电源轨：`12v_out`、`5v_out`、`20v_out`。板内 VDD_5V 电源轨在 CLI 和 TUI 中不可见。
+四条可控电源轨：`12v_out`、`5v_out`、`20v_out`、`vdd_5v`。其中 `vdd_5v`
+是辅助 5 V 电源轨，与其他输出一样通过 CLI 和 TUI 暴露。
 
 ```sh
 radxa-linkr-debuggerctl power set 12v_out on
@@ -65,6 +66,7 @@ radxa-linkr-debuggerctl power set 12v_out off
 radxa-linkr-debuggerctl power set 5v_out on
 radxa-linkr-debuggerctl power set 5v_out off
 radxa-linkr-debuggerctl power set 20v_out on
+radxa-linkr-debuggerctl power set vdd_5v on
 ```
 
 列出所有电源输出：
@@ -73,16 +75,17 @@ radxa-linkr-debuggerctl power set 20v_out on
 radxa-linkr-debuggerctl power list
 ```
 
-板内 VDD_5V 电源轨不会出现在 CLI 状态或电源控制中。
+## ADC（电流与电压监测）
 
-## ADC（电流监测）
-
-每条电源轨都有对应的电流传感通道。默认输出简洁（`5v_out=0.540000A`），加 `-v` 可看到 `signal`、`mv` 等原始 ADC 字段。
+四路 INA226 电流监测覆盖 `5v_out`、`12v_out`、`20v_out`、`vdd_5v`；
+`adc3` 是 GP29 上独立的仅监测电压通道。默认输出简洁
+（`5v_out=0.540000A`），加 `-v` 可看到 `signal`、`mv` 等原始 ADC 字段。
 
 ```sh
 radxa-linkr-debuggerctl adc read
 radxa-linkr-debuggerctl adc read 5v_out
-radxa-linkr-debuggerctl adc read 12v_out
+radxa-linkr-debuggerctl adc read vdd_5v
+radxa-linkr-debuggerctl adc read adc3
 ```
 
 ### 录制
@@ -90,20 +93,25 @@ radxa-linkr-debuggerctl adc read 12v_out
 `adc record` 打开 websocket session 并将遥测数据写入文件：
 
 ```sh
-radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 1000 --rate-hz 250
-radxa-linkr-debuggerctl adc record /tmp/adc.csv 1000 --rate-hz 250
+radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 500
+radxa-linkr-debuggerctl adc record /tmp/adc.csv 500 --rate-hz 250
 ```
 
 - 输出格式由文件扩展名决定：`.ndjson` 或 `.csv`
-- 默认订阅速率为 1000 Hz；使用 `--rate-hz HZ` 指定更低速率
-- 请求速率高于 100 Hz 时固件使用 batch JSON；recorder 将每个设备样本展开为独立行
+- 默认订阅速率为 250 Hz；`--rate-hz HZ` 接受 `1..250`。CLI 和固件都会拒绝
+  更高速率，而不是静默截断
 - 每条输出记录包含主机接收时间戳和 `metadata.requested_rate_hz`
 - 设备时间保留在 `metadata.device_timing` 中
 - 采样环覆盖通过 `metadata.dropped_samples` 在首个受影响行报告
+- NDJSON 保留全部五个描述符；CSV 是固定的四路电流表，未知或不可用的
+  rail 字段写为空单元格
 
 ### JSON ADC 输出
 
-`--json adc read` 返回完整诊断链路：`raw`、`mv`、`current_ua`、`sensor_value` 和电源状态。主机 CLI 直接展示固件值，不做主机侧校准。
+`--json adc read` 返回完整诊断链路：四路电流的 `raw`、`mv`、`current_ua`、
+`voltage_uv`、`sensor_value` 和电源状态，以及 ADC3 电压。主机 CLI 直接展示
+固件值，不做主机侧校准。PD 控制使用 `pd status`、`pd fixed MV` 和
+`pd pps MV`（整板上限 20 V）。
 
 ## Switch 路由
 
@@ -161,6 +169,41 @@ radxa-linkr-debuggerctl test run startup.ndjson --output startup-report.json
 {"id":"boot-loop","type":"loop","params":{"count":3,"steps":[{"id":"cycle-off","type":"power_off","params":{"rail":"5v_out"}},{"id":"settle","type":"delay","params":{"ms":1000}},{"id":"cycle-on","type":"power_on","params":{"rail":"5v_out"}}]}}
 ```
 
+## 重启与 BOOTSEL
+
+`reboot` 与 `bootloader` 是两个独立操作：
+
+```sh
+# 正常冷重启；响应后 250 ms 执行，绝不进入 ROM BOOTSEL
+radxa-linkr-debuggerctl reboot
+
+# 显式进入 ROM BOOTSEL；只刷合成完整 UF2
+radxa-linkr-debuggerctl bootloader
+```
+
+`reboot` 发送 `POST /api/v1/reboot`，通过正常 JSON envelope 返回
+`command: "reboot"`，等待 250 ms 后执行正常冷重启。reboot 动作本身绝不请求
+ROM BOOTSEL，也不会枚举为 `RPI` 大容量存储设备；如果复位期间一直按住物理
+BOOTSEL 按键，则由 ROM 单独决定进入 BOOTSEL。未被已保存 v1 配置快照恢复的
+电源轨回到各自的 boot-off 默认状态；`vdd_5v` 跟随 USB 路由默认值。板子恢复
+后必须重新设置并验证电源轨与 PD。
+
+`bootloader` 发送 `POST /api/v1/bootloader`，是唯一请求 ROM USB boot 路径的
+CLI 命令。ROM BOOTSEL 只能使用合成完整 `radxa-linkr-debugger-rp2350.uf2`；
+仅含应用固件的 `zephyr.uf2` 不包含 MCUboot，绝不能用于 ROM BOOTSEL。
+
+仅通过 CDC ACM shell 操作时，重启与 ROM BOOTSEL 的命令是 `reboot` 和
+`bootloader`。`reboot` 打印正常重启提示且不进入 BOOTSEL；`bootloader` 打印
+BOOTSEL 提示。
+
+物理 BOOTSEL 按键语义不同：固件运行中长按 3 秒后释放才请求正常重启；
+短按不动作；一直按住不释放不会复位；复位或上电时按住则由 RP2350 ROM
+采样并进入 ROM BOOTSEL。按键由固件线程轮询，无法恢复完全卡死的核心；
+该情况下硬件 watchdog 仍是兜底路径。TUI 中选中 **System / Reboot** 行并确认
+即可请求正常重启；TUI 不提供 BOOTSEL 行或直接按键。需要 ROM BOOTSEL 时使用
+独立的 CLI `bootloader` 命令或 Web **Enter BOOTSEL** 卡片。详见
+[TUI 指南](tui.zh-CN.md) 与 [Web UI 指南](webui.zh-CN.md)。
+
 ## 任务（固件目录与保存的请求序列）
 
 内置自动化任务全部来自固件拥有的不可变目录 `GET /api/v1/tasks/catalog`。
@@ -183,8 +226,8 @@ built-in 不占用固件任务槽，也不会通过 `/api/v1/tasks` 读取、写
 成功请求后由客户端 sleep，不会进入控制端点。built-in 与 stored task 都
 在首次失败时停止，失败或部分取消的 built-in 随后执行目录声明的 cleanup
 序列；CLI 不推断也不硬编码任何 cleanup。stored task 不推断 cleanup。
-built-in 成功结束时所选电源轨保持开启。该流程与进入调试板 RP2350
-BOOTSEL 的 `bootloader` 无关。
+built-in 成功结束时所选电源轨保持开启。该流程与执行正常冷重启的 `reboot`
+无关，也与进入调试板 RP2350 ROM BOOTSEL 的 `bootloader` 无关。
 
 固件目录接口不可用时，`task list` 仍然展示 stored task，同时返回结构化的
 `catalog_error` 与 `catalog_available:false`；任何 `task run builtin/...`

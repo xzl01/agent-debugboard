@@ -121,11 +121,30 @@ entry 已被遮蔽；执行该 ID 时选择 built-in。清空 stored task 会删
 
 ## 固件工具与电源分析
 
-- **固件工具**位于仪表盘侧栏，包含 OTA 和 BOOTSEL 控件。完整 OTA
-  工作流参见 [OTA 固件更新](ota.zh-CN.md)。
+- **固件工具**位于仪表盘侧栏，包含 OTA、正常重启和 ROM BOOTSEL 控件。
+  完整 OTA 工作流参见 [OTA 固件更新](ota.zh-CN.md)。
 - **电源分析**是工作区标签页，包含普通捕获和启动分析。
 - **Automation** 是工作区标签页，包含测试编辑器以及用于列出、保存、
   执行和清除已存请求序列的 flash 持久化 Task 卡片。
+
+### 重启与 BOOTSEL
+
+**Restart**（正常重启）通过 `POST /api/v1/reboot` 请求正常冷重启。板子在响应
+后 250 ms 重启，页面随后重连；该动作绝不请求 ROM BOOTSEL，也不会出现
+`RPI-RP2` 设备。如果复位期间一直按住物理 BOOTSEL 按键，则由 ROM 单独决定
+进入 BOOTSEL。未被已保存 v1 配置快照恢复的电源轨回到各自的 boot-off 默认
+状态，`vdd_5v` 跟随 USB 路由默认值；板子恢复后必须重新设置并验证电源轨与
+PD。
+
+**Enter BOOTSEL** 通过 `POST /api/v1/bootloader` 执行，是独立动作，不是
+Restart 的别名。它是 Web UI 中唯一应让板子枚举为 `RPI-RP2` 的动作。ROM
+BOOTSEL 只能刷写合成完整 `radxa-linkr-debugger-rp2350.uf2`（MCUboot + 应用）；
+仅含应用固件的 `zephyr.uf2` 不包含 MCUboot，绝不能使用。
+
+物理 BOOTSEL 按键不是 Web UI 的第三个动作。固件运行中长按 3 秒后释放才请求
+正常重启；短按不动作；一直按住不释放不会复位；复位或上电时按住则由 ROM
+采样并进入 ROM BOOTSEL。按键由固件线程处理，无法恢复完全卡死的核心；该
+故障模式下硬件 watchdog 仍是兜底路径。
 
 ## 串口控制台
 

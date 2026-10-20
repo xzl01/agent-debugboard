@@ -331,7 +331,6 @@ if [ "${CONFIG_HIL_CLEANUP_ENUMERATION:-0}" = 1 ] && [ -f "$CONFIG_HIL_STATE_DIR
     'PUT /switch/usb') respond 200 "{\"schema\":\"$schema\",\"ok\":true,\"command\":\"switch\",\"action\":\"route\",\"name\":\"usb\",\"route\":\"target\"}" ;;
     'PUT /switch/sd') respond 200 "{\"schema\":\"$schema\",\"ok\":true,\"command\":\"switch\",\"action\":\"route\",\"name\":\"sd\",\"route\":\"target\"}" ;;
     'PUT /switch/tf_wp') respond 200 "{\"schema\":\"$schema\",\"ok\":true,\"command\":\"switch\",\"action\":\"route\",\"name\":\"tf_wp\",\"route\":\"writable\"}" ;;
-    'GET /switch/vin') respond 200 "{\"schema\":\"$schema\",\"ok\":true,\"command\":\"switch\",\"action\":\"get\",\"name\":\"vin\",\"route\":\"3.3v\"}" ;;
     'GET /power')
       power_count=$(grep -F -c 'curl GET http://fixture.invalid/api/v1/power ' "$CONFIG_HIL_CALLS")
       state=on
@@ -558,7 +557,7 @@ flow_requests=$(for flow in safe-reboot dangerous-auto-restore capture-busy ota-
 done)
 final_cleanup_requests=$(printf '%s\n' \
   'DELETE /config' 'PUT /switch/usb' 'PUT /switch/sd' 'PUT /switch/tf_wp' \
-  'GET /switch/vin' 'GET /power' 'PUT /power/<firmware-name>' 'GET /power' \
+  'GET /power' 'PUT /power/<firmware-name>' 'GET /power' \
   'GET /gpio' 'PUT /gpio/<firmware-name>' 'GET /gpio' 'GET /config' 'CDC config show')
 expected_all_requests=$(printf '%s\n%s\n' "$flow_requests" "$final_cleanup_requests")
 [ "$all_requests" = "$expected_all_requests" ] || fail "all dry-run request plan differs from its complete flow sequence"
@@ -962,7 +961,7 @@ red_final_cleanup_plan() {
     --combined-uf2 "$CANONICAL_UF2" --ota-image "$CANONICAL_OTA" all
   assert_request_suffix "$WORK/red-final-cleanup-plan.out" \
     'DELETE /config' 'PUT /switch/usb' 'PUT /switch/sd' 'PUT /switch/tf_wp' \
-    'GET /switch/vin' 'GET /power' 'PUT /power/<firmware-name>' 'GET /power' \
+    'GET /power' 'PUT /power/<firmware-name>' 'GET /power' \
     'GET /gpio' 'PUT /gpio/<firmware-name>' 'GET /gpio' 'GET /config' 'CDC config show'
 }
 
@@ -1310,7 +1309,6 @@ red_final_cleanup_enumerated_execute() {
     'curl PUT http://fixture.invalid/api/v1/switch/usb {"route":"target"}' \
     'curl PUT http://fixture.invalid/api/v1/switch/sd {"route":"target"}' \
     'curl PUT http://fixture.invalid/api/v1/switch/tf_wp {"route":"writable"}' \
-    'curl GET http://fixture.invalid/api/v1/switch/vin' \
     'curl GET http://fixture.invalid/api/v1/power' \
     'curl PUT http://fixture.invalid/api/v1/power/fixture_rail {"state":"off"}' \
     'curl GET http://fixture.invalid/api/v1/power' \
@@ -1327,7 +1325,7 @@ red_final_cleanup_enumerated_plan() {
     --combined-uf2 "$CANONICAL_UF2" --ota-image "$CANONICAL_OTA" all
   assert_request_suffix "$WORK/red-final-cleanup-enumerated-plan.out" \
     'DELETE /config' 'PUT /switch/usb' 'PUT /switch/sd' 'PUT /switch/tf_wp' \
-    'GET /switch/vin' 'GET /power' 'PUT /power/<firmware-name>' 'GET /power' \
+    'GET /power' 'PUT /power/<firmware-name>' 'GET /power' \
     'GET /gpio' 'PUT /gpio/<firmware-name>' 'GET /gpio' 'GET /config' 'CDC config show'
 }
 

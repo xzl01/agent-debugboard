@@ -53,6 +53,8 @@ GPIO mutation. Use the explicit workflow in this runbook for those actions.
   Enumerate the current firmware response instead.
 - Prefer target software reboot or OpenOCD reset before power-cycling. A power
   cycle is a destructive hard-restart fallback.
+- `reboot` is a normal cold restart; `bootloader` is ROM BOOTSEL. Never
+  substitute one for the other.
 - `5V_FIN` is a source input, not a controllable power output.
 
 ## First Checks
@@ -232,7 +234,7 @@ curl --fail-with-body -sS -X PUT -H 'Content-Type: application/json' \
 Do not use a fixed rail list as a target contract. Firmware may advertise a
 different catalog, state, or confirmation requirement.
 
-## Switch Routes And VIN
+## Switch Routes
 
 Read the switch catalog and the selected switch before changing a route:
 
@@ -241,7 +243,6 @@ curl -fsS "$BOARD_URL/api/v1/switch"
 curl -fsS "$BOARD_URL/api/v1/switch/sd"
 curl -fsS "$BOARD_URL/api/v1/switch/usb"
 curl -fsS "$BOARD_URL/api/v1/switch/tf_wp"
-curl -fsS "$BOARD_URL/api/v1/switch/vin"
 ```
 
 Examples use only values returned by current firmware. Do not reuse them until
@@ -264,30 +265,6 @@ user-approved route change rather than forcing a host-side default.
 `switch tf_wp` affects write protection as interpreted by the reader. A route
 change can require card reattachment before the reader observes it.
 
-### VIN Safety
-
-VIN defaults to `3.3v`. Selecting `1.8v` is side-effectful and can damage an
-incompatible target. Before requesting it:
-
-1. Confirm the target VIO supports the requested voltage.
-2. Prepare physical measurement of the target VIO pin.
-3. Obtain an explicit approval for the exact voltage transition.
-
-Restore the safe default when the target session no longer requires 1.8 V:
-
-```sh
-curl --fail-with-body -sS -X PUT -H 'Content-Type: application/json' \
-  --data '{"route":"3.3v"}' \
-  "$BOARD_URL/api/v1/switch/vin"
-```
-
-If only CDC ACM remains, use:
-
-```text
-linkr-debugger:~$ vin get
-linkr-debugger:~$ vin set 3.3v
-```
-
 ## Safe GPIO
 
 Discover the current GPIO catalog before selecting a pin:
@@ -297,10 +274,12 @@ curl -fsS "$BOARD_URL/api/v1/gpio"
 curl -fsS "$BOARD_URL/api/v1/gpio/GP13"
 ```
 
-Only use output-capable entries advertised by firmware. The usual G3 safe
-surface includes `GP7` through `GP20`, but the live catalog is authoritative.
-`GP29` is owned by `adc3` on this firmware and is input-only; do not retry an
-output request that firmware rejects.
+Only use output-capable entries advertised by firmware. The x1.2 safe
+surface is `GP7`-`GP9`, `GP12`-`GP18`, and input-only `GP29`; `GP10`/`GP11`
+are the J4 UART, `GP19` is the CH224A PD strap, and `GP20`/`GP21` are the
+PIO I2C bus on J8 (GP20=SCL, GP21=SDA, not GPIO controls), so the live catalog remains
+authoritative. `GP29` is owned by `adc3` on this firmware and is input-only;
+do not retry an output request that firmware rejects.
 
 After confirmation, request the intended direction and value:
 
@@ -524,6 +503,39 @@ The OTA endpoint has no signature, authentication, secure-boot, or
 anti-rollback protection. USB NCM access is sufficient to submit an image.
 Keep the board and its USB connection physically controlled during this action.
 
+## Normal Restart And Physical BOOTSEL
+
+`reboot` and `bootloader` are separate operations. Never treat them as aliases.
+
+Request a normal cold restart when the board is reachable and the target does
+not need ROM BOOTSEL:
+
+```sh
+curl --fail-with-body -sS -X POST "$BOARD_URL/api/v1/reboot"
+```
+
+Firmware restarts 250 ms after the response and returns to normal operation.
+The reboot action itself never requests ROM BOOTSEL and never enumerates as
+`RPI-RP2`; holding the physical BOOTSEL button across that reset is a separate
+ROM behavior. A rail not restored by a saved v1 configuration snapshot returns
+to its boot-off default; `vdd_5v` follows the USB route default. Re-establish
+and verify any rail or PD setup after the board returns.
+
+The physical BOOTSEL button has its own semantics:
+
+- Hold it for 3 seconds while firmware runs, then release: normal cold restart.
+- Short press: no action.
+- Keep holding without releasing: no reset.
+- Hold it during power-on or reset: the RP2350 ROM samples it and enters ROM
+  BOOTSEL.
+
+The button is serviced by a firmware thread. A completely wedged core cannot
+run that thread, so a long press is not a recovery path for a full hang. The
+hardware watchdog remains the fallback; a normal watchdog reset enters ROM
+BOOTSEL through the recovery marker, while an OTA test-marker reset is handled
+by MCUboot rollback. Do not describe a successful long-press restart as
+`bootloader`, and do not use `bootloader` merely to restart the board.
+
 ## ROM BOOTSEL Recovery
 
 For ROM BOOTSEL initial installation or recovery, use only the combined
@@ -595,7 +607,7 @@ If the normal HTTP path fails, work through the fallback order:
 1. Check that USB NCM has enumerated and that `$BOARD_URL/api/v1/status` is
    reachable.
 2. Use a supported MCP or CLI `doctor` read if the host adapter is present.
-3. Use the CDC ACM shell for status, configuration, task visibility, VIN, or
+3. Use the CDC ACM shell for status, configuration, task visibility, or
    BOOTSEL actions that it exposes.
 4. Enter ROM BOOTSEL through a confirmed physical recovery path when the board
    cannot resume normal control-plane operation.
@@ -646,6 +658,8 @@ For adapter setup and target-specific detail, use the
   for snapshot semantics.
 - [ADC Telemetry](../../docs/reference/adc-telemetry.md) for channel ownership
   and wire details.
+- [x1.2 Hardware and BSP](../../docs/reference/hardware-x1.2.md) for board
+  rails, INA226, PIO I2C, J4 UART, and the flash/partition model.
 
 ## Final Safety Checklist
 
@@ -656,4 +670,5 @@ For adapter setup and target-specific detail, use the
 - Keep stored tasks inert until explicitly run, and do not invent task cleanup.
 - Use only `radxa-linkr-debugger-rp2350-ota.bin`-style MCUboot binaries for OTA.
 - Use only `radxa-linkr-debugger-rp2350.uf2` for ROM BOOTSEL.
+- Keep `reboot` (normal cold restart) and `bootloader` (ROM BOOTSEL) separate.
 - Retain physical recovery access while operating OTA or BOOTSEL.

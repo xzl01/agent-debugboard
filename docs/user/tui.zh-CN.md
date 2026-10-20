@@ -154,6 +154,26 @@ Down 会先为原始引脚派发到期 LOW 并消费该次 Down，下一次新�
 GPIO 操作不需要确认，也不会乐观更新显示；TUI 会先显示在途动作，再刷新固件权威
 状态。每个半行 GPIO 命中区域只属于一个引脚，没有 GPIO 的空半行不响应操作。
 
+## 重启与 BOOTSEL
+
+选中 **System / Reboot** 行并按 Enter 或 Space，会通过与
+`POST /api/v1/reboot` 相同的 250 ms 路径请求正常冷重启。动作本身绝不请求
+ROM BOOTSEL；如果复位期间一直按住物理按键，则由 ROM 单独决定进入 BOOTSEL。
+未被已保存 v1 配置快照恢复的电源轨回到各自的
+boot-off 默认状态，`vdd_5v` 跟随 USB 路由默认值；板子恢复后必须重新设置并
+验证电源轨与 PD。
+
+TUI 不提供 ROM BOOTSEL 行或直接按键；需要恢复路径时，使用独立的 CLI
+`bootloader` 命令或 Web **Enter BOOTSEL** 卡片。ROM BOOTSEL 只能刷写合成完整
+`radxa-linkr-debugger-rp2350.uf2`；仅含应用固件的 `zephyr.uf2` 不包含 MCUboot，
+绝不能使用。
+
+Reboot 行会打开与危险硬件动作相同的三秒确认框。取消、超时或任何其他按键
+都不会发送请求。TUI 不把物理按键映射成软件控件：固件运行中长按该按键 3 秒
+后释放才会请求正常重启；短按不动作；一直按住不释放不会复位；复位或上电时
+按住则由 ROM 采样并进入 ROM BOOTSEL。核心完全卡死时固件按键线程无法运行；
+该故障模式下硬件 watchdog 仍是兜底路径。
+
 ## 多实例
 
 TUI 界面会即时响应输入，并每两秒通过 HTTP 轮询一次调试板状态。可以同时开多个实例，互不干扰。

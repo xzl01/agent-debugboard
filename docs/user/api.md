@@ -45,16 +45,20 @@ curl http://172.29.203.1/api/v1/power/12v_out             # read one
 curl -X PUT http://172.29.203.1/api/v1/power/12v_out -d '{"state":"on"}'  # set
 ```
 
-`{name}` is `12v_out`, `5v_out`, or `20v_out`. Body: `{"state": "on"}` or `{"state": "off"}`.
+`{name}` is `12v_out`, `5v_out`, `20v_out`, or `vdd_5v`. Body: `{"state": "on"}` or `{"state": "off"}`.
 
-## ADC (Current Monitor)
+## ADC (Current And Voltage Monitor)
 
 ```sh
 curl http://172.29.203.1/api/v1/adc/read                    # all channels
 curl http://172.29.203.1/api/v1/adc/read?channel=5v_out      # single channel
 ```
 
-Each reading in the response carries: `name`, `signal`, `power_enabled`, `raw`, `mv`, `current_ua`, `sensor_value`, `unit`.
+The four INA226 current channels are `5v_out`, `12v_out`, `20v_out`, and
+`vdd_5v`; `adc3` is a separate monitor-only ADC voltage channel. Each INA226
+reading carries: `name`, `signal`, `power_enabled`, `raw`, `mv`, `current_ua`,
+`voltage_valid`, `voltage_uv`, `sensor_value`, `unit`. `adc3` carries `name`,
+`signal`, `raw`, `mv`, `sensor_channel`, `unit`, and `sensor_value`.
 
 ## Switch Routes
 
@@ -82,15 +86,44 @@ curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"output","valu
 curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"input"}'
 ```
 
+## Reboot
+
+### `POST /api/v1/reboot`
+
+Request a normal cold restart. The MCU performs it 250 ms after the response,
+and this path never requests ROM BOOTSEL. The planned-reboot state is prepared
+before the response is sent, so a successful response guarantees that, absent a
+physical BOOTSEL hold across the reset, the next boot returns to normal firmware
+instead of the ROM USB boot path.
+
+```sh
+curl -X POST http://172.29.203.1/api/v1/reboot
+```
+
+Each of `5v_out`, `12v_out`, and `20v_out` returns to its
+`regulator-boot-off` default unless a saved v1 configuration snapshot restores
+that rail; `vdd_5v` follows the USB route default. Re-apply rail and PD setup
+after the board returns.
+
+The supported mutation method is `POST`. `GET`, `PUT`, and `DELETE` return
+HTTP 405 with `error.code=method_not_allowed` and do not schedule a reset.
+Repeating `POST` while a restart is already pending returns HTTP 409 with
+`error.code=reboot_pending`; it does not schedule a second or earlier reset.
+
 ## Bootloader
 
 ### `POST /api/v1/bootloader`
 
-Enter ROM BOOTSEL mode. The MCU resets 250ms after the response.
+Enter ROM BOOTSEL mode. This is not a normal restart and is not an alias for
+`POST /api/v1/reboot`. The MCU resets 250 ms after the response.
 
 ```sh
 curl -X POST http://172.29.203.1/api/v1/bootloader
 ```
+
+Flash only the combined `radxa-linkr-debugger-rp2350.uf2` (MCUboot plus
+application). Never use the application-only `zephyr.uf2` for ROM BOOTSEL; it
+does not include MCUboot and can leave the board unable to start normally.
 
 ## Tasks (firmware catalog and saved request sequences)
 
@@ -164,6 +197,11 @@ are validated at parse time; an invalid record returns `invalid_blob`. Bytes
 under `0x20` other than tab/LF/CR are rejected before storage so the GET
 JSON encoder always reproduces the stored blob exactly.
 
+Task IDs are nonempty UTF-8 strings of at most 31 bytes. Space, tab, CR,
+LF, `#`, the reserved ID `catalog`, and the exact IDs `.` and `..` are
+invalid; `PUT` rejects a blob containing them with HTTP 400 `invalid_blob`.
+Other IDs containing dots, such as `.hidden` or `...`, remain valid.
+
 Old development data (anything written under the previous task-store marker
 or settings key) is intentionally invalidated by the new marker
 `# linkr-task.v1` and the new key `linkr/task/tasks`. There is no migration
@@ -234,12 +272,42 @@ is in flight. Successful response:
 }
 ```
 
+### `DELETE /api/v1/tasks/{id}`
+
+Deletes only the named stored task, preserving all other task sections
+byte-for-byte and leaving live hardware unchanged. Deleting the last task
+removes the backing key. Encode the ID as one UTF-8 percent-encoded URL
+path component (for example `café` becomes `caf%C3%A9`, `/` becomes `%2F`,
+and a literal `%` becomes `%25`). Decoding occurs once; decoded NUL (`%00`)
+is rejected rather than truncating the ID. The exact decoded IDs `.` and
+`..` are invalid, including `%2E` and `%2E%2E` spellings.
+
+| HTTP status | Result |
+| --- | --- |
+| 200 | Task deleted; response shown below |
+| 400 | Missing or invalid ID, invalid percent decoding, or decoded NUL; no task is deleted |
+| 404 | `not_found`: no stored task matches the valid ID |
+| 409 | `busy`: capture or OTA owns the shared mutation resource; no task is deleted |
+
+```json
+{
+  "schema": "radxa-linkr-debugger.v1",
+  "ok": true,
+  "command": "task",
+  "action": "delete",
+  "id": "power-cycle",
+  "deleted": true
+}
+```
+
 ### Method Handling
 
 GET, PUT, and DELETE are the only supported methods; any other verb on
 `/api/v1/tasks` returns `method_not_allowed` (HTTP 405). The endpoint never
 replays stored requests; the firmware contract is store-only. Execution is the
 client's job.
+
+`/api/v1/tasks/{id}` accepts DELETE only; other methods return HTTP 405.
 
 ### Client-Side Run And Limits
 
@@ -377,7 +445,7 @@ Up to 4 concurrent clients.
 ```json
 {"type": "subscribe", "topic": "live", "rate_hz": 60, "batch_size": 1}
 ```
-- `rate_hz`: 1–1000 (default 10)
+- `rate_hz`: 1–250 (default 10); values above 250 return error code `invalid_rate`
 - `batch_size`: 1–20 (>1 enables batch mode)
 
 **Unsubscribe**:
@@ -390,16 +458,23 @@ Up to 4 concurrent clients.
 {"type": "command", "command": "power_set", "id": "1", "output": "12v_out", "state": "on"}
 ```
 
-Available commands: `power_set`, `switch_route`, `gpio_set`, `bootloader`, `capture_arm`, `capture_trigger`, `capture_stop`, `capture_cancel`. Saved task sequences are managed over HTTP only.
+Available commands: `power_set`, `switch_route`, `gpio_set`, `reboot`, `bootloader`, `capture_arm`, `capture_trigger`, `capture_stop`, `capture_cancel`. Saved task sequences are managed over HTTP only.
+
+`reboot` requests the normal cold restart described under
+[Reboot](#reboot); it is not a `bootloader` alias. Firmware emits the
+`reboot`/`ok` result frame before the 250 ms restart delay begins. `bootloader`
+remains the explicit ROM BOOTSEL command.
 
 Power capture requires an explicit host-stream protocol mode:
 
 ```json
-{"type":"command","command":"capture_arm","id":"capture-1","mode":"host-stream-v1","trigger":"current","output":"5v_out","threshold_ua":500000,"rate_hz":100}
+{"type":"command","command":"capture_arm","id":"capture-1","mode":"host-stream-v1","trigger":"current","output":"5v_out","threshold_ua":500000,"rate_hz":250}
 ```
 
 Compare `mode` with the `power_capture_protocol` advertised by status before
 arming. This prevents mixed firmware/Web versions from waiting indefinitely.
+`rate_hz` accepts 1–250 and defaults to 100 when omitted; values above 250
+return error code `invalid_rate`.
 
 GPIO command (including direct recovery-line control):
 

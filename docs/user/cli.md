@@ -61,23 +61,29 @@ radxa-linkr-debuggerctl --json gpio list
 
 ## Power
 
-Three rails are controllable: `12v_out`, `5v_out`, `20v_out`. The board-internal VDD_5V rail is intentionally hidden from CLI and TUI.
+Four rails are controllable: `12v_out`, `5v_out`, `20v_out`, and `vdd_5v`.
+`vdd_5v` is the auxiliary 5 V rail and is exposed like the other outputs.
 
 ```sh
 radxa-linkr-debuggerctl power list
 radxa-linkr-debuggerctl power set 12v_out on
 radxa-linkr-debuggerctl power set 5v_out off
 radxa-linkr-debuggerctl power set 20v_out on
+radxa-linkr-debuggerctl power set vdd_5v on
 ```
 
-## ADC (Current Monitor)
+## ADC (Current And Voltage Monitor)
 
-Each power rail has a current-sense channel. Default output is concise (`5v_out=0.540000A`); add `-v` for raw ADC fields like `signal` and `mv`.
+Four INA226 channels cover `5v_out`, `12v_out`, `20v_out`, and `vdd_5v`;
+`adc3` is a separate monitor-only voltage channel on GP29. Default output is
+concise (`5v_out=0.540000A`); add `-v` for raw ADC fields like `signal` and
+`mv`.
 
 ```sh
 radxa-linkr-debuggerctl adc read
 radxa-linkr-debuggerctl adc read 5v_out
-radxa-linkr-debuggerctl adc read 12v_out
+radxa-linkr-debuggerctl adc read vdd_5v
+radxa-linkr-debuggerctl adc read adc3
 ```
 
 ### Recording
@@ -85,20 +91,22 @@ radxa-linkr-debuggerctl adc read 12v_out
 `adc record` opens a websocket session and writes telemetry to disk:
 
 ```sh
-radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 1000 --rate-hz 250
-radxa-linkr-debuggerctl adc record /tmp/adc.csv 1000 --rate-hz 250
+radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 500
+radxa-linkr-debuggerctl adc record /tmp/adc.csv 500 --rate-hz 250
 ```
 
 - Output format is determined by file extension: `.ndjson` or `.csv`
-- Default subscription rate is 1000 Hz; use `--rate-hz HZ` for lower rates
-- Requests above 100 Hz use batch JSON on the wire; the recorder expands each device sample into its own row
+- Default subscription rate is 250 Hz; `--rate-hz HZ` accepts `1..250`. The
+  CLI and firmware reject higher rates instead of clamping them.
 - Each output record includes host receive timestamps plus `metadata.requested_rate_hz`
 - Device timing is preserved under `metadata.device_timing`
 - Ring overruns are reported as `metadata.dropped_samples` on the first affected row
+- NDJSON preserves all five descriptors. CSV is a fixed four-current-rail
+  table; unknown or unavailable rail fields are empty cells.
 
 ### JSON ADC output
 
-`--json adc read` carries the raw diagnostic chain: `raw`, `mv`, `current_ua`, `sensor_value`, plus the power-output state. The host CLI presents firmware values directly without host-side calibration.
+`--json adc read` carries the raw diagnostic chain: `raw`, `mv`, `current_ua`, `voltage_uv`, `sensor_value`, plus the power-output state for the four current rails and the ADC3 voltage. The host CLI presents firmware values directly without host-side calibration. PD control is available through `pd status`, `pd fixed MV`, and `pd pps MV` (board limit 20 V).
 
 ## Switch Routes
 
@@ -159,6 +167,45 @@ commands and placing them in a loop frame.
 {"id":"boot-loop","type":"loop","params":{"count":3,"steps":[{"id":"cycle-off","type":"power_off","params":{"rail":"5v_out"}},{"id":"settle","type":"delay","params":{"ms":1000}},{"id":"cycle-on","type":"power_on","params":{"rail":"5v_out"}}]}}
 ```
 
+## Reboot And BOOTSEL
+
+`reboot` and `bootloader` are separate operations:
+
+```sh
+# Normal cold restart; 250 ms after the response, never ROM BOOTSEL
+radxa-linkr-debuggerctl reboot
+
+# Explicit ROM BOOTSEL entry; flash only the combined UF2
+radxa-linkr-debuggerctl bootloader
+```
+
+`reboot` sends `POST /api/v1/reboot`. It returns through the normal JSON
+envelope with `command: "reboot"`, waits 250 ms, and performs a normal cold
+restart. The reboot action itself never requests ROM BOOTSEL and never
+enumerates as an `RPI` mass-storage device; holding the physical BOOTSEL button
+across that reset is a separate ROM behavior. A rail not restored by a saved v1
+configuration snapshot returns to its boot-off default; `vdd_5v` follows the
+USB route default. Re-apply rail and PD setup after the board returns.
+
+`bootloader` sends `POST /api/v1/bootloader` and is the only CLI command that
+requests the ROM USB boot path. Use only the combined
+`radxa-linkr-debugger-rp2350.uf2`; the application-only `zephyr.uf2` does not
+contain MCUboot and must never be used for ROM BOOTSEL.
+
+For restart and ROM BOOTSEL, the CDC ACM shell commands are `reboot` and
+`bootloader`. `reboot` prints the normal-restart notice and does not enter
+BOOTSEL; `bootloader` prints the BOOTSEL notice. The physical BOOTSEL button
+has different semantics: hold it for 3 seconds while firmware is running and
+release to request a normal restart; a short press does nothing, and holding it
+without releasing does not reset. Holding it during power-on or reset is
+sampled by the RP2350 ROM, which enters ROM BOOTSEL. The button is polled by a
+firmware thread, so it cannot recover a completely wedged core; the hardware
+watchdog remains the fallback for that case. In the TUI, select the
+**System / Reboot** row and confirm it to request a normal restart; the TUI has
+no BOOTSEL row or direct key. Use the separate CLI `bootloader` command or Web
+**Enter BOOTSEL** card for ROM BOOTSEL. See the [TUI guide](tui.md) and
+[Web UI guide](webui.md).
+
 ## Tasks (firmware catalog and saved request sequences)
 
 Built-in automation tasks come from the firmware-owned immutable catalog at
@@ -186,8 +233,9 @@ endpoint. The first failure stops either built-in or stored execution. A
 failed or partially cancelled built-in then runs the cleanup sequence
 declared by the catalog; the CLI never infers or hardcodes its own cleanup.
 Stored tasks never infer cleanup. A successful built-in finishes with the
-selected rail on. This task flow is separate from `bootloader`, which enters
-the debugger MCU's RP2350 BOOTSEL mode.
+selected rail on. This task flow is separate from `reboot`, which performs a
+normal cold restart, and from `bootloader`, which enters the debugger MCU's
+RP2350 ROM BOOTSEL mode.
 
 If the firmware catalog endpoint fails, `task list` still shows the stored
 tasks together with a structured `catalog_error` and `catalog_available:false`,

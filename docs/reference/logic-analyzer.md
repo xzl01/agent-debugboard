@@ -29,6 +29,13 @@ PulseView GUI with the same connection string.
 GP7-GP9 and GP29 are not available in Sigrok modes. The Web UI sigrok pin
 selection is limited to GP10-GP20; GP29 stays in the persisted/safe catalog but is ADC3-owned and input-only on this firmware (ADC3 voltage monitor).
 
+FAST8 and WIDE11 include GP10/GP11, and SINGLE includes GP10; these are the J4
+UART1 TX/RX pins. While a capture owns those pins, PIO2 drives the capture
+function and the J4 CDC ACM bridge has no UART path on the owned pins, so J4
+serial traffic is unavailable. Cleanup restores `GPIO_FUNC_UART_AUX` on the pins
+the capture configured; the J4 bridge works again without a reboot. Do not
+expect J4 UART traffic during an active capture that selects GP10 or GP11.
+
 ### Capture Parameters
 
 **CONFIG v1 pre/post are uint16.** Ordinary bounded captures use 1..65535 and
@@ -85,7 +92,7 @@ DATA metadata is 8 bytes. Sample indices are modulo 24 bits; wrap is not a termi
 
 On overrun, possible overrun, transport backpressure, or bounded-capture completion,
 the firmware emits a terminal event and stops rather than silently continuing (lossless-or-stop).
-The packed ring reuses the 148856 B total backing allocation (sized to max(normal, burst)=148856 B); the WIDE11 144184 B hardware slice and the 30720 B WS telemetry ring share that allocation.
+The packed ring reuses the 161144 B total backing allocation (sized to max(normal, burst)=161144 B); the WIDE11 144184 B hardware slice and the 43008 B WS telemetry ring share that allocation.
 
 Arena pause/resume is a lossless, generation-scoped handshake. The ADC sampler
 atomically consumes preposted CONFIG/RESUME events, and an old generation's
@@ -233,9 +240,18 @@ The three physical capture plans:
   12500 B source at 100 MHz (100000 samples × 1 bit). A FAST8 physical plan, not a separate Sigrok wire mode.
 - **FAST8**: one 8-bit lane (GP10-GP17), autopush32, 4 samples per 32-bit word,
   100000 B source at 100 MHz (100000 samples × 8 bits)
-- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 148856 B total backing allocation); triggered deep burst adds a third trigger-only SM
+- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 161144 B total backing allocation); triggered deep burst adds a third trigger-only SM
 
-GP29 is excluded from WIDE11 LA (ADC3 voltage monitor; ADC3-owned and input-only). WIDE11 verification is
+GP29 is excluded from WIDE11 LA (ADC3 voltage monitor; ADC3-owned and input-only).
+On x1.2, GP20 is the PIO I2C **SCL** and GP21 is **SDA**. WIDE11 keeps GP20 as a
+read-only tap: the LA does not reconfigure GP20/GP21 pins, so PIO0 keeps
+driving the INA226/CH224A bus while PIO2 samples the pad. The host still
+receives the same 11-lane mapping; the GP20 lane shows the I2C SCL. Acceptance
+must never drive or pull GP20 low: that contends with the I2C master. Verify the
+tap by observing SCL activity from the board's own I2C traffic, and leave GP20
+otherwise at its pulled-up idle level. GP19 is the CH224A PD strap and must be
+left high-impedance for the same reason. INA226 telemetry while WIDE11 is
+running remains a HIL item. WIDE11 verification is
 covered by the historical 2026-07-27 freeze-final HIL matrices below.
 
 **Historical WIDE12 baseline (not current WIDE11; retained for context only)**:
@@ -275,7 +291,9 @@ deep-burst path on the representative HIL setup. They are not evidence for the
   `disconnects=0`, `overrun_events=0`, `error_events=0`, with a clean STOP_RESP
   and post-capture board-health recovery. This is the only physical-stimulus mapping
   pattern covered by the freeze-final HIL; **it does not demonstrate high-state
-  mapping on GP18–GP20 or simultaneous dual-lane transitions**. See
+  mapping on GP18–GP20 or simultaneous dual-lane transitions**. The run predates
+  x1.2, where GP20 is the I2C SCL: holding GP11–GP20 low is not a valid x1.2
+  procedure and must not be reused for acceptance. See
   `docs/testing/hil-functional-test-spec.md` and the SKILL before claiming full
   WIDE11 high-state mapping.
 - **Telemetry isolation** (`logic-analyzer-wide11-telemetry-isolation-freeze-final-sequential.json`):
@@ -345,14 +363,14 @@ retains the lossless-or-stop terminal behavior. When the writer is frozen on a t
 selection, the freeze policy (described under "Terminal selection freezes the
 writer" above) disables the trigger SM and the sampler SM(s) and aborts the ring
 DMA channel(s) without releasing the channels back to the pool, so the consumer
-can only drain already-committed ring data. The packed ring reuses the 148856 B total backing
-allocation (sized to max(normal, burst)=148856 B); the WIDE11 144184 B hardware slice and the
-30720 B WS telemetry ring share that backing allocation.
+can only drain already-committed ring data. The packed ring reuses the 161144 B total backing
+allocation (sized to max(normal, burst)=161144 B); the WIDE11 144184 B hardware slice and the
+43008 B WS telemetry ring share that backing allocation.
 
 The generic packed burst path uses a dual-SM packed arena: SM-A captures
 GP10-GP17 (8-bit autopush32, 100000 B source) and SM-B captures GP18-GP20 (3-bit
 autopush30, 40000 B source), with 140000 B total from two DMA channels and a
-144184 B burst slice (overlays the 148856 B total backing allocation). This is the WIDE11 architecture; GP29 is excluded from
+144184 B burst slice (overlays the 161144 B total backing allocation). This is the WIDE11 architecture; GP29 is excluded from
 WIDE11 LA. NONE deep burst uses two capture SMs; triggered deep burst adds a third SM
 running the 3-instruction trigger program. The three physical plans: SINGLE (one 1-bit lane, autopush32,
 32 samples/word, 12500 B at 100 MHz), FAST8 (one 8-bit lane, autopush32, 4 samples/word,

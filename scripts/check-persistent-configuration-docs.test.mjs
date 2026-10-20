@@ -38,7 +38,7 @@ test("persistent-configuration documentation contract", async (suite) => {
     const literals = new Map(FROZEN_SUMMARY);
     assert.equal(literals.get("snapshot"), "linkr/config/snapshot;v1;one");
     assert.equal(literals.get("boot-restore"), "defaults-first;v1-full-restore");
-    assert.equal(literals.get("header"), "12B-header;byte4-version=1;byte7-zero;max-104B");
+    assert.equal(literals.get("header"), "12B-header;byte4-version=1;byte7-zero;max-84B");
     assert.equal(literals.get("firmware-confirmation"), "firmware-owned-confirmation;save-time-only");
     assert.equal(literals.get("save"), "persists-and-applies;failed-retry-via-resave");
   });
@@ -87,6 +87,7 @@ test("persistent-configuration documentation contract", async (suite) => {
   });
 
   await suite.test("accepts the complete plan-exact fixture", async () => {
+    assert.ok(!fixtureDocuments()["docs/testing/hil-functional-test-spec.md"].includes("switch/vin"));
     await withFixture(async (root) => {
       const result = await checkPersistentConfigurationDocs(root);
       assert.equal(result.ok, true, formatFailures(result.failures));

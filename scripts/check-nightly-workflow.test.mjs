@@ -183,6 +183,18 @@ const MUTATIONS = [
   ["rejects disabled candidate duplicate rejection", "W12", "if [[ \"$candidate_rows\" == *$'\\n'* ]]; then\n            printf 'duplicate nightly candidate releases", "if false; then\n            printf 'duplicate nightly candidate releases"],
 ];
 
+for (const readme of Object.keys(READMES)) {
+  for (const [current, obsolete] of [["43008 B", "30720 B"], ["161144 B", "148856 B"]]) {
+    test(`W13: ${readme} rejects obsolete ${obsolete} allocation`, async () => {
+      await withRepo(BASELINE, async (root) => {
+        await writeFile(path.join(root, readme), replaceOnce(READMES[readme], current, obsolete));
+        const result = await checkNightlyWorkflow(root);
+        assert.ok(result.failures.some((failure) => failure.code === "W13" && failure.surface === readme), formatFailures(result.failures));
+      });
+    });
+  }
+}
+
 for (const [index, [name, workflow]] of TRIGGER_MUTATIONS.entries()) {
   test(`trigger ${index + 1}/${TRIGGER_MUTATIONS.length}: ${name}`, async () => {
     await withRepo(replaceRootTrigger(BASELINE, workflow), async (root) => {

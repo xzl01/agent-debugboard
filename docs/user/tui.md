@@ -197,6 +197,30 @@ confirmation and do not update the display optimistically; the TUI shows the
 pending action, then refreshes the authoritative firmware state. Each half-row
 GPIO hit target belongs to one pin; an empty half is inert.
 
+## Reboot And BOOTSEL
+
+Select the **System / Reboot** row and press Enter or Space to request a normal
+cold restart through the same 250 ms path as `POST /api/v1/reboot`. The action
+never requests ROM BOOTSEL; holding the physical button across that reset is a
+separate ROM behavior. A rail not restored by a saved v1
+configuration snapshot returns to its boot-off default, and `vdd_5v` follows
+the USB route default; re-apply rail and PD setup after the board returns.
+
+The TUI does not expose a ROM BOOTSEL row or direct key. Use the separate CLI
+`bootloader` command or Web **Enter BOOTSEL** card when that recovery path is
+intended. Flash only the combined `radxa-linkr-debugger-rp2350.uf2`; the
+application-only `zephyr.uf2` does not include MCUboot and must never be used
+for ROM BOOTSEL.
+
+The Reboot row opens the same three-second confirmation used for dangerous
+hardware actions. Cancellation, timeout, or any other key sends no request. The TUI
+does not expose the physical button as a software control: holding that button
+for 3 seconds while firmware runs and releasing it requests a normal restart,
+a short press does nothing, and holding it without releasing does not reset.
+Holding it during power-on or reset is sampled by the ROM, which enters ROM
+BOOTSEL. The firmware button thread cannot run when the core is completely
+wedged; the hardware watchdog remains the fallback for that failure mode.
+
 ## Multiple instances
 
 The TUI renders responsively and polls board state over HTTP every two seconds. You can run several instances at once without interference.

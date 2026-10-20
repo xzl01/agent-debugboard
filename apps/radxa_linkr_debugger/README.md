@@ -45,7 +45,7 @@ Tests:
 Schematics:
 
 ```text
-docs/hardware/radxa-linkr-debugger-schematic-x1.1.pdf  (RP2350A)
+docs/hardware/RA051_MB_X1.2.pdf  (RP2354A, RP2350A-compatible)
 ```
 
 The USB interface enumerates as a composite USB device. The board exposes its
@@ -121,12 +121,12 @@ a time. See
 
 ### ADC Telemetry
 
-The firmware exposes four ADC descriptors in a fixed order on both
+The firmware exposes five ADC descriptors in a fixed order on both
 `GET /api/v1/adc/read` and the live WebSocket telemetry frames
 (`topic="adc"` for both single and batch frames):
 
-- `5v_out`, `12v_out`, `20v_out`: `kind="current"`, signed integer
-  microamps. `power_enabled` carries the live state of the matching
+- `5v_out`, `12v_out`, `20v_out`, `vdd_5v`: `kind="current"`, signed integer
+  microamps from four INA226 devices. `power_enabled` carries the live state of the matching
   `power/<name>` output.
 - `adc3`: `kind="voltage"`, signed integer microvolts on GP29
   (`ADC3`). Nominal range 0..3,300,000 µV (0..3.3 V) with no probe
@@ -177,6 +177,29 @@ Persistence behaviour for saved snapshots:
 
 Old wording that lists GP29 alongside `GP10`-`GP20` as a freely
 drivable safe GPIO is replaced by this contract.
+### Restart And BOOTSEL
+
+A normal restart and ROM BOOTSEL are separate firmware paths:
+
+- `reboot` / `POST /api/v1/reboot` performs a normal cold restart 250 ms after
+  the response. The action itself never requests ROM BOOTSEL; holding the
+  physical button across that reset is a separate ROM behavior.
+- `bootloader` / `POST /api/v1/bootloader` is the explicit ROM BOOTSEL path.
+  Only the combined `radxa-linkr-debugger-rp2350.uf2` may be flashed there.
+
+A rail not restored by a saved v1 configuration snapshot returns to its
+`regulator-boot-off` default on a cold restart; `vdd_5v` follows the
+`switch usb` boot route. Re-apply rail and PD state after the board returns.
+
+The physical BOOTSEL button is polled by a firmware thread. While firmware is
+running, holding it for 3 seconds and releasing it requests a normal cold
+restart, not ROM BOOTSEL. A short press does nothing, and holding it without
+releasing does not reset. Holding it during power-on or reset is sampled by the
+RP2350 ROM and enters ROM BOOTSEL. A completely wedged core cannot run the
+button thread; the hardware watchdog remains the fallback for that failure mode.
+A normal watchdog reset enters ROM BOOTSEL through the recovery marker; when the
+OTA test marker is present, MCUboot rollback handles the reset instead.
+
 When HTTP/WS is unavailable but the CDC ACM shell still works, the local shell
 command below enters the current MCU's ROM BOOTSEL path used by the HTTP API:
 
@@ -207,10 +230,6 @@ curl -fsS http://172.29.203.1/api/v1/switch/tf_wp   # returns writable or protec
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"route":"writable"}' \
   http://172.29.203.1/api/v1/switch/tf_wp   # safe default (switch off)
-curl -fsS http://172.29.203.1/api/v1/switch/vin   # returns 1.8v or 3.3v
-curl -fsS -X PUT -H 'Content-Type: application/json' \
-  --data '{"route":"3.3v"}' \
-  http://172.29.203.1/api/v1/switch/vin   # safe default
 ```
 
 ## Persistent Configuration
@@ -229,7 +248,8 @@ subsystem initializes only the `linkr/config/snapshot` key, validates the
 record through the bounded v1 codec, and reports its state through the
 config service. The snapshot header is exactly 12 bytes; byte 4 version 1 is
 the only accepted version and byte 7 zero is the only accepted restore
-padding. The codec returns `unsupported_version` for any version byte other
+padding. The maximum encoded snapshot is 84 bytes (12-byte header plus 18
+four-byte entries). The codec returns `unsupported_version` for any version byte other
 than 1; a v1 header with a nonzero byte 7 is rejected as `invalid_snapshot`.
 A version byte other than 1 is never replayed, migrated, or auto-cleared. The config service
 runs after `linkr_debugger_control_init()` succeeds and before HTTP init,
@@ -270,7 +290,7 @@ confirmed-dangerous). Successful
 `clear` adds `noop`, `snapshot`, and numeric `pending`.
 
 Dangerous classification is firmware-owned and applies to `power=on`, every
-USB route value, `VIN=1.8v`, and any GPIO entry with the output direction
+USB route value, and any GPIO entry with the output direction
 bit set. A Save that includes any dangerous ID without `confirm:true`
 is rejected with `confirmation_required` and lists the offending IDs in
 `dangerous_items`. `confirmation_items` belongs to a successful save
@@ -299,7 +319,7 @@ later Save or `config clear` replaces the snapshot. Ordinary control
 setters are volatile; only an explicit `config save` writes the snapshot,
 and there is no auto-persist path on top of normal control operations.
 
-Save and boot restore share this exact replay order so coupled final state
+Save and boot restore share this exact nine-stage replay order so coupled final state
 is preserved:
 
 1. saved GPIO inputs (direction `input`)
@@ -310,8 +330,7 @@ is preserved:
 6. `power 12v_out`
 7. `power 5v_out`
 8. `power 20v_out`
-9. `switch vin`
-10. saved GPIO outputs (direction `output`)
+9. saved GPIO outputs (direction `output`)
 
 Replay stops at the first hardware failure, leaves earlier effects reported
 as applied, and keeps the failed plus remaining entries pending. There is
@@ -370,7 +389,8 @@ The primary result or error line precedes `confirmation_id`, `applied_id`,
 result, and `config show` proves only `available`, `reason`, `saved_count`, and
 `pending_count`; HTTP GET proves item state.
 
-Existing CDC `bootloader`, `vin`, and `tf_wp` commands remain unchanged.
+The CDC `bootloader` and `tf_wp` commands remain available. x1.2 has no
+`switch vin` or CDC `vin` command.
 The CDC ACM `bootloader` shell command is the independent fallback when
 HTTP/WS is unavailable.
 
@@ -401,7 +421,7 @@ already supports:
 - `DELETE /api/v1/config` and CDC `config clear` delete the stored
   snapshot but never change live hardware.
 
-A stored v1 snapshot, including power-on, USB routes, `VIN=1.8v`, and GPIO
+A stored v1 snapshot, including power-on, USB routes, and GPIO
 `output` entries, is replayed in full on every normal boot once it survives
 the recovery path intact. A new Save after recovery writes a fresh v1
 header; a stored blob whose version byte is not 1 is never replayed,
@@ -475,9 +495,8 @@ The pinned Zephyr HTTP/1 server short-circuits dynamic-resource `HEAD` requests
 before the application callback and returns a default headers-only HTTP 200.
 Use `GET` when validating captive portal behavior.
 
-VIN defaults to 3.3V at boot. G3-only VIN 1.8V switching is documented in the
-expert gated section below; it requires target voltage compatibility confirmation
-and physical measurement setup before use.
+x1.2 has no selectable VIN 1.8V/3.3V route; see the
+[hardware reference](../../docs/reference/hardware-x1.2.md).
 
 `GET /api/v1/status` includes `board_monitoring`, and WebSocket
 `snapshot/status` messages include the same object. The categories are
@@ -583,7 +602,7 @@ radxa-linkr-debuggerctl adc read -v 5v_out
 radxa-linkr-debuggerctl power set 12v_out on
 radxa-linkr-debuggerctl power set 20v_out on
 radxa-linkr-debuggerctl switch route sd usb-reader
-radxa-linkr-debuggerctl switch get vin   # returns 1.8v/3.3v
+radxa-linkr-debuggerctl switch get usb
 radxa-linkr-debuggerctl watchdog status
 ```
 
@@ -599,7 +618,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- adc read -v 5v_out
 cargo run --manifest-path cmd-ng/Cargo.toml -- power set 12v_out on
 cargo run --manifest-path cmd-ng/Cargo.toml -- power set 20v_out on
 cargo run --manifest-path cmd-ng/Cargo.toml -- switch route sd usb-reader
-cargo run --manifest-path cmd-ng/Cargo.toml -- switch get vin
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch get usb
 cargo run --manifest-path cmd-ng/Cargo.toml -- watchdog status
 ```
 
@@ -619,9 +638,9 @@ or 3 (RUNNING for NONE), then EVENT armed (rising/falling/either only), then EVE
 triggered, then DATA, then EVENT stopped.
 
 All modes use the common packed arena. WIDE11 is the current dual-lane
-implementation: its 144184 B hardware burst slice overlays the 148856 B total
-backing allocation, which is also shared with the 30720 B WebSocket telemetry
-ring. The allocation is sized to `max(normal, burst)=148856 B`; WIDE11 does not
+implementation: its 144184 B hardware burst slice overlays the 161144 B total
+backing allocation, which is also shared with the 43008 B WebSocket telemetry
+ring. The allocation is sized to `max(normal, burst)=161144 B`; WIDE11 does not
 extend it, and WIDE12 is historical only. GP29 is excluded from WIDE11 because
 it is owned by ADC3 and input-only; see [GP29 ADC3 ownership](#gp29-adc3-ownership).
 See the
@@ -645,17 +664,15 @@ target debug connector. The RP2350 firmware does not act as a debug probe.
 Power-output naming intentionally distinguishes controllable 5V outputs from
 `5V_FIN`. The firmware does not control `5V_FIN`.
 
-Current schematic mapping (G3 / RP2350A):
+Current schematic mapping (x1.2 / RP2354A):
 
 - `12v_out`: `GP02_12V_EN` (GPIO 2)
-- `5v_out`: `GP05_5V_EN` (GPIO 0)
-- `vdd_5v`: `GP09_5V_WS_EN` (GPIO 1, follows USB mux route)
-- `20v_out`: `GP10_20V_EN` (GPIO 3)
+- `5v_out`: `GP0_5V_EN` (GPIO 0)
+- `vdd_5v`: `GP01_5V_WS_EN` (GPIO 1, follows USB mux route)
+- `20v_out`: `GP03_20V_EN` (GPIO 3)
 - TF/SD route switch: `GP06_TF_SW` (GPIO 4)
 - USB hub mux switch: `GP03_USB3_HUB` (GPIO 5)
-- CH347 1.8 V VIN supply enable: `1V8_EN` (GPIO 6, internal to `switch vin`)
 - TF write-protect: `TF_WP` (GPIO 22, `switch tf_wp`; defaults to `writable` at boot)
-- CH347 VIO voltage select: `VIO_SEL` (GPIO 23, `switch vin`)
 - Test point: `TP15` (GPIO 24)
 - Status LED: `LED_BLUE` (GPIO 25)
 
@@ -666,66 +683,24 @@ behavior is driven through Device Tree chosen properties and the existing watchd
 supervisor, not through a Zephyr `CONFIG_LED` or built-in heartbeat driver.
 
 - GPIO aliases: `CON_MAS` (GP7), `CON_REST` (GP8), `CON_USER` (GP9)
-- J16 GPIO: `GP10`-`GP20`
-- J16 ADC3 / GPIO: `GP29` (ADC3, input-only while ADC3-owned; see
+- Safe GPIO: `GP7`-`GP9`, `GP12`-`GP18`
+- J4 UART1: TX `GP10`, RX `GP11`; LA temporarily owns captured pins
+- CH224A PD strap: `GP19`, high-impedance input without pulls
+- J8 PIO I2C: SCL `GP20`, SDA `GP21`; LA samples GP20 read-only
+- ADC3 / GPIO: `GP29` (ADC3, input-only while ADC3-owned; see
   [GP29 ADC3 ownership](#gp29-adc3-ownership))
-- ADC current monitor inputs: `S_C_5V` (ADC0), `S_C_12V` (ADC1), `S_C_20V` (ADC2)
+- Current monitors: four INA226 devices for `5v_out`, `12v_out`, `20v_out`, `vdd_5v`
 
-VIN defaults to 3.3V at boot. GPIO1 VDD_5V is coupled to the USB mux route
-(`pc` on, `target` off) and boots off under the default `target` route, while
-its GPIO6 VDD_1V8 child rail stays always on in the G3 Device Tree model. The
-selectable CH347 VIO level is modeled as a standard `regulator-gpio` regulator
-with exact 1.8V and 3.3V states, and firmware selects it through the Zephyr
-regulator API.
+GPIO1 VDD_5V is coupled to the USB mux route (`pc` on, `target` off) and boots
+off under the default `target` route. x1.2 has no VDD_1V8 child rail or
+selectable CH347 VIO regulator.
 
 GPIO1 VDD_5V is exposed as the `vdd_5v` power output across the raw API, host
 CLI/TUI, and Web UI. It powers the USB hub domain and follows the `switch usb`
 route (`pc` on, `target` off); manual `power set` is honored between route
-changes and re-imposed on the next route change. Turning it off also cuts the
-GPIO6 VDD_1V8 child rail used for CH347 1.8 V VIN.
+changes and re-imposed on the next route change. Turning it off cuts the USB
+hub domain.
 
-G3 ADC current monitor inputs use an INA139 with a 10 mOhm shunt and a
-50 kOhm output load. The Rust CLI and `curl` both report the
+x1.2 INA226 current monitors use 10 mOhm shunts. The Rust CLI and `curl` both report the
 firmware's raw current-monitor chain directly; no host-side ADC calibration
 tables or zero-point correction are applied.
-
-## Expert: G3 VIN 1.8V Switching
-
-VIN 1.8V switching applies to the supported G3 (RP2350A) hardware. This
-operation is side-effectful and requires confirmed target voltage compatibility
-and physical measurement setup before use.
-
-Prerequisites before any 1.8V switch:
-
-1. Confirm your target device's VIO supports 1.8V signaling.
-2. Connect a voltmeter or oscilloscope to the target VIO pin.
-3. Acknowledge that incorrect voltage will likely damage the target.
-
-To inspect current VIN state:
-
-```sh
-curl -fsS http://172.29.203.1/api/v1/switch/vin
-radxa-linkr-debuggerctl switch get vin
-```
-
-To switch to 1.8V (G3 only), confirm target compatibility first, then:
-
-```sh
-radxa-linkr-debuggerctl switch route vin 1.8v --confirm
-# Then immediately measure target VIO pin — expect ~1.8V
-```
-
-To restore safe 3.3V:
-
-```sh
-radxa-linkr-debuggerctl switch route vin 3.3v --confirm
-# Then immediately measure target VIO pin — expect ~3.3V
-```
-
-CDC ACM shell equivalent:
-
-```text
-linkr-debugger:~$ vin get
-linkr-debugger:~$ vin set 1.8v
-linkr-debugger:~$ vin set 3.3v
-```

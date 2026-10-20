@@ -49,7 +49,7 @@ curl http://172.29.203.1/api/v1/status
 
 ### `GET /api/v1/power/{name}`
 
-获取单个电源输出状态。`{name}` 为 `12v_out`、`5v_out` 或 `20v_out`。
+获取单个电源输出状态。`{name}` 为 `12v_out`、`5v_out`、`20v_out` 或 `vdd_5v`。
 
 ### `PUT /api/v1/power/{name}`
 
@@ -63,20 +63,24 @@ curl -X PUT http://172.29.203.1/api/v1/power/12v_out -d '{"state":"on"}'
 
 错误：400（`missing_power_output`、`invalid_state`）、403（`power_output_locked`）、500（`set_failed`）
 
-## ADC（电流监测）
+## ADC（电流与电压监测）
 
 ### `GET /api/v1/adc/read`
 
-读取电流监测 ADC 通道。
+读取 ADC 电流与电压通道。
 
 ```sh
 curl http://172.29.203.1/api/v1/adc/read
 curl http://172.29.203.1/api/v1/adc/read?channel=5v_out
 ```
 
-查询参数：`channel=<name>`（可选，如 `5v_out`、`12v_out`、`20v_out`）
+查询参数：`channel=<name>`（可选，如 `5v_out`、`12v_out`、`20v_out`、`vdd_5v`、`adc3`）
 
-响应 `readings` 数组字段：`name`、`signal`、`power_enabled`、`raw`、`mv`、`current_ua`、`sensor_value`、`unit`。
+四路 INA226 电流通道为 `5v_out`、`12v_out`、`20v_out`、`vdd_5v`；`adc3`
+是独立的仅监测 ADC 电压通道。INA226 响应 `readings` 数组字段：`name`、
+`signal`、`power_enabled`、`raw`、`mv`、`current_ua`、`voltage_valid`、
+`voltage_uv`、`sensor_value`、`unit`。`adc3` 携带 `name`、`signal`、`raw`、
+`mv`、`sensor_channel`、`unit`、`sensor_value`。
 
 ## Switch 路由
 
@@ -127,15 +131,41 @@ curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"output","valu
 curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"input"}'
 ```
 
+## 重启
+
+### `POST /api/v1/reboot`
+
+请求正常冷重启。MCU 在响应后 250 ms 执行，这条路径绝不请求 ROM BOOTSEL。
+固件在发送响应前已准备好计划重启状态，因此成功响应保证：只要复位期间没有
+按住物理 BOOTSEL 按键，下一次启动就回到正常固件，而不是 ROM USB boot 路径。
+
+```sh
+curl -X POST http://172.29.203.1/api/v1/reboot
+```
+
+`5v_out`、`12v_out`、`20v_out` 中的每一条都回到自己的
+`regulator-boot-off` 默认状态，除非已保存的 v1 配置快照恢复了该电源轨；
+`vdd_5v` 跟随 USB 路由默认值。板子恢复后必须重新设置并验证电源轨与 PD。
+
+受支持的变更方法是 `POST`。`GET`、`PUT`、`DELETE` 返回 HTTP 405，
+`error.code` 为 `method_not_allowed`，且不会调度复位。重启已处于 pending 时
+重复 `POST` 返回 HTTP 409、`error.code=reboot_pending`，不会调度第二次或
+更早的复位。
+
 ## Bootloader
 
 ### `POST /api/v1/bootloader`
 
-进入 ROM BOOTSEL 模式。MCU 在响应后 250ms 复位。
+进入 ROM BOOTSEL 模式。这不是正常重启，也不是 `POST /api/v1/reboot` 的
+别名。MCU 在响应后 250 ms 复位。
 
 ```sh
 curl -X POST http://172.29.203.1/api/v1/bootloader
 ```
+
+ROM BOOTSEL 只能刷写合成完整 UF2 `radxa-linkr-debugger-rp2350.uf2`
+（MCUboot + 应用）。绝不能使用仅含应用固件的 `zephyr.uf2`，它不包含
+MCUboot，可能导致板子无法正常启动。
 
 ## 任务（固件目录与保存的请求序列）
 
@@ -204,6 +234,10 @@ curl -fsS http://172.29.203.1/api/v1/tasks/catalog
 `invalid_blob`。小于 `0x20` 且不是 tab/LF/CR 的字节在写入前会被拒绝，
 保证 GET 返回的 JSON 始终能够逐字节还原已存 blob。
 
+任务 ID 必须是非空 UTF-8 字符串，最长 31 字节。空格、tab、CR、LF、`#`、
+保留 ID `catalog` 以及精确的 `.`、`..` 均非法；`PUT` 遇到含有这些非法 ID
+的 blob 时返回 HTTP 400 `invalid_blob`。`.hidden`、`...` 等其他含点 ID 仍合法。
+
 旧开发期数据（任何写入先前任务存储标记或 settings key 的内容）由新版
 任务存储契约定向失效：新版本固定为 `# linkr-task.v1` 标记与
 `linkr/task/tasks` 键。既没有迁移路径，也不提供读取别名；仍持有旧数据
@@ -269,11 +303,39 @@ JSON 字符串字面量（`"..."`），服务端会先反转义标准转义再�
 }
 ```
 
+### `DELETE /api/v1/tasks/{id}`
+
+仅删除指定的已存任务，其他任务段逐字节保留，不改变当前硬件状态。
+删除最后一个任务时移除存储键。将 ID 按 UTF-8 百分号编码为单个 URL 路径
+组件，例如 `café` 编码为 `caf%C3%A9`、`/` 编码为 `%2F`、字面量 `%`
+编码为 `%25`。服务端仅解码一次；解码后的 NUL（`%00`）会被拒绝，
+不会截断 ID。解码后精确为 `.`、`..` 的 ID 非法，包括 `%2E`、`%2E%2E`。
+
+| HTTP 状态 | 结果 |
+| --- | --- |
+| 200 | 任务已删除，响应见下方 |
+| 400 | ID 缺失或非法、百分号解码失败，或解码出 NUL；不删除任何任务 |
+| 404 | `not_found`：没有与合法 ID 匹配的已存任务 |
+| 409 | `busy`：采集或 OTA 占用共享 mutation 资源；不删除任何任务 |
+
+```json
+{
+  "schema": "radxa-linkr-debugger.v1",
+  "ok": true,
+  "command": "task",
+  "action": "delete",
+  "id": "power-cycle",
+  "deleted": true
+}
+```
+
 ### 方法处理
 
 `/api/v1/tasks` 仅接受 GET、PUT、DELETE；其他动词返回 `method_not_allowed`
 （HTTP 405）。端点本身不会重放记录，固件契约就是“只存不执行”；执行由
 客户端负责。
+
+`/api/v1/tasks/{id}` 仅接受 DELETE，其他方法返回 HTTP 405。
 
 ### 客户端执行与边界
 
@@ -408,7 +470,7 @@ Arm 捕获。
 ```json
 {"type": "subscribe", "topic": "live", "rate_hz": 60, "batch_size": 1}
 ```
-- `rate_hz`：1–1000（默认 10）
+- `rate_hz`：1–250（默认 10）；大于 250 返回错误码 `invalid_rate`
 - `batch_size`：1–20（>1 启用批处理模式）
 
 **取消订阅**：
@@ -421,16 +483,21 @@ Arm 捕获。
 {"type": "command", "command": "power_set", "id": "1", "output": "12v_out", "state": "on"}
 ```
 
-可用命令：`power_set`、`switch_route`、`gpio_set`、`bootloader`、`capture_arm`、`capture_trigger`、`capture_stop`、`capture_cancel`。保存的任务序列仅通过 HTTP 管理。
+可用命令：`power_set`、`switch_route`、`gpio_set`、`reboot`、`bootloader`、`capture_arm`、`capture_trigger`、`capture_stop`、`capture_cancel`。保存的任务序列仅通过 HTTP 管理。
+
+`reboot` 请求[重启](#重启)一节描述的正常冷重启，不是 `bootloader` 别名。
+固件先发送 `reboot`/`ok` 结果帧，再等待 250 ms 执行重启。`bootloader` 仍是
+显式的 ROM BOOTSEL 命令。
 
 功耗捕获必须显式指定上位机流式协议模式：
 
 ```json
-{"type":"command","command":"capture_arm","id":"capture-1","mode":"host-stream-v1","trigger":"current","output":"5v_out","threshold_ua":500000,"rate_hz":100}
+{"type":"command","command":"capture_arm","id":"capture-1","mode":"host-stream-v1","trigger":"current","output":"5v_out","threshold_ua":500000,"rate_hz":250}
 ```
 
 布防前应将 `mode` 与状态响应中的 `power_capture_protocol` 对比，避免固件与 Web
-版本不一致时无限等待。
+版本不一致时无限等待。`rate_hz` 接受 1–250；省略时默认 100，大于 250 返回
+错误码 `invalid_rate`。
 
 GPIO 命令（包括直接控制恢复线）：
 

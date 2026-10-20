@@ -348,7 +348,7 @@ SINGLE and FAST8 use one capture SM; WIDE11 uses two capture SMs. For WIDE11:
 - **Post-capture deep-burst transport**: up to 98 DATA frames, with the dedicated
   raw-burst item ceiling of 1024 samples per frame and 140000 B total payload; this
   item ceiling is independent of the larger continuous-stream chunk sizes above
-- **Shared burst slice**: 144184 bytes; overlays the 148856 B total backing allocation (sized to max(normal, burst)=148856 B); quiesces ADC telemetry, power capture, and normal Sigrok pool for the lease lifetime; restores after drain
+- **Shared burst slice**: 144184 bytes; overlays the 161144 B total backing allocation (sized to max(normal, burst)=161144 B); quiesces ADC telemetry, power capture, and normal Sigrok pool for the lease lifetime; restores after drain
 - **Two-phase START**: ownership and quiesce are ready before the response. NONE
   sends START_RESP in RUNNING state with no ARMED event; triggered captures send
   START_RESP in ARMED state followed by the ARMED event. GO then synchronously
@@ -361,7 +361,7 @@ The three physical capture plans:
   12500 B source at 100 MHz (100000 samples × 1 bit). A FAST8 physical plan, not a separate Sigrok wire mode.
 - **FAST8**: one 8-bit lane (GP10-GP17), autopush32, 4 samples per 32-bit word,
   100000 B source at 100 MHz (100000 samples × 8 bits)
-- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 148856 B total backing allocation)
+- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 161144 B total backing allocation)
 
 WIDE11 verification is the freeze-final HIL evidence block below; it is not the
 same artifact as the historical WIDE12 baseline.
@@ -505,9 +505,9 @@ All acquisitions capture at the requested sample rate until a stop condition:
 **Key insight**: Continuous protocol captures are bounded by the packed ring and
 USB/NCM transport. Higher rates fill the buffer faster; if continuity
 can no longer be proven, firmware emits a terminal OVERRUN/ERROR event and stops
-instead of silently continuing (lossless-or-stop). The packed ring reuses the 148856 B
-total backing allocation (sized to max(normal, burst)=148856 B); the WIDE11 144184 B hardware
-slice and the 30720 B WS telemetry ring share that backing allocation.
+instead of silently continuing (lossless-or-stop). The packed ring reuses the 161144 B
+total backing allocation (sized to max(normal, burst)=161144 B); the WIDE11 144184 B hardware
+slice and the 43008 B WS telemetry ring share that backing allocation.
 
 ## Session Flow
 
@@ -677,8 +677,8 @@ mapping, transition-rich 16 MHz SINGLE, 25/125 MHz sustained transport, or watch
 usable capacities are SINGLE 260096, FAST8 30720, WIDE11 14336; WIDE11 advances at the
 minimum completed lane sequence, treats DMA write-pointer skew as diagnostic, and stops on the
 sticky PIO RXSTALL hardware flag or ring overwrite; the packed
-ring reuses the 148856 B total backing allocation (sized to max(normal, burst)=148856 B),
-and the WIDE11 144184 B hardware slice plus the 30720 B WS telemetry ring share that
+ring reuses the 161144 B total backing allocation (sized to max(normal, burst)=161144 B),
+and the WIDE11 144184 B hardware slice plus the 43008 B WS telemetry ring share that
 backing allocation
 - LA sink: protocol-neutral consumer with 4 DATA slots of 4,096 payload bytes each plus
   1 terminal slot; total pool memory is 192 bytes smaller than the former 8 x 2,048-byte layout.

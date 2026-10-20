@@ -62,10 +62,11 @@ counts as HIL and where dated board-level evidence lives.
 
 ## Hardware
 
-Schematics and design references for the G3 board.
+Schematics and design references for the `RA051_MB_X1.2` board.
 
-- [Schematic (rev X1.1)](hardware/radxa-linkr-debugger-schematic-x1.1.pdf)
-- [Reference Designators](hardware/RA051_X11_20260618位号图.pdf)
+- [Schematic (rev X1.2)](hardware/RA051_MB_X1.2.pdf)
+- [Reference Designators (X1.2)](hardware/RA051_V12_20260920位号图.pdf)
+- [x1.2 Hardware and BSP](reference/hardware-x1.2.md)
 
 ## Assets
 

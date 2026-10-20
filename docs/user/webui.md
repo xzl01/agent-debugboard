@@ -143,13 +143,38 @@ key `linkr/task/tasks`; there is no migration or read alias for it.
 
 ## Firmware Tools And Power Analysis
 
-- **Firmware Tools** in the dashboard sidebar contains the OTA and BOOTSEL
-  controls. See [ota.md](ota.md) for the full OTA workflow.
+- **Firmware Tools** in the dashboard sidebar contains the OTA, normal
+  restart, and ROM BOOTSEL controls. See [ota.md](ota.md) for the full OTA
+  workflow.
 - **Power Analysis** is a workspace tab with ordinary captures and startup
   analysis.
 - **Automation** is a workspace tab with the test editor and the
   flash-backed Task card that lists, stores, runs, and clears saved
   request sequences.
+
+### Reboot And BOOTSEL
+
+**Restart** (normal reboot) requests a normal cold restart through
+`POST /api/v1/reboot`. The board restarts 250 ms after the response and the
+page reconnects; this action never enters ROM BOOTSEL and never produces an
+`RPI-RP2` device. Holding the physical BOOTSEL button across that reset is a
+separate ROM behavior. A rail not restored by a saved v1 configuration
+snapshot returns to its boot-off default, and `vdd_5v` follows the USB route
+default. Re-apply rail and PD setup after the board returns.
+
+**Enter BOOTSEL** is a separate action through `POST /api/v1/bootloader`; it is
+not a restart alias. It is the only Web UI action that should make the board
+enumerate as `RPI-RP2`. Flash only the combined
+`radxa-linkr-debugger-rp2350.uf2` (MCUboot plus application); the
+application-only `zephyr.uf2` does not include MCUboot and must never be used
+for ROM BOOTSEL.
+
+The physical BOOTSEL button is not a third Web UI action. While firmware is
+running, hold it for 3 seconds and release to request a normal restart; a short
+press does nothing, and holding it without releasing does not reset. Holding it
+during power-on or reset is sampled by the ROM, which enters ROM BOOTSEL. The
+button is serviced by a firmware thread and cannot recover a completely wedged
+core; the hardware watchdog remains the fallback for that failure mode.
 
 ## Connecting Target Serial
 
