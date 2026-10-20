@@ -124,12 +124,15 @@ Device Tree-selected input pin.
   decoded as the new STOP header. Successful cleanup still returns the original
   NAK `-EIO`; a cleanup timeout/error remains the reported diagnostic instead.
 - **Current 400 kHz HIL fixture only (not production-board population):** SDA
-  and SCL each have a 10 kΩ fly-wire pull-up to board VCC_3V3; the pull-ups
+  and SCL each have a 4.7 kΩ fly-wire pull-up to board VCC_3V3; the pull-ups
   disappear with board power, J8 is unloaded, and VHV/PD remains online for the
   run. No one-sided power-off case is exercised. In parallel with the documented
-  CH224A 7–15 kΩ internal pull-up range, the estimated effective pull-up is
-  4.1–6.0 kΩ. With the known 34 pF fixture capacitance this estimates
-  `tr = 119–173 ns` and a low-state current of approximately 0.55–0.80 mA.
+  CH224A 7/10/15 kΩ internal pull-ups, the calculated effective values are
+  2.812/3.197/3.579 kΩ. With the known 34 pF fixture capacitance this estimates
+  `tr = 81.0–103.1 ns` and a 3.3 V low-state pull-up current of
+  0.922–1.174 mA. The 4.7 kΩ external pull-up alone gives `tr = 135.4 ns` and
+  `Cbmax = 75.33 pF` at the 300 ns Fast-mode limit. The worst-case parallel
+  value gives `Cbmax = 98.94 pF`, leaving 64.94 pF beyond the known 34 pF.
   These are fixture estimates to be checked by measurement, not evidence that
   production x1.2 has an external pull-up or is safe under one-sided power-off.
 - CH224A is on the same bus and is limited to 400 kHz, so the shared bus

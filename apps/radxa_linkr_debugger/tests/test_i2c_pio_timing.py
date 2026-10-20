@@ -18,6 +18,9 @@ BINDING_PATH = APP_PATH / "dts/bindings/i2c/raspberrypi,pico-pio-i2c.yaml"
 PRJ_CONF_PATH = APP_PATH / "prj.conf"
 HARDWARE_DOC_PATH = ROOT / "docs/reference/hardware-x1.2.md"
 HIL_DOC_PATH = ROOT / "docs/testing/hil-functional-test-spec.md"
+HIL_RESULT_PATH = (
+    ROOT / "docs/testing/results/2026-10-20-pio-i2c-400khz-functional-hil.md"
+)
 PROJECT_SHELL_PATH = APP_PATH / "src/linkr_debugger_shell.c"
 GENERATED_CONFIG_PATH = (
     ROOT / "build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/.config"
@@ -289,6 +292,7 @@ class PioI2cTimingTest(unittest.TestCase):
         cls.prj_conf = PRJ_CONF_PATH.read_text(encoding="utf-8")
         cls.hardware_doc = HARDWARE_DOC_PATH.read_text(encoding="utf-8")
         cls.hil_doc = HIL_DOC_PATH.read_text(encoding="utf-8")
+        cls.hil_result = HIL_RESULT_PATH.read_text(encoding="utf-8")
         cls.project_shell = PROJECT_SHELL_PATH.read_text(encoding="utf-8")
 
         program = re.search(
@@ -1033,7 +1037,13 @@ class PioI2cTimingTest(unittest.TestCase):
             "5 V TVS",
             "must never enable it",
             "200 kHz by default",
-            "10 kΩ fly-wire pull-up",
+            "4.7 kΩ fly-wire pull-up",
+            "2.812/3.197/3.579 kΩ",
+            "`tr = 81.0–103.1 ns`",
+            "0.922–1.174 mA",
+            "`Cbmax = 75.33 pF`",
+            "`Cbmax = 98.94 pF`",
+            "64.94 pF",
             "34 pF fixture capacitance",
             "50 ns",
         )
@@ -1050,13 +1060,78 @@ class PioI2cTimingTest(unittest.TestCase):
             "SDA 的绝对最大值虽为 6 V",
             "ESD5451N 是 5 V TVS",
             "200 kHz 默认频率本身不消除上述风险",
-            "10 kΩ 飞线上拉到板载 VCC_3V3",
+            "4.7 kΩ 飞线上拉到板载 VCC_3V3",
+            "2.812/3.197/3.579 kΩ",
+            "`tr = 81.0–103.1 ns`",
+            "0.922–1.174 mA",
+            "`Cbmax = 75.33 pF`",
+            "`Cbmax = 98.94 pF`",
+            "64.94 pF",
             "不执行单边掉电",
             "50 ns spike filter",
         )
         for contract in required_hil_contracts:
             with self.subTest(hil_contract=contract):
                 self.assertIn(contract, self.hil_doc)
+
+        required_result_contracts = (
+            "Post-run fixture evidence correction",
+            "user/operator corrected",
+            "not a new HIL execution",
+            "4.7 kOhm flying-wire pull-up",
+            "2.812/3.197/3.579 kOhm",
+            "81.0–103.1 ns",
+            "0.922–1.174 mA",
+            "`Cbmax = 75.33 pF`",
+            "`Cbmax = 98.94 pF`",
+            "64.94 pF",
+        )
+        for contract in required_result_contracts:
+            with self.subTest(hil_result_contract=contract):
+                self.assertIn(contract, self.hil_result)
+
+        fixture_docs = "\n".join(
+            (self.hardware_doc, self.hil_doc, self.hil_result)
+        )
+        self.assertNotRegex(
+            fixture_docs,
+            r"10\s*k(?:Ω|Ohm)\s+(?:fly|flying|飞线)|"
+            r"10\s*k(?:Ω|Ohm)\s+external",
+        )
+
+    def test_corrected_fixture_calculations(self) -> None:
+        external_ohms = 4_700.0
+        internal_ohms = (7_000.0, 10_000.0, 15_000.0)
+        capacitance_pf = 34.0
+        rise_factor = 0.8473
+        effective_ohms = tuple(
+            external_ohms * internal / (external_ohms + internal)
+            for internal in internal_ohms
+        )
+
+        self.assertEqual(
+            tuple(round(value / 1_000, 3) for value in effective_ohms),
+            (2.812, 3.197, 3.579),
+        )
+        rise_ns = tuple(
+            rise_factor * value * capacitance_pf * 1e-3
+            for value in effective_ohms
+        )
+        self.assertEqual((round(min(rise_ns), 1), round(max(rise_ns), 1)),
+                         (81.0, 103.1))
+        current_ma = tuple(3.3 / value * 1_000 for value in effective_ohms)
+        self.assertEqual(
+            (round(min(current_ma), 3), round(max(current_ma), 3)),
+            (0.922, 1.174),
+        )
+
+        external_rise_ns = rise_factor * external_ohms * capacitance_pf * 1e-3
+        external_cbmax_pf = 300e-9 / (rise_factor * external_ohms) * 1e12
+        parallel_cbmax_pf = 300e-9 / (rise_factor * max(effective_ohms)) * 1e12
+        self.assertEqual(round(external_rise_ns, 1), 135.4)
+        self.assertEqual(round(external_cbmax_pf, 2), 75.33)
+        self.assertEqual(round(parallel_cbmax_pf, 2), 98.94)
+        self.assertEqual(round(parallel_cbmax_pf - capacitance_pf, 2), 64.94)
 
     def test_read_final_nack_and_write_ack_policy_remains_explicit(self) -> None:
         write_start = self.driver.index("\t\tif (!reading) {")

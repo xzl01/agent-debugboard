@@ -992,11 +992,14 @@ HIL 前，必须先满足以下电气前置条件；缺少任一项时将 I2C/IN
   400 kHz 验证构建修改 `clock-frequency`。报告必须明确该构建不是生产默认；任一
   条件失败都回退到 200 kHz 并把 400 kHz 标记为 `[blocked]`。
 - 本轮 400 kHz 夹具条件必须原样记录，不能外推为生产板事实：SDA/SCL 各通过
-  10 kΩ 飞线上拉到板载 VCC_3V3，上拉随板掉电，J8 空载，VHV/PD 全程在线，且
-  **不执行单边掉电**。10 kΩ 与 CH224A 7–15 kΩ internal pull-up 并联的估算值为
-  4.1–6.0 kΩ；按已知 34 pF 估算 `tr = 119–173 ns`、低态电流约
-  0.55–0.80 mA。报告仍须保存示波器实测 tr/VOL；这些估算不能替代测量，也不能
-  证明 VHV=0 或 VCC_3V3=0 时的 Ioff/反灌安全。
+  4.7 kΩ 飞线上拉到板载 VCC_3V3，上拉随板掉电，J8 空载，VHV/PD 全程在线，且
+  **不执行单边掉电**。4.7 kΩ 分别与 CH224A 7/10/15 kΩ internal pull-up
+  并联后为 2.812/3.197/3.579 kΩ；按已知 34 pF 估算
+  `tr = 81.0–103.1 ns`，3.3 V 低态上拉电流为 0.922–1.174 mA。4.7 kΩ
+  单独对应 `tr = 135.4 ns`、`Cbmax = 75.33 pF`；最坏并联值对应
+  `Cbmax = 98.94 pF`，扣除已知 34 pF 后余量为 64.94 pF。报告仍须保存
+  示波器实测 tr/VOL；这些估算不能替代测量，也不能证明 VHV=0 或
+  VCC_3V3=0 时的 Ioff/反灌安全。
 - 400 kHz 软件路径 HIL 需覆盖普通 data/ACK、STOP、repeated START 和九脉冲
   recovery。对 STOP、repeated START、每个 recovery high 及 recovery tail STOP，
   必须确认 SCL 释放后等待实际 SCL high，再从实际 high 起满足 setup/high 时间；

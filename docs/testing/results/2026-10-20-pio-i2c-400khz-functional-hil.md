@@ -11,9 +11,14 @@ a production 400 kHz claim.
 
 ## Scope and safety boundary
 
+**Post-run fixture evidence correction:** the user/operator corrected the
+previously recorded flying-wire pull-up value to **4.7 kOhm**. This changes only
+the fixture metadata and derived calculations below. It is not a new HIL execution
+and does not change the bounded functional observations.
+
 - Only USB topology path `1-1.4.2`, its `ttyACM3` control interface, and
   `eth1` / `172.29.201.1` were operated.
-- SDA and SCL each had a 10 kOhm flying-wire pull-up to board `VCC_3V3`.
+- SDA and SCL each had a 4.7 kOhm flying-wire pull-up to board `VCC_3V3`.
 - The pull-ups followed board power, J8 was otherwise unloaded, and CH224A VHV
   remained powered. No one-sided power-down test was performed.
 - Firmware retained `bias-disable`, output latch zero, output-enable-only
@@ -22,11 +27,14 @@ a production 400 kHz claim.
 - Every startup/reboot was followed by `5v_out=on`, fixed PD 20 V, and a valid
   INA226 voltage/current read before further HIL.
 
-The 10 kOhm external pull-ups in parallel with the CH224A specified 7–15 kOhm
-internal pull-up give an estimated 4.1–6.0 kOhm effective pull-up. With the
-known 34 pF load component, the calculated rise-time range is approximately
-119–173 ns and the low-state pull-up current is approximately 0.55–0.80 mA.
-These are calculations, not oscilloscope measurements.
+The 4.7 kOhm external pull-ups in parallel with the CH224A specified
+7/10/15 kOhm internal pull-ups give calculated effective values of
+2.812/3.197/3.579 kOhm. With the known 34 pF load component, the calculated
+rise-time range is 81.0–103.1 ns and the 3.3 V low-state pull-up current is
+0.922–1.174 mA. The 4.7 kOhm external pull-up alone gives `tr = 135.4 ns` and
+`Cbmax = 75.33 pF` at the 300 ns limit. The worst-case parallel value gives
+`Cbmax = 98.94 pF`, leaving 64.94 pF beyond the known 34 pF. These are
+calculations, not oscilloscope measurements.
 
 ## Software under test
 
