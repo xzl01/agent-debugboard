@@ -27,7 +27,7 @@ const script: TestScript = {
         count: 2,
         steps: [
           { id: "adc", type: "adc_read", params: { channel: "5v_out" } },
-          { id: "expect", type: "serial_expect", params: { channel: "uart0", command: "uname -a", pattern: "Linux", timeout_ms: 5000 } },
+          { id: "expect", type: "serial_expect", params: { channel: "j4", command: "uname -a", pattern: "Linux", timeout_ms: 5000 } },
         ],
       },
     },
@@ -105,7 +105,7 @@ describe("TestRunnerView practical hierarchy", () => {
         steps={plan}
         stepStates={states}
         stepResults={results}
-        serialLogs={[{ stepId: "expect@loop:1", channel: "uart0", direction: "rx", text: "Linux radxa", timestampMs: startedAtMs + 500 }]}
+        serialLogs={[{ stepId: "expect@loop:1", channel: "j4", direction: "rx", text: "Linux radxa", timestampMs: startedAtMs + 500 }]}
         adcSamples={[{ stepId: "adc@loop:1", channel: "5v_out", currentUa: 182_000, timestampMs: startedAtMs + 300 }]}
         startedAtMs={startedAtMs}
         onAbort={onAbort}

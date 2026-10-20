@@ -1,15 +1,18 @@
-import { act } from "react";
+import { act, Profiler } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LanguageProvider } from "@/lib/i18n";
 import { EMPTY_PD_STATUS } from "@/lib/pd";
-import type { PdStatus } from "@/lib/types";
+import type { AdcReading, PdStatus } from "@/lib/types";
 import { PowerCard } from "./PowerCard";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const closeViews: (() => void)[] = [];
 
-function render(lang: "en" | "zh" = "en", pdOverrides: Partial<PdStatus> = {}) {
+function render(lang: "en" | "zh" = "en", pdOverrides: Partial<PdStatus> = {}, readings: readonly AdcReading[] = [
+  { kind: "current", unit: "uA", name: "5v_out", signal: "INA226_5V", value: 300_000,
+    power_enabled: false, voltage_valid: true, voltage_uv: 4_800_000 },
+]) {
   localStorage.setItem("lang", lang);
   const onSetPd = vi.fn().mockResolvedValue(undefined);
   const host = document.createElement("div");
@@ -27,8 +30,7 @@ function render(lang: "en" | "zh" = "en", pdOverrides: Partial<PdStatus> = {}) {
       <PowerCard
         pd={pd} onSetPd={onSetPd} onSet={vi.fn()}
         outputs={["5v_out", "12v_out", "20v_out", "vdd_5v"].map((name) => ({ name, controllable: true, state: "off", value: 0 }))}
-        readings={[{ kind: "current", unit: "uA", name: "5v_out", signal: "INA226_5V", value: 300_000,
-          power_enabled: false, voltage_valid: true, voltage_uv: 4_800_000 }]}
+        readings={readings}
       />
     </LanguageProvider>,
   ));
@@ -51,6 +53,35 @@ describe("PowerCard PD editing and real translated measurement copy", () => {
   afterEach(() => {
     closeViews.splice(0).forEach((close) => close());
     localStorage.clear();
+  });
+
+  it.each([0, 1] as const)("keeps mode %s unknown until 20 V arrives, with no 5 V commit or startup write", (mode) => {
+    localStorage.setItem("lang", "en");
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    closeViews.push(() => act(() => { root.unmount(); host.remove(); }));
+    const onSetPd = vi.fn();
+    const frames: { status: string; value: string; selection: string }[] = [];
+    const renderPd = (pd: PdStatus) => <LanguageProvider><Profiler id="pd" onRender={() => {
+      const editor = host.querySelector<HTMLInputElement | HTMLSelectElement>('[aria-label="Requested voltage"], [aria-label="Requested voltage (mV)"]');
+      frames.push({ status: host.querySelector('[data-testid="pd-live-status"]')?.textContent ?? "", value: editor?.value ?? "",
+        selection: editor instanceof HTMLSelectElement ? editor.selectedOptions[0]?.textContent ?? "" : "" });
+    }}><PowerCard outputs={[]} readings={[]} pd={pd} onSet={vi.fn()} onSetPd={onSetPd} /></Profiler></LanguageProvider>;
+    act(() => root.render(renderPd({ ...EMPTY_PD_STATUS, mode })));
+    const initialEditor = host.querySelector<HTMLInputElement | HTMLSelectElement>('[aria-label="Requested voltage"], [aria-label="Requested voltage (mV)"]')!;
+    expect(initialEditor.disabled).toBe(true);
+    expect(initialEditor.value).toBe(mode === 0 ? "0" : "");
+    expect(host.querySelector('[data-testid="pd-live-status"]')?.textContent).toBe("Voltage not reported yet");
+    act(() => root.render(renderPd({ ...EMPTY_PD_STATUS, available: true, pd: true, protocol: "pd", mode, voltage_mv: 20000,
+      capabilities_valid: true, fixed_profiles: [{ voltage_mv: 5000, max_current_ma: 3000 }, { voltage_mv: 20000, max_current_ma: 3000 }],
+      pps_ranges: [{ min_voltage_mv: 3300, max_voltage_mv: 20000, step_mv: 100, max_current_ma: 3000 }],
+    })));
+    expect(host.querySelector('[data-testid="pd-live-status"]')?.textContent).toContain("requested 20.0 V");
+    expect(host.querySelector<HTMLInputElement | HTMLSelectElement>('[aria-label="Requested voltage"], [aria-label="Requested voltage (mV)"]')?.value).toBe("20000");
+    expect(frames[0].status).toBe("Voltage not reported yet");
+    expect(frames.every((frame) => frame.value !== "5000" && !/requested 5\.0 V|^5 V/u.test(frame.status + frame.selection))).toBe(true);
+    expect(onSetPd).not.toHaveBeenCalled();
   });
 
   it("keeps each PPS draft keystroke and submits a valid millivolt value", async () => {
@@ -90,6 +121,26 @@ describe("PowerCard PD editing and real translated measurement copy", () => {
     expect(close).not.toBeNull();
     act(() => close.click());
     expect(document.activeElement).toBe(enlarge);
+  });
+
+  it.each(["en", "zh"] as const)("distinguishes ADC-pad voltage from source voltage in %s", (lang) => {
+    const view = render(lang, {}, [{
+      kind: "voltage", unit: "uV", name: "adc0", signal: "GPIO26_ADC0", value: 2_608_696,
+      note: "PD input divider; ADC pad voltage",
+    }]);
+    const disclaimer = lang === "en"
+      ? "ADC pin voltage; not power-rail/source voltage"
+      : "ADC 引脚电压，非电源轨或电源输入电压";
+    expect(view.host.textContent?.split(disclaimer)).toHaveLength(2);
+    expect(view.host.querySelector("h4")?.closest("li")?.textContent).toContain("2.609 V");
+    expect(view.host.textContent).toContain("PD input divider; ADC pad voltage");
+    expect(view.host.textContent).not.toContain("20.000 V");
+    const enlarge = view.host.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!;
+    expect(enlarge.getAttribute("aria-label")).toContain("adc0 · GPIO26_ADC0");
+    act(() => enlarge.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      lang === "en" ? "adc0 · GPIO26_ADC0 · Voltage trend" : "adc0 · GPIO26_ADC0 · 电压趋势",
+    );
   });
 
   it.each(["", "3200", "11100", "9001", "9000.5"])("rejects invalid PPS draft %j without replacing it", (value) => {

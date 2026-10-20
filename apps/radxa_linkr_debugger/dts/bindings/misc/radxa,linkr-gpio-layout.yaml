@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
+
+description: Radxa Linkr Debugger physical GPIO connector layout
+
+compatible: "radxa,linkr-gpio-layout"
+
+properties:
+  view:
+    type: string
+    required: true
+    description: Physical viewing orientation used by every connector coordinate
+
+child-binding:
+  description: Physical connector in the board layout
+
+  properties:
+    connector-name:
+      type: string
+      required: true
+
+    edge:
+      type: string
+      required: true
+
+    order:
+      type: int
+      required: true
+
+    rows:
+      type: int
+      required: true
+
+    columns:
+      type: int
+      required: true
+
+  child-binding:
+    description: One physical connector contact
+
+    properties:
+      pin-number:
+        type: int
+        required: true
+
+      row:
+        type: int
+        required: true
+
+      column:
+        type: int
+        required: true
+
+      display-label:
+        type: string
+        required: true
+
+      signal:
+        type: string
+        required: true
+
+      role:
+        type: string
+        required: true
+        enum:
+          - gpio
+          - adc
+          - i2c
+          - usb
+          - ground
+          - power
+          - dedicated
+
+      gpio-pin:
+        type: int
+        description: RP2350 GPIO number; present only for a controllable contact
+
+      control-alias:
+        type: string
+        description: Stable control API alias; present only for a controllable contact
+
+      controllable:
+        type: boolean
+
+      output-capable:
+        type: boolean

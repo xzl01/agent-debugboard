@@ -33,11 +33,39 @@ static struct wch_ch224a_capabilities pd_capabilities;
 static int64_t pd_probe_retry_after_ms;
 static int64_t pd_capability_retry_after_ms;
 static int64_t pd_capability_valid_until_ms;
+static bool pd_input_present;
+static bool pd_monitor_started;
+
+enum pd_service_init_state {
+	PD_SERVICE_UNINITIALIZED = 0,
+	PD_SERVICE_READY,
+	PD_SERVICE_FAILED,
+};
+
+static enum pd_service_init_state pd_service_init_state;
+static int pd_service_init_error;
 
 #define PD_PROBE_RETRY_MSEC      5000
 #define PD_CAPABILITY_RETRY_MSEC 5000
 /* Bound stale source data without reading all 48 registers on every poll. */
 #define PD_CAPABILITY_TTL_MSEC   5000
+#define PD_INPUT_MONITOR_INTERVAL_MSEC 100
+#define PD_INPUT_MONITOR_STACK_SIZE    1024U
+#define PD_INPUT_MONITOR_PRIORITY      12
+
+#if !defined(LINKR_DEBUGGER_PD_HOST_TEST)
+BUILD_ASSERT(PD_INPUT_MONITOR_INTERVAL_MSEC >= 50 &&
+	     PD_INPUT_MONITOR_INTERVAL_MSEC <= 1000);
+BUILD_ASSERT(PD_INPUT_MONITOR_STACK_SIZE >= 768U &&
+	     PD_INPUT_MONITOR_STACK_SIZE <= 2048U);
+BUILD_ASSERT(PD_INPUT_MONITOR_PRIORITY > 7,
+	     "PD input monitor must remain below the priority-7 watchdog");
+BUILD_ASSERT(PD_INPUT_MONITOR_PRIORITY < CONFIG_NUM_PREEMPT_PRIORITIES);
+
+static K_THREAD_STACK_DEFINE(pd_input_monitor_stack,
+			     PD_INPUT_MONITOR_STACK_SIZE);
+static struct k_thread pd_input_monitor_thread;
+#endif
 
 static const uint16_t pd_voltages[] = {
 	LINKR_DEBUGGER_PD_VOLTAGE_5V,
@@ -57,9 +85,32 @@ static void pd_clear_capabilities_locked(void)
 static void pd_mark_unavailable_locked(int error)
 {
 	pd_available = false;
+	pd_mode = LINKR_DEBUGGER_PD_MODE_FIXED;
+	pd_gear = 0U;
+	pd_pps_mv = 0U;
+	pd_requested_voltage_valid = false;
 	pd_last_error = error;
 	pd_probe_retry_after_ms = k_uptime_get() + PD_PROBE_RETRY_MSEC;
 	pd_clear_capabilities_locked();
+}
+
+static void pd_fill_unavailable_status_locked(
+	struct linkr_debugger_pd_status *status)
+{
+	memset(status, 0, sizeof(*status));
+	status->mode = pd_mode;
+	status->last_error = pd_last_error;
+}
+
+static int pd_require_initialized_locked(void)
+{
+	if (pd_service_init_state == PD_SERVICE_READY) {
+		return 0;
+	}
+	if (pd_service_init_state == PD_SERVICE_FAILED) {
+		return pd_service_init_error;
+	}
+	return -ENODEV;
 }
 
 static int pd_probe_locked(void)
@@ -187,14 +238,130 @@ static int pd_refresh_capabilities_locked(void)
 	if (k_uptime_get() < pd_capability_retry_after_ms) return -EAGAIN;
 	ret = wch_ch224a_get_capabilities(ch224a_dev, &pd_capabilities);
 	if (ret < 0) {
-		pd_clear_capabilities_locked();
-		pd_capability_retry_after_ms = k_uptime_get() + PD_CAPABILITY_RETRY_MSEC;
+		if (ret == -ENODATA) {
+			pd_clear_capabilities_locked();
+			pd_capability_retry_after_ms =
+				k_uptime_get() + PD_CAPABILITY_RETRY_MSEC;
+		} else {
+			pd_mark_unavailable_locked(ret);
+		}
 	} else {
 		pd_capability_retry_after_ms = 0;
 		pd_capability_valid_until_ms = k_uptime_get() + PD_CAPABILITY_TTL_MSEC;
 	}
 	return ret;
 }
+
+static int pd_discover_source_locked(void)
+{
+	struct wch_ch224a_status status;
+	int ret;
+
+	ret = pd_probe_locked();
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = wch_ch224a_get_status(ch224a_dev, &status);
+	if (ret < 0) {
+		pd_mark_unavailable_locked(ret);
+		return ret;
+	}
+	if (!status.pd_active) {
+		pd_clear_capabilities_locked();
+		return 0;
+	}
+
+	ret = pd_refresh_capabilities_locked();
+	/* A complete but invalid capability window does not make the source
+	 * unavailable. The capability retry timer already records that outcome.
+	 */
+	return pd_available ? 0 : ret;
+}
+
+/* One deterministic monitor iteration. Production calls it from the dedicated
+ * low-priority thread; host tests call it directly. Lock order is always
+ * PD service -> CH224A -> sensor/ADC (and then I2C bus only on discovery).
+ */
+static int pd_monitor_step(void)
+{
+	bool input_present = false;
+	bool source_edge = false;
+	int ret;
+
+	k_mutex_lock(&linkr_debugger_pd_lock, K_FOREVER);
+	ret = pd_require_initialized_locked();
+	if (ret < 0) {
+		k_mutex_unlock(&linkr_debugger_pd_lock);
+		return ret;
+	}
+
+	ret = wch_ch224a_get_input_present(ch224a_dev, &input_present,
+					   &source_edge);
+	if (ret < 0) {
+		pd_input_present = false;
+		pd_mark_unavailable_locked(ret);
+		k_mutex_unlock(&linkr_debugger_pd_lock);
+		return ret;
+	}
+	if (!input_present) {
+		if (pd_input_present || pd_available || pd_last_error == 0) {
+			pd_mark_unavailable_locked(-ENOLINK);
+		}
+		pd_input_present = false;
+		k_mutex_unlock(&linkr_debugger_pd_lock);
+		return -ENOLINK;
+	}
+
+	source_edge = source_edge || !pd_input_present;
+	pd_input_present = true;
+	if (pd_available) {
+		k_mutex_unlock(&linkr_debugger_pd_lock);
+		return 0;
+	}
+	if (source_edge) {
+		/* A fresh three-sample rising edge identifies a new source. It is safe
+		 * to bypass only the old source's probe backoff; all per-transaction
+		 * ADC gates and the normal I2C recovery classification still apply.
+		 */
+		pd_probe_retry_after_ms = 0;
+	}
+	if (k_uptime_get() < pd_probe_retry_after_ms) {
+		ret = pd_last_error;
+		k_mutex_unlock(&linkr_debugger_pd_lock);
+		return ret;
+	}
+
+	ret = pd_discover_source_locked();
+	k_mutex_unlock(&linkr_debugger_pd_lock);
+	return ret;
+}
+
+#if !defined(LINKR_DEBUGGER_PD_HOST_TEST)
+static void pd_input_monitor_main(void *unused1, void *unused2, void *unused3)
+{
+	ARG_UNUSED(unused1);
+	ARG_UNUSED(unused2);
+	ARG_UNUSED(unused3);
+
+	for (;;) {
+		k_msleep(PD_INPUT_MONITOR_INTERVAL_MSEC);
+		(void)pd_monitor_step();
+	}
+}
+
+static void pd_start_input_monitor(void)
+{
+	(void)k_thread_create(&pd_input_monitor_thread, pd_input_monitor_stack,
+			      K_THREAD_STACK_SIZEOF(pd_input_monitor_stack),
+			      pd_input_monitor_main, NULL, NULL, NULL,
+			      K_PRIO_PREEMPT(PD_INPUT_MONITOR_PRIORITY), 0,
+			      K_NO_WAIT);
+	if (IS_ENABLED(CONFIG_THREAD_NAME)) {
+		(void)k_thread_name_set(&pd_input_monitor_thread, "linkr_pd_input");
+	}
+}
+#endif
 
 static bool pd_fixed_is_advertised(uint16_t voltage_mv)
 {
@@ -232,8 +399,15 @@ static int pd_apply_fixed_locked(uint8_t gear)
 	/* 5 V is the fail-safe request and must remain available even when the
 	 * optional Source_Capabilities window cannot be refreshed. Higher fixed
 	 * requests require a fresh matching PDO from the connected source. */
-	if (gear != 0U && (pd_refresh_capabilities_locked() < 0 ||
-	    !pd_fixed_is_advertised(pd_voltages[gear]))) return -ENOTSUP;
+	if (gear != 0U) {
+		ret = pd_refresh_capabilities_locked();
+		if (ret < 0) {
+			return ret;
+		}
+		if (!pd_fixed_is_advertised(pd_voltages[gear])) {
+			return -ENOTSUP;
+		}
+	}
 
 	ret = wch_ch224a_set_fixed(ch224a_dev, gear);
 	if (ret < 0) {
@@ -262,7 +436,11 @@ static int pd_apply_pps_locked(uint16_t voltage_mv)
 			return ret;
 		}
 	}
-	if (pd_refresh_capabilities_locked() < 0 || !pd_pps_is_advertised(voltage_mv)) {
+	ret = pd_refresh_capabilities_locked();
+	if (ret < 0) {
+		return ret;
+	}
+	if (!pd_pps_is_advertised(voltage_mv)) {
 		return -ENOTSUP;
 	}
 
@@ -283,22 +461,70 @@ static int pd_apply_pps_locked(uint16_t voltage_mv)
 int linkr_debugger_pd_init(void)
 {
 	struct wch_ch224a_status status;
+	bool input_present = false;
+	bool source_edge = false;
+	bool start_monitor = false;
+	int init_result = 0;
 	int ret;
 
+	k_mutex_lock(&linkr_debugger_pd_lock, K_FOREVER);
+	ret = pd_require_initialized_locked();
+	if (ret == 0) {
+		k_mutex_unlock(&linkr_debugger_pd_lock);
+		return 0;
+	}
+	if (pd_service_init_state == PD_SERVICE_FAILED) {
+		k_mutex_unlock(&linkr_debugger_pd_lock);
+		return ret;
+	}
+
+	/* The CH224A DT node uses zephyr,deferred-init so its POST_KERNEL
+	 * priority does not run it before the voltage-divider sensor. This is
+	 * called from main after normal device initialization has completed.
+	 */
 	if (!device_is_ready(ch224a_dev)) {
-		pd_available = false;
-		pd_last_error = -ENODEV;
-		LOG_WRN("CH224A driver not ready");
+		ret = device_init(ch224a_dev);
+		if (ret < 0) {
+			pd_service_init_state = PD_SERVICE_FAILED;
+			pd_service_init_error = ret;
+			pd_mark_unavailable_locked(ret);
+			k_mutex_unlock(&linkr_debugger_pd_lock);
+			LOG_WRN("CH224A deferred init failed: %d", ret);
+			return ret;
+		}
+	}
+	if (!device_is_ready(ch224a_dev)) {
+		pd_service_init_state = PD_SERVICE_FAILED;
+		pd_service_init_error = -ENODEV;
+		pd_mark_unavailable_locked(-ENODEV);
+		k_mutex_unlock(&linkr_debugger_pd_lock);
+		LOG_WRN("CH224A driver not ready after deferred init");
 		return -ENODEV;
 	}
 
-	k_mutex_lock(&linkr_debugger_pd_lock, K_FOREVER);
+	pd_service_init_state = PD_SERVICE_READY;
+	pd_service_init_error = 0;
 
+	ret = wch_ch224a_get_input_present(ch224a_dev, &input_present,
+					   &source_edge);
+	if (ret < 0) {
+		pd_input_present = false;
+		pd_mark_unavailable_locked(ret);
+		init_result = ret;
+		goto start_monitor;
+	}
+	pd_input_present = input_present;
+	if (!input_present) {
+		pd_mark_unavailable_locked(-ENOLINK);
+		init_result = -ENOLINK;
+		goto start_monitor;
+	}
+
+	pd_probe_retry_after_ms = 0;
 	ret = pd_probe_locked();
 	if (ret < 0) {
-		k_mutex_unlock(&linkr_debugger_pd_lock);
-		LOG_WRN("CH224A not available at 0x22 or 0x23: %d", ret);
-		return ret;
+		init_result = ret;
+		goto start_monitor;
 	}
 
 	ret = wch_ch224a_get_status(ch224a_dev, &status);
@@ -311,15 +537,38 @@ int linkr_debugger_pd_init(void)
 		pd_clear_capabilities_locked();
 	}
 
+start_monitor:
+	if (!pd_monitor_started) {
+		pd_monitor_started = true;
+		start_monitor = true;
+	}
 	k_mutex_unlock(&linkr_debugger_pd_lock);
 
-	LOG_INF("PD discovery complete; startup voltage remains hardware-selected");
-	return 0;
+#if !defined(LINKR_DEBUGGER_PD_HOST_TEST)
+	if (start_monitor) {
+		pd_start_input_monitor();
+	}
+#else
+	(void)start_monitor;
+#endif
+
+	if (init_result < 0) {
+		LOG_WRN("CH224A not initially available: %d; input monitor active",
+			init_result);
+	} else {
+		LOG_INF("PD discovery complete; startup voltage remains hardware-selected");
+	}
+	return init_result;
 }
 
 bool linkr_debugger_pd_available(void)
 {
-	return pd_available;
+	bool available;
+
+	k_mutex_lock(&linkr_debugger_pd_lock, K_FOREVER);
+	available = pd_available;
+	k_mutex_unlock(&linkr_debugger_pd_lock);
+	return available;
 }
 
 int linkr_debugger_pd_set_fixed(uint16_t voltage_mv)
@@ -333,6 +582,11 @@ int linkr_debugger_pd_set_fixed(uint16_t voltage_mv)
 	}
 
 	k_mutex_lock(&linkr_debugger_pd_lock, K_FOREVER);
+	ret = pd_require_initialized_locked();
+	if (ret < 0) {
+		k_mutex_unlock(&linkr_debugger_pd_lock);
+		return ret;
+	}
 
 	ret = pd_apply_fixed_locked(gear);
 	if (ret < 0) {
@@ -353,6 +607,11 @@ int linkr_debugger_pd_set_pps(uint16_t voltage_mv)
 	}
 
 	k_mutex_lock(&linkr_debugger_pd_lock, K_FOREVER);
+	ret = pd_require_initialized_locked();
+	if (ret < 0) {
+		k_mutex_unlock(&linkr_debugger_pd_lock);
+		return ret;
+	}
 
 	ret = pd_apply_pps_locked(voltage_mv);
 	if (ret < 0) {
@@ -377,13 +636,15 @@ static int pd_get_status(struct linkr_debugger_pd_status *status,
 	memset(status, 0, sizeof(*status));
 
 	k_mutex_lock(&linkr_debugger_pd_lock, K_FOREVER);
+	ret = pd_require_initialized_locked();
+	if (ret < 0) {
+		pd_fill_unavailable_status_locked(status);
+		status->last_error = ret;
+		k_mutex_unlock(&linkr_debugger_pd_lock);
+		return 0;
+	}
 	if (!pd_available && pd_probe_locked() < 0) {
-		status->available = false;
-		status->mode = pd_mode;
-		status->gear = pd_gear;
-		status->pps_mv = pd_mode == LINKR_DEBUGGER_PD_MODE_PPS ? pd_pps_mv : 0U;
-		status->voltage_mv = pd_current_voltage_mv();
-		status->last_error = pd_last_error;
+		pd_fill_unavailable_status_locked(status);
 		k_mutex_unlock(&linkr_debugger_pd_lock);
 		return 0;
 	}
@@ -398,8 +659,7 @@ static int pd_get_status(struct linkr_debugger_pd_status *status,
 	ret = wch_ch224a_get_status(ch224a_dev, &drv_status);
 	if (ret < 0) {
 		pd_mark_unavailable_locked(ret);
-		status->available = false;
-		status->last_error = ret;
+		pd_fill_unavailable_status_locked(status);
 		k_mutex_unlock(&linkr_debugger_pd_lock);
 		return 0;
 	}
@@ -416,9 +676,15 @@ static int pd_get_status(struct linkr_debugger_pd_status *status,
 	if (!drv_status.pd_active) {
 		pd_clear_capabilities_locked();
 	} else if (refresh_capabilities) {
-		(void)pd_refresh_capabilities_locked();
+		ret = pd_refresh_capabilities_locked();
+		if (ret < 0 && !pd_available) {
+			pd_fill_unavailable_status_locked(status);
+			k_mutex_unlock(&linkr_debugger_pd_lock);
+			return 0;
+		}
 	}
-	if (pd_capabilities.valid) {
+	if (pd_capabilities.valid &&
+	    k_uptime_get() < pd_capability_valid_until_ms) {
 		pd_copy_capabilities(status);
 	}
 	status->last_error = 0;

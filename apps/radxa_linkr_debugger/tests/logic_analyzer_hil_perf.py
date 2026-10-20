@@ -135,6 +135,9 @@ EVENT_ERROR = 6
 TERMINAL_REASON_SERVER_STOPPED = "server_stopped"
 TERMINAL_REASON_SERVER_OVERRUN = "server_overrun"
 TERMINAL_REASON_SERVER_ERROR = "server_error"
+ADC_CURRENT_CHANNEL_COUNT = 4
+ADC_MAX_BATCH_SAMPLES = 18
+ADC_CURRENT_MASK = (1 << ADC_CURRENT_CHANNEL_COUNT) - 1
 
 TRIGGER_NAMES = {
     TRIGGER_NONE: "none",
@@ -158,6 +161,27 @@ MODE_CASES = {
     "FAST8_SPARSE_GP10_GP13_GP17": ModeCase(mode_id=MODE_FAST8, mask=MASK_FAST8_SPARSE_GP10_GP13_GP17, pins=[10, 13, 17], sample_bytes=1),
     "WIDE11": ModeCase(mode_id=MODE_WIDE11, mask=MASK_WIDE11, pins=list(range(10, 21)), sample_bytes=2),
 }
+
+
+@dataclass(frozen=True)
+class AdcDescriptor:
+    name: str
+    signal: str
+    kind: str
+    http_unit: str
+    compact_unit: str
+
+
+ADC_DESCRIPTORS = (
+    AdcDescriptor("5v_out", "INA226_5V", "current", "A", "uA"),
+    AdcDescriptor("12v_out", "INA226_12V", "current", "A", "uA"),
+    AdcDescriptor("20v_out", "INA226_20V", "current", "A", "uA"),
+    AdcDescriptor("vdd_5v", "INA226_VDD_5V", "current", "A", "uA"),
+    AdcDescriptor("adc0", "GPIO26_ADC0", "voltage", "V", "uV"),
+    AdcDescriptor("adc1", "GPIO27_ADC1", "voltage", "V", "uV"),
+    AdcDescriptor("adc2", "GPIO28_ADC2", "voltage", "V", "uV"),
+    AdcDescriptor("adc3", "GPIO29_ADC3", "voltage", "V", "uV"),
+)
 
 
 @dataclass(frozen=True)
@@ -937,20 +961,248 @@ def board_health(http_base: str, timeout_s: float) -> dict[str, Any]:
         return {"ok": False, "elapsed_s": time.monotonic() - started, "error": str(exc)}
 
 
+def _is_signed_int32(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and -(1 << 31) <= value <= (1 << 31) - 1
+
+
+def _is_adc_mask(value: object) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= 0xFF
+        and (value & ~ADC_CURRENT_MASK) == 0
+    )
+
+
+def _adc_schema_result(errors: list[str], **details: Any) -> dict[str, Any]:
+    return {"valid": not errors, "errors": errors, **details}
+
+
+def _validate_adc_descriptor_identity(
+    entry: object,
+    index: int,
+    *,
+    errors: list[str],
+    unit_key: str,
+    expected_unit: str,
+    prefix: str,
+) -> Mapping[str, Any] | None:
+    descriptor = ADC_DESCRIPTORS[index]
+    if not isinstance(entry, Mapping):
+        errors.append(f"{prefix} must be an object")
+        return None
+    if entry.get("name") != descriptor.name:
+        errors.append(f"{prefix}.name must be {descriptor.name!r}")
+    if entry.get("signal") != descriptor.signal:
+        errors.append(f"{prefix}.signal must be {descriptor.signal!r}")
+    if entry.get("kind") != descriptor.kind:
+        errors.append(f"{prefix}.kind must be {descriptor.kind!r}")
+    if entry.get(unit_key) != expected_unit:
+        errors.append(f"{prefix}.{unit_key} must be {expected_unit!r}")
+    return entry
+
+
+def _validate_adc_sensor_value(value: object, prefix: str, errors: list[str]) -> None:
+    if not isinstance(value, Mapping):
+        errors.append(f"{prefix}.sensor_value must be an object")
+        return
+    val1 = value.get("val1")
+    val2 = value.get("val2")
+    if not _is_signed_int32(val1) or not _is_signed_int32(val2):
+        errors.append(f"{prefix}.sensor_value.val1/val2 must be signed 32-bit integers")
+        return
+    scalar = val1 * 1_000_000 + val2
+    if not _is_signed_int32(scalar):
+        errors.append(f"{prefix}.sensor_value must fit a signed 32-bit micro-unit scalar")
+
+
+def validate_http_adc_readings(readings: object) -> dict[str, Any]:
+    errors: list[str] = []
+    entries = readings if isinstance(readings, list) else None
+    if entries is None:
+        errors.append("readings must be a list")
+    elif len(entries) != len(ADC_DESCRIPTORS):
+        errors.append(f"readings must contain {len(ADC_DESCRIPTORS)} descriptors, got {len(entries)}")
+
+    if entries is not None:
+        for index, descriptor in enumerate(ADC_DESCRIPTORS):
+            if index >= len(entries):
+                break
+            prefix = f"readings[{index}]"
+            entry = entries[index]
+            if not isinstance(entry, Mapping):
+                errors.append(f"{prefix} must be an object")
+                continue
+            if entry.get("name") != descriptor.name:
+                errors.append(f"{prefix}.name must be {descriptor.name!r}")
+            if entry.get("signal") != descriptor.signal:
+                errors.append(f"{prefix}.signal must be {descriptor.signal!r}")
+            if entry.get("sensor_channel") != descriptor.kind:
+                errors.append(f"{prefix}.sensor_channel must be {descriptor.kind!r}")
+            if entry.get("unit") != descriptor.http_unit:
+                errors.append(f"{prefix}.unit must be {descriptor.http_unit!r}")
+            if "raw" not in entry:
+                errors.append(f"{prefix}.raw must be present")
+            elif entry.get("raw") is not None and not _is_signed_int32(entry.get("raw")):
+                errors.append(f"{prefix}.raw must be null or a signed 32-bit integer")
+            if not _is_signed_int32(entry.get("mv")):
+                errors.append(f"{prefix}.mv must be a signed 32-bit integer")
+            _validate_adc_sensor_value(entry.get("sensor_value"), prefix, errors)
+
+            if descriptor.kind == "current":
+                if not isinstance(entry.get("power_enabled"), bool):
+                    errors.append(f"{prefix}.power_enabled must be a boolean")
+                if not _is_signed_int32(entry.get("current_ua")):
+                    errors.append(f"{prefix}.current_ua must be a signed 32-bit integer")
+                voltage_valid = entry.get("voltage_valid")
+                voltage_uv = entry.get("voltage_uv")
+                if not isinstance(voltage_valid, bool):
+                    errors.append(f"{prefix}.voltage_valid must be a boolean")
+                elif voltage_valid and not _is_signed_int32(voltage_uv):
+                    errors.append(f"{prefix}.voltage_uv must be a signed 32-bit integer when voltage_valid is true")
+                elif not voltage_valid and voltage_uv is not None and not _is_signed_int32(voltage_uv):
+                    errors.append(f"{prefix}.voltage_uv must be null or a signed 32-bit integer")
+            elif descriptor.kind == "voltage":
+                for field in ("power_enabled", "current_ua", "voltage_valid", "voltage_uv"):
+                    if field in entry:
+                        errors.append(f"{prefix}.{field} is not valid for a voltage descriptor")
+            else:
+                errors.append(f"{prefix} has unsupported kind {descriptor.kind!r}")
+
+    return _adc_schema_result(errors, descriptor_count=len(ADC_DESCRIPTORS), reading_count=len(entries) if entries is not None else 0)
+
+
+def validate_ws_adc_single_readings(readings: object) -> dict[str, Any]:
+    errors: list[str] = []
+    entries = readings if isinstance(readings, list) else None
+    if entries is None:
+        errors.append("readings must be a list")
+    elif len(entries) != len(ADC_DESCRIPTORS):
+        errors.append(f"readings must contain {len(ADC_DESCRIPTORS)} descriptors, got {len(entries)}")
+
+    if entries is not None:
+        for index, descriptor in enumerate(ADC_DESCRIPTORS):
+            if index >= len(entries):
+                break
+            prefix = f"readings[{index}]"
+            entry = _validate_adc_descriptor_identity(entries[index], index, errors=errors, unit_key="unit", expected_unit=descriptor.compact_unit, prefix=prefix)
+            if entry is None:
+                continue
+            if not _is_signed_int32(entry.get("value")):
+                errors.append(f"{prefix}.value must be a signed 32-bit integer")
+            if descriptor.kind == "current":
+                if not isinstance(entry.get("power_enabled"), bool):
+                    errors.append(f"{prefix}.power_enabled must be a boolean")
+                if not _is_signed_int32(entry.get("current_ua")):
+                    errors.append(f"{prefix}.current_ua must be a signed 32-bit integer")
+                if not isinstance(entry.get("voltage_valid"), bool):
+                    errors.append(f"{prefix}.voltage_valid must be a boolean")
+                if not _is_signed_int32(entry.get("voltage_uv")):
+                    errors.append(f"{prefix}.voltage_uv must be a signed 32-bit integer")
+                if _is_signed_int32(entry.get("current_ua")) and _is_signed_int32(entry.get("value")) and entry.get("value") != entry.get("current_ua"):
+                    errors.append(f"{prefix}.value must equal current_ua")
+            elif descriptor.kind == "voltage":
+                for field in ("power_enabled", "current_ua", "voltage_valid", "voltage_uv"):
+                    if field in entry:
+                        errors.append(f"{prefix}.{field} is not valid for a voltage descriptor")
+            else:
+                errors.append(f"{prefix} has unsupported kind {descriptor.kind!r}")
+
+    return _adc_schema_result(errors, descriptor_count=len(ADC_DESCRIPTORS), reading_count=len(entries) if entries is not None else 0)
+
+
+def validate_ws_adc_batch(message: object) -> dict[str, Any]:
+    errors: list[str] = []
+    if not isinstance(message, Mapping):
+        return _adc_schema_result(["batch message must be an object"])
+
+    channels = message.get("channels")
+    samples = message.get("samples")
+    if not isinstance(channels, list):
+        errors.append("channels must be a list")
+    elif len(channels) != len(ADC_DESCRIPTORS):
+        errors.append(f"channels must contain {len(ADC_DESCRIPTORS)} descriptors, got {len(channels)}")
+
+    if isinstance(channels, list):
+        for index, descriptor in enumerate(ADC_DESCRIPTORS):
+            if index >= len(channels):
+                break
+            _validate_adc_descriptor_identity(
+                channels[index],
+                index,
+                errors=errors,
+                unit_key="unit",
+                expected_unit=descriptor.compact_unit,
+                prefix=f"channels[{index}]",
+            )
+
+    if not isinstance(samples, list):
+        errors.append("samples must be a list")
+    else:
+        if not samples:
+            errors.append("samples must not be empty")
+        if len(samples) > ADC_MAX_BATCH_SAMPLES:
+            errors.append(f"samples must contain at most {ADC_MAX_BATCH_SAMPLES} entries, got {len(samples)}")
+        for sample_index, sample in enumerate(samples):
+            prefix = f"samples[{sample_index}]"
+            if not isinstance(sample, Mapping):
+                errors.append(f"{prefix} must be an object")
+                continue
+            values = sample.get("values")
+            if not isinstance(values, list):
+                errors.append(f"{prefix}.values must be a list")
+            else:
+                if len(values) != len(ADC_DESCRIPTORS):
+                    errors.append(
+                        f"{prefix}.values must contain {len(ADC_DESCRIPTORS)} entries, got {len(values)}"
+                    )
+                for value_index, value in enumerate(values):
+                    if not _is_signed_int32(value):
+                        errors.append(f"{prefix}.values[{value_index}] must be a signed 32-bit integer")
+            voltages = sample.get("voltages_uv")
+            if not isinstance(voltages, list):
+                errors.append(f"{prefix}.voltages_uv must be a list")
+            else:
+                if len(voltages) != ADC_CURRENT_CHANNEL_COUNT:
+                    errors.append(
+                        f"{prefix}.voltages_uv must contain {ADC_CURRENT_CHANNEL_COUNT} entries, got {len(voltages)}"
+                    )
+                for voltage_index, voltage in enumerate(voltages):
+                    if not _is_signed_int32(voltage):
+                        errors.append(f"{prefix}.voltages_uv[{voltage_index}] must be a signed 32-bit integer")
+            for mask_field in ("power_enabled_mask", "voltage_valid_mask"):
+                mask = sample.get(mask_field)
+                if not _is_adc_mask(mask):
+                    errors.append(
+                        f"{prefix}.{mask_field} must be an unsigned integer within 0..255 using only bits 0..3"
+                    )
+
+    return _adc_schema_result(
+        errors,
+        descriptor_count=len(ADC_DESCRIPTORS),
+        current_count=ADC_CURRENT_CHANNEL_COUNT,
+        sample_count=len(samples) if isinstance(samples, list) else 0,
+        max_batch_samples=ADC_MAX_BATCH_SAMPLES,
+    )
+
+
 def adc_http_health(http_base: str, timeout_s: float) -> dict[str, Any]:
     started = time.monotonic()
     try:
         payload = http_json_request("GET", f"{http_base}/api/v1/adc/read", timeout_s)
         readings = payload.get("readings")
+        validation = validate_http_adc_readings(readings)
         return {
-            "ok": bool(payload.get("ok")) and isinstance(readings, list) and len(readings) > 0,
+            "ok": bool(payload.get("ok")) and validation["valid"],
             "http_status": payload.get("_http_status"),
             "elapsed_s": time.monotonic() - started,
             "reading_count": len(readings) if isinstance(readings, list) else 0,
+            "schema_valid": validation["valid"],
+            "schema_errors": validation["errors"],
             "error": payload.get("error"),
         }
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "elapsed_s": time.monotonic() - started, "error": str(exc)}
+        return {"ok": False, "elapsed_s": time.monotonic() - started, "schema_valid": False, "schema_errors": [str(exc)], "error": str(exc)}
 
 
 def sigrok_handshake(sock: socket.socket, timeout_s: float) -> dict[str, Any]:
@@ -1210,35 +1462,66 @@ def create_live_session_ws_url(http_base: str, timeout_s: float) -> str:
     return ws_url
 
 
-def telemetry_record_from_message(message: Mapping[str, Any], received_monotonic_s: float) -> dict[str, Any] | None:
+@dataclass(frozen=True, slots=True)
+class TelemetryParseResult:
+    record: dict[str, Any] | None = None
+    schema_errors: tuple[str, ...] = ()
+
+
+def telemetry_claims_adc_schema(message: Mapping[str, Any]) -> bool:
+    return (
+        message.get("type") in ("telemetry", "telemetry-batch")
+        and message.get("topic") in ("adc", "live")
+    )
+
+
+def _bounded_telemetry_schema_errors(errors: list[str]) -> tuple[str, ...]:
+    return tuple(errors[:MAX_STREAM_DIAGNOSTIC_RECORDS])
+
+
+def _telemetry_schema_error_record(message: Mapping[str, Any], errors: tuple[str, ...]) -> dict[str, Any]:
+    return {
+        "type": message.get("type"),
+        "topic": message.get("topic"),
+        "errors": list(errors),
+    }
+
+
+def telemetry_record_from_message(message: Mapping[str, Any], received_monotonic_s: float) -> TelemetryParseResult:
     message_type = message.get("type")
-    if message_type == "telemetry" and message.get("topic") == "adc":
-        return {
+    if not telemetry_claims_adc_schema(message):
+        return TelemetryParseResult()
+    if message_type == "telemetry":
+        validation = validate_ws_adc_single_readings(message.get("readings"))
+        if not validation["valid"]:
+            return TelemetryParseResult(schema_errors=_bounded_telemetry_schema_errors(validation["errors"]))
+        return TelemetryParseResult(record={
             "sequence": message.get("sequence"),
             "sample_sequence": message.get("sample_sequence"),
             "uptime_us": message.get("uptime_us"),
             "device_t_mono_us": message.get("device_t_mono_us"),
             "received_monotonic_s": received_monotonic_s,
             "message_type": message_type,
-        }
-    if message_type == "telemetry-batch" and message.get("topic") == "adc":
-        samples = message.get("samples")
-        if not isinstance(samples, list) or not samples:
-            return None
-        last = samples[-1]
-        if not isinstance(last, Mapping):
-            return None
-        return {
-            "sequence": last.get("sequence"),
-            "sample_sequence": last.get("sample_sequence"),
-            "uptime_us": last.get("uptime_us"),
-            "device_t_mono_us": last.get("device_t_mono_us"),
-            "received_monotonic_s": received_monotonic_s,
-            "message_type": message_type,
-            "batch_sample_count": len(samples),
-            "dropped_samples": message.get("dropped_samples"),
-        }
-    return None
+        })
+    validation = validate_ws_adc_batch(message)
+    if not validation["valid"]:
+        return TelemetryParseResult(schema_errors=_bounded_telemetry_schema_errors(validation["errors"]))
+    samples = message.get("samples")
+    if not isinstance(samples, list) or not samples:
+        return TelemetryParseResult(schema_errors=("samples must not be empty",))
+    last = samples[-1]
+    if not isinstance(last, Mapping):
+        return TelemetryParseResult(schema_errors=("last sample must be an object",))
+    return TelemetryParseResult(record={
+        "sequence": last.get("sequence"),
+        "sample_sequence": last.get("sample_sequence"),
+        "uptime_us": last.get("uptime_us"),
+        "device_t_mono_us": last.get("device_t_mono_us"),
+        "received_monotonic_s": received_monotonic_s,
+        "message_type": message_type,
+        "batch_sample_count": len(samples),
+        "dropped_samples": message.get("dropped_samples"),
+    })
 
 
 def telemetry_sequence_value(record: Mapping[str, Any]) -> int | None:
@@ -1287,6 +1570,8 @@ def telemetry_read_until(
     binary_frames = 0
     other_json = 0
     recv_timeouts = 0
+    schema_errors = 0
+    schema_error_records: list[dict[str, Any]] = []
     errors: list[str] = []
     deadline = time.monotonic() + timeout_s
     try:
@@ -1316,7 +1601,15 @@ def telemetry_read_until(
             if not isinstance(parsed, Mapping):
                 other_json += 1
                 continue
-            record = telemetry_record_from_message(parsed, received)
+            parse_result = telemetry_record_from_message(parsed, received)
+            if parse_result.schema_errors:
+                schema_errors += 1
+                if len(schema_error_records) < MAX_STREAM_DIAGNOSTIC_RECORDS:
+                    schema_error_records.append(_telemetry_schema_error_record(parsed, parse_result.schema_errors))
+                if len(errors) < MAX_STREAM_DIAGNOSTIC_RECORDS:
+                    errors.append(f"schema:{parsed.get('type')}:{parse_result.schema_errors[0]}")
+                continue
+            record = parse_result.record
             if record is None:
                 other_json += 1
                 continue
@@ -1332,6 +1625,8 @@ def telemetry_read_until(
         "binary_frames": binary_frames,
         "other_json": other_json,
         "recv_timeouts": recv_timeouts,
+        "schema_errors": schema_errors,
+        "schema_error_records": schema_error_records,
         "errors": errors,
         "elapsed_s": max(0.0, timeout_s - max(0.0, deadline - time.monotonic())),
     }
@@ -1361,6 +1656,8 @@ def telemetry_read_during_overlap(
     binary_frames = 0
     other_json = 0
     recv_timeouts = 0
+    schema_errors = 0
+    schema_error_records: list[dict[str, Any]] = []
     errors: list[str] = []
     reset_observed = False
     old_epoch_last_sequence = baseline_sequence
@@ -1393,7 +1690,15 @@ def telemetry_read_during_overlap(
         if not isinstance(parsed, Mapping):
             other_json += 1
             continue
-        record = telemetry_record_from_message(parsed, received)
+        parse_result = telemetry_record_from_message(parsed, received)
+        if parse_result.schema_errors:
+            schema_errors += 1
+            if len(schema_error_records) < MAX_STREAM_DIAGNOSTIC_RECORDS:
+                schema_error_records.append(_telemetry_schema_error_record(parsed, parse_result.schema_errors))
+            if len(errors) < MAX_STREAM_DIAGNOSTIC_RECORDS:
+                errors.append(f"schema:{parsed.get('type')}:{parse_result.schema_errors[0]}")
+            continue
+        record = parse_result.record
         if record is None:
             other_json += 1
             continue
@@ -1434,11 +1739,19 @@ def telemetry_read_during_overlap(
         "reset_epoch_record_count": len(reset_epoch_records),
         "sequence_reset_observed": reset_observed,
         "inferred_release_monotonic_s": inferred_release_monotonic_s,
-        "expected_pause_observed": len(old_epoch_pause_records) == 0,
+        "expected_pause_observed": (
+            len(old_epoch_pause_records) == 0
+            and schema_errors == 0
+            and malformed_json == 0
+            and binary_frames == 0
+            and not errors
+        ),
         "malformed_json": malformed_json,
         "binary_frames": binary_frames,
         "other_json": other_json,
         "recv_timeouts": recv_timeouts,
+        "schema_errors": schema_errors,
+        "schema_error_records": schema_error_records,
         "errors": errors,
         "elapsed_s": max(0.0, time.monotonic() - start_monotonic_s),
     }
@@ -1536,6 +1849,8 @@ def sigrok_tcp_wide11_telemetry_isolation_case(args: argparse.Namespace) -> dict
             "binary_frames": post_release_after_helper.get("binary_frames", 0),
             "other_json": post_release_after_helper.get("other_json", 0),
             "recv_timeouts": post_release_after_helper.get("recv_timeouts", 0),
+            "schema_errors": post_release_after_helper.get("schema_errors", 0),
+            "schema_error_records": post_release_after_helper.get("schema_error_records", []),
             "errors": post_release_after_helper.get("errors", []),
         }
         post_last_sequence = telemetry_sequence_value(post_records[-1]) if post_records else None
@@ -1558,13 +1873,19 @@ def sigrok_tcp_wide11_telemetry_isolation_case(args: argparse.Namespace) -> dict
                 pass
 
     baseline_result = cast(Mapping[str, Any], result.get("baseline", {}))
+    subscribe_result = cast(Mapping[str, Any], result.get("subscribe", {}))
     overlap_result = cast(Mapping[str, Any], result.get("overlap", {}))
     post_release_result = cast(Mapping[str, Any], result.get("post_release", {}))
     raw_result = cast(Mapping[str, Any], result.get("raw_tcp_wide11_burst", {}))
     adc_after = cast(Mapping[str, Any], result.get("adc_http_health_after", {}))
     checks = [
+        (bool(subscribe_result.get("connected", True)), "telemetry WS disconnected or errored during subscribe"),
+        (int(subscribe_result.get("schema_errors", 0) or 0) == 0, "invalid ADC schema in telemetry subscribe"),
+        (bool(baseline_result.get("connected", False)), "baseline telemetry WS disconnected or errored"),
+        (int(baseline_result.get("schema_errors", 0) or 0) == 0, "invalid ADC schema in baseline telemetry"),
         (int(baseline_result.get("record_count", 0) or 0) >= args.telemetry_isolation_baseline_samples, "baseline telemetry not established"),
         (bool(overlap_result.get("connected", False)), "telemetry WS disconnected or errored during overlap"),
+        (int(overlap_result.get("schema_errors", 0) or 0) == 0, "invalid ADC schema received on telemetry WS during overlap"),
         (int(overlap_result.get("malformed_json", 0) or 0) == 0, "malformed JSON received on telemetry WS"),
         (int(overlap_result.get("binary_frames", 0) or 0) == 0, "binary contamination received on telemetry WS"),
         (bool(overlap_result.get("expected_pause_observed", False)), "telemetry was emitted during arena pause/lease interval"),
@@ -1572,6 +1893,7 @@ def sigrok_tcp_wide11_telemetry_isolation_case(args: argparse.Namespace) -> dict
         (int(cast(Mapping[str, Any], raw_result.get("stats", {})).get("received_sample_count", 0) or 0) >= WIDE11_MAPPING_POST_SAMPLES, "raw TCP WIDE11 did not receive 100000 samples"),
         (int(cast(Mapping[str, Any], raw_result.get("stats", {})).get("data_frames", 0) or 0) == WIDE11_BURST_EXPECTED_DATA_FRAMES, "raw TCP WIDE11 did not receive 98 DATA frames"),
         (bool(post_release_result.get("connected", False)), "telemetry WS disconnected or errored during post-release collection"),
+        (int(post_release_result.get("schema_errors", 0) or 0) == 0, "invalid ADC schema received on telemetry WS after release"),
         (int(post_release_result.get("malformed_json", 0) or 0) == 0, "malformed JSON received on telemetry WS after release"),
         (int(post_release_result.get("binary_frames", 0) or 0) == 0, "binary contamination received on telemetry WS after release"),
         (int(post_release_result.get("record_count", 0) or 0) >= args.telemetry_isolation_post_release_samples, "fresh telemetry did not resume after release"),

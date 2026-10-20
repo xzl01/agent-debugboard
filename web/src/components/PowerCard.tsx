@@ -49,7 +49,8 @@ export function PowerCard({
   const showTrends = !compact && trendsExpanded;
   const [clockMs, setClockMs] = useState(() => Date.now());
   const [pdMode, setPdMode] = useState<0 | 1>(pd.mode);
-  const [pdVoltageDraft, setPdVoltageDraft] = useState(String(pd.voltage_mv || 5000));
+  const pdVoltageKnown = Number.isFinite(pd.voltage_mv) && pd.voltage_mv > 0;
+  const [pdVoltageDraft, setPdVoltageDraft] = useState(() => pdVoltageKnown ? String(pd.voltage_mv) : "");
   const [pdVoltageTouched, setPdVoltageTouched] = useState(false);
   const pdVoltageErrorId = useId();
   const [pdBusy, setPdBusy] = useState(false);
@@ -65,7 +66,7 @@ export function PowerCard({
   const modeSupported = pdMode === 0 ? fixedProfiles.length > 0 : ppsRanges.length > 0;
   const draftVoltageMv = Number(pdVoltageDraft);
   const pdVoltageMv = pdMode === 0
-    ? (fixedProfiles.find((profile) => profile.voltage_mv === draftVoltageMv) ?? fixedProfiles[0])?.voltage_mv ?? 0
+    ? fixedProfiles.find((profile) => profile.voltage_mv === draftVoltageMv)?.voltage_mv ?? 0
     : draftVoltageMv;
   const voltageValid = pdMode === 0 ? pdVoltageMv > 0 : (
     pdVoltageDraft.trim() !== "" && Number.isSafeInteger(pdVoltageMv) &&
@@ -73,7 +74,7 @@ export function PowerCard({
       pdVoltageMv >= range.min_voltage_mv && pdVoltageMv <= range.max_voltage_mv &&
       range.step_mv > 0 && (pdVoltageMv - range.min_voltage_mv) % range.step_mv === 0)
   );
-  const adc3 = readings.filter(isVoltageAdcReading).find((reading) => reading.name === "adc3");
+  const voltageReadings = readings.filter(isVoltageAdcReading);
   const rows = POWER_SWITCH_RAILS.map((name) => ({
     name,
     output: outputs.find((output) => output.name === name),
@@ -111,13 +112,13 @@ export function PowerCard({
 
   useEffect(() => {
     setPdMode(pd.mode);
-    setPdVoltageDraft(String(pd.voltage_mv || 5000));
+    setPdVoltageDraft(pd.voltage_mv > 0 ? String(pd.voltage_mv) : "");
     setPdVoltageTouched(false);
   }, [pd.mode, pd.voltage_mv]);
 
   const applyPd = async () => {
     setPdVoltageTouched(true);
-    if (!voltageValid) return;
+    if (disabled || stale || pdBusy || !pd.available || !pdVoltageKnown || !modeSupported || !voltageValid) return;
     setPdBusy(true);
     setPdError(null);
     try {
@@ -162,19 +163,19 @@ export function PowerCard({
                 {pd.available ? t("pd.available") : t("pd.unavailable")}
               </Badge>
             </div>
-            <div className="mt-0.5 text-xs text-ink-dim">
-              {t("pd.status", {
+            <div className="mt-0.5 text-xs text-ink-dim" data-testid="pd-live-status">
+              {pdVoltageKnown ? t("pd.status", {
                 protocol: pd.protocol.toUpperCase(),
                 voltage: pd.voltage_mv > 0 ? (pd.voltage_mv / 1000).toFixed(1) : "—",
                 current: pd.max_current_ma,
-              })}
+              }) : t("pd.voltageUnknown")}
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <select
               aria-label={t("pd.mode")}
               value={pdMode}
-              disabled={disabled || pdBusy}
+              disabled={disabled || stale || pdBusy || !pdVoltageKnown}
               onChange={(event) => {
                 const mode = Number(event.target.value) === 1 ? 1 : 0;
                 setPdMode(mode);
@@ -192,10 +193,11 @@ export function PowerCard({
               <select
                 aria-label={t("pd.voltage")}
                 value={pdVoltageMv}
-                disabled={disabled || pdBusy}
+                disabled={disabled || stale || pdBusy || !pdVoltageKnown || fixedProfiles.length === 0}
                 onChange={(event) => setPdVoltageDraft(event.target.value)}
                 className="min-h-9 rounded-lg border border-line bg-panel px-2 text-sm text-ink"
               >
+                {pdVoltageMv === 0 && <option value={0} disabled>{pdVoltageKnown ? `${pd.voltage_mv / 1000} V` : t("pd.voltageUnknown")}</option>}
                 {fixedProfiles.map((profile) => (
                   <option key={profile.voltage_mv} value={profile.voltage_mv}>
                     {profile.voltage_mv / 1000} V · {profile.max_current_ma} mA
@@ -213,7 +215,7 @@ export function PowerCard({
                   max={Math.min(ppsMaxMv, pd.board_max_voltage_mv)}
                   step={ppsStepMv}
                   value={pdVoltageDraft}
-                  disabled={disabled || pdBusy}
+                  disabled={disabled || stale || pdBusy || !pdVoltageKnown}
                   onChange={(event) => setPdVoltageDraft(event.target.value)}
                   onBlur={() => setPdVoltageTouched(true)}
                   className="min-h-9 w-28 rounded-lg border border-line bg-panel px-2 font-mono text-sm text-ink"
@@ -221,7 +223,7 @@ export function PowerCard({
                 <span>mV</span>
               </label>
             )}
-            <Button type="button" disabled={disabled || pdBusy || !pd.available || !modeSupported || !voltageValid} onClick={() => void applyPd()}>
+            <Button type="button" disabled={disabled || stale || pdBusy || !pd.available || !pdVoltageKnown || !modeSupported || !voltageValid} onClick={() => void applyPd()}>
               {pdBusy ? t("pd.applying") : t("pd.apply")}
             </Button>
           </div>
@@ -319,25 +321,35 @@ export function PowerCard({
           })}
         </ul>
       )}
-      {adc3 && (
+      {voltageReadings.length > 0 && (
         <section className="mt-4 border-t border-line/50 pt-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className="text-sm font-medium text-ink">{t("adc3.title")}</h3>
-                <Badge tone="neutral">{t("adc3.monitorOnly")}</Badge>
-              </div>
-              <p className="mt-1 text-xs text-ink-dim">{t("adc3.subtitle")}</p>
-            </div>
-            <div className="font-mono text-sm font-medium text-brand">
-              {(adc3.value / 1_000_000).toFixed(3)} V
-            </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-medium text-ink">{t("adc.voltage.title")}</h3>
+            <Badge tone="neutral">{t("power.monitorOnly")}</Badge>
           </div>
-          {showTrends && (
-            <div className="mt-2">
-              <MeasurementSparkline mode="voltage" reading={adc3} />
-            </div>
-          )}
+          <p className="mt-1 text-xs text-ink-dim">{t("adc.voltage.disclaimer")}</p>
+          {showTrends && <p className="mt-1 text-xs text-ink-dim">{t("adc.voltage.scale")}</p>}
+          <ul className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {voltageReadings.map((reading) => (
+              <li key={JSON.stringify([reading.name, reading.signal])} className="min-w-0 rounded-lg border border-line/60 bg-panel2/40 p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h4 className="break-words font-mono text-sm font-medium text-ink">{reading.name}</h4>
+                    <p className="mt-0.5 break-words font-mono text-xs text-ink-dim">{reading.signal}</p>
+                  </div>
+                  <div className="shrink-0 font-mono text-sm font-medium text-brand">
+                    {formatPowerMetric(reading.value / 1_000_000, "voltage")}
+                  </div>
+                </div>
+                {reading.note && <p className="mt-1 break-words text-xs text-ink-dim">{reading.note}</p>}
+                {showTrends && (
+                  <div className="mt-2">
+                    <MeasurementSparkline mode="voltage" reading={reading} />
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
         </section>
       )}
       {compact && onOpenDetails && (

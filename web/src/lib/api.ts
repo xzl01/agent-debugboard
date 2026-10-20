@@ -3,6 +3,7 @@ import type { PersistentConfig } from "./persistentConfig.ts";
 import { parseTaskListResponse, type TaskListData } from "./taskRunner.ts";
 import { isTaskControlPath } from "./taskBlob.ts";
 import { parseTaskCatalogResponse, type BuiltInTask } from "./builtinTasks.ts";
+import { parseGpioPhysicalLayout } from "./gpioPhysicalLayout.ts";
 
 // Thin client for the Radxa Linkr Debugger firmware REST API. Local development
 // uses Vite's same-origin proxy. The Pages build points this at the loopback
@@ -108,6 +109,8 @@ export function liveWebSocketUrl(path: string): string {
 export const apiEndpoint = () => BASE;
 
 export const getStatus = () => request("/status");
+export const getGpioLayout = async (signal?: AbortSignal) =>
+  parseGpioPhysicalLayout(await request("/gpio/layout", { signal }));
 export const getAdc = () => request("/adc/read");
 export const getPd = () => request("/pd");
 export const setPd = (mode: 0 | 1, voltageMv: number) =>

@@ -16,8 +16,464 @@
 #include "linkr_debugger_json_cursor.h"
 #include "linkr_debugger_model.h"
 #include "linkr_debugger_reboot.h"
+#include "linkr_debugger_capture_arena.h"
+#include "linkr_debugger_serial.h"
+#include "linkr_debugger_serial_net.h"
 
 #define LINKR_DEBUGGER_WS_ADC_MAX_SAMPLE_RATE_HZ 250U
+#define LINKR_DEBUGGER_WS_ADC_FRAME_BUFFER_SIZE 6144U
+#define LINKR_DEBUGGER_WS_ADC_MAX_BATCH_SIZE 18U
+#define LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE 6144U
+#define LINKR_DEBUGGER_WS_TELEMETRY_ADC_CHANNELS \
+	LINKR_DEBUGGER_ADC_TELEMETRY_CHANNEL_COUNT
+#define LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE 173U
+#define LINKR_DEBUGGER_WS_MAX_BATCH_SIZE LINKR_DEBUGGER_WS_ADC_MAX_BATCH_SIZE
+#define LINKR_DEBUGGER_WS_SAMPLER_READ_BATCH_SIZE 1U
+#define LINKR_DEBUGGER_WS_MESSAGE_MAX 480U
+
+enum linkr_debugger_ws_frame_flag {
+	LINKR_DEBUGGER_WS_FRAME_FINAL = 0x01U,
+	LINKR_DEBUGGER_WS_FRAME_TEXT = 0x02U,
+	LINKR_DEBUGGER_WS_FRAME_BINARY = 0x04U,
+	LINKR_DEBUGGER_WS_FRAME_CLOSE = 0x08U,
+	LINKR_DEBUGGER_WS_FRAME_PING = 0x10U,
+	LINKR_DEBUGGER_WS_FRAME_PONG = 0x20U,
+};
+
+enum linkr_debugger_ws_rx_result {
+	LINKR_DEBUGGER_WS_RX_MORE = 0,
+	LINKR_DEBUGGER_WS_RX_TEXT,
+	LINKR_DEBUGGER_WS_RX_BINARY,
+	LINKR_DEBUGGER_WS_RX_PING,
+	LINKR_DEBUGGER_WS_RX_PONG,
+	LINKR_DEBUGGER_WS_RX_CLOSE,
+};
+
+#define LINKR_DEBUGGER_WS_CONTROL_PAYLOAD_MAX 125U
+#define LINKR_DEBUGGER_WS_UNREPORTED_OVERFLOW \
+	(SIZE_MAX ^ (SIZE_MAX >> 1U))
+#define LINKR_DEBUGGER_WS_UNREPORTED_COUNT(value) \
+	((value) & ~LINKR_DEBUGGER_WS_UNREPORTED_OVERFLOW)
+
+struct linkr_debugger_ws_rx_assembly {
+	uint8_t data[LINKR_DEBUGGER_WS_MESSAGE_MAX];
+	uint64_t frame_remaining;
+	size_t length;
+	size_t unreported_length;
+	uint32_t message_kind;
+	uint32_t frame_flags;
+	bool active;
+	bool frame_open;
+	bool discarding;
+};
+
+static void linkr_debugger_ws_rx_reset(
+	struct linkr_debugger_ws_rx_assembly *assembly)
+{
+	assembly->frame_remaining = 0U;
+	assembly->length = 0U;
+	assembly->unreported_length = 0U;
+	assembly->message_kind = 0U;
+	assembly->frame_flags = 0U;
+	assembly->active = false;
+	assembly->frame_open = false;
+	assembly->discarding = false;
+}
+
+static void linkr_debugger_ws_rx_append(
+	struct linkr_debugger_ws_rx_assembly *assembly, const uint8_t *data,
+	size_t length)
+{
+	if (assembly->discarding) {
+		return;
+	}
+	if (length > sizeof(assembly->data) - assembly->length) {
+		assembly->discarding = true;
+		return;
+	}
+	if (length != 0U) {
+		memcpy(assembly->data + assembly->length, data, length);
+		assembly->length += length;
+	}
+}
+
+/*
+ * Zephyr v4.2 websocket_recv_msg() can return payload bytes after a
+ * nonblocking short read without updating message_type/remaining. Such bytes
+ * remain unreported until a later call reaches either the frame boundary or
+ * the caller buffer limit. Keep them, but never dispatch a message until
+ * metadata is available, the current frame has no remaining payload, and the
+ * WebSocket FIN bit closes the complete (possibly fragmented) message.
+ */
+static int linkr_debugger_ws_rx_assembly_feed(
+	struct linkr_debugger_ws_rx_assembly *assembly, uint8_t *scratch,
+	size_t scratch_capacity, const uint8_t *data, size_t length,
+	bool metadata_valid, uint32_t frame_flags, uint64_t remaining,
+	const uint8_t **message, size_t *message_length)
+{
+	bool unreported_overflow;
+	size_t unreported_length;
+	uint32_t control;
+	uint32_t kind;
+	uint64_t segment_length;
+	int result;
+
+	if (assembly == NULL || (data == NULL && length != 0U) ||
+	    scratch == NULL || scratch_capacity == 0U || message == NULL ||
+	    message_length == NULL) {
+		return -EINVAL;
+	}
+	*message = NULL;
+	*message_length = 0U;
+	unreported_overflow =
+		(assembly->unreported_length &
+		 LINKR_DEBUGGER_WS_UNREPORTED_OVERFLOW) != 0U;
+	unreported_length = LINKR_DEBUGGER_WS_UNREPORTED_COUNT(
+		assembly->unreported_length);
+	if (unreported_length > scratch_capacity ||
+	    length > scratch_capacity - unreported_length) {
+		unreported_overflow = true;
+		unreported_length = 0U;
+	}
+	if (length != 0U && !unreported_overflow) {
+		uint8_t *destination = scratch + unreported_length;
+
+		if (destination != data) {
+			memmove(destination, data, length);
+		}
+		unreported_length += length;
+	}
+	assembly->unreported_length = unreported_length |
+		(unreported_overflow ? LINKR_DEBUGGER_WS_UNREPORTED_OVERFLOW : 0U);
+	if (!metadata_valid) {
+		return LINKR_DEBUGGER_WS_RX_MORE;
+	}
+
+	control = frame_flags & (LINKR_DEBUGGER_WS_FRAME_CLOSE |
+				 LINKR_DEBUGGER_WS_FRAME_PING |
+				 LINKR_DEBUGGER_WS_FRAME_PONG);
+	if (control != 0U) {
+		uint32_t allowed = LINKR_DEBUGGER_WS_FRAME_FINAL | control;
+
+		if (assembly->frame_open || unreported_overflow || remaining != 0U ||
+		    unreported_length > LINKR_DEBUGGER_WS_CONTROL_PAYLOAD_MAX ||
+		    (control == LINKR_DEBUGGER_WS_FRAME_CLOSE &&
+		     unreported_length == 1U) ||
+		    (control != LINKR_DEBUGGER_WS_FRAME_CLOSE &&
+		     control != LINKR_DEBUGGER_WS_FRAME_PING &&
+		     control != LINKR_DEBUGGER_WS_FRAME_PONG) ||
+		    frame_flags != allowed) {
+			linkr_debugger_ws_rx_reset(assembly);
+			return -EPROTO;
+		}
+		assembly->unreported_length = 0U;
+		*message = scratch;
+		*message_length = unreported_length;
+		if (control == LINKR_DEBUGGER_WS_FRAME_PING) {
+			return LINKR_DEBUGGER_WS_RX_PING;
+		}
+		if (control == LINKR_DEBUGGER_WS_FRAME_PONG) {
+			return LINKR_DEBUGGER_WS_RX_PONG;
+		}
+		linkr_debugger_ws_rx_reset(assembly);
+		return LINKR_DEBUGGER_WS_RX_CLOSE;
+	}
+	if (unreported_overflow) {
+		assembly->discarding = true;
+	}
+	linkr_debugger_ws_rx_append(assembly, scratch, unreported_length);
+	kind = frame_flags &
+	       (LINKR_DEBUGGER_WS_FRAME_TEXT | LINKR_DEBUGGER_WS_FRAME_BINARY);
+	if (kind == (LINKR_DEBUGGER_WS_FRAME_TEXT |
+		     LINKR_DEBUGGER_WS_FRAME_BINARY)) {
+		linkr_debugger_ws_rx_reset(assembly);
+		return -EPROTO;
+	}
+	segment_length = unreported_length;
+
+	if (assembly->frame_open) {
+		if ((!unreported_overflow &&
+		     remaining > UINT64_MAX - segment_length) ||
+		    frame_flags != assembly->frame_flags ||
+		    (!unreported_overflow &&
+		     assembly->frame_remaining != segment_length + remaining)) {
+			linkr_debugger_ws_rx_reset(assembly);
+			return -EPROTO;
+		}
+	} else if (assembly->active) {
+		/* A subsequent RFC 6455 data frame must be CONTINUE (type bits
+		 * clear); FIN belongs to that continuation frame.
+		 */
+		if (kind != 0U) {
+			linkr_debugger_ws_rx_reset(assembly);
+			return -EPROTO;
+		}
+		assembly->frame_flags = frame_flags;
+	} else {
+		if (kind != LINKR_DEBUGGER_WS_FRAME_TEXT &&
+		    kind != LINKR_DEBUGGER_WS_FRAME_BINARY) {
+			linkr_debugger_ws_rx_reset(assembly);
+			return -EPROTO;
+		}
+		assembly->active = true;
+		assembly->message_kind = kind;
+		assembly->frame_flags = frame_flags;
+	}
+	assembly->unreported_length = 0U;
+	assembly->frame_remaining = remaining;
+	assembly->frame_open = remaining != 0U;
+	if (assembly->frame_open ||
+	    (frame_flags & LINKR_DEBUGGER_WS_FRAME_FINAL) == 0U) {
+		return LINKR_DEBUGGER_WS_RX_MORE;
+	}
+	if (assembly->discarding) {
+		linkr_debugger_ws_rx_reset(assembly);
+		return -EMSGSIZE;
+	}
+
+	*message = assembly->data;
+	*message_length = assembly->length;
+	result = assembly->message_kind == LINKR_DEBUGGER_WS_FRAME_BINARY ?
+			 LINKR_DEBUGGER_WS_RX_BINARY : LINKR_DEBUGGER_WS_RX_TEXT;
+	linkr_debugger_ws_rx_reset(assembly);
+	return result;
+}
+
+typedef int (*linkr_debugger_ws_pong_sender_t)(
+	void *context, const uint8_t *payload, size_t length);
+
+static int linkr_debugger_ws_rx_client_step(
+	struct linkr_debugger_ws_rx_assembly *assembly, uint8_t *scratch,
+	size_t scratch_capacity, const uint8_t *data, size_t length,
+	bool metadata_valid, uint32_t frame_flags, uint64_t remaining,
+	linkr_debugger_ws_pong_sender_t pong_sender, void *pong_context,
+	const uint8_t **message, size_t *message_length)
+{
+	int result = linkr_debugger_ws_rx_assembly_feed(
+		assembly, scratch, scratch_capacity, data, length, metadata_valid,
+		frame_flags, remaining, message, message_length);
+
+	if (result == LINKR_DEBUGGER_WS_RX_PING) {
+		int ret;
+
+		if (pong_sender == NULL) {
+			return -EINVAL;
+		}
+		ret = pong_sender(pong_context, *message, *message_length);
+		return ret < 0 ? ret : LINKR_DEBUGGER_WS_RX_MORE;
+	}
+	if (result == LINKR_DEBUGGER_WS_RX_PONG) {
+		return LINKR_DEBUGGER_WS_RX_MORE;
+	}
+	return result;
+}
+
+static uint64_t linkr_debugger_ws_serial_drop_delta(uint64_t previous,
+						     uint64_t total)
+{
+	return total >= previous ? total - previous : total;
+}
+
+enum linkr_debugger_ws_stream_mode {
+	LINKR_DEBUGGER_WS_MODE_IDLE = 0,
+	LINKR_DEBUGGER_WS_MODE_LIVE_ADC,
+	LINKR_DEBUGGER_WS_MODE_SERIAL_J4,
+	LINKR_DEBUGGER_WS_MODE_SIGROK,
+};
+
+static int linkr_debugger_ws_subscribe_mode(
+	enum linkr_debugger_ws_stream_mode current, const char *topic,
+	enum linkr_debugger_ws_stream_mode *next)
+{
+	enum linkr_debugger_ws_stream_mode requested;
+
+	if (topic == NULL || topic[0] == '\0' || strcmp(topic, "live") == 0) {
+		requested = LINKR_DEBUGGER_WS_MODE_LIVE_ADC;
+	} else if (strcmp(topic, "serial.j4") == 0) {
+		requested = LINKR_DEBUGGER_WS_MODE_SERIAL_J4;
+	} else {
+		return -EINVAL;
+	}
+	if (current != LINKR_DEBUGGER_WS_MODE_IDLE && current != requested) {
+		return -EBUSY;
+	}
+	if (next != NULL) {
+		*next = requested;
+	}
+	return 0;
+}
+
+static int linkr_debugger_ws_binary_mode(
+	enum linkr_debugger_ws_stream_mode current,
+	enum linkr_debugger_ws_stream_mode *next)
+{
+	if (current == LINKR_DEBUGGER_WS_MODE_LIVE_ADC) {
+		return -EBUSY;
+	}
+	if (next != NULL) {
+		*next = current == LINKR_DEBUGGER_WS_MODE_IDLE ?
+			       LINKR_DEBUGGER_WS_MODE_SIGROK : current;
+	}
+	return 0;
+}
+
+#define LINKR_DEBUGGER_WS_SIDECAR_COUNT 4U
+
+struct linkr_debugger_ws_serial_signature {
+	struct linkr_debugger_serial_config config;
+	uint64_t generation;
+	uint64_t active_event_id;
+	uint64_t pause_dropped;
+	uint64_t tx_canceled;
+	uint64_t completion_overflow;
+	enum linkr_debugger_serial_state state;
+	uint8_t tx_used_slots;
+	bool dtr;
+	bool rts;
+	bool usb_configured;
+	bool admission_frozen;
+};
+
+/* New serial/WS state deliberately lives in ordinary BSS. Keeping it out of
+ * linkr_debugger_ws_client preserves the exact pre-capture linker contract.
+ */
+struct linkr_debugger_ws_client_sidecar {
+	struct linkr_debugger_ws_rx_assembly rx_assembly;
+	struct linkr_debugger_serial_sink_pending serial_pending;
+	struct linkr_debugger_ws_serial_signature serial_signature;
+	uint64_t serial_last_drops;
+	enum linkr_debugger_ws_stream_mode stream_mode;
+	bool serial_state_valid;
+};
+
+static struct linkr_debugger_ws_client_sidecar
+	linkr_debugger_ws_client_sidecars[LINKR_DEBUGGER_WS_SIDECAR_COUNT];
+
+static struct linkr_debugger_ws_client_sidecar *
+linkr_debugger_ws_sidecar_at(uint8_t slot)
+{
+	return slot < LINKR_DEBUGGER_WS_SIDECAR_COUNT ?
+		       &linkr_debugger_ws_client_sidecars[slot] : NULL;
+}
+
+static bool linkr_debugger_ws_sidecar_reset_slot(uint8_t slot)
+{
+	struct linkr_debugger_ws_client_sidecar *sidecar =
+		linkr_debugger_ws_sidecar_at(slot);
+
+	if (sidecar == NULL) {
+		return false;
+	}
+	memset(sidecar, 0, sizeof(*sidecar));
+	linkr_debugger_ws_rx_reset(&sidecar->rx_assembly);
+	sidecar->stream_mode = LINKR_DEBUGGER_WS_MODE_IDLE;
+	return true;
+}
+
+#ifndef LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST
+static void linkr_debugger_ws_serial_signature_get(
+	const struct linkr_debugger_serial_status *status,
+	struct linkr_debugger_ws_serial_signature *signature)
+{
+	memset(signature, 0, sizeof(*signature));
+	signature->config = status->current_config;
+	signature->generation = status->generation;
+	signature->active_event_id = status->active_event_id;
+	signature->pause_dropped =
+		status->runtime_counters.uart_rx_pause_dropped;
+	signature->tx_canceled = status->tx_canceled;
+	signature->completion_overflow =
+		status->runtime_counters.completion_overflow;
+	signature->state = status->state;
+	signature->tx_used_slots = status->tx_used_slots;
+	signature->dtr = status->dtr;
+	signature->rts = status->rts;
+	signature->usb_configured = status->usb_configured;
+	signature->admission_frozen = status->admission_frozen;
+}
+#endif
+
+static size_t linkr_debugger_ws_json_string_size(const char *value)
+{
+	size_t size = 2U;
+
+	if (value == NULL) {
+		return size;
+	}
+	for (const unsigned char *cursor = (const unsigned char *)value;
+	     *cursor != '\0'; cursor++) {
+		switch (*cursor) {
+		case '"':
+		case '\\':
+		case '\b':
+		case '\f':
+		case '\n':
+		case '\r':
+		case '\t':
+			size += 2U;
+			break;
+		default:
+			size += *cursor < 0x20U ? 6U : 1U;
+			break;
+		}
+	}
+
+	return size;
+}
+
+/* Exact upper bound for the compact batch encoder with valid low-four-bit
+ * masks and the current descriptor metadata. Kept allocation-free so the
+ * registered host test also exercises the production encoder at 18 and 19.
+ */
+static inline size_t linkr_debugger_ws_adc_batch_worst_case_size_from(
+	const struct linkr_debugger_current_desc *channels,
+	size_t channel_count,
+	size_t current_count,
+	size_t sample_count,
+	const char *schema)
+{
+	size_t size = sizeof("{\"type\":\"telemetry-batch\",\"topic\":\"adc\",\"schema\":") - 1U;
+
+	size += linkr_debugger_ws_json_string_size(schema);
+	size += sizeof(",\"dropped_samples\":") - 1U + 10U;
+	size += sizeof(",\"channels\":[") - 1U;
+	for (size_t i = 0U; i < channel_count; i++) {
+		const struct linkr_debugger_current_desc *channel = &channels[i];
+		const char *kind = channel->kind == LINKR_DEBUGGER_ADC_KIND_CURRENT ?
+			"current" : "voltage";
+
+		size += i > 0U ? 1U : 0U;
+		size += sizeof("{\"name\":") - 1U +
+			linkr_debugger_ws_json_string_size(channel->name);
+		size += sizeof(",\"signal\":") - 1U +
+			linkr_debugger_ws_json_string_size(channel->signal);
+		size += sizeof(",\"kind\":") - 1U +
+			linkr_debugger_ws_json_string_size(kind);
+		size += sizeof(",\"unit\":") - 1U +
+			linkr_debugger_ws_json_string_size(channel->unit);
+		if (channel->note != NULL && channel->note[0] != '\0') {
+			size += sizeof(",\"note\":") - 1U +
+				linkr_debugger_ws_json_string_size(channel->note);
+		}
+		size += 1U;
+	}
+	size += sizeof("],\"samples\":[") - 1U;
+	for (size_t i = 0U; i < sample_count; i++) {
+		size += i > 0U ? 1U : 0U;
+		size += sizeof("{\"sequence\":") - 1U + 20U;
+		size += sizeof(",\"uptime_us\":") - 1U + 20U;
+		size += sizeof(",\"power_enabled_mask\":") - 1U + 2U;
+		size += sizeof(",\"voltage_valid_mask\":") - 1U + 2U;
+		size += sizeof(",\"values\":[") - 1U + channel_count * 11U +
+			(channel_count > 0U ? channel_count - 1U : 0U);
+		size += sizeof("],\"voltages_uv\":[") - 1U + current_count * 11U +
+			(current_count > 0U ? current_count - 1U : 0U);
+		size += sizeof("]}") - 1U;
+	}
+	size += sizeof("]}") - 1U;
+
+	return size;
+}
 
 static bool linkr_debugger_ws_adc_sample_rate_supported(int rate_hz)
 {
@@ -209,7 +665,6 @@ static int linkr_debugger_ws_append_safe_gpio_layout_from(
 #include "linkr_debugger_ws.h"
 #include "linkr_debugger_ws_sampler_sync.h"
 
-#include "linkr_debugger_capture_arena.h"
 #include "linkr_debugger_control.h"
 #include "linkr_debugger_config_summary.h"
 #include "linkr_debugger_gpio_error.h"
@@ -232,12 +687,11 @@ LOG_MODULE_REGISTER(linkr_debugger_ws, LOG_LEVEL_INF);
 #define LINKR_DEBUGGER_WS_STACK_SIZE 4096
 #define LINKR_DEBUGGER_WS_PRIORITY K_PRIO_PREEMPT(8)
 /* Sampling at 250 Hz must not be preempted by the client thread while it
- * serializes and sends each 20-sample batch. The sampler sleeps to an absolute
+ * serializes and sends each 18-sample batch. The sampler sleeps to an absolute
  * deadline after every read, so priority 1 remains bounded. WIDE11/FAST8
  * capture uses the same producer priority but explicitly pauses telemetry.
  */
 #define LINKR_DEBUGGER_ADC_SAMPLER_PRIORITY K_PRIO_PREEMPT(1)
-#define LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE 6144
 #define LINKR_DEBUGGER_WS_IDLE_WAIT_MS 100
 #define LINKR_DEBUGGER_WS_SIGROK_QDEPTH_LIMIT LINKR_DEBUGGER_SIGROK_LINKR_STREAM_QDEPTH_LIMIT
 #define LINKR_DEBUGGER_WS_SIGROK_DRAIN_BATCH 16
@@ -257,17 +711,23 @@ LOG_MODULE_REGISTER(linkr_debugger_ws, LOG_LEVEL_INF);
 #define LINKR_DEBUGGER_WS_SIGROK_BURST_DATA_SLOT_COUNT 2U
 #define LINKR_DEBUGGER_WS_SIGROK_BURST_TERMINAL_SLOT_COUNT 1U
 #define LINKR_DEBUGGER_WS_SIGROK_BURST_SLOT_WAIT_MS 1000U
-#define LINKR_DEBUGGER_WS_TELEMETRY_ADC_CHANNELS \
-	LINKR_DEBUGGER_ADC_TELEMETRY_CHANNEL_COUNT
 #define LINKR_DEBUGGER_POWER_CAPTURE_CURRENT_CHANNELS \
 	LINKR_DEBUGGER_CURRENT_SENSOR_COUNT
 #define LINKR_DEBUGGER_WS_ADC_I2C_BUS_HZ 200000U
 #define LINKR_DEBUGGER_WS_ADC_INA_REGISTER_READS_PER_SAMPLE 2U
 #define LINKR_DEBUGGER_WS_ADC_I2C_CLOCKS_PER_REGISTER_READ 45U
 #define LINKR_DEBUGGER_WS_ADC_I2C_BUDGET_PERCENT 50U
-#define LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE 256U
-#define LINKR_DEBUGGER_WS_MAX_BATCH_SIZE 20U
 #define LINKR_DEBUGGER_WS_SIGROK_SLOW_SEND_LOG_LIMIT 4U
+#define LINKR_DEBUGGER_WS_SERIAL_SEND_TIMEOUT_MS 20
+#define LINKR_DEBUGGER_WS_SERIAL_DRAIN_FRAMES 4U
+
+BUILD_ASSERT(LINKR_DEBUGGER_WS_FRAME_FINAL == WEBSOCKET_FLAG_FINAL &&
+	     LINKR_DEBUGGER_WS_FRAME_TEXT == WEBSOCKET_FLAG_TEXT &&
+	     LINKR_DEBUGGER_WS_FRAME_BINARY == WEBSOCKET_FLAG_BINARY &&
+	     LINKR_DEBUGGER_WS_FRAME_CLOSE == WEBSOCKET_FLAG_CLOSE &&
+	     LINKR_DEBUGGER_WS_FRAME_PING == WEBSOCKET_FLAG_PING &&
+	     LINKR_DEBUGGER_WS_FRAME_PONG == WEBSOCKET_FLAG_PONG,
+	     "WS assembly flags must match the pinned Zephyr websocket API");
 
 BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_QDEPTH_LIMIT == 32,
 	"Sigrok WS jitter buffer depth must match the measured HIL value");
@@ -275,6 +735,8 @@ BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_FRAMES == 16U,
 	"Sigrok WS coalesce frame cap must remain at the measured HIL value");
 BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_BYTES == LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
 	"Sigrok WS coalesce byte cap must use the already allocated client tx buffer");
+BUILD_ASSERT(LINKR_DEBUGGER_WS_ADC_FRAME_BUFFER_SIZE == LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+	"ADC frame budget must match the existing client tx buffer");
 BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_QBYTES_LIMIT == (36U * 1024U),
 	"Sigrok WS allocated queue byte cap must stay bounded for the 65 KiB heap");
 BUILD_ASSERT(LINKR_DEBUGGER_WS_SIGROK_COALESCE_MAX_BYTES <= LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
@@ -299,8 +761,8 @@ BUILD_ASSERT(LINKR_DEBUGGER_CAPTURE_ARENA_BURST_TERMINAL_BYTES == 16U,
 	"Sigrok WS burst terminal slot capacity must stay 16 bytes");
 
 BUILD_ASSERT(LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE > LINKR_DEBUGGER_WS_MAX_BATCH_SIZE);
-BUILD_ASSERT(LINKR_DEBUGGER_WS_TELEMETRY_ADC_CHANNELS == 5U,
-	"WS telemetry must retain four current channels plus ADC3");
+BUILD_ASSERT(LINKR_DEBUGGER_WS_TELEMETRY_ADC_CHANNELS == 8U,
+	"WS telemetry must retain four current and four ADC voltage channels");
 BUILD_ASSERT(LINKR_DEBUGGER_POWER_CAPTURE_CURRENT_CHANNELS == 4U,
 	"power capture must retain four current channels");
 /* Each INA sample reads current and voltage. A register-pointer write plus a
@@ -421,6 +883,14 @@ struct linkr_debugger_ws_client {
 	uint32_t sigrok_stream_generation;
 };
 
+static struct linkr_debugger_ws_client_sidecar *
+linkr_debugger_ws_sidecar(struct linkr_debugger_ws_client *client)
+{
+	__ASSERT_NO_MSG(client != NULL);
+	__ASSERT_NO_MSG(client->slot < LINKR_DEBUGGER_WS_SIDECAR_COUNT);
+	return &linkr_debugger_ws_client_sidecars[client->slot];
+}
+
 static int linkr_debugger_ws_send_json(struct linkr_debugger_ws_client *client,
 				     const char *payload);
 static int linkr_debugger_ws_send_json_timeout(struct linkr_debugger_ws_client *client,
@@ -468,7 +938,6 @@ static int linkr_debugger_ws_handle_reboot(struct linkr_debugger_ws_client *clie
 						 LINKR_DEBUGGER_REBOOT_DELAY_MS / 2U);
 }
 
-#ifndef LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST
 struct linkr_debugger_ws_adc_sample {
 	struct linkr_debugger_current_sample readings[LINKR_DEBUGGER_WS_TELEMETRY_ADC_CHANNELS];
 	uint64_t sequence;
@@ -477,21 +946,45 @@ struct linkr_debugger_ws_adc_sample {
 	uint32_t source_dropped_before;
 };
 
+struct linkr_debugger_ws_sampler_workspace {
+	struct linkr_debugger_current_sample
+		readings[LINKR_DEBUGGER_WS_SAMPLER_READ_BATCH_SIZE]
+			[LINKR_DEBUGGER_WS_TELEMETRY_ADC_CHANNELS];
+	int64_t timestamps_us[LINKR_DEBUGGER_WS_SAMPLER_READ_BATCH_SIZE];
+	struct linkr_debugger_ws_adc_sample ingest_sample;
+};
+
+BUILD_ASSERT(sizeof(struct linkr_debugger_ws_adc_sample) == 248U,
+	"eight-channel WS ADC sample size changed");
+BUILD_ASSERT(LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE *
+	     sizeof(struct linkr_debugger_ws_adc_sample) <=
+	     LINKR_DEBUGGER_CAPTURE_ARENA_WS_SAMPLE_RING_BYTES,
+	"173 WS ADC samples must fit the fixed arena slice");
+BUILD_ASSERT((LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE + 1U) *
+	     sizeof(struct linkr_debugger_ws_adc_sample) >
+	     LINKR_DEBUGGER_CAPTURE_ARENA_WS_SAMPLE_RING_BYTES,
+	"the fixed arena slice must not fit a 174th WS ADC sample");
+BUILD_ASSERT(sizeof(struct linkr_debugger_ws_sampler_workspace) == 480U,
+	"single-sample WS ADC workspace size changed");
+
+#define linkr_debugger_ws_sample_ring \
+	((struct linkr_debugger_ws_adc_sample *)linkr_debugger_capture_arena_ws_sample_ring())
+
+#ifndef LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST
 struct linkr_debugger_ws_client_thread_arg {
 	struct linkr_debugger_ws_client *client;
 	int ws_sock;
 	uint32_t session_id;
 };
 
-struct linkr_debugger_ws_sampler_workspace {
-	struct linkr_debugger_current_sample
-		readings[LINKR_DEBUGGER_CURRENT_BATCH_MAX][LINKR_DEBUGGER_WS_TELEMETRY_ADC_CHANNELS];
-	int64_t timestamps_us[LINKR_DEBUGGER_CURRENT_BATCH_MAX];
-	struct linkr_debugger_ws_adc_sample ingest_sample;
-};
-
 static struct linkr_debugger_ws_client linkr_debugger_ws_clients[LINKR_DEBUGGER_WS_MAX_CLIENTS]
 	Z_GENERIC_SECTION(.bss.pre_capture.ws_clients);
+BUILD_ASSERT(LINKR_DEBUGGER_WS_MAX_CLIENTS == LINKR_DEBUGGER_WS_SIDECAR_COUNT,
+	"every WS client slot must have exactly one sidecar");
+BUILD_ASSERT(sizeof(struct linkr_debugger_ws_client_sidecar) == 1088U,
+	"WS serial sidecar ARM layout changed");
+BUILD_ASSERT(sizeof(linkr_debugger_ws_client_sidecars) == 4352U,
+	"four WS serial sidecars must occupy exactly 4352 bytes");
 BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28704U);
 static struct linkr_debugger_ws_client_thread_arg linkr_debugger_ws_thread_args[LINKR_DEBUGGER_WS_MAX_CLIENTS];
 static K_THREAD_STACK_ARRAY_DEFINE(linkr_debugger_ws_stacks, LINKR_DEBUGGER_WS_MAX_CLIENTS,
@@ -504,8 +997,6 @@ static uint32_t linkr_debugger_ws_next_session_id = 1U;
 static uint32_t linkr_debugger_capture_owner_session_id;
 static uint32_t linkr_debugger_next_capture_id = 1U;
 
-#define linkr_debugger_ws_sample_ring \
-	((struct linkr_debugger_ws_adc_sample *)linkr_debugger_capture_arena_ws_sample_ring())
 static struct linkr_debugger_ws_sampler_workspace linkr_debugger_ws_sampler_workspace;
 static struct k_mutex linkr_debugger_ws_sample_ring_lock;
 static struct k_event linkr_debugger_ws_sampler_events;
@@ -518,9 +1009,6 @@ static uint64_t linkr_debugger_ws_latest_sample_sequence;
 static K_THREAD_STACK_DEFINE(linkr_debugger_adc_sampler_stack, 2048);
 static struct k_thread linkr_debugger_adc_sampler_thread_data;
 
-BUILD_ASSERT(LINKR_DEBUGGER_CAPTURE_ARENA_WS_SAMPLE_RING_BYTES ==
-	LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE * sizeof(struct linkr_debugger_ws_adc_sample),
-	"WS ADC sample ring arena slice size mismatch");
 BUILD_ASSERT(sizeof(struct linkr_debugger_capture) <=
 	LINKR_DEBUGGER_CAPTURE_ARENA_POWER_CAPTURE_BYTES,
 	"power capture arena slice size mismatch");
@@ -529,6 +1017,7 @@ enum {
 	LINKR_DEBUGGER_WS_EVENT_STATE = BIT(0),
 	LINKR_DEBUGGER_WS_EVENT_SAMPLE = BIT(1),
 	LINKR_DEBUGGER_WS_EVENT_STREAM_DATA = BIT(2),
+	LINKR_DEBUGGER_WS_EVENT_SERIAL = BIT(3),
 };
 
 enum {
@@ -564,6 +1053,26 @@ static int linkr_debugger_ws_send_json(struct linkr_debugger_ws_client *client, 
 	return linkr_debugger_ws_send_json_timeout(client, payload, SYS_FOREVER_MS);
 }
 
+static int linkr_debugger_ws_send_pong(void *context, const uint8_t *payload,
+				       size_t length)
+{
+	struct linkr_debugger_ws_client *client = context;
+	int ret = websocket_send_msg(
+		client->ws_sock, payload, length, WEBSOCKET_OPCODE_PONG, false,
+		true, LINKR_DEBUGGER_WS_SERIAL_SEND_TIMEOUT_MS);
+
+	if (ret < 0) {
+		LOG_ERR("websocket PONG send failed: %d", ret);
+		return ret;
+	}
+	if ((size_t)ret != length) {
+		LOG_ERR("websocket PONG short send: %d/%u", ret,
+			(unsigned int)length);
+		return -EIO;
+	}
+	return 0;
+}
+
 static struct linkr_debugger_ws_client *linkr_debugger_ws_client_allocate(void)
 {
 	struct linkr_debugger_ws_client *client = NULL;
@@ -572,6 +1081,7 @@ static struct linkr_debugger_ws_client *linkr_debugger_ws_client_allocate(void)
 	for (size_t i = 0; i < ARRAY_SIZE(linkr_debugger_ws_clients); i++) {
 		if (!linkr_debugger_ws_clients[i].active && linkr_debugger_ws_clients[i].thread == NULL) {
 			client = &linkr_debugger_ws_clients[i];
+			(void)linkr_debugger_ws_sidecar_reset_slot(client->slot);
 			client->active = true;
 			client->connected = false;
 			client->session_id = linkr_debugger_ws_next_session_id++;
@@ -589,6 +1099,7 @@ static struct linkr_debugger_ws_client *linkr_debugger_ws_client_allocate(void)
 
 static void linkr_debugger_ws_client_reset(struct linkr_debugger_ws_client *client)
 {
+	(void)linkr_debugger_ws_sidecar_reset_slot(client->slot);
 	client->session_id = 0U;
 	client->ws_sock = -1;
 	client->connected = false;
@@ -605,6 +1116,9 @@ static void linkr_debugger_ws_client_reset(struct linkr_debugger_ws_client *clie
 
 static void linkr_debugger_ws_client_release(struct linkr_debugger_ws_client *client, uint32_t session_id)
 {
+	struct linkr_debugger_ws_client_sidecar *sidecar =
+		linkr_debugger_ws_sidecar(client);
+
 	k_mutex_lock(&linkr_debugger_ws_clients_lock, K_FOREVER);
 	if (client->session_id != session_id) {
 		k_mutex_unlock(&linkr_debugger_ws_clients_lock);
@@ -616,6 +1130,9 @@ static void linkr_debugger_ws_client_release(struct linkr_debugger_ws_client *cl
 
 	sigrok_ws_release_capture_if_held(client);
 	sigrok_ws_stream_reset_queue(client);
+	if (sidecar->stream_mode == LINKR_DEBUGGER_WS_MODE_SERIAL_J4) {
+		(void)linkr_debugger_serial_net_ws_detach(client->slot);
+	}
 
 	k_mutex_lock(&linkr_debugger_ws_clients_lock, K_FOREVER);
 	if (client->session_id == session_id) {
@@ -691,6 +1208,8 @@ static void linkr_debugger_ws_publish(uint32_t event_mask)
 	k_mutex_unlock(&linkr_debugger_ws_clients_lock);
 }
 
+#endif /* LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST */
+
 static int linkr_debugger_ws_append(char *buf, size_t size, size_t *cursor, const char *fmt, ...)
 {
 	va_list args;
@@ -741,6 +1260,246 @@ static int linkr_debugger_ws_append_json_string(char *buf, size_t size, size_t *
 		value != NULL ? value : "", value != NULL ? strlen(value) : 0U);
 }
 
+#ifndef LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST
+static const char *linkr_debugger_ws_serial_state_name(
+	enum linkr_debugger_serial_state state)
+{
+	switch (state) {
+	case LINKR_DEBUGGER_SERIAL_READY:
+		return "ready";
+	case LINKR_DEBUGGER_SERIAL_RECONFIG:
+		return "reconfig";
+	case LINKR_DEBUGGER_SERIAL_PAUSED:
+		return "paused";
+	case LINKR_DEBUGGER_SERIAL_FAULTED:
+	default:
+		return "faulted";
+	}
+}
+
+static const char *linkr_debugger_ws_serial_parity_name(
+	enum linkr_debugger_serial_parity parity)
+{
+	switch (parity) {
+	case LINKR_DEBUGGER_SERIAL_PARITY_ODD:
+		return "odd";
+	case LINKR_DEBUGGER_SERIAL_PARITY_EVEN:
+		return "even";
+	case LINKR_DEBUGGER_SERIAL_PARITY_NONE:
+	default:
+		return "none";
+	}
+}
+
+static int linkr_debugger_ws_emit_serial_state(
+	struct linkr_debugger_ws_client *client,
+	const struct linkr_debugger_serial_status *status)
+{
+	struct linkr_debugger_ws_client_sidecar *sidecar =
+		linkr_debugger_ws_sidecar(client);
+	char *buf = (char *)client->tx_buffer;
+	size_t cursor = 0U;
+
+	if (linkr_debugger_ws_append(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+		    "{\"type\":\"serial_state\",\"topic\":\"serial.j4\","
+		    "\"schema\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+		    linkr_debugger_json_schema()) < 0 ||
+	    linkr_debugger_ws_append(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+		    ",\"state\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+		    linkr_debugger_ws_serial_state_name(status->state)) < 0 ||
+	    linkr_debugger_ws_append(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+		    ",\"generation\":%llu,\"line_coding\":{"
+		    "\"baud\":%u,\"data_bits\":%u,\"parity\":",
+		    (unsigned long long)status->generation,
+		    (unsigned int)status->current_config.baud,
+		    (unsigned int)status->current_config.data_bits) < 0 ||
+	    linkr_debugger_ws_append_json_string(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+		    linkr_debugger_ws_serial_parity_name(
+			    status->current_config.parity)) < 0 ||
+	    linkr_debugger_ws_append(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+		    ",\"stop_bits\":%u,\"flow_control\":\"none\"},"
+		    "\"dtr\":%s,\"rts\":%s,\"usb_configured\":%s,"
+		    "\"queue\":{\"used\":%u,\"capacity\":%u,"
+		    "\"active_event_id\":%llu,\"admission_frozen\":%s},"
+		    "\"counters\":{\"pause_dropped\":%llu,"
+		    "\"tx_canceled\":%llu,\"completion_overflow\":%llu}}",
+		    (unsigned int)status->current_config.stop_bits,
+		    status->dtr ? "true" : "false",
+		    status->rts ? "true" : "false",
+		    status->usb_configured ? "true" : "false",
+		    (unsigned int)status->tx_used_slots,
+		    (unsigned int)LINKR_DEBUGGER_SERIAL_TX_SLOT_COUNT,
+		    (unsigned long long)status->active_event_id,
+		    status->admission_frozen ? "true" : "false",
+		    (unsigned long long)
+			    status->runtime_counters.uart_rx_pause_dropped,
+		    (unsigned long long)status->tx_canceled,
+		    (unsigned long long)
+			    status->runtime_counters.completion_overflow) < 0) {
+		return -ENOMEM;
+	}
+	linkr_debugger_ws_serial_signature_get(status,
+					       &sidecar->serial_signature);
+	sidecar->serial_state_valid = true;
+	return linkr_debugger_ws_send_json(client, buf);
+}
+
+static int linkr_debugger_ws_emit_serial_write_accepted(
+	struct linkr_debugger_ws_client *client, uint64_t event_id,
+	size_t length)
+{
+	char *buf = (char *)client->tx_buffer;
+
+	snprintk(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+		 "{\"type\":\"serial_write_accepted\","
+		 "\"topic\":\"serial.j4\",\"event_id\":%llu,"
+		 "\"bytes\":%u}",
+		 (unsigned long long)event_id, (unsigned int)length);
+	return linkr_debugger_ws_send_json(client, buf);
+}
+
+static int linkr_debugger_ws_emit_serial_write_complete(
+	struct linkr_debugger_ws_client *client,
+	const struct linkr_debugger_serial_completion *completion)
+{
+	char *buf = (char *)client->tx_buffer;
+
+	snprintk(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+		 "{\"type\":\"serial_write_complete\","
+		 "\"topic\":\"serial.j4\",\"event_id\":%llu,"
+		 "\"disposition\":\"%s\"}",
+		 (unsigned long long)completion->event_id,
+		 completion->disposition == LINKR_DEBUGGER_SERIAL_COMPLETED ?
+			 "completed" : "canceled");
+	return linkr_debugger_ws_send_json(client, buf);
+}
+
+static int linkr_debugger_ws_emit_serial_overrun(
+	struct linkr_debugger_ws_client *client, uint64_t drops)
+{
+	struct linkr_debugger_ws_client_sidecar *sidecar =
+		linkr_debugger_ws_sidecar(client);
+	char *buf = (char *)client->tx_buffer;
+	uint64_t delta = linkr_debugger_ws_serial_drop_delta(
+		sidecar->serial_last_drops, drops);
+
+	snprintk(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+		 "{\"type\":\"serial_overrun\",\"topic\":\"serial.j4\","
+		 "\"dropped_bytes\":%llu,\"total_dropped_bytes\":%llu}",
+		 (unsigned long long)delta, (unsigned long long)drops);
+	sidecar->serial_last_drops = drops;
+	return linkr_debugger_ws_send_json(client, buf);
+}
+
+static int linkr_debugger_ws_serial_drain(
+	struct linkr_debugger_ws_client *client)
+{
+	struct linkr_debugger_ws_client_sidecar *sidecar =
+		linkr_debugger_ws_sidecar(client);
+	struct linkr_debugger_serial_net_status net_status;
+	struct linkr_debugger_serial_status serial_status;
+	struct linkr_debugger_ws_serial_signature signature;
+	struct linkr_debugger_serial_completion completion;
+	const uint8_t *data;
+	size_t length;
+	int ret;
+
+	while (linkr_debugger_serial_net_ws_completion_poll(
+		       client->slot, &completion) == 0) {
+		ret = linkr_debugger_ws_emit_serial_write_complete(client,
+							 &completion);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+	ret = linkr_debugger_serial_status_snapshot(&serial_status);
+	if (ret < 0) {
+		return linkr_debugger_ws_emit_error(
+			client, "serial", "unavailable", "J4 serial is unavailable");
+	}
+	linkr_debugger_ws_serial_signature_get(&serial_status, &signature);
+	if (!sidecar->serial_state_valid ||
+	    memcmp(&sidecar->serial_signature, &signature,
+		   sizeof(signature)) != 0) {
+		ret = linkr_debugger_ws_emit_serial_state(client, &serial_status);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+	if (serial_status.state != LINKR_DEBUGGER_SERIAL_READY) {
+		return 0;
+	}
+	if (linkr_debugger_serial_net_status_snapshot(&net_status) == 0 &&
+	    net_status.ws[client->slot].inferred_rx_drops !=
+		    sidecar->serial_last_drops) {
+		ret = linkr_debugger_ws_emit_serial_overrun(
+			client,
+			net_status.ws[client->slot].inferred_rx_drops);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
+	for (size_t frame = 0U; frame < LINKR_DEBUGGER_WS_SERIAL_DRAIN_FRAMES;
+	     ++frame) {
+		ret = linkr_debugger_serial_net_ws_read(
+			client->slot, &sidecar->serial_pending,
+			LINKR_DEBUGGER_SERIAL_TX_MESSAGE_MAX, &data, &length);
+		if (ret == -EAGAIN) {
+			return 0;
+		}
+		if (ret < 0) {
+			return ret;
+		}
+		if (length == 0U) {
+			return 0;
+		}
+		ret = websocket_send_msg(
+			client->ws_sock, data, length, WEBSOCKET_OPCODE_DATA_BINARY,
+			false, true, LINKR_DEBUGGER_WS_SERIAL_SEND_TIMEOUT_MS);
+		if (ret == -EAGAIN) {
+			k_event_post(&client->events, LINKR_DEBUGGER_WS_EVENT_SERIAL);
+			return 0;
+		}
+		if (ret < 0) {
+			return ret;
+		}
+		ret = linkr_debugger_serial_net_ws_consume(
+			client->slot, &sidecar->serial_pending, length);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+	k_event_post(&client->events, LINKR_DEBUGGER_WS_EVENT_SERIAL);
+	return 0;
+}
+#endif /* LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST */
+
+static int linkr_debugger_ws_append_adc_note(
+	char *buf, size_t size, size_t *cursor,
+	const struct linkr_debugger_current_desc *adc)
+{
+	if (adc->note == NULL || adc->note[0] == '\0') {
+		return 0;
+	}
+	if (linkr_debugger_ws_append(buf, size, cursor, ",\"note\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(buf, size, cursor, adc->note) < 0) {
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+#ifndef LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST
 static int linkr_debugger_ws_append_availability(char *buf, size_t size, size_t *cursor,
 					    bool available, const char *reason)
 {
@@ -1296,6 +2055,8 @@ static bool linkr_debugger_ws_adc_sampler_pause_if_requested(void)
 	return true;
 }
 
+#endif /* LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST */
+
 static void linkr_debugger_ws_store_adc_samples(
 	const struct linkr_debugger_current_sample
 		readings[][LINKR_DEBUGGER_WS_TELEMETRY_ADC_CHANNELS],
@@ -1325,6 +2086,7 @@ static void linkr_debugger_ws_store_adc_samples(
 	}
 }
 
+#ifndef LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST
 static void linkr_debugger_adc_sampler_thread(void *p1, void *p2, void *p3)
 {
 	const int64_t tick_us = k_ticks_to_us_ceil64(1);
@@ -1456,6 +2218,8 @@ static uint64_t linkr_debugger_ws_latest_sequence(void)
 	return sequence;
 }
 
+#endif /* LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST */
+
 static bool linkr_debugger_ws_sample_get(struct linkr_debugger_ws_client *client,
 					 struct linkr_debugger_ws_adc_sample *out_sample,
 					 uint32_t *dropped_samples)
@@ -1563,6 +2327,9 @@ static int linkr_debugger_ws_append_adc_readings(char *buf, size_t size, size_t 
 					 adc->name, adc->signal, linkr_debugger_ws_adc_kind_name(adc), adc->unit) < 0) {
 			return -ENOMEM;
 		}
+		if (linkr_debugger_ws_append_adc_note(buf, size, cursor, adc) < 0) {
+			return -ENOMEM;
+		}
 		switch (adc->kind) {
 		case LINKR_DEBUGGER_ADC_KIND_CURRENT:
 			if (linkr_debugger_ws_append(buf, size, cursor,
@@ -1633,6 +2400,14 @@ static int linkr_debugger_ws_emit_adc_batch(struct linkr_debugger_ws_client *cli
 	size_t dropped_samples_offset = 0U;
 	uint8_t sample_count = 0U;
 	size_t cursor = 0U;
+	size_t worst_case_size = linkr_debugger_ws_adc_batch_worst_case_size_from(
+		linkr_debugger_currents, linkr_debugger_adc_count,
+		linkr_debugger_current_count, client->telemetry_batch_size,
+		linkr_debugger_json_schema());
+
+	if (worst_case_size >= LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE) {
+		return -ENOMEM;
+	}
 
 	while (sample_count < client->telemetry_batch_size) {
 		struct linkr_debugger_ws_adc_sample sample;
@@ -1666,9 +2441,17 @@ static int linkr_debugger_ws_emit_adc_batch(struct linkr_debugger_ws_client *cli
 				if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
 							 &cursor,
 							 "{\"name\":\"%s\",\"signal\":\"%s\",\"kind\":\"%s\","
-							 "\"unit\":\"%s\"}",
+							 "\"unit\":\"%s\"",
 							 adc->name, adc->signal, linkr_debugger_ws_adc_kind_name(adc),
 							 adc->unit) < 0) {
+					return -ENOMEM;
+				}
+				if (linkr_debugger_ws_append_adc_note(
+					    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+					    &cursor, adc) < 0 ||
+				    linkr_debugger_ws_append(
+					    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+					    &cursor, "}") < 0) {
 					return -ENOMEM;
 				}
 			}
@@ -1768,6 +2551,7 @@ static int linkr_debugger_ws_emit_adc_batch(struct linkr_debugger_ws_client *cli
 	return linkr_debugger_ws_send_json(client, buf);
 }
 
+#ifndef LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST
 static bool linkr_debugger_ws_client_has_capture_pending(const struct linkr_debugger_ws_client *client)
 {
 	bool pending;
@@ -1834,11 +2618,33 @@ static int linkr_debugger_ws_emit_result(struct linkr_debugger_ws_client *client
 				     const char *status)
 {
 	char *buf = (char *)client->tx_buffer;
+	size_t cursor = 0U;
 
-	snprintk(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
-		 "{\"type\":\"result\",\"schema\":\"%s\",\"command\":\"%s\","
-		 "\"id\":\"%s\",\"ok\":true,\"status\":\"%s\"}",
-		 linkr_debugger_json_schema(), command, id != NULL ? id : "", status);
+	if (linkr_debugger_ws_append(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+		    "{\"type\":\"result\",\"schema\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+		    linkr_debugger_json_schema()) < 0 ||
+	    linkr_debugger_ws_append(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+		    ",\"command\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor, command) < 0 ||
+	    linkr_debugger_ws_append(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor, ",\"id\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+		    id != NULL ? id : "") < 0 ||
+	    linkr_debugger_ws_append(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+		    ",\"ok\":true,\"status\":") < 0 ||
+	    linkr_debugger_ws_append_json_string(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor, status) < 0 ||
+	    linkr_debugger_ws_append(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor, "}") < 0) {
+		return -ENOMEM;
+	}
 	return linkr_debugger_ws_send_json(client, buf);
 }
 
@@ -2128,6 +2934,8 @@ static int linkr_debugger_ws_handle_message(struct linkr_debugger_ws_client *cli
 				 const uint8_t *payload,
 				 size_t payload_len)
 {
+	struct linkr_debugger_ws_client_sidecar *sidecar =
+		linkr_debugger_ws_sidecar(client);
 	struct linkr_debugger_ws_request request = { 0 };
 	int ret;
 
@@ -2142,13 +2950,22 @@ static int linkr_debugger_ws_handle_message(struct linkr_debugger_ws_client *cli
 	if (strcmp(request.type, "subscribe") == 0) {
 		bool capture_active;
 		int emit_ret;
+		int mode_ret;
 		int telemetry_rate_hz;
 		uint8_t telemetry_batch_size;
 		uint64_t next_sample_sequence;
+		enum linkr_debugger_ws_stream_mode requested_mode;
 
-		if (request.topic[0] != '\0' && strcmp(request.topic, "live") != 0) {
+		mode_ret = linkr_debugger_ws_subscribe_mode(
+			sidecar->stream_mode, request.topic, &requested_mode);
+		if (mode_ret == -EINVAL) {
 			return linkr_debugger_ws_emit_error(client, "ws", "invalid_topic",
-						"topic must be live");
+						"topic must be live or serial.j4");
+		}
+		if (mode_ret == -EBUSY) {
+			return linkr_debugger_ws_emit_error(
+				client, "subscribe", "mode_conflict",
+				"live ADC, serial.j4, and sigrok are mutually exclusive");
 		}
 		k_mutex_lock(&linkr_debugger_capture_lock, K_FOREVER);
 		capture_active = linkr_debugger_capture_owner_session_id == client->session_id &&
@@ -2156,7 +2973,47 @@ static int linkr_debugger_ws_handle_message(struct linkr_debugger_ws_client *cli
 		k_mutex_unlock(&linkr_debugger_capture_lock);
 		if (capture_active) {
 			return linkr_debugger_ws_emit_error(client, "capture", "capture_active",
-						"sampling rate cannot change during an active capture");
+						"stream mode cannot change during an active capture");
+		}
+		if (requested_mode == LINKR_DEBUGGER_WS_MODE_SERIAL_J4) {
+			struct linkr_debugger_serial_net_status net_status;
+			struct linkr_debugger_serial_status serial_status;
+			bool attached = sidecar->stream_mode ==
+					LINKR_DEBUGGER_WS_MODE_SERIAL_J4;
+
+			if (!attached) {
+				mode_ret = linkr_debugger_serial_net_ws_attach(client->slot);
+				if (mode_ret < 0) {
+					return linkr_debugger_ws_emit_error(
+						client, "subscribe", "serial_unavailable",
+						"J4 serial adapter is unavailable");
+				}
+			}
+			client->telemetry_enabled = false;
+			sidecar->stream_mode = LINKR_DEBUGGER_WS_MODE_SERIAL_J4;
+			sidecar->serial_state_valid = false;
+			memset(&sidecar->serial_pending, 0,
+			       sizeof(sidecar->serial_pending));
+			if (!attached &&
+			    linkr_debugger_serial_net_status_snapshot(&net_status) == 0) {
+				sidecar->serial_last_drops =
+					net_status.ws[client->slot].inferred_rx_drops;
+			}
+			emit_ret = linkr_debugger_ws_emit_result(
+				client, request.id, "subscribe", "ok");
+			if (emit_ret == 0) {
+				emit_ret = linkr_debugger_serial_status_snapshot(
+					&serial_status);
+			}
+			if (emit_ret == 0) {
+				emit_ret = linkr_debugger_ws_emit_serial_state(
+					client, &serial_status);
+			}
+			if (emit_ret < 0 && !attached) {
+				(void)linkr_debugger_serial_net_ws_detach(client->slot);
+				sidecar->stream_mode = LINKR_DEBUGGER_WS_MODE_IDLE;
+			}
+			return emit_ret;
 		}
 		telemetry_rate_hz = request.rate_hz > 0 ? request.rate_hz : 10;
 		if (!linkr_debugger_ws_adc_sample_rate_supported(telemetry_rate_hz)) {
@@ -2182,6 +3039,7 @@ static int linkr_debugger_ws_handle_message(struct linkr_debugger_ws_client *cli
 		client->telemetry_dropped_samples = 0U;
 		client->next_sample_due_us = 0;
 		client->telemetry_enabled = true;
+		sidecar->stream_mode = LINKR_DEBUGGER_WS_MODE_LIVE_ADC;
 		k_mutex_unlock(&linkr_debugger_ws_clients_lock);
 		k_event_post(&linkr_debugger_ws_sampler_events,
 			     LINKR_DEBUGGER_WS_SAMPLER_EVENT_CONFIG);
@@ -2189,8 +3047,20 @@ static int linkr_debugger_ws_handle_message(struct linkr_debugger_ws_client *cli
 	}
 
 	if (strcmp(request.type, "unsubscribe") == 0) {
+		if (sidecar->stream_mode == LINKR_DEBUGGER_WS_MODE_SERIAL_J4) {
+			(void)linkr_debugger_serial_net_ws_detach(client->slot);
+			memset(&sidecar->serial_pending, 0,
+			       sizeof(sidecar->serial_pending));
+			sidecar->serial_state_valid = false;
+			sidecar->stream_mode = LINKR_DEBUGGER_WS_MODE_IDLE;
+			return linkr_debugger_ws_emit_result(
+				client, request.id, "unsubscribe", "ok");
+		}
 		k_mutex_lock(&linkr_debugger_ws_clients_lock, K_FOREVER);
 		client->telemetry_enabled = false;
+		if (sidecar->stream_mode == LINKR_DEBUGGER_WS_MODE_LIVE_ADC) {
+			sidecar->stream_mode = LINKR_DEBUGGER_WS_MODE_IDLE;
+		}
 		k_mutex_unlock(&linkr_debugger_ws_clients_lock);
 		k_event_post(&linkr_debugger_ws_sampler_events,
 			     LINKR_DEBUGGER_WS_SAMPLER_EVENT_CONFIG);
@@ -2203,6 +3073,83 @@ static int linkr_debugger_ws_handle_message(struct linkr_debugger_ws_client *cli
 
 	return linkr_debugger_ws_emit_error(client, "ws", "unknown_type",
 					"unknown websocket message type");
+}
+
+static int linkr_debugger_ws_handle_serial_binary(
+	struct linkr_debugger_ws_client *client, const uint8_t *payload,
+	size_t payload_len)
+{
+	struct linkr_debugger_serial_status status;
+	uint64_t event_id;
+	int ret;
+
+	if (payload_len > LINKR_DEBUGGER_SERIAL_TX_MESSAGE_MAX) {
+		return linkr_debugger_ws_emit_error(
+			client, "serial", "message_too_large",
+			"serial binary frames must be at most 480 bytes");
+	}
+	if (payload_len == 0U) {
+		return linkr_debugger_ws_emit_error(
+			client, "serial", "empty_write",
+			"serial binary frames must not be empty");
+	}
+	ret = linkr_debugger_serial_status_snapshot(&status);
+	if (ret < 0) {
+		return linkr_debugger_ws_emit_error(
+			client, "serial", "serial_unavailable",
+			"J4 serial is unavailable");
+	}
+	if (status.state == LINKR_DEBUGGER_SERIAL_PAUSED) {
+		return linkr_debugger_ws_emit_error(
+			client, "serial", "serial_paused",
+			"J4 serial is paused; payload was not admitted");
+	}
+	if (status.state == LINKR_DEBUGGER_SERIAL_FAULTED) {
+		return linkr_debugger_ws_emit_error(
+			client, "serial", "serial_faulted",
+			"J4 serial is faulted; payload was not admitted");
+	}
+	if (status.state != LINKR_DEBUGGER_SERIAL_READY) {
+		return linkr_debugger_ws_emit_error(
+			client, "serial", "serial_reconfiguring",
+			"J4 serial is reconfiguring; payload was not admitted");
+	}
+	ret = linkr_debugger_serial_net_ws_write(
+		client->slot, payload, payload_len, &event_id);
+	if (ret == -EAGAIN) {
+		int status_ret = linkr_debugger_serial_status_snapshot(&status);
+
+		if (status_ret < 0) {
+			return linkr_debugger_ws_emit_error(
+				client, "serial", "serial_unavailable",
+				"J4 serial is unavailable; payload was not admitted");
+		}
+		if (status.state == LINKR_DEBUGGER_SERIAL_PAUSED) {
+			return linkr_debugger_ws_emit_error(
+				client, "serial", "serial_paused",
+				"J4 serial is paused; payload was not admitted");
+		}
+		if (status.state == LINKR_DEBUGGER_SERIAL_FAULTED) {
+			return linkr_debugger_ws_emit_error(
+				client, "serial", "serial_faulted",
+				"J4 serial is faulted; payload was not admitted");
+		}
+		if (status.state == LINKR_DEBUGGER_SERIAL_RECONFIG) {
+			return linkr_debugger_ws_emit_error(
+				client, "serial", "serial_reconfiguring",
+				"J4 serial is reconfiguring; payload was not admitted");
+		}
+		return linkr_debugger_ws_emit_error(
+			client, "serial", "queue_full",
+			"this websocket already has a serial write in flight");
+	}
+	if (ret < 0) {
+		return linkr_debugger_ws_emit_error(
+			client, "serial", "write_rejected",
+			"serial write was rejected");
+	}
+	return linkr_debugger_ws_emit_serial_write_accepted(
+		client, event_id, payload_len);
 }
 
 static int sigrok_ws_stream_sink_lease(uint32_t sample_count,
@@ -3963,10 +4910,10 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 {
 	struct linkr_debugger_ws_client_thread_arg *thread_arg = arg1;
 	struct linkr_debugger_ws_client *client = thread_arg->client;
+	struct linkr_debugger_ws_client_sidecar *sidecar =
+		linkr_debugger_ws_sidecar(client);
 	int ws_sock = thread_arg->ws_sock;
 	uint32_t session_id = thread_arg->session_id;
-	uint32_t message_type;
-	uint64_t remaining;
 	int ret;
 
 	ARG_UNUSED(arg2);
@@ -3992,7 +4939,10 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 		 * drain); the k_event wait above provides the blocking so the thread
 		 * sleeps instead of spinning.
 		 */
-		wait_ms = capture_pending ? 1U : client->telemetry_enabled ?
+		wait_ms = capture_pending ? 1U :
+			sidecar->stream_mode == LINKR_DEBUGGER_WS_MODE_SERIAL_J4 ?
+			LINKR_DEBUGGER_WS_SERIAL_SEND_TIMEOUT_MS :
+			client->telemetry_enabled ?
 			MAX(1U, DIV_ROUND_UP(1000U * client->telemetry_batch_size,
 					       (uint32_t)client->telemetry_rate_hz)) :
 			LINKR_DEBUGGER_WS_IDLE_WAIT_MS;
@@ -4002,7 +4952,8 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 		 * timeout, which could permanently lose one-shot event posts.
 		 */
 		events = k_event_wait_safe(&client->events,
-			LINKR_DEBUGGER_WS_EVENT_STATE | LINKR_DEBUGGER_WS_EVENT_SAMPLE | LINKR_DEBUGGER_WS_EVENT_STREAM_DATA,
+			LINKR_DEBUGGER_WS_EVENT_STATE | LINKR_DEBUGGER_WS_EVENT_SAMPLE |
+			LINKR_DEBUGGER_WS_EVENT_STREAM_DATA | LINKR_DEBUGGER_WS_EVENT_SERIAL,
 			false, K_MSEC(wait_ms));
 
 		if (events & LINKR_DEBUGGER_WS_EVENT_STATE) {
@@ -4025,6 +4976,14 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 			}
 		}
 
+		if (sidecar->stream_mode == LINKR_DEBUGGER_WS_MODE_SERIAL_J4) {
+			ret = linkr_debugger_ws_serial_drain(client);
+			if (ret < 0) {
+				LOG_ERR("failed to drain J4 serial websocket: %d", ret);
+				break;
+			}
+		}
+
 		ret = linkr_debugger_ws_emit_capture_pending(client);
 		if (ret < 0) {
 			LOG_ERR("failed to emit capture data: %d", ret);
@@ -4033,12 +4992,26 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 
 		sigrok_ws_stream_drain(client);
 
+		uint32_t message_type = 0U;
+		uint64_t remaining = UINT64_MAX;
+		const uint8_t *message;
+		size_t message_length;
+		size_t scratch_offset = LINKR_DEBUGGER_WS_UNREPORTED_COUNT(
+			sidecar->rx_assembly.unreported_length);
+		int rx_result;
+
+		if (scratch_offset >= sizeof(client->recv_buffer)) {
+			sidecar->rx_assembly.unreported_length =
+				LINKR_DEBUGGER_WS_UNREPORTED_OVERFLOW;
+			scratch_offset = 0U;
+		}
 		ret = websocket_recv_msg(ws_sock,
-				 client->recv_buffer,
-				 sizeof(client->recv_buffer) - 1U,
+				 client->recv_buffer + scratch_offset,
+				 sizeof(client->recv_buffer) - scratch_offset,
 				 &message_type,
 				 &remaining,
-			 (client->telemetry_enabled || capture_pending || sigrok_busy) ?
+			 (client->telemetry_enabled || capture_pending || sigrok_busy ||
+			  sidecar->stream_mode == LINKR_DEBUGGER_WS_MODE_SERIAL_J4) ?
 			 0 : LINKR_DEBUGGER_WS_IDLE_WAIT_MS);
 		if (ret == -EAGAIN) {
 			continue;
@@ -4046,36 +5019,70 @@ static void linkr_debugger_ws_thread_main(void *arg1, void *arg2, void *arg3)
 		if (ret < 0) {
 			break;
 		}
-		if ((message_type & WEBSOCKET_FLAG_CLOSE) != 0U) {
+		rx_result = linkr_debugger_ws_rx_client_step(
+			&sidecar->rx_assembly, client->recv_buffer,
+			sizeof(client->recv_buffer),
+			client->recv_buffer + scratch_offset, (size_t)ret,
+			remaining != UINT64_MAX, message_type, remaining,
+			linkr_debugger_ws_send_pong, client, &message,
+			&message_length);
+		if (rx_result == LINKR_DEBUGGER_WS_RX_MORE) {
+			continue;
+		}
+		if (rx_result == LINKR_DEBUGGER_WS_RX_CLOSE) {
 			break;
 		}
-		if ((message_type & WEBSOCKET_FLAG_BINARY) != 0U) {
-			if (remaining != 0U) {
-				(void)linkr_debugger_ws_emit_error(client, "ws", "message_too_large",
-					"fragmented or oversized websocket frames are not supported");
-				break;
-			}
-			ret = linkr_debugger_ws_handle_sigrok_binary(client,
-				client->recv_buffer, (size_t)ret);
+		if (rx_result == -EMSGSIZE) {
+			ret = linkr_debugger_ws_emit_error(
+				client,
+				sidecar->stream_mode == LINKR_DEBUGGER_WS_MODE_SERIAL_J4 ?
+					"serial" : "ws",
+				"message_too_large",
+				"websocket messages must be at most 480 bytes");
 			if (ret < 0) {
-				LOG_ERR("sigrok binary handler error: %d", ret);
 				break;
 			}
 			continue;
 		}
-		if ((message_type & WEBSOCKET_FLAG_TEXT) == 0U) {
-			(void)linkr_debugger_ws_emit_error(client, "ws", "unsupported_frame",
-						"only text and binary websocket frames are supported");
-			continue;
+		if (rx_result == -EPROTO) {
+			(void)linkr_debugger_ws_emit_error(
+				client, "ws", "invalid_fragment_sequence",
+				"invalid or unsupported websocket fragment sequence");
+			break;
 		}
-		if (remaining != 0U) {
-			(void)linkr_debugger_ws_emit_error(client, "ws", "message_too_large",
-						"fragmented or oversized websocket frames are not supported");
-			continue;
+		if (rx_result < 0) {
+			break;
 		}
+		if (rx_result == LINKR_DEBUGGER_WS_RX_BINARY) {
+			enum linkr_debugger_ws_stream_mode next_mode;
 
-		client->recv_buffer[ret] = '\0';
-		ret = linkr_debugger_ws_handle_message(client, client->recv_buffer, (size_t)ret);
+			if (linkr_debugger_ws_binary_mode(
+				    sidecar->stream_mode, &next_mode) < 0) {
+				ret = linkr_debugger_ws_emit_error(
+					client, "ws", "mode_conflict",
+					"unsubscribe live ADC before sending binary frames");
+				if (ret < 0) {
+					break;
+				}
+				continue;
+			}
+			sidecar->stream_mode = next_mode;
+			if (sidecar->stream_mode == LINKR_DEBUGGER_WS_MODE_SERIAL_J4) {
+				ret = linkr_debugger_ws_handle_serial_binary(
+					client, message, message_length);
+			} else {
+				client->sigrok_active = true;
+				ret = linkr_debugger_ws_handle_sigrok_binary(
+					client, message, message_length);
+			}
+			if (ret < 0) {
+				LOG_ERR("binary websocket handler error: %d", ret);
+				break;
+			}
+			continue;
+		}
+		ret = linkr_debugger_ws_handle_message(client, message,
+						      message_length);
 		if (ret < 0) {
 			break;
 		}
@@ -4141,6 +5148,7 @@ int linkr_debugger_ws_setup(int ws_socket, struct http_request_ctx *request_ctx,
 	if (client == NULL) {
 		return -EBUSY;
 	}
+	(void)linkr_debugger_ws_sidecar_reset_slot(client->slot);
 
 	client->ws_sock = ws_socket;
 	client->telemetry_enabled = false;
@@ -4289,6 +5297,8 @@ static void linkr_debugger_ws_capture_arena_resume(void *user_data)
 int linkr_debugger_ws_init(void)
 {
 	memset(linkr_debugger_ws_clients, 0, sizeof(linkr_debugger_ws_clients));
+	memset(linkr_debugger_ws_client_sidecars, 0,
+	       sizeof(linkr_debugger_ws_client_sidecars));
 	k_mutex_init(&linkr_debugger_ws_clients_lock);
 	k_mutex_init(&linkr_debugger_capture_lock);
 	for (size_t i = 0; i < ARRAY_SIZE(linkr_debugger_ws_clients); i++) {
@@ -4367,7 +5377,9 @@ int linkr_debugger_ws_session_delete(uint32_t session_id)
 		client->telemetry_enabled = false;
 		sigrok_ws_stream_cancel_deferred_wake_sync(client);
 		k_event_post(&client->events,
-			     LINKR_DEBUGGER_WS_EVENT_STATE | LINKR_DEBUGGER_WS_EVENT_SAMPLE);
+			     LINKR_DEBUGGER_WS_EVENT_STATE |
+			     LINKR_DEBUGGER_WS_EVENT_SAMPLE |
+			     LINKR_DEBUGGER_WS_EVENT_SERIAL);
 		(void)zsock_shutdown(client->ws_sock, ZSOCK_SHUT_RDWR);
 		k_mutex_unlock(&linkr_debugger_ws_clients_lock);
 		k_event_post(&linkr_debugger_ws_sampler_events,
@@ -4416,6 +5428,24 @@ void linkr_debugger_ws_publish_state_change(void)
 void linkr_debugger_ws_publish_sample(void)
 {
 	linkr_debugger_ws_publish_unbatched_sample();
+}
+
+void linkr_debugger_ws_publish_serial(uint8_t slot)
+{
+	k_mutex_lock(&linkr_debugger_ws_clients_lock, K_FOREVER);
+	if (slot < ARRAY_SIZE(linkr_debugger_ws_clients)) {
+		struct linkr_debugger_ws_client *client =
+			&linkr_debugger_ws_clients[slot];
+		struct linkr_debugger_ws_client_sidecar *sidecar =
+			linkr_debugger_ws_sidecar(client);
+
+		if (client->active &&
+		    sidecar->stream_mode == LINKR_DEBUGGER_WS_MODE_SERIAL_J4) {
+			k_event_post(&client->events,
+			     LINKR_DEBUGGER_WS_EVENT_SERIAL);
+		}
+	}
+	k_mutex_unlock(&linkr_debugger_ws_clients_lock);
 }
 
 #endif /* LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST */

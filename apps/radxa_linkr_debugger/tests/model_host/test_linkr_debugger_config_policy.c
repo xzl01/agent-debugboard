@@ -32,17 +32,15 @@ static const struct expected_item expected_catalog[] = {
 	  LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID },
 	{ "switch/tf_wp", LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 	  LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID },
-	{ "gpio/GP7", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U },
-	{ "gpio/GP8", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 8U },
-	{ "gpio/GP9", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 9U },
-	{ "gpio/GP12", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 12U },
-	{ "gpio/GP13", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 13U },
-	{ "gpio/GP14", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 14U },
-	{ "gpio/GP15", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 15U },
-	{ "gpio/GP16", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 16U },
-	{ "gpio/GP17", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 17U },
-	{ "gpio/GP18", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 18U },
 	{ "gpio/GP29", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 29U },
+	{ "gpio/GP16", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 16U },
+	{ "gpio/GP15", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 15U },
+	{ "gpio/GP14", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 14U },
+	{ "gpio/GP13", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 13U },
+	{ "gpio/GP12", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 12U },
+	{ "gpio/GP9", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 9U },
+	{ "gpio/GP8", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 8U },
+	{ "gpio/GP7", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U },
 };
 
 struct value_case {
@@ -78,7 +76,7 @@ static const struct value_case value_cases[] = {
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U, 0U, false },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 13U, LINKR_DEBUGGER_CONFIG_GPIO_LEVEL, false },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 29U, LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT, true },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 18U,
+	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 16U,
 	  LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT | LINKR_DEBUGGER_CONFIG_GPIO_LEVEL, true },
 };
 
@@ -239,7 +237,7 @@ static void assert_confirmation_tail_clear(
 	}
 }
 
-static void test_resolve_all_23_exact_ids_and_preserves_request_order(void)
+static void test_resolve_all_16_exact_ids_and_preserves_request_order(void)
 {
 	struct linkr_debugger_config_save_request request;
 	struct linkr_debugger_config_resolved_selection selection;
@@ -379,7 +377,7 @@ static void test_project_copies_selected_values_in_selection_order(void)
 	assert(projected.entries[3].value == 0U);
 }
 
-static void test_project_full_20_items_copies_every_value_exactly(void)
+static void test_project_full_16_items_copies_every_value_exactly(void)
 {
 	struct linkr_debugger_control_snapshot control;
 	struct linkr_debugger_config_save_request request;
@@ -513,7 +511,7 @@ static void assert_canonical_order(const struct linkr_debugger_config_snapshot *
 	}
 }
 
-static void test_canonicalize_sorts_shuffled_23_entries_stably(void)
+static void test_canonicalize_sorts_shuffled_16_entries_stably(void)
 {
 	struct linkr_debugger_control_snapshot control;
 	struct linkr_debugger_config_save_request request;
@@ -536,14 +534,25 @@ static void test_canonicalize_sorts_shuffled_23_entries_stably(void)
 	assert(projected.entry_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
 	assert_canonical_order(&projected);
 	for (size_t i = 0U; i < linkr_debugger_config_item_count; i++) {
-		assert(projected.entries[i].domain == control.items[i].domain);
-		assert(projected.entries[i].item_id == control.items[i].item_id);
-		assert(projected.entries[i].value == control.items[i].value);
+		const struct linkr_debugger_config_item_desc *item =
+			linkr_debugger_config_find_item(projected.entries[i].domain,
+						 projected.entries[i].item_id);
+		size_t control_index;
+
+		assert(item != NULL);
+		control_index = (size_t)(item - linkr_debugger_config_items);
+		assert(projected.entries[i].value == control.items[control_index].value);
 	}
 	assert(linkr_debugger_config_policy_canonicalize_snapshot(&projected) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	for (size_t i = 0U; i < linkr_debugger_config_item_count; i++) {
-		assert(projected.entries[i].value == control.items[i].value);
+		const struct linkr_debugger_config_item_desc *item =
+			linkr_debugger_config_find_item(projected.entries[i].domain,
+						 projected.entries[i].item_id);
+
+		assert(item != NULL);
+		assert(projected.entries[i].value ==
+		       control.items[(size_t)(item - linkr_debugger_config_items)].value);
 	}
 }
 
@@ -788,19 +797,19 @@ static void test_full_pipeline_resolve_project_canonicalize_confirm(void)
 
 int main(void)
 {
-	test_resolve_all_23_exact_ids_and_preserves_request_order();
+	test_resolve_all_16_exact_ids_and_preserves_request_order();
 	test_resolve_rejects_malformed_requests();
 	test_project_copies_selected_values_in_selection_order();
-	test_project_full_20_items_copies_every_value_exactly();
+	test_project_full_16_items_copies_every_value_exactly();
 	test_project_rejects_incoherent_control_snapshots();
 	test_project_rejects_unavailable_selected_items();
-	test_canonicalize_sorts_shuffled_23_entries_stably();
+	test_canonicalize_sorts_shuffled_16_entries_stably();
 	test_canonicalize_rejects_malformed_snapshots();
 	test_confirmation_report_classifies_every_domain_value();
 	test_confirmation_report_lists_multi_danger_in_canonical_order();
 	test_confirmation_report_handles_safe_snapshot_and_malformed_calls();
 	test_full_pipeline_resolve_project_canonicalize_confirm();
-	printf("linkr_debugger_config_policy: resolve=23 project=23 canonical=23 "
+	printf("linkr_debugger_config_policy: resolve=16 project=16 canonical=16 "
 	       "confirm=17/17 passed\n");
 	return 0;
 }

@@ -97,8 +97,7 @@ export function StepParams({
         <>
           <ParamRow label={t("test.param.channel")}>
             <select className={inputCls} value={p.channel} onChange={(e) => onParamChange("channel", e.target.value)}>
-              <option value="uart0">{t("test.opt.uart0")}</option>
-              <option value="uart1">{t("test.opt.uart1")}</option>
+              <option value="j4">{t("test.opt.j4")}</option>
             </select>
           </ParamRow>
           <ParamRow label={t("test.param.pattern")}>
@@ -116,8 +115,7 @@ export function StepParams({
         <>
           <ParamRow label={t("test.param.channel")}>
             <select className={inputCls} value={p.channel} onChange={(e) => onParamChange("channel", e.target.value)}>
-              <option value="uart0">{t("test.opt.uart0")}</option>
-              <option value="uart1">{t("test.opt.uart1")}</option>
+              <option value="j4">{t("test.opt.j4")}</option>
             </select>
           </ParamRow>
           <ParamRow label={t("test.param.text")}>
@@ -132,8 +130,7 @@ export function StepParams({
         <>
           <ParamRow label={t("test.param.channel")}>
             <select className={inputCls} value={p.channel} onChange={(e) => onParamChange("channel", e.target.value)}>
-              <option value="uart0">{t("test.opt.uart0")}</option>
-              <option value="uart1">{t("test.opt.uart1")}</option>
+              <option value="j4">{t("test.opt.j4")}</option>
             </select>
           </ParamRow>
           <ParamRow label={t("test.param.command")}>

@@ -1010,6 +1010,38 @@ class PioI2cTimingTest(unittest.TestCase):
                     rf"{registration_macro}\({command},",
                 )
 
+    def test_ch224a_uses_deferred_init_and_bounded_standard_recovery(self) -> None:
+        ch_node = re.search(
+            r"ch224a:\s*ch224a@22\s*\{(.*?)\n\s*\};",
+            self.overlay,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(ch_node)
+        self.assertIn("zephyr,deferred-init;", ch_node.group(1))
+
+        pd_source = (APP_PATH / "src/linkr_debugger_pd.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(
+            pd_source,
+            r"if \(!device_is_ready\(ch224a_dev\)\) \{\s*"
+            r"ret = device_init\(ch224a_dev\);",
+        )
+        self.assertIn("static int pd_monitor_step(void)", pd_source)
+        self.assertIn("k_thread_create(&pd_input_monitor_thread", pd_source)
+        self.assertNotIn("k_work_", pd_source)
+
+        ch_source = (APP_PATH / "src/wch_ch224a.c").read_text(encoding="utf-8")
+        classifier = ch_source[
+            ch_source.index("static bool wch_ch224a_probe_error_needs_recovery") :
+            ch_source.index("static void wch_ch224a_clear_input_locked")
+        ]
+        self.assertIn("error == -ETIMEDOUT || error == -EBUSY", classifier)
+        self.assertNotIn("error == -EIO", classifier)
+        self.assertEqual(ch_source.count("i2c_recover_bus(config->i2c.bus)"), 1)
+        self.assertIn("bool recovery_attempted = false", ch_source)
+        self.assertIn(".recover_bus = pio_i2c_recover_bus", self.driver)
+
     def test_generated_config_omits_generic_mutation_shells(self) -> None:
         if not GENERATED_CONFIG_PATH.exists():
             self.skipTest("run after make firmware to inspect generated .config")
@@ -1064,9 +1096,14 @@ class PioI2cTimingTest(unittest.TestCase):
             "64.94 pF",
             "34 pF fixture capacitance",
             "50 ns",
-            "probes CH224A at startup",
-            "five-second retry backoff",
-            "polling behavior does not prove Ioff safety",
+            "`zephyr,deferred-init`",
+            "About every 100 ms",
+            "five-second probe backoff",
+            "periodic ADC polling, not an IRQ",
+            "does not prove Ioff safety",
+            "`-ETIMEDOUT` or `-EBUSY`",
+            "Clean address/data NAK (`-EIO`) never invokes recovery",
+            "generic Zephyr I2C shell remains disabled",
         )
         normalized_hardware_doc = re.sub(r"\s+", " ", self.hardware_doc)
         for contract in required_hardware_contracts:
@@ -1091,12 +1128,14 @@ class PioI2cTimingTest(unittest.TestCase):
             "`Cbmax = 98.94 pF`",
             "64.94 pF",
             "J8 空载",
-            "启动时probe CH224A",
+            "`zephyr,deferred-init`",
             "5秒probe退避",
-            "插入源后由后续状态轮询恢复",
-            "无PD轮询行为可在后续单独HIL验证",
-            "不是400 kHz放行前提",
-            "轮询结果不能证明powered-off Ioff安全",
+            "约每100 ms只轮询ADC gate",
+            "稳定复插边沿应清旧source的probe backoff",
+            "ADC gate的板级HIL保持`pending`",
+            "不是IRQ",
+            "powered-off Ioff合格",
+            "`CONFIG_I2C_SHELL=n`保持不变",
             "不执行单边掉电",
             "50 ns spike filter",
         )

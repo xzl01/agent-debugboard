@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "linkr_debugger_board_model.h"
+
 struct linkr_debugger_rail_desc {
 	const char *name;
 	const char *signal;
@@ -29,28 +31,11 @@ struct linkr_debugger_current_desc {
 	const char *name;
 	const char *signal;
 	const char *sensor;
+	const char *note;
 	enum linkr_debugger_adc_kind kind;
 	const char *unit;
 	size_t adc_index;
 	size_t sensor_index;
-};
-
-struct linkr_debugger_safe_gpio_desc {
-	uint8_t pin;
-	bool output_capable;
-	const char *note;
-	/* NULL means the safe GPIO has no confirmed connector placement. */
-	const char *layout_group;
-	const char *layout_label;
-	/* Coordinates are valid only when layout_group is non-NULL and non-empty. */
-	uint8_t layout_row;
-	uint8_t layout_column;
-};
-
-struct linkr_debugger_gpio_layout_group_desc {
-	const char *name;
-	const char *edge;
-	uint8_t order;
 };
 
 struct linkr_debugger_heartbeat_state {
@@ -64,7 +49,7 @@ enum linkr_debugger_tf_wp_route {
 };
 
 #define LINKR_DEBUGGER_GPIO_NAME_BUFSZ 5
-#define LINKR_DEBUGGER_ADC_TELEMETRY_CHANNEL_COUNT 5U
+#define LINKR_DEBUGGER_ADC_TELEMETRY_CHANNEL_COUNT 8U
 #define LINKR_DEBUGGER_CURRENT_SENSOR_COUNT 4U
 
 extern const struct linkr_debugger_rail_desc linkr_debugger_rails[];
@@ -73,11 +58,6 @@ extern const size_t linkr_debugger_rail_count;
 extern const struct linkr_debugger_current_desc linkr_debugger_currents[];
 extern const size_t linkr_debugger_adc_count;
 extern const size_t linkr_debugger_current_count;
-
-extern const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[];
-extern const size_t linkr_debugger_safe_gpio_count;
-extern const struct linkr_debugger_gpio_layout_group_desc linkr_debugger_gpio_layout_groups[];
-extern const size_t linkr_debugger_gpio_layout_group_count;
 
 bool linkr_debugger_parse_bool_arg(const char *arg, bool *value);
 bool linkr_debugger_parse_gpio_pin(const char *arg, uint8_t *pin);

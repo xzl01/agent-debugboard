@@ -49,7 +49,13 @@ struct wch_ch224a_status {
 	uint16_t max_current_ma;
 };
 
+/* Every API operation that can issue I2C is source-voltage gated. It may
+ * return -ENOLINK for an absent input, or propagate sensor/ADC errors before
+ * any CH224A transaction starts.
+ */
 struct wch_ch224a_driver_api {
+	int (*get_input_present)(const struct device *dev, bool *present,
+				 bool *newly_present);
 	int (*probe)(const struct device *dev);
 	int (*get_status)(const struct device *dev,
 			  struct wch_ch224a_status *status);
@@ -58,6 +64,21 @@ struct wch_ch224a_driver_api {
 	int (*set_fixed)(const struct device *dev, uint8_t gear);
 	int (*set_pps)(const struct device *dev, uint16_t voltage_mv);
 };
+
+/* Sample the private input-voltage gate without issuing I2C. A successful low
+ * sample is reported as present=false; sensor/ADC failures are returned.
+ * newly_present reports a completed absent-to-present stable transition even
+ * when another driver operation observed the preceding low sample.
+ */
+static inline int wch_ch224a_get_input_present(const struct device *dev,
+					       bool *present,
+					       bool *newly_present)
+{
+	const struct wch_ch224a_driver_api *api =
+		(const struct wch_ch224a_driver_api *)dev->api;
+
+	return api->get_input_present(dev, present, newly_present);
+}
 
 static inline int wch_ch224a_probe(const struct device *dev)
 {

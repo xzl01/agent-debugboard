@@ -25,7 +25,7 @@ _Static_assert(ARRAY_SIZE_LOCAL(
 	       ((struct linkr_debugger_config_http_save_payload *)0)->request.item_ids) ==
 	       LINKR_DEBUGGER_CONFIG_MAX_ENTRIES,
 	       "config HTTP parser item bound changed");
-_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 18U,
+_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 16U,
 	       "config HTTP catalog bound changed");
 _Static_assert(RESPONSE_STORAGE_SIZE == 4161U,
 	       "config HTTP response storage changed");
@@ -495,7 +495,7 @@ static void test_complete_catalog_and_capacity(void)
 	assert_contains(full, "\"schema\":\"radxa-linkr-debugger.v1\"");
 	assert_contains(full, "\"backend\":{\"available\":true,\"reason\":\"ready\"}");
 	assert_contains(full, "\"snapshot\":{\"present\":true,\"version\":1}");
-	assert_contains(full, "\"pending\":18");
+	assert_contains(full, "\"pending\":16");
 
 	cursor = full;
 	for (size_t i = 0U; i < linkr_debugger_config_item_count; i++) {

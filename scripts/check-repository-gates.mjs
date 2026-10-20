@@ -153,12 +153,20 @@ function firmwareMemoryCaptureContract({
     && /BUILD_ASSERT\(\s*sizeof\(\s*linkr_debugger_sigrok_linkr_runtime\s*\)\s*==\s*27168U\s*\)/.test(sigrokSource)
     && /memset\(\s*&linkr_debugger_sigrok_linkr_runtime\s*,\s*0\s*,\s*sizeof\(\s*linkr_debugger_sigrok_linkr_runtime\s*\)\s*\)\s*;[\s\S]*?linkr_debugger_sigrok_linkr_runtime\.listen_fd\s*=\s*-1\s*;[\s\S]*?linkr_debugger_sigrok_linkr_runtime\.client_fd\s*=\s*-1\s*;[\s\S]*?linkr_debugger_sigrok_linkr_runtime\.next_sequence_id\s*=\s*1U\s*;[\s\S]*?k_(?:fifo|mutex|sem)_init\(/.test(sigrokSource)
     && /K_THREAD_STACK_DEFINE\(\s*server_stack\s*,\s*2048U\s*\)/.test(sigrokSource);
+  const wsClientBody = wsSource.match(/struct\s+linkr_debugger_ws_client\s*\{([\s\S]*?)\n\};/)?.[1] ?? "";
   const ws = /#define\s+LINKR_DEBUGGER_WS_MAX_CLIENTS\s+4\b/.test(wsHeader)
-    && /#define\s+LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE\s+6144\b/.test(wsSource)
+    && /#define\s+LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE\s+6144U?\b/.test(wsSource)
     && /Z_GENERIC_SECTION\(\s*\.bss\.pre_capture\.ws_clients\s*\)/.test(wsSource)
     && !/section\(\s*"\.bss\.pre_capture\.ws_clients"\s*\)/.test(wsSource)
     && /BUILD_ASSERT\(\s*sizeof\(\s*linkr_debugger_ws_clients\s*\)\s*==\s*28704U\s*\)/.test(wsSource)
+    && /static\s+struct\s+linkr_debugger_ws_client_sidecar\s+linkr_debugger_ws_client_sidecars\s*\[\s*LINKR_DEBUGGER_WS_SIDECAR_COUNT\s*\]\s*;/.test(wsSource)
+    && !/linkr_debugger_ws_client_sidecars[\s\S]{0,80}Z_GENERIC_SECTION/.test(wsSource)
+    && /BUILD_ASSERT\(\s*sizeof\(\s*struct\s+linkr_debugger_ws_client_sidecar\s*\)\s*==\s*1088U/.test(wsSource)
+    && /BUILD_ASSERT\(\s*sizeof\(\s*linkr_debugger_ws_client_sidecars\s*\)\s*==\s*4352U/.test(wsSource)
+    && !/(?:rx_assembly|serial_pending|serial_signature|serial_last_drops|stream_mode|serial_state_valid)/.test(wsClientBody)
+    && /linkr_debugger_ws_sidecar\s*\([^)]*client[^)]*\)\s*\{[\s\S]{0,240}__ASSERT_NO_MSG\(\s*client->slot\s*<\s*LINKR_DEBUGGER_WS_SIDECAR_COUNT\s*\)/.test(wsSource)
     && /memset\(\s*linkr_debugger_ws_clients\s*,\s*0\s*,\s*sizeof\(\s*linkr_debugger_ws_clients\s*\)\s*\)\s*;[\s\S]*?k_mutex_init\(/.test(wsSource)
+    && /memset\(\s*linkr_debugger_ws_client_sidecars\s*,\s*0\s*,\s*sizeof\(\s*linkr_debugger_ws_client_sidecars\s*\)\s*\)/.test(wsSource)
     && /K_THREAD_STACK_DEFINE\(\s*linkr_debugger_adc_sampler_stack\s*,\s*2048\s*\)/.test(wsSource);
   const stacks = /#define\s+LINKR_DEBUGGER_LA_STREAM_THREAD_STACK_SIZE\s+2048U\b/.test(logicAnalyzerSource)
     && /K_THREAD_STACK_DEFINE\(\s*la_stream_ring_thread_stack\s*,\s*LINKR_DEBUGGER_LA_STREAM_THREAD_STACK_SIZE\s*\)/.test(logicAnalyzerSource)

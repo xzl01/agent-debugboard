@@ -3,6 +3,8 @@
 // Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
 // Copyright (c) Jiali Chen <chenjiali@radxa.com>
 
+#[cfg(test)]
+pub(crate) mod fixture;
 mod model;
 mod normalize;
 mod output;

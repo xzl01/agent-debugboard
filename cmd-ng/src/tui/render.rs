@@ -7,7 +7,9 @@ use super::render_body::render_body;
 use super::render_keybar::render_keybar;
 use super::render_modal::render_hardware_confirmation;
 use super::render_status::render_status_band;
-use super::render_telemetry::{render_telemetry, telemetry_rows};
+use super::render_telemetry::{
+    render_telemetry, render_voltage_strip, telemetry_rows, voltage_rows,
+};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -31,6 +33,7 @@ pub(super) fn render_ui(frame: &mut ratatui::Frame, model: &mut TuiModel) {
     let chunks = Layout::vertical([
         Constraint::Length(2),
         Constraint::Length(telemetry),
+        Constraint::Length(voltage_rows(model, area.height) as u16),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(1),
@@ -40,10 +43,11 @@ pub(super) fn render_ui(frame: &mut ratatui::Frame, model: &mut TuiModel) {
 
     render_status_band(frame, chunks[0], model);
     render_telemetry(frame, chunks[1], model);
-    render_tabs(frame, chunks[2], model);
-    render_page_header(frame, chunks[3], model);
-    render_body(frame, chunks[4], model);
-    render_keybar(frame, chunks[5], model);
+    render_voltage_strip(frame, chunks[2], model);
+    render_tabs(frame, chunks[3], model);
+    render_page_header(frame, chunks[4], model);
+    render_body(frame, chunks[5], model);
+    render_keybar(frame, chunks[6], model);
     render_hardware_confirmation(frame, model);
     render_confirmation(
         frame,

@@ -13,7 +13,7 @@
 #define TEST_ERR_REMOTE_IO (-121)
 
 static const uint8_t gpio_ids[] = {
-	7U, 8U, 9U, 12U, 13U, 14U, 15U, 16U, 17U, 18U, 29U,
+	29U, 16U, 15U, 14U, 13U, 12U, 9U, 8U, 7U,
 };
 
 struct fake_control {
@@ -216,7 +216,7 @@ static void assert_current_fields_preserved(
 	}
 }
 
-static void test_orders_shuffled_20_entries(void)
+static void test_orders_shuffled_16_entries(void)
 {
 	struct linkr_debugger_config_snapshot expected;
 	struct linkr_debugger_config_snapshot shuffled;
@@ -589,7 +589,7 @@ static void test_execute_rejects_null_and_malformed_inputs(void)
 
 int main(void)
 {
-	test_orders_shuffled_20_entries();
+	test_orders_shuffled_16_entries();
 	test_order_reorders_two_entry_snapshot();
 	test_order_rejects_malformed_without_partial_output();
 	test_full_replay_replays_every_entry_and_usb_vdd_order();
@@ -598,6 +598,6 @@ int main(void)
 	test_later_full_success_clears_prior_failure();
 	test_status_merge_preserves_non_saved_entries();
 	test_execute_rejects_null_and_malformed_inputs();
-	printf("linkr_debugger_config_replay: order=20 failures=20/20 passed\n");
+	printf("linkr_debugger_config_replay: order=16 failures=16/16 passed\n");
 	return 0;
 }

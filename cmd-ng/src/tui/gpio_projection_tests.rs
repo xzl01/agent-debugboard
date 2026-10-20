@@ -78,6 +78,34 @@ fn right_edge_groups_follow_order_at_every_layout_width() -> Result<()> {
 }
 
 #[test]
+fn synthetic_unmapped_pins_still_use_generic_fallback_in_snapshot_order() -> Result<()> {
+    let mut model = projection_model()?;
+    model.apply_status_snapshot(serde_json::from_str(
+        r#"{"gpios":[
+        {"name":"loose_b"},
+        {"name":"mapped","layoutGroup":"AUX","layoutLabel":"DATA","layoutRow":0,"layoutColumn":0},
+        {"name":"loose_a","layoutGroup":""}
+    ]}"#,
+    )?);
+    for width in [80, 32] {
+        model.width = width;
+        let rows = gpio_visual_rows(&model);
+        let cells: Vec<_> = rows.iter().flat_map(|row| &row.cells).collect();
+        assert_eq!(
+            cells
+                .iter()
+                .map(|cell| cell.name.as_str())
+                .collect::<Vec<_>>(),
+            ["mapped", "loose_b", "loose_a"]
+        );
+        assert!(cells[1..]
+            .iter()
+            .all(|cell| cell.group == "GPIO" && !cell.right_edge));
+    }
+    Ok(())
+}
+
+#[test]
 fn x1_2_projection_keeps_every_pin_in_physical_order_and_preserves_identity() -> Result<()> {
     let mut model = x1_2_model()?;
     let expected = [
@@ -90,8 +118,6 @@ fn x1_2_projection_keeps_every_pin_in_physical_order_and_preserves_identity() ->
         ("GP9", "J13", "USER"),
         ("GP8", "J13", "RSET"),
         ("GP7", "J13", "MASKROM"),
-        ("GP17", "GPIO", "GP17"),
-        ("GP18", "GPIO", "GP18"),
     ];
     assert_eq!(model.gpio_names.len(), expected.len());
     for (pin, row) in [
@@ -112,8 +138,11 @@ fn x1_2_projection_keeps_every_pin_in_physical_order_and_preserves_identity() ->
         assert_eq!((layout.row, layout.column), (Some(row), Some(column)));
     }
     for pin in ["GP17", "GP18"] {
-        assert!(model.gpio_layouts[pin].group.is_none());
+        assert!(!model.gpio_names.iter().any(|name| name == pin));
+        assert!(!model.gpio_layouts.contains_key(pin));
+        assert!(item_index(&model, pin).is_err());
     }
+    assert_eq!(model.gpio_is_input.get("GP29"), Some(&true));
     model.control_idx = item_index(&model, "GP8")?;
     for width in [80u16, 48, 47, 32] {
         model.width = width as usize;
@@ -125,12 +154,13 @@ fn x1_2_projection_keeps_every_pin_in_physical_order_and_preserves_identity() ->
             .collect();
         assert_eq!(
             actual, expected,
-            "all 11 safe GPIOs must survive at {width}"
+            "all nine safe GPIOs must survive at {width}"
         );
-        assert_eq!(rows.len(), if width >= 48 { 9 } else { 11 });
+        assert_eq!(rows.len(), if width >= 48 { 8 } else { 9 });
         for cell in &cells {
             assert_eq!(cell.item_index, item_index(&model, &cell.name)?);
-            assert_eq!(cell.right_edge, cell.group != "GPIO");
+            assert!(cell.right_edge);
+            assert_ne!(cell.group, "GPIO", "x1.2 must not add fallback cells");
         }
 
         let buffer = draw(&mut model, width, 32)?;
@@ -140,6 +170,9 @@ fn x1_2_projection_keeps_every_pin_in_physical_order_and_preserves_identity() ->
             for x in rect.x..rect.x + rect.width {
                 assert_eq!(model.hit_map.controls.at(x, rect.y), Some(&target));
             }
+        }
+        for pin in ["GP17", "GP18"] {
+            assert!(control_rect(&model, pin).is_err());
         }
         let user = control_rect(&model, "GP9")?;
         let reset = control_rect(&model, "GP8")?;

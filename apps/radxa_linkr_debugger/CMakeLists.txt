@@ -145,6 +145,11 @@ target_sources(app PRIVATE
   src/i2c_rpi_pico_pio.c
   src/linkr_debugger_build_info.c
   src/linkr_debugger_bootsel_button.c
+  src/linkr_debugger_board_model.c
+  src/linkr_debugger_serial_model.c
+  src/linkr_debugger_serial.c
+  src/linkr_debugger_serial_net.c
+  src/linkr_debugger_serial_http.c
   src/linkr_debugger_captive_portal.c
   src/linkr_debugger_capture_arbiter.c
   src/linkr_debugger_capture_arena.c

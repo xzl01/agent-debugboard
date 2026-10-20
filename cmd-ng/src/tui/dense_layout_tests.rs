@@ -1,10 +1,9 @@
 use super::controls::{control_items, ControlItem};
+use super::gpio_fixture::X1_2_STATUS_JSON;
 use super::model::TuiModel;
 use super::render::render_ui;
 use crate::client::DEFAULT_BASE_URL;
-use crate::ws_status::{
-    TuiStatusGpio, TuiStatusPowerOutput, TuiStatusSwitchInfo, WsStatusSnapshot,
-};
+use crate::ws_status::{TuiStatusPowerOutput, TuiStatusSwitchInfo, WsStatusSnapshot};
 use anyhow::{anyhow, Result};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -16,7 +15,6 @@ const WIDTH: u16 = 80;
 const HEIGHT: u16 = 24;
 const POWER_NAMES: [&str; 4] = ["12v_out", "5v_out", "20v_out", "vdd_5v"];
 const SWITCH_NAMES: [&str; 3] = ["sd", "tf_wp", "usb"];
-const GPIO_COUNT: u32 = 13;
 const CONTROLS_SEGMENTS: [&str; 7] = [
     "q quit",
     "Tab/Shift+Tab page",
@@ -27,20 +25,22 @@ const CONTROLS_SEGMENTS: [&str; 7] = [
     "PgUp/PgDn Move",
 ];
 
-fn gpio_name(index: u32) -> String {
-    format!("GP{}", 7 + index)
-}
-
 fn object_names() -> Vec<String> {
     let mut names: Vec<String> = POWER_NAMES.iter().map(|name| name.to_string()).collect();
     names.extend(SWITCH_NAMES.iter().map(|name| name.to_string()));
     names.push("Reboot".to_string());
-    names.extend((0..GPIO_COUNT).map(gpio_name));
+    let snapshot: WsStatusSnapshot = serde_json::from_str(X1_2_STATUS_JSON).unwrap();
+    names.extend(
+        snapshot
+            .gpios
+            .into_iter()
+            .map(|gpio| gpio.layout_label.unwrap_or(gpio.name)),
+    );
     names
 }
 
 fn fixture_model() -> TuiModel {
-    let mut snapshot = WsStatusSnapshot::default();
+    let mut snapshot: WsStatusSnapshot = serde_json::from_str(X1_2_STATUS_JSON).unwrap();
     for (index, name) in POWER_NAMES.iter().enumerate() {
         snapshot.power_outputs.push(TuiStatusPowerOutput {
             name: name.to_string(),
@@ -63,16 +63,6 @@ fn fixture_model() -> TuiModel {
             },
         );
     }
-    for index in 0..GPIO_COUNT {
-        snapshot.gpios.push(TuiStatusGpio {
-            name: gpio_name(index),
-            pin: 7 + index,
-            value: Some((index % 3 == 0) as i32),
-            direction: if index < 4 { "output" } else { "input" }.to_string(),
-            note: format!("J16_PIN{}", index + 1),
-            ..Default::default()
-        });
-    }
     let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
     model.apply_status_snapshot(snapshot);
     if let Some(state) = model.switches.get_mut("sd") {
@@ -88,6 +78,8 @@ fn fixture_model() -> TuiModel {
 }
 
 fn draw(model: &mut TuiModel, width: u16, height: u16) -> Result<Buffer> {
+    model.width = width as usize;
+    model.height = height as usize;
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend)?;
     terminal.draw(|frame| render_ui(frame, model))?;
@@ -165,7 +157,8 @@ fn object_rows_are_dense_without_separator_rows() -> Result<()> {
     let names = object_names();
     let first =
         find_row(&buffer, "12v_out").ok_or_else(|| anyhow!("first power object row is missing"))?;
-    for y in first..buffer.area.height - 1 {
+    // Four power + three switch + Reboot + eight projected GPIO rows.
+    for y in first..first + 16 {
         let row = row_text(&buffer, y);
         assert!(
             names.iter().any(|name| row.contains(name)),
@@ -178,7 +171,7 @@ fn object_rows_are_dense_without_separator_rows() -> Result<()> {
 #[test]
 fn visible_object_rows_meet_canonical_budgets() -> Result<()> {
     let names = object_names();
-    for (width, height, minimum) in [(80u16, 24u16, 14usize), (120, 32, 20)] {
+    for (width, height) in [(80u16, 24u16), (120, 32)] {
         let mut model = fixture_model();
         let buffer = draw(&mut model, width, height)?;
         let count = (0..buffer.area.height)
@@ -187,33 +180,38 @@ fn visible_object_rows_meet_canonical_budgets() -> Result<()> {
                 names.iter().any(|name| row.contains(name))
             })
             .count();
-        assert!(
-            count >= minimum,
-            "expected at least {minimum} visible object rows at {width}x{height}, found {count}"
+        assert_eq!(
+            count, 16,
+            "nine GPIOs form eight visual rows at {width}x{height}"
         );
     }
     Ok(())
 }
 
 #[test]
-fn selected_row_background_spans_the_full_terminal_width() -> Result<()> {
+fn selected_single_gpio_row_background_spans_only_its_left_half() -> Result<()> {
     let mut model = fixture_model();
     model.control_idx = control_items(&model)
         .iter()
         .position(|item| item == &ControlItem::Gpio("GP7".to_string()))
         .unwrap();
     let buffer = draw(&mut model, WIDTH, HEIGHT)?;
-    let row = find_row(&buffer, "GP7").ok_or_else(|| anyhow!("selected GP7 row is missing"))?;
-    for x in 0..buffer.area.width {
+    let row =
+        find_row(&buffer, "MASKROM").ok_or_else(|| anyhow!("selected MASKROM row is missing"))?;
+    for x in 0..buffer.area.width / 2 {
         let cell = &buffer[(x, row)];
         assert_eq!(
             cell.bg,
             Color::White,
-            "selected row must paint the White selection background across x=0..{}; \
+            "selected cell must paint the White selection background across x=0..{}; \
              x={x} has {:?}",
-            buffer.area.width - 1,
+            buffer.area.width / 2 - 1,
             cell.bg
         );
+    }
+    for x in buffer.area.width / 2..buffer.area.width {
+        assert_ne!(buffer[(x, row)].bg, Color::White);
+        assert!(model.hit_map.controls.at(x, row).is_none());
     }
     Ok(())
 }
@@ -226,19 +224,19 @@ fn unfocused_gpio_low_cell_has_no_white_background() -> Result<()> {
         .position(|item| item == &ControlItem::Gpio("GP7".to_string()))
         .unwrap();
     let buffer = draw(&mut model, WIDTH, HEIGHT)?;
-    let row = find_row(&buffer, "GP8").ok_or_else(|| anyhow!("GP8 row is missing"))?;
+    let row = find_row(&buffer, "GP13").ok_or_else(|| anyhow!("GP13 row is missing"))?;
     let white_cells = (0..buffer.area.width)
         .filter(|x| buffer[(*x, row)].bg == Color::White)
         .count();
     assert_eq!(
         white_cells, 0,
-        "an unfocused GPIO LOW row must not use a White background; \
+        "an unfocused GP13 LOW row must not use a White background; \
          the legacy low tone collides with the selection background"
     );
     let marker_cell = (0..buffer.area.width)
         .map(|x| &buffer[(x, row)])
-        .find(|cell| cell.symbol() == "○")
-        .ok_or_else(|| anyhow!("GP8 LOW marker cell is missing on row {row}"))?;
+        .find(|cell| cell.symbol() == "◌")
+        .ok_or_else(|| anyhow!("GP13 input LOW marker cell is missing on row {row}"))?;
     assert_eq!(
         marker_cell.fg,
         Color::DarkGray,

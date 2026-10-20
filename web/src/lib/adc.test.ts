@@ -9,77 +9,84 @@ import {
   parseHttpAdcReadings,
 } from "./adc.ts";
 
-test("normalizes HTTP current and ADC3 voltage readings at the boundary", () => {
+const currentNames = ["5v_out", "12v_out", "20v_out", "vdd_5v"];
+const voltageChannels = [
+  { name: "adc0", signal: "GPIO26_ADC0", value: 2_608_696, note: "PD input divider; ADC pad voltage" },
+  { name: "adc1", signal: "GPIO27_ADC1", value: 1_100_000 },
+  { name: "adc2", signal: "GPIO28_ADC2", value: 2_200_000 },
+  { name: "adc3", signal: "GPIO29_ADC3", value: 1_650_000 },
+];
+
+test("normalizes all eight HTTP readings without scaling ADC-pad voltage", () => {
   const readings = parseHttpAdcReadings({
     readings: [
-      {
-        name: "5v_out",
-        signal: "S_C_5V",
+      ...currentNames.map((name) => ({
+        name,
+        signal: `INA226_${name}`,
         power_enabled: true,
-        raw: 101,
-        mv: 250,
+        raw: null,
+        mv: 5010,
+        voltage_valid: true,
+        voltage_uv: 5_010_000,
         sensor_channel: "current",
         unit: "A",
         sensor_value: { val1: 0, val2: 125_000 },
         current_ua: 125_000,
-      },
-      {
-        name: "adc3",
-        signal: "GPIO29_ADC3",
+      })),
+      ...voltageChannels.map(({ value, ...metadata }) => ({
+        ...metadata,
         raw: 2048,
-        mv: 1_650,
+        mv: Math.trunc(value / 1000),
         sensor_channel: "voltage",
         unit: "V",
-        sensor_value: { val1: 1, val2: 650_000 },
-      },
+        sensor_value: { val1: Math.trunc(value / 1_000_000), val2: value % 1_000_000 },
+      })),
     ],
   });
 
   assert.deepEqual(readings, [
-    {
+    ...currentNames.map((name) => ({
       kind: "current",
       unit: "uA",
-      name: "5v_out",
-      signal: "S_C_5V",
+      name,
+      signal: `INA226_${name}`,
       value: 125_000,
       power_enabled: true,
-      raw: 101,
-      mv: 250,
+      voltage_valid: true,
+      voltage_uv: 5_010_000,
+      raw: null,
+      mv: 5010,
       sensor_channel: "current",
       sensor_value: { val1: 0, val2: 125_000 },
-    },
-    {
+    })),
+    ...voltageChannels.map((channel) => ({
       kind: "voltage",
       unit: "uV",
-      name: "adc3",
-      signal: "GPIO29_ADC3",
-      value: 1_650_000,
+      ...channel,
       raw: 2048,
-      mv: 1_650,
+      mv: Math.trunc(channel.value / 1000),
       sensor_channel: "voltage",
-      sensor_value: { val1: 1, val2: 650_000 },
-    },
+      sensor_value: { val1: Math.trunc(channel.value / 1_000_000), val2: channel.value % 1_000_000 },
+    })),
   ]);
+  assert.equal(readings.length, 8);
 });
 
-test("accepts only matching compact single-reading kind and unit pairs", () => {
+test("accepts all eight compact channels with matching kind and unit pairs", () => {
   const readings = parseCompactAdcReadings([
-    {
-      name: "12v_out",
-      signal: "S_C_12V",
+    ...currentNames.map((name) => ({
+      name,
+      signal: `INA226_${name}`,
       kind: "current",
       unit: "uA",
       power_enabled: false,
       value: 42_000,
-    },
-    {
-      name: "adc3",
-      signal: "GPIO29_ADC3",
+    })),
+    ...voltageChannels.map((channel) => ({
+      ...channel,
       kind: "voltage",
       unit: "uV",
-      power_enabled: false,
-      value: 2_345_678,
-    },
+    })),
     {
       name: "invalid-current",
       signal: "INVALID",
@@ -98,35 +105,42 @@ test("accepts only matching compact single-reading kind and unit pairs", () => {
   ]);
 
   assert.deepEqual(readings, [
-    {
+    ...currentNames.map((name) => ({
       kind: "current",
       unit: "uA",
-      name: "12v_out",
-      signal: "S_C_12V",
+      name,
+      signal: `INA226_${name}`,
       value: 42_000,
       power_enabled: false,
-    },
-    {
+    })),
+    ...voltageChannels.map((channel) => ({
       kind: "voltage",
       unit: "uV",
-      name: "adc3",
-      signal: "GPIO29_ADC3",
-      value: 2_345_678,
-    },
+      ...channel,
+    })),
   ]);
+});
+
+test("does not turn missing or invalid voltage values into zero or invent unreported channels", () => {
+  const channel = { name: "adc3", signal: "GPIO29_ADC3", kind: "voltage", unit: "uV" };
+  assert.deepEqual(parseCompactAdcReadings([{ ...channel, value: 0 }]), [{ ...channel, value: 0 }]);
+  for (const value of [null, undefined, NaN, Infinity, "1650000", 1.5]) {
+    assert.deepEqual(parseCompactAdcReadings([{ ...channel, value }]), []);
+  }
+  assert.deepEqual(parseHttpAdcReadings({ readings: [{ ...channel, sensor_channel: "voltage", unit: "V", sensor_value: null }] }), []);
+  assert.deepEqual(parseHttpAdcReadings({ readings: [] }), []);
 });
 
 test("keeps power-capture readings current-only", () => {
   const readings = parseCaptureCurrentReadings([
-    { name: "20v_out", power_enabled: true, current_ua: 750_000 },
-    { name: "adc3", kind: "voltage", unit: "uV", value: 1_800_000 },
+    ...currentNames.map((name) => ({ name, power_enabled: true, current_ua: 750_000 })),
+    ...voltageChannels.map((channel) => ({ ...channel, kind: "voltage", unit: "uV" })),
   ]);
 
-  assert.deepEqual(readings, [
-    {
+  assert.deepEqual(readings, currentNames.map((name) => ({
       kind: "current",
       unit: "uA",
-      name: "20v_out",
+      name,
       signal: "",
       value: 750_000,
       power_enabled: true,
@@ -134,8 +148,7 @@ test("keeps power-capture readings current-only", () => {
       raw: null,
       mv: 0,
       sensor_channel: "current",
-    },
-  ]);
+    })));
 });
 
 test("retains a bounded 600-sample browser history independently from the 90-sample preview", () => {

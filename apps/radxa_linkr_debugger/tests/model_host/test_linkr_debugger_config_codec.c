@@ -32,6 +32,18 @@ static const uint8_t legacy_gp29_output_vector[] = {
 	0x03, 0x1d, 0x03, 0x00,
 };
 
+static const uint8_t removed_gp17_vector[] = {
+	0x4c, 0x52, 0x43, 0x46, 0x01, 0x04, 0x01, 0x00,
+	0x10, 0x00, 0x00, 0x00,
+	0x03, 0x11, 0x00, 0x00,
+};
+
+static const uint8_t removed_gp18_vector[] = {
+	0x4c, 0x52, 0x43, 0x46, 0x01, 0x04, 0x01, 0x00,
+	0x10, 0x00, 0x00, 0x00,
+	0x03, 0x12, 0x00, 0x00,
+};
+
 static const uint8_t v2_gp29_output_vector[] = {
 	0x4c, 0x52, 0x43, 0x46, 0x02, 0x04, 0x01, 0x01,
 	0x10, 0x00, 0x00, 0x00,
@@ -102,6 +114,10 @@ static void append_entry(struct linkr_debugger_config_snapshot *snapshot,
 
 static void build_max_snapshot(struct linkr_debugger_config_snapshot *snapshot)
 {
+	static const uint8_t gpio_pins[] = {
+		7U, 8U, 9U, 12U, 13U, 14U, 15U, 16U, 29U,
+	};
+
 	linkr_debugger_config_snapshot_clear(snapshot);
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID,
@@ -124,15 +140,10 @@ static void build_max_snapshot(struct linkr_debugger_config_snapshot *snapshot)
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		     LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
 		     LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE);
-	for (uint8_t pin = 7U; pin <= 18U; pin++) {
-		if (pin == 10U || pin == 11U) {
-			continue;
-		}
-		append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, pin,
-			     (uint8_t)(pin & LINKR_DEBUGGER_CONFIG_GPIO_VALUE_MASK));
+	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(gpio_pins); i++) {
+		append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, gpio_pins[i],
+			     (uint8_t)(gpio_pins[i] & LINKR_DEBUGGER_CONFIG_GPIO_VALUE_MASK));
 	}
-	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 29U,
-		     LINKR_DEBUGGER_CONFIG_GPIO_LEVEL);
 	assert(snapshot->entry_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
 }
 
@@ -157,24 +168,22 @@ static void test_constants_and_catalog(void)
 		  LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID, "switch/usb" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		  LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID, "switch/tf_wp" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U, "gpio/GP7" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 8U, "gpio/GP8" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 9U, "gpio/GP9" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 12U, "gpio/GP12" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 13U, "gpio/GP13" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 14U, "gpio/GP14" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 15U, "gpio/GP15" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 16U, "gpio/GP16" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 17U, "gpio/GP17" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 18U, "gpio/GP18" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 29U, "gpio/GP29" },
+		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 16U, "gpio/GP16" },
+		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 15U, "gpio/GP15" },
+		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 14U, "gpio/GP14" },
+		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 13U, "gpio/GP13" },
+		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 12U, "gpio/GP12" },
+		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 9U, "gpio/GP9" },
+		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 8U, "gpio/GP8" },
+		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U, "gpio/GP7" },
 	};
 
 	assert(LINKR_DEBUGGER_CONFIG_VERSION == 1U);
 	assert(LINKR_DEBUGGER_CONFIG_HEADER_SIZE == 12U);
 	assert(LINKR_DEBUGGER_CONFIG_ENTRY_SIZE == 4U);
-	assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 18U);
-	assert(LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE == 84U);
+	assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 16U);
+	assert(LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE == 76U);
 	assert(LINKR_DEBUGGER_CONFIG_SETTINGS_MAX_VAL_LEN == 256U);
 	assert(linkr_debugger_config_item_count == ARRAY_SIZE_LOCAL(expected));
 
@@ -191,8 +200,38 @@ static void test_constants_and_catalog(void)
 
 	assert(linkr_debugger_config_find_item(0U, 0U) == NULL);
 	assert(linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 10U) == NULL);
+	assert(linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 17U) == NULL);
+	assert(linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 18U) == NULL);
 	assert(linkr_debugger_config_find_item_by_name(NULL) == NULL);
 	assert(linkr_debugger_config_find_item_by_name("gpio/GP10") == NULL);
+}
+
+static void test_production_dt_dispatch_expands_property_before_concatenation(void)
+{
+	char path[4096] = __FILE__;
+	char source[32768];
+	char *filename = strrchr(path, '/');
+	size_t offset;
+	size_t length;
+	FILE *file;
+	int written;
+
+	assert(filename != NULL);
+	offset = (size_t)(filename - path);
+	written = snprintf(path + offset, sizeof(path) - offset,
+			   "/../../src/linkr_debugger_config_codec.c");
+	assert(written > 0 && (size_t)written < sizeof(path) - offset);
+	file = fopen(path, "rb");
+	assert(file != NULL);
+	length = fread(source, 1U, sizeof(source) - 1U, file);
+	assert(feof(file));
+	assert(fclose(file) == 0);
+	source[length] = '\0';
+
+	assert(strstr(source, "#define LINKR_CONFIG_CAT2(a, b)") != NULL);
+	assert(strstr(source,
+		      "LINKR_CONFIG_CAT2(LINKR_CONFIG_GPIO_CELL_,") != NULL);
+	assert(strstr(source, "DT_CAT(") == NULL);
 }
 
 static void assert_classification(uint8_t domain, uint8_t item_id, uint8_t value,
@@ -281,7 +320,7 @@ static void test_maximum_round_trip(void)
 	assert(linkr_debugger_config_encode(&source, encoded, sizeof(encoded), &encoded_len) ==
 	       LINKR_DEBUGGER_CONFIG_CODEC_OK);
 	assert(encoded_len == LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE);
-	assert(encoded[8] == 0x54U);
+	assert(encoded[8] == 0x4cU);
 	assert(encoded[9] == 0x00U);
 	for (size_t i = 0; i < source.entry_count; i++) {
 		const size_t offset = LINKR_DEBUGGER_CONFIG_HEADER_SIZE +
@@ -319,6 +358,14 @@ static void test_gp29_output_snapshot_round_trip(void)
 	       LINKR_DEBUGGER_CONFIG_CODEC_OK);
 	assert(encoded_len == sizeof(legacy_gp29_output_vector));
 	assert(memcmp(encoded, legacy_gp29_output_vector, encoded_len) == 0);
+}
+
+static void test_removed_gp17_gp18_snapshots_are_malformed(void)
+{
+	assert_decode_result(removed_gp17_vector, sizeof(removed_gp17_vector),
+			     LINKR_DEBUGGER_CONFIG_CODEC_MALFORMED);
+	assert_decode_result(removed_gp18_vector, sizeof(removed_gp18_vector),
+			     LINKR_DEBUGGER_CONFIG_CODEC_MALFORMED);
 }
 
 static void assert_encode_malformed(struct linkr_debugger_config_snapshot *snapshot)
@@ -563,10 +610,12 @@ static void test_encode_always_writes_v1_header(void)
 int main(void)
 {
 	test_constants_and_catalog();
+	test_production_dt_dispatch_expands_property_before_concatenation();
 	test_risk_classification();
 	test_known_vector();
 	test_maximum_round_trip();
 	test_gp29_output_snapshot_round_trip();
+	test_removed_gp17_gp18_snapshots_are_malformed();
 	test_encode_rejections();
 	test_header_rejections();
 	test_entry_rejections();

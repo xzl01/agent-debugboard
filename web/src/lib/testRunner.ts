@@ -1,6 +1,7 @@
 import type { RefObject } from "react";
 import type { UseBoard } from "../hooks/useBoard";
-import type { SerialAutomationHandle, SerialChannelId } from "../components/SerialCard";
+import type { SerialAutomationHandle } from "./j4SerialSession";
+import type { J4SerialChannel as SerialChannelId } from "./j4SerialProtocol";
 import type { PowerCapture } from "./types";
 import { summarizePowerCapture } from "./powerCapture.ts";
 import {
@@ -51,6 +52,13 @@ class RunnerAbortedError extends Error {
 
 const SERIAL_BUFFER_LIMIT = 65_536;
 
+export class J4SerialPreflightError extends Error {
+  constructor(state: string) {
+    super(`J4 MCU serial is not ready (${state}); connect J4 and wait for the UART to be ready`);
+    this.name = "J4SerialPreflightError";
+  }
+}
+
 function validateRegex(pattern: string, label: string) {
   if (pattern.length === 0) throw new Error(`${label} must not be empty`);
   if (pattern.length > 500) throw new Error(`${label} is too long`);
@@ -68,17 +76,17 @@ function validateExecutionPreconditions(
 ) {
   if (!board || board.connected === false) throw new Error("debug board is not connected");
 
-  const requiredChannels = new Set<SerialChannelId>();
+  let requiresSerial = false;
   for (const step of executionPlan) {
     if (step.type === "serial_wait") {
       const params = step.params as import("./testScript").SerialWaitParams;
-      requiredChannels.add(params.channel);
+      requiresSerial = true;
       validateRegex(params.pattern, `serial wait pattern for ${step.sourceStepId}`);
     } else if (step.type === "serial_send") {
-      requiredChannels.add((step.params as import("./testScript").SerialSendParams).channel);
+      requiresSerial = true;
     } else if (step.type === "serial_expect") {
       const params = step.params as import("./testScript").SerialExpectParams;
-      requiredChannels.add(params.channel);
+      requiresSerial = true;
       if (params.pattern.trim()) validateRegex(params.pattern, `serial assertion pattern for ${step.sourceStepId}`);
     } else if (step.type === "capture") {
       const params = step.params as import("./testScript").CaptureParams;
@@ -91,10 +99,15 @@ function validateExecutionPreconditions(
     }
   }
 
-  for (const channel of requiredChannels) {
-    if (!serial?.isConnected(channel)) {
-      throw new Error(`${channel.toUpperCase()} is required by this workflow but is not connected`);
-    }
+  if (requiresSerial) {
+    if (!serial) throw new J4SerialPreflightError("not connected");
+    const state = serial.getState();
+    if (state.phase !== "connected") throw new J4SerialPreflightError(state.phase);
+    if (state.configuring) throw new J4SerialPreflightError("applying settings");
+    if (state.serial?.read_only) throw new J4SerialPreflightError("read-only");
+    if (state.serial?.state !== "ready") throw new J4SerialPreflightError(state.serial?.state ?? "unavailable");
+    if (state.automationActive) throw new J4SerialPreflightError("automation already owns J4");
+    if (state.backpressure || state.pendingWrites > 0) throw new J4SerialPreflightError("busy");
   }
 }
 
@@ -339,6 +352,7 @@ export function createTestRunner(
   let captureInfrastructureError: string | undefined;
   const abortController = new AbortController();
   const { signal } = abortController;
+  let serialLease: SerialAutomationHandle | null = null;
   const results: StepResult[] = [];
   const executionPlan = buildExecutionPlan(script);
   const startedAtMs = Date.now();
@@ -421,24 +435,19 @@ export function createTestRunner(
           if (!serialRef.current?.isConnected(channel)) {
             throw new Error(`${channel.toUpperCase()} disconnected during workflow execution`);
           }
-          serialRef.current?.setAutomationActive(true, channel);
-          try {
-            const result = await waitForPattern(
-              serialRef,
-              channel,
-              p.pattern,
-              p.timeout_ms,
-              () => unreadSerialBuffer(channel),
-              signal,
-            );
-            serialOutput = result.text;
-            ctx.serialOutput = result.text;
-            consumeSerialBuffer(channel, result.consumedLength);
-            if (!result.matched) {
-              error = `timeout waiting for pattern: ${p.pattern}`;
-            }
-          } finally {
-            serialRef.current?.setAutomationActive(false, channel);
+          const result = await waitForPattern(
+            serialRef,
+            channel,
+            p.pattern,
+            p.timeout_ms,
+            () => unreadSerialBuffer(channel),
+            signal,
+          );
+          serialOutput = result.text;
+          ctx.serialOutput = result.text;
+          consumeSerialBuffer(channel, result.consumedLength);
+          if (!result.matched) {
+            error = `timeout waiting for pattern: ${p.pattern}`;
           }
           break;
         }
@@ -458,7 +467,6 @@ export function createTestRunner(
           if (!serialRef.current?.isConnected(channel)) {
             throw new Error(`${channel.toUpperCase()} disconnected during workflow execution`);
           }
-          serialRef.current?.setAutomationActive(true, channel);
           try {
             const result = await sendAndExpect(
               serialRef,
@@ -482,7 +490,6 @@ export function createTestRunner(
             }
           } finally {
             consumeSerialBuffer(channel);
-            serialRef.current?.setAutomationActive(false, channel);
           }
           break;
         }
@@ -706,13 +713,15 @@ export function createTestRunner(
       try {
         validateExecutionPreconditions(executionPlan, boardRef.current, serialRef.current);
         const serial = serialRef.current;
-        if (serial) {
-          for (const channel of ["uart0", "uart1"] as const) {
-            serialUnsubscribers.push(serial.subscribe((text, receivedAtMs) => {
-              appendSerialBuffer(channel, text);
-              callbacks.onSerialLog(activeStepId, channel, text, "rx", receivedAtMs ?? Date.now());
-            }, channel));
-          }
+        if (serial && executionPlan.some((step) => step.type === "serial_send" || step.type === "serial_wait" || step.type === "serial_expect")) {
+          serial.setAutomationActive(true, "j4");
+          serialLease = serial;
+        }
+        if (serialLease) {
+          serialUnsubscribers.push(serialLease.subscribe((text, receivedAtMs) => {
+            appendSerialBuffer("j4", text);
+            callbacks.onSerialLog(activeStepId, "j4", text, "rx", receivedAtMs ?? Date.now());
+          }, "j4"));
         }
         for (const step of executionPlan) {
           if (aborted) break;
@@ -767,7 +776,8 @@ export function createTestRunner(
         infrastructureError = e instanceof Error ? e.message : String(e);
       } finally {
         for (const unsubscribe of serialUnsubscribers) unsubscribe();
-        cleanup = await performSafeCleanup();
+        try { cleanup = await performSafeCleanup(); }
+        finally { serialLease?.setAutomationActive(false, "j4"); serialLease = null; }
       }
 
       const finishedAtMs = Date.now();

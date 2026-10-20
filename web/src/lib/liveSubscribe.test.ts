@@ -20,6 +20,7 @@ test("default live telemetry subscription requests a 60 Hz wire stream with one 
 });
 
 test("custom subscription accepts the 250 Hz wire maximum and clamps batch size", () => {
+  assert.equal(TELEMETRY_STREAM_BATCH_SIZE, 18);
   assert.deepEqual(liveSubscribeMessage(1, 0), {
     type: "subscribe",
     topic: "live",

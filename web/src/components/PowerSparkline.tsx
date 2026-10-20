@@ -39,7 +39,7 @@ const EXPANDED_WIDTH = 960;
 const EXPANDED_HEIGHT = 280;
 const PLOT_PADDING = 4;
 const PREVIEW_MIN_SIDE_RATIO = 0.15;
-const ADC3_MAX_UV = 3_300_000;
+const ADC_MAX_UV = 3_300_000;
 const POWER_TRACES = [
   { metric: "current", minimumScale: 0.001, color: "rgb(var(--c-brand))", unit: "A" },
   { metric: "voltage", minimumScale: 0.1, color: "rgb(var(--c-ok))", unit: "V", dash: "5 3" },
@@ -126,7 +126,7 @@ function plotTrace(trace: ChartTrace, extents: ReturnType<typeof traceExtents>, 
 
 export function MeasurementSparkline(props: MeasurementSparklineProps) {
   // A reused component must never join samples from different rails or sensor modes.
-  return <MeasurementSparklineHistory key={`${props.mode}:${props.reading.name}`} {...props} />;
+  return <MeasurementSparklineHistory key={JSON.stringify([props.mode, props.reading.name, props.reading.signal])} {...props} />;
 }
 
 function MeasurementSparklineHistory(props: MeasurementSparklineProps) {
@@ -146,7 +146,7 @@ function MeasurementSparklineHistory(props: MeasurementSparklineProps) {
   // One bounded history per rail. Only an open dialog plots the full buffer;
   // previews remain cheap and never duplicate the retained sample objects.
   const preview = useMemo(() => history.slice(-MEASUREMENT_PREVIEW_SAMPLES), [history]);
-  const name = props.mode === "power" ? powerRailLabel(props.reading.name) : t("adc3.title");
+  const name = props.mode === "power" ? powerRailLabel(props.reading.name) : `${props.reading.name} · ${props.reading.signal}`;
   return (
     <div className="min-w-0">
       <div className="mb-1 flex items-center justify-between gap-2 text-[10px] text-ink-dim">
@@ -164,7 +164,7 @@ function MeasurementSparklineHistory(props: MeasurementSparklineProps) {
       <MeasurementChart mode={props.mode} name={name} history={preview} />
       {expanded && (
         <Dialog
-          title={`${name} · ${t("power.chart.title")}`}
+          title={`${name} · ${t(props.mode === "power" ? "power.chart.title" : "adc.voltage.chart.title")}`}
           description={t("power.chart.history", { count: history.length, limit: MEASUREMENT_HISTORY_LIMIT })}
           closeLabel={t("power.chart.close")}
           onClose={closeExpanded}
@@ -228,10 +228,10 @@ const MeasurementChart = memo(function MeasurementChart({ mode, name, history, z
   })) : [{
     metric: "voltage",
     values: history.map((sample) => sample.voltageUv),
-    minimumScale: ADC3_MAX_UV,
-    maximumScale: ADC3_MAX_UV,
+    minimumScale: ADC_MAX_UV,
+    maximumScale: ADC_MAX_UV,
     color: "rgb(var(--c-brand))",
-    label: t("adc3.title"),
+    label: name,
     unit: "V",
     formatLatest: (value: number) => `${(value / 1_000_000).toFixed(3)} V`,
   }];
@@ -246,7 +246,7 @@ const MeasurementChart = memo(function MeasurementChart({ mode, name, history, z
   const plotted = traces.map((trace, index) => plotTrace(trace, extents[index], history, width, height, positiveRatio));
   const ariaLabel = mode === "power"
     ? `${name} · ${t("power.chart.overlaid")} · ${t("power.chart.independentScales")} · ${t("power.chart.zeroBaseline")}`
-    : t("adc3.chart.aria");
+    : `${name} · ${t("adc.voltage.chart.aria")}`;
   const hasSamples = plotted.some((trace) => trace.segments.length > 0);
   const noVoltage = mode === "power" && plotted.find((trace) => trace.metric === "voltage")?.latest === null;
   const firstSample = history[0];
@@ -339,9 +339,9 @@ const MeasurementChart = memo(function MeasurementChart({ mode, name, history, z
         </div>
       ) : graphic}
       <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-[10px] text-ink-dim">
-        <span>{mode === "power" ? t("power.chart.independentScales") : duration ? `-${duration}s` : ""}</span>
+        <span>{mode === "power" ? t("power.chart.independentScales") : t("adc.voltage.scale")}</span>
         {mode === "voltage" && <span className="font-mono text-ink">{plotted[0].latest === null ? "—" : plotted[0].formatLatest(plotted[0].latest)}</span>}
-        {mode === "power" && duration > 0 && <span>{`${large ? historyOffset(elapsedSeconds) : `-${duration}s`} → ${t("power.chart.now")}`}</span>}
+        {duration > 0 && <span>{`${large ? historyOffset(elapsedSeconds) : `-${duration}s`} → ${t("power.chart.now")}`}</span>}
         {noVoltage && <span className="basis-full">{t("power.chart.noVoltage")}</span>}
       </div>
       {large && <p id={scrollHintId} className="mt-3 text-[11px] text-ink-dim">{t("power.chart.scrollHint")}</p>}

@@ -6,6 +6,7 @@
  */
 
 #include "linkr_debugger_logic_analyzer.h"
+#include "linkr_debugger_serial.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -16,6 +17,89 @@
 #ifndef BIT
 #define BIT(n) (1UL << (n))
 #endif
+
+enum j4_event {
+	J4_EVENT_PAUSE = 1,
+	J4_EVENT_STATUS,
+	J4_EVENT_MUX_CLAIM,
+	J4_EVENT_MUX_RESTORE,
+	J4_EVENT_RESUME,
+};
+
+static enum j4_event j4_events[16];
+static size_t j4_event_count;
+static unsigned int j4_pause_count;
+static unsigned int j4_status_count;
+static unsigned int j4_mux_event_count;
+static unsigned int j4_resume_count;
+static int j4_pause_result;
+static int j4_status_result;
+static int j4_resume_result;
+static enum linkr_debugger_serial_state j4_status_state =
+	LINKR_DEBUGGER_SERIAL_PAUSED;
+
+static void j4_record(enum j4_event event)
+{
+	assert(j4_event_count < sizeof(j4_events) / sizeof(j4_events[0]));
+	j4_events[j4_event_count++] = event;
+}
+
+int linkr_debugger_serial_runtime_pause(void)
+{
+	j4_pause_count++;
+	j4_record(J4_EVENT_PAUSE);
+	return j4_pause_result;
+}
+
+int linkr_debugger_serial_status_snapshot(
+	struct linkr_debugger_serial_status *status)
+{
+	j4_status_count++;
+	j4_record(J4_EVENT_STATUS);
+	if (j4_status_result < 0) {
+		return j4_status_result;
+	}
+	memset(status, 0, sizeof(*status));
+	status->state = j4_status_state;
+	return 0;
+}
+
+int linkr_debugger_serial_runtime_resume(void)
+{
+	j4_resume_count++;
+	j4_record(J4_EVENT_RESUME);
+	return j4_resume_result;
+}
+
+void linkr_debugger_logic_analyzer_host_j4_mux_event(bool restored)
+{
+	j4_mux_event_count++;
+	j4_record(restored ? J4_EVENT_MUX_RESTORE : J4_EVENT_MUX_CLAIM);
+}
+
+int linkr_debugger_logic_analyzer_host_j4_capture_prepare(
+	const struct linkr_debugger_la_config *config, bool fail_after_mux);
+void linkr_debugger_logic_analyzer_host_j4_capture_cleanup(void);
+
+static void j4_fake_reset(void)
+{
+	memset(j4_events, 0, sizeof(j4_events));
+	j4_event_count = 0U;
+	j4_pause_count = 0U;
+	j4_status_count = 0U;
+	j4_mux_event_count = 0U;
+	j4_resume_count = 0U;
+	j4_pause_result = 0;
+	j4_status_result = 0;
+	j4_resume_result = 0;
+	j4_status_state = LINKR_DEBUGGER_SERIAL_PAUSED;
+}
+
+static void j4_assert_events(const enum j4_event *expected, size_t count)
+{
+	assert(j4_event_count == count);
+	assert(memcmp(j4_events, expected, count * sizeof(expected[0])) == 0);
+}
 
 static struct linkr_debugger_la_config base_config(void)
 {
@@ -3039,6 +3123,126 @@ static void test_capture_snapshot_copy_contract(void)
 	assert(copied[1].values == 0x0002U);
 }
 
+static void test_j4_serial_pause_resume_ownership(void)
+{
+	struct linkr_debugger_la_config config = single_plan_config(0U);
+	static const enum j4_event success_events[] = {
+		J4_EVENT_PAUSE,
+		J4_EVENT_STATUS,
+		J4_EVENT_MUX_CLAIM,
+		J4_EVENT_MUX_RESTORE,
+		J4_EVENT_RESUME,
+	};
+	static const enum j4_event unconfirmed_events[] = {
+		J4_EVENT_PAUSE,
+		J4_EVENT_STATUS,
+	};
+
+	/* SINGLE GP10 is a J4 claim, and cleanup restores the UART mux before
+	 * resuming exactly once.
+	 */
+	j4_fake_reset();
+	assert(linkr_debugger_logic_analyzer_host_j4_capture_prepare(
+		&config, false) == 0);
+	assert(j4_pause_count == 1U);
+	assert(j4_status_count == 1U);
+	assert(j4_resume_count == 0U);
+	linkr_debugger_logic_analyzer_host_j4_capture_cleanup();
+	j4_assert_events(success_events,
+		sizeof(success_events) / sizeof(success_events[0]));
+	assert(j4_resume_count == 1U);
+	linkr_debugger_logic_analyzer_host_j4_capture_cleanup();
+	assert(j4_resume_count == 1U);
+
+	/* Captures that contain neither GP10 nor GP11 do not touch serial. */
+	j4_fake_reset();
+	config.pin_base = 12U;
+	config.selected_pins[0] = 12U;
+	assert(linkr_debugger_logic_analyzer_host_j4_capture_prepare(
+		&config, false) == 0);
+	linkr_debugger_logic_analyzer_host_j4_capture_cleanup();
+	assert(j4_pause_count == 0U);
+	assert(j4_status_count == 0U);
+	assert(j4_resume_count == 0U);
+	assert(j4_event_count == 0U);
+
+	/* Sparse FAST8 selection still physically configures the full GP10..17
+	 * PIO lane, so it must pause even when only GP12/GP13 are exported.
+	 */
+	j4_fake_reset();
+	config.pin_base = 10U;
+	config.pin_count = 8U;
+	config.selected_pins[0] = 12U;
+	config.selected_pins[1] = 13U;
+	config.selected_pin_count = 2U;
+	assert(linkr_debugger_logic_analyzer_host_j4_capture_prepare(
+		&config, false) == 0);
+	linkr_debugger_logic_analyzer_host_j4_capture_cleanup();
+	j4_assert_events(success_events,
+		sizeof(success_events) / sizeof(success_events[0]));
+
+	/* A timeout leaves the runtime READY. It aborts before status probing,
+	 * pinmux changes, or a cleanup resume.
+	 */
+	j4_fake_reset();
+	config = single_plan_config(0U);
+	config.pin_base = 11U;
+	config.selected_pins[0] = 11U;
+	j4_pause_result = -ETIMEDOUT;
+	j4_status_state = LINKR_DEBUGGER_SERIAL_READY;
+	assert(linkr_debugger_logic_analyzer_host_j4_capture_prepare(
+		&config, false) == -ETIMEDOUT);
+	linkr_debugger_logic_analyzer_host_j4_capture_cleanup();
+	assert(j4_event_count == 1U);
+	assert(j4_events[0] == J4_EVENT_PAUSE);
+	assert(j4_status_count == 0U);
+	assert(j4_mux_event_count == 0U);
+	assert(j4_resume_count == 0U);
+	assert(j4_status_state == LINKR_DEBUGGER_SERIAL_READY);
+
+	/* A preparation failure after mux ownership performs the same ordered,
+	 * exactly-once cleanup.
+	 */
+	j4_fake_reset();
+	assert(linkr_debugger_logic_analyzer_host_j4_capture_prepare(
+		&config, true) == -EIO);
+	j4_assert_events(success_events,
+		sizeof(success_events) / sizeof(success_events[0]));
+	linkr_debugger_logic_analyzer_host_j4_capture_cleanup();
+	assert(j4_resume_count == 1U);
+
+	/* Any pause error aborts before ownership; cleanup has nothing to resume. */
+	j4_fake_reset();
+	j4_pause_result = -EBUSY;
+	assert(linkr_debugger_logic_analyzer_host_j4_capture_prepare(
+		&config, false) == -EBUSY);
+	assert(j4_pause_count == 1U);
+	assert(j4_status_count == 0U);
+	assert(j4_mux_event_count == 0U);
+	assert(j4_resume_count == 0U);
+
+	/* Even an inconsistent zero return is insufficient without a PAUSED
+	 * snapshot. No mux ownership or cleanup resume is allowed.
+	 */
+	j4_fake_reset();
+	j4_status_state = LINKR_DEBUGGER_SERIAL_READY;
+	assert(linkr_debugger_logic_analyzer_host_j4_capture_prepare(
+		&config, false) == -EIO);
+	j4_assert_events(unconfirmed_events,
+		sizeof(unconfirmed_events) / sizeof(unconfirmed_events[0]));
+	assert(j4_mux_event_count == 0U);
+	assert(j4_resume_count == 0U);
+
+	j4_fake_reset();
+	j4_status_result = -EIO;
+	assert(linkr_debugger_logic_analyzer_host_j4_capture_prepare(
+		&config, false) == -EIO);
+	j4_assert_events(unconfirmed_events,
+		sizeof(unconfirmed_events) / sizeof(unconfirmed_events[0]));
+	assert(j4_mux_event_count == 0U);
+	assert(j4_resume_count == 0U);
+}
+
 int main(void)
 {
 	assert(linkr_debugger_logic_analyzer_init() == 0);
@@ -3127,5 +3331,6 @@ int main(void)
 	test_wide11_burst_100000_chunk_accounting();
 	test_wide11_burst_triggered_configured_pin_count_stays_11();
 	test_capture_snapshot_copy_contract();
+	test_j4_serial_pause_resume_ownership();
 	return 0;
 }

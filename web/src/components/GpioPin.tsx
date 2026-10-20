@@ -35,20 +35,28 @@ export interface GpioPinProps {
   readonly instructionsId: string | undefined;
   readonly onAction: ((pin: number, action: GpioAction) => void) | undefined;
   readonly t: (key: string, params?: Record<string, string | number>) => string;
+  readonly disabled?: boolean;
+  readonly outputCapable?: boolean;
+  readonly ariaLabel?: string;
+  readonly hitTargetRadius?: number;
+  readonly label?: { readonly lines: readonly string[]; readonly fontSize: number };
 }
 
-export function GpioPin({ cell, cx, cy, pendingPin, instructionsId, onAction, t }: GpioPinProps) {
+export function GpioPin({ cell, cx, cy, pendingPin, instructionsId, onAction, t, disabled = false, outputCapable = true, ariaLabel, hitTargetRadius = GPIO_HIT_TARGET_RADIUS, label }: GpioPinProps) {
   const isHigh = cell.value > 0;
   const anyPending = pendingPin !== null;
+  const blocked = anyPending || disabled;
   const isPendingTarget = pendingPin === cell.pin;
-  const labelFontSize = pinLabelFontSize(cell.layoutLabel);
-  const labelLines = pinLabelLines(cell.layoutLabel);
+  const labelFontSize = label?.fontSize ?? pinLabelFontSize(cell.layoutLabel);
+  const labelLines = label?.lines ?? pinLabelLines(cell.layoutLabel);
   const gesture = useGpioPinGesture({
-    blocked: anyPending,
-    onAction: (action) => onAction?.(cell.pin, action),
+    blocked,
+    onAction: (action) => {
+      if (action.kind === "input" || outputCapable) onAction?.(cell.pin, action);
+    },
   });
 
-  const stateClass = anyPending
+  const stateClass = blocked
     ? isPendingTarget
       ? "opacity-40"
       : ""
@@ -57,14 +65,14 @@ export function GpioPin({ cell, cx, cy, pendingPin, instructionsId, onAction, t 
   return (
     <g
       className={`group transition-opacity duration-150 focus:outline-none ${stateClass}`}
-      style={{ cursor: anyPending ? "not-allowed" : "pointer", touchAction: "manipulation" }}
+      style={{ cursor: blocked ? "not-allowed" : "pointer", touchAction: "manipulation" }}
       role="button"
       tabIndex={0}
-      aria-disabled={anyPending || undefined}
+      aria-disabled={blocked || undefined}
       aria-busy={isPendingTarget || undefined}
       aria-describedby={instructionsId}
-      aria-keyshortcuts="Enter Space 0 1 I"
-      aria-label={t("gpio.pinAria", {
+      aria-keyshortcuts={outputCapable ? "Enter Space 0 1 I" : "I"}
+      aria-label={ariaLabel ?? t("gpio.pinAria", {
         name: cell.name,
         pin: cell.pin,
         direction: cell.direction === "output" ? t("gpio.output") : t("gpio.input"),
@@ -94,7 +102,7 @@ export function GpioPin({ cell, cx, cy, pendingPin, instructionsId, onAction, t 
         vectorEffect="non-scaling-stroke"
         className="pointer-events-none"
       />
-      {gesture.holding && (
+      {gesture.holding && outputCapable && (
         <circle
           cx={cx}
           cy={cy}
@@ -125,7 +133,7 @@ export function GpioPin({ cell, cx, cy, pendingPin, instructionsId, onAction, t 
       <circle
         cx={cx}
         cy={cy}
-        r={GPIO_HIT_TARGET_RADIUS}
+        r={hitTargetRadius}
         fill="transparent"
         pointerEvents="all"
       />

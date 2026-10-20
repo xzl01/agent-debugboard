@@ -229,6 +229,71 @@ fn config_json_preserves_valid_raw_firmware_bytes() {
     assert!(stderr.is_empty());
 }
 
+#[test]
+fn x1_2_config_catalog_has_sixteen_items_and_only_nine_gpio_controls() {
+    // Firmware-owned catalog fixture, not a client-side hardware allowlist.
+    let mut items = Vec::new();
+    for name in ["5v_out", "12v_out", "20v_out", "vdd_5v"] {
+        items.push(serde_json::json!({"id":format!("power/{name}"),"kind":"power","current":{"state":"off"},"saved":null,"selected":false,"requires_confirm":true,"apply_state":"not_saved"}));
+    }
+    for (name, route) in [("sd", "target"), ("tf_wp", "writable"), ("usb", "target")] {
+        items.push(serde_json::json!({"id":format!("switch/{name}"),"kind":"switch","current":{"route":route},"saved":null,"selected":false,"requires_confirm":true,"apply_state":"not_saved"}));
+    }
+    for pin in [7, 8, 9, 12, 13, 14, 15, 16, 29] {
+        items.push(serde_json::json!({"id":format!("gpio/GP{pin}"),"kind":"gpio","current":{"direction":"input","value":0},"saved":null,"selected":false,"requires_confirm":false,"apply_state":"not_saved"}));
+    }
+    let body = serde_json::json!({"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":false,"version":null},"pending":0,"items":items}).to_string();
+    let response = PersistentConfigResponse::from_raw(body.clone()).unwrap();
+    assert_eq!(response.envelope.items.len(), 16);
+    let gpio_ids = response
+        .envelope
+        .items
+        .iter()
+        .filter(|item| item.kind == ConfigItemKind::Gpio)
+        .map(|item| item.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        gpio_ids,
+        [
+            "gpio/GP7",
+            "gpio/GP8",
+            "gpio/GP9",
+            "gpio/GP12",
+            "gpio/GP13",
+            "gpio/GP14",
+            "gpio/GP15",
+            "gpio/GP16",
+            "gpio/GP29"
+        ]
+    );
+    let (code, stdout, stderr, request) = run_command(&["config", "show"], true, 200, &body);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), body);
+    assert!(stderr.is_empty());
+    assert!(request.starts_with("GET /api/v1/config HTTP/1.1"));
+    assert!(!stdout.contains("gpio/GP17") && !stdout.contains("gpio/GP18"));
+}
+
+#[test]
+fn removed_x1_2_gpio_config_ids_surface_firmware_unknown_item_without_remapping() {
+    let body = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"unknown_item","message":"unknown config item"}}"#;
+    for id in ["gpio/GP17", "gpio/GP18"] {
+        for json in [false, true] {
+            let (code, stdout, stderr, request) =
+                run_command(&["config", "save", id], json, 400, body);
+            assert_eq!(code, 1);
+            assert!(request.contains(&format!(r#""items":["{id}"]"#)));
+            if json {
+                assert_eq!(stdout.trim(), body);
+                assert!(stderr.is_empty());
+            } else {
+                assert!(stdout.is_empty());
+                assert!(stderr.contains("unknown_item: unknown config item"));
+            }
+        }
+    }
+}
+
 fn run_command(args: &[&str], json: bool, status: u16, body: &str) -> (u8, String, String, String) {
     let (url, requests) = mock_server(vec![(status, body.to_string())]);
     let client = BoardClient::new(&url, Duration::from_secs(2)).unwrap();

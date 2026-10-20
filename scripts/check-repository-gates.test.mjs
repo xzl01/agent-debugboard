@@ -150,10 +150,15 @@ ASSERT((__bss_start & 0x7fff) == 0, "generic BSS alignment")
   wsSource = appendIfMissing(wsSource, "Z_GENERIC_SECTION(.bss.pre_capture.ws_clients)", `static struct linkr_debugger_ws_client linkr_debugger_ws_clients
   Z_GENERIC_SECTION(.bss.pre_capture.ws_clients);`);
   wsSource = appendIfMissing(wsSource, "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28704U)", "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28704U);");
+  wsSource = appendIfMissing(wsSource, "linkr_debugger_ws_client_sidecars[LINKR_DEBUGGER_WS_SIDECAR_COUNT]", `static struct linkr_debugger_ws_client_sidecar
+  linkr_debugger_ws_client_sidecars[LINKR_DEBUGGER_WS_SIDECAR_COUNT];
+BUILD_ASSERT(sizeof(struct linkr_debugger_ws_client_sidecar) == 1088U);
+BUILD_ASSERT(sizeof(linkr_debugger_ws_client_sidecars) == 4352U);`);
   wsSource = appendIfMissing(wsSource, "static K_THREAD_STACK_DEFINE(linkr_debugger_adc_sampler_stack, 2048)", "static K_THREAD_STACK_DEFINE(linkr_debugger_adc_sampler_stack, 2048);");
   wsSource = appendIfMissing(wsSource, "memset(linkr_debugger_ws_clients, 0, sizeof(linkr_debugger_ws_clients))", `void memory_contract_ws_init(void)
 {
   memset(linkr_debugger_ws_clients, 0, sizeof(linkr_debugger_ws_clients));
+  memset(linkr_debugger_ws_client_sidecars, 0, sizeof(linkr_debugger_ws_client_sidecars));
   k_mutex_init(&linkr_debugger_ws_clients_lock);
 }`);
   contents.set(WS_SOURCE, wsSource);
@@ -511,6 +516,21 @@ test("requires CI and Makefile durable gate parity", async () => {
   assert.ok(result.failures.some((failure) => failure.code === "G12"));
 });
 
+test("pins the G14 status capacity even when firmware and HIL grow together", async () => {
+  const baseline = await repositoryContents();
+  let changed = mutation(
+    baseline,
+    "apps/radxa_linkr_debugger/src/linkr_debugger_http.c",
+    "#define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 6656U\n",
+    "#define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 6657U\n",
+  );
+  changed = mutationAll(changed, HIL_SPEC, "6656", "6657");
+  const result = checkRepositoryGateContents(changed);
+
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.some((failure) => failure.code === "G14"));
+});
+
 test("rejects every publication and branch-policy bypass", async (t) => {
   const baseline = await repositoryContents();
   const cases = [
@@ -553,9 +573,9 @@ test("rejects every publication and branch-policy bypass", async (t) => {
     ["English flake input", "docs/developer/build.md", '    agent-debugboard.url = "github:xzl01/agent-debugboard";\n', "", "G13"],
     ["Chinese flake input", "docs/developer/build.zh-CN.md", '    agent-debugboard.url = "github:xzl01/agent-debugboard";\n', "", "G13"],
     ["legacy import expression", "docs/developer/build.md", '        overlays = [ agent-debugboard.overlays.default ];\n', '        overlays = [ (import github:xzl01/agent-debugboard).overlays.default ];\n', "G13"],
-    ["status response wording", "docs/testing/hil-functional-test-spec.md", "验证 HTTP 响应 JSON 长度低于专用 6144 字节 status buffer（协议限制检查）：\n", "验证 HTTP 响应 JSON 长度低于专用 4096 字节 status buffer（协议限制检查）：\n", "G14"],
-    ["status response assertion", "docs/testing/hil-functional-test-spec.md", '[ "$LEN" -lt 6144 ] || { echo "status response must be below 6144 bytes"; exit 1; }\n', '[ "$LEN" -lt 4096 ] || { echo "status response must be below 4096 bytes"; exit 1; }\n', "G14"],
-    ["status buffer capacity", "apps/radxa_linkr_debugger/src/linkr_debugger_http.c", "#define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 6144U\n", "#define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 4096U\n", "G14"],
+    ["status response wording", "docs/testing/hil-functional-test-spec.md", "验证 HTTP 响应 JSON 长度低于专用 6656 字节 status buffer（协议限制检查）：\n", "验证 HTTP 响应 JSON 长度低于专用 6144 字节 status buffer（协议限制检查）：\n", "G14"],
+    ["status response assertion", "docs/testing/hil-functional-test-spec.md", '[ "$LEN" -lt 6656 ] || { echo "status response must be below 6656 bytes"; exit 1; }\n', '[ "$LEN" -lt 6144 ] || { echo "status response must be below 6144 bytes"; exit 1; }\n', "G14"],
+    ["status buffer capacity", "apps/radxa_linkr_debugger/src/linkr_debugger_http.c", "#define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 6656U\n", "#define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 6144U\n", "G14"],
     ["WS snapshot cadence", "docs/testing/hil-functional-test-spec.md", "const MAX_SNAPSHOTS = 1;\n", "const MAX_SNAPSHOTS = 3;\n", "G15"],
     ["WS state snapshot gate", "apps/radxa_linkr_debugger/src/linkr_debugger_ws.c", "if (events & LINKR_DEBUGGER_WS_EVENT_STATE) {\n", "if (events & LINKR_DEBUGGER_WS_EVENT_SAMPLE) {\n", "G15"],
     ["Web dependency registry", "web/package-lock.json", "https://registry.npmjs.org/react-grab/-/react-grab-0.1.50.tgz", "https://repo.huaweicloud.com/repository/npm/react-grab/-/react-grab-0.1.50.tgz", "G11"],
@@ -706,6 +726,12 @@ test("rejects every firmware memory optimization contract regression", async (t)
     ["Sigrok server stack", SIGROK_SOURCE, "static K_THREAD_STACK_DEFINE(server_stack, 2048U)", "static K_THREAD_STACK_DEFINE(server_stack, 2049U)"],
     ["WS pre-capture placement", WS_SOURCE, "Z_GENERIC_SECTION(.bss.pre_capture.ws_clients)", "__attribute__((section(\".bss.pre_capture.ws_clients\")))"],
     ["WS clients size", WS_SOURCE, "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28704U)", "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28703U)"],
+    ["WS sidecar placement", WS_SOURCE, "linkr_debugger_ws_client_sidecars[LINKR_DEBUGGER_WS_SIDECAR_COUNT];", "linkr_debugger_ws_client_sidecars[LINKR_DEBUGGER_WS_SIDECAR_COUNT] Z_GENERIC_SECTION(.bss.pre_capture.ws_clients);"],
+    ["WS sidecar ARM slot size", WS_SOURCE, "sizeof(struct linkr_debugger_ws_client_sidecar) == 1088U", "sizeof(struct linkr_debugger_ws_client_sidecar) == 1089U"],
+    ["WS sidecar ARM array size", WS_SOURCE, "sizeof(linkr_debugger_ws_client_sidecars) == 4352U", "sizeof(linkr_debugger_ws_client_sidecars) == 4353U"],
+    ["WS sidecar zeroing", WS_SOURCE, "memset(linkr_debugger_ws_client_sidecars, 0,", "memset(linkr_debugger_ws_client_sidecars, 0xff,"],
+    ["WS sidecar state excluded from pre-capture client", WS_SOURCE, "\tuint64_t sequence;\n\tint64_t session_created_ms;", "\tuint64_t sequence;\n\tenum linkr_debugger_ws_stream_mode stream_mode;\n\tint64_t session_created_ms;"],
+    ["WS sidecar slot bounds assertion", WS_SOURCE, "__ASSERT_NO_MSG(client->slot < LINKR_DEBUGGER_WS_SIDECAR_COUNT);", "(void)client->slot;"],
     ["WS client zeroing", WS_SOURCE, "memset(linkr_debugger_ws_clients, 0, sizeof(linkr_debugger_ws_clients))", ""],
     ["ADC sampler stack", WS_SOURCE, "static K_THREAD_STACK_DEFINE(linkr_debugger_adc_sampler_stack, 2048)", "static K_THREAD_STACK_DEFINE(linkr_debugger_adc_sampler_stack, 2049)"],
     ["logic analyzer ring stacks", LOGIC_ANALYZER_SOURCE, "#define LINKR_DEBUGGER_LA_STREAM_THREAD_STACK_SIZE 2048U", "#define LINKR_DEBUGGER_LA_STREAM_THREAD_STACK_SIZE 2049U"],

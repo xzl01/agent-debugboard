@@ -87,6 +87,7 @@ fn apply_adc_response_updates_history_and_power_state() {
         current_ua: Some(500000),
         voltage_valid: None,
         voltage_uv: None,
+        ..Default::default()
     }]);
 
     assert_eq!(model.power_states.get("5v_out"), Some(&true));
@@ -111,13 +112,14 @@ fn milliamp_estimate_falls_back_to_current_microamps() {
         current_ua: Some(850_000),
         voltage_valid: None,
         voltage_uv: None,
+        ..Default::default()
     };
 
     assert_eq!(current_milliamp_estimate(&reading), 850);
 }
 
 #[test]
-fn voltage_reading_is_ignored_by_power_history_and_tui_sections() {
+fn voltage_reading_is_retained_without_power_or_current_history() {
     let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
     model.apply_adc_response(vec![AdcReading {
         name: "adc3".to_string(),
@@ -138,11 +140,42 @@ fn voltage_reading_is_ignored_by_power_history_and_tui_sections() {
         current_ua: None,
         voltage_valid: None,
         voltage_uv: Some(1_234_000),
+        ..Default::default()
     }]);
 
     assert!(!model.history.contains_key("adc3"));
-    assert!(!model.latest.contains_key("adc3"));
+    assert_eq!(model.latest["adc3"].voltage_uv, Some(1_234_000));
     assert!(!model.power_states.contains_key("adc3"));
+}
+
+#[test]
+fn adc_catalog_and_latest_keep_four_currents_and_all_four_pad_voltages() {
+    let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+    model.apply_status_snapshot(
+        serde_json::from_value(serde_json::json!({"adc_channels":crate::adc::fixture::channels()}))
+            .unwrap(),
+    );
+    model.apply_adc_response(
+        crate::adc::transform_response(&crate::adc::fixture::http().to_string())
+            .unwrap()
+            .readings,
+    );
+    assert_eq!(
+        model.channel_ids,
+        ["5v_out", "12v_out", "20v_out", "vdd_5v"]
+    );
+    assert_eq!(model.voltage_channel_ids, ["adc0", "adc1", "adc2", "adc3"]);
+    assert_eq!(model.latest.len(), 8);
+    assert_eq!(model.history.len(), 4);
+    assert_eq!(model.latest["adc0"].voltage_uv, Some(2_608_696));
+    assert_eq!(model.latest["adc3"].voltage_uv, Some(0));
+    for name in &model.voltage_channel_ids {
+        assert!(!model.history.contains_key(name));
+        assert!(!model.power_states.contains_key(name));
+    }
+    model.apply_status_snapshot(WsStatusSnapshot::default());
+    assert!(model.voltage_channel_ids.is_empty());
+    assert!(model.adc_channel_metadata.is_empty());
 }
 
 #[test]

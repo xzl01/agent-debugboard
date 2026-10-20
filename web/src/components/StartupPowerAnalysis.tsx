@@ -3,7 +3,8 @@ import type { RefObject } from "react";
 import { Activity, Download, Eye, EyeOff, Play, Square, TerminalSquare, TimerReset } from "lucide-react";
 import { Badge, Button, Toggle } from "./ui";
 import type { CaptureConfig, PowerCapture, PowerOutput } from "@/lib/types";
-import type { SerialAutomationHandle, SerialChannelId } from "./SerialCard";
+import type { SerialAutomationHandle } from "@/lib/j4SerialSession";
+import type { J4SerialChannel as SerialChannelId } from "@/lib/j4SerialProtocol";
 import { nominalVoltage, powerRailLabel, USER_POWER_RAILS } from "@/lib/power";
 import { useI18n } from "@/lib/i18n";
 import { buildPowerChartAxis, PowerChartYAxis } from "./PowerChartAxis";
@@ -351,7 +352,7 @@ export function StartupPowerAnalysis({
   const { t } = useI18n();
   const [phase, setPhase] = useState<Phase>("idle");
   const [rail, setRail] = useState("5v_out");
-  const [serialChannel, setSerialChannel] = useState<SerialChannelId>("uart0");
+  const serialChannel: SerialChannelId = "j4";
   const [offDelayMs, setOffDelayMs] = useState(3000);
   const [rateHz, setRateHz] = useState(50);
   const [timeoutSeconds, setTimeoutSeconds] = useState(90);
@@ -570,8 +571,14 @@ export function StartupPowerAnalysis({
   const start = async () => {
     const serial = serialRef.current;
     const output = outputs.find((item) => item.name === rail);
-    if (!serial?.isConnected(serialChannel)) {
+    if (!serial) {
       setError(t("startup.error.serial").replaceAll("{channel}", serialChannel.toUpperCase()));
+      return;
+    }
+    const serialState = serial.getState();
+    if (serialState.phase !== "connected" || serialState.serial?.state !== "ready"
+      || serialState.serial.read_only || serialState.configuring || serialState.backpressure || serialState.pendingWrites > 0 || serialState.automationActive) {
+      setError(t("test.error.serialNotReady"));
       return;
     }
     if (!output?.controllable) {
@@ -1022,11 +1029,7 @@ export function StartupPowerAnalysis({
           </select>
         </label>
         <label className="text-[11px] text-ink-dim">{t("startup.serialChannel")}
-          <select value={serialChannel} onChange={(event) => setSerialChannel(event.target.value as SerialChannelId)} disabled={busy}
-            className="mt-1 w-full rounded-lg border border-line bg-panel2 px-2 py-2 text-xs text-ink">
-            <option value="uart0">UART0</option>
-            <option value="uart1">UART1</option>
-          </select>
+          <div className="mt-1 rounded-lg border border-line bg-panel2 px-2 py-2 font-mono text-xs text-ink">J4 · MCU</div>
         </label>
         <label className="text-[11px] text-ink-dim">{t("startup.bootloader")}
           <select value={bootloaderMode} onChange={(event) => setBootloaderMode(event.target.value as BootloaderMode)} disabled={busy}

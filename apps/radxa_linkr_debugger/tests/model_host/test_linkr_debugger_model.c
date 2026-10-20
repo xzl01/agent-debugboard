@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "linkr_debugger_model.h"
+#include "linkr_debugger_control.h"
 
 static void assert_str_eq(const char *actual, const char *expected)
 {
@@ -97,12 +97,22 @@ static void test_current_table(void)
 static void test_adc_table(void)
 {
 	const struct linkr_debugger_current_desc *adc;
+	const struct linkr_debugger_current_desc *adc0;
 	const struct linkr_debugger_current_desc *adc3;
 	size_t current_descriptor_count = 0U;
+	static const char *const expected_names[] = {
+		"5v_out", "12v_out", "20v_out", "vdd_5v",
+		"adc0", "adc1", "adc2", "adc3",
+	};
+	static const char *const expected_adc_signals[] = {
+		"GPIO26_ADC0", "GPIO27_ADC1", "GPIO28_ADC2", "GPIO29_ADC3",
+	};
 
-	assert(linkr_debugger_adc_count == 5);
+	assert(linkr_debugger_adc_count == LINKR_DEBUGGER_ADC_TELEMETRY_CHANNEL_COUNT);
+	assert(linkr_debugger_adc_count == 8U);
 	for (size_t i = 0; i < linkr_debugger_adc_count; i++) {
 		adc = &linkr_debugger_currents[i];
+		assert_str_eq(adc->name, expected_names[i]);
 		switch (adc->kind) {
 		case LINKR_DEBUGGER_ADC_KIND_CURRENT:
 			assert_str_eq(adc->sensor, "INA226");
@@ -112,12 +122,21 @@ static void test_adc_table(void)
 		case LINKR_DEBUGGER_ADC_KIND_VOLTAGE:
 			assert_str_eq(adc->sensor, "ADC");
 			assert_str_eq(adc->unit, "uV");
+			assert(adc->adc_index == i - LINKR_DEBUGGER_CURRENT_SENSOR_COUNT);
+			assert_str_eq(adc->signal,
+				expected_adc_signals[i - LINKR_DEBUGGER_CURRENT_SENSOR_COUNT]);
 			break;
 		default:
 			assert(false);
 		}
 	}
 	assert(current_descriptor_count == LINKR_DEBUGGER_CURRENT_SENSOR_COUNT);
+	adc0 = linkr_debugger_find_adc("adc0");
+	assert(adc0 != NULL);
+	assert_str_eq(adc0->signal, "GPIO26_ADC0");
+	assert_str_eq(adc0->note, "PD input divider; ADC pad voltage");
+	assert(adc0->adc_index == 0U);
+	assert(linkr_debugger_find_current("adc0") == NULL);
 
 	adc3 = linkr_debugger_find_adc("adc3");
 	assert(adc3 != NULL);
@@ -126,15 +145,46 @@ static void test_adc_table(void)
 	assert(adc3->kind == LINKR_DEBUGGER_ADC_KIND_VOLTAGE);
 	assert_str_eq(adc3->unit, "uV");
 	assert(adc3->adc_index == 3);
+	assert(adc3->note == NULL);
 
 	assert(linkr_debugger_find_adc("5V_FIN") == NULL);
+}
+
+static void test_adc_microvolt_conversion_fallback(void)
+{
+	int32_t microvolts = 1234567;
+
+	assert(linkr_debugger_adc_resolve_microvolts(0, 2048, 12U,
+						       &microvolts) == 0);
+	assert(microvolts == 1234567);
+
+	assert(linkr_debugger_adc_resolve_microvolts(-ENOTSUP, 2048, 12U,
+						       &microvolts) == 0);
+	assert(microvolts == 1650402);
+	assert(linkr_debugger_adc_resolve_microvolts(-ENOTSUP, 4095, 12U,
+						       &microvolts) == 0);
+	assert(microvolts == 3300000);
+	assert(linkr_debugger_adc_resolve_microvolts(-ENOTSUP, -2048, 12U,
+						       &microvolts) == 0);
+	assert(microvolts == -1650402);
+
+	assert(linkr_debugger_adc_resolve_microvolts(-ENOTSUP, INT32_MAX, 1U,
+						       &microvolts) == 0);
+	assert(microvolts == INT32_MAX);
+	assert(linkr_debugger_adc_resolve_microvolts(-ENOTSUP, INT32_MIN, 1U,
+						       &microvolts) == 0);
+	assert(microvolts == INT32_MIN);
+	assert(linkr_debugger_adc_resolve_microvolts(-ENOTSUP, 2048, 33U,
+						       &microvolts) == -ERANGE);
+	assert(linkr_debugger_adc_resolve_microvolts(-ENOTSUP, 2048, 12U,
+						       NULL) == -EINVAL);
 }
 
 static void test_safe_gpio_allowlist(void)
 {
 	const struct linkr_debugger_safe_gpio_desc *gpio;
 	static const uint8_t expected_order[] = {
-		8, 9, 7, 15, 29, 14, 13, 12, 18, 17, 16,
+		29, 16, 15, 14, 13, 12, 9, 8, 7,
 	};
 	static const struct {
 		uint8_t pin;
@@ -159,11 +209,15 @@ static void test_safe_gpio_allowlist(void)
 	assert_str_eq(linkr_debugger_gpio_layout_groups[0].name, "J8");
 	assert_str_eq(linkr_debugger_gpio_layout_groups[0].edge, "right");
 	assert(linkr_debugger_gpio_layout_groups[0].order == 0U);
+	assert(linkr_debugger_gpio_layout_groups[0].rows == 10U);
+	assert(linkr_debugger_gpio_layout_groups[0].columns == 2U);
 	assert_str_eq(linkr_debugger_gpio_layout_groups[1].name, "J13");
 	assert_str_eq(linkr_debugger_gpio_layout_groups[1].edge, "right");
 	assert(linkr_debugger_gpio_layout_groups[1].order == 1U);
+	assert(linkr_debugger_gpio_layout_groups[1].rows == 2U);
+	assert(linkr_debugger_gpio_layout_groups[1].columns == 2U);
 
-	assert(linkr_debugger_safe_gpio_count == 11);
+	assert(linkr_debugger_safe_gpio_count == 9);
 	for (size_t i = 0; i < linkr_debugger_safe_gpio_count; i++) {
 		assert(linkr_debugger_safe_gpios[i].pin == expected_order[i]);
 		assert(linkr_debugger_safe_gpios[i].output_capable ==
@@ -182,21 +236,21 @@ static void test_safe_gpio_allowlist(void)
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "CON_MAS");
 	assert_str_eq(gpio->layout_group, "J13");
-	assert_str_eq(gpio->layout_label, "MASKROM");
+	assert_str_eq(gpio->layout_label, "GP7 / MASKROM");
 	assert(gpio->layout_row == 1);
 	assert(gpio->layout_column == 0);
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(8);
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "CON_REST");
-	assert_str_eq(gpio->layout_label, "RSET");
+	assert_str_eq(gpio->layout_label, "GP8 / RSET");
 	assert(gpio->layout_row == 0);
 	assert(gpio->layout_column == 1);
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(9);
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "CON_USER");
-	assert_str_eq(gpio->layout_label, "USER");
+	assert_str_eq(gpio->layout_label, "GP9 / USER");
 	assert(gpio->layout_row == 0);
 	assert(gpio->layout_column == 0);
 
@@ -216,32 +270,24 @@ static void test_safe_gpio_allowlist(void)
 	gpio = linkr_debugger_find_safe_gpio_by_pin(29);
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "J8_PIN6");
-	assert_str_eq(gpio->layout_label, "ADC3");
+	assert_str_eq(gpio->layout_label, "GP29 / ADC3");
 	assert(gpio->layout_row == 4);
 	assert(gpio->layout_column == 0);
 	assert(!gpio->output_capable);
 	assert(linkr_debugger_format_gpio_name(gpio->pin, name, sizeof(name)));
 	assert_str_eq(name, "GP29");
 
-	gpio = linkr_debugger_find_safe_gpio_by_pin(17);
-	assert(gpio != NULL);
-	assert(gpio->output_capable);
-	assert_str_eq(gpio->note, "GP17");
-	assert(gpio->layout_group == NULL);
-	assert_str_eq(gpio->layout_label, "GP17");
-
-	gpio = linkr_debugger_find_safe_gpio_by_pin(18);
-	assert(gpio != NULL);
-	assert(gpio->output_capable);
-	assert_str_eq(gpio->note, "GP18");
-	assert(gpio->layout_group == NULL);
-	assert_str_eq(gpio->layout_label, "GP18");
+	assert(linkr_debugger_find_safe_gpio_by_pin(17) == NULL);
+	assert(linkr_debugger_find_safe_gpio_by_pin(18) == NULL);
 
 	assert(linkr_debugger_find_safe_gpio_by_pin(6) == NULL);
 	assert(linkr_debugger_find_safe_gpio_by_pin(22) == NULL);
 	assert(linkr_debugger_find_safe_gpio_by_pin(23) == NULL);
 	assert(linkr_debugger_find_safe_gpio_by_pin(24) == NULL);
 	assert(linkr_debugger_find_safe_gpio_by_pin(25) == NULL);
+	assert(linkr_debugger_find_safe_gpio_by_pin(26) == NULL);
+	assert(linkr_debugger_find_safe_gpio_by_pin(27) == NULL);
+	assert(linkr_debugger_find_safe_gpio_by_pin(28) == NULL);
 
 	gpio = linkr_debugger_find_safe_gpio_by_identifier("GP7");
 	assert(gpio != NULL);
@@ -253,6 +299,55 @@ static void test_safe_gpio_allowlist(void)
 	assert(linkr_debugger_find_safe_gpio_by_identifier("J8_PIN12") == NULL);
 
 	assert(linkr_debugger_find_safe_gpio_by_identifier("not-a-gpio") == NULL);
+}
+
+static void test_full_gpio_layout_catalog(void)
+{
+	const struct linkr_debugger_gpio_layout_cell_desc *cell;
+	size_t controllable = 0U;
+
+	assert_str_eq(linkr_debugger_gpio_layout_view, "component-top");
+	assert(linkr_debugger_gpio_layout_cell_count == 24U);
+	for (size_t i = 0U; i < linkr_debugger_gpio_layout_cell_count; i++) {
+		cell = &linkr_debugger_gpio_layout_cells[i];
+		if (cell->controllable) {
+			controllable++;
+			assert(cell->gpio_pin <= 29U);
+		}
+		assert(!cell->output_capable || cell->controllable);
+	}
+	assert(controllable == 9U);
+
+	cell = &linkr_debugger_gpio_layout_cells[0];
+	assert(cell->group_order == 0U);
+	assert(cell->pin_number == 10U);
+	assert(cell->row == 0U && cell->column == 0U);
+	assert_str_eq(cell->label, "GP21 / SDA");
+	assert_str_eq(cell->signal, "RP2354_SDA");
+	assert_str_eq(cell->role, "i2c");
+	assert(!cell->controllable);
+
+	cell = &linkr_debugger_gpio_layout_cells[8];
+	assert(cell->pin_number == 6U);
+	assert_str_eq(cell->signal, "GPIO29_ADC3");
+	assert_str_eq(cell->role, "adc");
+	assert(cell->controllable);
+	assert(!cell->output_capable);
+	assert(cell->gpio_pin == 29U);
+
+	cell = &linkr_debugger_gpio_layout_cells[20];
+	assert(cell->group_order == 1U);
+	assert(cell->pin_number == 2U);
+	assert_str_eq(cell->label, "GP9 / USER");
+	assert_str_eq(cell->signal, "GP09_USER");
+	assert(cell->controllable && cell->output_capable);
+	assert(cell->gpio_pin == 9U);
+
+	cell = &linkr_debugger_gpio_layout_cells[23];
+	assert(cell->pin_number == 4U);
+	assert_str_eq(cell->signal, "GND");
+	assert_str_eq(cell->role, "ground");
+	assert(!cell->controllable);
 }
 
 static void test_gpio_name_formatter(void)
@@ -375,7 +470,9 @@ int main(void)
 	test_vdd_5v_state_contract_matches_board_revision();
 	test_current_table();
 	test_adc_table();
+	test_adc_microvolt_conversion_fallback();
 	test_safe_gpio_allowlist();
+	test_full_gpio_layout_catalog();
 	test_gpio_name_formatter();
 	test_bool_parser();
 	test_gpio_pin_parser();

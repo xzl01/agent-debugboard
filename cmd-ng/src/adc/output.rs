@@ -32,6 +32,12 @@ pub fn write_text(output: &str, verbose: bool) -> Result<String, String> {
             if !reading.signal.is_empty() {
                 parts.push(format!("signal={}", reading.signal));
             }
+            if !reading.label.is_empty() {
+                parts.push(format!("label={}", reading.label));
+            }
+            if !reading.note.is_empty() {
+                parts.push(format!("note={}", reading.note));
+            }
             if let Some(power_enabled) = reading.power_enabled {
                 parts.push(format!(
                     "power={}",
@@ -93,11 +99,18 @@ pub fn write_text(output: &str, verbose: bool) -> Result<String, String> {
                 }
                 AdcKind::Voltage => {
                     if let Some(voltage_uv) = reading.voltage_uv {
-                        lines.push(format!(
+                        let mut text = format!(
                             "{}={}",
                             reading.name,
                             voltage_text_from_microvolts(voltage_uv)
-                        ));
+                        );
+                        for metadata in [&reading.label, &reading.note] {
+                            if !metadata.is_empty() {
+                                text.push(' ');
+                                text.push_str(metadata);
+                            }
+                        }
+                        lines.push(text);
                     }
                 }
             }

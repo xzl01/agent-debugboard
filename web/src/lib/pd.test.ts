@@ -3,6 +3,16 @@ import test from "node:test";
 import { EMPTY_PD_STATUS, parsePdStatus } from "./pd.ts";
 import type { PdStatus } from "./types.ts";
 
+test("PD starts unknown and adopts a reported 20 V without a synthesized 5 V", () => {
+  assert.equal(EMPTY_PD_STATUS.voltage_mv, 0);
+  for (const partial of [undefined, {}, { available: true, pd: true }, { voltage_mv: Number.NaN }]) {
+    assert.equal(parsePdStatus(partial).voltage_mv, 0);
+  }
+  const reported = parsePdStatus({ available: true, pd: true, mode: 0, voltage_mv: 20000 });
+  assert.equal(reported.voltage_mv, 20000);
+  assert.equal(parsePdStatus({ capabilities_valid: false }, reported).voltage_mv, 20000);
+});
+
 test("parsePdStatus normalizes firmware PD state", () => {
   assert.deepEqual(parsePdStatus({
     available: true,

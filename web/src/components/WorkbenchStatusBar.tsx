@@ -44,13 +44,7 @@ export function WorkbenchStatusBar({
     const value = snapshot.switches[name]?.route;
     return value ? switchRouteLabel(t, value) : "—";
   };
-  const uartLabel = serialConnections.uart0 && serialConnections.uart1
-    ? t("statusBar.uart.bothConnected")
-    : serialConnections.uart0
-      ? t("statusBar.uart.connected", { channel: "UART0" })
-      : serialConnections.uart1
-        ? t("statusBar.uart.connected", { channel: "UART1" })
-        : t("statusBar.uart.disconnected", { channel: "UART0" });
+  const serialLabel = t(`statusBar.j4.${serialConnections.state}`);
 
   return (
     <aside
@@ -110,9 +104,9 @@ export function WorkbenchStatusBar({
           <span className="hidden sm:inline">· VIN {route("vin")}</span>
         </div>
 
-        <div className="hidden shrink-0 items-center gap-1 border-l border-line/70 pl-3.5 lg:flex" title={t("statusBar.uartTitle")}>
+        <div className="hidden shrink-0 items-center gap-1 border-l border-line/70 pl-3.5 lg:flex" title={t("statusBar.j4Title")}>
           <SquareTerminal aria-hidden="true" className="h-3 w-3" />
-          <span>{uartLabel}</span>
+          <span>{serialLabel}</span>
         </div>
 
         <div

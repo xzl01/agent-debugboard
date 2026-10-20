@@ -40,7 +40,7 @@ const script: TestScript = {
         count: 2,
         steps: [
           { id: "adc", type: "adc_read", params: { channel: "5v_out" } },
-          { id: "expect", type: "serial_expect", params: { channel: "uart0", command: "uname -a", pattern: "Linux", timeout_ms: 5000 } },
+          { id: "expect", type: "serial_expect", params: { channel: "j4", command: "uname -a", pattern: "Linux", timeout_ms: 5000 } },
         ],
       },
     },
@@ -146,7 +146,7 @@ function mountReport(
     <TestReport
       script={options.testScript ?? script}
       summary={options.runSummary ?? summary(results)}
-      serialLogs={[{ stepId: "capture", channel: "uart0", direction: "rx", text: "capture done", timestampMs: startedAtMs + 700 }]}
+      serialLogs={[{ stepId: "capture", channel: "j4", direction: "rx", text: "capture done", timestampMs: startedAtMs + 700 }]}
       adcSamples={Array.from({ length: 12 }, (_, index) => ({ stepId: "capture", channel: "5v_out", currentUa: 100_000 + index * 10_000, timestampMs: startedAtMs + index * 50 }))}
       powerCaptures={options.captures ?? [{ stepId: "capture", rail: "5v_out", capture: incompleteCapture }]}
       onReRun={vi.fn()}

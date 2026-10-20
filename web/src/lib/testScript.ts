@@ -13,7 +13,7 @@ export type StepType =
 
 export type StepStatus = "pending" | "running" | "pass" | "fail" | "skip" | "error" | "aborted";
 
-export type SerialChannel = "uart0" | "uart1";
+export type SerialChannel = "j4";
 // Switch names are firmware-enumerated and validated by the board at runtime.
 export type SwitchName = string;
 export type CaptureTrigger = "manual" | "current" | "gpio" | "power_on";
@@ -354,6 +354,24 @@ function assertSerialWaitPattern(step: TestStep, location: string) {
   }
 }
 
+function assertJ4Channel(step: TestStep, location: string) {
+  if ((step.type === "serial_wait" || step.type === "serial_send" || step.type === "serial_expect")
+    && (step.params as SerialWaitParams).channel !== "j4") {
+    throw new Error(`${location}: serial channel must be j4`);
+  }
+}
+
+function assertJ4ScriptChannels(items: TestScriptItem[]) {
+  for (const item of items) {
+    if (isTestLoop(item)) assertJ4ScriptChannels(item.params.steps);
+    else if (isTestCondition(item)) {
+      assertJ4Channel(item.params.check, `Condition ${item.id}`);
+      assertJ4ScriptChannels(item.params.then_steps);
+      assertJ4ScriptChannels(item.params.else_steps);
+    } else assertJ4Channel(item, `Step ${item.id}`);
+  }
+}
+
 function assertConditionCheck(step: TestStep, location: string) {
   if (!(["serial_expect", "adc_read", "gpio_assert"] as StepType[]).includes(step.type)) {
     throw new Error(`${location}: unsupported check type "${step.type}"`);
@@ -520,6 +538,7 @@ export function buildExecutionPlan(script: TestScript): ExecutionStep[] {
   > & { suffix: string };
 
   const appendPrimitive = (step: TestStep, context: ExpansionContext) => {
+    assertJ4Channel(step, `Step ${step.id}`);
     appendStep({
       ...step,
       executionId: `${step.id}${context.suffix}`,
@@ -671,9 +690,9 @@ export function defaultStepParams<T extends StepType>(type: T): StepParamsFor<T>
     power_on: { rail: "5v_out" },
     power_off: { rail: "5v_out" },
     delay: { ms: 1000 },
-    serial_wait: { channel: "uart0", pattern: "login:", timeout_ms: 60000 },
-    serial_send: { channel: "uart0", text: "root\n" },
-    serial_expect: { channel: "uart0", command: "uname -a", pattern: "Linux", timeout_ms: 10000 },
+    serial_wait: { channel: "j4", pattern: "login:", timeout_ms: 60000 },
+    serial_send: { channel: "j4", text: "root\n" },
+    serial_expect: { channel: "j4", command: "uname -a", pattern: "Linux", timeout_ms: 10000 },
     adc_read: { channel: "5v_out" },
     gpio_set: { pin: "GP13", direction: "output", value: 1 },
     gpio_assert: { pin: "GP13", direction: "output", value: 1 },
@@ -718,6 +737,7 @@ export function parseTestScript(
       assert: value.assert as StepAssertion | undefined,
       continue_on_error: value.continue_on_error as boolean | undefined,
     };
+    assertJ4Channel(step, location);
     if (validatePlan) assertSerialWaitPattern(step, location);
     return step;
   };
@@ -852,6 +872,7 @@ export function parseTestScript(
       assert: obj.assert,
       continue_on_error: obj.continue_on_error,
     };
+    assertJ4Channel(step, `Line ${i + 1}`);
     if (validatePlan) assertSerialWaitPattern(step, `Line ${i + 1}`);
     steps.push(step);
   }
@@ -868,6 +889,7 @@ export function parseTestScript(
 }
 
 export function serializeTestScript(script: TestScript): string {
+  assertJ4ScriptChannels(script.steps);
   const header = {
     schema: script.schema,
     name: script.name,

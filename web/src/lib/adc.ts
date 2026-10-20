@@ -29,6 +29,10 @@ function parseSensorValue(value: unknown): SensorValue | undefined {
   return { val1: value.val1, val2: value.val2 };
 }
 
+function channelMetadata(record: RecordValue) {
+  return typeof record.note === "string" ? { note: record.note } : {};
+}
+
 function httpDiagnostics(record: RecordValue, sensorChannel: "current" | "voltage") {
   const sensorValue = parseSensorValue(record.sensor_value);
   return {
@@ -55,6 +59,7 @@ function parseHttpReading(value: unknown): AdcReading | null {
       unit: "uA",
       name: value.name,
       signal: value.signal,
+      ...channelMetadata(value),
       value: value.current_ua,
       power_enabled: value.power_enabled,
       ...(typeof value.voltage_valid === "boolean" ? { voltage_valid: value.voltage_valid } : {}),
@@ -72,6 +77,7 @@ function parseHttpReading(value: unknown): AdcReading | null {
       unit: "uV",
       name: value.name,
       signal: value.signal,
+      ...channelMetadata(value),
       value: voltageUv,
       ...httpDiagnostics(value, "voltage"),
     };
@@ -100,6 +106,7 @@ function parseCompactReading(value: unknown): AdcReading | null {
       unit: "uA",
       name: value.name,
       signal: value.signal,
+      ...channelMetadata(value),
       value: value.value,
       power_enabled: value.power_enabled,
       ...(typeof value.voltage_valid === "boolean" ? { voltage_valid: value.voltage_valid } : {}),
@@ -113,6 +120,7 @@ function parseCompactReading(value: unknown): AdcReading | null {
       unit: "uV",
       name: value.name,
       signal: value.signal,
+      ...channelMetadata(value),
       value: value.value,
     };
   }

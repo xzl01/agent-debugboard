@@ -51,6 +51,7 @@ type AdcDiagnostics = {
 type AdcReadingBase = AdcDiagnostics & {
   readonly name: string;
   readonly signal: string;
+  readonly note?: string;
   readonly value: number;
 };
 
@@ -189,6 +190,30 @@ export interface GpioLayoutGroupMetadata {
   // Unknown edges are retained at the boundary, but claim no board geometry.
   edge: string;
   order: number;
+}
+
+/** Physical connector metadata, never inferred from the live GPIO subset. */
+export interface GpioPhysicalCell {
+  readonly pinNumber: number;
+  readonly row: number;
+  readonly column: number;
+  readonly label: string;
+  readonly signal: string;
+  readonly role: string;
+  readonly controllable: boolean;
+  readonly outputCapable: boolean;
+  readonly gpioName?: string;
+}
+
+export interface GpioPhysicalGroup extends GpioLayoutGroupMetadata {
+  readonly rows: number;
+  readonly columns: number;
+  readonly cells: readonly GpioPhysicalCell[];
+}
+
+export interface GpioPhysicalLayout {
+  readonly view: "component-top";
+  readonly groups: readonly GpioPhysicalGroup[];
 }
 
 export interface WatchdogStatus {

@@ -9,8 +9,75 @@
 #include "linkr_debugger_logic_analyzer.h"
 
 #include <assert.h>
+#include <arpa/inet.h>
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
+
+int linkr_debugger_sigrok_linkr_test_bind_listener(int fd);
+
+static struct sockaddr_in bound_addr;
+static int bound_fd;
+static unsigned int bind_calls;
+static int bind_result;
+
+int zsock_bind(int fd, const struct sockaddr *addr, socklen_t addrlen)
+{
+	assert(addr != NULL);
+	assert(addrlen == sizeof(bound_addr));
+	memcpy(&bound_addr, addr, addrlen);
+	bound_fd = fd;
+	bind_calls++;
+	if (bind_result < 0) {
+		errno = EADDRINUSE;
+	}
+	return bind_result;
+}
+
+static void test_tcp_listener_binds_any_ipv4_on_sigrok_port(void)
+{
+	bind_calls = 0U;
+	bind_result = 0;
+	memset(&bound_addr, 0xff, sizeof(bound_addr));
+	assert(linkr_debugger_sigrok_linkr_test_bind_listener(42) == 0);
+	assert(bind_calls == 1U);
+	assert(bound_fd == 42);
+	assert(bound_addr.sin_family == AF_INET);
+	assert(ntohs(bound_addr.sin_port) == 5556U);
+	assert(bound_addr.sin_addr.s_addr == htonl(INADDR_ANY));
+
+	bind_result = -1;
+	assert(linkr_debugger_sigrok_linkr_test_bind_listener(43) == -1);
+	assert(errno == EADDRINUSE);
+	assert(bind_calls == 2U);
+	assert(bound_fd == 43);
+	assert(bound_addr.sin_family == AF_INET);
+	assert(ntohs(bound_addr.sin_port) == 5556U);
+	assert(bound_addr.sin_addr.s_addr == htonl(INADDR_ANY));
+	bind_result = 0;
+}
+
+static void test_tcp_listener_has_no_fixed_subnet_or_text_conversion(void)
+{
+	static const char source_suffix[] = "../../src/linkr_debugger_sigrok_linkr.c";
+	char path[sizeof(__FILE__) + sizeof(source_suffix)];
+	const char *basename = strrchr(__FILE__, '/');
+	size_t dir_len = basename != NULL ? (size_t)(basename - __FILE__) + 1U : 0U;
+	char line[512];
+	FILE *source;
+
+	memcpy(path, __FILE__, dir_len);
+	memcpy(path + dir_len, source_suffix, sizeof(source_suffix));
+	source = fopen(path, "r");
+	assert(source != NULL);
+	while (fgets(line, sizeof(line), source) != NULL) {
+		assert(strstr(line, "172.29.") == NULL);
+		assert(strstr(line, "inet_pton") == NULL);
+	}
+	assert(!ferror(source));
+	assert(fclose(source) == 0);
+}
 
 static void test_header_roundtrip(void)
 {
@@ -3331,6 +3398,8 @@ static void test_arbiter_sigrok_linkr_owner(void)
 
 int main(void)
 {
+	test_tcp_listener_binds_any_ipv4_on_sigrok_port();
+	test_tcp_listener_has_no_fixed_subnet_or_text_conversion();
 	test_header_roundtrip();
 	test_decode_next_request_frame_rejects_truncated_boundaries();
 	test_decode_next_request_frame_rejects_overlong_control_payload();

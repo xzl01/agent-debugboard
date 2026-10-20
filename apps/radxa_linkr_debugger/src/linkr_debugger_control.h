@@ -11,6 +11,8 @@
 #include "linkr_debugger_config_codec.h"
 #include "linkr_debugger_model.h"
 
+#include <errno.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -37,6 +39,37 @@ struct linkr_debugger_current_sample {
 	int32_t current_ua;
 	struct sensor_value value;
 };
+
+static inline int linkr_debugger_adc_resolve_microvolts(int conversion_result,
+							 int32_t raw,
+							 uint8_t resolution,
+							 int32_t *microvolts)
+{
+	int64_t full_scale;
+	int64_t scaled;
+
+	if (microvolts == NULL) {
+		return -EINVAL;
+	}
+	if (conversion_result >= 0) {
+		return 0;
+	}
+	if (resolution == 0U || resolution > 32U) {
+		return -ERANGE;
+	}
+
+	full_scale = (int64_t)((UINT64_C(1) << resolution) - 1U);
+	scaled = ((int64_t)raw * INT64_C(3300000)) / full_scale;
+	if (scaled > INT32_MAX) {
+		*microvolts = INT32_MAX;
+	} else if (scaled < INT32_MIN) {
+		*microvolts = INT32_MIN;
+	} else {
+		*microvolts = (int32_t)scaled;
+	}
+
+	return 0;
+}
 
 struct linkr_debugger_control_item_state {
 	uint8_t domain;

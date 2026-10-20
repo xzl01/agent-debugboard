@@ -30,6 +30,7 @@
 #include "linkr_debugger_ota.h"
 #include "linkr_debugger_pd.h"
 #include "linkr_debugger_shell.h"
+#include "linkr_debugger_serial_http.h"
 #include "linkr_debugger_ws.h"
 
 #include <errno.h>
@@ -53,7 +54,7 @@ LOG_MODULE_REGISTER(linkr_debugger_http, CONFIG_LINKR_DEBUGGER_LOG_LEVEL);
 #define LINKR_DEBUGGER_HTTP_HOST "0.0.0.0"
 #define LINKR_DEBUGGER_HTTP_BODY_BUFSZ 160U
 #define LINKR_DEBUGGER_HTTP_JSON_BUFSZ 4096U
-#define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 6144U
+#define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 6656U
 #define LINKR_DEBUGGER_HTTP_GPIO_NAME_BUFSZ LINKR_DEBUGGER_GPIO_NAME_BUFSZ
 #define LINKR_DEBUGGER_HTTP_GPIO_IDENT_BUFSZ 64U
 
@@ -90,6 +91,22 @@ struct linkr_debugger_http_pd_set_request {
 static uint16_t linkr_debugger_http_port = LINKR_DEBUGGER_HTTP_PORT;
 static struct k_mutex linkr_debugger_http_lock;
 static struct k_work_delayable linkr_debugger_bootloader_work;
+
+/* Owned exclusively by Zephyr's http_server_tid, including the send after a
+ * resource callback returns. HTTP/1 and HTTP/2 consume response_ctx->body via
+ * http_server_sendall() before dispatching another callback; no asynchronous
+ * sender retains it. Handlers must not re-enter one another or publish this
+ * workspace to workers. The control mutex does not protect its send lifetime.
+ * Keep each handler's original encoding limit, not the workspace's full size.
+ */
+static uint8_t linkr_debugger_http_json_workspace[LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ];
+
+BUILD_ASSERT(LINKR_DEBUGGER_HTTP_JSON_BUFSZ == 4096U,
+	     "HTTP JSON response limit must remain 4096 bytes");
+BUILD_ASSERT(LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ == 6656U,
+	     "HTTP status response limit must remain 6656 bytes");
+BUILD_ASSERT(sizeof(linkr_debugger_http_json_workspace) == 6656U,
+	     "HTTP handlers must share exactly one 6656-byte JSON workspace");
 
 static int linkr_debugger_http_route_request(struct http_client_ctx *client,
 				 enum http_transaction_status status,
@@ -568,6 +585,22 @@ static int linkr_debugger_http_json_power_outputs(struct linkr_debugger_http_env
 	return linkr_debugger_http_append(env, "]");
 }
 
+static int linkr_debugger_http_json_adc_note(
+	struct linkr_debugger_http_env *env,
+	const struct linkr_debugger_current_desc *adc)
+{
+	if (adc->note == NULL || adc->note[0] == '\0') {
+		return 0;
+	}
+
+	if (linkr_debugger_http_append(env, ",\"note\":") < 0 ||
+	    linkr_debugger_http_json_string(env, adc->note) < 0) {
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
 static int linkr_debugger_http_json_adc_channels(struct linkr_debugger_http_env *env)
 {
 	if (linkr_debugger_http_append(env, "[") < 0) {
@@ -606,8 +639,10 @@ static int linkr_debugger_http_json_adc_channels(struct linkr_debugger_http_env 
 					 (unsigned int)current->adc_index) < 0 ||
 		    linkr_debugger_http_json_string(env, current->sensor) < 0 ||
 		    linkr_debugger_http_append(env,
-					 ",\"sensor_channel\":\"%s\",\"unit\":\"%s\"}",
-					 sensor_channel, unit) < 0) {
+					 ",\"sensor_channel\":\"%s\",\"unit\":\"%s\"",
+					 sensor_channel, unit) < 0 ||
+		    linkr_debugger_http_json_adc_note(env, current) < 0 ||
+		    linkr_debugger_http_append(env, "}") < 0) {
 			return -ENOMEM;
 		}
 	}
@@ -707,6 +742,176 @@ static int linkr_debugger_http_json_gpio_layout_groups(struct linkr_debugger_htt
 		linkr_debugger_gpio_layout_group_count);
 }
 
+static bool linkr_debugger_http_gpio_role_valid(const char *role)
+{
+	static const char *const roles[] = {
+		"gpio", "adc", "i2c", "usb", "ground", "power", "dedicated",
+	};
+
+	if (role == NULL) {
+		return false;
+	}
+	for (size_t i = 0U; i < ARRAY_SIZE(roles); i++) {
+		if (strcmp(role, roles[i]) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static int linkr_debugger_http_validate_gpio_layout_catalog(
+	const char *view,
+	const struct linkr_debugger_gpio_layout_group_desc *groups,
+	size_t group_count,
+	const struct linkr_debugger_gpio_layout_cell_desc *cells,
+	size_t cell_count)
+{
+	size_t matched_cells = 0U;
+
+	if (view == NULL || groups == NULL || group_count == 0U ||
+	    cells == NULL || cell_count == 0U ||
+	    !linkr_debugger_json_utf8_valid(view, strlen(view))) {
+		return -EINVAL;
+	}
+
+	for (size_t i = 0U; i < group_count; i++) {
+		size_t group_cells = 0U;
+
+		if (groups[i].name == NULL || groups[i].edge == NULL ||
+		    groups[i].rows == 0U || groups[i].columns == 0U ||
+		    !linkr_debugger_json_utf8_valid(groups[i].name,
+						 strlen(groups[i].name)) ||
+		    !linkr_debugger_json_utf8_valid(groups[i].edge,
+						 strlen(groups[i].edge))) {
+			return -EINVAL;
+		}
+		for (size_t other = 0U; other < i; other++) {
+			if (groups[other].order == groups[i].order) {
+				return -EINVAL;
+			}
+		}
+
+		for (size_t cell_index = 0U; cell_index < cell_count; cell_index++) {
+			const struct linkr_debugger_gpio_layout_cell_desc *cell =
+				&cells[cell_index];
+
+			if (cell->group_order != groups[i].order) {
+				continue;
+			}
+			group_cells++;
+			if (cell->pin_number == 0U || cell->row >= groups[i].rows ||
+			    cell->column >= groups[i].columns || cell->label == NULL ||
+			    cell->signal == NULL || !linkr_debugger_http_gpio_role_valid(cell->role) ||
+			    !linkr_debugger_json_utf8_valid(cell->label, strlen(cell->label)) ||
+			    !linkr_debugger_json_utf8_valid(cell->signal, strlen(cell->signal)) ||
+			    !linkr_debugger_json_utf8_valid(cell->role, strlen(cell->role)) ||
+			    (cell->controllable && cell->gpio_pin > 29U) ||
+			    (cell->output_capable && !cell->controllable)) {
+				return -EINVAL;
+			}
+		}
+		if (group_cells != (size_t)groups[i].rows * groups[i].columns) {
+			return -EINVAL;
+		}
+		matched_cells += group_cells;
+	}
+
+	return matched_cells == cell_count ? 0 : -EINVAL;
+}
+
+static int linkr_debugger_http_json_gpio_layout_catalog_from(
+	struct linkr_debugger_http_env *env,
+	const char *view,
+	const struct linkr_debugger_gpio_layout_group_desc *groups,
+	size_t group_count,
+	const struct linkr_debugger_gpio_layout_cell_desc *cells,
+	size_t cell_count)
+{
+	if (env == NULL || linkr_debugger_http_validate_gpio_layout_catalog(
+				   view, groups, group_count, cells, cell_count) < 0) {
+		return -EINVAL;
+	}
+
+	if (linkr_debugger_http_append(env, "{\"view\":") < 0 ||
+	    linkr_debugger_http_json_string(env, view) < 0 ||
+	    linkr_debugger_http_append(env, ",\"groups\":[") < 0) {
+		return -ENOMEM;
+	}
+
+	for (size_t i = 0U; i < group_count; i++) {
+		const struct linkr_debugger_gpio_layout_group_desc *group = &groups[i];
+		bool first_cell = true;
+
+		if ((i > 0U && linkr_debugger_http_append(env, ",") < 0) ||
+		    linkr_debugger_http_append(env, "{\"name\":") < 0 ||
+		    linkr_debugger_http_json_string(env, group->name) < 0 ||
+		    linkr_debugger_http_append(env, ",\"edge\":") < 0 ||
+		    linkr_debugger_http_json_string(env, group->edge) < 0 ||
+		    linkr_debugger_http_append(env,
+				     ",\"order\":%u,\"rows\":%u,\"columns\":%u,\"cells\":[",
+				     (unsigned int)group->order,
+				     (unsigned int)group->rows,
+				     (unsigned int)group->columns) < 0) {
+			return -ENOMEM;
+		}
+
+		for (size_t cell_index = 0U; cell_index < cell_count; cell_index++) {
+			const struct linkr_debugger_gpio_layout_cell_desc *cell =
+				&cells[cell_index];
+			char gpio_name[LINKR_DEBUGGER_HTTP_GPIO_NAME_BUFSZ];
+
+			if (cell->group_order != group->order) {
+				continue;
+			}
+			if ((!first_cell && linkr_debugger_http_append(env, ",") < 0) ||
+			    linkr_debugger_http_append(env,
+					     "{\"pinNumber\":%u,\"row\":%u,\"column\":%u,\"label\":",
+					     (unsigned int)cell->pin_number,
+					     (unsigned int)cell->row,
+					     (unsigned int)cell->column) < 0 ||
+			    linkr_debugger_http_json_string(env, cell->label) < 0 ||
+			    linkr_debugger_http_append(env, ",\"signal\":") < 0 ||
+			    linkr_debugger_http_json_string(env, cell->signal) < 0 ||
+			    linkr_debugger_http_append(env, ",\"role\":") < 0 ||
+			    linkr_debugger_http_json_string(env, cell->role) < 0 ||
+			    linkr_debugger_http_append(
+				    env, ",\"controllable\":%s,\"outputCapable\":%s",
+				    cell->controllable ? "true" : "false",
+				    cell->output_capable ? "true" : "false") < 0) {
+				return -ENOMEM;
+			}
+			if (cell->controllable) {
+				if (!linkr_debugger_format_gpio_name(
+					    cell->gpio_pin, gpio_name, sizeof(gpio_name)) ||
+				    linkr_debugger_http_append(env, ",\"gpioName\":") < 0 ||
+				    linkr_debugger_http_json_string(env, gpio_name) < 0) {
+					return -ENOMEM;
+				}
+			}
+			if (linkr_debugger_http_append(env, "}") < 0) {
+				return -ENOMEM;
+			}
+			first_cell = false;
+		}
+		if (linkr_debugger_http_append(env, "]}") < 0) {
+			return -ENOMEM;
+		}
+	}
+
+	return linkr_debugger_http_append(env, "]}");
+}
+
+static int linkr_debugger_http_json_gpio_layout_catalog(
+	struct linkr_debugger_http_env *env)
+{
+	return linkr_debugger_http_json_gpio_layout_catalog_from(
+		env, linkr_debugger_gpio_layout_view,
+		linkr_debugger_gpio_layout_groups,
+		linkr_debugger_gpio_layout_group_count,
+		linkr_debugger_gpio_layout_cells,
+		linkr_debugger_gpio_layout_cell_count);
+}
+
 static int linkr_debugger_http_json_gpio_layout(struct linkr_debugger_http_env *env,
 					       const struct linkr_debugger_safe_gpio_desc *desc)
 {
@@ -737,6 +942,7 @@ static int linkr_debugger_http_json_current_reading(struct linkr_debugger_http_e
 	    linkr_debugger_http_json_string(env, current->name) < 0 ||
 	    linkr_debugger_http_append(env, ",\"signal\":") < 0 ||
 	    linkr_debugger_http_json_string(env, current->signal) < 0 ||
+	    linkr_debugger_http_json_adc_note(env, current) < 0 ||
 	    linkr_debugger_http_append(env, ",\"power_enabled\":%s,",
 				     sample->rail_enabled ? "true" : "false") < 0) {
 		return -ENOMEM;
@@ -781,7 +987,8 @@ static int linkr_debugger_http_json_voltage_reading(struct linkr_debugger_http_e
 	if (linkr_debugger_http_append(env, "{\"name\":") < 0 ||
 	    linkr_debugger_http_json_string(env, adc->name) < 0 ||
 	    linkr_debugger_http_append(env, ",\"signal\":") < 0 ||
-	    linkr_debugger_http_json_string(env, adc->signal) < 0) {
+	    linkr_debugger_http_json_string(env, adc->signal) < 0 ||
+	    linkr_debugger_http_json_adc_note(env, adc) < 0) {
 		return -ENOMEM;
 	}
 
@@ -1120,13 +1327,13 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 					 struct http_response_ctx *response_ctx,
 					 void *user_data)
 {
-	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ];
+	uint8_t *const json_buf = linkr_debugger_http_json_workspace;
 	struct linkr_debugger_config_service_status config_status;
 	struct linkr_debugger_pd_status pd_status;
 	const struct linkr_debugger_config_service_status *config_status_ptr = NULL;
 	struct linkr_debugger_http_env env = {
 		.buf = (char *)json_buf,
-		.cap = sizeof(json_buf),
+		.cap = LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ,
 	};
 
 	ARG_UNUSED(request_ctx);
@@ -1137,7 +1344,7 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 	}
 
 	if (client->method != HTTP_GET) {
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 				     HTTP_405_METHOD_NOT_ALLOWED,
 				     "status", "method_not_allowed", "method not allowed");
 		return 0;
@@ -1181,7 +1388,7 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 	    linkr_debugger_http_append(&env, ",\"gpios\":") < 0 ||
 	    linkr_debugger_http_json_safe_gpios(&env) < 0) {
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 				     HTTP_500_INTERNAL_SERVER_ERROR, "status",
 				     "response_too_large", "failed to encode status response");
 		return 0;
@@ -1202,14 +1409,14 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 
 	if (linkr_debugger_http_append(&env, "}\n") < 0) {
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 				     HTTP_500_INTERNAL_SERVER_ERROR, "status",
 				     "response_too_large", "failed to encode status response");
 		return 0;
 	}
 	k_mutex_unlock(&linkr_debugger_http_lock);
 
-	linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+	linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap, HTTP_200_OK);
 	return 0;
 }
 
@@ -1219,12 +1426,12 @@ static int linkr_debugger_http_handle_power(struct http_client_ctx *client,
 					struct http_response_ctx *response_ctx,
 					void *user_data)
 {
-	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	uint8_t *const json_buf = linkr_debugger_http_json_workspace;
 	char *path;
 	const struct linkr_debugger_rail_desc *rail = NULL;
 	struct linkr_debugger_http_env env = {
 		.buf = (char *)json_buf,
-		.cap = sizeof(json_buf),
+		.cap = LINKR_DEBUGGER_HTTP_JSON_BUFSZ,
 	};
 
 	ARG_UNUSED(user_data);
@@ -1237,7 +1444,7 @@ static int linkr_debugger_http_handle_power(struct http_client_ctx *client,
 	if (path != NULL) {
 		rail = linkr_debugger_find_rail(path + 1);
 		if (rail == NULL) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_404_NOT_FOUND,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_404_NOT_FOUND,
 					     "power", "unknown_power_output",
 					     "unknown power output");
 			return 0;
@@ -1267,7 +1474,7 @@ static int linkr_debugger_http_handle_power(struct http_client_ctx *client,
 		}
 
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap, HTTP_200_OK);
 		return 0;
 
 	case HTTP_PUT: {
@@ -1275,7 +1482,7 @@ static int linkr_debugger_http_handle_power(struct http_client_ctx *client,
 
 		if (rail == NULL) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_400_BAD_REQUEST,
 					     "power", "missing_power_output",
 					     "missing power output in URL");
 			return 0;
@@ -1283,7 +1490,7 @@ static int linkr_debugger_http_handle_power(struct http_client_ctx *client,
 
 		if (request_ctx->data == NULL || request_ctx->data_len == 0U) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_400_BAD_REQUEST,
 					     "power", "missing_body",
 					     "missing JSON request body");
 			return 0;
@@ -1293,21 +1500,21 @@ static int linkr_debugger_http_handle_power(struct http_client_ctx *client,
 						 request_ctx->data, request_ctx->data_len);
 		if (ret == -EINVAL || ret == -ERANGE || ret == -ENOTSUP) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_400_BAD_REQUEST,
 					     "power", "invalid_state",
 					     "state must be on/off or 1/0");
 			return 0;
 		}
 		if (ret == -EPERM) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_403_FORBIDDEN,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_403_FORBIDDEN,
 					     "power", "power_output_locked",
 					     "power output is locked in this build");
 			return 0;
 		}
 		if (ret < 0) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_500_INTERNAL_SERVER_ERROR,
 					     "power", "set_failed",
 					     "failed to set power output");
@@ -1324,20 +1531,20 @@ static int linkr_debugger_http_handle_power(struct http_client_ctx *client,
 		}
 
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap, HTTP_200_OK);
 		return 0;
 	}
 
 	default:
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 				     HTTP_405_METHOD_NOT_ALLOWED,
 				     "power", "method_not_allowed", "method not allowed");
 		return 0;
 	}
 
 	k_mutex_unlock(&linkr_debugger_http_lock);
-	linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
+	linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_500_INTERNAL_SERVER_ERROR,
 			     "power", "response_too_large", "failed to encode power response");
 	return 0;
 }
@@ -1348,10 +1555,10 @@ static int linkr_debugger_http_handle_adc(struct http_client_ctx *client,
 				      struct http_response_ctx *response_ctx,
 				      void *user_data)
 {
-	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	uint8_t *const json_buf = linkr_debugger_http_json_workspace;
 	struct linkr_debugger_http_env env = {
 		.buf = (char *)json_buf,
-		.cap = sizeof(json_buf),
+		.cap = LINKR_DEBUGGER_HTTP_JSON_BUFSZ,
 	};
 	const struct linkr_debugger_current_desc *single = NULL;
 	char *query;
@@ -1364,7 +1571,7 @@ static int linkr_debugger_http_handle_adc(struct http_client_ctx *client,
 	}
 
 	if (client->method != HTTP_GET) {
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 				     HTTP_405_METHOD_NOT_ALLOWED,
 				     "adc", "method_not_allowed", "method not allowed");
 		return 0;
@@ -1374,7 +1581,7 @@ static int linkr_debugger_http_handle_adc(struct http_client_ctx *client,
 	if (query != NULL) {
 		single = linkr_debugger_find_adc(query + strlen("channel="));
 		if (single == NULL) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_404_NOT_FOUND,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_404_NOT_FOUND,
 					     "adc", "unknown_channel", "unknown adc channel");
 			return 0;
 		}
@@ -1398,7 +1605,7 @@ static int linkr_debugger_http_handle_adc(struct http_client_ctx *client,
 		ret = linkr_debugger_current_read(current, &sample);
 		if (ret < 0) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_500_INTERNAL_SERVER_ERROR,
 					     "adc", "read_failed", "failed to read adc channel");
 			return 0;
@@ -1419,12 +1626,12 @@ static int linkr_debugger_http_handle_adc(struct http_client_ctx *client,
 	}
 
 	k_mutex_unlock(&linkr_debugger_http_lock);
-	linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+	linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap, HTTP_200_OK);
 	return 0;
 
 too_large:
 	k_mutex_unlock(&linkr_debugger_http_lock);
-	linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
+	linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_500_INTERNAL_SERVER_ERROR,
 			     "adc", "response_too_large", "failed to encode adc response");
 	return 0;
 }
@@ -1435,11 +1642,11 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 				 struct http_response_ctx *response_ctx,
 				 void *user_data)
 {
-	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	uint8_t *const json_buf = linkr_debugger_http_json_workspace;
 	char *path;
 	struct linkr_debugger_http_env env = {
 		.buf = (char *)json_buf,
-		.cap = sizeof(json_buf),
+		.cap = LINKR_DEBUGGER_HTTP_JSON_BUFSZ,
 	};
 
 	ARG_UNUSED(user_data);
@@ -1488,13 +1695,13 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 			}
 		} else {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_404_NOT_FOUND,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_404_NOT_FOUND,
 					     "switch", "not_found", "unknown switch");
 			return 0;
 		}
 
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap, HTTP_200_OK);
 		return 0;
 
 	case HTTP_PUT: {
@@ -1502,14 +1709,14 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 
 		if (path == NULL) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_400_BAD_REQUEST,
 					     "switch", "missing_switch", "missing switch name in URL");
 			return 0;
 		}
 
 		if (request_ctx->data == NULL || request_ctx->data_len == 0U) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_400_BAD_REQUEST,
 					     "switch", "missing_body", "missing JSON request body");
 			return 0;
 		}
@@ -1518,21 +1725,21 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 						  request_ctx->data, request_ctx->data_len);
 		if (ret == -EINVAL) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_400_BAD_REQUEST,
 					     "switch", "invalid_route",
 					     "route must be valid for the selected switch");
 			return 0;
 		}
 		if (ret == -ENOENT) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_404_NOT_FOUND,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_404_NOT_FOUND,
 					     "switch", "not_found", "unknown switch");
 			return 0;
 		}
 
 		if (ret < 0) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_500_INTERNAL_SERVER_ERROR,
 					     "switch", "set_failed", "failed to set switch route");
 			return 0;
 		}
@@ -1552,19 +1759,19 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 		}
 
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap, HTTP_200_OK);
 		return 0;
 	}
 
 	default:
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_405_METHOD_NOT_ALLOWED,
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_405_METHOD_NOT_ALLOWED,
 				     "switch", "method_not_allowed", "method not allowed");
 		return 0;
 	}
 
 	k_mutex_unlock(&linkr_debugger_http_lock);
-	linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
+	linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_500_INTERNAL_SERVER_ERROR,
 			     "switch", "response_too_large", "failed to encode switch response");
 	return 0;
 }
@@ -1575,14 +1782,14 @@ static int linkr_debugger_http_handle_gpio(struct http_client_ctx *client,
 				       struct http_response_ctx *response_ctx,
 				       void *user_data)
 {
-	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	uint8_t *const json_buf = linkr_debugger_http_json_workspace;
 	char *path;
 	char name[LINKR_DEBUGGER_HTTP_GPIO_NAME_BUFSZ];
 	char identifier[LINKR_DEBUGGER_HTTP_GPIO_IDENT_BUFSZ];
 	const struct linkr_debugger_safe_gpio_desc *desc = NULL;
 	struct linkr_debugger_http_env env = {
 		.buf = (char *)json_buf,
-		.cap = sizeof(json_buf),
+		.cap = LINKR_DEBUGGER_HTTP_JSON_BUFSZ,
 	};
 
 	ARG_UNUSED(user_data);
@@ -1590,11 +1797,38 @@ static int linkr_debugger_http_handle_gpio(struct http_client_ctx *client,
 	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
 		return 0;
 	}
+	if (strcmp((char *)client->url_buffer, "/api/v1/gpio/layout") == 0) {
+		k_mutex_lock(&linkr_debugger_http_lock, K_FOREVER);
+		if (client->method != HTTP_GET) {
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
+					     HTTP_405_METHOD_NOT_ALLOWED, "gpio",
+					     "method_not_allowed", "method not allowed");
+			k_mutex_unlock(&linkr_debugger_http_lock);
+			return 0;
+		}
+
+		if (linkr_debugger_http_json_begin(&env, "gpio", true) < 0 ||
+		    linkr_debugger_http_append(&env,
+					     ",\"action\":\"layout\",\"layout\":") < 0 ||
+		    linkr_debugger_http_json_gpio_layout_catalog(&env) < 0 ||
+		    linkr_debugger_http_append(&env, "}\n") < 0) {
+			k_mutex_unlock(&linkr_debugger_http_lock);
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
+					     HTTP_500_INTERNAL_SERVER_ERROR, "gpio",
+					     "response_too_large",
+					     "failed to encode GPIO layout response");
+			return 0;
+		}
+		k_mutex_unlock(&linkr_debugger_http_lock);
+		linkr_debugger_http_set_json_response(response_ctx, json_buf,
+						 env.cap, HTTP_200_OK);
+		return 0;
+	}
 
 	path = strchr((char *)client->url_buffer + strlen("/api/v1/gpio"), '/');
 	if (path != NULL) {
 		if (!linkr_debugger_http_percent_decode(path + 1, identifier, sizeof(identifier))) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_400_BAD_REQUEST,
 					     "gpio", "invalid_gpio",
 					     "GPIO target must be GP13, 13, or an allowlist note such as CON_MAS");
 			return 0;
@@ -1602,7 +1836,7 @@ static int linkr_debugger_http_handle_gpio(struct http_client_ctx *client,
 
 		desc = linkr_debugger_find_safe_gpio_by_identifier(identifier);
 		if (desc == NULL) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_403_FORBIDDEN,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_403_FORBIDDEN,
 					     "gpio", "not_allowed", "GPIO is not in the allowlist");
 			return 0;
 		}
@@ -1628,7 +1862,7 @@ static int linkr_debugger_http_handle_gpio(struct http_client_ctx *client,
 			int ret = linkr_debugger_gpio_get(desc, &value);
 			if (ret < 0) {
 				k_mutex_unlock(&linkr_debugger_http_lock);
-				linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+				linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 						     HTTP_500_INTERNAL_SERVER_ERROR,
 						     "gpio", "read_failed", "failed to read GPIO");
 				return 0;
@@ -1655,7 +1889,7 @@ static int linkr_debugger_http_handle_gpio(struct http_client_ctx *client,
 		}
 
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap, HTTP_200_OK);
 		return 0;
 
 	case HTTP_PUT: {
@@ -1666,14 +1900,14 @@ static int linkr_debugger_http_handle_gpio(struct http_client_ctx *client,
 
 		if (desc == NULL) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_400_BAD_REQUEST,
 					     "gpio", "missing_gpio", "missing GPIO in URL");
 			return 0;
 		}
 
 		if (request_ctx->data == NULL || request_ctx->data_len == 0U) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_400_BAD_REQUEST,
 					     "gpio", "missing_body", "missing JSON request body");
 			return 0;
 		}
@@ -1687,13 +1921,13 @@ static int linkr_debugger_http_handle_gpio(struct http_client_ctx *client,
 
 			k_mutex_unlock(&linkr_debugger_http_lock);
 			if (!input_requested && !output_requested) {
-				linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+				linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 						     HTTP_400_BAD_REQUEST, "gpio", "invalid_request",
 						     "request must contain direction and optional value");
 				return 0;
 			}
 			gpio_error = linkr_debugger_gpio_configure_error(output_requested, ret);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     gpio_error->forbidden ? HTTP_403_FORBIDDEN :
 							      HTTP_500_INTERNAL_SERVER_ERROR,
 					     "gpio", gpio_error->code, gpio_error->message);
@@ -1739,27 +1973,27 @@ static int linkr_debugger_http_handle_gpio(struct http_client_ctx *client,
 			}
 		} else {
 			k_mutex_unlock(&linkr_debugger_http_lock);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_400_BAD_REQUEST,
 					     "gpio", "invalid_request",
 					     "direction must be input or output");
 			return 0;
 		}
 
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap, HTTP_200_OK);
 		return 0;
 	}
 
 	default:
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 				     HTTP_405_METHOD_NOT_ALLOWED,
 				     "gpio", "method_not_allowed", "method not allowed");
 		return 0;
 	}
 
 	k_mutex_unlock(&linkr_debugger_http_lock);
-	linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
+	linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_500_INTERNAL_SERVER_ERROR,
 			     "gpio", "response_too_large", "failed to encode gpio response");
 	return 0;
 }
@@ -1770,10 +2004,10 @@ static int linkr_debugger_http_handle_bootloader(struct http_client_ctx *client,
 				     struct http_response_ctx *response_ctx,
 				     void *user_data)
 {
-	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	uint8_t *const json_buf = linkr_debugger_http_json_workspace;
 	struct linkr_debugger_http_env env = {
 		.buf = (char *)json_buf,
-		.cap = sizeof(json_buf),
+		.cap = LINKR_DEBUGGER_HTTP_JSON_BUFSZ,
 	};
 
 	ARG_UNUSED(client);
@@ -1784,7 +2018,7 @@ static int linkr_debugger_http_handle_bootloader(struct http_client_ctx *client,
 		return 0;
 	}
 	if (client->method != HTTP_POST) {
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 				     HTTP_405_METHOD_NOT_ALLOWED, "bootloader",
 				     "method_not_allowed", "method not allowed");
 		return 0;
@@ -1793,7 +2027,7 @@ static int linkr_debugger_http_handle_bootloader(struct http_client_ctx *client,
 	if (linkr_debugger_http_json_begin(&env, "bootloader", true) < 0 ||
 	    linkr_debugger_http_append(&env, ",\"message\":\"entering %s BOOTSEL in 250 ms\"}\n",
 				     linkr_debugger_mcu_name()) < 0) {
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_500_INTERNAL_SERVER_ERROR,
 				     "bootloader", "response_too_large",
 				     "failed to encode bootloader response");
 		return 0;
@@ -1801,7 +2035,7 @@ static int linkr_debugger_http_handle_bootloader(struct http_client_ctx *client,
 
 	linkr_debugger_ws_publish_state_change();
 	(void)k_work_reschedule(&linkr_debugger_bootloader_work, K_MSEC(250));
-	linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+	linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap, HTTP_200_OK);
 	return 0;
 }
 
@@ -1811,10 +2045,10 @@ static int linkr_debugger_http_handle_watchdog(struct http_client_ctx *client,
 				     struct http_response_ctx *response_ctx,
 				     void *user_data)
 {
-	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	uint8_t *const json_buf = linkr_debugger_http_json_workspace;
 	struct linkr_debugger_http_env env = {
 		.buf = (char *)json_buf,
-		.cap = sizeof(json_buf),
+		.cap = LINKR_DEBUGGER_HTTP_JSON_BUFSZ,
 	};
 	enum linkr_debugger_http_body_event body_event =
 		linkr_debugger_http_body_event_from_status(status);
@@ -1836,12 +2070,12 @@ static int linkr_debugger_http_handle_watchdog(struct http_client_ctx *client,
 		}
 
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap, HTTP_200_OK);
 		return 0;
 
 	case HTTP_POST:
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 				     HTTP_405_METHOD_NOT_ALLOWED,
 				     "watchdog", "manual_feed_removed",
 				     "watchdog is supervised by firmware and cannot be fed manually");
@@ -1849,14 +2083,14 @@ static int linkr_debugger_http_handle_watchdog(struct http_client_ctx *client,
 
 	default:
 		k_mutex_unlock(&linkr_debugger_http_lock);
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 				     HTTP_405_METHOD_NOT_ALLOWED,
 				     "watchdog", "method_not_allowed", "method not allowed");
 		return 0;
 	}
 
 	k_mutex_unlock(&linkr_debugger_http_lock);
-	linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
+	linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_500_INTERNAL_SERVER_ERROR,
 			     "watchdog", "response_too_large", "failed to encode watchdog response");
 	return 0;
 }
@@ -1869,10 +2103,10 @@ static int linkr_debugger_http_handle_watchdog_fault(
 	struct http_response_ctx *response_ctx,
 	void *user_data)
 {
-	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	uint8_t *const json_buf = linkr_debugger_http_json_workspace;
 	struct linkr_debugger_http_env env = {
 		.buf = (char *)json_buf,
-		.cap = sizeof(json_buf),
+		.cap = LINKR_DEBUGGER_HTTP_JSON_BUFSZ,
 	};
 	int ret;
 
@@ -1891,7 +2125,7 @@ static int linkr_debugger_http_handle_watchdog_fault(
 		ret = linkr_debugger_watchdog_fault_injection_arm();
 		if (ret == -EALREADY) {
 			linkr_debugger_http_error(
-				response_ctx, json_buf, sizeof(json_buf),
+				response_ctx, json_buf, env.cap,
 				HTTP_409_CONFLICT, "watchdog",
 				"already_armed",
 				"watchdog fault injection is already armed");
@@ -1899,7 +2133,7 @@ static int linkr_debugger_http_handle_watchdog_fault(
 		}
 		if (ret == -EBUSY) {
 			linkr_debugger_http_error(
-				response_ctx, json_buf, sizeof(json_buf),
+				response_ctx, json_buf, env.cap,
 				HTTP_409_CONFLICT, "watchdog",
 				"confirm_in_progress",
 				"watchdog fault injection cannot arm during OTA confirmation");
@@ -1907,7 +2141,7 @@ static int linkr_debugger_http_handle_watchdog_fault(
 		}
 		if (ret < 0) {
 			linkr_debugger_http_error(
-				response_ctx, json_buf, sizeof(json_buf),
+				response_ctx, json_buf, env.cap,
 				HTTP_409_CONFLICT, "watchdog",
 				"fault_injection_rejected",
 				"watchdog fault injection requires an active OTA test marker");
@@ -1918,7 +2152,7 @@ static int linkr_debugger_http_handle_watchdog_fault(
 	case HTTP_DELETE:
 		if (linkr_debugger_watchdog_fault_injection_disarm() < 0) {
 			linkr_debugger_http_error(
-				response_ctx, json_buf, sizeof(json_buf),
+				response_ctx, json_buf, env.cap,
 				HTTP_404_NOT_FOUND, "watchdog",
 				"fault_injection_unavailable",
 				"watchdog fault injection is unavailable");
@@ -1928,7 +2162,7 @@ static int linkr_debugger_http_handle_watchdog_fault(
 
 	default:
 		linkr_debugger_http_error(
-			response_ctx, json_buf, sizeof(json_buf),
+			response_ctx, json_buf, env.cap,
 			HTTP_405_METHOD_NOT_ALLOWED, "watchdog",
 			"method_not_allowed", "method not allowed");
 		return 0;
@@ -1943,14 +2177,14 @@ static int linkr_debugger_http_handle_watchdog_fault(
 		    linkr_debugger_watchdog_fault_injection_armed() ?
 			    "true" : "false") < 0) {
 		linkr_debugger_http_error(
-			response_ctx, json_buf, sizeof(json_buf),
+			response_ctx, json_buf, env.cap,
 			HTTP_500_INTERNAL_SERVER_ERROR, "watchdog",
 			"response_too_large", "failed to encode watchdog fault response");
 		return 0;
 	}
 
 	linkr_debugger_http_set_json_response(
-		response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+		response_ctx, json_buf, env.cap, HTTP_200_OK);
 	return 0;
 }
 #endif
@@ -2181,6 +2415,27 @@ LINKR_DEBUGGER_CONFIG_HTTP_RESOURCE(linkr_debugger_config_resource, "/api/v1/con
 					    BIT(HTTP_GET) | BIT(HTTP_PUT) | BIT(HTTP_DELETE),
 					    LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_CONFIG);
 
+#define LINKR_DEBUGGER_SERIAL_HTTP_RESOURCE(name_, path_, methods_, route_)                    \
+	static const enum linkr_debugger_serial_http_route name_##_route = route_;              \
+	static struct http_resource_detail_dynamic name_##_detail = {                           \
+		.common = {                                                                      \
+			.type = HTTP_RESOURCE_TYPE_DYNAMIC,                                      \
+			.bitmask_of_supported_http_methods = methods_,                           \
+			.content_type = "application/json",                                    \
+		},                                                                               \
+		.cb = linkr_debugger_serial_http_handle,                                      \
+		.user_data = (void *)&name_##_route,                                          \
+	};                                                                                   \
+	HTTP_RESOURCE_DEFINE(name_, linkr_debugger_http_service, path_, &name_##_detail)
+
+LINKR_DEBUGGER_SERIAL_HTTP_RESOURCE(
+	linkr_debugger_serial_j4_resource, LINKR_DEBUGGER_SERIAL_HTTP_STATUS_PATH,
+	BIT(HTTP_GET), LINKR_DEBUGGER_SERIAL_HTTP_ROUTE_STATUS);
+LINKR_DEBUGGER_SERIAL_HTTP_RESOURCE(
+	linkr_debugger_serial_j4_config_resource,
+	LINKR_DEBUGGER_SERIAL_HTTP_CONFIG_PATH, BIT(HTTP_PUT),
+	LINKR_DEBUGGER_SERIAL_HTTP_ROUTE_CONFIG);
+
 static uint8_t linkr_debugger_ws_resource_buffers[LINKR_DEBUGGER_WS_MAX_CLIENTS][LINKR_DEBUGGER_WS_RECV_BUFFER_SIZE];
 static uint8_t linkr_debugger_ws_resource_slots[LINKR_DEBUGGER_WS_MAX_CLIENTS] = { 0, 1, 2, 3 };
 
@@ -2259,10 +2514,10 @@ static int linkr_debugger_http_handle_pd(struct http_client_ctx *client,
 				  struct http_response_ctx *response_ctx,
 				  void *user_data)
 {
-	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	uint8_t *const json_buf = linkr_debugger_http_json_workspace;
 	struct linkr_debugger_http_env env = {
 		.buf = (char *)json_buf,
-		.cap = sizeof(json_buf),
+		.cap = LINKR_DEBUGGER_HTTP_JSON_BUFSZ,
 	};
 	struct linkr_debugger_http_pd_set_request req = { 0 };
 	struct linkr_debugger_pd_status pd_status;
@@ -2290,13 +2545,13 @@ static int linkr_debugger_http_handle_pd(struct http_client_ctx *client,
 			return 0;
 		}
 		if (body_result == LINKR_DEBUGGER_HTTP_BODY_TOO_LARGE) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_413_PAYLOAD_TOO_LARGE, "pd",
 					     "body_too_large", "JSON request body is too large");
 			return 0;
 		}
 		if (body_result != LINKR_DEBUGGER_HTTP_BODY_READY) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_400_BAD_REQUEST, "pd", "invalid_body",
 					     "failed to assemble JSON request body");
 			return 0;
@@ -2307,27 +2562,27 @@ static int linkr_debugger_http_handle_pd(struct http_client_ctx *client,
 	case HTTP_GET:
 		ret = linkr_debugger_pd_get_status(&pd_status);
 		if (ret < 0) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_503_SERVICE_UNAVAILABLE, "pd",
 					     "unavailable", "PD controller is unavailable");
 			return 0;
 		}
 		if (linkr_debugger_http_encode_pd(&env, "get", &pd_status) < 0) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_500_INTERNAL_SERVER_ERROR, "pd",
 					     "response_too_large",
 					     "failed to encode PD response");
 			return 0;
 		}
 		linkr_debugger_http_set_json_response(response_ctx, json_buf,
-						 sizeof(json_buf), HTTP_200_OK);
+						 env.cap, HTTP_200_OK);
 		return 0;
 
 	case HTTP_PUT:
 		if (body.len == 0U) {
 			linkr_debugger_http_body_clear((uintptr_t)client, HTTP_PUT,
 						 LINKR_DEBUGGER_HTTP_ROUTE_PD);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_400_BAD_REQUEST, "pd", "missing_body",
 					     "missing JSON request body");
 			return 0;
@@ -2339,14 +2594,14 @@ static int linkr_debugger_http_handle_pd(struct http_client_ctx *client,
 					 LINKR_DEBUGGER_HTTP_ROUTE_PD);
 		/* json_obj_parse returns a bitmap, not a decoded-field count. */
 		if (parsed_fields != (BIT64(0) | BIT64(1))) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_400_BAD_REQUEST, "pd", "invalid_body",
 					     "body must be {\"mode\":0|1,\"voltage_mv\":N}");
 			return 0;
 		}
 		if (req.mode != (int)LINKR_DEBUGGER_PD_MODE_FIXED &&
 		    req.mode != (int)LINKR_DEBUGGER_PD_MODE_PPS) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_400_BAD_REQUEST, "pd", "invalid_mode",
 					     "mode must be 0 (fixed) or 1 (PPS)");
 			return 0;
@@ -2360,38 +2615,38 @@ static int linkr_debugger_http_handle_pd(struct http_client_ctx *client,
 			ret = linkr_debugger_pd_set_fixed((uint16_t)req.voltage_mv);
 		}
 		if (ret == -EINVAL || ret == -ERANGE || ret == -ENOTSUP) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_400_BAD_REQUEST, "pd", "invalid_voltage",
 					     "voltage must be within the 20 V board limit and "
 					     "advertised by the connected source");
 			return 0;
 		}
 		if (ret == -ENODEV) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_503_SERVICE_UNAVAILABLE, "pd",
 					     "unavailable", "PD controller is unavailable");
 			return 0;
 		}
 		if (ret < 0) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_500_INTERNAL_SERVER_ERROR, "pd",
 					     "set_failed", "failed to apply PD voltage");
 			return 0;
 		}
 		(void)linkr_debugger_pd_get_status(&pd_status);
 		if (linkr_debugger_http_encode_pd(&env, "set", &pd_status) < 0) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_500_INTERNAL_SERVER_ERROR, "pd",
 					     "response_too_large",
 					     "failed to encode PD response");
 			return 0;
 		}
 		linkr_debugger_http_set_json_response(response_ctx, json_buf,
-						 sizeof(json_buf), HTTP_200_OK);
+						 env.cap, HTTP_200_OK);
 		return 0;
 
 	default:
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 				     HTTP_405_METHOD_NOT_ALLOWED, "pd",
 				     "method_not_allowed", "method not allowed");
 		return 0;
@@ -2404,10 +2659,10 @@ static int linkr_debugger_http_handle_net(struct http_client_ctx *client,
 					  struct http_response_ctx *response_ctx,
 					  void *user_data)
 {
-	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	uint8_t *const json_buf = linkr_debugger_http_json_workspace;
 	struct linkr_debugger_http_env env = {
 		.buf = (char *)json_buf,
-		.cap = sizeof(json_buf),
+		.cap = LINKR_DEBUGGER_HTTP_JSON_BUFSZ,
 	};
 	struct linkr_debugger_http_net_set_request req = { 0 };
 	struct linkr_debugger_http_body_view body = { 0 };
@@ -2437,13 +2692,13 @@ static int linkr_debugger_http_handle_net(struct http_client_ctx *client,
 			return 0;
 		}
 		if (body_result == LINKR_DEBUGGER_HTTP_BODY_TOO_LARGE) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_413_PAYLOAD_TOO_LARGE, "net",
 					     "body_too_large", "JSON request body is too large");
 			return 0;
 		}
 		if (body_result != LINKR_DEBUGGER_HTTP_BODY_READY) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_400_BAD_REQUEST, "net", "invalid_body",
 					     "failed to assemble JSON request body");
 			return 0;
@@ -2454,14 +2709,14 @@ static int linkr_debugger_http_handle_net(struct http_client_ctx *client,
 	case HTTP_GET:
 		subnet = linkr_debugger_network_subnet();
 		if (linkr_debugger_http_encode_net(&env, "get", subnet, false) < 0) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_500_INTERNAL_SERVER_ERROR, "net",
 					     "response_too_large",
 					     "failed to encode network response");
 			return 0;
 		}
 
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf),
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap,
 						 HTTP_200_OK);
 		return 0;
 
@@ -2469,7 +2724,7 @@ static int linkr_debugger_http_handle_net(struct http_client_ctx *client,
 		if (body.len == 0U) {
 			linkr_debugger_http_body_clear((uintptr_t)client,
 						HTTP_PUT, LINKR_DEBUGGER_HTTP_ROUTE_NET);
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_400_BAD_REQUEST, "net", "missing_body",
 					     "missing JSON request body");
 			return 0;
@@ -2481,7 +2736,7 @@ static int linkr_debugger_http_handle_net(struct http_client_ctx *client,
 		linkr_debugger_http_body_clear((uintptr_t)client,
 					HTTP_PUT, LINKR_DEBUGGER_HTTP_ROUTE_NET);
 		if (parsed_fields != BIT64(0)) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_400_BAD_REQUEST, "net", "invalid_body",
 					     "request body must be {\"subnet\":1..254}");
 			return 0;
@@ -2489,7 +2744,7 @@ static int linkr_debugger_http_handle_net(struct http_client_ctx *client,
 
 		if (req.subnet < (int)LINKR_DEBUGGER_NET_SUBNET_MIN ||
 		    req.subnet > (int)LINKR_DEBUGGER_NET_SUBNET_MAX) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_400_BAD_REQUEST, "net", "invalid_subnet",
 					     "subnet must be between 1 and 254");
 			return 0;
@@ -2498,13 +2753,13 @@ static int linkr_debugger_http_handle_net(struct http_client_ctx *client,
 		ret = linkr_debugger_network_set_subnet_with_result(
 			(uint8_t)req.subnet, &reconnect_required);
 		if (ret == -EINVAL) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_400_BAD_REQUEST, "net", "invalid_subnet",
 					     "subnet must be between 1 and 254");
 			return 0;
 		}
 		if (ret < 0) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_500_INTERNAL_SERVER_ERROR, "net",
 					     "set_failed", "failed to apply network subnet");
 			return 0;
@@ -2513,19 +2768,19 @@ static int linkr_debugger_http_handle_net(struct http_client_ctx *client,
 		if (linkr_debugger_http_encode_net(&env, "set",
 						  linkr_debugger_network_subnet(),
 						  reconnect_required) < 0) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     HTTP_500_INTERNAL_SERVER_ERROR, "net",
 					     "response_too_large",
 					     "failed to encode network response");
 			return 0;
 		}
 
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf),
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap,
 						 HTTP_200_OK);
 		return 0;
 
 	default:
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 				     HTTP_405_METHOD_NOT_ALLOWED, "net",
 				     "method_not_allowed", "method not allowed");
 		return 0;
@@ -2538,10 +2793,10 @@ static int linkr_debugger_http_handle_live_sessions(struct http_client_ctx *clie
 					 struct http_response_ctx *response_ctx,
 					 void *user_data)
 {
-	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	uint8_t *const json_buf = linkr_debugger_http_json_workspace;
 	struct linkr_debugger_http_env env = {
 		.buf = (char *)json_buf,
-		.cap = sizeof(json_buf),
+		.cap = LINKR_DEBUGGER_HTTP_JSON_BUFSZ,
 	};
 	struct linkr_debugger_ws_session_info info = { 0 };
 	char ws_url[96];
@@ -2561,19 +2816,19 @@ static int linkr_debugger_http_handle_live_sessions(struct http_client_ctx *clie
 	switch (client->method) {
 	case HTTP_POST:
 		if (path != NULL) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_404_NOT_FOUND,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_404_NOT_FOUND,
 					     "live-sessions", "not_found", "unknown live session path");
 			return 0;
 		}
 		ret = linkr_debugger_ws_session_create(&info);
 		if (ret == -EBUSY) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_503_SERVICE_UNAVAILABLE,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_503_SERVICE_UNAVAILABLE,
 					     "live-sessions", "no_slots_available",
 					     "no websocket session slots available");
 			return 0;
 		}
 		if (ret < 0) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_500_INTERNAL_SERVER_ERROR,
 					     "live-sessions", "create_failed",
 					     "failed to create live websocket session");
 			return 0;
@@ -2586,17 +2841,17 @@ static int linkr_debugger_http_handle_live_sessions(struct http_client_ctx *clie
 			     info.ws_path) < 0 ||
 		    linkr_debugger_http_json_string(&env, ws_url) < 0 ||
 		    linkr_debugger_http_append(&env, ",\"connected\":false}\n") < 0) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_500_INTERNAL_SERVER_ERROR,
 					     "live-sessions", "response_too_large",
 					     "failed to encode live session response");
 			return 0;
 		}
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf), HTTP_201_CREATED);
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap, HTTP_201_CREATED);
 		return 0;
 
 	case HTTP_GET:
 		if (path == NULL || *(path + 1) == '\0') {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_400_BAD_REQUEST,
 					     "live-sessions", "missing_session_id",
 					     "missing session id in URL");
 			return 0;
@@ -2604,7 +2859,7 @@ static int linkr_debugger_http_handle_live_sessions(struct http_client_ctx *clie
 		session_id = (uint32_t)strtoul(path + 1, NULL, 10);
 		ret = linkr_debugger_ws_session_lookup(session_id, &info);
 		if (ret < 0) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_404_NOT_FOUND,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_404_NOT_FOUND,
 					     "live-sessions", "unknown_session_id",
 					     "unknown live session id");
 			return 0;
@@ -2618,17 +2873,17 @@ static int linkr_debugger_http_handle_live_sessions(struct http_client_ctx *clie
 			     info.ws_path) < 0 ||
 		    linkr_debugger_http_json_string(&env, ws_url) < 0 ||
 		    linkr_debugger_http_append(&env, "}\n") < 0) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_500_INTERNAL_SERVER_ERROR,
 					     "live-sessions", "response_too_large",
 					     "failed to encode live session response");
 			return 0;
 		}
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap, HTTP_200_OK);
 		return 0;
 
 	case HTTP_DELETE:
 		if (path == NULL || *(path + 1) == '\0') {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_400_BAD_REQUEST,
 					     "live-sessions", "missing_session_id",
 					     "missing session id in URL");
 			return 0;
@@ -2636,19 +2891,19 @@ static int linkr_debugger_http_handle_live_sessions(struct http_client_ctx *clie
 		session_id = (uint32_t)strtoul(path + 1, NULL, 10);
 		ret = linkr_debugger_ws_session_delete(session_id);
 		if (ret == -ENOENT) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_404_NOT_FOUND,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_404_NOT_FOUND,
 					     "live-sessions", "unknown_session_id",
 					     "unknown live session id");
 			return 0;
 		}
 		if (ret == -EBUSY) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_409_CONFLICT,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_409_CONFLICT,
 					     "live-sessions", "session_connected",
 					     "session is already connected");
 			return 0;
 		}
 		if (ret < 0) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_500_INTERNAL_SERVER_ERROR,
 					     "live-sessions", "delete_failed",
 					     "failed to delete live session");
 			return 0;
@@ -2656,16 +2911,16 @@ static int linkr_debugger_http_handle_live_sessions(struct http_client_ctx *clie
 		if (linkr_debugger_http_json_begin(&env, "live-sessions", true) < 0 ||
 		    linkr_debugger_http_append(&env, ",\"action\":\"delete\",\"session_id\":%u}\n",
 				     (unsigned int)session_id) < 0) {
-			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_500_INTERNAL_SERVER_ERROR,
+			linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_500_INTERNAL_SERVER_ERROR,
 					     "live-sessions", "response_too_large",
 					     "failed to encode live session delete response");
 			return 0;
 		}
-		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf), HTTP_200_OK);
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, env.cap, HTTP_200_OK);
 		return 0;
 
 	default:
-		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_405_METHOD_NOT_ALLOWED,
+		linkr_debugger_http_error(response_ctx, json_buf, env.cap, HTTP_405_METHOD_NOT_ALLOWED,
 				     "live-sessions", "method_not_allowed", "method not allowed");
 		return 0;
 	}
@@ -2726,6 +2981,10 @@ static int linkr_debugger_http_route_request(struct http_client_ctx *client,
 	char *path = (char *)client->url_buffer;
 	enum linkr_debugger_captive_method captive_method;
 	enum linkr_debugger_captive_action captive_action;
+	static const enum linkr_debugger_serial_http_route serial_status_route =
+		LINKR_DEBUGGER_SERIAL_HTTP_ROUTE_STATUS;
+	static const enum linkr_debugger_serial_http_route serial_config_route =
+		LINKR_DEBUGGER_SERIAL_HTTP_ROUTE_CONFIG;
 
 	/* Network PUT owns a fragmented JSON body and must receive MORE, FINAL,
 	 * ABORTED and COMPLETE events. Other fallback routes remain final-only.
@@ -2737,6 +2996,18 @@ static int linkr_debugger_http_route_request(struct http_client_ctx *client,
 	if (linkr_debugger_http_path_matches(path, "/api/v1/pd", false)) {
 		return linkr_debugger_http_handle_pd(client, status, request_ctx,
 					     response_ctx, user_data);
+	}
+	if (linkr_debugger_http_path_matches(
+		    path, LINKR_DEBUGGER_SERIAL_HTTP_STATUS_PATH, false)) {
+		return linkr_debugger_serial_http_handle(
+			client, status, request_ctx, response_ctx,
+			(void *)&serial_status_route);
+	}
+	if (linkr_debugger_http_path_matches(
+		    path, LINKR_DEBUGGER_SERIAL_HTTP_CONFIG_PATH, false)) {
+		return linkr_debugger_serial_http_handle(
+			client, status, request_ctx, response_ctx,
+			(void *)&serial_config_route);
 	}
 
 	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {

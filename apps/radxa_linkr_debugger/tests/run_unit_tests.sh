@@ -54,15 +54,53 @@ cat > "${HOST_STUB_DIR}/zephyr/version.h" <<'EOF'
 
 #endif
 EOF
+mkdir -p "${HOST_STUB_DIR}/zephyr/drivers"
+cat > "${HOST_STUB_DIR}/zephyr/drivers/sensor.h" <<'EOF'
+#ifndef LINKR_DEBUGGER_UNIT_SENSOR_H_
+#define LINKR_DEBUGGER_UNIT_SENSOR_H_
+
+#include <stdint.h>
+
+struct sensor_value {
+	int32_t val1;
+	int32_t val2;
+};
+
+#endif
+EOF
 
 ${CC} -std=c11 -Wall -Wextra -Werror \
 	-DCONFIG_SOC_SERIES_RP2350 \
+	-I"${HOST_STUB_DIR}" \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/linkr_debugger_board_model_fixture.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_model.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_model.c" \
 	-o "${OUT}/linkr_debugger_model_rp2350_test"
 
 "${OUT}/linkr_debugger_model_rp2350_test"
+
+${CC} -std=c11 -Wall -Wextra -Werror \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_serial_model.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_serial_model.c" \
+	-o "${OUT}/linkr_debugger_serial_model_test"
+
+"${OUT}/linkr_debugger_serial_model_test"
+
+${CC} -std=c11 -Wall -Wextra -Werror \
+	-DLINKR_DEBUGGER_SERIAL_HOST_TEST \
+	-pthread \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/serial_runtime_stubs" \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_serial_model.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_serial.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_serial_runtime.c" \
+	-o "${OUT}/linkr_debugger_serial_runtime_test"
+
+"${OUT}/linkr_debugger_serial_runtime_test"
 
 ${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_CONFIG_CODEC_HOST_TEST \

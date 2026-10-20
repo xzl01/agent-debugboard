@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { LanguageProvider } from "@/lib/i18n";
 import type { SafeGpio } from "@/lib/types";
 import { GpioCard } from "./GpioCard";
+import { layoutForTestGpios } from "@/lib/gpioPhysicalLayout.testFixtures";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -48,14 +49,14 @@ export function mount(element: ReactElement): View {
 }
 
 export function renderCard(gpios: SafeGpio[], onSet: OnSet): View {
-  return mount(<GpioCard gpios={gpios} onSet={onSet} />);
+  return mount(<GpioCard gpios={gpios} physicalLayout={layoutForTestGpios(gpios)} onSet={onSet} />);
 }
 
 export function rerenderCard(view: View, gpios: SafeGpio[], onSet: OnSet): void {
   act(() => {
     view.root.render(
       <LanguageProvider>
-        <GpioCard gpios={gpios} onSet={onSet} />
+        <GpioCard gpios={gpios} physicalLayout={layoutForTestGpios(gpios)} onSet={onSet} />
       </LanguageProvider>
     );
   });

@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import type { AutomationTaskControl } from "@/lib/automationTask";
+import type { GpioPhysicalLayout } from "@/lib/types";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -84,6 +85,7 @@ const headerMocks = vi.hoisted(() => ({
 
 vi.mock("@/hooks/useBoard", async () => {
   const { useBoardReboot } = await import("@/hooks/useBoardReboot");
+  const { layoutForTestGpios } = await import("@/lib/gpioPhysicalLayout.testFixtures");
   return { useBoard: () => {
     const reboot = useBoardReboot(boardMocks.connected, boardMocks.uptimeMs);
     return {
@@ -99,6 +101,9 @@ vi.mock("@/hooks/useBoard", async () => {
     error: null,
     auto: true,
     live: true,
+    gpioPhysicalLayout: layoutForTestGpios([{ name: "GP10", pin: 10, note: "", value: 1, direction: "output" }]),
+    gpioLayoutError: null,
+    gpioLayoutLoading: false,
     snapshot: {
       config: boardMocks.config ?? undefined,
       powerOutputs: boardMocks.powerOutputs,
@@ -148,11 +153,11 @@ vi.mock("./SwitchCard", () => ({ SwitchCard: () => null }));
 vi.mock("./BootCard", () => ({ BootCard: () => null }));
 vi.mock("./NetworkCard", () => ({ NetworkCard: () => null }));
 vi.mock("./GpioCard", () => ({
-  GpioCard: ({ workspaceTabs, layoutGroups }: {
+  GpioCard: ({ workspaceTabs, physicalLayout }: {
     readonly workspaceTabs?: ReactNode;
-    readonly layoutGroups?: readonly { readonly name: string }[];
+    readonly physicalLayout?: GpioPhysicalLayout | null;
   }) => (
-    <div data-testid="gpio-card" data-layout-groups={layoutGroups?.map((group) => group.name).join(",")}>{workspaceTabs}</div>
+    <div data-testid="gpio-card" data-layout-groups={physicalLayout?.groups.map((group) => group.name).join(",")}>{workspaceTabs}</div>
   ),
 }));
 vi.mock("./WatchdogCard", () => ({ WatchdogCard: () => <div data-testid="watchdog-card" /> }));
@@ -195,7 +200,7 @@ vi.mock("./PersistentConfigCard", () => ({ PersistentConfigCard: () => null }));
 
 type SerialCardMockProps = {
   readonly workspaceTabs?: ReactNode;
-  readonly onConnectionChange?: (connections: { uart0: boolean; uart1: boolean }) => void;
+  readonly onConnectionChange?: (connections: { j4: boolean; state: "ready" }) => void;
 };
 
 vi.mock("./SerialCard", async () => {
@@ -206,7 +211,7 @@ vi.mock("./SerialCard", async () => {
       _ref
     ) {
       useEffect(() => {
-        onConnectionChange?.({ uart0: true, uart1: false });
+        onConnectionChange?.({ j4: true, state: "ready" });
       }, [onConnectionChange]);
       return (
         <div data-testid="serial-card">
@@ -696,7 +701,7 @@ describe("App workspace", () => {
     expect(dialog.querySelector('[data-testid="hardware-section-tab-firmware"]')).toBeNull();
   });
 
-  it("keeps GPIO and watchdog controls in the hardware drawer io section", () => {
+  it("places the sole physical GPIO card immediately before Watchdog in the IO drawer", () => {
     const { host } = mountApp();
     click(byTestId(host, "open-hardware-controls"));
     const dialog = document.body.querySelector<HTMLDialogElement>('dialog[aria-labelledby="hardware-controls-title"]');
@@ -705,9 +710,17 @@ describe("App workspace", () => {
     click(byTestId<HTMLButtonElement>(dialog, "hardware-section-tab-io"));
 
     expect(dialog.querySelector('[data-testid="gpio-card"]')).not.toBeNull();
-    expect(dialog.querySelector('[data-testid="gpio-card"]')?.getAttribute("data-layout-groups")).toBe("PORT");
+    expect(dialog.querySelector('[data-testid="gpio-card"]')?.getAttribute("data-layout-groups")).toBe("TEST");
     expect(dialog.querySelector('[data-testid="watchdog-card"]')).not.toBeNull();
     expect(dialog.querySelector('[data-testid="gpio-controls-anchor"]')).not.toBeNull();
+    const controls = byTestId(dialog, "gpio-controls-anchor");
+    const watchdog = byTestId(dialog, "watchdog-card");
+    expect(controls.nextElementSibling).toBe(watchdog);
+    expect(controls.parentElement).toBe(watchdog.parentElement);
+    expect([...controls.parentElement!.children]).toEqual([controls, watchdog]);
+    expect(controls.querySelector('[data-testid="gpio-card"]')).not.toBeNull();
+    expect(dialog.querySelectorAll('[data-testid="gpio-card"]')).toHaveLength(1);
+    expect(dialog.querySelector('[data-testid="gpio-reference-column"]')).toBeNull();
   });
 
   it("closes the hardware drawer on an exact backdrop click but not on inside clicks", () => {

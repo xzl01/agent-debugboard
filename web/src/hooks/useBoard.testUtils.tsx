@@ -11,6 +11,7 @@ const hoistedApiMocks = vi.hoisted(() => ({
   getAdc: vi.fn<typeof import("@/lib/api").getAdc>(),
   getPd: vi.fn<typeof import("@/lib/api").getPd>(),
   getStatus: vi.fn<typeof import("@/lib/api").getStatus>(),
+  getGpioLayout: vi.fn<typeof import("@/lib/api").getGpioLayout>(),
   liveWebSocketUrl: vi.fn<typeof import("@/lib/api").liveWebSocketUrl>(),
   setGpio: vi.fn<typeof import("@/lib/api").setGpio>(),
   setPower: vi.fn<typeof import("@/lib/api").setPower>(),
@@ -143,6 +144,7 @@ export function setupUseBoardHarness(): void {
   apiMocks.rebootBoard.mockResolvedValue(undefined);
   apiMocks.getAdc.mockResolvedValue({ readings: [] });
   apiMocks.getPd.mockResolvedValue({ available: false, mode: 0, voltage_mv: 5000 });
+  apiMocks.getGpioLayout.mockResolvedValue({ view: "component-top", groups: [] });
   apiMocks.getStatus.mockResolvedValue({
     power_capture_protocol: "host-stream-v1",
     power_outputs: [],

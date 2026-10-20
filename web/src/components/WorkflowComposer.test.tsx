@@ -1,8 +1,9 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { defaultScript, type TestScript } from "@/lib/testScript";
+import { defaultScript, defaultStepParams, type TestScript } from "@/lib/testScript";
 import { WorkflowComposer } from "./WorkflowComposer";
+import { StepParams } from "./TestEditor";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -29,7 +30,7 @@ function practicalScript(): TestScript {
       {
         id: "serial-wait",
         type: "serial_wait",
-        params: { channel: "uart0", pattern: "login:", timeout_ms: 60_000 },
+        params: { channel: "j4", pattern: "login:", timeout_ms: 60_000 },
       },
       {
         id: "loop-1",
@@ -37,7 +38,7 @@ function practicalScript(): TestScript {
         params: {
           count: 2,
           steps: [
-            { id: "loop-send", type: "serial_send", params: { channel: "uart0", text: "root\\n" } },
+            { id: "loop-send", type: "serial_send", params: { channel: "j4", text: "root\\n" } },
             {
               id: "loop-adc",
               type: "adc_read",
@@ -110,6 +111,15 @@ afterEach(() => {
 });
 
 describe("WorkflowComposer panel layout", () => {
+  it("offers only the J4 MCU channel for serial send, wait and expect inspectors", () => {
+    const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
+    currentView = { host, close: () => act(() => { root.unmount(); host.remove(); }) };
+    for (const type of ["serial_send", "serial_wait", "serial_expect"] as const) {
+      act(() => root.render(<StepParams step={{ id: type, type, params: defaultStepParams(type) }} onParamChange={vi.fn()} />));
+      expect([...host.querySelectorAll("select option")].map((option) => (option as HTMLOptionElement).value)).toEqual(["j4"]);
+      expect(host.textContent).toContain("test.opt.j4");
+    }
+  });
   it("lets the Unit library and inspector be hidden independently without hiding the canvas", () => {
     const { host } = mountComposer();
     const layoutControls = host.querySelector<HTMLElement>('[aria-label="test.workflow.layoutControls"]');

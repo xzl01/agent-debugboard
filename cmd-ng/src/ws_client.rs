@@ -19,6 +19,8 @@ use std::sync::Mutex;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{connect, Message, WebSocket};
 
+pub const MAX_ADC_BATCH_SAMPLES: u8 = 18;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WsEnvelope {
     #[serde(default)]
@@ -121,6 +123,10 @@ pub struct WsTelemetryBatchChannel {
     pub name: String,
     #[serde(default)]
     pub signal: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
     pub kind: AdcKind,
     pub unit: String,
 }
@@ -313,12 +319,26 @@ pub fn subscribe_request(rate_hz: i32) -> WsCommandRequest {
 
 pub fn subscribe_batch_request(rate_hz: i32, batch_size: u8) -> WsCommandRequest {
     WsCommandRequest {
-        batch_size: Some(batch_size),
+        batch_size: Some(batch_size.min(MAX_ADC_BATCH_SAMPLES)),
         ..subscribe_request(rate_hz)
     }
 }
 
 pub fn expand_telemetry_batch(batch: WsTelemetryBatch) -> Result<Vec<WsTelemetryMessage>> {
+    anyhow::ensure!(
+        batch.samples.len() <= usize::from(MAX_ADC_BATCH_SAMPLES),
+        "telemetry batch exceeds {MAX_ADC_BATCH_SAMPLES} samples"
+    );
+    let current_count = batch
+        .channels
+        .iter()
+        .filter(|channel| channel.kind == AdcKind::Current)
+        .count();
+    anyhow::ensure!(
+        current_count <= 4,
+        "telemetry batch exceeds four current channels"
+    );
+    let current_mask = (1u32 << current_count) - 1;
     let mut messages = Vec::with_capacity(batch.samples.len());
 
     for (sample_index, sample) in batch.samples.into_iter().enumerate() {
@@ -329,57 +349,47 @@ pub fn expand_telemetry_batch(batch: WsTelemetryBatch) -> Result<Vec<WsTelemetry
                 sample.values.len()
             ));
         }
+        anyhow::ensure!(
+            sample.voltages_uv.len() == current_count,
+            "telemetry batch rail voltage count mismatch: {current_count} current channels, {} voltages",
+            sample.voltages_uv.len()
+        );
+        anyhow::ensure!(
+            (sample.power_enabled_mask | sample.voltage_valid_mask) & !current_mask == 0,
+            "telemetry batch mask contains non-current channel bits"
+        );
 
+        let mut current_index = 0usize;
         let readings = batch
             .channels
             .iter()
             .zip(sample.values)
-            .enumerate()
-            .map(|(channel_index, (channel, value))| {
+            .map(|(channel, value)| {
                 validate_compact_kind_unit(channel.kind, &channel.unit)
                     .map_err(|err| anyhow!(err))?;
-                let power_enabled = match channel.kind {
+                let (power_enabled, voltage_valid, voltage_uv) = match channel.kind {
                     AdcKind::Current => {
-                        let bit = if channel_index < u32::BITS as usize {
-                            1u32 << channel_index
-                        } else {
-                            0
-                        };
-                        Some(sample.power_enabled_mask & bit != 0)
+                        let bit = 1u32 << current_index;
+                        let voltage = sample.voltages_uv[current_index];
+                        current_index += 1;
+                        (
+                            Some(sample.power_enabled_mask & bit != 0),
+                            Some(sample.voltage_valid_mask & bit != 0),
+                            Some(voltage),
+                        )
                     }
-                    AdcKind::Voltage => None,
+                    AdcKind::Voltage => (None, None, None),
                 };
                 AdcCompactReading {
                     name: channel.name.clone(),
                     signal: channel.signal.clone(),
+                    note: channel.note.clone(),
+                    label: channel.label.clone(),
                     kind: channel.kind,
                     unit: channel.unit.clone(),
                     power_enabled,
-                    voltage_valid: match channel.kind {
-                        AdcKind::Current => {
-                            let current_index = batch.channels[..channel_index]
-                                .iter()
-                                .filter(|candidate| candidate.kind == AdcKind::Current)
-                                .count();
-                            let bit = if current_index < u32::BITS as usize {
-                                1u32 << current_index
-                            } else {
-                                0
-                            };
-                            Some(sample.voltage_valid_mask & bit != 0)
-                        }
-                        AdcKind::Voltage => None,
-                    },
-                    voltage_uv: match channel.kind {
-                        AdcKind::Current => {
-                            let current_index = batch.channels[..channel_index]
-                                .iter()
-                                .filter(|candidate| candidate.kind == AdcKind::Current)
-                                .count();
-                            sample.voltages_uv.get(current_index).copied()
-                        }
-                        AdcKind::Voltage => None,
-                    },
+                    voltage_valid,
+                    voltage_uv,
                     value,
                 }
                 .into_reading()
@@ -657,8 +667,8 @@ mod tests {
                 "dropped_samples":2,
                 "channels":[{"name":"5v_out","signal":"S_C_5V","kind":"current","unit":"uA"}],
                 "samples":[
-                    {"sequence":10,"uptime_us":1000,"sample_sequence":110,"device_t_mono_us":1001,"power_enabled_mask":1,"values":[56]},
-                    {"sequence":11,"uptime_us":2000,"sample_sequence":111,"device_t_mono_us":2001,"power_enabled_mask":0,"values":[57]}
+                    {"sequence":10,"uptime_us":1000,"sample_sequence":110,"device_t_mono_us":1001,"power_enabled_mask":1,"values":[56],"voltages_uv":[0]},
+                    {"sequence":11,"uptime_us":2000,"sample_sequence":111,"device_t_mono_us":2001,"power_enabled_mask":0,"values":[57],"voltages_uv":[0]}
                 ]
             }"#,
         )
@@ -695,7 +705,7 @@ mod tests {
                 "topic":"adc",
                 "schema":"radxa-linkr-debugger.v1",
                 "channels":[{"name":"5v_out","signal":"S_C_5V","kind":"current","unit":"uA"}],
-                "samples":[{"sequence":12,"uptime_us":3000,"power_enabled_mask":1,"values":[58]}]
+                "samples":[{"sequence":12,"uptime_us":3000,"power_enabled_mask":1,"values":[58],"voltages_uv":[0]}]
             }"#,
         )
         .unwrap();
@@ -710,33 +720,108 @@ mod tests {
 
     #[test]
     fn expands_mixed_current_and_voltage_batch_with_power_mask() {
-        let batch: WsTelemetryBatch = serde_json::from_str(
-            r#"{
-                "type":"telemetry-batch",
-                "topic":"adc",
-                "schema":"radxa-linkr-debugger.v1",
-                "channels":[
-                    {"name":"5v_out","signal":"S_C_5V","kind":"current","unit":"uA"},
-                    {"name":"12v_out","signal":"S_C_12V","kind":"current","unit":"uA"},
-                    {"name":"20v_out","signal":"S_C_20V","kind":"current","unit":"uA"},
-                    {"name":"adc3","signal":"ADC3","kind":"voltage","unit":"uV"}
-                ],
-                "samples":[{"sequence":12,"uptime_us":3000,"power_enabled_mask":5,"voltage_valid_mask":7,"values":[540000,120000,20000,1234000],"voltages_uv":[5010000,12020000,20030000]}]
-            }"#,
-        )
-        .unwrap();
+        let mut wire = crate::adc::fixture::batch();
+        wire["samples"][0]["power_enabled_mask"] = serde_json::json!(5);
+        let batch: WsTelemetryBatch = serde_json::from_value(wire).unwrap();
 
         let message = expand_telemetry_batch(batch).unwrap().remove(0);
-        assert_eq!(message.readings.len(), 4);
+        assert_eq!(message.readings.len(), 8);
         assert_eq!(message.readings[0].power_enabled, Some(true));
         assert_eq!(message.readings[1].power_enabled, Some(false));
         assert_eq!(message.readings[2].power_enabled, Some(true));
-        assert_eq!(message.readings[0].voltage_uv, Some(5_010_000));
-        assert_eq!(message.readings[1].voltage_uv, Some(12_020_000));
-        assert_eq!(message.readings[2].voltage_uv, Some(20_030_000));
-        assert_eq!(message.readings[3].kind, AdcKind::Voltage);
-        assert_eq!(message.readings[3].voltage_uv, Some(1_234_000));
-        assert_eq!(message.readings[3].current_ua, None);
+        assert_eq!(message.readings[0].voltage_uv, Some(5_000_000));
+        assert_eq!(message.readings[1].voltage_uv, None);
+        assert_eq!(message.readings[2].voltage_uv, Some(20_000_000));
+        for (reading, uv) in message.readings[4..]
+            .iter()
+            .zip([2_608_696, 1_100_000, 2_200_000, 0])
+        {
+            assert_eq!(reading.kind, AdcKind::Voltage);
+            assert_eq!(reading.voltage_uv, Some(uv));
+            assert_eq!(reading.current_ua, None);
+            assert_eq!(reading.power_enabled, None);
+        }
+        assert_eq!(message.readings[4].note, "pad voltage");
+    }
+
+    #[test]
+    fn batch_masks_use_current_indices_even_with_interleaved_voltage_descriptors() {
+        let mut wire = crate::adc::fixture::batch();
+        let order = [4, 0, 5, 1, 6, 2, 7, 3];
+        wire["channels"] = order
+            .iter()
+            .map(|index| wire["channels"][*index].clone())
+            .collect::<Vec<_>>()
+            .into();
+        wire["samples"][0]["values"] = order
+            .iter()
+            .map(|index| wire["samples"][0]["values"][*index].clone())
+            .collect::<Vec<_>>()
+            .into();
+        wire["samples"][0]["power_enabled_mask"] = serde_json::json!(5);
+        let messages = expand_telemetry_batch(serde_json::from_value(wire).unwrap()).unwrap();
+        let current: Vec<_> = messages[0]
+            .readings
+            .iter()
+            .filter(|reading| reading.kind == AdcKind::Current)
+            .collect();
+        assert_eq!(
+            current
+                .iter()
+                .map(|reading| reading.power_enabled)
+                .collect::<Vec<_>>(),
+            [Some(true), Some(false), Some(true), Some(false)]
+        );
+        assert_eq!(
+            current
+                .iter()
+                .map(|reading| reading.voltage_valid)
+                .collect::<Vec<_>>(),
+            [Some(true), Some(false), Some(true), Some(true)]
+        );
+        assert_eq!(current[3].voltage_uv, Some(5_100_000));
+    }
+
+    #[test]
+    fn batch_rejects_bad_lengths_masks_and_more_than_eighteen_samples() {
+        for (field, value) in [
+            ("values", serde_json::json!([1, 2, 3, 4, 5])),
+            ("values", serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9])),
+            ("voltages_uv", serde_json::json!([1, 2, 3])),
+            ("voltages_uv", serde_json::json!([1, 2, 3, 4, 5])),
+            ("power_enabled_mask", serde_json::json!(16)),
+            ("voltage_valid_mask", serde_json::json!(0x8000_0000u32)),
+        ] {
+            let mut wire = crate::adc::fixture::batch();
+            wire["samples"][0][field] = value;
+            assert!(
+                expand_telemetry_batch(serde_json::from_value(wire).unwrap()).is_err(),
+                "{field}"
+            );
+        }
+        let mut wire = crate::adc::fixture::batch();
+        let sample = wire["samples"][0].clone();
+        wire["samples"] = serde_json::json!(vec![sample.clone(); 18]);
+        assert_eq!(
+            expand_telemetry_batch(serde_json::from_value(wire.clone()).unwrap())
+                .unwrap()
+                .len(),
+            18
+        );
+        wire["samples"].as_array_mut().unwrap().push(sample);
+        assert!(expand_telemetry_batch(serde_json::from_value(wire).unwrap()).is_err());
+        assert_eq!(subscribe_batch_request(250, 20).batch_size, Some(18));
+    }
+
+    #[test]
+    fn single_telemetry_normalizes_all_eight_channels_without_scaling_pad_voltage() {
+        let raw = crate::adc::fixture::http();
+        let wire = serde_json::json!({"type":"telemetry","topic":"adc","schema":JSON_SCHEMA,"readings":raw["readings"]});
+        let message: super::WsTelemetryMessage = serde_json::from_value(wire).unwrap();
+        assert_eq!(message.readings.len(), 8);
+        assert_eq!(message.readings[4].voltage_uv, Some(2_608_696));
+        assert_eq!(message.readings[4].note, "pad voltage");
+        assert_eq!(message.readings[7].voltage_uv, Some(0));
     }
 
     #[test]

@@ -75,15 +75,19 @@ struct linkr_debugger_pd_status {
 	int last_error;
 };
 
+/* Explicitly initialize the deferred CH224A device, discover initial state,
+ * and start the single dedicated ~100 ms input-gate monitor thread.
+ */
 int linkr_debugger_pd_init(void);
 bool linkr_debugger_pd_available(void);
 int linkr_debugger_pd_set_fixed(uint16_t voltage_mv);
 int linkr_debugger_pd_set_pps(uint16_t voltage_mv);
-/* Probe/read short status registers and copy cached capabilities only; never
- * read the source capability registers (0x60..0x8f). */
+/* Probe/read short status registers and copy only unexpired cached
+ * capabilities; never read source capability registers (0x60..0x8f). */
 int linkr_debugger_pd_get_status_short(struct linkr_debugger_pd_status *status);
-/* Refresh missing or expired capabilities (5 s TTL), respecting the shared
- * failure retry backoff. */
+/* Refresh missing or expired capabilities (5 s TTL). ADC gate or I2C errors
+ * make the source unavailable and start the 5 s probe backoff; a complete but
+ * invalid PDO window only starts capability backoff. */
 int linkr_debugger_pd_get_status(struct linkr_debugger_pd_status *status);
 int linkr_debugger_pd_voltage_to_gear(uint16_t voltage_mv, uint8_t *gear);
 int linkr_debugger_pd_gear_to_voltage(uint8_t gear, uint16_t *voltage_mv);

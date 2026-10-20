@@ -12,13 +12,17 @@ struct device {
 };
 
 extern const struct device linkr_pd_test_device;
+extern const struct device linkr_pd_test_sensor_device;
+
+bool linkr_pd_test_device_is_ready(const struct device *dev);
+int device_init(const struct device *dev);
 
 #define DEVICE_DT_GET(node) (&linkr_pd_test_device)
 #define DT_INST_FOREACH_STATUS_OKAY(fn)
 
 static inline bool device_is_ready(const struct device *dev)
 {
-	return dev != NULL;
+	return linkr_pd_test_device_is_ready(dev);
 }
 
 #endif

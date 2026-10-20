@@ -39,9 +39,9 @@ pub(super) const GENERIC_EDGE_STATUS_JSON: &str = r#"{
   ]
 }"#;
 
-// User-confirmed x1.2 hardware. J8 pins 1..6 are GP12..GP16/GP29;
-// GP17/GP18 remain safe GPIOs but are not J8 pins. J13 pin 4 is GND,
-// not a GPIO cell. Deliberately shuffle GPIOs and list J13 metadata first.
+// x1.2 controls-only catalog: nine advertised GPIOs, all physically mapped.
+// GP17/GP18 are absent from safe/status/config. GP29 is input-only; J13 pin 4
+// is GND, not a GPIO cell. Shuffle GPIOs and list J13 metadata first.
 pub(super) const X1_2_STATUS_JSON: &str = r#"{
   "gpio_layout_groups":[
     {"name":"J13","edge":"right","order":1},
@@ -49,13 +49,11 @@ pub(super) const X1_2_STATUS_JSON: &str = r#"{
   ],
   "gpios":[
     {"name":"GP8","pin":8,"value":0,"direction":"input","note":"CON_REST","layoutGroup":"J13","layoutLabel":"RSET","layoutRow":0,"layoutColumn":1},
-    {"name":"GP17","pin":17,"value":0,"direction":"input","note":"","layoutGroup":""},
     {"name":"GP12","pin":12,"value":1,"direction":"output","note":"J8_PIN1","layoutGroup":"J8","layoutLabel":"GP12","layoutRow":9,"layoutColumn":0},
     {"name":"GP9","pin":9,"value":1,"direction":"input","note":"CON_USER","layoutGroup":"J13","layoutLabel":"USER","layoutRow":0,"layoutColumn":0},
     {"name":"GP13","pin":13,"value":0,"direction":"input","note":"J8_PIN2","layoutGroup":"J8","layoutLabel":"GP13","layoutRow":8,"layoutColumn":0},
     {"name":"GP7","pin":7,"value":0,"direction":"input","note":"CON_MAS","layoutGroup":"J13","layoutLabel":"MASKROM","layoutRow":1,"layoutColumn":0},
     {"name":"GP14","pin":14,"value":0,"direction":"input","note":"J8_PIN3","layoutGroup":"J8","layoutLabel":"GP14","layoutRow":7,"layoutColumn":0},
-    {"name":"GP18","pin":18,"value":0,"direction":"input","note":"","layoutGroup":""},
     {"name":"GP15","pin":15,"value":0,"direction":"input","note":"J8_PIN4","layoutGroup":"J8","layoutLabel":"GP15","layoutRow":6,"layoutColumn":0},
     {"name":"GP16","pin":16,"value":0,"direction":"input","note":"J8_PIN5","layoutGroup":"J8","layoutLabel":"GP16","layoutRow":5,"layoutColumn":0},
     {"name":"GP29","pin":29,"value":0,"direction":"input","note":"ADC3","layoutGroup":"J8","layoutLabel":"ADC3","layoutRow":4,"layoutColumn":0}
@@ -79,6 +77,7 @@ pub(super) fn current_adc_channels() -> Vec<TuiStatusAdcChannel> {
         .map(|name| TuiStatusAdcChannel {
             name: name.to_string(),
             sensor_channel: "current".to_string(),
+            ..Default::default()
         })
         .collect()
 }

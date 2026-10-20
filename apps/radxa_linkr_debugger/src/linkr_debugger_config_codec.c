@@ -9,7 +9,9 @@
 #include <string.h>
 
 #ifdef __ZEPHYR__
+#include <zephyr/devicetree.h>
 #include <zephyr/settings/settings.h>
+#include <zephyr/sys/util.h>
 #else
 #define SETTINGS_MAX_VAL_LEN 256
 #endif
@@ -17,6 +19,35 @@
 #define ARRAY_SIZE_LOCAL(array) (sizeof(array) / sizeof((array)[0]))
 #define POWER_ITEM(item_id, name) { LINKR_DEBUGGER_CONFIG_DOMAIN_POWER, item_id, "power/" name }
 #define SWITCH_ITEM(item_id, name) { LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH, item_id, "switch/" name }
+#define GPIO_ITEM(pin) { LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, pin, "gpio/GP" #pin }
+
+#ifdef __ZEPHYR__
+#define LINKR_CONFIG_CAT2(a, b) LINKR_CONFIG_CAT2_(a, b)
+#define LINKR_CONFIG_CAT2_(a, b) a##b
+#define LINKR_CONFIG_GPIO_CELL_0(cell_node)
+#define LINKR_CONFIG_GPIO_CELL_1(cell_node)                                      \
+	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, DT_PROP(cell_node, gpio_pin),         \
+	  "gpio/GP" STRINGIFY(DT_PROP(cell_node, gpio_pin)) },
+#define LINKR_CONFIG_GPIO_CELL(cell_node, unused)                               \
+	LINKR_CONFIG_CAT2(LINKR_CONFIG_GPIO_CELL_,                               \
+			  DT_PROP(cell_node, controllable))(cell_node)
+#define LINKR_CONFIG_GPIO_GROUP(group_node) \
+	DT_FOREACH_CHILD_VARGS(group_node, LINKR_CONFIG_GPIO_CELL, _)
+#define LINKR_CONFIG_GPIO_ITEMS                                                  \
+	DT_FOREACH_CHILD(DT_CHOSEN(radxa_linkr_gpio_layout), LINKR_CONFIG_GPIO_GROUP)
+#else
+/* Explicit fixture for host-only codec tests; production entries come from DT. */
+#define LINKR_CONFIG_GPIO_ITEMS \
+	GPIO_ITEM(29),                 \
+	GPIO_ITEM(16),                 \
+	GPIO_ITEM(15),                 \
+	GPIO_ITEM(14),                 \
+	GPIO_ITEM(13),                 \
+	GPIO_ITEM(12),                 \
+	GPIO_ITEM(9),                  \
+	GPIO_ITEM(8),                  \
+	GPIO_ITEM(7),
+#endif
 
 _Static_assert(SETTINGS_MAX_VAL_LEN == LINKR_DEBUGGER_CONFIG_SETTINGS_MAX_VAL_LEN,
 	       "Zephyr Settings value limit changed");
@@ -29,17 +60,7 @@ const struct linkr_debugger_config_item_desc linkr_debugger_config_items[] = {
 	SWITCH_ITEM(LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID, "sd"),
 	SWITCH_ITEM(LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID, "usb"),
 	SWITCH_ITEM(LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID, "tf_wp"),
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U, "gpio/GP7" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 8U, "gpio/GP8" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 9U, "gpio/GP9" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 12U, "gpio/GP12" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 13U, "gpio/GP13" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 14U, "gpio/GP14" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 15U, "gpio/GP15" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 16U, "gpio/GP16" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 17U, "gpio/GP17" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 18U, "gpio/GP18" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 29U, "gpio/GP29" },
+	LINKR_CONFIG_GPIO_ITEMS
 };
 
 const size_t linkr_debugger_config_item_count = ARRAY_SIZE_LOCAL(linkr_debugger_config_items);

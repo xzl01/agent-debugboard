@@ -18,6 +18,11 @@
 #define LINKR_DEBUGGER_SIGROK_LINKR_WIDE11_ARENA_QUIESCE_TIMEOUT_MS 100U
 
 #ifdef LINKR_DEBUGGER_SIGROK_LINKR_HOST_TEST
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+int zsock_bind(int fd, const struct sockaddr *addr, socklen_t addrlen);
+
 int linkr_debugger_ws_sigrok_burst_pool_begin(uint32_t session_id,
 	uint32_t stream_generation, uint32_t source_generation)
 {
@@ -78,7 +83,6 @@ LOG_MODULE_REGISTER(linkr_debugger_sigrok_linkr, CONFIG_LINKR_DEBUGGER_LOG_LEVEL
 
 static int send_all(int fd, const uint8_t *data, size_t len);
 
-#define LINKR_DEBUGGER_SIGROK_LINKR_BIND_ADDR "172.29.203.1"
 #define LINKR_DEBUGGER_SIGROK_LINKR_RECV_TIMEOUT_MS 2000U
 #define LINKR_DEBUGGER_SIGROK_LINKR_STREAM_RECV_SLICE_MS 1U
 #define LINKR_DEBUGGER_SIGROK_LINKR_SEND_TIMEOUT_MS 2000U
@@ -3172,6 +3176,16 @@ int linkr_debugger_sigrok_linkr_handle_request(
 	}
 }
 
+static int sigrok_linkr_bind_listener(int fd)
+{
+	struct sockaddr_in addr = {0};
+
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(LINKR_DEBUGGER_SIGROK_LINKR_PORT);
+	addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	return zsock_bind(fd, (struct sockaddr *)&addr, sizeof(addr));
+}
+
 #ifndef LINKR_DEBUGGER_SIGROK_LINKR_HOST_TEST
 static void close_fd(int *fd)
 {
@@ -3508,8 +3522,6 @@ send_response:
 
 static void server_thread(void *p1, void *p2, void *p3)
 {
-	struct sockaddr_in addr;
-
 	ARG_UNUSED(p1);
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
@@ -3523,11 +3535,7 @@ static void server_thread(void *p1, void *p2, void *p3)
 			continue;
 		}
 		(void)zsock_setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-		memset(&addr, 0, sizeof(addr));
-		addr.sin_family = AF_INET;
-		addr.sin_port = htons(LINKR_DEBUGGER_SIGROK_LINKR_PORT);
-		(void)zsock_inet_pton(NET_AF_INET, LINKR_DEBUGGER_SIGROK_LINKR_BIND_ADDR, &addr.sin_addr);
-		if (zsock_bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
+		if (sigrok_linkr_bind_listener(fd) < 0 ||
 		    zsock_listen(fd, 1U) < 0) {
 			close_fd(&fd);
 			k_msleep(500);
@@ -3588,6 +3596,11 @@ bool linkr_debugger_sigrok_linkr_tcp_active(void)
 	return linkr_debugger_sigrok_linkr_runtime.client_fd >= 0;
 }
 #else
+int linkr_debugger_sigrok_linkr_test_bind_listener(int fd)
+{
+	return sigrok_linkr_bind_listener(fd);
+}
+
 int linkr_debugger_sigrok_linkr_init(void)
 {
 	return 0;

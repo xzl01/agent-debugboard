@@ -16,9 +16,13 @@ import type { BoardCaptureMessageHandler } from "./useBoardCaptureMessages";
 import { useBoardLive } from "./useBoardLive";
 import { useBoardMutations } from "./useBoardMutations";
 import { useBoardReboot } from "./useBoardReboot";
+import { useBoardGpioLayout } from "./useBoardGpioLayout";
 import type { UseBoard as UseBoardBase } from "./useBoard.types";
 
 export interface UseBoard extends UseBoardBase {
+  gpioPhysicalLayout: ReturnType<typeof useBoardGpioLayout>["gpioPhysicalLayout"];
+  gpioLayoutError: string | null;
+  gpioLayoutLoading: boolean;
   lastVerifiedAt: number | null;
   powerUpdatedAt: number | null;
   powerStateStale: boolean;
@@ -27,6 +31,7 @@ export interface UseBoard extends UseBoardBase {
 const PD_CAPABILITY_RETRY_MS = 5000;
 
 export function useBoard(): UseBoard {
+  const { gpioPhysicalLayout, gpioLayoutError, gpioLayoutLoading, noteGpioStatus, invalidateGpioLayout } = useBoardGpioLayout();
   const [snapshot, setSnapshot] = useState<BoardSnapshot>(EMPTY_BOARD_SNAPSHOT);
   const [hasData, setHasData] = useState(false);
   const [connected, setConnected] = useState(true);
@@ -51,9 +56,10 @@ export function useBoard(): UseBoard {
     : typeof runtime.uptime_seconds === "number" ? runtime.uptime_seconds * 1000 : null;
   const { rebootBoard: requestReboot, restarting, restartTimedOut, isExpectedRestartDisconnect, noteConnection } = useBoardReboot(connected, uptimeMs);
   const setBoardConnected = useCallback((online: boolean) => {
+    if (!online) invalidateGpioLayout();
     setConnected(online);
     noteConnection(online);
-  }, [noteConnection]);
+  }, [noteConnection, invalidateGpioLayout]);
   const setConnectionError = useCallback((message: string | null) => {
     if (message !== null && isExpectedRestartDisconnect()) return;
     setError(message);
@@ -181,6 +187,11 @@ export function useBoard(): UseBoard {
           setSnapshot((prev) => ({
             ...prev,
             pd: parsePdStatus({
+              // A GET can establish the initial requested voltage. Do not let
+              // an older discovery overwrite a newer status received in flight.
+              ...(full.voltage_mv > 0 && prev.pd?.voltage_mv === pd.voltage_mv && prev.pd?.mode === pd.mode
+                ? { voltage_mv: full.voltage_mv, mode: full.mode, pps_mv: full.pps_mv, gear: full.gear }
+                : {}),
               capabilities_valid: true,
               fixed_profiles: full.fixed_profiles,
               pps_ranges: full.pps_ranges,
@@ -211,6 +222,7 @@ export function useBoard(): UseBoard {
   const refresh = useCallback(async () => {
     try {
       const status = await api.getStatus();
+      noteGpioStatus();
       // Stamp the status receipt, not the later ADC completion or React effect.
       const updatedAt = typeof status === "object" && status !== null &&
         "power_outputs" in status && Array.isArray(status.power_outputs) ? Date.now() : null;
@@ -228,13 +240,14 @@ export function useBoard(): UseBoard {
     } finally {
       setLoading(false);
     }
-  }, [markVerified, setBoardConnected, setConnectionError]);
+  }, [markVerified, setBoardConnected, setConnectionError, noteGpioStatus]);
 
   useBoardLive({
     live,
     pageVisible,
     auto,
     refresh,
+    onStatus: noteGpioStatus,
     wsRef,
     pendingCaptureRef,
     setSnapshot: setSnapshotVerified,
@@ -259,6 +272,9 @@ export function useBoard(): UseBoard {
   } = useBoardMutations({ live, refresh, setSnapshot: setSnapshotVerified });
 
   return {
+    gpioPhysicalLayout,
+    gpioLayoutError,
+    gpioLayoutLoading,
     snapshot,
     persistentConfigCurrentStateKey: currentStateKey,
     hasData,

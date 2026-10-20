@@ -20,6 +20,10 @@ pub struct AdcReading {
     pub name: String,
     #[serde(default)]
     pub signal: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
     pub raw: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_valid: Option<bool>,
@@ -52,6 +56,10 @@ pub struct AdcCompactReading {
     pub name: String,
     #[serde(default)]
     pub signal: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub label: String,
     pub kind: AdcKind,
     pub unit: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -80,6 +88,8 @@ impl AdcCompactReading {
         Ok(AdcReading {
             name: self.name,
             signal: self.signal,
+            note: self.note,
+            label: self.label,
             raw: None,
             current_valid: None,
             mv: None,

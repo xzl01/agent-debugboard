@@ -30,7 +30,6 @@ import { GpioCard } from "./components/GpioCard";
 import { WatchdogCard } from "./components/WatchdogCard";
 import {
   SerialCard,
-  type SerialAutomationHandle,
   type SerialConnectionSummary,
 } from "./components/SerialCard";
 import { PowerAnalysisWorkspace } from "./components/PowerAnalysisWorkspace";
@@ -42,6 +41,7 @@ import {
 } from "./components/WorkbenchStatusBar";
 import { Button } from "./components/ui";
 import { useI18n } from "@/lib/i18n";
+import { useJ4Serial } from "@/lib/j4SerialReact";
 import { POWER_STATE_STALE_MS } from "@/lib/power";
 import type { OtaStatus } from "@/lib/ota";
 import {
@@ -96,11 +96,16 @@ export default function App() {
     currentStateKey: board.persistentConfigCurrentStateKey,
   });
   const { t } = useI18n();
-  const serialAutomationRef = useRef<SerialAutomationHandle>(null);
+  const boardRuntime = board.snapshot.monitoring?.runtime;
+  const boardUptimeMs = boardRuntime?.available
+    ? typeof boardRuntime.uptime_ms === "number" ? boardRuntime.uptime_ms
+      : typeof boardRuntime.uptime_seconds === "number" ? boardRuntime.uptime_seconds * 1000 : null
+    : null;
+  const j4Serial = useJ4Serial({ available: board.connected && board.hasData, restarting: board.restarting, uptimeMs: boardUptimeMs });
+  const serialAutomationRef = useMemo(() => ({ current: j4Serial }), [j4Serial]);
   const [serialConnections, setSerialConnections] = useState<SerialConnectionSummary>({
-    uart0: false,
-    uart1: false,
-    bridgeActive: false,
+    j4: false,
+    state: "disconnected",
   });
   const [logicAnalyzerActive, setLogicAnalyzerActive] = useState(false);
   const automationTaskLockRef = useRef(createAutomationTaskLock());
@@ -387,7 +392,7 @@ export default function App() {
       role="tabpanel"
       aria-labelledby="hardware-section-tab-io"
       data-testid="hardware-section-panel-io"
-      className="grid min-w-0 items-start gap-4 md:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)]"
+      className="min-w-0 space-y-4"
     >
       <div
         data-testid="gpio-controls-anchor"
@@ -395,15 +400,15 @@ export default function App() {
       >
         <GpioCard
           gpios={board.snapshot.gpios}
-          layoutGroups={board.snapshot.gpioLayoutGroups}
+          physicalLayout={board.gpioPhysicalLayout}
+          layoutError={board.gpioLayoutError}
+          layoutLoading={board.gpioLayoutLoading}
           onSet={board.setGpio}
           disabled={!board.connected || automationOwner != null}
           stale={!board.connected}
         />
       </div>
-      <div className="min-w-0">
-        <WatchdogCard watchdog={board.snapshot.watchdog} />
-      </div>
+      <WatchdogCard watchdog={board.snapshot.watchdog} />
     </div>
   );
 
@@ -501,7 +506,7 @@ export default function App() {
                   className="min-h-0 min-w-0"
                 >
                   <SerialCard
-                    ref={serialAutomationRef}
+                    session={j4Serial}
                     onConnectionChange={setSerialConnections}
                   />
                 </div>

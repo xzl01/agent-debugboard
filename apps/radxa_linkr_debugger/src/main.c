@@ -15,6 +15,8 @@
 #include "linkr_debugger_http.h"
 #include "linkr_debugger_logic_analyzer.h"
 #include "linkr_debugger_network.h"
+#include "linkr_debugger_serial.h"
+#include "linkr_debugger_serial_net.h"
 #include "linkr_debugger_task.h"
 #include "linkr_debugger_ota.h"
 #include "linkr_debugger_shell.h"
@@ -22,6 +24,9 @@
 #include "linkr_debugger_ws.h"
 #include "linkr_debugger_usb_net.h"
 
+#include <errno.h>
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/logging/log_ctrl.h>
@@ -31,6 +36,32 @@
 #include <zephyr/toolchain.h>
 
 LOG_MODULE_REGISTER(radxa_linkr_debugger, LOG_LEVEL_INF);
+
+#define LINKR_DEBUGGER_J4_UART_NODE DT_CHOSEN(radxa_linkr_j4_uart)
+#define LINKR_DEBUGGER_J4_CDC_NODE DT_CHOSEN(radxa_linkr_j4_cdc)
+
+static int linkr_debugger_j4_serial_init(void)
+{
+	const struct device *uart = DEVICE_DT_GET(LINKR_DEBUGGER_J4_UART_NODE);
+	const struct device *cdc = DEVICE_DT_GET(LINKR_DEBUGGER_J4_CDC_NODE);
+	const struct linkr_debugger_serial_runtime_config config = {
+		.uart = uart,
+		.cdc = cdc,
+		.initial_config = {
+			.baud = DT_PROP(LINKR_DEBUGGER_J4_UART_NODE, current_speed),
+			.data_bits = 8U,
+			.parity = LINKR_DEBUGGER_SERIAL_PARITY_NONE,
+			.stop_bits = 1U,
+			.flow_control = LINKR_DEBUGGER_SERIAL_FLOW_NONE,
+		},
+	};
+
+	if (!device_is_ready(uart) || !device_is_ready(cdc)) {
+		return -ENODEV;
+	}
+
+	return linkr_debugger_serial_init(&config);
+}
 
 static const char *linkr_debugger_fatal_reason_str(unsigned int reason)
 {
@@ -98,6 +129,12 @@ int main(void)
 		LOG_WRN("Config service init non-OK: %d", ret);
 	}
 
+	/* The CDC device is initialized here, before the USB device is enabled. */
+	ret = linkr_debugger_j4_serial_init();
+	if (ret < 0) {
+		LOG_WRN("J4 serial init failed: %d (serial endpoints unavailable)", ret);
+	}
+
 	linkr_debugger_http_init();
 	linkr_debugger_task_init();
 	ret = linkr_debugger_ws_init();
@@ -116,6 +153,11 @@ int main(void)
 	if (ret < 0) {
 		LOG_ERR("Network service init failed: %d", ret);
 		return 0;
+	}
+
+	ret = linkr_debugger_serial_net_init();
+	if (ret < 0) {
+		LOG_WRN("J4 serial network init failed: %d (non-fatal)", ret);
 	}
 
 	ret = linkr_debugger_logic_analyzer_init();

@@ -1,7 +1,7 @@
 import { act, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CurrentAdcReading } from "@/lib/types";
+import type { CurrentAdcReading, VoltageAdcReading } from "@/lib/types";
 import { PowerCard } from "./PowerCard";
 import { MeasurementSparkline } from "./PowerSparkline";
 import { MEASUREMENT_HISTORY_LIMIT, MEASUREMENT_PREVIEW_SAMPLES } from "@/lib/adc";
@@ -44,6 +44,26 @@ function reading(overrides: Partial<CurrentAdcReading> = {}): CurrentAdcReading 
     voltage_uv: 5_100_000,
     ...overrides,
   };
+}
+
+function voltageReading(overrides: Partial<VoltageAdcReading> = {}): VoltageAdcReading {
+  return {
+    name: "adc0",
+    signal: "GPIO26_ADC0",
+    kind: "voltage",
+    unit: "uV",
+    value: 2_608_696,
+    ...overrides,
+  };
+}
+
+function voltageReadings(): VoltageAdcReading[] {
+  return [
+    voltageReading({ note: "PD input divider; ADC pad voltage" }),
+    voltageReading({ name: "adc1", signal: "GPIO27_ADC1", value: 1_100_000 }),
+    voltageReading({ name: "adc2", signal: "GPIO28_ADC2", value: 2_200_000 }),
+    voltageReading({ name: "adc3", signal: "GPIO29_ADC3", value: 1_650_000 }),
+  ];
 }
 
 function chart(host: HTMLElement, rail = "5V"): SVGSVGElement {
@@ -191,6 +211,56 @@ describe("overlaid power measurement trends", () => {
     expect(view.host.querySelector("button[aria-expanded]")).toBeNull();
     expect(view.host.querySelector('button[aria-haspopup="dialog"]')).toBeNull();
     expect(localStorage.getItem("linkr-power-trends-expanded")).toBe("true");
+  });
+
+  it("renders four descriptor-driven voltage cards after the four current overlays", () => {
+    const onSet = vi.fn();
+    const currents = ["5v_out", "12v_out", "20v_out", "vdd_5v"].map((name) => reading({ name }));
+    const voltages = voltageReadings();
+    const view = render(<PowerCard outputs={[]} readings={[...currents, ...voltages]} onSet={onSet} />);
+    expect(view.host.querySelectorAll('svg[role="img"]')).toHaveLength(8);
+    const cards = [...view.host.querySelectorAll("h4")].map((heading) => heading.closest("li")!);
+    expect(cards).toHaveLength(4);
+    expect(cards[0].parentElement?.className).toContain("grid-cols-1");
+    expect(cards[0].parentElement?.className).toContain("sm:grid-cols-2");
+    expect(view.host.textContent?.split("adc.voltage.disclaimer")).toHaveLength(2);
+    voltages.forEach((voltage, index) => {
+      expect(cards[index].querySelector("h4")?.textContent).toBe(voltage.name);
+      expect(cards[index].textContent).toContain(voltage.signal);
+      expect(cards[index].textContent).toContain(`${(voltage.value / 1_000_000).toFixed(3)} V`);
+      expect(chart(cards[index], voltage.name).querySelectorAll("g[data-metric]")).toHaveLength(1);
+      expect(cards[index].querySelector('[role="switch"]')).toBeNull();
+    });
+    expect(cards[0].textContent).toContain(voltages[0].note);
+    expect(cards[0].textContent).not.toContain("20.000 V");
+    expect(onSet).not.toHaveBeenCalled();
+  });
+
+  it("keeps all reported voltage identities and latest values visible in compact mode", () => {
+    const voltages = voltageReadings();
+    const view = render(<PowerCard outputs={[]} readings={voltages} onSet={vi.fn()} compact />);
+    expect([...view.host.querySelectorAll("h4")].map((heading) => heading.textContent)).toEqual(voltages.map(({ name }) => name));
+    for (const voltage of voltages) {
+      expect(view.host.textContent).toContain(voltage.signal);
+      expect(view.host.textContent).toContain(`${(voltage.value / 1_000_000).toFixed(3)} V`);
+    }
+    expect(view.host.querySelector('svg[role="img"]')).toBeNull();
+    expect(view.host.querySelector('button[aria-haspopup="dialog"]')).toBeNull();
+  });
+
+  it("never invents missing voltage cards and keeps a reported zero distinct from absence", () => {
+    const onSet = vi.fn();
+    const adc3 = voltageReadings()[3];
+    const view = render(<PowerCard outputs={[]} readings={[reading(), adc3]} onSet={onSet} />);
+    expect([...view.host.querySelectorAll("h4")].map((heading) => heading.textContent)).toEqual(["adc3"]);
+    view.rerender(<PowerCard outputs={[]} readings={[reading()]} onSet={onSet} />);
+    expect(view.host.querySelector("h4")).toBeNull();
+    expect(view.host.textContent).not.toContain("adc.voltage.disclaimer");
+    view.rerender(<PowerCard outputs={[]} readings={[reading(), { ...adc3, value: 0 }]} onSet={onSet} />);
+    expect(view.host.querySelector("h4")?.closest("li")?.textContent).toContain("0.000 V");
+    // An absent channel unmounts its history, so resumed samples never bridge the missing interval.
+    expect(chart(view.host, "adc3").querySelector("polyline")).toBeNull();
+    expect(onSet).not.toHaveBeenCalled();
   });
 
   it("plots nonzero sensor values for all three metrics even when the rail is reported disabled", () => {
@@ -416,12 +486,63 @@ describe("overlaid power measurement trends", () => {
     view.rerender(
       <MeasurementSparkline mode="voltage" reading={{ kind: "voltage", unit: "uV", name: "adc3", signal: "GP29", value: 1_650_000 }} />,
     );
-    const adc3 = view.host.querySelector('svg[role="img"][aria-label="adc3.chart.aria"]');
-    expect(adc3?.parentElement?.textContent).toContain("1.650 V");
-    expect(adc3?.parentElement?.querySelector("ul")).toBeNull();
+    const adc3 = chart(view.host, "adc3");
+    expect(adc3.getAttribute("aria-label")).toBe("adc3 · GP29 · adc.voltage.chart.aria");
+    expect(adc3.parentElement?.textContent).toContain("1.650 V");
+    expect(adc3.parentElement?.querySelector("ul")).toBeNull();
     view.rerender(<MeasurementSparkline mode="power" reading={first} />);
     expect(chart(view.host).querySelector("polyline")).toBeNull();
     expect(legend(chart(view.host), "voltage").textContent).toContain("5.100 V");
+  });
+
+  it("retains independent voltage histories through descriptor reordering and resets on signal changes", () => {
+    const onSet = vi.fn();
+    const initial = voltageReadings();
+    const view = render(<PowerCard outputs={[]} readings={initial} onSet={onSet} />);
+    const updated = [{ ...initial[0], value: 2_700_000 }, ...initial.slice(1)];
+    view.rerender(<PowerCard outputs={[]} readings={updated} onSet={onSet} />);
+    expect(points(chart(view.host, "adc0"), "voltage")).toHaveLength(2);
+    expect(chart(view.host, "adc1").querySelector("polyline")).toBeNull();
+    view.rerender(<PowerCard outputs={[]} readings={[updated[3], updated[0], { ...updated[1], value: 1_200_000 }, updated[2]]} onSet={onSet} />);
+    expect(points(chart(view.host, "adc0"), "voltage")).toHaveLength(2);
+    expect(points(chart(view.host, "adc1"), "voltage")).toHaveLength(2);
+    expect(chart(view.host, "adc2").querySelector("polyline")).toBeNull();
+    expect(chart(view.host, "adc3").querySelector("polyline")).toBeNull();
+    const { modal } = expandChart(view.host, "adc0");
+    expect(modal.textContent).toContain("adc0 · GPIO26_ADC0 · adc.voltage.chart.title");
+    expect(modal.textContent).toContain("2.700 V");
+    expect(modal.textContent).not.toContain("1.200 V");
+    act(() => dialogButton(modal, "power.chart.close").click());
+    view.rerender(<PowerCard outputs={[]} readings={[{ ...updated[0], signal: "replacement-sensor" }]} onSet={onSet} />);
+    expect(chart(view.host, "adc0").getAttribute("aria-label")).toContain("replacement-sensor");
+    expect(chart(view.host, "adc0").querySelector("polyline")).toBeNull();
+    expect(onSet).not.toHaveBeenCalled();
+  });
+
+  it.each(["preview", "expanded"] as const)("uses a fixed 0–3.3 V domain for every %s ADC channel without rail scaling", (size) => {
+    const view = render(<MeasurementSparkline mode="voltage" reading={voltageReading({ value: 0 })} />);
+    view.rerender(<MeasurementSparkline mode="voltage" reading={voltageReading()} />);
+    view.rerender(<MeasurementSparkline mode="voltage" reading={voltageReading({ value: 3_300_000 })} />);
+    const svg = chart(size === "expanded" ? expandChart(view.host, "adc0").modal : view.host, "adc0");
+    const height = size === "expanded" ? 280 : 58;
+    const trace = points(svg, "voltage");
+    expect(trace).toHaveLength(3);
+    expect(trace[0][1]).toBe(height - 4);
+    expect(trace[1][1]).toBeCloseTo(height - 4 - (2_608_696 / 3_300_000) * (height - 8));
+    expect(trace[2][1]).toBe(4);
+    expect(svg.querySelectorAll("g[data-metric]")).toHaveLength(1);
+    expect(svg.querySelector('[data-reference="zero"]')).toBeNull();
+  });
+
+  it("splits ADC voltage history at a long sample gap instead of interpolating a voltage", () => {
+    const view = render(<MeasurementSparkline mode="voltage" reading={voltageReading()} />);
+    view.rerender(<MeasurementSparkline mode="voltage" reading={voltageReading({ value: 2_600_000 })} />);
+    vi.setSystemTime(22_000);
+    view.rerender(<MeasurementSparkline mode="voltage" reading={voltageReading({ value: 2_700_000 })} />);
+    view.rerender(<MeasurementSparkline mode="voltage" reading={voltageReading({ value: 2_800_000 })} />);
+    const segments = chart(view.host, "adc0").querySelectorAll('g[data-metric="voltage"] polyline');
+    expect(segments).toHaveLength(2);
+    for (const segment of segments) expect(segment.getAttribute("points")?.split(" ")).toHaveLength(2);
   });
 
   it("opens a rail-named three-trace dialog, traps focus, closes on Escape or button and restores the opener", () => {

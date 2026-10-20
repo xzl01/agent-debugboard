@@ -20,6 +20,39 @@ import {
   compatibleAssertionForStepType,
 } from "./testScript.ts";
 
+describe("J4-only serial contract", () => {
+  it("uses j4 for every serial default and round-trips conditions and nested units", () => {
+    for (const type of ["serial_wait", "serial_send", "serial_expect"] as const) {
+      assert.equal(defaultStepParams(type).channel, "j4");
+    }
+    const script = {
+      ...defaultScript(),
+      steps: [{ id: "condition", type: "condition" as const, params: {
+        check: { id: "check", type: "serial_expect" as const, params: defaultStepParams("serial_expect") },
+        then_steps: [{ id: "unit", type: "loop" as const, params: { count: 1, unit: { name: "J4" }, steps: [
+          { id: "send", type: "serial_send" as const, params: defaultStepParams("serial_send") },
+        ] } }], else_steps: [],
+      } }],
+    };
+    assert.equal(buildExecutionPlan(parseTestScript(serializeTestScript(script))).length, 2);
+  });
+
+  it("rejects obsolete unpublished channel fixtures during import, draft loading, export and planning", () => {
+    // Intentional historical negative fixtures, never supported product aliases.
+    for (const channel of ["uart0", "uart1", "other"]) {
+      const step = { id: "send", type: "serial_send" as const, params: { channel, text: "must not run" } };
+      const source = `${JSON.stringify({ schema: "linkr-test.v1" })}\n${JSON.stringify(step)}\n`;
+      assert.throws(() => parseTestScript(source), /serial channel must be j4/);
+      assert.throws(() => parseTestScript(source, { validatePlan: false }), /serial channel must be j4/);
+      const script = { ...defaultScript(), steps: [step] } as never;
+      assert.throws(() => serializeTestScript(script), /serial channel must be j4/);
+      assert.throws(() => buildExecutionPlan(script), /serial channel must be j4/);
+      const nested = `${JSON.stringify({ schema: "linkr-test.v1" })}\n${JSON.stringify({ id: "loop", type: "loop", params: { count: 1, steps: [step] } })}\n`;
+      assert.throws(() => parseTestScript(nested, { validatePlan: false }), /serial channel must be j4/);
+    }
+  });
+});
+
 describe("stepTypeLabel", () => {
   it("returns a label for every step type", () => {
     for (const type of STEP_TYPES) {
@@ -418,7 +451,7 @@ describe("serializeTestScript / parseTestScript", () => {
         params: {
           count: 3,
           steps: [
-            { id: "send", type: "serial_send", params: { channel: "uart0", text: "ping\n" } },
+            { id: "send", type: "serial_send", params: { channel: "j4", text: "ping\n" } },
             { id: "delay", type: "delay", params: { ms: 10 } },
           ],
         },
@@ -454,8 +487,8 @@ describe("serializeTestScript / parseTestScript", () => {
           count: 1,
           unit: { name: "Stress test" },
           steps: [
-            { id: "login", type: "serial_wait", params: { channel: "uart0", pattern: "# ", timeout_ms: 30000 } },
-            { id: "stress", type: "serial_expect", params: { channel: "uart0", command: "stress-ng --cpu 4 --timeout 30s", pattern: "", timeout_ms: 40000 } },
+            { id: "login", type: "serial_wait", params: { channel: "j4", pattern: "# ", timeout_ms: 30000 } },
+            { id: "stress", type: "serial_expect", params: { channel: "j4", command: "stress-ng --cpu 4 --timeout 30s", pattern: "", timeout_ms: 40000 } },
           ],
         },
       },
@@ -513,7 +546,7 @@ describe("serializeTestScript / parseTestScript", () => {
             count: 1,
             unit: { name: "Stress" },
             steps: [
-              { id: "run", type: "serial_expect", params: { channel: "uart0", command: "stress-ng", pattern: "", timeout_ms: 1000 } },
+              { id: "run", type: "serial_expect", params: { channel: "j4", command: "stress-ng", pattern: "", timeout_ms: 1000 } },
               { id: "cooldown", type: "delay", params: { ms: 10 } },
             ],
           },
@@ -644,7 +677,7 @@ describe("serializeTestScript / parseTestScript", () => {
       JSON.stringify({
         id: "wait1",
         type: "serial_wait",
-        params: { channel: "uart0", pattern: "   ", timeout_ms: 1000 },
+        params: { channel: "j4", pattern: "   ", timeout_ms: 1000 },
       }),
     ].join("\n")), /serial_wait pattern must be non-empty/);
     assert.throws(() => parseTestScript([
@@ -656,7 +689,7 @@ describe("serializeTestScript / parseTestScript", () => {
           check: {
             id: "check",
             type: "serial_expect",
-            params: { channel: "uart0", command: "true", pattern: "", timeout_ms: 100 },
+            params: { channel: "j4", command: "true", pattern: "", timeout_ms: 100 },
           },
           then_steps: [],
           else_steps: [],

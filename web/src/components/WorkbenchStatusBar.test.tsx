@@ -45,8 +45,8 @@ const snapshot: BoardSnapshot = {
 function render(options?: {
   readonly snapshot?: BoardSnapshot;
   readonly connected?: boolean;
-  readonly uart0?: boolean;
-  readonly uart1?: boolean;
+  readonly j4?: boolean;
+  readonly serialState?: import("@/lib/j4SerialSession").J4SerialConnectionState;
   readonly taskOwner?: "power" | null;
 }) {
   localStorage.setItem("lang", "en");
@@ -60,9 +60,8 @@ function render(options?: {
           snapshot={options?.snapshot ?? snapshot}
           connected={options?.connected ?? true}
           serialConnections={{
-            uart0: options?.uart0 ?? false,
-            uart1: options?.uart1 ?? false,
-            bridgeActive: false,
+            j4: options?.j4 ?? false,
+            state: options?.serialState ?? (options?.j4 ? "ready" : "disconnected"),
           }}
           taskOwner={options?.taskOwner ?? null}
         />
@@ -101,13 +100,13 @@ describe("WorkbenchStatusBar", () => {
   });
 
   it("uses live routing, UART and task state instead of static status copy", () => {
-    const view = render({ uart0: true, uart1: true, taskOwner: "power" });
+    const view = render({ j4: true, taskOwner: "power" });
 
     expect(view.host.textContent).toContain("SD→SBC");
     expect(view.host.textContent).toContain("USB→SBC");
     expect(view.host.textContent).toContain("TF Writable");
     expect(view.host.textContent).toContain("VIN 3.3V");
-    expect(view.host.textContent).toContain("UART0/1 connected");
+    expect(view.host.textContent).toContain("J4 connected");
     expect(view.host.textContent).toContain("power capture");
     view.close();
   });
@@ -120,6 +119,15 @@ describe("WorkbenchStatusBar", () => {
     expect(bar?.querySelector(".bg-danger")).not.toBeNull();
     expect(bar?.textContent).toContain("5V on");
     view.close();
+  });
+
+  it("distinguishes a connected J4 socket from a UART that is not ready", () => {
+    for (const [state, label] of [["paused", "J4 suspended"], ["faulted", "J4 fault"], ["read_only", "J4 read-only"], ["reconfig", "J4 applying settings"]] as const) {
+      const view = render({ j4: true, serialState: state });
+      expect(view.host.textContent).toContain(label);
+      expect(view.host.textContent).not.toContain("J4 connected");
+      view.close();
+    }
   });
 
   it("keeps non-binary firmware rail states unknown", () => {

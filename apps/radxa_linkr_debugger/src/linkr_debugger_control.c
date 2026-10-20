@@ -878,8 +878,14 @@ static int read_adc_debug(const struct linkr_debugger_current_desc *current,
 	ret = adc_raw_to_millivolts_dt(spec, &mv);
 	if (ret < 0) {
 		uint8_t resolution = spec->resolution != 0U ? spec->resolution : 12U;
+		int32_t microvolts = 0;
 
-		mv = (sample->raw * 3300) / ((1 << resolution) - 1);
+		ret = linkr_debugger_adc_resolve_microvolts(ret, sample->raw,
+						       resolution, &microvolts);
+		if (ret < 0) {
+			return ret;
+		}
+		mv = microvolts / 1000;
 	}
 
 	sample->raw_available = true;
@@ -1213,17 +1219,22 @@ int linkr_debugger_current_read(const struct linkr_debugger_current_desc *curren
 		return 0;
 	case LINKR_DEBUGGER_ADC_KIND_VOLTAGE: {
 		int32_t microvolts;
+		uint8_t resolution;
 
 		k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
 		sample->rail_enabled = true;
 		ret = read_adc_debug(current, sample);
 		if (ret == 0) {
+			resolution = adc_channels[current->adc_index].resolution != 0U ?
+				adc_channels[current->adc_index].resolution : 12U;
 			microvolts = sample->raw;
-			if (adc_raw_to_microvolts_dt(&adc_channels[current->adc_index],
-					       &microvolts) < 0) {
-				microvolts = sample->mv * 1000;
+			ret = linkr_debugger_adc_resolve_microvolts(
+				adc_raw_to_microvolts_dt(&adc_channels[current->adc_index],
+							    &microvolts),
+				sample->raw, resolution, &microvolts);
+			if (ret == 0) {
+				(void)sensor_value_from_micro(&sample->value, microvolts);
 			}
-			(void)sensor_value_from_micro(&sample->value, microvolts);
 		}
 		k_mutex_unlock(&linkr_debugger_control_lock);
 		return ret;
@@ -1303,6 +1314,7 @@ int linkr_debugger_current_read_batch(struct linkr_debugger_current_sample *samp
 					.buffer_size = sizeof(sample->raw),
 				};
 				int32_t microvolts;
+				uint8_t resolution;
 
 				if (current->adc_index >= ARRAY_SIZE(adc_channels)) {
 					ret = -ERANGE;
@@ -1318,16 +1330,17 @@ int linkr_debugger_current_read_batch(struct linkr_debugger_current_sample *samp
 					goto out;
 				}
 				sample->raw_available = true;
+				resolution = adc_channels[current->adc_index].resolution != 0U ?
+					adc_channels[current->adc_index].resolution : 12U;
 				microvolts = sample->raw;
-				if (adc_raw_to_microvolts_dt(&adc_channels[current->adc_index],
-							     &microvolts) < 0) {
-					uint8_t resolution =
-						adc_channels[current->adc_index].resolution != 0U ?
-						adc_channels[current->adc_index].resolution : 12U;
-
-					microvolts = (sample->raw * 3300 * 1000) /
-						((1 << resolution) - 1);
+				ret = linkr_debugger_adc_resolve_microvolts(
+					adc_raw_to_microvolts_dt(&adc_channels[current->adc_index],
+								    &microvolts),
+					sample->raw, resolution, &microvolts);
+				if (ret < 0) {
+					goto out;
 				}
+				sample->mv = microvolts / 1000;
 				(void)sensor_value_from_micro(&sample->value, microvolts);
 			} else {
 				ret = -EINVAL;

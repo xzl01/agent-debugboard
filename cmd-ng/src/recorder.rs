@@ -8,7 +8,7 @@ use crate::client::{BoardClient, BoardRequest, BoardTransport};
 use crate::json_contract::JSON_SCHEMA;
 use crate::ws_client::{
     expand_telemetry_batch, subscribe_batch_request, subscribe_request, WsClient, WsTelemetryBatch,
-    WsTelemetryMessage,
+    WsTelemetryMessage, MAX_ADC_BATCH_SAMPLES,
 };
 use anyhow::{anyhow, Result};
 use reqwest::Method;
@@ -21,7 +21,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MAX_ADC_RECORD_RATE_HZ: i32 = 250;
 pub const DEFAULT_ADC_RECORD_RATE_HZ: i32 = MAX_ADC_RECORD_RATE_HZ;
-const ADC_RECORD_BATCH_SIZE: u8 = 20;
+const ADC_RECORD_BATCH_SIZE: u8 = MAX_ADC_BATCH_SAMPLES;
 
 const DEVICE_TIMING_FIELDS: &[&str] = &[
     "device_t_mono_ns",
@@ -163,9 +163,7 @@ fn record_adc_ws_to_file_with_session(
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"));
-    if csv {
-        write_csv_header(&mut writer)?;
-    }
+    let mut csv_voltage_channels: Option<Vec<String>> = None;
     let started = Instant::now();
     let mut written = 0usize;
 
@@ -194,7 +192,23 @@ fn record_adc_ws_to_file_with_session(
             message.readings =
                 crate::adc::transform_readings(message.readings).map_err(|e| anyhow!(e))?;
             if csv {
-                write_telemetry_csv_row(&mut writer, &message, started.elapsed(), unix_time_ns())?;
+                if csv_voltage_channels.is_none() {
+                    let channels = message
+                        .readings
+                        .iter()
+                        .filter(|reading| reading.kind == AdcKind::Voltage)
+                        .map(|reading| reading.name.clone())
+                        .collect::<Vec<_>>();
+                    write_csv_header(&mut writer, &channels)?;
+                    csv_voltage_channels = Some(channels);
+                }
+                write_telemetry_csv_row(
+                    &mut writer,
+                    &message,
+                    started.elapsed(),
+                    unix_time_ns(),
+                    csv_voltage_channels.as_deref().unwrap_or_default(),
+                )?;
             } else {
                 write_telemetry_record(
                     &mut writer,
@@ -208,17 +222,23 @@ fn record_adc_ws_to_file_with_session(
         }
     }
 
+    if csv && csv_voltage_channels.is_none() {
+        write_csv_header(&mut writer, &[])?;
+    }
     writer.flush()?;
     Ok(())
 }
 
-fn write_csv_header(writer: &mut BufWriter<File>) -> Result<()> {
+fn write_csv_header(writer: &mut BufWriter<File>, voltage_channels: &[String]) -> Result<()> {
     write!(writer, "sequence,t_mono_ns,t_unix_ns,device_t_mono_us")?;
     for rail in CSV_RAILS {
         write!(
             writer,
             ",{rail}_power_enabled,{rail}_current_ua,{rail}_voltage_uv"
         )?;
+    }
+    for channel in voltage_channels {
+        write!(writer, ",{channel}_voltage_uv")?;
     }
     writer.write_all(b"\n")?;
     Ok(())
@@ -243,6 +263,7 @@ fn write_telemetry_csv_row(
     message: &WsTelemetryMessage,
     elapsed: Duration,
     unix_ns: i128,
+    voltage_channels: &[String],
 ) -> Result<()> {
     let device_t_mono_us = csv_device_time_us(message);
     write!(
@@ -260,6 +281,18 @@ fn write_telemetry_csv_row(
             .find(|reading| reading.name == *rail && reading.kind == AdcKind::Current);
         write_csv_cell(writer, reading.and_then(|reading| reading.power_enabled))?;
         write_csv_cell(writer, reading.and_then(|reading| reading.current_ua))?;
+        write_csv_cell(
+            writer,
+            reading
+                .filter(|reading| reading.voltage_valid != Some(false))
+                .and_then(|reading| reading.voltage_uv),
+        )?;
+    }
+    for channel in voltage_channels {
+        let reading = message
+            .readings
+            .iter()
+            .find(|reading| reading.name == *channel && reading.kind == AdcKind::Voltage);
         write_csv_cell(
             writer,
             reading
@@ -357,27 +390,34 @@ mod tests {
                     serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
                 let interval_us = 1_000_000 / rate_hz;
                 if request.get("batch_size").is_some() {
+                    let mut batch = crate::adc::fixture::batch();
+                    let mut first = batch["samples"][0].clone();
+                    first["sequence"] = json!(1);
+                    first["uptime_us"] = json!(interval_us);
+                    first["values"][0] = json!(0);
+                    let mut second = first.clone();
+                    second["sequence"] = json!(2);
+                    second["uptime_us"] = json!(interval_us * 2);
+                    second["values"][0] = json!(100);
+                    batch["samples"] = json!([first, second]);
                     socket
-                        .send(Message::Text(
-                            json!({
-                                "type": "telemetry-batch", "topic": "adc", "schema": JSON_SCHEMA,
-                                "channels": [{"name": "vdd_5v", "kind": "current", "unit": "uA"}],
-                                "samples": [
-                                    {"sequence": 1, "uptime_us": interval_us, "values": [0]},
-                                    {"sequence": 2, "uptime_us": interval_us * 2, "values": [100]}
-                                ]
-                            })
-                            .to_string()
-                            .into(),
-                        ))
+                        .send(Message::Text(batch.to_string().into()))
                         .unwrap();
                 } else {
                     for sequence in 1..=2 {
-                        socket.send(Message::Text(json!({
-                            "type": "telemetry", "topic": "adc", "schema": JSON_SCHEMA,
-                            "sequence": sequence, "uptime_us": interval_us * sequence,
-                            "readings": [{"name": "vdd_5v", "kind": "current", "unit": "uA", "value": (sequence - 1) * 100}]
-                        }).to_string().into())).unwrap();
+                        let mut readings = crate::adc::fixture::http()["readings"].clone();
+                        readings[0]["value"] = json!((sequence - 1) * 100);
+                        socket
+                            .send(Message::Text(
+                                json!({
+                                    "type": "telemetry", "topic": "adc", "schema": JSON_SCHEMA,
+                                    "sequence": sequence, "uptime_us": interval_us * sequence,
+                                    "readings": readings
+                                })
+                                .to_string()
+                                .into(),
+                            ))
+                            .unwrap();
                     }
                 }
                 request
@@ -394,7 +434,7 @@ mod tests {
             assert_eq!(request["rate_hz"], rate_hz);
             assert_eq!(
                 request.get("batch_size").and_then(Value::as_u64),
-                (rate_hz > 100).then_some(20)
+                (rate_hz > 100).then_some(18)
             );
 
             let ndjson = std::fs::read_to_string(&path).unwrap();
@@ -409,6 +449,8 @@ mod tests {
                 assert!(record["metadata"]["requested_rate_hz"].as_i64().unwrap() <= 250);
                 assert_eq!(record["sequence"], index + 1);
                 assert_eq!(record["readings"][0]["current_ua"], index * 100);
+                assert_eq!(record["readings"].as_array().unwrap().len(), 8);
+                assert_eq!(record["readings"][4]["voltage_uv"], 2_608_696);
             }
         }
     }
@@ -500,7 +542,8 @@ mod tests {
                     "sample_sequence": 210,
                     "device_t_mono_us": 2234,
                     "power_enabled_mask": 1,
-                    "values": [456000]
+                    "values": [456000],
+                    "voltages_uv": [0]
                 }]
         }))
         .unwrap();
@@ -543,13 +586,14 @@ mod tests {
                 current_ua: Some(123_000),
                 voltage_valid: Some(false),
                 voltage_uv: None,
+                ..Default::default()
             }],
             extra,
             ..Default::default()
         };
 
-        write_csv_header(&mut writer).unwrap();
-        write_telemetry_csv_row(&mut writer, &message, Duration::from_millis(2), 77).unwrap();
+        write_csv_header(&mut writer, &[]).unwrap();
+        write_telemetry_csv_row(&mut writer, &message, Duration::from_millis(2), 77, &[]).unwrap();
         writer.flush().unwrap();
         drop(writer);
         let data = std::fs::read_to_string(&path).unwrap();
@@ -574,14 +618,15 @@ mod tests {
                     "sequence": 10,
                     "uptime_us": 1234,
                     "power_enabled_mask": 1,
-                    "values": [456000]
+                    "values": [456000],
+                    "voltages_uv": [0]
                 }]
         }))
         .unwrap();
         let message = expand_telemetry_batch(batch).unwrap().remove(0);
 
-        write_csv_header(&mut writer).unwrap();
-        write_telemetry_csv_row(&mut writer, &message, Duration::from_millis(3), 88).unwrap();
+        write_csv_header(&mut writer, &[]).unwrap();
+        write_telemetry_csv_row(&mut writer, &message, Duration::from_millis(3), 88, &[]).unwrap();
         writer.flush().unwrap();
         drop(writer);
         let data = std::fs::read_to_string(&path).unwrap();
@@ -590,30 +635,10 @@ mod tests {
     }
 
     #[test]
-    fn ndjson_retains_voltage_adc3_while_csv_records_all_four_current_rails() {
+    fn ndjson_and_csv_retain_all_eight_channels_with_raw_pad_voltage() {
         let path = temp_file_path("adc3");
         let mut writer = BufWriter::new(File::create(&path).unwrap());
-        let batch: WsTelemetryBatch = serde_json::from_value(serde_json::json!({
-            "type": "telemetry-batch",
-            "topic": "adc",
-            "schema": JSON_SCHEMA,
-            "channels": [
-                {"name":"5v_out","signal":"S_C_5V","kind":"current","unit":"uA"},
-                {"name":"12v_out","signal":"S_C_12V","kind":"current","unit":"uA"},
-                {"name":"20v_out","signal":"S_C_20V","kind":"current","unit":"uA"},
-                {"name":"vdd_5v","signal":"S_C_VDD_5V","kind":"current","unit":"uA"},
-                {"name":"adc3","signal":"ADC3","kind":"voltage","unit":"uV"}
-            ],
-            "samples": [{
-                "sequence": 14,
-                "uptime_us": 4321,
-                "power_enabled_mask": 15,
-                "voltage_valid_mask": 13,
-                "voltages_uv": [5000000, 0, 20000000, 5001000],
-                "values": [100, 200, 300, 400, 1234000]
-            }]
-        }))
-        .unwrap();
+        let batch: WsTelemetryBatch = serde_json::from_value(crate::adc::fixture::batch()).unwrap();
         let message = expand_telemetry_batch(batch).unwrap().remove(0);
 
         write_telemetry_record(&mut writer, &message, Duration::ZERO, 1, 100).unwrap();
@@ -623,23 +648,32 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let record: Value = serde_json::from_str(data.trim()).unwrap();
 
-        assert_eq!(record["readings"][4]["name"], "adc3");
-        assert_eq!(record["readings"][4]["voltage_uv"], 1_234_000);
+        assert_eq!(record["readings"].as_array().unwrap().len(), 8);
+        assert_eq!(record["readings"][4]["name"], "adc0");
+        assert_eq!(record["readings"][4]["voltage_uv"], 2_608_696);
+        assert_eq!(record["readings"][4]["note"], "pad voltage");
+        assert_eq!(record["readings"][7]["voltage_uv"], 0);
 
         let csv_path = temp_file_path("adc3-csv");
         let mut csv = BufWriter::new(File::create(&csv_path).unwrap());
-        write_csv_header(&mut csv).unwrap();
-        write_telemetry_csv_row(&mut csv, &message, Duration::ZERO, 1).unwrap();
+        let channels = message
+            .readings
+            .iter()
+            .filter(|reading| reading.kind == AdcKind::Voltage)
+            .map(|reading| reading.name.clone())
+            .collect::<Vec<_>>();
+        write_csv_header(&mut csv, &channels).unwrap();
+        write_telemetry_csv_row(&mut csv, &message, Duration::ZERO, 1, &channels).unwrap();
         csv.flush().unwrap();
         drop(csv);
         let csv = std::fs::read_to_string(&csv_path).unwrap();
         let _ = std::fs::remove_file(&csv_path);
-        assert_eq!(csv.lines().next(), Some("sequence,t_mono_ns,t_unix_ns,device_t_mono_us,5v_out_power_enabled,5v_out_current_ua,5v_out_voltage_uv,12v_out_power_enabled,12v_out_current_ua,12v_out_voltage_uv,20v_out_power_enabled,20v_out_current_ua,20v_out_voltage_uv,vdd_5v_power_enabled,vdd_5v_current_ua,vdd_5v_voltage_uv"));
+        assert_eq!(csv.lines().next(), Some("sequence,t_mono_ns,t_unix_ns,device_t_mono_us,5v_out_power_enabled,5v_out_current_ua,5v_out_voltage_uv,12v_out_power_enabled,12v_out_current_ua,12v_out_voltage_uv,20v_out_power_enabled,20v_out_current_ua,20v_out_voltage_uv,vdd_5v_power_enabled,vdd_5v_current_ua,vdd_5v_voltage_uv,adc0_voltage_uv,adc1_voltage_uv,adc2_voltage_uv,adc3_voltage_uv"));
         assert_eq!(
             csv.lines().nth(1),
-            Some("14,0,1,4321,true,100,5000000,true,200,,true,300,20000000,true,400,5001000")
+            Some("14,0,1,4321,true,100,5000000,true,200,,true,300,20000000,true,400,5100000,2608696,1100000,2200000,0")
         );
-        assert!(!csv.contains("adc3"));
+        assert!(csv.contains("adc3_voltage_uv"));
     }
 
     #[test]
@@ -658,7 +692,7 @@ mod tests {
                 }],
                 ..Default::default()
             };
-            write_telemetry_csv_row(&mut writer, &message, Duration::ZERO, 1).unwrap();
+            write_telemetry_csv_row(&mut writer, &message, Duration::ZERO, 1, &[]).unwrap();
         }
         writer.flush().unwrap();
         drop(writer);
@@ -669,6 +703,90 @@ mod tests {
         assert_eq!(&rows[0][13..], &["false", "0", ""]);
         assert_eq!(&rows[1][13..], &["false", "0", ""]);
         assert_eq!(&rows[2][13..], &["false", "0", "0"]);
+    }
+
+    #[test]
+    fn csv_voltage_columns_follow_descriptors_and_keep_missing_cells_empty() {
+        let mut message =
+            expand_telemetry_batch(serde_json::from_value(crate::adc::fixture::batch()).unwrap())
+                .unwrap()
+                .remove(0);
+        message.readings[4..].rotate_left(2);
+        let channels = message
+            .readings
+            .iter()
+            .filter(|reading| reading.kind == AdcKind::Voltage)
+            .map(|reading| reading.name.clone())
+            .collect::<Vec<_>>();
+        let path = temp_file_path("csv-pad-order");
+        let mut writer = BufWriter::new(File::create(&path).unwrap());
+        write_csv_header(&mut writer, &channels).unwrap();
+        write_telemetry_csv_row(&mut writer, &message, Duration::ZERO, 1, &channels).unwrap();
+        message.readings.retain(|reading| reading.name != "adc2");
+        message
+            .readings
+            .iter_mut()
+            .find(|reading| reading.name == "adc0")
+            .unwrap()
+            .voltage_uv = None;
+        write_telemetry_csv_row(&mut writer, &message, Duration::ZERO, 1, &channels).unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+        let csv = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let rows: Vec<Vec<_>> = csv.lines().map(|line| line.split(',').collect()).collect();
+        assert!(rows.iter().all(|row| row.len() == 20));
+        assert_eq!(
+            &rows[0][16..],
+            [
+                "adc2_voltage_uv",
+                "adc3_voltage_uv",
+                "adc0_voltage_uv",
+                "adc1_voltage_uv"
+            ]
+        );
+        assert_eq!(&rows[1][16..], ["2200000", "0", "2608696", "1100000"]);
+        assert_eq!(&rows[2][16..], ["", "0", "", "1100000"]);
+    }
+
+    #[test]
+    fn csv_recorder_derives_its_header_from_the_eight_channel_batch() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut socket = accept(stream).unwrap();
+            let request: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(request["batch_size"], 18);
+            socket
+                .send(Message::Text(
+                    crate::adc::fixture::batch().to_string().into(),
+                ))
+                .unwrap();
+        });
+        let ws =
+            WsClient::with_ws_url(format!("http://{addr}"), format!("ws://{addr}/api/v1/ws/0"));
+        let mut path = temp_file_path("csv-eight-channel-session");
+        path.set_extension("csv");
+        record_adc_ws_to_file_with_session(&ws, path.to_str().unwrap(), Some(1), 250).unwrap();
+        ws.close().unwrap();
+        server.join().unwrap();
+        let csv = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(csv
+            .lines()
+            .next()
+            .unwrap()
+            .ends_with(",adc0_voltage_uv,adc1_voltage_uv,adc2_voltage_uv,adc3_voltage_uv"));
+        assert!(csv
+            .lines()
+            .nth(1)
+            .unwrap()
+            .ends_with(",2608696,1100000,2200000,0"));
     }
 
     #[test]
@@ -697,7 +815,7 @@ mod tests {
             ..Default::default()
         };
         for message in [WsTelemetryMessage::default(), partial] {
-            write_telemetry_csv_row(&mut writer, &message, Duration::ZERO, 1).unwrap();
+            write_telemetry_csv_row(&mut writer, &message, Duration::ZERO, 1, &[]).unwrap();
         }
         writer.flush().unwrap();
         drop(writer);

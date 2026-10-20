@@ -13,6 +13,38 @@ properties:
       Maximum voltage that firmware may request from the source. This is a
       board-level power-path limit and may be lower than the CH224A capability.
 
+  input-voltage-sensor:
+    type: phandle
+    required: true
+    description: |
+      Voltage-divider sensor measuring the CH224A input source on the board.
+      The driver samples this sensor before every CH224A I2C transaction.
+
+  input-present-threshold-millivolt:
+    type: int
+    required: true
+    description: |
+      Source-side voltage at or above which consecutive samples may establish
+      that the CH224A input is present.
+
+  input-absent-threshold-millivolt:
+    type: int
+    required: true
+    description: |
+      Source-side voltage below which input presence is cleared immediately.
+
+  input-present-stable-samples:
+    type: int
+    required: true
+    description: |
+      Consecutive samples required to establish presence from an absent or
+      unknown state.
+
+  input-sample-interval-ms:
+    type: int
+    required: true
+    description: Delay between consecutive samples used to establish presence.
+
   cfg1-gpios:
     type: phandle-array
     description: |

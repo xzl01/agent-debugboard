@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SerialAutomationHandle } from "./SerialCard";
 import { StartupPowerAnalysis } from "./StartupPowerAnalysis";
 import { PowerAnalysisWorkspace } from "./PowerAnalysisWorkspace";
+import { j4ReadySnapshot } from "@/lib/j4Serial.testFixtures";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -24,6 +25,7 @@ describe("StartupPowerAnalysis workspace", () => {
     const root = createRoot(host);
     const serialRef = {
       current: {
+        getState: () => j4ReadySnapshot({ phase: "disconnected" }),
         isConnected: () => false,
         connectedChannels: () => [],
         clear: vi.fn(),
@@ -73,6 +75,7 @@ describe("StartupPowerAnalysis workspace", () => {
     const root = createRoot(host);
     const serialRef = {
       current: {
+        getState: () => j4ReadySnapshot({ phase: "disconnected" }),
         isConnected: () => false,
         connectedChannels: () => [],
         clear: vi.fn(),
@@ -124,10 +127,12 @@ describe("StartupPowerAnalysis workspace", () => {
     const onCancelCapture = vi.fn();
     const release = vi.fn();
     const setAutomationActive = vi.fn();
+    const getSerialState = vi.fn(j4ReadySnapshot);
     const serialRef = {
       current: {
+        getState: getSerialState,
         isConnected: () => true,
-        connectedChannels: () => ["uart0" as const],
+        connectedChannels: () => ["j4" as const],
         clear: vi.fn(),
         write: vi.fn(() => Promise.resolve()),
         setAutomationActive,
@@ -153,8 +158,12 @@ describe("StartupPowerAnalysis workspace", () => {
 
     const start = [...host.querySelectorAll("button")].find((item) => item.textContent?.includes("startup.start"));
     expect(start).toBeDefined();
+    getSerialState.mockReturnValueOnce(j4ReadySnapshot({ configuring: true }));
     act(() => start?.click());
-    expect(setAutomationActive).toHaveBeenCalledWith(true, "uart0");
+    expect(onSetPower).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("test.error.serialNotReady");
+    act(() => start?.click());
+    expect(setAutomationActive).toHaveBeenCalledWith(true, "j4");
 
     act(() => root.render(render("recording")));
     act(() => root.unmount());
@@ -167,7 +176,7 @@ describe("StartupPowerAnalysis workspace", () => {
       resolvePowerOff();
       await Promise.resolve();
     });
-    expect(setAutomationActive).toHaveBeenLastCalledWith(false, "uart0");
+    expect(setAutomationActive).toHaveBeenLastCalledWith(false, "j4");
     expect(release).toHaveBeenCalledWith("startup");
   });
 
@@ -177,6 +186,7 @@ describe("StartupPowerAnalysis workspace", () => {
     const root = createRoot(host);
     const serialRef = {
       current: {
+        getState: () => j4ReadySnapshot({ phase: "disconnected" }),
         isConnected: () => false,
         connectedChannels: () => [],
         clear: vi.fn(),

@@ -2,8 +2,10 @@
 """Offline unit tests for logic_analyzer_hil_perf.py."""
 
 import argparse
+import copy
 import errno
 import importlib.util
+import json
 import pathlib
 import sys
 import types
@@ -22,6 +24,7 @@ sys.modules[RUNNER_SPEC.name] = runner
 RUNNER_SPEC.loader.exec_module(runner)
 
 FakeWebSocketTimeoutException = type("WebSocketTimeoutException", (Exception,), {})
+ADC0_PAD_UV = 2_608_696
 
 
 class FakeSocket:
@@ -105,6 +108,232 @@ class FakeJsonWsConnection:
 
     def close(self) -> None:
         self.closed = True
+
+
+def adc_http_readings() -> list[dict[str, object]]:
+    return [
+        {
+            "name": "5v_out",
+            "signal": "INA226_5V",
+            "power_enabled": True,
+            "raw": None,
+            "mv": 5010,
+            "voltage_valid": True,
+            "voltage_uv": 5010000,
+            "sensor_channel": "current",
+            "unit": "A",
+            "sensor_value": {"val1": 0, "val2": 540000},
+            "current_ua": 540000,
+        },
+        {
+            "name": "12v_out",
+            "signal": "INA226_12V",
+            "power_enabled": False,
+            "raw": None,
+            "mv": 12020,
+            "voltage_valid": True,
+            "voltage_uv": 12020000,
+            "sensor_channel": "current",
+            "unit": "A",
+            "sensor_value": {"val1": 0, "val2": 120000},
+            "current_ua": 120000,
+        },
+        {
+            "name": "20v_out",
+            "signal": "INA226_20V",
+            "power_enabled": True,
+            "raw": None,
+            "mv": 20030,
+            "voltage_valid": True,
+            "voltage_uv": 20030000,
+            "sensor_channel": "current",
+            "unit": "A",
+            "sensor_value": {"val1": 0, "val2": 20000},
+            "current_ua": 20000,
+        },
+        {
+            "name": "vdd_5v",
+            "signal": "INA226_VDD_5V",
+            "power_enabled": True,
+            "raw": None,
+            "mv": 5000,
+            "voltage_valid": True,
+            "voltage_uv": 5000000,
+            "sensor_channel": "current",
+            "unit": "A",
+            "sensor_value": {"val1": 0, "val2": 150000},
+            "current_ua": 150000,
+        },
+        {
+            "name": "adc0",
+            "signal": "GPIO26_ADC0",
+            "note": "PD input divider; ADC pad voltage",
+            "raw": 2000,
+            "mv": 2608,
+            "sensor_channel": "voltage",
+            "unit": "V",
+            "sensor_value": {"val1": 2, "val2": 608696},
+        },
+        {
+            "name": "adc1",
+            "signal": "GPIO27_ADC1",
+            "raw": 1700,
+            "mv": 1100,
+            "sensor_channel": "voltage",
+            "unit": "V",
+            "sensor_value": {"val1": 1, "val2": 100000},
+        },
+        {
+            "name": "adc2",
+            "signal": "GPIO28_ADC2",
+            "raw": 3000,
+            "mv": 2200,
+            "sensor_channel": "voltage",
+            "unit": "V",
+            "sensor_value": {"val1": 2, "val2": 200000},
+        },
+        {
+            "name": "adc3",
+            "signal": "GPIO29_ADC3",
+            "raw": 1900,
+            "mv": 1234,
+            "sensor_channel": "voltage",
+            "unit": "V",
+            "sensor_value": {"val1": 1, "val2": 234000},
+        },
+    ]
+
+
+def adc_ws_single_readings() -> list[dict[str, object]]:
+    return [
+        {
+            "name": "5v_out",
+            "signal": "INA226_5V",
+            "kind": "current",
+            "unit": "uA",
+            "power_enabled": True,
+            "current_ua": 540000,
+            "voltage_valid": True,
+            "voltage_uv": 5010000,
+            "value": 540000,
+        },
+        {
+            "name": "12v_out",
+            "signal": "INA226_12V",
+            "kind": "current",
+            "unit": "uA",
+            "power_enabled": False,
+            "current_ua": 120000,
+            "voltage_valid": True,
+            "voltage_uv": 12020000,
+            "value": 120000,
+        },
+        {
+            "name": "20v_out",
+            "signal": "INA226_20V",
+            "kind": "current",
+            "unit": "uA",
+            "power_enabled": True,
+            "current_ua": 20000,
+            "voltage_valid": True,
+            "voltage_uv": 20030000,
+            "value": 20000,
+        },
+        {
+            "name": "vdd_5v",
+            "signal": "INA226_VDD_5V",
+            "kind": "current",
+            "unit": "uA",
+            "power_enabled": True,
+            "current_ua": 150000,
+            "voltage_valid": True,
+            "voltage_uv": 5000000,
+            "value": 150000,
+        },
+        {
+            "name": "adc0",
+            "signal": "GPIO26_ADC0",
+            "kind": "voltage",
+            "unit": "uV",
+            "note": "PD input divider; ADC pad voltage",
+            "value": 2608696,
+        },
+        {"name": "adc1", "signal": "GPIO27_ADC1", "kind": "voltage", "unit": "uV", "value": 1100000},
+        {"name": "adc2", "signal": "GPIO28_ADC2", "kind": "voltage", "unit": "uV", "value": 2200000},
+        {"name": "adc3", "signal": "GPIO29_ADC3", "kind": "voltage", "unit": "uV", "value": 1234000},
+    ]
+
+
+def adc_ws_single_message(
+    sequence: int = 1,
+    *,
+    uptime_us: int | None = None,
+    device_t_mono_us: int | None = None,
+) -> str:
+    if uptime_us is None:
+        uptime_us = sequence
+    if device_t_mono_us is None:
+        device_t_mono_us = uptime_us
+    return json.dumps(
+        {
+            "type": "telemetry",
+            "topic": "adc",
+            "schema": "radxa-linkr-debugger.v1",
+            "sequence": sequence,
+            "uptime_us": uptime_us,
+            "sample_sequence": sequence,
+            "device_t_mono_us": device_t_mono_us,
+            "readings": adc_ws_single_readings(),
+        },
+        separators=(",", ":"),
+    )
+
+
+def adc_ws_batch_channels() -> list[dict[str, object]]:
+    return [
+        {"name": "5v_out", "signal": "INA226_5V", "kind": "current", "unit": "uA"},
+        {"name": "12v_out", "signal": "INA226_12V", "kind": "current", "unit": "uA"},
+        {"name": "20v_out", "signal": "INA226_20V", "kind": "current", "unit": "uA"},
+        {"name": "vdd_5v", "signal": "INA226_VDD_5V", "kind": "current", "unit": "uA"},
+        {
+            "name": "adc0",
+            "signal": "GPIO26_ADC0",
+            "kind": "voltage",
+            "unit": "uV",
+            "note": "PD input divider; ADC pad voltage",
+        },
+        {"name": "adc1", "signal": "GPIO27_ADC1", "kind": "voltage", "unit": "uV"},
+        {"name": "adc2", "signal": "GPIO28_ADC2", "kind": "voltage", "unit": "uV"},
+        {"name": "adc3", "signal": "GPIO29_ADC3", "kind": "voltage", "unit": "uV"},
+    ]
+
+
+def adc_ws_batch_sample(
+    sequence: int = 1,
+    *,
+    uptime_us: int = 1000,
+    power_enabled_mask: object = 15,
+    voltage_valid_mask: object = 15,
+) -> dict[str, object]:
+    return {
+        "sequence": sequence,
+        "uptime_us": uptime_us,
+        "power_enabled_mask": power_enabled_mask,
+        "voltage_valid_mask": voltage_valid_mask,
+        "values": [540000, 120000, 20000, 150000, 2608696, 1100000, 2200000, 1234000],
+        "voltages_uv": [5010000, 12020000, 20030000, 5000000],
+    }
+
+
+def adc_ws_batch_message(samples: list[dict[str, object]] | None = None) -> dict[str, object]:
+    return {
+        "type": "telemetry-batch",
+        "topic": "adc",
+        "schema": "radxa-linkr-debugger.v1",
+        "dropped_samples": 0,
+        "channels": adc_ws_batch_channels(),
+        "samples": samples if samples is not None else [adc_ws_batch_sample()],
+    }
 
 
 class LogicAnalyzerHilPerfTests(unittest.TestCase):
@@ -1796,42 +2025,270 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertIn("read-only", result["validation_limitations"][0])
         self.assertIn("not validated", result["validation_limitations"][1])
 
-    def test_telemetry_record_from_message_accepts_single_and_batch_adc(self) -> None:
-        single = runner.telemetry_record_from_message({"type": "telemetry", "topic": "adc", "sequence": 7, "sample_sequence": 17, "uptime_us": 100, "device_t_mono_us": 101}, 1.25)
-        self.assertEqual(single["sample_sequence"], 17)
-        self.assertEqual(single["received_monotonic_s"], 1.25)
+    def test_http_adc_schema_accepts_canonical_eight_descriptors_and_adc0_pad_voltage(self) -> None:
+        self.assertEqual(
+            [descriptor.name for descriptor in runner.ADC_DESCRIPTORS],
+            ["5v_out", "12v_out", "20v_out", "vdd_5v", "adc0", "adc1", "adc2", "adc3"],
+        )
+        self.assertEqual(
+            [descriptor.kind for descriptor in runner.ADC_DESCRIPTORS],
+            ["current", "current", "current", "current", "voltage", "voltage", "voltage", "voltage"],
+        )
+        readings = adc_http_readings()
+        result = runner.validate_http_adc_readings(readings)
+        self.assertTrue(result["valid"], result)
+        self.assertEqual(result["reading_count"], 8)
+        adc0 = readings[4]
+        self.assertEqual(
+            adc0["sensor_value"]["val1"] * 1_000_000 + adc0["sensor_value"]["val2"],
+            ADC0_PAD_UV,
+        )
+        self.assertEqual(adc0["sensor_value"], {"val1": 2, "val2": 608696})
 
-        batch = runner.telemetry_record_from_message({
-            "type": "telemetry-batch",
-            "topic": "adc",
-            "dropped_samples": 2,
-            "samples": [
-                {"sequence": 1, "sample_sequence": 11, "uptime_us": 10, "device_t_mono_us": 11},
-                {"sequence": 2, "sample_sequence": 12, "uptime_us": 20, "device_t_mono_us": 21},
-            ],
-        }, 2.0)
-        self.assertEqual(batch["sample_sequence"], 12)
-        self.assertEqual(batch["batch_sample_count"], 2)
-        self.assertEqual(batch["dropped_samples"], 2)
-        self.assertIsNone(runner.telemetry_record_from_message({"type": "snapshot", "topic": "status"}, 0.0))
+    def test_http_adc_schema_rejects_order_kind_unit_and_non_signed_scalars(self) -> None:
+        mutations = {
+            "missing descriptor": lambda readings: readings.pop(),
+            "wrong order": lambda readings: readings.reverse(),
+            "wrong kind": lambda readings: readings[0].update({"sensor_channel": "voltage"}),
+            "wrong unit": lambda readings: readings[0].update({"unit": "uA"}),
+            "non-signed current": lambda readings: readings[0].update({"current_ua": 1.5}),
+            "non-signed sensor value": lambda readings: readings[7]["sensor_value"].update({"val2": True}),
+            "voltage with current fields": lambda readings: readings[4].update({"power_enabled": True}),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                readings = adc_http_readings()
+                mutate(readings)
+                result = runner.validate_http_adc_readings(readings)
+                self.assertFalse(result["valid"])
+                self.assertGreater(len(result["errors"]), 0)
+
+    def test_adc_schemas_accept_negative_signed_and_absent_voltage_values(self) -> None:
+        http_readings = adc_http_readings()
+        http_readings[0].update(
+            {
+                "current_ua": -540000,
+                "sensor_value": {"val1": -1, "val2": 460000},
+                "voltage_valid": False,
+                "voltage_uv": None,
+            }
+        )
+        self.assertTrue(runner.validate_http_adc_readings(http_readings)["valid"])
+
+        single_readings = adc_ws_single_readings()
+        single_readings[0].update({"current_ua": -540000, "value": -540000, "voltage_uv": -1})
+        self.assertTrue(runner.validate_ws_adc_single_readings(single_readings)["valid"])
+
+        batch = adc_ws_batch_message()
+        batch["samples"][0]["values"][0] = -540000
+        batch["samples"][0]["voltages_uv"][0] = -1
+        self.assertTrue(runner.validate_ws_adc_batch(batch)["valid"])
+
+    def test_ws_single_adc_schema_requires_eight_readings_and_kind_unit_signed_values(self) -> None:
+        readings = adc_ws_single_readings()
+        result = runner.validate_ws_adc_single_readings(readings)
+        self.assertTrue(result["valid"], result)
+        self.assertEqual(result["reading_count"], 8)
+        self.assertEqual(readings[4]["value"], ADC0_PAD_UV)
+
+        mutations = {
+            "missing descriptor": lambda items: items.pop(),
+            "wrong order": lambda items: items.reverse(),
+            "wrong kind": lambda items: items[0].update({"kind": "voltage"}),
+            "wrong unit": lambda items: items[0].update({"unit": "uV"}),
+            "non-signed value": lambda items: items[7].update({"value": 1.5}),
+            "voltage with current fields": lambda items: items[4].update({"power_enabled": True}),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                items = adc_ws_single_readings()
+                mutate(items)
+                result = runner.validate_ws_adc_single_readings(items)
+                self.assertFalse(result["valid"])
+                self.assertGreater(len(result["errors"]), 0)
+
+    def test_ws_batch_adc_schema_requires_canonical_arrays_and_rejects_high_masks(self) -> None:
+        message = adc_ws_batch_message()
+        result = runner.validate_ws_adc_batch(message)
+        self.assertTrue(result["valid"], result)
+        self.assertEqual(result["descriptor_count"], 8)
+        self.assertEqual(result["current_count"], 4)
+        self.assertEqual(result["max_batch_samples"], 18)
+
+        mutations = {
+            "channels": lambda batch: batch["channels"].pop(),
+            "values": lambda batch: batch["samples"][0]["values"].pop(),
+            "voltages": lambda batch: batch["samples"][0]["voltages_uv"].pop(),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                batch = adc_ws_batch_message()
+                mutate(batch)
+                result = runner.validate_ws_adc_batch(batch)
+                self.assertFalse(result["valid"])
+                self.assertGreater(len(result["errors"]), 0)
+
+        for mask_field in ("power_enabled_mask", "voltage_valid_mask"):
+            for invalid_mask in (0x10, 0x100, -1, "15", True):
+                with self.subTest(mask_field=mask_field, mask=invalid_mask):
+                    batch = adc_ws_batch_message()
+                    batch["samples"][0][mask_field] = invalid_mask
+                    result = runner.validate_ws_adc_batch(batch)
+                    self.assertFalse(result["valid"])
+                    self.assertTrue(any(mask_field in error for error in result["errors"]))
+
+    def test_ws_batch_adc_schema_accepts_eighteen_samples_and_rejects_nineteen(self) -> None:
+        accepted = adc_ws_batch_message([adc_ws_batch_sample(seq) for seq in range(1, 19)])
+        self.assertTrue(runner.validate_ws_adc_batch(accepted)["valid"])
+        rejected = adc_ws_batch_message([adc_ws_batch_sample(seq) for seq in range(1, 20)])
+        result = runner.validate_ws_adc_batch(rejected)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("at most 18" in error for error in result["errors"]))
+
+    def test_adc_http_health_requires_canonical_schema_not_just_nonempty_readings(self) -> None:
+        valid_payload = {"ok": True, "readings": adc_http_readings(), "_http_status": 200}
+        with mock.patch.object(runner, "http_json_request", return_value=valid_payload):
+            healthy = runner.adc_http_health("http://board", 1.0)
+        self.assertTrue(healthy["ok"])
+        self.assertTrue(healthy["schema_valid"])
+        self.assertEqual(healthy["reading_count"], 8)
+        self.assertEqual(healthy["schema_errors"], [])
+
+        invalid_payload = copy.deepcopy(valid_payload)
+        invalid_payload["readings"].pop()
+        with mock.patch.object(runner, "http_json_request", return_value=invalid_payload):
+            unhealthy = runner.adc_http_health("http://board", 1.0)
+        self.assertFalse(unhealthy["ok"])
+        self.assertFalse(unhealthy["schema_valid"])
+        self.assertEqual(unhealthy["reading_count"], 7)
+        self.assertGreater(len(unhealthy["schema_errors"]), 0)
+
+    def test_telemetry_record_from_message_accepts_single_and_batch_adc(self) -> None:
+        single_message = json.loads(adc_ws_single_message(7, uptime_us=100, device_t_mono_us=101))
+        single_message["sample_sequence"] = 17
+        single = runner.telemetry_record_from_message(single_message, 1.25)
+        self.assertEqual(single.schema_errors, ())
+        self.assertIsNotNone(single.record)
+        self.assertEqual(single.record["sample_sequence"], 17)
+        self.assertEqual(single.record["received_monotonic_s"], 1.25)
+
+        first_batch_sample = adc_ws_batch_sample(1, uptime_us=10)
+        first_batch_sample.update({"sample_sequence": 11, "device_t_mono_us": 11})
+        last_batch_sample = adc_ws_batch_sample(2, uptime_us=20)
+        last_batch_sample.update({"sample_sequence": 12, "device_t_mono_us": 21})
+        batch_message = adc_ws_batch_message([first_batch_sample, last_batch_sample])
+        batch_message["dropped_samples"] = 2
+        batch = runner.telemetry_record_from_message(batch_message, 2.0)
+        self.assertEqual(batch.schema_errors, ())
+        self.assertIsNotNone(batch.record)
+        self.assertEqual(batch.record["sample_sequence"], 12)
+        self.assertEqual(batch.record["batch_sample_count"], 2)
+        self.assertEqual(batch.record["dropped_samples"], 2)
+        non_telemetry = runner.telemetry_record_from_message({"type": "snapshot", "topic": "status"}, 0.0)
+        self.assertIsNone(non_telemetry.record)
+        self.assertEqual(non_telemetry.schema_errors, ())
+
+    def test_telemetry_record_from_message_rejects_incomplete_adc_schema(self) -> None:
+        single_message = json.loads(adc_ws_single_message(3))
+        single_message["readings"].pop()
+        single = runner.telemetry_record_from_message(single_message, 0.0)
+        self.assertIsNone(single.record)
+        self.assertGreater(len(single.schema_errors), 0)
+
+        batch_message = adc_ws_batch_message()
+        batch_message["samples"][0]["values"].pop()
+        batch = runner.telemetry_record_from_message(batch_message, 0.0)
+        self.assertIsNone(batch.record)
+        self.assertGreater(len(batch.schema_errors), 0)
+
+    def test_telemetry_live_topic_claiming_adc_schema_is_validated(self) -> None:
+        message = json.loads(adc_ws_single_message(1))
+        message["topic"] = "live"
+        valid = runner.telemetry_record_from_message(message, 0.0)
+        self.assertIsNotNone(valid.record)
+        self.assertEqual(valid.schema_errors, ())
+
+        message["readings"].pop()
+        invalid = runner.telemetry_record_from_message(message, 0.0)
+        self.assertIsNone(invalid.record)
+        self.assertGreater(len(invalid.schema_errors), 0)
+
+    def test_telemetry_read_until_records_invalid_claiming_frames_as_schema_errors(self) -> None:
+        missing_adc3 = json.loads(adc_ws_single_message(1))
+        missing_adc3["readings"].pop()
+        invalid_mask = adc_ws_batch_message()
+        invalid_mask["samples"][0]["voltage_valid_mask"] = 0x10
+        ws = FakeJsonWsConnection([
+            json.dumps({"type": "snapshot", "topic": "status"}),
+            json.dumps(missing_adc3),
+            json.dumps(invalid_mask),
+            adc_ws_single_message(2),
+        ])
+        result = runner.telemetry_read_until(ws, timeout_s=1.0, min_records=1, phase="baseline")
+        self.assertEqual(result["record_count"], 1)
+        self.assertEqual(result["schema_errors"], 2)
+        self.assertEqual(result["other_json"], 1)
+        self.assertEqual(len(result["schema_error_records"]), 2)
+        self.assertFalse(result["connected"])
+        self.assertGreaterEqual(len(result["errors"]), 2)
+
+    def test_telemetry_overlap_missing_adc3_fails_pause_observation(self) -> None:
+        message = json.loads(adc_ws_single_message(1))
+        message["readings"].pop()
+        ws = FakeJsonWsConnection([json.dumps(message)])
+        worker = mock.Mock()
+        states = [True, False]
+        worker.is_alive.side_effect = lambda: states.pop(0) if states else False
+        with mock.patch.object(runner.time, "monotonic", side_effect=[0.0, 0.01, 0.10, 0.11]):
+            result = runner.telemetry_read_during_overlap(ws, start_monotonic_s=0.0, worker=worker, timeout_s=1.0)
+        self.assertFalse(result["expected_pause_observed"])
+        self.assertEqual(result["schema_errors"], 1)
+        self.assertEqual(result["pause_record_count"], 0)
+        self.assertFalse(result["connected"])
+        self.assertGreater(len(result["errors"]), 0)
+
+    def test_telemetry_overlap_invalid_batch_length_or_mask_fails_pause(self) -> None:
+        mutations = {
+            "values length": lambda message: message["samples"][0]["values"].pop(),
+            "power mask": lambda message: message["samples"][0].update({"power_enabled_mask": 0x10}),
+            "voltage mask": lambda message: message["samples"][0].update({"voltage_valid_mask": 0x100}),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                message = adc_ws_batch_message()
+                mutate(message)
+                ws = FakeJsonWsConnection([json.dumps(message)])
+                worker = mock.Mock()
+                states = [True, False]
+                worker.is_alive.side_effect = lambda: states.pop(0) if states else False
+                with mock.patch.object(runner.time, "monotonic", side_effect=[0.0, 0.01, 0.10, 0.11]):
+                    result = runner.telemetry_read_during_overlap(
+                        ws, start_monotonic_s=0.0, worker=worker, timeout_s=1.0
+                    )
+                self.assertFalse(result["expected_pause_observed"])
+                self.assertEqual(result["schema_errors"], 1)
+                self.assertEqual(result["pause_record_count"], 0)
+                self.assertFalse(result["connected"])
+                self.assertGreater(len(result["errors"]), 0)
 
     def test_telemetry_read_until_flags_binary_and_malformed_without_disconnect(self) -> None:
         ws = FakeJsonWsConnection([
             b"binary",
             "not json",
-            '{"type":"telemetry","topic":"adc","sequence":3,"sample_sequence":30,"uptime_us":1,"device_t_mono_us":2}',
+            adc_ws_single_message(3, uptime_us=1, device_t_mono_us=2),
         ])
         result = runner.telemetry_read_until(ws, timeout_s=1.0, min_records=1, phase="baseline")
         self.assertEqual(result["record_count"], 1)
         self.assertEqual(result["binary_frames"], 1)
         self.assertEqual(result["malformed_json"], 1)
+        self.assertEqual(result["schema_errors"], 0)
         self.assertFalse(result["connected"])
 
     def test_telemetry_overlap_distinguishes_grace_from_pause_pollution(self) -> None:
         ws = FakeJsonWsConnection([
-            '{"type":"telemetry","topic":"adc","sequence":1,"sample_sequence":1}',
+            adc_ws_single_message(1),
             TimeoutError("pause"),
-            '{"type":"telemetry","topic":"adc","sequence":2,"sample_sequence":2}',
+            adc_ws_single_message(2),
         ])
         worker = mock.Mock()
         states = [True, True, True, False]
@@ -1856,16 +2313,17 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertEqual(result["pause_record_count"], 0)
         self.assertEqual(result["binary_frames"], 0)
         self.assertEqual(result["malformed_json"], 0)
+        self.assertEqual(result["schema_errors"], 0)
         self.assertEqual(result["recv_timeouts"], 2)
         self.assertEqual(result["errors"], [])
 
     def test_telemetry_overlap_uses_sequence_reset_as_inferred_release(self) -> None:
         grace_frames: list[object] = [
-            f'{{"type":"telemetry","topic":"adc","sequence":{seq},"sample_sequence":{seq},"uptime_us":{1000 + seq},"device_t_mono_us":{1000 + seq}}}'
+            adc_ws_single_message(seq, uptime_us=1000 + seq, device_t_mono_us=1000 + seq)
             for seq in range(13, 26)
         ]
         reset_frames: list[object] = [
-            f'{{"type":"telemetry","topic":"adc","sequence":{seq},"sample_sequence":{seq},"uptime_us":{2000 + seq},"device_t_mono_us":{2000 + seq}}}'
+            adc_ws_single_message(seq, uptime_us=2000 + seq, device_t_mono_us=2000 + seq)
             for seq in range(1, 10)
         ]
         ws = FakeJsonWsConnection(grace_frames + reset_frames)
@@ -1897,8 +2355,8 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
 
     def test_telemetry_overlap_fails_same_epoch_post_grace_before_reset(self) -> None:
         ws = FakeJsonWsConnection([
-            '{"type":"telemetry","topic":"adc","sequence":13,"sample_sequence":13,"uptime_us":1013,"device_t_mono_us":1013}',
-            '{"type":"telemetry","topic":"adc","sequence":14,"sample_sequence":14,"uptime_us":1014,"device_t_mono_us":1014}',
+            adc_ws_single_message(13, uptime_us=1013, device_t_mono_us=1013),
+            adc_ws_single_message(14, uptime_us=1014, device_t_mono_us=1014),
         ])
         worker = mock.Mock()
         states = [True, True, False]
@@ -1963,7 +2421,7 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
             mock.patch.object(runner, "telemetry_read_until", side_effect=[baseline, post]),
             mock.patch.object(runner, "telemetry_read_during_overlap", return_value=overlap),
             mock.patch.object(runner, "sigrok_tcp_wide11_deep_burst_raw_capture", side_effect=fake_burst),
-            mock.patch.object(runner, "adc_http_health", return_value={"ok": True}),
+            mock.patch.object(runner, "adc_http_health", return_value={"ok": True, "schema_valid": True, "reading_count": 8, "schema_errors": []}),
         ):
             result = runner.sigrok_tcp_wide11_telemetry_isolation_case(args)
         self.assertTrue(result["pass"], result)
@@ -1974,6 +2432,38 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertTrue(result["post_release_valid_epoch"])
         self.assertEqual(result["raw_tcp_wide11_burst"]["stats"]["data_frames"], 98)
         self.assertTrue(fake_ws.closed)
+
+    def test_wide11_telemetry_isolation_case_rejects_schema_errors_during_pause(self) -> None:
+        args = runner.parse_args(["--matrix", "wide11-telemetry-isolation", "--telemetry-isolation-baseline-samples", "1", "--telemetry-isolation-post-release-samples", "1"])
+        fake_ws = FakeJsonWsConnection([])
+
+        class WsModule:
+            @staticmethod
+            def create_connection(url: str, timeout: float) -> FakeJsonWsConnection:
+                return fake_ws
+
+        baseline = {"phase": "baseline", "records": [{"sample_sequence": 10, "device_t_mono_us": 868824800, "uptime_us": 868824800, "received_monotonic_s": 1.0}], "record_count": 1, "connected": True, "schema_errors": 0, "malformed_json": 0, "binary_frames": 0, "errors": []}
+        overlap = {"phase": "overlap_pause", "connected": True, "expected_pause_observed": True, "pause_record_count": 0, "schema_errors": 1, "schema_error_records": [{"type": "telemetry", "topic": "adc", "errors": ["missing adc3"]}], "malformed_json": 0, "binary_frames": 0, "recv_timeouts": 1, "errors": ["schema:telemetry:missing adc3"], "pre_pause_delivery_grace_records": []}
+        post = {"phase": "post_release", "records": [{"sample_sequence": 1, "device_t_mono_us": 869354700, "uptime_us": 869354700, "received_monotonic_s": 2.0}], "record_count": 1, "connected": True, "schema_errors": 0, "malformed_json": 0, "binary_frames": 0, "errors": []}
+        raw = {"ok": True, "reason": "ok", "stats": {"received_sample_count": 100000, "data_frames": 98, "sample_index_gaps": 0}}
+
+        def fake_burst(host: str, port: int, timeout_s: float, *, on_start_resp=None):
+            if callable(on_start_resp):
+                on_start_resp({"start_resp_monotonic_s": 1.5})
+            return raw
+
+        with (
+            mock.patch.object(runner, "load_websocket_module", return_value=WsModule),
+            mock.patch.object(runner, "create_live_session_ws_url", return_value="ws://telemetry"),
+            mock.patch.object(runner, "telemetry_subscribe", return_value={"connected": True, "schema_errors": 0}),
+            mock.patch.object(runner, "telemetry_read_until", side_effect=[baseline, post]),
+            mock.patch.object(runner, "telemetry_read_during_overlap", return_value=overlap),
+            mock.patch.object(runner, "sigrok_tcp_wide11_deep_burst_raw_capture", side_effect=fake_burst),
+            mock.patch.object(runner, "adc_http_health", return_value={"ok": True, "schema_valid": True, "reading_count": 8, "schema_errors": []}),
+        ):
+            result = runner.sigrok_tcp_wide11_telemetry_isolation_case(args)
+        self.assertFalse(result["pass"])
+        self.assertIn("schema", result["reason"])
 
     def test_wide11_telemetry_isolation_case_accepts_reset_epoch_before_helper_return(self) -> None:
         args = runner.parse_args(["--matrix", "wide11-telemetry-isolation", "--telemetry-isolation-baseline-samples", "1", "--telemetry-isolation-post-release-samples", "2"])
@@ -2002,7 +2492,7 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
             mock.patch.object(runner, "telemetry_read_until", side_effect=[baseline, post_after_helper]),
             mock.patch.object(runner, "telemetry_read_during_overlap", return_value=overlap),
             mock.patch.object(runner, "sigrok_tcp_wide11_deep_burst_raw_capture", side_effect=fake_burst),
-            mock.patch.object(runner, "adc_http_health", return_value={"ok": True}),
+            mock.patch.object(runner, "adc_http_health", return_value={"ok": True, "schema_valid": True, "reading_count": 8, "schema_errors": []}),
         ):
             result = runner.sigrok_tcp_wide11_telemetry_isolation_case(args)
         self.assertTrue(result["pass"], result)

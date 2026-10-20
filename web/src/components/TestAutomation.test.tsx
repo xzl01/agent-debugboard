@@ -263,6 +263,18 @@ describe("TestAutomation workspace shell", () => {
     expect(host.querySelector("[data-testid='automation-error']")?.textContent)
       .toContain("test.error.taskBusy");
   });
+
+  it("localizes J4 MCU readiness failures before creating a runner", async () => {
+    vi.mocked(preflightTestRun).mockImplementationOnce(() => {
+      const error = new Error("J4 MCU serial is not ready (paused)");
+      error.name = "J4SerialPreflightError";
+      throw error;
+    });
+    const { host } = await mountAutomation({ validWorkflow: true });
+    act(() => workflowCapture.props?.onRun());
+    expect(host.querySelector("[data-testid='automation-error']")?.textContent).toContain("test.error.serialNotReady");
+    expect(runnerCapture.scripts).toHaveLength(0);
+  });
 });
 
 describe("TestAutomation editor state", () => {

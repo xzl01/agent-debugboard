@@ -5,74 +5,91 @@ import {
   decodeTelemetrySamples,
 } from "./boardTelemetry.ts";
 
-const CURRENT_CHANNEL = { name: "5v_out", signal: "S_C_5V", kind: "current", unit: "uA" };
-const CURRENT_CHANNEL_2 = { name: "12v_out", signal: "S_C_12V", kind: "current", unit: "uA" };
-const VOLTAGE_CHANNEL = { name: "adc3", signal: "S_ADC3", kind: "voltage", unit: "uV" };
+const CURRENT_CHANNELS = [
+  { name: "5v_out", signal: "INA226_5V", kind: "current", unit: "uA" },
+  { name: "12v_out", signal: "INA226_12V", kind: "current", unit: "uA" },
+  { name: "20v_out", signal: "INA226_20V", kind: "current", unit: "uA" },
+  { name: "vdd_5v", signal: "INA226_VDD_5V", kind: "current", unit: "uA" },
+];
+const VOLTAGE_CHANNELS = [
+  { name: "adc0", signal: "GPIO26_ADC0", kind: "voltage", unit: "uV", note: "PD input divider; ADC pad voltage" },
+  { name: "adc1", signal: "GPIO27_ADC1", kind: "voltage", unit: "uV" },
+  { name: "adc2", signal: "GPIO28_ADC2", kind: "voltage", unit: "uV" },
+  { name: "adc3", signal: "GPIO29_ADC3", kind: "voltage", unit: "uV" },
+];
+const CHANNELS = [...CURRENT_CHANNELS, ...VOLTAGE_CHANNELS];
+const VALUES = [100, -200, 300, 400, 2_608_696, 1_100_000, 2_200_000, 1_650_000];
 
-function compactCurrent(value: number, powerEnabled: boolean) {
-  return { ...CURRENT_CHANNEL, value, power_enabled: powerEnabled };
+function compactReadings() {
+  return CHANNELS.map((channel, index) => ({
+    ...channel, value: VALUES[index],
+    ...(channel.kind === "current" ? { power_enabled: true, voltage_valid: true, voltage_uv: 5_000_000 } : {}),
+  }));
 }
 
-function compactVoltage(value: number) {
-  return { ...VOLTAGE_CHANNEL, value };
-}
-
-test("decodeTelemetryReadings previews a single telemetry frame", () => {
-  // Given a single compact telemetry frame with current and voltage readings
-  // When preview readings are decoded
+test("decodeTelemetryReadings previews all eight single-frame descriptors", () => {
   const readings = decodeTelemetryReadings({
     type: "telemetry",
-    readings: [compactCurrent(100, true), compactVoltage(3300000)],
+    readings: compactReadings(),
   });
 
-  // Then both channels are parsed in order
-  assert.deepEqual(readings, [
-    { kind: "current", unit: "uA", name: "5v_out", signal: "S_C_5V", value: 100, power_enabled: true },
-    { kind: "voltage", unit: "uV", name: "adc3", signal: "S_ADC3", value: 3300000 },
-  ]);
+  assert.deepEqual(readings, compactReadings());
+  assert.equal(readings.length, 8);
+  assert.equal(readings[4].value, 2_608_696);
 });
 
 test("decodeTelemetryReadings previews only the latest batch sample", () => {
-  // Given a batch whose mask powers only the second channel
-  // When preview readings are decoded
   const readings = decodeTelemetryReadings({
     type: "telemetry-batch",
-    channels: [CURRENT_CHANNEL, CURRENT_CHANNEL_2, VOLTAGE_CHANNEL],
+    channels: CHANNELS,
     samples: [
-      { sample_sequence: 1, values: [10, 20, 30], power_enabled_mask: 0b111 },
-      { sample_sequence: 2, values: [40, 50, 60], power_enabled_mask: 0b010 },
+      { sample_sequence: 1, values: VALUES.map(() => 0), power_enabled_mask: 0b1111 },
+      { sample_sequence: 2, values: VALUES, power_enabled_mask: 0b1010 },
     ],
   });
 
-  // Then only the latest sample is decoded and the mask gates current channels
-  assert.deepEqual(readings, [
-    { kind: "current", unit: "uA", name: "5v_out", signal: "S_C_5V", value: 40, power_enabled: false },
-    { kind: "current", unit: "uA", name: "12v_out", signal: "S_C_12V", value: 50, power_enabled: true },
-    { kind: "voltage", unit: "uV", name: "adc3", signal: "S_ADC3", value: 60 },
-  ]);
+  assert.deepEqual(readings, CHANNELS.map((channel, index) => ({
+    ...channel, value: VALUES[index],
+    ...(channel.kind === "current" ? { power_enabled: index === 1 || index === 3 } : {}),
+  })));
 });
 
-test("decodeTelemetryReadings attaches rail voltage to current channels", () => {
+test("decodeTelemetryReadings keeps four rail-voltage slots separate from ADC-pad values", () => {
   const readings = decodeTelemetryReadings({
     type: "telemetry-batch",
-    channels: [CURRENT_CHANNEL, CURRENT_CHANNEL_2, VOLTAGE_CHANNEL],
+    channels: CHANNELS,
     samples: [{
       sample_sequence: 3,
-      values: [100, 200, 300],
-      power_enabled_mask: 0b11,
-      voltage_valid_mask: 0b01,
-      voltages_uv: [5_010_000, 12_020_000],
+      values: VALUES,
+      power_enabled_mask: 0b1111,
+      voltage_valid_mask: 0b1001,
+      voltages_uv: [5_010_000, 12_020_000, null, 5_000_000],
     }],
   });
 
-  assert.deepEqual(readings[0], {
-    kind: "current", unit: "uA", name: "5v_out", signal: "S_C_5V", value: 100,
-    power_enabled: true, voltage_valid: true, voltage_uv: 5_010_000,
+  assert.equal(readings.length, 8);
+  assert.deepEqual(readings.slice(0, 4).map((reading) => reading.kind === "current" && [
+    reading.voltage_valid, reading.voltage_uv,
+  ]), [[true, 5_010_000], [false, 12_020_000], [false, undefined], [true, 5_000_000]]);
+  assert.deepEqual(readings.slice(4), VOLTAGE_CHANNELS.map((channel, index) => ({ ...channel, value: VALUES[index + 4] })));
+  for (const reading of readings.slice(4)) {
+    assert.equal("power_enabled" in reading, false);
+    assert.equal("voltage_uv" in reading, false);
+  }
+});
+
+test("missing and null sample values never shift another descriptor or become zero", () => {
+  const readings = decodeTelemetryReadings({
+    type: "telemetry-batch",
+    channels: [...CURRENT_CHANNELS, null, ...VOLTAGE_CHANNELS.slice(1)],
+    samples: [{ values: [...VALUES.slice(0, 5), null, 0], power_enabled_mask: 0b1111 }],
   });
-  assert.deepEqual(readings[1], {
-    kind: "current", unit: "uA", name: "12v_out", signal: "S_C_12V", value: 200,
-    power_enabled: true, voltage_valid: false, voltage_uv: 12_020_000,
-  });
+  assert.deepEqual(readings.map(({ name, value }) => [name, value]), [
+    ["5v_out", 100], ["12v_out", -200], ["20v_out", 300], ["vdd_5v", 400], ["adc2", 0],
+  ]);
+  assert.deepEqual(decodeTelemetryReadings({
+    type: "telemetry", readings: [{ ...VOLTAGE_CHANNELS[3], value: 1_650_000 }],
+  }), [{ ...VOLTAGE_CHANNELS[3], value: 1_650_000 }]);
 });
 
 test("decodeTelemetryReadings returns empty readings for unsupported frames", () => {
@@ -85,51 +102,44 @@ test("decodeTelemetryReadings returns empty readings for unsupported frames", ()
   assert.deepEqual(decodeTelemetryReadings({ type: "telemetry-batch", samples: [] }), []);
 });
 
-test("decodeTelemetrySamples decodes a single frame with legacy field fallbacks", () => {
-  // Given a single frame using only the legacy sequence/uptime field names
-  // When capture samples are decoded
+test("decodeTelemetrySamples retains only four current channels from an eight-reading frame", () => {
   const samples = decodeTelemetrySamples({
     type: "telemetry",
-    readings: [compactCurrent(42, true), compactVoltage(3300000)],
-    sequence: 9,
-    uptime_us: 12345,
+    readings: compactReadings(),
+    sample_sequence: 9,
+    device_t_mono_us: 12345,
   });
 
-  // Then one sample results, voltage is filtered out, and fallbacks apply
   assert.equal(samples.length, 1);
   const sample = samples[0];
   assert.equal(sample?.offset, 0);
   assert.equal(sample?.triggered, false);
   assert.equal(sample?.sampleSequence, 9);
   assert.equal(sample?.deviceTimeUs, 12345);
-  assert.deepEqual(sample?.readings, [{
-    kind: "current",
-    unit: "uA",
-    name: "5v_out",
-    signal: "S_C_5V",
-    value: 42,
+  assert.deepEqual(sample?.readings, CURRENT_CHANNELS.map((channel, index) => ({
+    ...channel,
+    value: VALUES[index],
     power_enabled: true,
-    current_ua: 42,
+    voltage_valid: true,
+    voltage_uv: 5_000_000,
+    current_ua: VALUES[index],
     raw: null,
     mv: 0,
     sensor_channel: "current",
-  }]);
+  })));
 });
 
 test("decodeTelemetrySamples decodes every batch sample in order", () => {
-  // Given a batch with three samples and a mask that disables the current rail
-  // When capture samples are decoded
   const samples = decodeTelemetrySamples({
     type: "telemetry-batch",
-    channels: [CURRENT_CHANNEL, VOLTAGE_CHANNEL],
+    channels: CHANNELS,
     samples: [
-      { sample_sequence: 7, device_t_mono_us: 7000, values: [70, 700], power_enabled_mask: 0b01 },
-      { sequence: 8, uptime_us: 8000, values: [80, 800], power_enabled_mask: 0b00 },
-      { sample_sequence: 9, device_t_mono_us: 9000, values: [90, 900], power_enabled_mask: 0b01 },
+      { sample_sequence: 7, device_t_mono_us: 7000, values: VALUES, power_enabled_mask: 0b1111 },
+      { sample_sequence: 8, device_t_mono_us: 8000, values: VALUES, power_enabled_mask: 0b0000 },
+      { sample_sequence: 9, device_t_mono_us: 9000, values: VALUES, power_enabled_mask: 0b1111 },
     ],
   });
 
-  // Then every sample is decoded in order with per-sample fallbacks and mask
   assert.equal(samples.length, 3);
   assert.deepEqual(
     samples.map((sample) => [sample.sampleSequence, sample.deviceTimeUs]),
@@ -137,7 +147,8 @@ test("decodeTelemetrySamples decodes every batch sample in order", () => {
   );
   assert.equal(samples[0]?.readings[0]?.power_enabled, true);
   assert.equal(samples[1]?.readings[0]?.power_enabled, false);
-  assert.equal(samples[1]?.readings.length, 1);
+  assert.equal(samples[1]?.readings.length, 4);
+  assert.deepEqual(samples[1].readings.map(({ name }) => name), CURRENT_CHANNELS.map(({ name }) => name));
 });
 
 test("decodeTelemetrySamples returns no samples for unsupported frames", () => {

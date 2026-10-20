@@ -20,9 +20,10 @@
  *    respectively (SCL=GPIO20, SDA=GPIO21). This is the opposite of the
  *    RP2350 I2C0 pin functions and of the pico-examples SCL=SDA+1 layout,
  *    so the PIO program uses an absolute GPIO wait on SCL.
- *  - ADC0..3 are exposed on the J8 header (GPIO26..29), not rail sense.
+ *  - ADC0 measures the DC20V input divider (R46=100 kOhm, R47=15 kOhm)
+ *    after Q28 and before U10. J8 exposes ADC1..3 on GPIO27..29.
  *  - J4 is a 3-pin target UART (TX/RX/GND): UART1 TX=GPIO10, RX=GPIO11,
- *    bridged to the second USB CDC ACM (cdc_acm_uart1) by uart_bridge.
+ *    exposed through the second USB CDC ACM (cdc_acm_uart1).
  *  - LED_BLUE=GPIO24, TF mux select=GPIO4, TF_WP=GPIO22, OTG enable=GPIO23,
  *    CH224A PD config=GPIO19.
  */
@@ -38,10 +39,293 @@
 		zephyr,shell-uart = &cdc_acm_uart0;
 		zephyr,heartbeat-led = &led0;
 		radxa-linkr-debugger-temperature-sensor = &die_temp;
+		radxa,linkr-gpio-layout = &linkr_gpio_layout;
+		radxa,linkr-j4-uart = &uart1;
+		radxa,linkr-j4-cdc = &cdc_acm_uart1;
+	};
+
+	linkr_gpio_layout: gpio-layout {
+		compatible = "radxa,linkr-gpio-layout";
+		view = "component-top";
+
+		j8 {
+			connector-name = "J8";
+			edge = "right";
+			order = <0>;
+			rows = <10>;
+			columns = <2>;
+
+			contact-10 {
+				pin-number = <10>;
+				row = <0>;
+				column = <0>;
+				display-label = "GP21 / SDA";
+				signal = "RP2354_SDA";
+				role = "i2c";
+			};
+
+			contact-20 {
+				pin-number = <20>;
+				row = <0>;
+				column = <1>;
+				display-label = "5V USB HUB";
+				signal = "5V_USB_HUB";
+				role = "power";
+			};
+
+			contact-9 {
+				pin-number = <9>;
+				row = <1>;
+				column = <0>;
+				display-label = "GP20 / SCL";
+				signal = "RP2354_SCL";
+				role = "i2c";
+			};
+
+			contact-19 {
+				pin-number = <19>;
+				row = <1>;
+				column = <1>;
+				display-label = "USB DM (hub)";
+				signal = "U3_D3M_HUB_CON";
+				role = "usb";
+			};
+
+			contact-8 {
+				pin-number = <8>;
+				row = <2>;
+				column = <0>;
+				display-label = "GP27 / ADC1";
+				signal = "GPIO27_ADC1";
+				role = "adc";
+			};
+
+			contact-18 {
+				pin-number = <18>;
+				row = <2>;
+				column = <1>;
+				display-label = "USB DP (hub)";
+				signal = "U3_D3P_HUB_CON";
+				role = "usb";
+			};
+
+			contact-7 {
+				pin-number = <7>;
+				row = <3>;
+				column = <0>;
+				display-label = "GP28 / ADC2";
+				signal = "GPIO28_ADC2";
+				role = "adc";
+			};
+
+			contact-17 {
+				pin-number = <17>;
+				row = <3>;
+				column = <1>;
+				display-label = "GND";
+				signal = "GND";
+				role = "ground";
+			};
+
+			contact-6 {
+				pin-number = <6>;
+				row = <4>;
+				column = <0>;
+				display-label = "GP29 / ADC3";
+				signal = "GPIO29_ADC3";
+				role = "adc";
+				gpio-pin = <29>;
+				control-alias = "J8_PIN6";
+				controllable;
+			};
+
+			contact-16 {
+				pin-number = <16>;
+				row = <4>;
+				column = <1>;
+				display-label = "USB MUX";
+				signal = "GPIO5";
+				role = "dedicated";
+			};
+
+			contact-5 {
+				pin-number = <5>;
+				row = <5>;
+				column = <0>;
+				display-label = "GP16";
+				signal = "GPIO16";
+				role = "gpio";
+				gpio-pin = <16>;
+				control-alias = "J8_PIN5";
+				controllable;
+				output-capable;
+			};
+
+			contact-15 {
+				pin-number = <15>;
+				row = <5>;
+				column = <1>;
+				display-label = "TF switch";
+				signal = "GP06_TF_SW";
+				role = "dedicated";
+			};
+
+			contact-4 {
+				pin-number = <4>;
+				row = <6>;
+				column = <0>;
+				display-label = "GP15";
+				signal = "GPIO15";
+				role = "gpio";
+				gpio-pin = <15>;
+				control-alias = "J8_PIN4";
+				controllable;
+				output-capable;
+			};
+
+			contact-14 {
+				pin-number = <14>;
+				row = <6>;
+				column = <1>;
+				display-label = "GND";
+				signal = "GND";
+				role = "ground";
+			};
+
+			contact-3 {
+				pin-number = <3>;
+				row = <7>;
+				column = <0>;
+				display-label = "GP14";
+				signal = "GPIO14";
+				role = "gpio";
+				gpio-pin = <14>;
+				control-alias = "J8_PIN3";
+				controllable;
+				output-capable;
+			};
+
+			contact-13 {
+				pin-number = <13>;
+				row = <7>;
+				column = <1>;
+				display-label = "USB DM";
+				signal = "MTT_USB2_DM";
+				role = "usb";
+			};
+
+			contact-2 {
+				pin-number = <2>;
+				row = <8>;
+				column = <0>;
+				display-label = "GP13";
+				signal = "GPIO13";
+				role = "gpio";
+				gpio-pin = <13>;
+				control-alias = "J8_PIN2";
+				controllable;
+				output-capable;
+			};
+
+			contact-12 {
+				pin-number = <12>;
+				row = <8>;
+				column = <1>;
+				display-label = "USB DP";
+				signal = "MTT_USB2_DP";
+				role = "usb";
+			};
+
+			contact-1 {
+				pin-number = <1>;
+				row = <9>;
+				column = <0>;
+				display-label = "GP12";
+				signal = "GPIO12";
+				role = "gpio";
+				gpio-pin = <12>;
+				control-alias = "J8_PIN1";
+				controllable;
+				output-capable;
+			};
+
+			contact-11 {
+				pin-number = <11>;
+				row = <9>;
+				column = <1>;
+				display-label = "GND";
+				signal = "GND";
+				role = "ground";
+			};
+		};
+
+		j13 {
+			connector-name = "J13";
+			edge = "right";
+			order = <1>;
+			rows = <2>;
+			columns = <2>;
+
+			contact-2 {
+				pin-number = <2>;
+				row = <0>;
+				column = <0>;
+				display-label = "GP9 / USER";
+				signal = "GP09_USER";
+				role = "gpio";
+				gpio-pin = <9>;
+				control-alias = "CON_USER";
+				controllable;
+				output-capable;
+			};
+
+			contact-3 {
+				pin-number = <3>;
+				row = <0>;
+				column = <1>;
+				display-label = "GP8 / RSET";
+				signal = "GP08_REST";
+				role = "gpio";
+				gpio-pin = <8>;
+				control-alias = "CON_REST";
+				controllable;
+				output-capable;
+			};
+
+			contact-1 {
+				pin-number = <1>;
+				row = <1>;
+				column = <0>;
+				display-label = "GP7 / MASKROM";
+				signal = "GP07_MAS";
+				role = "gpio";
+				gpio-pin = <7>;
+				control-alias = "CON_MAS";
+				controllable;
+				output-capable;
+			};
+
+			contact-4 {
+				pin-number = <4>;
+				row = <1>;
+				column = <1>;
+				display-label = "GND";
+				signal = "GND";
+				role = "ground";
+			};
+		};
 	};
 
 	zephyr,user {
 		io-channels = <&adc 0>, <&adc 1>, <&adc 2>, <&adc 3>;
+	};
+
+	ch224a_input_voltage: ch224a-input-voltage {
+		compatible = "voltage-divider";
+		io-channels = <&adc 0>;
+		output-ohms = <15000>;
+		full-ohms = <115000>;
+		status = "okay";
 	};
 
 	reg_12v_out: regulator-12v-out {
@@ -86,13 +370,6 @@
 		long-press-ms = <3000>;
 		status = "okay";
 	};
-
-	/* J4 target UART -> second USB CDC ACM, same pattern as the Pico 2 demo. */
-	j4_uart_bridge: uart-bridge-j4 {
-		compatible = "zephyr,uart-bridge";
-		peers = <&cdc_acm_uart1 &uart1>;
-	};
-
 };
 
 /* PIO I2C master: schematic SCL=GPIO20, SDA=GPIO21. */
@@ -138,7 +415,14 @@
 		ch224a: ch224a@22 {
 			compatible = "wch,ch224a";
 			reg = <0x22>;
+			/* Initialized explicitly from main after its I2C and sensor dependencies. */
+			zephyr,deferred-init;
 			maximum-request-millivolt = <20000>;
+			input-voltage-sensor = <&ch224a_input_voltage>;
+			input-present-threshold-millivolt = <2800>;
+			input-absent-threshold-millivolt = <2500>;
+			input-present-stable-samples = <3>;
+			input-sample-interval-ms = <5>;
 			/* R97 is a series link; keep GPIO19 input/no-pull so R81 sets CFG1. */
 			cfg1-gpios = <&gpio0 19 GPIO_ACTIVE_HIGH>;
 			status = "okay";
@@ -164,7 +448,7 @@
 	};
 
 	/* J4 target UART: TX = GPIO10, RX = GPIO11 (UART1 alternate function),
-	 * bridged to cdc_acm_uart1 through j4_uart_bridge.
+	 * serviced by the project-owned serial runtime.
 	 * Use the raw pinmux cell: this Zephyr tree's UART1_*_P10 helpers
 	 * reference an undefined RP2_PINCTRL_GPIO_FUNC_UART_ALT symbol, while
 	 * RP2350 names function 11 RP2_PINCTRL_GPIO_FUNC_UART_AUX.
@@ -270,9 +554,7 @@
 	status = "okay";
 };
 
-/* J4 target UART (3-pin TX/RX/GND), UART1 on GPIO10/GPIO11, bridged to
- * the second USB CDC ACM by j4_uart_bridge.
- */
+/* J4 target UART (3-pin TX/RX/GND), UART1 on GPIO10/GPIO11. */
 &uart1 {
 	status = "okay";
 	current-speed = <115200>;

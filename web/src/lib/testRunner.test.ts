@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createTestRunner, type RunnerCallbacks } from "./testRunner.ts";
+import { createTestRunner, preflightTestRun, type RunnerCallbacks } from "./testRunner.ts";
 import type { RunSummary, TestScript } from "./testScript.ts";
+import { j4ReadySnapshot } from "./j4Serial.testFixtures.ts";
 
 function callbacks(onComplete: (summary: RunSummary) => void): RunnerCallbacks {
   return {
@@ -34,8 +35,9 @@ function baseBoard() {
 function serialWithCommandOutput(output: string) {
   const listeners = new Set<(text: string, receivedAtMs: number) => void>();
   return {
+    getState: j4ReadySnapshot,
     isConnected: () => true,
-    connectedChannels: () => ["uart0"],
+    connectedChannels: () => ["j4"],
     clear() {},
     setAutomationActive() {},
     subscribe(listener: (text: string, receivedAtMs: number) => void) {
@@ -66,6 +68,22 @@ async function run(script: TestScript, board: object, serial: object) {
 }
 
 describe("createTestRunner", () => {
+  it("checks actual J4 readiness and pending writes instead of accepting a connected-looking handle", () => {
+    const script: TestScript = { ...{ schema: "linkr-test.v1", version: "1.0", name: "preflight" } as const,
+      steps: [{ id: "send", type: "serial_send", params: { channel: "j4", text: "hello" } }] };
+    const serial = serialWithCommandOutput("");
+    const ready = j4ReadySnapshot();
+    for (const state of [
+      { ...ready, phase: "disconnected" as const },
+      { ...ready, serial: { ...ready.serial!, state: "paused" as const } },
+      { ...ready, serial: { ...ready.serial!, state: "faulted" as const } },
+      { ...ready, serial: { ...ready.serial!, read_only: true } },
+      { ...ready, configuring: true }, { ...ready, pendingWrites: 1 }, { ...ready, backpressure: true }, { ...ready, automationActive: true },
+    ]) {
+      assert.throws(() => preflightTestRun(script, baseBoard() as never, { ...serial, getState: () => state } as never), /J4 MCU serial is not ready/);
+    }
+    assert.equal(preflightTestRun(script, baseBoard() as never, serial as never).length, 1);
+  });
   it("requires serial_expect output to match the configured pattern", async () => {
     const script: TestScript = {
       schema: "linkr-test.v1",
@@ -74,7 +92,7 @@ describe("createTestRunner", () => {
       steps: [{
         id: "expect",
         type: "serial_expect",
-        params: { channel: "uart0", command: "uname -a", pattern: "Linux", timeout_ms: 100 },
+        params: { channel: "j4", command: "uname -a", pattern: "Linux", timeout_ms: 100 },
       }],
     };
     const summary = await run(script, baseBoard(), serialWithCommandOutput("Darwin"));
@@ -90,7 +108,7 @@ describe("createTestRunner", () => {
       steps: [{
         id: "expect",
         type: "serial_expect",
-        params: { channel: "uart0", command: "uname -a", pattern: "Linux", timeout_ms: 100 },
+        params: { channel: "j4", command: "uname -a", pattern: "Linux", timeout_ms: 100 },
       }],
     };
     const summary = await run(script, baseBoard(), serialWithCommandOutput("Linux 6.1"));
@@ -126,12 +144,13 @@ describe("createTestRunner", () => {
   it("records serial output from power_on before a following serial_wait starts", async () => {
     const listeners = new Set<(text: string, receivedAtMs: number) => void>();
     const serial = {
+      getState: j4ReadySnapshot,
       isConnected: () => true,
-      connectedChannels: () => ["uart0"],
+      connectedChannels: () => ["j4"],
       clear() {},
       setAutomationActive() {},
-      subscribe(listener: (text: string, receivedAtMs: number) => void, channel = "uart0") {
-        if (channel === "uart0") listeners.add(listener);
+      subscribe(listener: (text: string, receivedAtMs: number) => void, channel = "j4") {
+        if (channel === "j4") listeners.add(listener);
         return () => listeners.delete(listener);
       },
       async write() {},
@@ -148,7 +167,7 @@ describe("createTestRunner", () => {
       name: "early boot",
       steps: [
         { id: "power", type: "power_on", params: { rail: "5v_out" } },
-        { id: "boot", type: "serial_wait", params: { channel: "uart0", pattern: "BOOT0", timeout_ms: 10 } },
+        { id: "boot", type: "serial_wait", params: { channel: "j4", pattern: "BOOT0", timeout_ms: 10 } },
       ],
     };
 
@@ -159,11 +178,12 @@ describe("createTestRunner", () => {
   it("records the UART channel and receive timestamp for serial evidence", async () => {
     const listeners = new Map<string, Set<(text: string, receivedAtMs: number) => void>>();
     const serial = {
-      isConnected: (channel: string) => channel === "uart0",
-      connectedChannels: () => ["uart0"],
+      getState: j4ReadySnapshot,
+      isConnected: (channel: string) => channel === "j4",
+      connectedChannels: () => ["j4"],
       clear() {},
       setAutomationActive() {},
-      subscribe(listener: (text: string, receivedAtMs: number) => void, channel = "uart0") {
+      subscribe(listener: (text: string, receivedAtMs: number) => void, channel = "j4") {
         const channelListeners = listeners.get(channel) ?? new Set();
         channelListeners.add(listener);
         listeners.set(channel, channelListeners);
@@ -174,7 +194,7 @@ describe("createTestRunner", () => {
     const board = baseBoard() as any;
     board.setPower = async (_rail: string, on: boolean) => {
       if (on) {
-        for (const listener of listeners.get("uart0") ?? []) listener("BOOT0 ready\n", 1234);
+        for (const listener of listeners.get("j4") ?? []) listener("BOOT0 ready\n", 1234);
       }
     };
     const script: TestScript = {
@@ -183,7 +203,7 @@ describe("createTestRunner", () => {
       name: "serial evidence",
       steps: [
         { id: "power", type: "power_on", params: { rail: "5v_out" } },
-        { id: "boot", type: "serial_wait", params: { channel: "uart0", pattern: "BOOT0", timeout_ms: 10 } },
+        { id: "boot", type: "serial_wait", params: { channel: "j4", pattern: "BOOT0", timeout_ms: 10 } },
       ],
     };
     const logs: Array<{ channel: string; timestampMs: number }> = [];
@@ -201,18 +221,19 @@ describe("createTestRunner", () => {
     await runner.start();
 
     assert.ok(summary);
-    assert.deepEqual(logs, [{ channel: "uart0", timestampMs: 1234 }]);
+    assert.deepEqual(logs, [{ channel: "j4", timestampMs: 1234 }]);
   });
 
   it("preserves later milestones that arrived in the same early serial chunk", async () => {
     const listeners = new Set<(text: string, receivedAtMs: number) => void>();
     const serial = {
+      getState: j4ReadySnapshot,
       isConnected: () => true,
-      connectedChannels: () => ["uart0"],
+      connectedChannels: () => ["j4"],
       clear() {},
       setAutomationActive() {},
-      subscribe(listener: (text: string, receivedAtMs: number) => void, channel = "uart0") {
-        if (channel === "uart0") listeners.add(listener);
+      subscribe(listener: (text: string, receivedAtMs: number) => void, channel = "j4") {
+        if (channel === "j4") listeners.add(listener);
         return () => listeners.delete(listener);
       },
       async write() {},
@@ -231,9 +252,9 @@ describe("createTestRunner", () => {
       name: "early milestones",
       steps: [
         { id: "power", type: "power_on", params: { rail: "5v_out" } },
-        { id: "boot", type: "serial_wait", params: { channel: "uart0", pattern: "BOOT0", timeout_ms: 10 } },
-        { id: "uefi", type: "serial_wait", params: { channel: "uart0", pattern: "UEFI", timeout_ms: 10 } },
-        { id: "kernel", type: "serial_wait", params: { channel: "uart0", pattern: "Kernel", timeout_ms: 10 } },
+        { id: "boot", type: "serial_wait", params: { channel: "j4", pattern: "BOOT0", timeout_ms: 10 } },
+        { id: "uefi", type: "serial_wait", params: { channel: "j4", pattern: "UEFI", timeout_ms: 10 } },
+        { id: "kernel", type: "serial_wait", params: { channel: "j4", pattern: "Kernel", timeout_ms: 10 } },
       ],
     };
 
@@ -711,7 +732,7 @@ describe("createTestRunner", () => {
           check: {
             id: "check",
             type: "serial_expect",
-            params: { channel: "uart0", command: "uname -s", pattern: "Linux", timeout_ms: 100 },
+            params: { channel: "j4", command: "uname -s", pattern: "Linux", timeout_ms: 100 },
           },
           then_steps: [{ id: "then", type: "gpio_set", params: { pin: "GP13", value: 1 } }],
           else_steps: [{ id: "else", type: "gpio_set", params: { pin: "GP13", value: 0 } }],
@@ -741,7 +762,7 @@ describe("createTestRunner", () => {
           check: {
             id: "check",
             type: "serial_expect",
-            params: { channel: "uart0", command: "uname -s", pattern: "Linux", timeout_ms: 100 },
+            params: { channel: "j4", command: "uname -s", pattern: "Linux", timeout_ms: 100 },
           },
           then_steps: [{ id: "then", type: "gpio_set", params: { pin: "GP13", value: 1 } }],
           else_steps: [{ id: "else", type: "gpio_set", params: { pin: "GP13", value: 0 } }],
@@ -774,6 +795,7 @@ describe("createTestRunner", () => {
 
   it("fails preflight before hardware actions when required serial is not connected", async () => {
     const serial = {
+      getState: () => j4ReadySnapshot({ phase: "disconnected" }),
       isConnected: () => false,
       connectedChannels: () => [] as string[],
       subscribe: () => () => {},
@@ -788,12 +810,12 @@ describe("createTestRunner", () => {
       name: "skip",
       steps: [
         { id: "power", type: "power_on", params: { rail: "5v_out" } },
-        { id: "serial", type: "serial_send", params: { channel: "uart0", text: "hello" } },
+        { id: "serial", type: "serial_send", params: { channel: "j4", text: "hello" } },
       ],
     };
     const summary = await run(script, board, serial);
     assert.equal(summary.results.length, 0);
-    assert.match(summary.infrastructureError ?? "", /UART0.*not connected/);
+    assert.match(summary.infrastructureError ?? "", /J4.*disconnected/);
     assert.equal(summary.completed, false);
     assert.equal(powerCalls, 0);
   });

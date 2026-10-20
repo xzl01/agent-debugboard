@@ -45,6 +45,7 @@ export interface UseBoardLiveOptions {
   readonly pageVisible: boolean;
   readonly auto: boolean;
   readonly refresh: () => Promise<void>;
+  readonly onStatus?: () => void;
   readonly wsRef: { current: WebSocket | null };
   readonly pendingCaptureRef: { current: CaptureConfig | null };
   readonly setSnapshot: Dispatch<SetStateAction<BoardSnapshot>>;
@@ -65,6 +66,7 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
     pageVisible,
     auto,
     refresh,
+    onStatus,
     wsRef,
     pendingCaptureRef,
     setSnapshot,
@@ -98,6 +100,7 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
             try {
               const status = await api.getStatus();
               if (cancelled) return;
+              onStatus?.();
               setSnapshot((prev) => mapBoardStatus(status, prev.adc, prev.pd));
               onPowerSnapshot(isRecord(status) && Array.isArray(status.power_outputs) ? Date.now() : null);
               setConnected(true);
@@ -137,6 +140,8 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
         // Seed metadata from an HTTP poll before switching to live stream.
         try {
           const status = await api.getStatus();
+          if (cancelled) return;
+          onStatus?.();
           const powerUpdatedAt = isRecord(status) && Array.isArray(status.power_outputs) ? Date.now() : null;
           const adcResponse: unknown = await api.getAdc();
           if (cancelled) return;
@@ -265,6 +270,7 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
     handleSocketFailure,
     live,
     onPowerSnapshot,
+    onStatus,
     pageVisible,
     pendingCaptureRef,
     refresh,

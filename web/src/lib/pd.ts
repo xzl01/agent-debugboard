@@ -3,7 +3,8 @@ import type { PdStatus } from "./types.ts";
 const EMPTY_PD_STATUS: PdStatus = {
   available: false,
   mode: 0,
-  voltage_mv: 5000,
+  // Zero is unknown until firmware reports a requested voltage, not a 0 V request.
+  voltage_mv: 0,
   gear: 0,
   pps_mv: 0,
   pd: false,

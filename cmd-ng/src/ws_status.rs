@@ -13,6 +13,12 @@ pub struct TuiStatusPowerOutput {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TuiStatusAdcChannel {
     pub name: String,
+    #[serde(default)]
+    pub signal: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub label: String,
     pub sensor_channel: String,
 }
 

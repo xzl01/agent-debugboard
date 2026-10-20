@@ -8,6 +8,7 @@
 #include "linkr_debugger_logic_analyzer.h"
 
 #include "linkr_debugger_capture_arena.h"
+#include "linkr_debugger_serial.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -84,6 +85,122 @@ static uint8_t la_pin_at(const struct linkr_debugger_la_config *config, uint8_t 
 	}
 
 	return (uint8_t)(config->pin_base + index);
+}
+
+#if defined(LINKR_DEBUGGER_LA_HOST_TEST)
+__attribute__((weak)) int linkr_debugger_serial_runtime_pause(void)
+{
+	return 0;
+}
+
+__attribute__((weak)) int linkr_debugger_serial_runtime_resume(void)
+{
+	return 0;
+}
+
+__attribute__((weak)) int linkr_debugger_serial_status_snapshot(
+	struct linkr_debugger_serial_status *status)
+{
+	if (status == NULL) {
+		return -EINVAL;
+	}
+	memset(status, 0, sizeof(*status));
+	status->state = LINKR_DEBUGGER_SERIAL_PAUSED;
+	return 0;
+}
+#endif
+
+static bool la_j4_serial_paused;
+
+static bool la_pin_span_claims_j4_uart(uint8_t pin_base, uint8_t pin_count)
+{
+	uint16_t pin_end = (uint16_t)pin_base + pin_count;
+
+	return pin_count > 0U && pin_base <= 11U && pin_end > 10U;
+}
+
+#if !defined(LINKR_DEBUGGER_LA_HOST_TEST)
+static bool la_packed_burst_plan_claims_j4_uart(
+	const struct linkr_debugger_la_packed_burst_plan *plan)
+{
+	if (plan == NULL) {
+		return false;
+	}
+	for (uint8_t lane = 0U; lane < plan->lane_count; lane++) {
+		if (la_pin_span_claims_j4_uart(plan->lanes[lane].pin_base,
+		    plan->lanes[lane].pin_count)) {
+			return true;
+		}
+	}
+	return false;
+}
+#endif
+
+static bool la_packed_ring_plan_claims_j4_uart(
+	const struct linkr_debugger_la_packed_ring_plan *plan)
+{
+	if (plan == NULL) {
+		return false;
+	}
+	for (uint8_t lane = 0U; lane < plan->lane_count; lane++) {
+		if (la_pin_span_claims_j4_uart(plan->lanes[lane].pin_base,
+		    plan->lanes[lane].pin_count)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static int la_pause_j4_serial_locked(bool claims_j4_uart)
+{
+	struct linkr_debugger_serial_status status;
+	int pause_ret;
+	int ret;
+
+	if (!claims_j4_uart) {
+		return 0;
+	}
+	if (la_j4_serial_paused) {
+		return -EBUSY;
+	}
+
+	pause_ret = linkr_debugger_serial_runtime_pause();
+	if (pause_ret != 0) {
+		return pause_ret;
+	}
+
+	/* A zero return and a PAUSED snapshot are both required before any PIO
+	 * or pinmux configuration takes ownership. Negative returns leave the
+	 * runtime READY and must never be treated as physical UART quiescence.
+	 */
+	ret = linkr_debugger_serial_status_snapshot(&status);
+	if (ret < 0) {
+		return ret;
+	}
+	if (status.state != LINKR_DEBUGGER_SERIAL_PAUSED) {
+		return -EIO;
+	}
+	la_j4_serial_paused = true;
+
+	return 0;
+}
+
+static void la_resume_j4_serial_after_mux_restore_locked(void)
+{
+	int ret;
+
+	if (!la_j4_serial_paused) {
+		return;
+	}
+	la_j4_serial_paused = false;
+	ret = linkr_debugger_serial_runtime_resume();
+#if !defined(LINKR_DEBUGGER_LA_HOST_TEST)
+	if (ret < 0) {
+		LOG_WRN("J4 serial resume failed after logic-analyzer cleanup: %d", ret);
+	}
+#else
+	(void)ret;
+#endif
 }
 
 static bool la_pin_is_safe(uint8_t pin)
@@ -3052,7 +3169,7 @@ static void la_restore_configured_pins(void)
 	}
 	if (restore_j4_uart) {
 		/* FAST8/WIDE11 temporarily own GP10/11 through PIO2. Restore the
-		 * RP2350 auxiliary UART1 TX/RX mux used by the J4 CDC bridge rather
+		 * RP2350 auxiliary UART1 TX/RX mux used by the J4 serial runtime rather
 		 * than leaving both pins as SIO inputs until reboot.
 		 */
 		gpio_set_function(10U, GPIO_FUNC_UART_AUX);
@@ -3061,6 +3178,7 @@ static void la_restore_configured_pins(void)
 		gpio_set_input_enabled(11U, true);
 	}
 	la_configured_pin_count = 0U;
+	la_resume_j4_serial_after_mux_restore_locked();
 }
 
 static void la_cleanup_locked(void)
@@ -3068,6 +3186,7 @@ static void la_cleanup_locked(void)
 	PIO pio;
 
 	if (!device_is_ready(la_pio_dev)) {
+		la_restore_configured_pins();
 		return;
 	}
 	la_packed_burst_cleanup_locked();
@@ -3551,6 +3670,11 @@ static int la_packed_burst_configure_locked(
 	if (!device_is_ready(gpio_dev) || !device_is_ready(la_pio_dev) || !device_is_ready(la_dma_dev)) {
 		return -ENODEV;
 	}
+	ret = la_pause_j4_serial_locked(
+		la_packed_burst_plan_claims_j4_uart(plan));
+	if (ret < 0) {
+		return ret;
+	}
 	pio = pio_rpi_pico_get_pio(la_pio_dev);
 	ret = pio_rpi_pico_allocate_sm(la_pio_dev, &la_packed_sm_a);
 	if (ret < 0) {
@@ -3717,6 +3841,11 @@ static int la_packed_ring_configure_locked(const struct linkr_debugger_la_config
 	if (!device_is_ready(gpio_dev) || !device_is_ready(la_pio_dev) || !device_is_ready(la_dma_dev)) {
 		return -ENODEV;
 	}
+	ret = la_pause_j4_serial_locked(
+		la_packed_ring_plan_claims_j4_uart(&la_stream_ring_plan));
+	if (ret < 0) {
+		return ret;
+	}
 	pio = pio_rpi_pico_get_pio(la_pio_dev);
 	ret = pio_rpi_pico_allocate_sm(la_pio_dev, &la_packed_sm_a);
 	if (ret < 0) {
@@ -3875,9 +4004,54 @@ static struct k_mutex la_mutex;
 static struct linkr_debugger_la_capture la_capture;
 static bool la_initialized;
 static struct linkr_debugger_la_sample la_samples[LINKR_DEBUGGER_LA_MAX_EXPORTED_SAMPLES];
+static bool la_host_j4_mux_claimed;
+
+__attribute__((weak)) void linkr_debugger_logic_analyzer_host_j4_mux_event(
+	bool restored)
+{
+	ARG_UNUSED(restored);
+}
 
 static void la_cleanup_locked(void)
 {
+	if (la_host_j4_mux_claimed) {
+		linkr_debugger_logic_analyzer_host_j4_mux_event(true);
+		la_host_j4_mux_claimed = false;
+	}
+	la_resume_j4_serial_after_mux_restore_locked();
+}
+
+int linkr_debugger_logic_analyzer_host_j4_capture_prepare(
+	const struct linkr_debugger_la_config *config, bool fail_after_mux)
+{
+	struct linkr_debugger_la_packed_ring_plan plan;
+	bool claims_j4_uart;
+	int ret;
+
+	claims_j4_uart = config != NULL &&
+		linkr_debugger_logic_analyzer_packed_ring_plan(config, &plan) == 0 &&
+		la_packed_ring_plan_claims_j4_uart(&plan);
+	k_mutex_lock(&la_mutex, K_FOREVER);
+	ret = la_pause_j4_serial_locked(claims_j4_uart);
+	if (ret == 0 && claims_j4_uart) {
+		linkr_debugger_logic_analyzer_host_j4_mux_event(false);
+		la_host_j4_mux_claimed = true;
+	}
+	if (ret == 0 && fail_after_mux) {
+		ret = -EIO;
+	}
+	if (ret < 0) {
+		la_cleanup_locked();
+	}
+	k_mutex_unlock(&la_mutex);
+	return ret;
+}
+
+void linkr_debugger_logic_analyzer_host_j4_capture_cleanup(void)
+{
+	k_mutex_lock(&la_mutex, K_FOREVER);
+	la_cleanup_locked();
+	k_mutex_unlock(&la_mutex);
 }
 
 static void la_stream_teardown_locked(void)

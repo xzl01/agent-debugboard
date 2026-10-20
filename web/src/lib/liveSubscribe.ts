@@ -1,4 +1,4 @@
-export const TELEMETRY_STREAM_BATCH_SIZE = 20;
+export const TELEMETRY_STREAM_BATCH_SIZE = 18;
 export const MAX_ADC_TELEMETRY_RATE_HZ = 250;
 
 // The default live subscription requests a 60 Hz wire stream with one sample

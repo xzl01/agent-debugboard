@@ -7,12 +7,11 @@
 
 #include "linkr_debugger_usb_net.h"
 
+#include "linkr_debugger_serial.h"
+
 #include <errno.h>
-#include <stdint.h>
 
 #include <zephyr/device.h>
-#include <zephyr/drivers/uart.h>
-#include <zephyr/drivers/uart/uart_bridge.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/usb/usbd.h>
 #include <zephyr/usb/usbd_msg.h>
@@ -22,8 +21,7 @@ LOG_MODULE_REGISTER(linkr_debugger_usb_net, LOG_LEVEL_INF);
 #define LINKR_DEBUGGER_USB_VID  sys_cpu_to_le16(0x2fe3U)
 #define LINKR_DEBUGGER_USB_PID  sys_cpu_to_le16(0xDB01U)
 #define LINKR_DEBUGGER_USB_POWER_MA 50U
-#define LINKR_DEBUGGER_J4_UART_MIN_BAUD 2400U
-#define LINKR_DEBUGGER_J4_UART_MAX_BAUD (UINT32_MAX / 16U)
+#define LINKR_DEBUGGER_J4_CDC_NODE DT_CHOSEN(radxa_linkr_j4_cdc)
 
 USBD_DEVICE_DEFINE(linkr_debugger_usbd,
 		   DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)),
@@ -44,37 +42,50 @@ static void linkr_debugger_fix_code_triple(struct usbd_context *uds_ctx)
 				    USB_BCC_MISCELLANEOUS, 0x02, 0x01);
 }
 
-#define DEVICE_DT_GET_COMMA(node_id) DEVICE_DT_GET(node_id),
-
-static const struct device *const uart_bridges[] = {
-	DT_FOREACH_STATUS_OKAY(zephyr_uart_bridge, DEVICE_DT_GET_COMMA)
-};
+static const struct device *const linkr_debugger_j4_cdc =
+	DEVICE_DT_GET(LINKR_DEBUGGER_J4_CDC_NODE);
 
 static void linkr_debugger_usbd_msg_cb(struct usbd_context *const ctx,
 				   const struct usbd_msg *const msg)
 {
+	int ret = 0;
+
 	ARG_UNUSED(ctx);
 
 	LOG_INF("usb event: %s", usbd_msg_type_string(msg->type));
 
-	/* DTR/RTS changes do not alter the UART format. Reconfiguring PL011 on
-	 * every CONTROL_LINE_STATE event can race consecutive open-time events
-	 * (stale line coding, new line coding, then DTR) and wedge the bridge long
-	 * enough for the hardware watchdog to enter BOOTSEL. Apply settings only
-	 * after the host has delivered a new line-coding tuple.
-	 */
-	if (msg->type == USBD_MSG_CDC_ACM_LINE_CODING) {
-		struct uart_config config;
+	switch (msg->type) {
+	case USBD_MSG_CDC_ACM_LINE_CODING:
+		if (msg->dev == linkr_debugger_j4_cdc) {
+			ret = linkr_debugger_serial_cdc_line_coding(msg->dev);
+		}
+		break;
+	case USBD_MSG_CDC_ACM_CONTROL_LINE_STATE:
+		/* DTR/RTS changes never reconfigure PL011. Doing so here races the
+		 * open-time line-coding notification and can stall long enough for the
+		 * hardware watchdog to enter BOOTSEL.
+		 */
+		if (msg->dev == linkr_debugger_j4_cdc) {
+			ret = linkr_debugger_serial_cdc_control_line(msg->dev);
+		}
+		break;
+	case USBD_MSG_RESET:
+		ret = linkr_debugger_serial_cdc_usb_event(
+			linkr_debugger_j4_cdc, LINKR_DEBUGGER_SERIAL_USB_RESET,
+			false);
+		break;
+	case USBD_MSG_CONFIGURATION:
+		ret = linkr_debugger_serial_cdc_usb_event(
+			linkr_debugger_j4_cdc,
+			LINKR_DEBUGGER_SERIAL_USB_CONFIGURATION,
+			msg->status != 0);
+		break;
+	default:
+		break;
+	}
 
-		if (uart_config_get(msg->dev, &config) < 0 ||
-		    config.baudrate < LINKR_DEBUGGER_J4_UART_MIN_BAUD ||
-		    config.baudrate > LINKR_DEBUGGER_J4_UART_MAX_BAUD) {
-			LOG_WRN("ignoring unsafe CDC UART line coding");
-			return;
-		}
-		for (size_t i = 0; i < ARRAY_SIZE(uart_bridges); i++) {
-			uart_bridge_settings_update(msg->dev, uart_bridges[i]);
-		}
+	if (ret < 0 && ret != -ENODEV) {
+		LOG_WRN("J4 serial USB event failed: %d", ret);
 	}
 }
 

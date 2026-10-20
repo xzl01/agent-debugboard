@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useI18n } from "@/lib/i18n";
 import { GpioCard } from "./GpioCard";
 import { gpio, mount, pinButton, renderCard } from "./GpioCard.testUtils";
+import { layoutForTestGpios } from "@/lib/gpioPhysicalLayout.testFixtures";
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -25,11 +26,12 @@ describe("GpioCard compact pinout", () => {
     view.close();
   });
 
-  it("renders the gesture hint as four inline-block phrase chunks", () => {
+  it("keeps complete gesture instructions available to screen readers without a visible text block", () => {
     const onSet = vi.fn().mockResolvedValue(undefined);
     const view = renderCard([gpio(10)], onSet);
 
     const hint = document.getElementById(pinButton(view.host, 10).getAttribute("aria-describedby")!);
+    expect(hint?.classList.contains("sr-only")).toBe(true);
     const chunks = Array.from(hint?.querySelectorAll("span.inline-block") ?? []);
     expect(chunks).toHaveLength(4);
     expect(chunks[0]?.textContent).toBe("Tap: output low");
@@ -40,7 +42,7 @@ describe("GpioCard compact pinout", () => {
     view.close();
   });
 
-  it("keeps each Chinese hint phrase wrappable only as a unit", () => {
+  it("localizes the screen-reader instructions without expanding the visible card", () => {
     let switchLang: ((lang: "en" | "zh") => void) | undefined;
     function LangProbe(): null {
       const { setLang } = useI18n();
@@ -53,7 +55,7 @@ describe("GpioCard compact pinout", () => {
         <LangProbe />
         <GpioCard
           gpios={[gpio(10)]}
-          layoutGroups={[{ name: "J16", edge: "right", order: 0 }]}
+          physicalLayout={layoutForTestGpios([gpio(10)])}
           onSet={onSet}
         />
       </>
@@ -62,8 +64,7 @@ describe("GpioCard compact pinout", () => {
     const svg = view.host.querySelector('svg[role="group"]')!;
     const description = document.getElementById(svg.getAttribute("aria-describedby")!)!;
     const hintId = pinButton(view.host, 10).getAttribute("aria-describedby")!;
-    expect(description.textContent).toContain("Only controllable pins");
-    expect(description.textContent).toContain("Right-edge connectors exit sideways");
+    expect(description.textContent).toContain("Tap: output low");
 
     act(() => {
       switchLang?.("zh");
@@ -77,8 +78,8 @@ describe("GpioCard compact pinout", () => {
     expect(chunks[1]?.textContent).toBe("双击：设为输入");
     expect(chunks[2]?.textContent).toBe("长按：输出高电平");
     expect(chunks[3]?.textContent).toBe("按键：Enter/Space/0 低电平，1 高电平，I 输入");
-    expect(description.textContent).toContain("仅显示可控引脚，并非完整连接器。");
-    expect(description.textContent).toContain("右边缘连接器从板侧向外伸出。");
+    expect(description.textContent).toContain("轻点：输出低电平");
+    expect(description.classList.contains("sr-only")).toBe(true);
     view.close();
   });
 
@@ -97,18 +98,33 @@ describe("GpioCard compact pinout", () => {
     const onSet = vi.fn().mockResolvedValue(undefined);
     const view = renderCard([gpio(10)], onSet);
 
-    const section = view.host.querySelector("section.min-w-0");
+    const section = view.host.querySelector("section.min-w-0.w-full");
     expect(section?.classList.contains("w-full")).toBe(true);
-    expect(section?.classList.contains("max-w-md")).toBe(true);
+    expect(section?.classList.contains("max-w-md")).toBe(false);
     expect(section?.querySelector(".overflow-hidden")).toBeNull();
     view.close();
   });
 
-  it("renders the empty state when no safe GPIOs are reported", () => {
-    const onSet = vi.fn().mockResolvedValue(undefined);
-    const view = renderCard([], onSet);
+  it("has no old GPIO heading, subtitle or separate control list", () => {
+    const view = renderCard([gpio(10)], vi.fn());
+    expect(view.host.querySelector("h2")).toBeNull();
+    expect(view.host.textContent).not.toContain("Safe GPIO");
+    expect(view.host.textContent).not.toContain("Live GPIO · direct controls");
+    expect(view.host.textContent).not.toContain("安全 GPIO");
+    expect(view.host.querySelector("[data-gpio-control-group]")).toBeNull();
+    expect(view.host.querySelector("dl, table, h3")).toBeNull();
+    expect(view.host.querySelector('section.w-full')?.lastElementChild?.classList.contains("sr-only")).toBe(true);
+    expect(view.host.querySelectorAll('[role="button"]')).toHaveLength(1);
+    expect(view.host.querySelector('[role="button"]')?.closest("[data-physical-cell]")).not.toBeNull();
+    view.close();
+  });
 
-    expect(view.host.textContent).toContain("No safe GPIOs reported.");
+  it("does not invent a pinout without firmware layout", () => {
+    const onSet = vi.fn().mockResolvedValue(undefined);
+    const view = mount(<GpioCard gpios={[]} onSet={onSet} />);
+
+    expect(view.host.textContent).toContain("Waiting for the board");
+    expect(view.host.querySelector('[role="button"]')).toBeNull();
     view.close();
   });
 });

@@ -27,7 +27,7 @@ static void make_save_request(struct linkr_debugger_config_save_request *request
 			      bool reverse, bool confirmed);
 
 	static const uint8_t gpio_ids[] = {
-		7U, 8U, 9U, 12U, 13U, 14U, 15U, 16U, 17U, 18U, 29U,
+		29U, 16U, 15U, 14U, 13U, 12U, 9U, 8U, 7U,
 	};
 
 struct fake_env {
@@ -796,7 +796,7 @@ static void make_save_request(struct linkr_debugger_config_save_request *request
 	request->confirmed = confirmed;
 }
 
-static void test_save_happy_20_items(void)
+static void test_save_happy_16_items(void)
 {
 	struct fake_env env;
 	struct linkr_debugger_config_save_request request;
@@ -832,14 +832,23 @@ static void test_save_happy_20_items(void)
 
 	assert(env.store_last_saved.entry_count == linkr_debugger_config_item_count);
 	for (size_t i = 0U; i < linkr_debugger_config_item_count; i++) {
-		const struct linkr_debugger_config_item_desc *item =
-			&linkr_debugger_config_items[i];
 		const struct linkr_debugger_config_entry *entry =
 			&env.store_last_saved.entries[i];
+		const struct linkr_debugger_config_item_desc *item =
+			linkr_debugger_config_find_item(entry->domain, entry->item_id);
+		size_t index;
 
-		assert(entry->domain == item->domain);
-		assert(entry->item_id == item->item_id);
-		assert(entry->value == env.control_items[i].value);
+		assert(item != NULL);
+		index = catalog_index(item);
+		assert(entry->value == env.control_items[index].value);
+		if (i > 0U) {
+			const struct linkr_debugger_config_entry *previous =
+				&env.store_last_saved.entries[i - 1U];
+
+			assert(entry->domain > previous->domain ||
+			       (entry->domain == previous->domain &&
+				entry->item_id > previous->item_id));
+		}
 	}
 
 	assert(linkr_debugger_config_service_status_get(&status) ==
@@ -1082,8 +1091,8 @@ static void test_save_partial_failure_reports_pending_and_retry(void)
 	assert(init_fresh(&env) == LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	make_save_request(&request, false, true);
 
-	/* All eleven captured GPIOs are inputs and replay first in catalog
-	 * order (GP7..GP18, GP29), so replay position five is GP14. */
+	/* All nine captured GPIOs are inputs and replay first in DT catalog
+	 * order, so replay position five is GP12. */
 	env.setter_fail_at = 5U;
 	env.setter_failure_errno = TEST_ERR_IO;
 	assert(linkr_debugger_config_service_save(&request, &report) ==
@@ -1096,7 +1105,7 @@ static void test_save_partial_failure_reports_pending_and_retry(void)
 	assert(report.pending_items[0] == report.failed_item);
 	assert(report.failed_item ==
 	       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO,
-				       14U));
+				       12U));
 	assert(report.failed_errno == TEST_ERR_IO);
 	assert_owners_idle(&env);
 	assert(linkr_debugger_config_service_status_get(&status) ==
@@ -1620,7 +1629,7 @@ int main(void)
 	test_init_replays_snapshot_on_every_boot();
 	test_init_boot_failure_and_busy_remain_observable();
 	test_failed_reinit_preserves_initialized_state();
-	test_save_happy_20_items();
+	test_save_happy_16_items();
 	test_save_validation_failures_have_no_side_effects();
 	test_save_unavailable_and_capture_failure();
 	test_save_confirmation_flow_preserves_prior_state();

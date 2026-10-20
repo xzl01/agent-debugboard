@@ -228,6 +228,34 @@ describe("useBoard on-demand PD capability discovery", () => {
     teardownUseBoardHarness();
   });
 
+  it("adopts the first authoritative GET voltage without inventing a status voltage", async () => {
+    apiMocks.getStatus.mockResolvedValue({ pd: pdStatus() });
+    let finish!: (value: PdStatus) => void;
+    apiMocks.getPd.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const view = renderBoard();
+    await flushMicrotasks();
+    expect(view.current().snapshot.pd?.voltage_mv).toBe(0);
+    await act(async () => finish({ ...discoveredPd(), voltage_mv: 20000 }));
+    await flushMicrotasks();
+    expect(view.current().snapshot.pd?.voltage_mv).toBe(20000);
+    expect(apiMocks.setPd).not.toHaveBeenCalled();
+    view.close();
+  });
+
+  it("does not let a late GET voltage replace a newer status voltage", async () => {
+    apiMocks.getStatus.mockResolvedValue({ pd: pdStatus() });
+    let finish!: (value: PdStatus) => void;
+    apiMocks.getPd.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const view = renderBoard();
+    await flushMicrotasks();
+    apiMocks.getStatus.mockResolvedValue({ pd: { voltage_mv: 20000 } });
+    await advancePolling(2000);
+    await act(async () => finish({ ...discoveredPd(), voltage_mv: 9000 }));
+    await flushMicrotasks();
+    expect(view.current().snapshot.pd?.voltage_mv).toBe(20000);
+    view.close();
+  });
+
   it("uses only status and ADC on regular inactive or already-cached polls", async () => {
     const view = renderBoard();
     await flushMicrotasks();

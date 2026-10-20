@@ -35,6 +35,105 @@ pub(super) fn telemetry_rows(model: &TuiModel, height: u16) -> usize {
     }
 }
 
+pub(super) fn voltage_rows(model: &TuiModel, height: u16) -> usize {
+    // Keep the existing status/tabs/header/body/keybar minimum of six rows.
+    usize::from(height >= 7 && !model.voltage_channel_ids.is_empty())
+}
+
+pub(super) fn voltage_strip_line(model: &TuiModel, width: usize) -> Line<'static> {
+    if model.voltage_channel_ids.is_empty() || width == 0 {
+        return Line::default();
+    }
+    let (widths, gutter) = column_widths(width, model.voltage_channel_ids.len());
+    let mut spans = Vec::new();
+    for (index, name) in model.voltage_channel_ids.iter().enumerate() {
+        let descriptor = model.adc_channel_metadata.get(name);
+        let reading = model
+            .latest
+            .get(name)
+            .filter(|reading| reading.kind == crate::adc::AdcKind::Voltage);
+        let signal = descriptor
+            .map(|channel| channel.signal.as_str())
+            .filter(|signal| !signal.is_empty())
+            .or_else(|| reading.map(|reading| reading.signal.as_str()))
+            .unwrap_or_default();
+        let label = descriptor
+            .map(|channel| channel.label.as_str())
+            .filter(|label| !label.is_empty())
+            .or_else(|| reading.map(|reading| reading.label.as_str()))
+            .unwrap_or_default();
+        let note = reading
+            .map(|reading| reading.note.as_str())
+            .filter(|note| !note.is_empty())
+            .or_else(|| descriptor.map(|channel| channel.note.as_str()))
+            .unwrap_or_default();
+        let uv = reading
+            .filter(|reading| reading.voltage_valid != Some(false))
+            .and_then(|reading| reading.voltage_uv);
+        let budget = widths[index];
+        // The descriptor name is the stable identity. Never trade its suffix
+        // or numeric precision for a long (often shared-prefix) signal/label.
+        let name_width = display_width(name);
+        let value_budget = budget.saturating_sub(name_width + 1);
+        let value = uv
+            .map(|uv| {
+                let mut value = (0..=6)
+                    .rev()
+                    .map(|precision| format!("{:.precision$}", f64::from(uv) / 1_000_000.0))
+                    .find(|value| display_width(value) <= value_budget)
+                    .unwrap_or_default();
+                if !value.is_empty() && display_width(&value) < value_budget {
+                    value.push('V');
+                }
+                value
+            })
+            .unwrap_or_else(|| "--".to_string());
+        let mut remaining = budget;
+        remaining = push_clipped(&mut spans, name.clone(), Style::default(), remaining);
+        if name_width < budget && !value.is_empty() {
+            remaining = push_clipped(&mut spans, "=".to_string(), Style::default(), remaining);
+            remaining = push_clipped(
+                &mut spans,
+                value,
+                Style::default().fg(Color::Cyan),
+                remaining,
+            );
+        }
+        if !signal.is_empty() && signal != name && display_width(signal) < remaining {
+            remaining = push_clipped(
+                &mut spans,
+                format!(" {signal}"),
+                Style::default().fg(Color::DarkGray),
+                remaining,
+            );
+        }
+        for detail in [label, note] {
+            if !detail.is_empty() && detail != name && detail != signal {
+                remaining = push_clipped(
+                    &mut spans,
+                    format!(" {detail}"),
+                    Style::default().fg(Color::DarkGray),
+                    remaining,
+                );
+            }
+        }
+        spans.push(Span::raw(" ".repeat(remaining)));
+        if index + 1 < widths.len() && gutter > 0 {
+            spans.push(Span::raw(" "));
+        }
+    }
+    Line::from(spans)
+}
+
+pub(super) fn render_voltage_strip(frame: &mut ratatui::Frame, area: Rect, model: &TuiModel) {
+    if area.height > 0 {
+        frame.render_widget(
+            Paragraph::new(voltage_strip_line(model, area.width as usize)),
+            area,
+        );
+    }
+}
+
 fn column_widths(total: usize, count: usize) -> (Vec<usize>, usize) {
     let gutter_count = count.saturating_sub(1);
     let gutter_width = usize::from(gutter_count > 0 && total >= count.saturating_add(gutter_count));

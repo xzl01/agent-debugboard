@@ -8,9 +8,9 @@ use super::gpio_layout::{TuiGpioLayout, TuiGpioLayoutGroup};
 use super::hit::HitMap;
 use super::pages::ActivePage;
 use super::{TuiActionMsg, TUI_HISTORY_LIMIT};
-use crate::adc::AdcReading;
+use crate::adc::{AdcKind, AdcReading};
 use crate::monitoring::BoardMonitoring;
-use crate::ws_status::{TuiPdStatus, WsStatusSnapshot};
+use crate::ws_status::{TuiPdStatus, TuiStatusAdcChannel, WsStatusSnapshot};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -73,6 +73,8 @@ pub struct TuiModel {
     pub(super) gpio_poll_defer_until: Option<Instant>,
     pub closed: bool,
     pub channel_ids: Vec<String>,
+    pub voltage_channel_ids: Vec<String>,
+    pub(super) adc_channel_metadata: std::collections::HashMap<String, TuiStatusAdcChannel>,
 }
 
 impl TuiModel {
@@ -117,6 +119,8 @@ impl TuiModel {
             gpio_poll_defer_until: None,
             closed: false,
             channel_ids: Vec::new(),
+            voltage_channel_ids: Vec::new(),
+            adc_channel_metadata: std::collections::HashMap::new(),
         }
     }
 
@@ -138,9 +142,20 @@ impl TuiModel {
         self.apply_pd_status(snapshot.pd);
         self.channel_ids = snapshot
             .adc_channels
-            .into_iter()
+            .iter()
             .filter(|channel| channel.sensor_channel == "current")
-            .map(|channel| channel.name)
+            .map(|channel| channel.name.clone())
+            .collect();
+        self.voltage_channel_ids = snapshot
+            .adc_channels
+            .iter()
+            .filter(|channel| channel.sensor_channel == "voltage")
+            .map(|channel| channel.name.clone())
+            .collect();
+        self.adc_channel_metadata = snapshot
+            .adc_channels
+            .into_iter()
+            .map(|channel| (channel.name.clone(), channel))
             .collect();
         let now = Instant::now();
         let mut switches = BTreeMap::new();
@@ -244,19 +259,18 @@ impl TuiModel {
 
     pub(super) fn apply_adc_response(&mut self, readings: Vec<AdcReading>) {
         for reading in readings {
-            if reading.kind != crate::adc::AdcKind::Current {
-                continue;
-            }
-            if let Some(power_enabled) = reading.power_enabled {
-                self.power_states
-                    .insert(reading.name.clone(), power_enabled);
-            }
-            let ma = current_milliamp_estimate(&reading);
-            let series = self.history.entry(reading.name.clone()).or_default();
-            series.push(ma);
-            if series.len() > TUI_HISTORY_LIMIT {
-                let drain = series.len() - TUI_HISTORY_LIMIT;
-                series.drain(0..drain);
+            if reading.kind == AdcKind::Current {
+                if let Some(power_enabled) = reading.power_enabled {
+                    self.power_states
+                        .insert(reading.name.clone(), power_enabled);
+                }
+                let ma = current_milliamp_estimate(&reading);
+                let series = self.history.entry(reading.name.clone()).or_default();
+                series.push(ma);
+                if series.len() > TUI_HISTORY_LIMIT {
+                    let drain = series.len() - TUI_HISTORY_LIMIT;
+                    series.drain(0..drain);
+                }
             }
             self.latest.insert(reading.name.clone(), reading);
         }

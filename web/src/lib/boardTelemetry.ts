@@ -13,7 +13,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function compactBatchReadings(
-  channels: readonly Record<string, unknown>[],
+  channels: readonly unknown[],
   sample: Record<string, unknown>,
 ): readonly AdcReading[] {
   const values = Array.isArray(sample.values) ? sample.values : [];
@@ -23,6 +23,8 @@ function compactBatchReadings(
   const voltageValidMask = Number(sample.voltage_valid_mask ?? 0);
   let currentIndex = 0;
   return parseCompactAdcReadings(channels.map((channel, index) => {
+    // Preserve each descriptor's value slot even when another descriptor is malformed.
+    if (!isRecord(channel)) return null;
     const current = channel.kind === "current" ? currentIndex++ : -1;
     return {
       ...channel,
@@ -50,7 +52,7 @@ export function decodeTelemetryReadings(
   }
   if (message.type !== "telemetry-batch" || !Array.isArray(message.samples)) return [];
 
-  const channels = Array.isArray(message.channels) ? message.channels.filter(isRecord) : [];
+  const channels = Array.isArray(message.channels) ? message.channels : [];
   const latest = message.samples.filter(isRecord).at(-1);
   return latest ? compactBatchReadings(channels, latest) : [];
 }
@@ -73,7 +75,7 @@ export function decodeTelemetrySamples(
   }
   if (message.type !== "telemetry-batch" || !Array.isArray(message.samples)) return [];
 
-  const channels = Array.isArray(message.channels) ? message.channels.filter(isRecord) : [];
+  const channels = Array.isArray(message.channels) ? message.channels : [];
   return message.samples.filter(isRecord).map((sample) => {
     const readings = compactBatchReadings(channels, sample);
     return {

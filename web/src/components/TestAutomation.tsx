@@ -15,7 +15,7 @@ import { TaskCard } from "./TaskCard";
 import { TestRunnerView } from "./TestRunnerView";
 import { TestReport } from "./TestReport";
 import type { UseBoard } from "@/hooks/useBoard";
-import type { SerialAutomationHandle } from "./SerialCard";
+import type { SerialAutomationHandle } from "@/lib/j4SerialSession";
 import type { TestScript, StepResult, StepStatus, RunSummary, AdcSampleEntry, SerialLogEntry, PowerCaptureEvidenceEntry } from "@/lib/testScript";
 import { defaultScript, parseTestScript, serializeTestScript, tryBuildExecutionPlan } from "@/lib/testScript";
 import { loadStoredTestScript, persistTestScript } from "@/lib/testScriptStorage";
@@ -174,13 +174,10 @@ export function TestAutomation({
       preflightTestRun(runScript, boardRef.current, serialRef.current);
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
-      const serialMatch = /^(UART[01]) is required for this test but is not connected$/.exec(
-        message,
-      );
       if (message === "debug board is not connected") {
         setRunError(t("test.error.boardDisconnected"));
-      } else if (serialMatch) {
-        setRunError(t("test.error.serialDisconnected", { channel: serialMatch[1] }));
+      } else if (reason instanceof Error && reason.name === "J4SerialPreflightError") {
+        setRunError(t("test.error.serialNotReady"));
       } else {
         setRunError(message);
       }

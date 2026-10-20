@@ -71,6 +71,11 @@ fn transform_reading(mut reading: AdcReading) -> Result<AdcReading, String> {
             reading.ma_est = None;
             reading.power_enabled = None;
             reading.current_ua = None;
+            if reading.voltage_valid == Some(false) {
+                reading.value = None;
+                reading.voltage_uv = None;
+                return Ok(reading);
+            }
             let voltage_uv = match (
                 reading.voltage_uv,
                 reading.value,

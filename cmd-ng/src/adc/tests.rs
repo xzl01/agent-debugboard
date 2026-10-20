@@ -1,6 +1,65 @@
 use super::{transform_response, AdcKind, AdcResponse};
 
 #[test]
+fn all_eight_http_channels_keep_pad_microvolts_and_generic_metadata() {
+    let raw = super::fixture::http().to_string();
+    let response = transform_response(&raw).unwrap();
+    assert_eq!(
+        response
+            .readings
+            .iter()
+            .map(|reading| reading.name.as_str())
+            .collect::<Vec<_>>(),
+        ["5v_out", "12v_out", "20v_out", "vdd_5v", "adc0", "adc1", "adc2", "adc3"]
+    );
+    for (reading, value) in response.readings[4..]
+        .iter()
+        .zip([2_608_696, 1_100_000, 2_200_000, 0])
+    {
+        assert_eq!(reading.kind, AdcKind::Voltage);
+        assert_eq!(reading.voltage_uv, Some(value));
+        assert_eq!(reading.current_ua, None);
+        assert_eq!(reading.power_enabled, None);
+    }
+    assert_eq!(response.readings[4].note, "pad voltage");
+    assert!(super::write_text(&raw, false)
+        .unwrap()
+        .contains("adc0=2.608696V pad voltage"));
+    assert!(!super::write_text(&raw, false).unwrap().contains("adc0=20"));
+    let mut rich = super::fixture::http();
+    for (index, value) in [2_608_696, 1_100_000, 2_200_000, 0].into_iter().enumerate() {
+        let reading = &mut rich["readings"][index + 4];
+        reading.as_object_mut().unwrap().remove("value");
+        reading["unit"] = serde_json::json!("V");
+        reading["sensor_value"] =
+            serde_json::json!({"val1":value / 1_000_000,"val2":value % 1_000_000});
+        reading["label"] = serde_json::json!(format!("采样{index}"));
+    }
+    let rich = transform_response(&rich.to_string()).unwrap();
+    assert_eq!(rich.readings[4].voltage_uv, Some(2_608_696));
+    assert_eq!(rich.readings[7].voltage_uv, Some(0));
+    assert_eq!(rich.readings[4].label, "采样0");
+}
+
+#[test]
+fn missing_and_invalid_pad_values_stay_unknown_not_zero() {
+    for extra in [
+        serde_json::json!({}),
+        serde_json::json!({"voltage_valid":false,"value":123}),
+    ] {
+        let mut reading = serde_json::json!({"name":"arbitrary","kind":"voltage","unit":"uV"});
+        reading
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let readings =
+            super::transform_readings(vec![serde_json::from_value(reading).unwrap()]).unwrap();
+        assert_eq!(readings[0].voltage_uv, None);
+        assert_eq!(readings[0].value, None);
+    }
+}
+
+#[test]
 fn parses_strict_compact_adc_kind_and_value_fields() {
     let raw = r#"{"name":"adc3","signal":"ADC3","kind":"voltage","unit":"uV","value":1234000}"#;
     let reading: super::AdcReading = serde_json::from_str(raw).unwrap();

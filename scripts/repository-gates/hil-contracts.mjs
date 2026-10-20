@@ -49,7 +49,7 @@ function otaNegativeUploadTimeoutContract(script) {
 export function checkHilContracts({ hilSpec, prjConfig, statusSource, wsSource, webOtaHil }) {
   const statusCapacity = statusJsonCapacity(statusSource);
   return {
-    statusJson: statusCapacity === 6144 && statusJsonSpecContract(hilSpec, statusCapacity),
+    statusJson: statusCapacity === 6656 && statusJsonSpecContract(hilSpec, statusCapacity),
     wsStatusSnapshots: wsStatusSnapshotContract(hilSpec, wsSource),
     captivePortalLocalOnlyDhcp: captivePortalDhcpContract(hilSpec, prjConfig),
     otaNegativeUploadTimeouts: otaNegativeUploadTimeoutContract(webOtaHil),

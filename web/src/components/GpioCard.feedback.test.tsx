@@ -2,6 +2,7 @@ import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useI18n } from "@/lib/i18n";
 import { GpioCard } from "./GpioCard";
+import { layoutForTestGpios } from "@/lib/gpioPhysicalLayout.testFixtures";
 import { flush, gpio, mount, pinButton, renderCard, rerenderCard } from "./GpioCard.testUtils";
 import {
   GPIO_FILL_HIGH,
@@ -65,7 +66,7 @@ describe("GpioCard feedback", () => {
     const view = mount(
       <>
         <LangProbe />
-        <GpioCard gpios={[gpio(10)]} onSet={onSet} />
+        <GpioCard gpios={[gpio(10)]} physicalLayout={layoutForTestGpios([gpio(10)])} onSet={onSet} />
       </>
     );
     keyDown(pinButton(view.host, 10), "1");
@@ -109,11 +110,12 @@ describe("GpioCard feedback", () => {
     view.close();
   });
 
-  it("connects every pin to the visible gesture hint through aria-describedby", () => {
+  it("connects every pin to the screen-reader gesture hint through aria-describedby", () => {
     const onSet = vi.fn().mockResolvedValue(undefined);
     const view = renderCard([gpio(10), gpio(11)], onSet);
 
     const hint = document.getElementById(pinButton(view.host, 10).getAttribute("aria-describedby")!);
+    expect(hint?.classList.contains("sr-only")).toBe(true);
     expect(hint?.textContent).toContain("Tap: output low");
     const hintId = hint?.getAttribute("id");
     expect(hintId).toBeTruthy();

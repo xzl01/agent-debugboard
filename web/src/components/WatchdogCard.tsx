@@ -12,7 +12,7 @@ export function WatchdogCard({ watchdog }: { watchdog: WatchdogStatus }) {
       subtitle={t("watchdog.subtitle")}
       icon={healthy ? ShieldCheck : ShieldAlert}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 [&>span]:max-w-full" data-testid="watchdog-statuses">
         {healthy ? (
           <Badge tone="ok">{t("watchdog.healthy")}</Badge>
         ) : (

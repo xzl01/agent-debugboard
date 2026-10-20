@@ -6,7 +6,7 @@ import {
   mergeBoardWsSnapshot,
 } from "./boardSnapshot.ts";
 
-test("EMPTY_BOARD_SNAPSHOT carries the documented boot-time defaults", () => {
+test("EMPTY_BOARD_SNAPSHOT starts unavailable/unknown rather than inventing hardware state", () => {
   // Given the empty snapshot constant
   // When its fields are inspected
   // Then every section defaults to unavailable/empty
@@ -31,6 +31,18 @@ test("EMPTY_BOARD_SNAPSHOT carries the documented boot-time defaults", () => {
     cpu: { available: false },
   });
   assert.equal(EMPTY_BOARD_SNAPSHOT.config, undefined);
+  assert.equal(EMPTY_BOARD_SNAPSHOT.pd?.voltage_mv, 0);
+});
+
+test("HTTP/WS snapshots keep PD unknown until firmware reports 20 V directly", () => {
+  const initial = mapBoardStatus({}, []);
+  assert.equal(initial.pd?.voltage_mv, 0);
+  const pending = mapBoardStatus({ pd: { available: true, pd: true } }, [], initial.pd);
+  assert.equal(pending.pd?.voltage_mv, 0);
+  const reported = mapBoardStatus({ pd: { available: true, pd: true, voltage_mv: 20000 } }, [], pending.pd);
+  assert.equal(reported.pd?.voltage_mv, 20000);
+  assert.equal(mergeBoardWsSnapshot(pending, { pd: { voltage_mv: 20000 } }).pd?.voltage_mv, 20000);
+  assert.equal(mergeBoardWsSnapshot(reported, {}).pd?.voltage_mv, 20000);
 });
 
 test("mapBoardStatus treats a non-record status as an empty payload", () => {

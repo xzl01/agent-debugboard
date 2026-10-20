@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdcReading, PowerOutput, SafeGpio, SwitchState } from "@/lib/types";
 import { GpioCard } from "./GpioCard";
+import { layoutForTestGpios } from "@/lib/gpioPhysicalLayout.testFixtures";
 import { PowerCard } from "./PowerCard";
 import { SwitchCard } from "./SwitchCard";
 
@@ -171,7 +172,7 @@ describe("hardware control cards", () => {
       layoutColumn: 0,
     };
     const onSet = vi.fn().mockResolvedValue(undefined);
-    const view = render(<GpioCard gpios={[gpio]} onSet={onSet} />);
+    const view = render(<GpioCard gpios={[gpio]} physicalLayout={layoutForTestGpios([gpio])} onSet={onSet} />);
     expect(pinButton(view.host, 12).getAttribute("aria-label")).toContain("gpio.input");
     expect(pinButton(view.host, 12).getAttribute("aria-label")).toContain("gpio.high");
 
@@ -186,26 +187,27 @@ describe("hardware control cards", () => {
     expect(pinButton(view.host, 12).getAttribute("aria-label")).toContain("gpio.high");
 
     // When: the firmware reports the applied state in a new snapshot
-    view.rerender(<GpioCard gpios={[{ ...gpio, direction: "output" }]} onSet={onSet} />);
+    view.rerender(<GpioCard gpios={[{ ...gpio, direction: "output" }]} physicalLayout={layoutForTestGpios([gpio])} onSet={onSet} />);
 
     // Then: the accessible direction tracks the new snapshot
     expect(pinButton(view.host, 12).getAttribute("aria-label")).toContain("gpio.output");
     view.close();
   });
 
-  it("shows input GPIO as read-only in quick controls and locks output toggles offline", () => {
+  it("keeps the full physical pinout read-only offline", () => {
     const gpios: SafeGpio[] = [
       { name: "GP10", pin: 10, note: "output", direction: "output", value: 1 },
       { name: "GP12", pin: 12, note: "input", direction: "input", value: 0 },
     ];
     const onSet = vi.fn();
-    const view = render(<GpioCard gpios={gpios} onSet={onSet} compact disabled stale />);
+    const view = render(<GpioCard gpios={gpios} physicalLayout={layoutForTestGpios(gpios)} onSet={onSet} disabled stale />);
 
     expect(view.host.textContent).toContain("snapshot.readOnly");
-    expect(view.host.textContent).toContain("snapshot.last: gpio.low");
-    const toggles = view.host.querySelectorAll<HTMLButtonElement>('[role="switch"]');
-    expect(toggles).toHaveLength(1);
-    expect(toggles[0]?.disabled).toBe(true);
+    const pins = view.host.querySelectorAll('[role="button"][aria-disabled="true"]');
+    expect(pins).toHaveLength(2);
+    press(pinButton(view.host, 10), "1");
+    press(pinButton(view.host, 12), "i");
+    expect(view.host.querySelector('[role="switch"]')).toBeNull();
     expect(view.host.querySelectorAll("select")).toHaveLength(0);
     expect(onSet).not.toHaveBeenCalled();
     view.close();
@@ -218,7 +220,7 @@ describe("hardware control cards", () => {
       { name: "GP11", pin: 11, note: "uart rx", direction: "input", value: 0, layoutGroup: "J16", layoutLabel: "GP11", layoutRow: 1, layoutColumn: 0 },
       { name: "GP12", pin: 12, note: "camera reset", direction: "input", value: 1, layoutGroup: "J16", layoutLabel: "GP12", layoutRow: 2, layoutColumn: 1 },
     ];
-    const view = render(<GpioCard gpios={gpios} onSet={vi.fn()} />);
+    const view = render(<GpioCard gpios={gpios} physicalLayout={layoutForTestGpios(gpios)} onSet={vi.fn()} />);
 
     // Then: every supplied pin is present and the card has no filter input that
     // could alter membership
@@ -230,6 +232,7 @@ describe("hardware control cards", () => {
     view.rerender(
       <GpioCard
         gpios={gpios.map((g) => ({ ...g, direction: g.direction === "input" ? "output" : "input", value: g.value > 0 ? 0 : 1 }))}
+        physicalLayout={layoutForTestGpios(gpios)}
         onSet={vi.fn()}
       />,
     );

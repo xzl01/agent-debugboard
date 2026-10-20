@@ -1,9 +1,34 @@
 use super::controls::{navigate, Nav};
 use super::events::handle_key;
-use super::gpio_fixture::{generic_edge_model, item_index, projection_model};
+use super::gpio_fixture::{generic_edge_model, item_index, projection_model, x1_2_model};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;
+
+#[test]
+fn x1_2_navigation_ends_at_maskrom_without_removed_fallback_pins() -> Result<()> {
+    let mut model = x1_2_model()?;
+    for width in [80, 48, 47, 32] {
+        model.width = width;
+        model.control_idx = item_index(&model, "GP7")?;
+        assert_eq!(navigate(&model, Nav::Down), model.control_idx);
+        assert_eq!(navigate(&model, Nav::PageDown), model.control_idx);
+        model.control_idx = item_index(&model, "GP9")?;
+        assert_eq!(
+            navigate(&model, Nav::Right),
+            item_index(&model, if width >= 48 { "GP8" } else { "GP9" })?
+        );
+        model.control_idx = item_index(&model, "GP8")?;
+        assert_eq!(navigate(&model, Nav::Down), item_index(&model, "GP7")?);
+        handle_key(
+            &mut model,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+            Instant::now(),
+        )?;
+        assert_eq!(model.control_idx, item_index(&model, "GP29")?);
+    }
+    Ok(())
+}
 
 #[test]
 fn metadata_order_does_not_clamp_selection_to_the_last_visual_cells_raw_index() -> Result<()> {
