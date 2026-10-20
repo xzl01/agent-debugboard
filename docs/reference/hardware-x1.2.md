@@ -54,13 +54,15 @@ The overlay uses `rshunt-micro-ohms = <10000>` and
 The schematic nets `RP2354_SCL`/`RP2354_SDA` are on **GPIO20/GPIO21**
 respectively (SCL=GPIO20, SDA=GPIO21). This is the opposite of the RP2350
 I2C0 pin functions and of the pico-examples `SCL = SDA + 1` layout, so the
-board drives the bus with a **PIO I2C master** whose two wait instructions
-are absolute `wait 1 gpio, 20` (SCL); SDA is sampled on GPIO21.
+board drives the bus with a **PIO I2C master**. Its data/ACK waits and all
+escape-path waits are encoded at initialization from the Device Tree SCL GPIO;
+there is no machine-code dependency on GPIO20. SDA is sampled through the
+Device Tree-selected input pin.
 
 - Clock: **200 kHz by default**. The PIO data-bit loop is 34 state-machine
   cycles: 18 low and 16 high. At the RP2350 150 MHz system clock, divider
   `22 + 16/256` gives an effective default clock of approximately
-  **199.967 kHz**. The same 20-instruction program has a 400 kHz capability
+  **199.967 kHz**. The same 23-instruction program has a 400 kHz capability
   ceiling: divider `11 + 8/256` gives approximately **399.933 kHz**, while its
   shortest data/ACK low phase remains 18 cycles (approximately 1.324 us).
   The default is intentionally not 400 kHz. Static timing capability does not
@@ -92,15 +94,44 @@ are absolute `wait 1 gpio, 20` (SCL); SDA is sampled on GPIO21.
   measurement across VBUS/VHV, VCC_3V3, and J8-connected states. If any source
   of the high level is unidentified, any domain can be unpowered unsafely, or
   any measurement fails, keep the 200 kHz default and mark 400 kHz blocked.
-- Data and ACK high phases wait for physical SCL, so target clock stretching
-  only lengthens those phases. Each bus-clear level is duplicated; including
-  the parser's `OUT EXEC` and loop-jump overhead, recovery is 0.85 times the
-  configured data rate (approximately 169.972 kHz at the default). Its STOP
-  tail holds SCL low for 20 state-machine cycles and then holds SCL high with
-  SDA low for 20 cycles before releasing SDA. The recovery deadline accounts
-  for all 41 raw instructions plus the tBUF confirmation. The former 1 kHz
-  bring-up setting exposed low-frequency timeout assumptions and is no longer
-  used.
+- Data and ACK high phases wait for physical SCL. After WAIT observes SCL high,
+  each path has an explicit nine-state-machine-cycle high hold: at every phase
+  of the `11 + 8/256` divider this is at least 660 ns. STOP and repeated START
+  likewise execute a dynamic SCL WAIT immediately after release, then hold the
+  actual-high state for ten cycles (at least 733 ns) before changing SDA.
+  Clock stretching therefore only lengthens these phases.
+- Recovery applies the same dynamic WAIT to every one of its nine pulse highs
+  and to the tail STOP. A no-stretch recovery pulse is 43 state-machine cycles,
+  approximately **158.113 kHz** at the 200 kHz default and **316.226 kHz** at
+  the 400 kHz capability ceiling. The STOP tail holds SCL low for 20 cycles,
+  waits for physical SCL high, then holds SDA low for ten cycles before release.
+  The deadline accounts for 41 raw levels, ten WAIT instructions, parser/EXEC
+  overhead, and tBUF. A stretched-low SCL eventually expires the CPU-side
+  deadline and fail-closes with both lines released; it cannot leave an
+  unbounded CPU polling loop or a partially queued escape active.
+- Device Tree enables RP2350 input Schmitt hysteresis on both SDA and SCL while
+  retaining `bias-disable` and open-drain operation. Hysteresis improves input
+  edge qualification, but it does **not** by itself prove the UM10204 50 ns
+  spike-suppression requirement. These software timing checks are not a claim
+  of complete UM10204 electrical certification. The former 1 kHz bring-up
+  setting exposed low-frequency timeout assumptions and is no longer used.
+- A target NAK enters the PIO IRQ wait path. Before issuing cleanup STOP, the
+  driver forces physical OE off, disables the SM, clears both FIFOs, restarts
+  the shift counters/ISR/EXEC/delay/IRQ-wait state, explicitly consumes the
+  preserved OSR contents with autopull disabled, restores the parser PC and
+  original shift configuration (including read autopush), then safely re-enables
+  open drain. This prevents a prefetched WAIT or partial escape word from being
+  decoded as the new STOP header. Successful cleanup still returns the original
+  NAK `-EIO`; a cleanup timeout/error remains the reported diagnostic instead.
+- **Current 400 kHz HIL fixture only (not production-board population):** SDA
+  and SCL each have a 10 kΩ fly-wire pull-up to board VCC_3V3; the pull-ups
+  disappear with board power, J8 is unloaded, and VHV/PD remains online for the
+  run. No one-sided power-off case is exercised. In parallel with the documented
+  CH224A 7–15 kΩ internal pull-up range, the estimated effective pull-up is
+  4.1–6.0 kΩ. With the known 34 pF fixture capacitance this estimates
+  `tr = 119–173 ns` and a low-state current of approximately 0.55–0.80 mA.
+  These are fixture estimates to be checked by measurement, not evidence that
+  production x1.2 has an external pull-up or is safe under one-sided power-off.
 - CH224A is on the same bus and is limited to 400 kHz, so the shared bus
   cannot use INA226 High-Speed mode (2.94 MHz) without a hardware
   bridge/isolator. The PIO master also implements Fast mode only.
@@ -206,7 +237,8 @@ follows the `switch usb` boot route.
 The BSP has been validated by the full firmware build and the host-model unit
 tests. Static policy tests cover the 200 kHz production default, 150 MHz/
 400 kHz capability divider, generated PIO machine code, Fast-mode timing
-bounds, and recovery rate. Earlier on-hardware
+bounds, all 32 fractional-divider phases, dynamic SCL stretching, escape/FIFO
+timeout fail-close behavior, and recovery rate. Earlier on-hardware
 x1.2 bring-up at 1 kHz verified the four INA226
 addresses (`0x40/0x41/0x44/0x45`), manufacturer ID `0x5449`, configuration
 register `0x4127`, and line levels in that specific setup; those observed levels

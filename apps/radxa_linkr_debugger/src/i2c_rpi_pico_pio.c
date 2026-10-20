@@ -9,8 +9,9 @@
  * The x1.2 board routes the I2C bus to GPIO20 (SCL) and GPIO21 (SDA); the
  * schematic nets are crossed relative to the RP2350 I2C0 pin functions.
  * The pico-examples program normally requires SCL = SDA + 1, so the two
- * wait instructions are encoded as absolute GPIO waits on SCL (GPIO20)
- * instead of relative pin waits. SDA is sampled on GPIO21.
+ * wait instructions are encoded at init from the devicetree SCL GPIO instead
+ * of relying on the pico-examples relative pin layout. SDA is sampled through
+ * the devicetree-selected input pin.
  *
  * The program and byte-level sequencing are the pico-examples pio/i2c
  * implementation (BSD-3-Clause).
@@ -81,20 +82,30 @@ LOG_MODULE_REGISTER(i2c_rpi_pico_pio, LOG_LEVEL_INF);
 #define PIO_I2C_INSTR_SET_X_7         0xe027U
 #define PIO_I2C_INSTR_DATA_OUT        0x6781U
 #define PIO_I2C_INSTR_DATA_LOW_HOLD   0xb142U
-#define PIO_I2C_INSTR_DATA_HIGH       0xba42U
-#define PIO_I2C_INSTR_DATA_WAIT       0x2494U
+#define PIO_I2C_INSTR_DATA_HIGH       0xb942U
+#define PIO_I2C_INSTR_DATA_WAIT       0x2480U
+#define PIO_I2C_INSTR_DATA_POST_WAIT  0xb842U
 #define PIO_I2C_INSTR_DATA_IN         0x4701U
 #define PIO_I2C_INSTR_DATA_FALL       0x1743U
 #define PIO_I2C_INSTR_ACK_LOW_HOLD    0xb242U
-#define PIO_I2C_INSTR_ACK_HIGH        0xbf42U
-#define PIO_I2C_INSTR_ACK_WAIT        0x2794U
+#define PIO_I2C_INSTR_ACK_HIGH        0xba42U
+#define PIO_I2C_INSTR_ACK_WAIT        0x2380U
+#define PIO_I2C_INSTR_ACK_POST_WAIT_8 0xbf42U
+#define PIO_I2C_INSTR_ACK_POST_WAIT_1 0xb842U
 #define PIO_I2C_INSTR_ACK_FALL        0x13c0U
 #define PIO_I2C_INSTR_PARSER_OUT_X    0x6026U
 #define PIO_I2C_INSTR_PARSER_OUT_Y    0x6041U
 #define PIO_I2C_INSTR_PARSER_JMP_DATA 0x0022U
 #define PIO_I2C_INSTR_PARSER_OUT_NULL 0x6060U
 #define PIO_I2C_INSTR_OUT_EXEC        0x60f0U
-#define PIO_I2C_INSTR_EXEC_LOOP       0x0052U
+#define PIO_I2C_INSTR_EXEC_LOOP       0x0055U
+#define PIO_I2C_INSTR_EXEC_WAIT_BASE  0x2080U
+
+#define PIO_I2C_DATA_WAIT_INDEX 6U
+#define PIO_I2C_ACK_WAIT_INDEX  13U
+#define PIO_I2C_DATA_WAIT_DELAY 4U
+#define PIO_I2C_ACK_WAIT_DELAY  3U
+#define PIO_I2C_WAIT_SCL_PLACEHOLDER UINT16_MAX
 
 /* pioasm output for the set_scl_sda instruction table (executed via OUT EXEC). */
 #define PIO_I2C_SC0_SD0 0xf780U
@@ -109,6 +120,10 @@ LOG_MODULE_REGISTER(i2c_rpi_pico_pio, LOG_LEVEL_INF);
 #define PIO_I2C_DATA_THIGH_CYCLES \
 	(PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_DATA_HIGH) + \
 	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_DATA_WAIT) + \
+	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_DATA_POST_WAIT) + \
+	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_DATA_IN))
+#define PIO_I2C_DATA_POST_WAIT_CYCLES \
+	(PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_DATA_POST_WAIT) + \
 	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_DATA_IN))
 #define PIO_I2C_DATA_SETUP_CYCLES \
 	(PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_DATA_OUT) + \
@@ -116,7 +131,7 @@ LOG_MODULE_REGISTER(i2c_rpi_pico_pio, LOG_LEVEL_INF);
 #define PIO_I2C_DATA_VALID_CYCLES \
 	PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_DATA_FALL)
 
-/* Successful ACK takes PC 13 -> 14 -> 15 -> 16 -> 2 -> 3 -> 4 before PC 5
+/* Successful ACK takes PC 16 -> 17 -> 18 -> 19 -> 2 -> 3 -> 4 before PC 5
  * releases SCL. Derive that complete low phase from those exact words.
  */
 #define PIO_I2C_ACK_TLOW_CYCLES \
@@ -129,7 +144,12 @@ LOG_MODULE_REGISTER(i2c_rpi_pico_pio, LOG_LEVEL_INF);
 	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_DATA_LOW_HOLD))
 #define PIO_I2C_ACK_THIGH_CYCLES \
 	(PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_ACK_HIGH) + \
-	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_ACK_WAIT))
+	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_ACK_WAIT) + \
+	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_ACK_POST_WAIT_8) + \
+	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_ACK_POST_WAIT_1))
+#define PIO_I2C_ACK_POST_WAIT_CYCLES \
+	(PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_ACK_POST_WAIT_8) + \
+	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_ACK_POST_WAIT_1))
 #define PIO_I2C_ACK_VALID_CYCLES \
 	PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_DATA_FALL)
 #define PIO_I2C_CYCLES_PER_BIT \
@@ -140,25 +160,35 @@ LOG_MODULE_REGISTER(i2c_rpi_pico_pio, LOG_LEVEL_INF);
 	(PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_SC0_SD0) + \
 	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_OUT_EXEC) + \
 	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_EXEC_LOOP))
+#define PIO_I2C_ESCAPE_WAIT_CYCLES \
+	(PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_EXEC_WAIT_BASE) + \
+	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_OUT_EXEC) + \
+	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_EXEC_LOOP))
 #define PIO_I2C_START_HOLD_CYCLES PIO_I2C_ESCAPE_LEVEL_CYCLES
 #define PIO_I2C_REPSTART_SETUP_CYCLES PIO_I2C_ESCAPE_LEVEL_CYCLES
 #define PIO_I2C_STOP_SETUP_CYCLES PIO_I2C_ESCAPE_LEVEL_CYCLES
 
 /* OUT EXEC and its loop jump add two SM cycles to each eight-cycle raw level.
- * Recovery duplicates every low/high level, so its SCL period is 40 cycles.
+ * Each recovery pulse has four raw levels plus one three-cycle no-stretch
+ * WAIT/EXEC record, so its minimum SCL period is 43 cycles.
  */
 #define PIO_I2C_ESCAPE_SETUP_CYCLES \
 	(PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_PARSER_OUT_X) + \
 	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_PARSER_OUT_Y) + \
 	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_PARSER_JMP_DATA) + \
 	 PIO_I2C_INSTRUCTION_CYCLES(PIO_I2C_INSTR_PARSER_OUT_NULL))
-#define PIO_I2C_RECOVERY_INSTRUCTION_COUNT 41U
-#define PIO_I2C_RECOVERY_CYCLES_PER_PULSE (4U * PIO_I2C_ESCAPE_LEVEL_CYCLES)
+#define PIO_I2C_RECOVERY_RAW_LEVEL_COUNT 41U
+#define PIO_I2C_RECOVERY_WAIT_COUNT 10U
+#define PIO_I2C_RECOVERY_INSTRUCTION_COUNT \
+	(PIO_I2C_RECOVERY_RAW_LEVEL_COUNT + PIO_I2C_RECOVERY_WAIT_COUNT)
+#define PIO_I2C_RECOVERY_CYCLES_PER_PULSE \
+	(4U * PIO_I2C_ESCAPE_LEVEL_CYCLES + PIO_I2C_ESCAPE_WAIT_CYCLES)
 #define PIO_I2C_RECOVERY_STOP_TLOW_CYCLES (2U * PIO_I2C_ESCAPE_LEVEL_CYCLES)
-#define PIO_I2C_RECOVERY_STOP_SETUP_CYCLES (2U * PIO_I2C_ESCAPE_LEVEL_CYCLES)
+#define PIO_I2C_RECOVERY_STOP_SETUP_CYCLES PIO_I2C_ESCAPE_LEVEL_CYCLES
 #define PIO_I2C_RECOVERY_SM_CYCLES \
 	(PIO_I2C_ESCAPE_SETUP_CYCLES + \
-	 PIO_I2C_RECOVERY_INSTRUCTION_COUNT * PIO_I2C_ESCAPE_LEVEL_CYCLES)
+	 PIO_I2C_RECOVERY_RAW_LEVEL_COUNT * PIO_I2C_ESCAPE_LEVEL_CYCLES + \
+	 PIO_I2C_RECOVERY_WAIT_COUNT * PIO_I2C_ESCAPE_WAIT_CYCLES)
 #define PIO_I2C_RECOVERY_TRANSFER_CLOCKS \
 	DIV_ROUND_UP(PIO_I2C_RECOVERY_SM_CYCLES, PIO_I2C_CYCLES_PER_BIT)
 #define PIO_I2C_IDLE_CONFIRM_CLOCKS \
@@ -166,10 +196,14 @@ LOG_MODULE_REGISTER(i2c_rpi_pico_pio, LOG_LEVEL_INF);
 		     PIO_I2C_USEC_PER_SEC)
 #define PIO_I2C_RECOVERY_CLOCKS \
 	(PIO_I2C_RECOVERY_TRANSFER_CLOCKS + PIO_I2C_IDLE_CONFIRM_CLOCKS)
-#define PIO_I2C_STOP_INSTRUCTION_COUNT 3U
+#define PIO_I2C_STOP_RAW_LEVEL_COUNT 4U
+#define PIO_I2C_STOP_WAIT_COUNT 1U
+#define PIO_I2C_STOP_INSTRUCTION_COUNT \
+	(PIO_I2C_STOP_RAW_LEVEL_COUNT + PIO_I2C_STOP_WAIT_COUNT)
 #define PIO_I2C_STOP_SM_CYCLES \
 	(PIO_I2C_ESCAPE_SETUP_CYCLES + \
-	 PIO_I2C_STOP_INSTRUCTION_COUNT * PIO_I2C_ESCAPE_LEVEL_CYCLES)
+	 PIO_I2C_STOP_RAW_LEVEL_COUNT * PIO_I2C_ESCAPE_LEVEL_CYCLES + \
+	 PIO_I2C_STOP_WAIT_COUNT * PIO_I2C_ESCAPE_WAIT_CYCLES)
 #define PIO_I2C_STOP_TRANSFER_CLOCKS \
 	DIV_ROUND_UP(PIO_I2C_STOP_SM_CYCLES, PIO_I2C_CYCLES_PER_BIT)
 #define PIO_I2C_STOP_CLOCKS \
@@ -189,7 +223,10 @@ BUILD_ASSERT(PIO_I2C_DATA_THIGH_CYCLES == 16U);
 BUILD_ASSERT(PIO_I2C_CYCLES_PER_BIT == 34U);
 BUILD_ASSERT(PIO_I2C_ACK_TLOW_CYCLES == 18U);
 BUILD_ASSERT(PIO_I2C_ACK_THIGH_CYCLES == 16U);
+BUILD_ASSERT(PIO_I2C_DATA_POST_WAIT_CYCLES == 9U);
+BUILD_ASSERT(PIO_I2C_ACK_POST_WAIT_CYCLES == 9U);
 BUILD_ASSERT(PIO_I2C_ESCAPE_LEVEL_CYCLES == 10U);
+BUILD_ASSERT(PIO_I2C_ESCAPE_WAIT_CYCLES == 3U);
 BUILD_ASSERT(PIO_I2C_MIN_TIMING_OK(PIO_I2C_DATA_TLOW_CYCLES,
 				    PIO_I2C_FAST_TLOW_MIN_NS));
 BUILD_ASSERT(PIO_I2C_MIN_TIMING_OK(PIO_I2C_DATA_THIGH_CYCLES,
@@ -201,6 +238,10 @@ BUILD_ASSERT(PIO_I2C_MAX_TIMING_OK(PIO_I2C_DATA_VALID_CYCLES,
 BUILD_ASSERT(PIO_I2C_MIN_TIMING_OK(PIO_I2C_ACK_TLOW_CYCLES,
 				    PIO_I2C_FAST_TLOW_MIN_NS));
 BUILD_ASSERT(PIO_I2C_MIN_TIMING_OK(PIO_I2C_ACK_THIGH_CYCLES,
+				    PIO_I2C_FAST_THIGH_MIN_NS));
+BUILD_ASSERT(PIO_I2C_MIN_TIMING_OK(PIO_I2C_DATA_POST_WAIT_CYCLES,
+				    PIO_I2C_FAST_THIGH_MIN_NS));
+BUILD_ASSERT(PIO_I2C_MIN_TIMING_OK(PIO_I2C_ACK_POST_WAIT_CYCLES,
 				    PIO_I2C_FAST_THIGH_MIN_NS));
 BUILD_ASSERT(PIO_I2C_MAX_TIMING_OK(PIO_I2C_ACK_VALID_CYCLES,
 				    PIO_I2C_FAST_TVD_ACK_MAX_NS));
@@ -216,56 +257,90 @@ BUILD_ASSERT(PIO_I2C_MIN_TIMING_OK(PIO_I2C_RECOVERY_STOP_SETUP_CYCLES,
 				    PIO_I2C_FAST_TSU_STO_MIN_NS));
 BUILD_ASSERT(PIO_I2C_IDLE_SAMPLE_MIN_USEC * 1000U >= PIO_I2C_FAST_TBUF_MIN_NS);
 BUILD_ASSERT(PIO_I2C_RECOVERY_CYCLES_PER_PULSE >= PIO_I2C_CYCLES_PER_BIT);
-BUILD_ASSERT(PIO_I2C_RECOVERY_TRANSFER_CLOCKS == 13U);
-BUILD_ASSERT(PIO_I2C_RECOVERY_CLOCKS == 15U);
-BUILD_ASSERT(PIO_I2C_STOP_CLOCKS == 3U);
+BUILD_ASSERT(PIO_I2C_RECOVERY_INSTRUCTION_COUNT <= 64U);
+BUILD_ASSERT(PIO_I2C_RECOVERY_TRANSFER_CLOCKS == 14U);
+BUILD_ASSERT(PIO_I2C_RECOVERY_CLOCKS == 16U);
+BUILD_ASSERT(PIO_I2C_STOP_CLOCKS == 4U);
 
-/* pioasm 2.2.0 output for the pico-examples program with explicit side-low
- * holds after the data and ACK OUTs (wrap 14..19, entry 14).
+/* pioasm 2.2.0 output for the pico-examples program with explicit low holds
+ * and post-WAIT high holds (wrap 17..22, entry 17). WAIT GPIO 0 is a
+ * placeholder replaced from the devicetree SCL pin before loading the program.
  */
-RPI_PICO_PIO_DEFINE_PROGRAM(i2c_pio, 14, 19,
-	0x008e, /*  0: jmp    y--, 14                     */
+RPI_PICO_PIO_DEFINE_PROGRAM(i2c_pio, 17, 22,
+	0x0091, /*  0: jmp    y--, 17                     */
 	0xc030, /*  1: irq    wait 0 rel                  */
 	PIO_I2C_INSTR_SET_X_7,         /*  2: set    x, 7                        */
 	PIO_I2C_INSTR_DATA_OUT,        /*  3: out    pindirs, 1             [7]  */
 	PIO_I2C_INSTR_DATA_LOW_HOLD,   /*  4: nop                    side 0 [1]  */
-	PIO_I2C_INSTR_DATA_HIGH,       /*  5: nop                    side 1 [2]  */
-	PIO_I2C_INSTR_DATA_WAIT,       /*  6: wait   1 gpio, 20             [4]  */
-	PIO_I2C_INSTR_DATA_IN,         /*  7: in     pins, 1                [7]  */
-	PIO_I2C_INSTR_DATA_FALL,       /*  8: jmp    x--, 3          side 0 [7]  */
-	PIO_I2C_INSTR_DATA_OUT,        /*  9: out    pindirs, 1             [7]  */
-	PIO_I2C_INSTR_ACK_LOW_HOLD,    /* 10: nop                    side 0 [2]  */
-	PIO_I2C_INSTR_ACK_HIGH,        /* 11: nop                    side 1 [7]  */
-	PIO_I2C_INSTR_ACK_WAIT,        /* 12: wait   1 gpio, 20             [7]  */
-	PIO_I2C_INSTR_ACK_FALL,        /* 13: jmp    pin, 0          side 0 [3]  */
-	PIO_I2C_INSTR_PARSER_OUT_X,    /* 14: out    x, 6                        */
-	PIO_I2C_INSTR_PARSER_OUT_Y,    /* 15: out    y, 1                        */
-	PIO_I2C_INSTR_PARSER_JMP_DATA, /* 16: jmp    !x, 2                       */
-	PIO_I2C_INSTR_PARSER_OUT_NULL, /* 17: out    null, 32                    */
-	PIO_I2C_INSTR_OUT_EXEC,        /* 18: out    exec, 16                    */
-	PIO_I2C_INSTR_EXEC_LOOP,       /* 19: jmp    x--, 18                     */
+	PIO_I2C_INSTR_DATA_HIGH,       /*  5: nop                    side 1 [1]  */
+	PIO_I2C_INSTR_DATA_WAIT,       /*  6: wait   1 gpio, 0              [4]  */
+	PIO_I2C_INSTR_DATA_POST_WAIT,  /*  7: nop                    side 1      */
+	PIO_I2C_INSTR_DATA_IN,         /*  8: in     pins, 1                [7]  */
+	PIO_I2C_INSTR_DATA_FALL,       /*  9: jmp    x--, 3          side 0 [7]  */
+	PIO_I2C_INSTR_DATA_OUT,        /* 10: out    pindirs, 1             [7]  */
+	PIO_I2C_INSTR_ACK_LOW_HOLD,    /* 11: nop                    side 0 [2]  */
+	PIO_I2C_INSTR_ACK_HIGH,        /* 12: nop                    side 1 [2]  */
+	PIO_I2C_INSTR_ACK_WAIT,        /* 13: wait   1 gpio, 0              [3]  */
+	PIO_I2C_INSTR_ACK_POST_WAIT_8, /* 14: nop                    side 1 [7]  */
+	PIO_I2C_INSTR_ACK_POST_WAIT_1, /* 15: nop                    side 1      */
+	PIO_I2C_INSTR_ACK_FALL,        /* 16: jmp    pin, 0          side 0 [3]  */
+	PIO_I2C_INSTR_PARSER_OUT_X,    /* 17: out    x, 6                        */
+	PIO_I2C_INSTR_PARSER_OUT_Y,    /* 18: out    y, 1                        */
+	PIO_I2C_INSTR_PARSER_JMP_DATA, /* 19: jmp    !x, 2                       */
+	PIO_I2C_INSTR_PARSER_OUT_NULL, /* 20: out    null, 32                    */
+	PIO_I2C_INSTR_OUT_EXEC,        /* 21: out    exec, 16                    */
+	PIO_I2C_INSTR_EXEC_LOOP,       /* 22: jmp    x--, 21                     */
 );
 
+static int pio_i2c_prepare_program(uint32_t scl_pin,
+				   uint16_t instructions[ARRAY_SIZE(i2c_pio_program_instructions)],
+				   struct pio_program *program)
+{
+	if (scl_pin >= 32U) {
+		return -EINVAL;
+	}
+
+	for (size_t i = 0U; i < ARRAY_SIZE(i2c_pio_program_instructions); i++) {
+		instructions[i] = i2c_pio_program_instructions[i];
+	}
+	instructions[PIO_I2C_DATA_WAIT_INDEX] =
+		(uint16_t)(pio_encode_wait_gpio(true, scl_pin) |
+			   pio_encode_delay(PIO_I2C_DATA_WAIT_DELAY));
+	instructions[PIO_I2C_ACK_WAIT_INDEX] =
+		(uint16_t)(pio_encode_wait_gpio(true, scl_pin) |
+			   pio_encode_delay(PIO_I2C_ACK_WAIT_DELAY));
+	*program = *RPI_PICO_PIO_GET_PROGRAM(i2c_pio);
+	program->instructions = instructions;
+
+	return 0;
+}
+
 static const uint16_t pio_i2c_recovery_instructions[] = {
-	/* Each eight-cycle raw state also costs one OUT EXEC and one loop jump.
-	 * Duplicating low and high therefore makes each recovery pulse 40 SM
-	 * cycles, versus 34 for a normal data bit: about 340 kHz only when DT
-	 * explicitly requests the 400 kHz capability ceiling. The STOP tail likewise
-	 * duplicates SCL-low/SDA-low and
-	 * SCL-high/SDA-low before releasing SDA. Recovery can only be slower than
-	 * the configured bus, including its final clock-shaped transition.
+	/* Every SCL release is immediately followed by a runtime-encoded WAIT on
+	 * the devicetree SCL GPIO. The following repeated high level guarantees a
+	 * ten-cycle hold measured after WAIT observes physical SCL high.
 	 */
-	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1, PIO_I2C_SC1_SD1,
-	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1, PIO_I2C_SC1_SD1,
-	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1, PIO_I2C_SC1_SD1,
-	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1, PIO_I2C_SC1_SD1,
-	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1, PIO_I2C_SC1_SD1,
-	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1, PIO_I2C_SC1_SD1,
-	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1, PIO_I2C_SC1_SD1,
-	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1, PIO_I2C_SC1_SD1,
-	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1, PIO_I2C_SC1_SD1,
+	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1,
+	PIO_I2C_WAIT_SCL_PLACEHOLDER, PIO_I2C_SC1_SD1,
+	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1,
+	PIO_I2C_WAIT_SCL_PLACEHOLDER, PIO_I2C_SC1_SD1,
+	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1,
+	PIO_I2C_WAIT_SCL_PLACEHOLDER, PIO_I2C_SC1_SD1,
+	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1,
+	PIO_I2C_WAIT_SCL_PLACEHOLDER, PIO_I2C_SC1_SD1,
+	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1,
+	PIO_I2C_WAIT_SCL_PLACEHOLDER, PIO_I2C_SC1_SD1,
+	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1,
+	PIO_I2C_WAIT_SCL_PLACEHOLDER, PIO_I2C_SC1_SD1,
+	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1,
+	PIO_I2C_WAIT_SCL_PLACEHOLDER, PIO_I2C_SC1_SD1,
+	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1,
+	PIO_I2C_WAIT_SCL_PLACEHOLDER, PIO_I2C_SC1_SD1,
+	PIO_I2C_SC0_SD1, PIO_I2C_SC0_SD1, PIO_I2C_SC1_SD1,
+	PIO_I2C_WAIT_SCL_PLACEHOLDER, PIO_I2C_SC1_SD1,
 	PIO_I2C_SC0_SD0, PIO_I2C_SC0_SD0,
-	PIO_I2C_SC1_SD0, PIO_I2C_SC1_SD0, PIO_I2C_SC1_SD1,
+	PIO_I2C_SC1_SD0, PIO_I2C_WAIT_SCL_PLACEHOLDER,
+	PIO_I2C_SC1_SD0, PIO_I2C_SC1_SD1,
 };
 
 BUILD_ASSERT(ARRAY_SIZE(pio_i2c_recovery_instructions) ==
@@ -525,15 +600,32 @@ static inline int pio_i2c_put16(const struct pio_i2c_data *data, PIO pio,
 	return 0;
 }
 
-static void pio_i2c_resume_after_error(PIO pio, size_t sm, uint32_t both_pins)
+static void pio_i2c_restart_sm_released(PIO pio, size_t sm, uint32_t both_pins)
 {
+	uint32_t shiftctrl = pio->sm[sm].shiftctrl;
+	const uint32_t fdebug_sm_mask =
+		((1U << PIO_FDEBUG_TXOVER_LSB) |
+		 (1U << PIO_FDEBUG_RXUNDER_LSB) |
+		 (1U << PIO_FDEBUG_TXSTALL_LSB) |
+		 (1U << PIO_FDEBUG_RXSTALL_LSB)) << sm;
 	uint32_t wrap_bottom;
 
-	pio_sm_drain_tx_fifo(pio, sm);
 	pio_sm_set_enabled(pio, sm, false);
+	hw_clear_bits(&pio->sm[sm].shiftctrl,
+		      PIO_SM0_SHIFTCTRL_AUTOPULL_BITS |
+		      PIO_SM0_SHIFTCTRL_AUTOPUSH_BITS);
+	pio_sm_clear_fifos(pio, sm);
+	pio_sm_restart(pio, sm);
+	pio_sm_clkdiv_restart(pio, sm);
 
-	/* Release both lines before restarting so a failed transfer cannot
-	 * leave SDA/SCL driven low. The SDK pin helpers require a disabled SM.
+	/* SM_RESTART clears both shift counters but intentionally preserves OSR
+	 * contents. With autopull disabled, consume all 32 stale OSR bits so the
+	 * parser's next OUT X must pull the new record header from the clean FIFO.
+	 */
+	pio_sm_exec(pio, sm, pio_encode_out(pio_null, 32));
+
+	/* Restore released open-drain pin state while physical OE is forced off.
+	 * These SDK helpers preserve the configured wrap, clkdiv, and pin mapping.
 	 */
 	pio_sm_set_pins_with_mask(pio, sm, 0U, both_pins);
 	pio_sm_set_pindirs_with_mask(pio, sm, both_pins, both_pins);
@@ -541,7 +633,28 @@ static void pio_i2c_resume_after_error(PIO pio, size_t sm, uint32_t both_pins)
 		      PIO_SM0_EXECCTRL_WRAP_BOTTOM_LSB;
 	pio_sm_exec(pio, sm, pio_encode_jmp(wrap_bottom));
 	pio_interrupt_clear(pio, sm);
-	pio_sm_set_enabled(pio, sm, true);
+	pio->fdebug = fdebug_sm_mask;
+	pio->sm[sm].shiftctrl = shiftctrl;
+}
+
+static void pio_i2c_resume_after_error(const struct device *dev)
+{
+	const struct pio_i2c_config *config = dev->config;
+	struct pio_i2c_data *data = dev->data;
+	PIO pio = pio_i2c_pio(dev);
+	uint32_t both_pins = (1U << config->sda_pin) | (1U << config->scl_pin);
+
+	/* Release physical OE before touching a potentially stalled SM. */
+	gpio_set_oeover(config->sda_pin, GPIO_OVERRIDE_LOW);
+	gpio_set_oeover(config->scl_pin, GPIO_OVERRIDE_LOW);
+	pio_i2c_restart_sm_released(pio, data->sm, both_pins);
+
+	/* Pindirs are restored to released before the open-drain inversion and SM
+	 * are re-enabled. Preserve the prior RX autopush mode for cleanup.
+	 */
+	gpio_set_oeover(config->sda_pin, GPIO_OVERRIDE_INVERT);
+	gpio_set_oeover(config->scl_pin, GPIO_OVERRIDE_INVERT);
+	pio_sm_set_enabled(pio, data->sm, true);
 }
 
 static inline int pio_i2c_put_or_err(const struct pio_i2c_data *data, PIO pio,
@@ -564,27 +677,50 @@ static uint8_t pio_i2c_get(PIO pio, size_t sm)
 	return (uint8_t)pio_sm_get(pio, sm);
 }
 
+static int pio_i2c_encode_exec_wait_scl(PIO pio, uint32_t scl_pin,
+					uint16_t *instruction)
+{
+	uint32_t gpio_base = pio_get_gpio_base(pio);
+
+	if (scl_pin < gpio_base || scl_pin - gpio_base >= 32U) {
+		return -EINVAL;
+	}
+	*instruction = (uint16_t)pio_encode_wait_gpio(true, scl_pin - gpio_base);
+
+	return 0;
+}
+
 static int pio_i2c_queue_escape(const struct pio_i2c_data *data, PIO pio,
-				size_t sm, const uint16_t *instructions,
+				size_t sm, uint32_t scl_pin,
+				const uint16_t *instructions,
 				size_t instruction_count)
 {
+	uint16_t wait_scl;
 	int ret;
 
 	if (instruction_count < 2U || instruction_count > 64U) {
 		return -EINVAL;
 	}
+	ret = pio_i2c_encode_exec_wait_scl(pio, scl_pin, &wait_scl);
+	if (ret < 0) {
+		return ret;
+	}
 
 	ret = pio_i2c_put_or_err(data, pio, sm,
 				  (uint16_t)PIO_I2C_EXEC_COUNT(instruction_count));
 	for (size_t i = 0U; ret == 0 && i < instruction_count; i++) {
-		ret = pio_i2c_put_or_err(data, pio, sm, instructions[i]);
+		uint16_t instruction = instructions[i] == PIO_I2C_WAIT_SCL_PLACEHOLDER ?
+			wait_scl : instructions[i];
+
+		ret = pio_i2c_put_or_err(data, pio, sm, instruction);
 	}
 
 	/* A partial escape is an error; callers must reset or fail-close the SM. */
 	return ret;
 }
 
-static int pio_i2c_start(const struct pio_i2c_data *data, PIO pio, size_t sm)
+static int pio_i2c_start(const struct pio_i2c_data *data, PIO pio, size_t sm,
+			 uint32_t scl_pin)
 {
 	const uint16_t instructions[] = {
 		PIO_I2C_SC1_SD0,
@@ -595,37 +731,49 @@ static int pio_i2c_start(const struct pio_i2c_data *data, PIO pio, size_t sm)
 	/* The bus was verified idle: generate START, hold SCL low, then clear the
 	 * ISR before the address byte. REPSTART additionally releases both lines.
 	 */
-	return pio_i2c_queue_escape(data, pio, sm, instructions,
+	return pio_i2c_queue_escape(data, pio, sm, scl_pin, instructions,
 				     ARRAY_SIZE(instructions));
 }
 
-static int pio_i2c_stop(const struct pio_i2c_data *data, PIO pio, size_t sm)
+static int pio_i2c_stop(const struct pio_i2c_data *data, PIO pio, size_t sm,
+			uint32_t scl_pin)
 {
 	const uint16_t instructions[] = {
 		PIO_I2C_SC0_SD0,
 		PIO_I2C_SC1_SD0,
+		PIO_I2C_WAIT_SCL_PLACEHOLDER,
+		PIO_I2C_SC1_SD0,
 		PIO_I2C_SC1_SD1,
 	};
 
+	/* WAIT makes tSU;STO start at observed SCL high, not at OE release. The
+	 * repeated SC1_SD0 then supplies a full ten-cycle post-WAIT setup hold.
+	 */
 	/* Clear a prior empty-FIFO event before queueing STOP. Clearing it in
 	 * wait_idle() could erase STOP's completion if the PIO wins the race.
 	 */
 	pio->fdebug = 1U << (PIO_FDEBUG_TXSTALL_LSB + sm);
-	return pio_i2c_queue_escape(data, pio, sm, instructions,
+	return pio_i2c_queue_escape(data, pio, sm, scl_pin, instructions,
 				     ARRAY_SIZE(instructions));
 }
 
-static int pio_i2c_repstart(const struct pio_i2c_data *data, PIO pio, size_t sm)
+static int pio_i2c_repstart(const struct pio_i2c_data *data, PIO pio, size_t sm,
+			    uint32_t scl_pin)
 {
 	const uint16_t instructions[] = {
 		PIO_I2C_SC0_SD1,
+		PIO_I2C_SC1_SD1,
+		PIO_I2C_WAIT_SCL_PLACEHOLDER,
 		PIO_I2C_SC1_SD1,
 		PIO_I2C_SC1_SD0,
 		PIO_I2C_SC0_SD0,
 		pio_encode_mov(pio_isr, pio_null),
 	};
 
-	return pio_i2c_queue_escape(data, pio, sm, instructions,
+	/* WAIT makes tSU;STA start at observed SCL high. The repeated SC1_SD1
+	 * supplies the post-WAIT setup hold before SDA falls.
+	 */
+	return pio_i2c_queue_escape(data, pio, sm, scl_pin, instructions,
 				     ARRAY_SIZE(instructions));
 }
 
@@ -660,26 +808,13 @@ static void pio_i2c_reset_and_release(const struct device *dev)
 	PIO pio = pio_i2c_pio(dev);
 	size_t sm = data->sm;
 	uint32_t both_pins = (1U << config->sda_pin) | (1U << config->scl_pin);
-	uint32_t wrap_bottom;
 
 	/* GPIO_OVERRIDE_LOW disables the physical output enable. Keep it forced
 	 * off while discarding any partial record and restoring the PIO entry.
 	 */
 	gpio_set_oeover(config->sda_pin, GPIO_OVERRIDE_LOW);
 	gpio_set_oeover(config->scl_pin, GPIO_OVERRIDE_LOW);
-	pio_sm_set_enabled(pio, sm, false);
-	pio_sm_clear_fifos(pio, sm);
-	pio_sm_restart(pio, sm);
-	pio_interrupt_clear(pio, sm);
-	wrap_bottom = (pio->sm[sm].execctrl & PIO_SM0_EXECCTRL_WRAP_BOTTOM_BITS) >>
-		      PIO_SM0_EXECCTRL_WRAP_BOTTOM_LSB;
-	pio_sm_exec(pio, sm, pio_encode_jmp(wrap_bottom));
-	pio_sm_set_pins_with_mask(pio, sm, 0U, both_pins);
-
-	/* This driver implements open drain by inverting the peripheral OE. A
-	 * PIO pindir value of one therefore means released once INVERT is restored.
-	 */
-	pio_sm_set_pindirs_with_mask(pio, sm, both_pins, both_pins);
+	pio_i2c_restart_sm_released(pio, sm, both_pins);
 }
 
 static void pio_i2c_fail_close(const struct device *dev)
@@ -708,13 +843,12 @@ static int pio_i2c_cleanup_after_irq(const struct device *dev)
 	const struct pio_i2c_config *config = dev->config;
 	struct pio_i2c_data *data = dev->data;
 	PIO pio = pio_i2c_pio(dev);
-	uint32_t both_pins = (1U << config->sda_pin) | (1U << config->scl_pin);
 	int ret;
 
-	pio_i2c_resume_after_error(pio, data->sm, both_pins);
+	pio_i2c_resume_after_error(dev);
 	pio_i2c_set_deadline(data, PIO_I2C_STOP_CLOCKS,
 			     PIO_I2C_TIMEOUT_MIN_MSEC);
-	ret = pio_i2c_stop(data, pio, data->sm);
+	ret = pio_i2c_stop(data, pio, data->sm, config->scl_pin);
 	if (ret == 0) {
 		ret = pio_i2c_wait_idle(data, pio, data->sm);
 	}
@@ -793,9 +927,9 @@ static int pio_i2c_transfer_once(const struct device *dev, struct i2c_msg *msgs,
 		bool reading = (msg->flags & I2C_MSG_READ) != 0U;
 
 		if (i == 0U) {
-			err = pio_i2c_start(data, pio, sm);
+			err = pio_i2c_start(data, pio, sm, config->scl_pin);
 		} else {
-			err = pio_i2c_repstart(data, pio, sm);
+			err = pio_i2c_repstart(data, pio, sm, config->scl_pin);
 		}
 		if (err < 0) {
 			goto out;
@@ -862,7 +996,7 @@ static int pio_i2c_transfer_once(const struct device *dev, struct i2c_msg *msgs,
 		}
 
 		if ((msg->flags & I2C_MSG_STOP) != 0U) {
-			err = pio_i2c_stop(data, pio, sm);
+			err = pio_i2c_stop(data, pio, sm, config->scl_pin);
 			if (err == 0) {
 				err = pio_i2c_wait_idle(data, pio, sm);
 			}
@@ -873,7 +1007,7 @@ static int pio_i2c_transfer_once(const struct device *dev, struct i2c_msg *msgs,
 	}
 
 	if (!(msgs[num_msgs - 1U].flags & I2C_MSG_STOP)) {
-		err = pio_i2c_stop(data, pio, sm);
+		err = pio_i2c_stop(data, pio, sm, config->scl_pin);
 		if (err == 0) {
 			err = pio_i2c_wait_idle(data, pio, sm);
 		}
@@ -993,6 +1127,8 @@ static int pio_i2c_init(const struct device *dev)
 {
 	const struct pio_i2c_config *config = dev->config;
 	struct pio_i2c_data *data = dev->data;
+	uint16_t program_instructions[ARRAY_SIZE(i2c_pio_program_instructions)];
+	struct pio_program program;
 	pio_sm_config sm_config;
 	uint32_t offset;
 	uint32_t div_int;
@@ -1013,6 +1149,11 @@ static int pio_i2c_init(const struct device *dev)
 			config->clock_frequency);
 		return -EINVAL;
 	}
+	if (config->sda_pin >= 32U || config->scl_pin >= 32U) {
+		LOG_ERR("PIO I2C SDA=%u SCL=%u must be GPIO 0..31",
+			config->sda_pin, config->scl_pin);
+		return -EINVAL;
+	}
 	sys_hz = clock_get_hz(clk_sys);
 	ret = pio_i2c_calculate_clkdiv(sys_hz, config->clock_frequency,
 					&div_int, &div_frac,
@@ -1028,6 +1169,11 @@ static int pio_i2c_init(const struct device *dev)
 	}
 
 	pio = pio_rpi_pico_get_pio(config->piodev);
+	ret = pio_i2c_prepare_program(config->scl_pin, program_instructions,
+				      &program);
+	if (ret < 0) {
+		return ret;
+	}
 
 	ret = pio_rpi_pico_allocate_sm(config->piodev, &sm);
 	if (ret < 0) {
@@ -1037,11 +1183,11 @@ static int pio_i2c_init(const struct device *dev)
 	data->fail_closed = true;
 	data->recovery_not_before_ms = 0;
 
-	if (!pio_can_add_program(pio, RPI_PICO_PIO_GET_PROGRAM(i2c_pio))) {
+	if (!pio_can_add_program(pio, &program)) {
 		pio_sm_unclaim(pio, sm);
 		return -EBUSY;
 	}
-	offset = pio_add_program(pio, RPI_PICO_PIO_GET_PROGRAM(i2c_pio));
+	offset = pio_add_program(pio, &program);
 
 	sm_config = pio_get_default_sm_config();
 	sm_config_set_out_pins(&sm_config, config->sda_pin, 1);
@@ -1086,8 +1232,7 @@ static int pio_i2c_init(const struct device *dev)
 	gpio_set_oeover(config->sda_pin, GPIO_OVERRIDE_LOW);
 	gpio_set_oeover(config->scl_pin, GPIO_OVERRIDE_LOW);
 	if (ret < 0) {
-		pio_remove_program_and_unclaim_sm(RPI_PICO_PIO_GET_PROGRAM(i2c_pio),
-						  pio, sm, offset);
+		pio_remove_program_and_unclaim_sm(&program, pio, sm, offset);
 		return ret;
 	}
 
@@ -1195,7 +1340,8 @@ static int pio_i2c_recover_locked(const struct device *dev)
 	 * instructions must never be queued without this escape word.
 	 */
 	pio->fdebug = 1U << (PIO_FDEBUG_TXSTALL_LSB + sm);
-	ret = pio_i2c_queue_escape(data, pio, sm, pio_i2c_recovery_instructions,
+	ret = pio_i2c_queue_escape(data, pio, sm, config->scl_pin,
+				    pio_i2c_recovery_instructions,
 				    ARRAY_SIZE(pio_i2c_recovery_instructions));
 	if (ret == 0) {
 		ret = pio_i2c_wait_idle(data, pio, sm);

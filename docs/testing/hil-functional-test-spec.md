@@ -991,6 +991,19 @@ HIL 前，必须先满足以下电气前置条件；缺少任一项时将 I2C/IN
   且示波器测得 `tr <= 300 ns`、VOL/灌电流与反灌均满足器件边界后，才可用单独的
   400 kHz 验证构建修改 `clock-frequency`。报告必须明确该构建不是生产默认；任一
   条件失败都回退到 200 kHz 并把 400 kHz 标记为 `[blocked]`。
+- 本轮 400 kHz 夹具条件必须原样记录，不能外推为生产板事实：SDA/SCL 各通过
+  10 kΩ 飞线上拉到板载 VCC_3V3，上拉随板掉电，J8 空载，VHV/PD 全程在线，且
+  **不执行单边掉电**。10 kΩ 与 CH224A 7–15 kΩ internal pull-up 并联的估算值为
+  4.1–6.0 kΩ；按已知 34 pF 估算 `tr = 119–173 ns`、低态电流约
+  0.55–0.80 mA。报告仍须保存示波器实测 tr/VOL；这些估算不能替代测量，也不能
+  证明 VHV=0 或 VCC_3V3=0 时的 Ioff/反灌安全。
+- 400 kHz 软件路径 HIL 需覆盖普通 data/ACK、STOP、repeated START 和九脉冲
+  recovery。对 STOP、repeated START、每个 recovery high 及 recovery tail STOP，
+  必须确认 SCL 释放后等待实际 SCL high，再从实际 high 起满足 setup/high 时间；
+  人为拉低 SCL 的测试必须在有界超时后看到控制器 fail-close、两线释放，不能卡死
+  CPU。Device Tree 对 SDA/SCL 启用 Schmitt hysteresis 且保持 `bias-disable`；
+  Schmitt 并不自动证明 UM10204 的 50 ns spike filter，因此本项不得写成完整
+  UM10204 认证。
 
 ```sh
 timeout 5s radxa-linkr-debuggerctl --json adc read

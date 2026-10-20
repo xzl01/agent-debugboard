@@ -4,6 +4,7 @@
 """Offline policy tests for the x1.2 PIO I2C Fast-mode implementation."""
 
 from fractions import Fraction
+from math import gcd
 from pathlib import Path
 import re
 import unittest
@@ -54,7 +55,229 @@ def escape_sequence(source: str, function: str) -> list[str]:
     )
     if match is None:
         raise AssertionError(f"missing escape sequence {function}")
-    return re.findall(r"PIO_I2C_SC[01]_SD[01]|pio_encode_mov", match.group(1))
+    return re.findall(
+        r"PIO_I2C_SC[01]_SD[01]|PIO_I2C_WAIT_SCL_PLACEHOLDER|pio_encode_mov",
+        match.group(1),
+    )
+
+
+def encode_wait_gpio(gpio: int, delay: int = 0) -> int:
+    return 0x2000 | (4 << 5) | (gpio & 0x1F) | (delay << 8)
+
+
+class FractionalDivider:
+    def __init__(self, integer: int, fraction: int, phase: int):
+        phase_count = 256 // gcd(fraction, 256) if fraction else 1
+        if not 0 <= phase < phase_count:
+            raise ValueError("divider phase out of range")
+        self.integer = integer
+        self.fraction = fraction
+        self.accumulator = (phase * fraction) & 0xFF
+
+    def advance(self, cycles: int) -> int:
+        ticks = 0
+        for _ in range(cycles):
+            ticks += self.integer
+            self.accumulator += self.fraction
+            if self.accumulator >= 256:
+                ticks += 1
+                self.accumulator -= 256
+        return ticks
+
+
+def simulate_program_high_window(
+    words: list[int],
+    indices: range,
+    *,
+    phase: int,
+    stretch_ticks: int,
+    synchronizer_ticks: int,
+) -> int:
+    divider = FractionalDivider(11, 8, phase)
+    now = 0
+    actual_high = None
+    scl = 0
+
+    for index in indices:
+        word = words[index]
+        side = side_set(word)
+        if side == 1 and scl == 0:
+            scl = 1
+            actual_high = now + stretch_ticks
+        elif side == 0 and scl == 1:
+            if actual_high is None or now < actual_high:
+                raise AssertionError("SCL fell before becoming physically high")
+            return now - actual_high
+
+        is_wait_gpio_high = (word & 0xE0E0) == 0x2080
+        if is_wait_gpio_high:
+            if actual_high is None:
+                raise AssertionError("WAIT appeared before SCL release")
+            visible_at = actual_high + synchronizer_ticks
+            while now < visible_at:
+                now += divider.advance(1)
+        now += divider.advance(instruction_duration(word))
+
+    raise AssertionError("modeled window did not contain an SCL falling edge")
+
+
+def escape_state(token: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"PIO_I2C_SC([01])_SD([01])", token)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def simulate_escape_edges(
+    tokens: list[str],
+    *,
+    phase: int,
+    stretch_ticks: int,
+    synchronizer_ticks: int,
+    raw_level_cycles: int,
+    wait_exec_cycles: int,
+) -> dict[str, list[int]]:
+    divider = FractionalDivider(11, 8, phase)
+    now = 0
+    state = None
+    actual_high = None
+    events: dict[str, list[int]] = {
+        "high_windows": [],
+        "repstart_setup": [],
+        "stop_setup": [],
+    }
+
+    for token in tokens:
+        next_state = escape_state(token)
+        if next_state is not None:
+            if state is not None:
+                old_scl, old_sda = state
+                scl, sda = next_state
+                if old_scl == 0 and scl == 1:
+                    actual_high = now + stretch_ticks
+                if old_scl == 1 and scl == 0:
+                    if actual_high is None or now < actual_high:
+                        raise AssertionError("escape lowered SCL before actual high")
+                    events["high_windows"].append(now - actual_high)
+                if old_sda == 1 and sda == 0 and scl == 1:
+                    if actual_high is None or now < actual_high:
+                        raise AssertionError("REPSTART preceded actual SCL high")
+                    events["repstart_setup"].append(now - actual_high)
+                if old_sda == 0 and sda == 1 and scl == 1:
+                    if actual_high is None or now < actual_high:
+                        raise AssertionError("STOP preceded actual SCL high")
+                    events["stop_setup"].append(now - actual_high)
+            state = next_state
+            now += divider.advance(raw_level_cycles)
+            continue
+
+        if token == "PIO_I2C_WAIT_SCL_PLACEHOLDER":
+            if actual_high is None:
+                raise AssertionError("escape WAIT preceded SCL release")
+            visible_at = actual_high + synchronizer_ticks
+            while now < visible_at:
+                now += divider.advance(1)
+            now += divider.advance(wait_exec_cycles)
+            continue
+
+        if token == "pio_encode_mov":
+            now += divider.advance(3)
+            continue
+
+        raise AssertionError(f"unknown escape token: {token}")
+
+    return events
+
+
+class RecoveryStateMachine:
+    """Minimal OSR/FIFO/internal-state model for the NAK cleanup boundary."""
+
+    def __init__(self) -> None:
+        self.enabled = True
+        self.oe_forced_off = False
+        self.autopull = True
+        self.autopush = True
+        self.tx_fifo = [0xF780, 0x2094, 0xFF80]
+        self.rx_fifo = [0x12, 0x34]
+        self.osr = 0x2094
+        self.osr_count = 0
+        self.isr = 0xA5
+        self.isr_count = 7
+        self.exec_stalled = True
+        self.delay_counter = 5
+        self.irq_wait = True
+        self.irq = True
+        self.pc = 16
+        self.wrap_bottom = 17
+        self.pins_released = False
+        self.config = {
+            "origin": 3,
+            "wrap": (20, 25),
+            "clkdiv": (11, 8),
+            "out_pin": 21,
+            "in_pin": 21,
+            "sideset_pin": 20,
+        }
+
+    def _autopull_if_empty(self) -> None:
+        if self.autopull and self.osr_count >= 16:
+            if not self.tx_fifo:
+                raise AssertionError("parser stalled waiting for a record header")
+            self.osr = self.tx_fifo.pop(0)
+            self.osr_count = 0
+
+    def parser_out_x(self) -> int:
+        self._autopull_if_empty()
+        value = (self.osr >> 10) & 0x3F
+        self.osr_count += 6
+        return value
+
+    def queue_stop_header(self, instruction_count: int) -> int:
+        header = (instruction_count - 1) << 10
+        self.tx_fifo.append(header)
+        return header
+
+    def old_drain_and_jump(self) -> None:
+        # pio_sm_drain_tx_fifo() executes OUT NULL,32 with autopull enabled.
+        while self.tx_fifo:
+            self.osr_count = 32
+            self._autopull_if_empty()
+        self.enabled = False
+        self.pins_released = True
+        self.pc = self.wrap_bottom
+        self.irq = False
+        self.enabled = True
+
+    def full_restart_and_resume(self) -> None:
+        saved_autopull = self.autopull
+        saved_autopush = self.autopush
+        saved_config = dict(self.config)
+
+        self.oe_forced_off = True
+        self.enabled = False
+        self.autopull = False
+        self.autopush = False
+        self.tx_fifo.clear()
+        self.rx_fifo.clear()
+
+        # pio_sm_restart(): counters/ISR/EXEC/delay/IRQ-wait clear, OSR data
+        # remains. OUT NULL,32 with autopull disabled then marks that OSR empty.
+        self.osr_count = 0
+        self.isr = 0
+        self.isr_count = 0
+        self.exec_stalled = False
+        self.delay_counter = 0
+        self.irq_wait = False
+        self.osr_count = 32
+
+        self.pins_released = True
+        self.pc = self.wrap_bottom
+        self.irq = False
+        self.autopull = saved_autopull
+        self.autopush = saved_autopush
+        self.config = saved_config
+        self.oe_forced_off = False
+        self.enabled = True
 
 
 class PioI2cTimingTest(unittest.TestCase):
@@ -93,7 +316,7 @@ class PioI2cTimingTest(unittest.TestCase):
         self, *, pin_high: bool, nak_expected: bool, next_x: int
     ) -> tuple[int | None, list[int], str]:
         """Execute from ACK falling edge until the next SCL high or terminal wait."""
-        pc = 13
+        pc = 16
         x = 0
         y = 1 if nak_expected else 0
         scl = 1
@@ -113,21 +336,21 @@ class PioI2cTimingTest(unittest.TestCase):
                 return None, pcs, "irq-wait"
 
             cycles += instruction_duration(word)
-            if pc == 13:
-                pc = 0 if pin_high else 14
+            if pc == 16:
+                pc = 0 if pin_high else 17
             elif pc == 0:
                 branch = y != 0
                 y = (y - 1) & 0xFFFFFFFF
-                pc = 14 if branch else 1
-            elif pc == 14:
+                pc = 17 if branch else 1
+            elif pc == 17:
                 x = next_x
-                pc = 15
-            elif pc == 16:
-                pc = 2 if x == 0 else 17
+                pc = 18
+            elif pc == 19:
+                pc = 2 if x == 0 else 20
             elif pc == 2:
                 x = 7
                 pc = 3
-            elif pc == 18:
+            elif pc == 21:
                 return None, pcs, "out-exec"
             else:
                 pc += 1
@@ -135,74 +358,241 @@ class PioI2cTimingTest(unittest.TestCase):
         self.fail(f"ACK path did not terminate: {pcs}")
 
     def test_pioasm_machine_code_is_exact(self) -> None:
-        # Generated with Pico SDK pioasm 2.2.0 from the documented 20-instruction
+        # Generated with Pico SDK pioasm 2.2.0 from the documented 23-instruction
         # program. This catches stale labels as well as delay/side-set drift.
-        self.assertEqual((self.wrap_target, self.wrap), (14, 19))
+        self.assertEqual((self.wrap_target, self.wrap), (17, 22))
         self.assertEqual(
             self.instructions,
             [
-                0x008E,
+                0x0091,
                 0xC030,
                 0xE027,
                 0x6781,
                 0xB142,
-                0xBA42,
-                0x2494,
+                0xB942,
+                0x2480,
+                0xB842,
                 0x4701,
                 0x1743,
                 0x6781,
                 0xB242,
+                0xBA42,
+                0x2380,
                 0xBF42,
-                0x2794,
+                0xB842,
                 0x13C0,
                 0x6026,
                 0x6041,
                 0x0022,
                 0x6060,
                 0x60F0,
-                0x0052,
+                0x0055,
             ],
         )
 
         # Data clocks have 18 low and 16 high cycles.
         data_low = sum(
-            instruction_duration(self.instructions[index]) for index in (8, 3, 4)
+            instruction_duration(self.instructions[index]) for index in (9, 3, 4)
         )
         data_high = sum(
-            instruction_duration(self.instructions[index]) for index in (5, 6, 7)
+            instruction_duration(self.instructions[index]) for index in (5, 6, 7, 8)
         )
         ack_high = sum(
-            instruction_duration(self.instructions[index]) for index in (11, 12)
+            instruction_duration(self.instructions[index])
+            for index in (12, 13, 14, 15)
         )
         self.assertEqual(data_low, 18)
         self.assertEqual(data_high, 16)
         self.assertEqual(ack_high, 16)
 
-        # Both high phases release SCL before an absolute GPIO20 wait. A
-        # stretched SCL therefore delays sampling/falling instead of shortening
-        # the externally observed high phase.
-        self.assertEqual(self.instructions[6], 0x2494)
-        self.assertEqual(self.instructions[12], 0x2794)
+        self.assertEqual(self.instructions[6], encode_wait_gpio(0, 4))
+        self.assertEqual(self.instructions[13], encode_wait_gpio(0, 3))
+        self.assertEqual(
+            sum(instruction_duration(self.instructions[index]) for index in (7, 8)),
+            9,
+        )
+        self.assertEqual(
+            sum(instruction_duration(self.instructions[index]) for index in (14, 15)),
+            9,
+        )
+
+    def test_runtime_program_waits_use_the_devicetree_scl_gpio(self) -> None:
+        for scl_pin, gpio_base, expected_gpio in ((20, 0, 20), (23, 16, 7)):
+            words = list(self.instructions)
+            words[6] = encode_wait_gpio(scl_pin, 4)
+            words[13] = encode_wait_gpio(scl_pin, 3)
+
+            # pio_add_program() converts absolute source GPIO encoding to the
+            # PIO instance's relative GPIO_BASE encoding.
+            if gpio_base == 16:
+                words[6] ^= 16
+                words[13] ^= 16
+            self.assertEqual(words[6] & 0x1F, expected_gpio)
+            self.assertEqual(words[13] & 0x1F, expected_gpio)
+
+            # OUT EXEC bypasses the program loader, so the escape encoder must
+            # subtract GPIO_BASE directly.
+            escape_wait = encode_wait_gpio(scl_pin - gpio_base)
+            self.assertEqual(escape_wait & 0x1F, expected_gpio)
+
+        prepare = self.driver[
+            self.driver.index("static int pio_i2c_prepare_program") :
+            self.driver.index("static const uint16_t pio_i2c_recovery_instructions")
+        ]
+        self.assertIn("pio_encode_wait_gpio(true, scl_pin)", prepare)
+        encoder = self.driver[
+            self.driver.index("static int pio_i2c_encode_exec_wait_scl") :
+            self.driver.index("static int pio_i2c_queue_escape")
+        ]
+        self.assertIn("pio_encode_wait_gpio(true, scl_pin - gpio_base)", encoder)
+        self.assertNotIn("gpio, 20", self.driver)
+
+    def test_data_and_ack_high_windows_cover_all_fractional_phases(self) -> None:
+        words = list(self.instructions)
+        words[6] = encode_wait_gpio(20, 4)
+        words[13] = encode_wait_gpio(20, 3)
+        fast_mode_min_ticks = 90  # 600 ns at clk_sys=150 MHz
+
+        for phase in range(32):
+            # Explicit post-WAIT holds alone must have margin over 600 ns in
+            # every 11+8/256 divider phase; an eight-cycle hold would fail.
+            for indices in ((7, 8), (14, 15)):
+                divider = FractionalDivider(11, 8, phase)
+                post_wait_ticks = sum(
+                    divider.advance(instruction_duration(words[index]))
+                    for index in indices
+                )
+                self.assertGreater(post_wait_ticks, fast_mode_min_ticks)
+
+            for stretch_ticks in (0, 1, 37, 1_000):
+                for synchronizer_ticks in (0, 1, 2):
+                    with self.subTest(
+                        phase=phase,
+                        stretch=stretch_ticks,
+                        synchronizer=synchronizer_ticks,
+                    ):
+                        data_high = simulate_program_high_window(
+                            words,
+                            range(5, 10),
+                            phase=phase,
+                            stretch_ticks=stretch_ticks,
+                            synchronizer_ticks=synchronizer_ticks,
+                        )
+                        ack_high = simulate_program_high_window(
+                            words,
+                            range(12, 17),
+                            phase=phase,
+                            stretch_ticks=stretch_ticks,
+                            synchronizer_ticks=synchronizer_ticks,
+                        )
+                        self.assertGreater(data_high, fast_mode_min_ticks)
+                        self.assertGreater(ack_high, fast_mode_min_ticks)
 
     def test_ack_success_and_nak_paths_are_traced_instruction_by_instruction(self) -> None:
         ack_low, pcs, terminal = self.trace_ack_path(
             pin_high=False, nak_expected=False, next_x=0
         )
         self.assertEqual(terminal, "scl-high")
-        self.assertEqual(pcs, [13, 14, 15, 16, 2, 3, 4, 5])
+        self.assertEqual(pcs, [16, 17, 18, 19, 2, 3, 4, 5])
         self.assertEqual(ack_low, 18)
 
         _, pcs, terminal = self.trace_ack_path(
             pin_high=True, nak_expected=False, next_x=0
         )
         self.assertEqual(terminal, "irq-wait")
-        self.assertEqual(pcs, [13, 0, 1])
+        self.assertEqual(pcs, [16, 0, 1])
 
         _, pcs, terminal = self.trace_ack_path(
             pin_high=True, nak_expected=True, next_x=2
         )
         self.assertEqual(terminal, "out-exec")
-        self.assertEqual(pcs, [13, 0, 14, 15, 16, 17, 18])
+        self.assertEqual(pcs, [16, 0, 17, 18, 19, 20, 21])
+
+    def test_nak_cleanup_discards_prefetched_osr_and_partial_escape(self) -> None:
+        old = RecoveryStateMachine()
+        old.old_drain_and_jump()
+        old.queue_stop_header(5)
+        self.assertNotEqual(old.parser_out_x(), 4)
+        self.assertNotEqual(old.osr, 0x1000)
+        self.assertNotEqual(old.rx_fifo, [])
+
+        recovered = RecoveryStateMachine()
+        original_config = dict(recovered.config)
+        recovered.full_restart_and_resume()
+        self.assertEqual(recovered.tx_fifo, [])
+        self.assertEqual(recovered.rx_fifo, [])
+        self.assertEqual(recovered.osr_count, 32)
+        self.assertEqual((recovered.isr, recovered.isr_count), (0, 0))
+        self.assertFalse(recovered.exec_stalled)
+        self.assertEqual(recovered.delay_counter, 0)
+        self.assertFalse(recovered.irq_wait)
+        self.assertFalse(recovered.irq)
+        self.assertTrue(recovered.pins_released)
+        self.assertTrue(recovered.autopull)
+        self.assertTrue(recovered.autopush)
+        self.assertEqual(recovered.pc, recovered.wrap_bottom)
+        self.assertEqual(recovered.config, original_config)
+
+        stop_header = recovered.queue_stop_header(5)
+        self.assertEqual(stop_header, 0x1000)
+        self.assertEqual(recovered.parser_out_x(), 4)
+        self.assertEqual(recovered.osr, stop_header)
+
+        restart = self.driver[
+            self.driver.index("static void pio_i2c_restart_sm_released") :
+            self.driver.index("static void pio_i2c_resume_after_error")
+        ]
+        ordered_calls = (
+            "pio_sm_set_enabled(pio, sm, false)",
+            "hw_clear_bits(&pio->sm[sm].shiftctrl",
+            "pio_sm_clear_fifos(pio, sm)",
+            "pio_sm_restart(pio, sm)",
+            "pio_sm_clkdiv_restart(pio, sm)",
+            "pio_encode_out(pio_null, 32)",
+            "pio_sm_set_pins_with_mask",
+            "pio_sm_set_pindirs_with_mask",
+            "pio_encode_jmp(wrap_bottom)",
+            "pio_interrupt_clear(pio, sm)",
+            "pio->sm[sm].shiftctrl = shiftctrl",
+        )
+        positions = [restart.index(call) for call in ordered_calls]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn("pio_sm_drain_tx_fifo", restart)
+        self.assertNotIn("pio_sm_init", restart)
+
+        resume = self.driver[
+            self.driver.index("static void pio_i2c_resume_after_error") :
+            self.driver.index("static inline int pio_i2c_put_or_err")
+        ]
+        oe_off = resume.index("GPIO_OVERRIDE_LOW")
+        reset = resume.index("pio_i2c_restart_sm_released")
+        oe_restore = resume.index("GPIO_OVERRIDE_INVERT")
+        enable = resume.index("pio_sm_set_enabled")
+        self.assertLess(oe_off, reset)
+        self.assertLess(reset, oe_restore)
+        self.assertLess(oe_restore, enable)
+
+        def cleanup_result(original_error: int, cleanup_error: int) -> int:
+            return cleanup_error if cleanup_error < 0 else original_error
+
+        self.assertEqual(cleanup_result(-5, 0), -5)
+        self.assertEqual(cleanup_result(-5, -110), -110)
+        transfer = self.driver[
+            self.driver.index("static int pio_i2c_transfer_once") :
+            self.driver.index(
+                "static int pio_i2c_transfer(",
+                self.driver.index("static int pio_i2c_transfer_once"),
+            )
+        ]
+        self.assertIn("err == -EIO && pio_i2c_check_error(pio, sm)", transfer)
+        self.assertIsNotNone(
+            re.search(
+                r"int cleanup_err = pio_i2c_cleanup_after_irq\(dev\);\s*"
+                r"if \(cleanup_err < 0\) \{\s*err = cleanup_err;",
+                transfer,
+                re.DOTALL,
+            )
+        )
 
     def test_escape_timing_and_open_drain_policy_remain_intact(self) -> None:
         self.assertEqual(
@@ -214,6 +604,8 @@ class PioI2cTimingTest(unittest.TestCase):
             [
                 "PIO_I2C_SC0_SD1",
                 "PIO_I2C_SC1_SD1",
+                "PIO_I2C_WAIT_SCL_PLACEHOLDER",
+                "PIO_I2C_SC1_SD1",
                 "PIO_I2C_SC1_SD0",
                 "PIO_I2C_SC0_SD0",
                 "pio_encode_mov",
@@ -221,7 +613,13 @@ class PioI2cTimingTest(unittest.TestCase):
         )
         self.assertEqual(
             escape_sequence(self.driver, "pio_i2c_stop"),
-            ["PIO_I2C_SC0_SD0", "PIO_I2C_SC1_SD0", "PIO_I2C_SC1_SD1"],
+            [
+                "PIO_I2C_SC0_SD0",
+                "PIO_I2C_SC1_SD0",
+                "PIO_I2C_WAIT_SCL_PLACEHOLDER",
+                "PIO_I2C_SC1_SD0",
+                "PIO_I2C_SC1_SD1",
+            ],
         )
         for name, word in {
             "PIO_I2C_SC0_SD0": "f780",
@@ -257,7 +655,16 @@ class PioI2cTimingTest(unittest.TestCase):
         self.assertLess(pinctrl, min(sda_oe_disabled[1], scl_oe_disabled[1]))
         self.assertLess(max(sda_oe_disabled[1], scl_oe_disabled[1]), failure_check)
         self.assertEqual(self.overlay.count("bias-disable;"), 2)
+        self.assertEqual(self.overlay.count("input-schmitt-enable;"), 2)
         self.assertNotIn("bias-pull-up", self.overlay)
+        self.assertNotIn("bias-pull-down", self.overlay)
+
+        for group in ("sda_pins", "scl_pins"):
+            match = re.search(rf"{group} \{{(.*?)\n\t\t\}};", self.overlay, re.DOTALL)
+            self.assertIsNotNone(match)
+            self.assertIn("bias-disable;", match.group(1))
+            self.assertIn("input-enable;", match.group(1))
+            self.assertIn("input-schmitt-enable;", match.group(1))
 
         pre_pinctrl = re.sub(r"/\*.*?\*/", "", init[:pinctrl], flags=re.DOTALL)
         self.assertNotRegex(pre_pinctrl, r"\bgpio_init\s*\(")
@@ -275,10 +682,10 @@ class PioI2cTimingTest(unittest.TestCase):
 
     def test_150mhz_400khz_divider_and_fast_mode_bounds(self) -> None:
         data_low = sum(
-            instruction_duration(self.instructions[index]) for index in (8, 3, 4)
+            instruction_duration(self.instructions[index]) for index in (9, 3, 4)
         )
         data_high = sum(
-            instruction_duration(self.instructions[index]) for index in (5, 6, 7)
+            instruction_duration(self.instructions[index]) for index in (5, 6, 7, 8)
         )
         ack_low, _, _ = self.trace_ack_path(
             pin_high=False, nak_expected=False, next_x=0
@@ -312,14 +719,17 @@ class PioI2cTimingTest(unittest.TestCase):
             ),
             "ack-low": (ack_low, 1_300),
             "ack-high": (
-                sum(instruction_duration(self.instructions[index]) for index in (11, 12)),
+                sum(
+                    instruction_duration(self.instructions[index])
+                    for index in (12, 13, 14, 15)
+                ),
                 600,
             ),
         }
         raw_level_cycles = (
             instruction_duration(integer_define(self.driver, "PIO_I2C_SC0_SD0"))
-            + instruction_duration(self.instructions[18])
-            + instruction_duration(self.instructions[19])
+            + instruction_duration(self.instructions[21])
+            + instruction_duration(self.instructions[22])
         )
         minimums_ns.update(
             {
@@ -333,92 +743,208 @@ class PioI2cTimingTest(unittest.TestCase):
                 actual_ns = cycles * shortest_cycle_ns
                 self.assertGreaterEqual(actual_ns, required_ns)
 
-        data_valid_ns = instruction_duration(self.instructions[8]) * longest_cycle_ns
+        data_valid_ns = instruction_duration(self.instructions[9]) * longest_cycle_ns
         self.assertLessEqual(data_valid_ns, 900)
-        ack_valid_ns = instruction_duration(self.instructions[8]) * longest_cycle_ns
+        ack_valid_ns = instruction_duration(self.instructions[9]) * longest_cycle_ns
         self.assertLessEqual(ack_valid_ns, 900)
         self.assertGreaterEqual(
             integer_define(self.driver, "PIO_I2C_IDLE_SAMPLE_MIN_USEC") * 1_000,
             1_300,
         )
 
-    def test_recovery_is_slower_than_normal_bus(self) -> None:
+    def test_stop_and_repstart_wait_for_actual_scl_high(self) -> None:
+        sequences = {
+            "stop": escape_sequence(self.driver, "pio_i2c_stop"),
+            "repstart": escape_sequence(self.driver, "pio_i2c_repstart"),
+        }
+        minimum_ticks = 90
+        raw_level_cycles = (
+            instruction_duration(integer_define(self.driver, "PIO_I2C_SC0_SD0"))
+            + instruction_duration(self.instructions[21])
+            + instruction_duration(self.instructions[22])
+        )
+        wait_exec_cycles = (
+            instruction_duration(encode_wait_gpio(20))
+            + instruction_duration(self.instructions[21])
+            + instruction_duration(self.instructions[22])
+        )
+        self.assertEqual((raw_level_cycles, wait_exec_cycles), (10, 3))
+
+        for name, tokens in sequences.items():
+            for index, token in enumerate(tokens[:-1]):
+                state = escape_state(token)
+                previous = escape_state(tokens[index - 1]) if index > 0 else None
+                if state is not None and previous is not None:
+                    if previous[0] == 0 and state[0] == 1:
+                        self.assertEqual(
+                            tokens[index + 1], "PIO_I2C_WAIT_SCL_PLACEHOLDER"
+                        )
+                        self.assertEqual(escape_state(tokens[index + 2]), state)
+
+            for phase in range(32):
+                for stretch_ticks in (0, 1, 37, 1_000):
+                    for synchronizer_ticks in (0, 1, 2):
+                        events = simulate_escape_edges(
+                            tokens,
+                            phase=phase,
+                            stretch_ticks=stretch_ticks,
+                            synchronizer_ticks=synchronizer_ticks,
+                            raw_level_cycles=raw_level_cycles,
+                            wait_exec_cycles=wait_exec_cycles,
+                        )
+                        setup_key = (
+                            "stop_setup" if name == "stop" else "repstart_setup"
+                        )
+                        self.assertEqual(len(events[setup_key]), 1)
+                        self.assertGreater(events[setup_key][0], minimum_ticks)
+                        if name == "repstart":
+                            self.assertEqual(len(events["high_windows"]), 1)
+                            self.assertGreater(
+                                events["high_windows"][0], minimum_ticks
+                            )
+
+    def test_recovery_waits_every_high_and_models_fifo_timeout(self) -> None:
         match = re.search(
             r"static const uint16_t pio_i2c_recovery_instructions\[\] = \{(.*?)\n\};",
             self.driver,
             re.DOTALL,
         )
         self.assertIsNotNone(match)
-        states = re.findall(r"PIO_I2C_SC[01]_SD[01]", match.group(1))
-        self.assertEqual(len(states), 41)
-
+        tokens = re.findall(
+            r"PIO_I2C_SC[01]_SD[01]|PIO_I2C_WAIT_SCL_PLACEHOLDER",
+            match.group(1),
+        )
+        states = [token for token in tokens if escape_state(token) is not None]
+        waits = [token for token in tokens if token == "PIO_I2C_WAIT_SCL_PLACEHOLDER"]
+        self.assertEqual((len(tokens), len(states), len(waits)), (51, 41, 10))
         raw_level_cycles = (
             instruction_duration(integer_define(self.driver, "PIO_I2C_SC0_SD0"))
-            + instruction_duration(self.instructions[18])
-            + instruction_duration(self.instructions[19])
+            + instruction_duration(self.instructions[21])
+            + instruction_duration(self.instructions[22])
         )
-        self.assertEqual(raw_level_cycles, 10)
-        recovery_cycles = 4 * raw_level_cycles
-        scaled_divider = 2_824
-        sm_hz = Fraction(150_000_000 * 256, scaled_divider)
-        recovery_hz = sm_hz / recovery_cycles
-        fastest_recovery_hz = Fraction(150_000_000, 11 * recovery_cycles)
+        wait_exec_cycles = (
+            instruction_duration(encode_wait_gpio(20))
+            + instruction_duration(self.instructions[21])
+            + instruction_duration(self.instructions[22])
+        )
+        self.assertEqual((raw_level_cycles, wait_exec_cycles), (10, 3))
 
-        self.assertEqual(recovery_cycles, 40)
-        self.assertLessEqual(fastest_recovery_hz, 400_000)
-        self.assertAlmostEqual(float(recovery_hz), 339_943.343, places=3)
-
-        scl = {name: int(name[10]) for name in set(states)}
-        sda = {name: int(name[14]) for name in set(states)}
-        segments: list[tuple[int, int]] = []
-        for state in states:
-            if segments and segments[-1][0] == scl[state]:
-                segments[-1] = (scl[state], segments[-1][1] + raw_level_cycles)
-            else:
-                segments.append((scl[state], raw_level_cycles))
-
-        self.assertEqual([level for level, _ in segments], [0, 1] * 10)
-        low_cycles = [cycles for level, cycles in segments if level == 0]
-        high_cycles = [cycles for level, cycles in segments if level == 1]
-        self.assertEqual(low_cycles, [20] * 10)
-        self.assertEqual(high_cycles, [20] * 9 + [30])
-        shortest_cycle_ns = Fraction(11 * 1_000_000_000, 150_000_000)
-        for low, high in zip(low_cycles, high_cycles):
-            self.assertGreaterEqual(low * shortest_cycle_ns, 1_300)
-            self.assertGreaterEqual(high * shortest_cycle_ns, 600)
-            self.assertLessEqual(
-                Fraction(150_000_000, 11 * (low + high)), 400_000
-            )
-
+        pulse = [
+            "PIO_I2C_SC0_SD1",
+            "PIO_I2C_SC0_SD1",
+            "PIO_I2C_SC1_SD1",
+            "PIO_I2C_WAIT_SCL_PLACEHOLDER",
+            "PIO_I2C_SC1_SD1",
+        ]
+        for pulse_index in range(9):
+            self.assertEqual(tokens[pulse_index * 5 : pulse_index * 5 + 5], pulse)
         self.assertEqual(
-            states[-5:],
+            tokens[-6:],
             [
                 "PIO_I2C_SC0_SD0",
                 "PIO_I2C_SC0_SD0",
                 "PIO_I2C_SC1_SD0",
+                "PIO_I2C_WAIT_SCL_PLACEHOLDER",
                 "PIO_I2C_SC1_SD0",
                 "PIO_I2C_SC1_SD1",
             ],
         )
-        stop_index = len(states) - 1
-        self.assertEqual((scl[states[stop_index]], sda[states[stop_index]]), (1, 1))
-        stop_setup_cycles = 0
-        for state in reversed(states[:stop_index]):
-            if (scl[state], sda[state]) != (1, 0):
-                break
-            stop_setup_cycles += raw_level_cycles
-        self.assertEqual(stop_setup_cycles, 20)
-        self.assertGreaterEqual(stop_setup_cycles * shortest_cycle_ns, 600)
+
+        for index, token in enumerate(tokens[:-2]):
+            state = escape_state(token)
+            previous = escape_state(tokens[index - 1]) if index > 0 else None
+            if state is not None and previous is not None:
+                if previous[0] == 0 and state[0] == 1:
+                    self.assertEqual(
+                        tokens[index + 1], "PIO_I2C_WAIT_SCL_PLACEHOLDER"
+                    )
+                    self.assertEqual(escape_state(tokens[index + 2]), state)
+
+        scaled_divider = 2_824
+        sm_hz = Fraction(150_000_000 * 256, scaled_divider)
+        recovery_hz = sm_hz / 43
+        fastest_recovery_hz = Fraction(150_000_000, 11 * 43)
+
+        self.assertLessEqual(fastest_recovery_hz, 400_000)
+        self.assertAlmostEqual(float(recovery_hz), 316_226.365, places=3)
+
+        for phase in range(32):
+            for stretch_ticks in (0, 1, 37, 1_000):
+                for synchronizer_ticks in (0, 1, 2):
+                    events = simulate_escape_edges(
+                        tokens,
+                        phase=phase,
+                        stretch_ticks=stretch_ticks,
+                        synchronizer_ticks=synchronizer_ticks,
+                        raw_level_cycles=raw_level_cycles,
+                        wait_exec_cycles=wait_exec_cycles,
+                    )
+                    self.assertEqual(len(events["high_windows"]), 9)
+                    self.assertEqual(len(events["stop_setup"]), 1)
+                    self.assertTrue(
+                        all(window > 90 for window in events["high_windows"])
+                    )
+                    self.assertGreater(events["stop_setup"][0], 90)
 
         escape_setup_cycles = sum(
             instruction_duration(self.instructions[index])
-            for index in (14, 15, 16, 17)
+            for index in (17, 18, 19, 20)
         )
-        recovery_sm_cycles = escape_setup_cycles + len(states) * raw_level_cycles
+        recovery_sm_cycles = (
+            escape_setup_cycles
+            + len(states) * raw_level_cycles
+            + len(waits) * wait_exec_cycles
+        )
         recovery_transfer_clocks = (recovery_sm_cycles + 34 - 1) // 34
         idle_clocks = (5 * 400_000 + 1_000_000 - 1) // 1_000_000
-        self.assertEqual((recovery_sm_cycles, recovery_transfer_clocks), (414, 13))
-        self.assertEqual(recovery_transfer_clocks + idle_clocks, 15)
+        self.assertEqual((recovery_sm_cycles, recovery_transfer_clocks), (444, 14))
+        self.assertEqual(recovery_transfer_clocks + idle_clocks, 16)
+
+        # With SCL stuck low, OUT EXEC stalls at the first WAIT. The producer
+        # can fill only the four-word TX FIFO, so this 52-word record must take
+        # the pio_i2c_put16 deadline path rather than spin forever.
+        first_wait = tokens.index("PIO_I2C_WAIT_SCL_PLACEHOLDER")
+        record_words = 1 + len(tokens)
+        consumed_through_wait = 1 + first_wait + 1
+        self.assertLess(consumed_through_wait + 4, record_words)
+
+        put16 = self.driver[
+            self.driver.index("static inline int pio_i2c_put16") :
+            self.driver.index("static void pio_i2c_resume_after_error")
+        ]
+        self.assertIn("pio_i2c_status(data, pio, sm)", put16)
+        status = self.driver[
+            self.driver.index("static int pio_i2c_status") :
+            self.driver.index("static inline int pio_i2c_put16")
+        ]
+        self.assertIn("pio_i2c_expired(data)", status)
+        recover = self.driver[
+            self.driver.index("static int pio_i2c_recover_locked(const struct device *dev)\n{") :
+            self.driver.index("static int pio_i2c_recover_bus", self.driver.index("static int pio_i2c_recover_locked(const struct device *dev)\n{"))
+        ]
+        self.assertIsNotNone(
+            re.search(
+                r"if \(ret == 0\).*?else \{\s*pio_i2c_fail_close\(dev\);",
+                recover,
+                re.DOTALL,
+            )
+        )
+        cleanup = self.driver[
+            self.driver.index("static int pio_i2c_cleanup_after_irq") :
+            self.driver.index("static int pio_i2c_recover_bus", self.driver.index("static int pio_i2c_cleanup_after_irq"))
+        ]
+        self.assertRegex(cleanup, r"if \(ret < 0\) \{\s*pio_i2c_fail_close\(dev\);")
+        transfer = self.driver[
+            self.driver.index("static int pio_i2c_transfer_once") :
+            self.driver.index("static int pio_i2c_transfer(", self.driver.index("static int pio_i2c_transfer_once"))
+        ]
+        self.assertIsNotNone(
+            re.search(
+                r"if \(err != 0\).*?else \{\s*pio_i2c_fail_close\(dev\);",
+                transfer,
+                re.DOTALL,
+            )
+        )
 
     def test_dt_defaults_to_200khz_with_400khz_capability_ceiling(self) -> None:
         self.assertRegex(self.overlay, r"clock-frequency\s*=\s*<200000>;")
@@ -507,6 +1033,9 @@ class PioI2cTimingTest(unittest.TestCase):
             "5 V TVS",
             "must never enable it",
             "200 kHz by default",
+            "10 kΩ fly-wire pull-up",
+            "34 pF fixture capacitance",
+            "50 ns",
         )
         for contract in required_hardware_contracts:
             with self.subTest(hardware_contract=contract):
@@ -521,6 +1050,9 @@ class PioI2cTimingTest(unittest.TestCase):
             "SDA 的绝对最大值虽为 6 V",
             "ESD5451N 是 5 V TVS",
             "200 kHz 默认频率本身不消除上述风险",
+            "10 kΩ 飞线上拉到板载 VCC_3V3",
+            "不执行单边掉电",
+            "50 ns spike filter",
         )
         for contract in required_hil_contracts:
             with self.subTest(hil_contract=contract):

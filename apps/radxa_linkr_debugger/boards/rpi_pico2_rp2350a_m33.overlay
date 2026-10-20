@@ -151,12 +151,14 @@
 			pinmux = <PIO0_P21>;
 			bias-disable;
 			input-enable;
+			input-schmitt-enable;
 		};
 
 		scl_pins {
 			pinmux = <PIO0_P20>;
 			bias-disable;
 			input-enable;
+			input-schmitt-enable;
 		};
 	};
 

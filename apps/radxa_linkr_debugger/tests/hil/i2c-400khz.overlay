@@ -1,0 +1,10 @@
+/*
+ * SPDX-License-Identifier: LGPL-3.0-or-later
+ *
+ * HIL-only override. Production remains at 200 kHz because x1.2 has no
+ * board-mounted pull-up or powered-off-safe isolation between every bus domain.
+ */
+
+&pio_i2c0 {
+	clock-frequency = <400000>;
+};
