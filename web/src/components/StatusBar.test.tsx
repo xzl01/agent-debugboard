@@ -55,7 +55,6 @@ function render(
             setLive={vi.fn()}
             onRefresh={vi.fn()}
             logicAnalyzerActive={false}
-            uartBridgeActive={false}
           />
         </LanguageProvider>
       </ThemeProvider>

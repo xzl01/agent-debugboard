@@ -48,6 +48,7 @@ export interface UseBoardLiveOptions {
   readonly wsRef: { current: WebSocket | null };
   readonly pendingCaptureRef: { current: CaptureConfig | null };
   readonly setSnapshot: Dispatch<SetStateAction<BoardSnapshot>>;
+  readonly onPowerSnapshot: (updatedAt: number | null) => void;
   readonly setHasData: (hasData: boolean) => void;
   readonly setConnected: (connected: boolean) => void;
   readonly setError: (message: string | null) => void;
@@ -67,6 +68,7 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
     wsRef,
     pendingCaptureRef,
     setSnapshot,
+    onPowerSnapshot,
     setHasData,
     setConnected,
     setError,
@@ -97,6 +99,7 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
               const status = await api.getStatus();
               if (cancelled) return;
               setSnapshot((prev) => mapBoardStatus(status, prev.adc, prev.pd));
+              onPowerSnapshot(isRecord(status) && Array.isArray(status.power_outputs) ? Date.now() : null);
               setConnected(true);
             } catch {
               // The independent live stream still determines connectivity.
@@ -134,9 +137,11 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
         // Seed metadata from an HTTP poll before switching to live stream.
         try {
           const status = await api.getStatus();
+          const powerUpdatedAt = isRecord(status) && Array.isArray(status.power_outputs) ? Date.now() : null;
           const adcResponse: unknown = await api.getAdc();
           if (cancelled) return;
           setSnapshot((prev) => mapBoardStatus(status, parseHttpAdcReadings(adcResponse), prev.pd));
+          onPowerSnapshot(powerUpdatedAt);
           setHasData(true);
           setConnected(true);
           setError(null);
@@ -189,6 +194,7 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
             const msg = parsed;
             if (msg.type === "snapshot") {
               setSnapshot((prev) => mergeBoardWsSnapshot(prev, msg));
+              if (Array.isArray(msg.power_outputs)) onPowerSnapshot(Date.now());
             } else if (msg.type === "telemetry" || msg.type === "telemetry-batch") {
               const samples = decodeTelemetrySamples(msg);
               const latestReadings = decodeTelemetryReadings(msg);
@@ -258,6 +264,7 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
     handleSessionCleanup,
     handleSocketFailure,
     live,
+    onPowerSnapshot,
     pageVisible,
     pendingCaptureRef,
     refresh,

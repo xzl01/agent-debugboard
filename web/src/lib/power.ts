@@ -8,6 +8,9 @@ export const USER_POWER_RAILS = ["5v_out", "12v_out", "20v_out"] as const;
 // but USER_POWER_RAILS remains the three target-facing comparison/capture rails.
 export const POWER_SWITCH_RAILS = [...USER_POWER_RAILS, "vdd_5v"] as const;
 
+// Live status polling runs every 10 s; three missed power snapshots make control unsafe.
+export const POWER_STATE_STALE_MS = 30_000;
+
 export function powerOutputIsOn(output?: PowerOutput): boolean {
   return output?.state === "on" || output?.value === 1;
 }

@@ -1,10 +1,11 @@
+import { useRef, useState } from "react";
 import { Languages, RefreshCw } from "lucide-react";
 import { Button } from "./ui";
 import type { BoardSnapshot, MemoryPressureSnapshot } from "@/lib/types";
 import type { OtaStatus } from "@/lib/ota";
 import { cn, formatBytes, formatUptime } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
-import { powerOutputIsOn, USER_POWER_RAILS } from "@/lib/power";
+import { powerOutputIsOn, POWER_STATE_STALE_MS, USER_POWER_RAILS } from "@/lib/power";
 import { LinkrLogo } from "./LinkrLogo";
 import { ThemeMenu } from "./ThemeMenu";
 
@@ -33,7 +34,10 @@ export function StatusBar({
   onRefresh,
   ota,
   logicAnalyzerActive,
-  uartBridgeActive,
+  onSetVdd5v,
+  powerDisabled = false,
+  powerStale = !connected,
+  powerUpdatedAt = null,
 }: {
   snapshot: BoardSnapshot;
   connected: boolean;
@@ -46,7 +50,10 @@ export function StatusBar({
   onRefresh: () => void;
   ota?: OtaStatus | null;
   logicAnalyzerActive: boolean;
-  uartBridgeActive: boolean;
+  onSetVdd5v?: (on: boolean) => Promise<void>;
+  powerDisabled?: boolean;
+  powerStale?: boolean;
+  powerUpdatedAt?: number | null;
 }) {
   const { t, lang, setLang } = useI18n();
   const logoState = loading ? "connecting" : connected ? "ready" : "offline";
@@ -56,6 +63,43 @@ export function StatusBar({
     powerOutputIsOn(outputs.get(USER_POWER_RAILS[1])),
     powerOutputIsOn(outputs.get(USER_POWER_RAILS[2])),
   ];
+  const vdd5vOutput = outputs.get("vdd_5v");
+  const vdd5vOn = vdd5vOutput?.state === "on" ? true : vdd5vOutput?.state === "off" ? false : null;
+  const [powerBusy, setPowerBusy] = useState(false);
+  const [powerError, setPowerError] = useState<string | null>(null);
+  const powerPendingRef = useRef(false);
+  const powerExpired = powerUpdatedAt == null || Date.now() - powerUpdatedAt >= POWER_STATE_STALE_MS;
+  const powerBlocked = powerBusy || powerDisabled || powerStale || powerExpired || !connected || loading || !onSetVdd5v ||
+    !vdd5vOutput?.controllable || vdd5vOn == null;
+  const powerActionRef = useRef({ blocked: powerBlocked, on: vdd5vOn, set: onSetVdd5v, updatedAt: powerUpdatedAt });
+  powerActionRef.current = { blocked: powerBlocked, on: vdd5vOn, set: onSetVdd5v, updatedAt: powerUpdatedAt };
+  const toggleVdd5v = async () => {
+    if (powerBlocked || powerPendingRef.current || vdd5vOn == null) return;
+    powerPendingRef.current = true;
+    const next = !vdd5vOn;
+    try {
+      if (!window.confirm(t(next ? "status.vdd5v.confirmOn" : "status.vdd5v.confirmOff"))) return;
+      // Confirmation can outlive a snapshot or task-lock change. Never act on its old closure.
+      const current = powerActionRef.current;
+      // Native confirm blocks expiry timers, so compare wall time again before dispatch.
+      if (current.blocked || current.on !== vdd5vOn || !current.set ||
+        current.updatedAt == null || Date.now() - current.updatedAt >= POWER_STATE_STALE_MS) {
+        throw new Error(t("status.vdd5v.unavailable"));
+      }
+      setPowerBusy(true);
+      setPowerError(null);
+      await current.set(next);
+    } catch (reason) {
+      setPowerError(`${t("status.vdd5v.failed")}${reason instanceof Error ? reason.message : String(reason)}`);
+    } finally {
+      powerPendingRef.current = false;
+      setPowerBusy(false);
+    }
+  };
+  const powerStateLabel = t(vdd5vOn == null ? "status.vdd5v.unknown" : vdd5vOn ? "power.on" : "power.off");
+  const powerStatus = powerBusy
+    ? `${powerStateLabel} · ${t("status.vdd5v.pending")}`
+    : powerStale || powerExpired ? `${powerStateLabel} · ${t("snapshot.readOnly")}` : powerStateLabel;
 
   const { temperature: temp, cpu, heap, memory, runtime } = snapshot.monitoring;
   const uptime = runtime.uptime_seconds;
@@ -157,7 +201,14 @@ export function StatusBar({
             state={logoState}
             rails={rails}
             logicAnalyzerActive={logicAnalyzerActive}
-            uartBridgeActive={uartBridgeActive}
+            vdd5v={{
+              on: vdd5vOn,
+              pending: powerBusy,
+              disabled: powerBlocked,
+              label: t("power.railSwitch", { rail: "vdd_5v" }),
+              status: powerStatus,
+              onToggle: () => void toggleVdd5v(),
+            }}
           />
           <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-panel2/70 px-2 py-1 text-[11px] text-ink-dim">
             <span data-testid="status-mcu">{snapshot.mcu?.toUpperCase() || "—"}</span>
@@ -168,8 +219,16 @@ export function StatusBar({
 
         <div
           data-testid="status-details"
-          className="order-3 flex w-full min-w-0 items-center gap-2 overflow-x-auto whitespace-nowrap py-2 text-[11px] text-ink-dim md:order-2 md:w-auto md:flex-1 md:justify-center md:py-0"
+          className="order-3 flex w-full min-w-0 items-center gap-2 overflow-x-auto whitespace-nowrap py-2 text-[11px] text-ink-dim md:order-2 md:w-auto md:flex-1 md:py-0"
         >
+          {/* Reserve normal-flow space instead of floating over the logo or workspace tabs. */}
+          <span
+            data-testid="logo-vdd5v-status"
+            aria-hidden="true"
+            className="header-power-status rounded-lg border border-line/60 bg-panel2/45 px-2 py-1 font-medium leading-4 text-ink transition-colors"
+          >
+            <span className="font-mono">vdd_5v</span> · {powerStatus}
+          </span>
           <span
             data-testid="status-connection"
             role="status"
@@ -271,7 +330,9 @@ export function StatusBar({
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
           </Button>
         </div>
+
       </div>
+      {powerError && <p role="alert" className="mx-auto max-w-[1440px] px-6 pb-2 text-xs text-danger">{powerError}</p>}
     </header>
   );
 }

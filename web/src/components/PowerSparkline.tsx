@@ -37,6 +37,8 @@ const WIDTH = 320;
 const HEIGHT = 58;
 const EXPANDED_WIDTH = 960;
 const EXPANDED_HEIGHT = 280;
+const PLOT_PADDING = 4;
+const PREVIEW_MIN_SIDE_RATIO = 0.15;
 const ADC3_MAX_UV = 3_300_000;
 const POWER_TRACES = [
   { metric: "current", minimumScale: 0.001, color: "rgb(var(--c-brand))", unit: "A" },
@@ -84,17 +86,26 @@ function appendSample(previous: readonly MeasurementSample[], sample: Measuremen
   });
 }
 
-function plotTrace(trace: ChartTrace, history: readonly MeasurementSample[], width: number, height: number) {
+function traceExtents(trace: ChartTrace) {
   const validValues = trace.values.filter((value): value is number => value !== null);
+  return {
+    positive: Math.max(trace.minimumScale, ...validValues),
+    negative: trace.metric === "voltage" ? 0 : Math.max(0, ...validValues.map((value) => -value)),
+  };
+}
+
+function plotTrace(trace: ChartTrace, extents: ReturnType<typeof traceExtents>, history: readonly MeasurementSample[], width: number, height: number, positiveRatio: number) {
   // Each trace has its own range: volts must not share a numeric Y axis with amps or watts.
-  const extent = Math.max(trace.minimumScale, ...validValues.map(Math.abs)) * 1.15;
-  // Symmetric signed domains keep zero aligned across independently scaled
-  // overlay traces, without suggesting that volts, amps and watts share units.
-  // ADC3 alone retains its explicitly fixed 0–3.3 V range.
-  const minimum = trace.maximumScale === undefined ? -extent : 0;
+  const signed = trace.metric !== "voltage";
+  // Fit both sides to the shared zero position, with headroom on every trace.
+  // Voltage uses only the area above zero and never advertises a negative range.
+  const extent = Math.max(extents.positive, signed ? extents.negative * positiveRatio / (1 - positiveRatio) : 0) * 1.15;
+  const minimum = signed ? -extent * (1 - positiveRatio) / positiveRatio : 0;
   const maximum = trace.maximumScale ?? extent;
-  const yForValue = (value: number) => height - 4 -
-    ((Math.min(maximum, Math.max(minimum, value)) - minimum) / (maximum - minimum)) * (height - 8);
+  const positiveHeight = positiveRatio * (height - PLOT_PADDING * 2);
+  const zeroY = PLOT_PADDING + positiveHeight;
+  const yForValue = (value: number) => zeroY -
+    (Math.min(maximum, Math.max(minimum, value)) / maximum) * positiveHeight;
   const segments: { x: number; y: number }[][] = [];
   let segment: (typeof segments)[number] = [];
   const firstMs = history[0]?.timestampMs ?? 0;
@@ -224,7 +235,15 @@ const MeasurementChart = memo(function MeasurementChart({ mode, name, history, z
     unit: "V",
     formatLatest: (value: number) => `${(value / 1_000_000).toFixed(3)} V`,
   }];
-  const plotted = traces.map((trace) => plotTrace(trace, history, width, height));
+  const extents = traces.map(traceExtents);
+  // A mostly positive preview reserves only 15% below zero. Substantial reverse
+  // current/power expands that area; using one ratio keeps every zero aligned.
+  // The diagnostic view retains symmetric signed current and power domains.
+  const positiveRatio = mode === "voltage" ? 1 : large ? 0.5 : Math.max(PREVIEW_MIN_SIDE_RATIO,
+    Math.min(1 - PREVIEW_MIN_SIDE_RATIO, ...extents.map(({ positive, negative }) => positive / (positive + negative))),
+  );
+  const zeroY = PLOT_PADDING + positiveRatio * (height - PLOT_PADDING * 2);
+  const plotted = traces.map((trace, index) => plotTrace(trace, extents[index], history, width, height, positiveRatio));
   const ariaLabel = mode === "power"
     ? `${name} · ${t("power.chart.overlaid")} · ${t("power.chart.independentScales")} · ${t("power.chart.zeroBaseline")}`
     : t("adc3.chart.aria");
@@ -244,9 +263,10 @@ const MeasurementChart = memo(function MeasurementChart({ mode, name, history, z
           className={large ? "block h-[clamp(200px,40vh,420px)] w-full" : "block h-16 w-full"}
         >
           {mode === "power" ? <g aria-hidden="true">
-            <line data-reference="zero" x1="0" x2={width} y1={height / 2} y2={height / 2}
-              stroke="rgb(var(--c-line))" strokeDasharray="3 5" />
-            <text x="2" y={height / 2 - 3} fill="rgb(var(--c-ink-dim))" fontSize={large ? 12 : 8}>0</text>
+            <line data-reference="zero" x1="0" x2={width} y1={zeroY} y2={zeroY}
+              stroke="rgb(var(--c-ink-dim))" strokeOpacity="0.7" strokeDasharray="5 4"
+              strokeWidth="1" vectorEffect="non-scaling-stroke" />
+            <text x="2" y={zeroY - 3} fill="rgb(var(--c-ink-dim))" fontSize={large ? 12 : 8}>0</text>
           </g> : [0.33, 0.66].map((ratio) => (
             <line key={ratio} x1="0" x2={width} y1={height * ratio} y2={height * ratio}
               stroke="rgb(var(--c-line))" strokeOpacity="0.55" strokeDasharray="3 5" />
@@ -295,7 +315,7 @@ const MeasurementChart = memo(function MeasurementChart({ mode, name, history, z
               <div className={large ? "mt-1 font-mono text-sm font-medium text-ink sm:text-lg" : "mt-0.5 font-mono text-xs text-ink"}>
                 {trace.latest === null ? "—" : trace.formatLatest(trace.latest)}
               </div>
-              {large && <div className="mt-1 text-[10px] text-ink-dim">{t("power.chart.range")} <span className="font-mono">±{trace.formatLatest(trace.maximum)}</span></div>}
+              {large && <div className="mt-1 text-[10px] text-ink-dim">{t("power.chart.range")} <span className="font-mono">{trace.minimum === 0 ? `${trace.formatLatest(0)} – ${trace.formatLatest(trace.maximum)}` : `±${trace.formatLatest(trace.maximum)}`}</span></div>}
             </li>
           ))}
         </ul>

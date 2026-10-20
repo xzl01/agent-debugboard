@@ -40,6 +40,8 @@ const boardMocks = vi.hoisted(() => ({
   restarting: false,
   restartTimedOut: false,
   connected: true,
+  powerStateStale: false,
+  powerUpdatedAt: Date.now(),
   lastVerifiedAt: null as number | null,
   config: null as null | {
     readonly available: boolean;
@@ -71,12 +73,23 @@ const automationMocks = vi.hoisted(() => ({
   lastAcquire: null as boolean | null,
 }));
 
+const headerMocks = vi.hoisted(() => ({
+  latest: null as null | {
+    onSetVdd5v: (on: boolean) => Promise<void>;
+    powerDisabled: boolean;
+    powerStale: boolean;
+    powerUpdatedAt: number | null;
+  },
+}));
+
 vi.mock("@/hooks/useBoard", async () => {
   const { useBoardReboot } = await import("@/hooks/useBoardReboot");
   return { useBoard: () => {
     const reboot = useBoardReboot(boardMocks.connected, boardMocks.uptimeMs);
     return {
     connected: boardMocks.connected,
+    powerStateStale: boardMocks.powerStateStale,
+    powerUpdatedAt: boardMocks.powerUpdatedAt,
     restarting: boardMocks.useRealReboot ? reboot.restarting : boardMocks.restarting,
     restartTimedOut: boardMocks.useRealReboot ? reboot.restartTimedOut : boardMocks.restartTimedOut,
     rebootBoard: boardMocks.useRealReboot ? reboot.rebootBoard : boardMocks.rebootBoard,
@@ -123,7 +136,12 @@ vi.mock("@/lib/i18n", () => ({
   }),
 }));
 
-vi.mock("./StatusBar", () => ({ StatusBar: () => null }));
+vi.mock("./StatusBar", () => ({
+  StatusBar: (props: NonNullable<typeof headerMocks.latest>) => {
+    headerMocks.latest = props;
+    return null;
+  },
+}));
 vi.mock("./PowerCard", () => ({ PowerCard: () => null }));
 vi.mock("./SwitchCard", () => ({ SwitchCard: () => null }));
 vi.mock("./BootCard", () => ({ BootCard: () => null }));
@@ -276,6 +294,7 @@ afterEach(() => {
   boardMocks.restarting = false;
   boardMocks.restartTimedOut = false;
   boardMocks.connected = true;
+  boardMocks.powerStateStale = false;
   boardMocks.lastVerifiedAt = null;
   boardMocks.config = null;
   boardMocks.powerOutputs = [
@@ -289,10 +308,12 @@ afterEach(() => {
   persistentMocks.state.busy = null;
   persistentMocks.state.supported = false;
   automationMocks.lastAcquire = null;
+  headerMocks.latest = null;
   vi.useRealTimers();
   localStorage.clear();
   scrollIntoViewMock.mockClear();
   vi.restoreAllMocks();
+  boardMocks.powerUpdatedAt = Date.now();
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
     value: originalMatchMedia,
@@ -300,6 +321,77 @@ afterEach(() => {
 });
 
 describe("App workspace", () => {
+  it("routes the header toggle only to vdd_5v and holds the global lock until its request settles", async () => {
+    boardMocks.powerOutputs.push({ name: "vdd_5v", controllable: true, state: "off", value: 0 });
+    let resolve!: () => void;
+    boardMocks.setPower.mockReturnValue(new Promise<void>((done) => { resolve = done; }));
+    const view = mountApp();
+    let request!: Promise<void>;
+    await act(async () => { request = headerMocks.latest!.onSetVdd5v(true); });
+    expect(boardMocks.setPower).toHaveBeenCalledExactlyOnceWith("vdd_5v", true);
+    expect(headerMocks.latest!.powerDisabled).toBe(true);
+    click(byTestId(view.host, "acquire-test-task"));
+    expect(automationMocks.lastAcquire).toBe(false);
+    await act(async () => { resolve(); await request; });
+    expect(headerMocks.latest!.powerDisabled).toBe(false);
+    expect(boardMocks.setSwitch).not.toHaveBeenCalled();
+    expect(boardMocks.rebootBoard).not.toHaveBeenCalled();
+    expect(byId(view.host, "workspace-tab-terminal").getAttribute("aria-selected")).toBe("true");
+    click(byTestId(view.host, "acquire-test-task"));
+    expect(automationMocks.lastAcquire).toBe(true);
+  });
+
+  it("checks the real task lock even when the header callback predates its acquisition", async () => {
+    boardMocks.powerOutputs.push({ name: "vdd_5v", controllable: true, state: "off", value: 0 });
+    const view = mountApp();
+    const setHeaderPower = headerMocks.latest!.onSetVdd5v;
+    click(byTestId(view.host, "acquire-test-task"));
+    expect(headerMocks.latest!.powerDisabled).toBe(true);
+    await expect(setHeaderPower(true)).rejects.toThrow("task.error.busy");
+    expect(boardMocks.setPower).not.toHaveBeenCalled();
+  });
+
+  it("rejects stale or disconnected state after confirmation without a power request", async () => {
+    boardMocks.powerOutputs.push({ name: "vdd_5v", controllable: true, state: "off", value: 0 });
+    const view = mountApp();
+    const setHeaderPower = headerMocks.latest!.onSetVdd5v;
+    boardMocks.powerStateStale = true;
+    view.rerender();
+    expect(headerMocks.latest!.powerStale).toBe(true);
+    await expect(setHeaderPower(true)).rejects.toThrow("status.vdd5v.unavailable");
+    boardMocks.powerStateStale = false;
+    boardMocks.connected = false;
+    view.rerender();
+    await expect(setHeaderPower(true)).rejects.toThrow("status.vdd5v.unavailable");
+    expect(boardMocks.setPower).not.toHaveBeenCalled();
+  });
+
+  it("releases the header power lock after an error so another task can run", async () => {
+    boardMocks.powerOutputs.push({ name: "vdd_5v", controllable: true, state: "on", value: 1 });
+    boardMocks.setPower.mockRejectedValueOnce(new Error("hardware rejected request"));
+    const view = mountApp();
+    await act(async () => {
+      await expect(headerMocks.latest!.onSetVdd5v(false)).rejects.toThrow("hardware rejected request");
+    });
+    expect(boardMocks.setPower).toHaveBeenCalledExactlyOnceWith("vdd_5v", false);
+    expect(headerMocks.latest!.powerDisabled).toBe(false);
+    click(byTestId(view.host, "acquire-test-task"));
+    expect(automationMocks.lastAcquire).toBe(true);
+  });
+
+  it("passes the authoritative timestamp to the header and rejects an expired callback without waiting for a stale render", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(100_000);
+    boardMocks.powerUpdatedAt = 100_000;
+    boardMocks.powerOutputs.push({ name: "vdd_5v", controllable: true, state: "off", value: 0 });
+    mountApp();
+    expect(headerMocks.latest!.powerUpdatedAt).toBe(100_000);
+    expect(headerMocks.latest!.powerStale).toBe(false);
+    const setHeaderPower = headerMocks.latest!.onSetVdd5v;
+    now.mockReturnValue(131_000);
+    await expect(setHeaderPower(true)).rejects.toThrow("status.vdd5v.unavailable");
+    expect(boardMocks.setPower).not.toHaveBeenCalled();
+  });
+
   it("releases the real reboot task after an uptime-confirmed restart with no offline transition", async () => {
     boardMocks.useRealReboot = true;
     boardMocks.uptimeMs = 100_000;

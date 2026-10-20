@@ -214,12 +214,6 @@ button {
   27% { opacity: 1; }
 }
 
-@keyframes linkr-logo-uart-heartbeat {
-  0%,
-  100% { opacity: 0.55; }
-  35% { opacity: 1; }
-}
-
 @keyframes linkr-logo-logic-spin {
   to { transform: rotate(360deg); }
 }
@@ -228,6 +222,24 @@ button {
   fill: rgb(var(--c-panel2));
   stroke: rgb(var(--c-line));
   stroke-width: 2;
+}
+
+/* The logo switch's visible status owns a bounded slot at the start of the
+   scrollable header row. Neither hover nor keyboard focus adds an overlay. */
+.header-power-status {
+  position: static;
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+header:has([data-testid="logo-vdd5v-toggle"]:hover) .header-power-status,
+header:has([data-testid="logo-vdd5v-toggle"]:focus-visible) .header-power-status {
+  border-color: rgb(var(--c-brand) / 0.45);
+  background-color: rgb(var(--c-brand) / 0.08);
 }
 
 [data-testid="linkr-logo"][data-state="connecting"] [data-linkr-backplate] {
@@ -259,15 +271,11 @@ button {
 [data-testid="linkr-logo"][data-state="ready"]
   [data-indicator="12v_out"][data-active="true"],
 [data-testid="linkr-logo"][data-state="ready"]
-  [data-indicator="20v_out"][data-active="true"] {
+  [data-indicator="20v_out"][data-active="true"],
+[data-testid="linkr-logo"][data-state="ready"]
+  [data-indicator="vdd_5v"][data-active="true"] {
   color: rgb(var(--c-identity));
   opacity: 1;
-}
-
-[data-testid="linkr-logo"][data-state="ready"]
-  [data-indicator="uart_bridge"][data-active="true"] {
-  color: rgb(var(--c-brand));
-  animation: linkr-logo-uart-heartbeat 800ms ease-in-out infinite;
 }
 
 [data-testid="linkr-logo"][data-state="ready"][data-logic-analyzer-active="true"]
@@ -294,7 +302,7 @@ button {
   animation-delay: 0.3s;
 }
 
-[data-testid="linkr-logo"][data-state="connecting"] [data-indicator="uart_bridge"] {
+[data-testid="linkr-logo"][data-state="connecting"] [data-indicator="vdd_5v"] {
   animation-delay: 0.6s;
 }
 
@@ -369,14 +377,11 @@ button {
 
 @media (prefers-reduced-motion: reduce) {
   [data-testid="linkr-logo"] [data-linkr-rotor],
-  [data-testid="linkr-logo"] [data-linkr-heartbeat],
-  [data-testid="linkr-logo"] [data-indicator="uart_bridge"] {
+  [data-testid="linkr-logo"] [data-linkr-heartbeat] {
     animation: none !important;
   }
 
   [data-testid="linkr-logo"][data-state="ready"] [data-linkr-heartbeat],
-  [data-testid="linkr-logo"][data-state="ready"]
-    [data-indicator="uart_bridge"][data-active="true"],
   [data-testid="linkr-logo"][data-state="connecting"] [data-linkr-arm],
   [data-testid="linkr-logo"][data-state="offline"] [data-linkr-arm] {
     opacity: 1;

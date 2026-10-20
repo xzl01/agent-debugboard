@@ -28,6 +28,7 @@ function LiveProbe() {
     wsRef: { current: null },
     pendingCaptureRef: { current: null },
     setSnapshot: vi.fn(),
+    onPowerSnapshot: vi.fn(),
     setHasData: vi.fn(),
     setConnected: vi.fn(),
     setError: vi.fn(),

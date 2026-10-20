@@ -42,6 +42,7 @@ import {
 } from "./components/WorkbenchStatusBar";
 import { Button } from "./components/ui";
 import { useI18n } from "@/lib/i18n";
+import { POWER_STATE_STALE_MS } from "@/lib/power";
 import type { OtaStatus } from "@/lib/ota";
 import {
   createAutomationTaskLock,
@@ -118,6 +119,25 @@ export default function App() {
     acquire: acquireAutomation,
     release: releaseAutomation,
   }), [acquireAutomation, automationOwner, releaseAutomation]);
+
+  const headerBoardRef = useRef(board);
+  headerBoardRef.current = board;
+  const setHeaderVdd5v = useCallback(async (on: boolean) => {
+    const current = headerBoardRef.current;
+    const output = current.snapshot.powerOutputs.find((item) => item.name === "vdd_5v");
+    if (!current.connected || !current.hasData || current.powerStateStale || current.loading || current.restarting ||
+      current.powerUpdatedAt == null || Date.now() - current.powerUpdatedAt >= POWER_STATE_STALE_MS ||
+      !output?.controllable || (output.state !== "on" && output.state !== "off")) {
+      throw new Error(t("status.vdd5v.unavailable"));
+    }
+    // Use the live lock, not the render-time owner, after the header confirms.
+    if (!acquireAutomation("power")) throw new Error(t("task.error.busy"));
+    try {
+      await current.setPower("vdd_5v", on);
+    } finally {
+      releaseAutomation("power");
+    }
+  }, [acquireAutomation, releaseAutomation, t]);
 
   const rebootDebugger = useCallback(async () => {
     if (!acquireAutomation("reboot")) throw new Error(t("task.error.busy"));
@@ -400,7 +420,10 @@ export default function App() {
         onRefresh={board.refresh}
         ota={ota}
         logicAnalyzerActive={logicAnalyzerActive}
-        uartBridgeActive={serialConnections.bridgeActive}
+        onSetVdd5v={setHeaderVdd5v}
+        powerDisabled={automationOwner != null || board.restarting || !board.hasData}
+        powerStale={board.powerStateStale}
+        powerUpdatedAt={board.powerUpdatedAt}
       />
 
       <nav className="border-b border-line/80 bg-panel/95 md:sticky md:top-14 md:z-20 md:backdrop-blur-sm">

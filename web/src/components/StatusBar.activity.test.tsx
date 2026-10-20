@@ -32,9 +32,8 @@ const emptySnapshot: BoardSnapshot = {
 
 function render(
   snapshot: BoardSnapshot,
-  runtime: { readonly logicAnalyzerActive: boolean; readonly uartBridgeActive: boolean } = {
+  runtime: { readonly logicAnalyzerActive: boolean } = {
     logicAnalyzerActive: false,
-    uartBridgeActive: false,
   },
 ) {
   localStorage.setItem("theme", "light");
@@ -60,7 +59,6 @@ function render(
             setLive={vi.fn()}
             onRefresh={vi.fn()}
             logicAnalyzerActive={nextRuntime.logicAnalyzerActive}
-            uartBridgeActive={nextRuntime.uartBridgeActive}
           />
         </LanguageProvider>
       </ThemeProvider>,
@@ -104,11 +102,11 @@ describe("StatusBar Linkr indicator", () => {
         { name: "12v_out", controllable: true, state: "on", value: 1 },
       ],
     };
-    const view = render(power, { logicAnalyzerActive: false, uartBridgeActive: true });
+    const view = render(power, { logicAnalyzerActive: false });
     expect(indicatorStates(view.host)).toEqual([
       { indicator: "5v_out", active: "false" },
       { indicator: "12v_out", active: "true" },
-      { indicator: "uart_bridge", active: "true" },
+      { indicator: "vdd_5v", active: "true" },
       { indicator: "20v_out", active: "true" },
     ]);
     view.close();
@@ -117,7 +115,6 @@ describe("StatusBar Linkr indicator", () => {
   it("exposes the neutral ready backplate, center heartbeat, and logic-analyzer rotor", () => {
     const view = render(emptySnapshot, {
       logicAnalyzerActive: true,
-      uartBridgeActive: false,
     });
     const logo = view.host.querySelector('[data-testid="linkr-logo"]');
     expect(logo?.getAttribute("data-state")).toBe("ready");
@@ -128,7 +125,6 @@ describe("StatusBar Linkr indicator", () => {
 
     view.update(emptySnapshot, false, {
       logicAnalyzerActive: true,
-      uartBridgeActive: true,
     });
     expect(logo?.getAttribute("data-state")).toBe("offline");
     view.close();

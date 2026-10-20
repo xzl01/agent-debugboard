@@ -131,6 +131,9 @@ describe("overlaid power measurement trends", () => {
     const currentPoints = points(svg, "current");
     const voltagePoints = points(svg, "voltage");
     const powerPoints = points(svg, "power");
+    // Positive-only previews spend 85% of the drawable height above zero.
+    const zeroY = Number(svg.querySelector('[data-reference="zero"]')?.getAttribute("y1"));
+    expect(zeroY).toBeCloseTo(4 + (58 - 8) * 0.85);
     expect(currentPoints[1][1]).toBeLessThan(currentPoints[0][1]);
     expect(voltagePoints[1][1]).toBeGreaterThan(voltagePoints[0][1]);
     // Each metric's maximum reaches the same normalized height despite different numeric units.
@@ -140,6 +143,28 @@ describe("overlaid power measurement trends", () => {
     expect(points(chart(view.host), "current")).toEqual(currentPoints);
     expect(points(chart(view.host), "voltage")).toEqual(voltagePoints);
     expect(onSet).not.toHaveBeenCalled();
+  });
+
+  it.each(["preview", "expanded"] as const)("keeps the %s zero baseline readable but visually subordinate to data traces", (size) => {
+    const view = render(<MeasurementSparkline mode="power" reading={reading()} />);
+    view.rerender(<MeasurementSparkline mode="power" reading={reading({ value: 300_000 })} />);
+    const svg = chart(size === "expanded" ? expandChart(view.host).modal : view.host);
+    const baseline = svg.querySelector('line[data-reference="zero"]')!;
+    expect(baseline.getAttribute("stroke")).toBe("rgb(var(--c-ink-dim))");
+    expect(baseline.getAttribute("stroke-opacity")).toBe("0.7");
+    expect(baseline.getAttribute("stroke-dasharray")).toBe("5 4");
+    expect(baseline.getAttribute("stroke-width")).toBe("1");
+    expect(baseline.getAttribute("vector-effect")).toBe("non-scaling-stroke");
+    expect(baseline.parentElement?.querySelector("text")?.textContent).toBe("0");
+    expect(baseline.parentElement?.querySelector("text")?.getAttribute("fill")).toBe("rgb(var(--c-ink-dim))");
+    const colors = { current: "brand", voltage: "ok", power: "warn" };
+    for (const metric of ["current", "voltage", "power"] as const) {
+      const trace = svg.querySelector(`g[data-metric="${metric}"] polyline`)!;
+      expect(trace.getAttribute("stroke")).toBe(`rgb(var(--c-${colors[metric]}))`);
+      expect(Number(trace.getAttribute("stroke-width"))).toBeGreaterThan(Number(baseline.getAttribute("stroke-width")));
+      expect(trace.getAttribute("stroke-opacity")).toBeNull();
+      expect(baseline.compareDocumentPosition(trace) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    }
   });
 
   it("respects a stored collapsed preference and persists manual show/hide actions", () => {
@@ -186,7 +211,8 @@ describe("overlaid power measurement trends", () => {
       const tracePoints = points(svg, metric);
       expect(tracePoints).toHaveLength(2);
       // Positive measurements must be above the signed domain's zero baseline.
-      expect(tracePoints.every(([, y]) => Number.isFinite(y) && y < 29)).toBe(true);
+      const zeroY = Number(svg.querySelector('[data-reference="zero"]')?.getAttribute("y1"));
+      expect(tracePoints.every(([, y]) => Number.isFinite(y) && y < zeroY)).toBe(true);
     }
     expect(onSet).not.toHaveBeenCalled();
   });
@@ -198,7 +224,7 @@ describe("overlaid power measurement trends", () => {
     view.rerender(<PowerCard outputs={[]} readings={[{ ...sample, value: -100_000 }]} onSet={onSet} />);
     const negativeOnly = chart(view.host);
     const zeroY = Number(negativeOnly.querySelector('[data-reference="zero"]')?.getAttribute("y1"));
-    expect(zeroY).toBe(29);
+    expect(zeroY).toBeCloseTo(4 + (58 - 8) * 0.15);
     expect(legend(negativeOnly, "current").textContent).toContain("-0.100 A");
     expect(legend(negativeOnly, "power").textContent).toContain("-0.48 W");
     for (const metric of ["current", "power"] as const) {
@@ -209,13 +235,87 @@ describe("overlaid power measurement trends", () => {
     expect(points(negativeOnly, "voltage").every(([, y]) => y < zeroY)).toBe(true);
     view.rerender(<PowerCard outputs={[]} readings={[{ ...sample, value: 0 }]} onSet={onSet} />);
     view.rerender(<PowerCard outputs={[]} readings={[{ ...sample, value: 300_000 }]} onSet={onSet} />);
+    const mixedZeroY = Number(chart(view.host).querySelector('[data-reference="zero"]')?.getAttribute("y1"));
+    expect(mixedZeroY).toBe(29);
     for (const metric of ["current", "power"] as const) {
       const trace = points(chart(view.host), metric);
-      expect(trace[2][1]).toBe(zeroY);
-      expect(trace[3][1]).toBeLessThan(zeroY);
-      expect(trace[0][1] - zeroY).toBeCloseTo(zeroY - trace[3][1]);
+      expect(trace[2][1]).toBe(mixedZeroY);
+      expect(trace[3][1]).toBeLessThan(mixedZeroY);
+      expect(trace[0][1] - mixedZeroY).toBeCloseTo(mixedZeroY - trace[3][1]);
     }
     expect(onSet).not.toHaveBeenCalled();
+  });
+
+  it("keeps tiny negative samples visible in a compact lower margin with every metric aligned at zero", () => {
+    const sample = reading({ value: 300_000, voltage_uv: 4_800_000 });
+    const view = render(<MeasurementSparkline mode="power" reading={sample} />);
+    view.rerender(<MeasurementSparkline mode="power" reading={{ ...sample, value: 0, voltage_uv: 0 }} />);
+    view.rerender(<MeasurementSparkline mode="power" reading={{ ...sample, value: -300 }} />);
+    const svg = chart(view.host);
+    const zeroY = Number(svg.querySelector('[data-reference="zero"]')?.getAttribute("y1"));
+    expect(zeroY).toBeCloseTo(46.5);
+    for (const metric of ["current", "voltage", "power"] as const) {
+      const trace = points(svg, metric);
+      expect(trace[0][1]).toBeLessThan(zeroY);
+      expect(trace[1][1]).toBe(zeroY);
+      expect(trace.every(([, y]) => y > 4 && y < 54)).toBe(true);
+    }
+    for (const metric of ["current", "power"] as const) {
+      expect(points(svg, metric)[2][1]).toBeGreaterThan(zeroY);
+    }
+    expect(points(svg, "voltage")[2][1]).toBeLessThan(zeroY);
+    expect(legend(svg, "current").textContent).toContain("-0.3 mA");
+    expect(legend(svg, "power").textContent).toContain("-1.4 mW");
+  });
+
+  it("expands the shared negative area for substantial reverse current and power without clipping", () => {
+    const sample = reading({ value: 300_000, voltage_uv: 4_800_000 });
+    const view = render(<MeasurementSparkline mode="power" reading={sample} />);
+    view.rerender(<MeasurementSparkline mode="power" reading={{ ...sample, value: 0, voltage_uv: 0 }} />);
+    view.rerender(<MeasurementSparkline mode="power" reading={{ ...sample, value: -1_200_000, voltage_uv: 1_200_000 }} />);
+    const svg = chart(view.host);
+    const zeroY = Number(svg.querySelector('[data-reference="zero"]')?.getAttribute("y1"));
+    expect(zeroY).toBeCloseTo(4 + (58 - 8) * 0.2);
+    for (const metric of ["current", "power"] as const) {
+      const trace = points(svg, metric);
+      expect(trace[0][1]).toBeLessThan(zeroY);
+      expect(trace[1][1]).toBe(zeroY);
+      expect(trace[2][1]).toBeGreaterThan(zeroY);
+      expect(trace.every(([, y]) => y > 4 && y < 54)).toBe(true);
+      // Different current/power distributions must still share a zero position
+      // while preserving each metric's signed proportions.
+      expect((trace[2][1] - zeroY) / (zeroY - trace[0][1])).toBeCloseTo(metric === "current" ? 4 : 1);
+    }
+    expect(points(svg, "voltage")[1][1]).toBe(zeroY);
+    expect(points(svg, "voltage").every(([, y]) => y > 4 && y <= zeroY)).toBe(true);
+    expect(legend(svg, "current").textContent).toContain("-1.200 A");
+    expect(legend(svg, "power").textContent).toContain("-1.44 W");
+  });
+
+  it.each([
+    ["positive-only", 200_000],
+    ["tiny reverse", -300],
+    ["substantial reverse", -1_200_000],
+  ])("keeps expanded signed domains symmetric for %s data and voltage nonnegative", (_label, latestCurrent) => {
+    const sample = reading({ value: 300_000, voltage_uv: 4_800_000 });
+    const view = render(<MeasurementSparkline mode="power" reading={sample} />);
+    view.rerender(<MeasurementSparkline mode="power" reading={{ ...sample, value: latestCurrent }} />);
+    const { modal } = expandChart(view.host);
+    const svg = chart(modal);
+    const zeroY = Number(svg.querySelector('[data-reference="zero"]')?.getAttribute("y1"));
+    expect(zeroY).toBe(140);
+    const maximumCurrent = Math.max(300_000, Math.abs(latestCurrent));
+    for (const metric of ["current", "power"] as const) {
+      const trace = points(svg, metric);
+      expect(trace[0][1]).toBeCloseTo(zeroY - (136 / 1.15) * 300_000 / maximumCurrent);
+      expect(trace[1][1]).toBeCloseTo(zeroY - (136 / 1.15) * latestCurrent / maximumCurrent);
+      expect(trace.every(([, y]) => y > 4 && y < 276)).toBe(true);
+      expect(modal.querySelector(`li[data-metric="${metric}"]`)?.textContent).toContain("power.chart.range ±");
+    }
+    const voltageLegend = modal.querySelector('li[data-metric="voltage"]')?.textContent;
+    expect(voltageLegend).toContain("power.chart.range 0.000 V – 5.520 V");
+    expect(voltageLegend).not.toContain("±");
+    expect(points(svg, "voltage").every(([, y]) => y > 4 && y < zeroY)).toBe(true);
   });
 
   it("keeps current visible but never invents voltage or power when measured voltage is missing", () => {

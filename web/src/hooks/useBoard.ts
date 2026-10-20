@@ -8,6 +8,7 @@ import {
 } from "@/lib/boardSnapshot";
 import { persistentConfigCurrentStateKey } from "@/lib/persistentConfigCurrentStateKey";
 import { parsePdStatus } from "@/lib/pd";
+import { POWER_STATE_STALE_MS } from "@/lib/power";
 import type { BoardSnapshot } from "@/lib/types";
 
 import { useBoardCapture } from "./useBoardCapture";
@@ -19,6 +20,8 @@ import type { UseBoard as UseBoardBase } from "./useBoard.types";
 
 export interface UseBoard extends UseBoardBase {
   lastVerifiedAt: number | null;
+  powerUpdatedAt: number | null;
+  powerStateStale: boolean;
 }
 
 const PD_CAPABILITY_RETRY_MS = 5000;
@@ -28,6 +31,8 @@ export function useBoard(): UseBoard {
   const [hasData, setHasData] = useState(false);
   const [connected, setConnected] = useState(true);
   const [lastVerifiedAt, setLastVerifiedAt] = useState<number | null>(null);
+  const [powerUpdatedAt, setPowerUpdatedAt] = useState<number | null>(null);
+  const [powerStateStale, setPowerStateStale] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [auto, setAuto] = useState(true);
@@ -65,6 +70,18 @@ export function useBoard(): UseBoard {
     }),
     [snapshot.gpios, snapshot.powerOutputs, snapshot.switches]
   );
+
+  useEffect(() => {
+    if (!hasData || powerUpdatedAt == null) {
+      setPowerStateStale(true);
+      return;
+    }
+    const remainingMs = POWER_STATE_STALE_MS - (Date.now() - powerUpdatedAt);
+    setPowerStateStale(remainingMs <= 0);
+    if (remainingMs <= 0) return;
+    const timer = setTimeout(() => setPowerStateStale(true), remainingMs);
+    return () => clearTimeout(timer);
+  }, [hasData, powerUpdatedAt]);
 
   // Every successful HTTP poll or inbound WebSocket frame proves the board is
   // reachable; stamp it so the UI can show when the state was last verified.
@@ -194,9 +211,13 @@ export function useBoard(): UseBoard {
   const refresh = useCallback(async () => {
     try {
       const status = await api.getStatus();
+      // Stamp the status receipt, not the later ADC completion or React effect.
+      const updatedAt = typeof status === "object" && status !== null &&
+        "power_outputs" in status && Array.isArray(status.power_outputs) ? Date.now() : null;
       const adcResponse: unknown = await api.getAdc();
       const readings = parseHttpAdcReadings(adcResponse);
       setSnapshot((prev) => mapBoardStatus(status, readings, prev.pd));
+      setPowerUpdatedAt(updatedAt);
       setHasData(true);
       setBoardConnected(true);
       markVerified();
@@ -217,6 +238,7 @@ export function useBoard(): UseBoard {
     wsRef,
     pendingCaptureRef,
     setSnapshot: setSnapshotVerified,
+    onPowerSnapshot: setPowerUpdatedAt,
     setHasData,
     setConnected: setBoardConnected,
     setError: setConnectionError,
@@ -242,6 +264,8 @@ export function useBoard(): UseBoard {
     hasData,
     connected,
     lastVerifiedAt,
+    powerUpdatedAt,
+    powerStateStale: powerStateStale || powerUpdatedAt == null || !connected || !hasData,
     error,
     loading,
     auto,
