@@ -615,6 +615,10 @@ static int linkr_debugger_http_json_adc_channels(struct linkr_debugger_http_env 
 	return linkr_debugger_http_append(env, "]");
 }
 
+static int linkr_debugger_http_json_gpio_layout(
+	struct linkr_debugger_http_env *env,
+	const struct linkr_debugger_safe_gpio_desc *desc);
+
 static int linkr_debugger_http_json_safe_gpios(struct linkr_debugger_http_env *env)
 {
 	char name[LINKR_DEBUGGER_HTTP_GPIO_NAME_BUFSZ];
@@ -646,13 +650,7 @@ static int linkr_debugger_http_json_safe_gpios(struct linkr_debugger_http_env *e
 		    linkr_debugger_http_append(env, ",\"pin\":%u,\"note\":",
 					     (unsigned int)desc->pin) < 0 ||
 		    linkr_debugger_http_json_string(env, desc->note) < 0 ||
-		    linkr_debugger_http_append(env, ",\"layoutGroup\":") < 0 ||
-		    linkr_debugger_http_json_string(env, desc->layout_group) < 0 ||
-		    linkr_debugger_http_append(env, ",\"layoutLabel\":") < 0 ||
-		    linkr_debugger_http_json_string(env, desc->layout_label) < 0 ||
-		    linkr_debugger_http_append(env, ",\"layoutRow\":%u,\"layoutColumn\":%u",
-					     (unsigned int)desc->layout_row,
-					     (unsigned int)desc->layout_column) < 0 ||
+		    linkr_debugger_http_json_gpio_layout(env, desc) < 0 ||
 		    linkr_debugger_http_append(env, ",\"value\":%d,\"direction\":",
 					     value > 0 ? 1 : 0) < 0 ||
 		    linkr_debugger_http_json_string(env, linkr_debugger_safe_gpio_direction_name(i)) < 0 ||
@@ -664,9 +662,60 @@ static int linkr_debugger_http_json_safe_gpios(struct linkr_debugger_http_env *e
 	return linkr_debugger_http_append(env, "]");
 }
 
+static int linkr_debugger_http_json_gpio_layout_groups_from(
+	struct linkr_debugger_http_env *env,
+	const struct linkr_debugger_gpio_layout_group_desc *groups,
+	size_t group_count)
+{
+	if (env == NULL || (group_count > 0U && groups == NULL)) {
+		return -EINVAL;
+	}
+	for (size_t i = 0; i < group_count; i++) {
+		if (groups[i].name == NULL || groups[i].edge == NULL ||
+		    !linkr_debugger_json_utf8_valid(groups[i].name, strlen(groups[i].name)) ||
+		    !linkr_debugger_json_utf8_valid(groups[i].edge, strlen(groups[i].edge))) {
+			return -EINVAL;
+		}
+	}
+	if (linkr_debugger_http_append(env, "[") < 0) {
+		return -ENOMEM;
+	}
+
+	for (size_t i = 0; i < group_count; i++) {
+		const struct linkr_debugger_gpio_layout_group_desc *group = &groups[i];
+
+		if (i > 0U && linkr_debugger_http_append(env, ",") < 0) {
+			return -ENOMEM;
+		}
+		if (linkr_debugger_http_append(env, "{\"name\":") < 0 ||
+		    linkr_debugger_http_json_string(env, group->name) < 0 ||
+		    linkr_debugger_http_append(env, ",\"edge\":") < 0 ||
+		    linkr_debugger_http_json_string(env, group->edge) < 0 ||
+		    linkr_debugger_http_append(env, ",\"order\":%u}",
+					     (unsigned int)group->order) < 0) {
+			return -ENOMEM;
+		}
+	}
+
+	return linkr_debugger_http_append(env, "]");
+}
+
+static int linkr_debugger_http_json_gpio_layout_groups(struct linkr_debugger_http_env *env)
+{
+	return linkr_debugger_http_json_gpio_layout_groups_from(
+		env, linkr_debugger_gpio_layout_groups,
+		linkr_debugger_gpio_layout_group_count);
+}
+
 static int linkr_debugger_http_json_gpio_layout(struct linkr_debugger_http_env *env,
 					       const struct linkr_debugger_safe_gpio_desc *desc)
 {
+	if (desc->layout_group == NULL || desc->layout_group[0] == '\0') {
+		return 0;
+	}
+	if (desc->layout_label == NULL) {
+		return -EINVAL;
+	}
 	if (linkr_debugger_http_append(env, ",\"layoutGroup\":") < 0 ||
 	    linkr_debugger_http_json_string(env, desc->layout_group) < 0 ||
 	    linkr_debugger_http_append(env, ",\"layoutLabel\":") < 0 ||
@@ -1127,6 +1176,8 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 	    linkr_debugger_http_json_pd_status(&env, &pd_status) < 0 ||
 	    linkr_debugger_http_append(&env, ",\"board_monitoring\":{\"temperature\":") < 0 ||
 	    linkr_debugger_http_json_board_monitoring(&env) < 0 ||
+	    linkr_debugger_http_append(&env, ",\"gpio_layout_groups\":") < 0 ||
+	    linkr_debugger_http_json_gpio_layout_groups(&env) < 0 ||
 	    linkr_debugger_http_append(&env, ",\"gpios\":") < 0 ||
 	    linkr_debugger_http_json_safe_gpios(&env) < 0) {
 		k_mutex_unlock(&linkr_debugger_http_lock);
@@ -1562,7 +1613,10 @@ static int linkr_debugger_http_handle_gpio(struct http_client_ctx *client,
 	case HTTP_GET:
 		if (desc == NULL) {
 			if (linkr_debugger_http_json_begin(&env, "gpio", true) < 0 ||
-			    linkr_debugger_http_append(&env, ",\"action\":\"list\",\"gpios\":") < 0 ||
+			    linkr_debugger_http_append(&env,
+					     ",\"action\":\"list\",\"gpio_layout_groups\":") < 0 ||
+			    linkr_debugger_http_json_gpio_layout_groups(&env) < 0 ||
+			    linkr_debugger_http_append(&env, ",\"gpios\":") < 0 ||
 			    linkr_debugger_http_json_safe_gpios(&env) < 0 ||
 			    linkr_debugger_http_append(&env, ",\"reserved\":") < 0 ||
 			    linkr_debugger_http_json_string(&env, linkr_debugger_reserved_gpios()) < 0 ||

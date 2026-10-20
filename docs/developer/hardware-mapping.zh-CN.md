@@ -35,16 +35,52 @@ MCUboot board。权威板级说明见
 | ADC1 | — | `GPIO27_ADC1` | 27 |
 | ADC2 | — | `GPIO28_ADC2` | 28 |
 | ADC3 / GP29 | `adc3` | `GPIO29_ADC3` | 29 |
-| 恢复控制 GPIO | `CON_MAS` | `GP07_MAS` | 7 |
-| 恢复控制 GPIO | `CON_REST` | `GP08_REST` | 8 |
-| 恢复控制 GPIO | `CON_USER` | `GP09_USER` | 9 |
-| J8 安全 GPIO | `GP12`-`GP18` | `GPIO12`-`GPIO18` | 12-18 |
+| 恢复控制 GPIO / J13 pin 1 | `CON_MAS` | `GP07_MAS` | 7 |
+| 恢复控制 GPIO / J13 pin 3 | `CON_REST` | `GP08_REST` | 8 |
+| 恢复控制 GPIO / J13 pin 2 | `CON_USER` | `GP09_USER` | 9 |
+| J8 pin 1-5 安全 GPIO | `GP12`-`GP16` | `GPIO12`-`GPIO16` | 12-16 |
+| 无 J8/J13 映射的安全 GPIO | `GP17`、`GP18` | `GPIO17`、`GPIO18` | 17、18 |
 
 `GP10`/`GP11` 属于 J4 UART，不在安全 GPIO 目录中。它们同时也是逻辑分析仪
 lane（SINGLE 用 GP10，FAST8/WIDE11 用 GP10/GP11）：捕获拥有这些引脚时 PIO2
 接管，J4 不可用；cleanup 会把已配置引脚恢复为 `GPIO_FUNC_UART_AUX`。`GP19`
 是 CH224A PD strap，`GP20`/`GP21` 是 PIO I2C 总线，三者都不作为 GPIO 控制
 暴露。`GP29` 保留在目录中，但由 `adc3` 拥有，只能作为输入。
+
+## 连接器方向与已确认映射
+
+以下为用户结合原始x1.2 PDF确认的**元件面俯视图**。J8和J13都位于板卡
+**右侧边缘**。这里只记录与控制/监测有关的已确认子集，不是完整连接器pinout；
+空位或未列位置绝不能推断、点击或路由到其它GPIO。
+
+J8为2x10连接器。自顶部向下，左列编号为`10`到`1`，右列为`20`到`11`。
+已确认的相关J8端子全部位于左列：
+
+| J8 pin | 信号 | 固件用途 |
+|---|---|---|
+| 10 | GP21 | PIO I2C SDA，不属于safe-GPIO控制 |
+| 9 | GP20 | PIO I2C SCL，不属于safe-GPIO控制 |
+| 8 | GP27 / ADC1 | ADC1端子，不是电源轨采样 |
+| 7 | GP28 / ADC2 | ADC2端子，不是电源轨采样 |
+| 6 | GP29 / ADC3 | `adc3`，safe目录中仅输入 |
+| 5 | GP16 | safe GPIO |
+| 4 | GP15 | safe GPIO |
+| 3 | GP14 | safe GPIO |
+| 2 | GP13 | safe GPIO |
+| 1 | GP12 | safe GPIO |
+
+ADC0/GP26在该确认映射中没有J8端子。GP17和GP18仍属于safe-GPIO允许列表，
+但没有J8或J13连接器映射。
+
+J13为2x2连接器，同样按元件面俯视：
+
+| | 左 | 右 |
+|---|---|---|
+| 上 | pin 2：GP9 / USER | pin 3：GP8 / RSET |
+| 下 | pin 1：GP7 / MASKROM | pin 4：GND |
+
+J13 pin 4是**GND**，不是3.3 V。safe-GPIO允许列表独立保持为`GP7`-`GP9`、
+`GP12`-`GP18`及仅输入`GP29`；不得从允许列表反推连接器位置。
 
 ## 状态 LED（GPIO24）
 
@@ -63,8 +99,12 @@ USB5V 生成；x1.2 没有可切换的 VIO/1.8 V regulator，也没有 `switch/v
 
 ## 电流与电压监测
 
-四颗 INA226 共享 200 kHz PIO I2C 总线，每颗为一个电源轨上报电流、总线电压和
-功率；板上没有 ADC 电流采样路径。
+四颗 INA226 共享生产默认400 kHz的PIO I2C总线。合格基线使用生产BOM中的
+4.7 kΩ上拉到常供电VCC_3V3，并保持J8空载。每颗INA226为一个电源轨上报电流、
+总线电压和功率；板上没有ADC电流采样路径。任何J8器件、线缆、上拉或异域电源
+都必须重新验证总电容、上升时间、VOL和电源域边界。固件启动时probe CH224A，
+状态请求继续轮询；无PD源/VHV时失败后进入5秒退避，插入源后恢复。该期间
+VCC_3V3供电的INA226遥测仍可工作。
 
 | 电源轨 | 器件 | 7 位地址 | 采样电阻 |
 | --- | --- | --- | --- |
@@ -73,9 +113,10 @@ USB5V 生成；x1.2 没有可切换的 VIO/1.8 V regulator，也没有 `switch/v
 | `5v_out` | U11 | `0x44` | 10 mOhm |
 | `vdd_5v` | U12 | `0x45` | 10 mOhm |
 
-ADC0-ADC2 从 J8 引出，不是电源轨采样输入。ADC3（`GP29`）是由 `adc3` 拥有的
-纯监测电压通道，没有电源状态。固件上报五个 descriptor，主机直接展示固件值，
-不做主机侧校准表或零点修正。合约见
+J8只引出ADC1/GP27、ADC2/GP28和ADC3/GP29；ADC0/GP26不是J8端子。
+ADC1/ADC2不是电源轨采样输入。ADC3（`GP29`）是由`adc3`拥有的纯监测电压通道，
+没有电源状态。固件上报五个descriptor，主机直接展示固件值，不做主机侧校准表
+或零点修正。合约见
 [ADC telemetry 合约](../reference/adc-telemetry.md)。
 
 ## 原理图参考

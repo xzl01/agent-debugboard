@@ -39,10 +39,18 @@ struct linkr_debugger_safe_gpio_desc {
 	uint8_t pin;
 	bool output_capable;
 	const char *note;
+	/* NULL means the safe GPIO has no confirmed connector placement. */
 	const char *layout_group;
 	const char *layout_label;
+	/* Coordinates are valid only when layout_group is non-NULL and non-empty. */
 	uint8_t layout_row;
 	uint8_t layout_column;
+};
+
+struct linkr_debugger_gpio_layout_group_desc {
+	const char *name;
+	const char *edge;
+	uint8_t order;
 };
 
 struct linkr_debugger_heartbeat_state {
@@ -68,6 +76,8 @@ extern const size_t linkr_debugger_current_count;
 
 extern const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[];
 extern const size_t linkr_debugger_safe_gpio_count;
+extern const struct linkr_debugger_gpio_layout_group_desc linkr_debugger_gpio_layout_groups[];
+extern const size_t linkr_debugger_gpio_layout_group_count;
 
 bool linkr_debugger_parse_bool_arg(const char *arg, bool *value);
 bool linkr_debugger_parse_gpio_pin(const char *arg, uint8_t *pin);

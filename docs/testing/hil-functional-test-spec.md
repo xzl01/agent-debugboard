@@ -809,12 +809,25 @@ docs/testing/results/<YYYY-MM-DD>-persistent-config-hil.SHA256SUMS
   不得使用固定 5000 mA 量程。
 - Controls、Saved Config、Status 三页页签和当前页表头各固定一行，Tab/Shift+Tab
   在三页间前后切换，且只有活动页签使用反色/粗体焦点。
-- Controls 每个 Power、Switch 对象严格占一行并使用稳定列。GPIO 只消费固件返回的
+- Controls 每个 Power、Switch 对象严格占一行并使用稳定列。状态快照的顶层
+  `gpio_layout_groups` 是连接器布局权威：x1.2 必须包含
+  `J8/right/order=0` 和 `J13/right/order=1`。known group 先按 `order` 排序，组内
+  只按固件给出的 `layoutRow/layoutColumn` 排序；这些坐标是元件面俯视物理网格，
+  即使 `edge=right` 也**不得镜像** row/column。
+- GPIO 只消费固件返回的
   `layoutGroup/layoutLabel/layoutRow/layoutColumn`：48 列及以上时同一固件物理行
-  最多两个独立 cell，低于 48 列时每针单行，不得跨固件行配对；缺失 metadata
-  的引脚按快照顺序独立回退，host 不得硬编码连接器、pin map 或镜像规则。80x24
-  首屏至少暴露 14 个硬件对象/cell，120x32 至少 21 个。Saved Config 每个条目占
-  一行，Status 每个 switch 或监控字段占一行。
+  最多两个独立 cell，低于48列时每针单行，不得跨固件行配对。`edge=right` 仅由
+  group metadata驱动右侧/板外方向的`›`标记，不得按`J8`、`J13`或任何GPIO名称
+  特判。未提供组级metadata的组保留首次出现顺序；未知edge使用通用外观，不猜测
+  出线方向。缺失/非法引脚坐标或坐标冲突的引脚进入通用fallback，并按快照顺序
+  保留可达性；host不得硬编码连接器、pin map或镜像规则。
+- 固件GPIO数组和布局图只描述可控制safe-GPIO子集，不是完整connector pinout。
+  J8/J13的GND、保留脚和空位必须保持inert，不得命中其它引脚。GP17/GP18仍作为
+  通用GPIO组内的真实控件可达，但不能在J8/J13物理图上虚构孔位。无ADC数据的密度
+  基准fixture须保持`dense_layout_tests.rs`的预算：80x24至少14行、120x32至少20行。
+  实板有ADC时保留七行示波器，按实际目录及物理行配对核对可见数量，不能为凑数
+  虚构引脚或跨行配对；所有项目必须可滚动到达。Saved Config每个条目占一行，
+  Status每个switch或监控字段占一行。
 - 当前 Power、Switch 与 Saved Config 行的焦点背景必须从第 0 列铺到终端最后一列；
    GPIO 焦点只覆盖自己的半行 cell，不能覆盖或隐藏兄弟 cell。电源 ON/OFF 分别为
    绿/深灰；switch ready/pending/mismatch 分别为青/黄/红；GPIO 必须显示
@@ -969,37 +982,36 @@ timeout 5s radxa-linkr-debuggerctl --json power set 20v_out off
 
 ### 4. ADC 电流监测
 
-四路 INA226 和 CH224A 共用的 GP20/GP21 I2C 总线在 x1.2 板上没有板载外置
-SCL/SDA 上拉，并跨越 VBUS/VHV、VCC_3V3 与外部 J8。执行本节或任何依赖该总线的
-HIL 前，必须先满足以下电气前置条件；缺少任一项时将 I2C/INA226 项标记为
-`[blocked]`，不得根据一次 idle-high 读数推断存在安全上拉：
+四路 INA226 和 CH224A 共用 GP20/GP21 I2C 总线。400 kHz 生产默认的合格基线是：
+生产 BOM 在 SDA/SCL 各装 4.7 kΩ 到常供电板载 VCC_3V3，J8 空载，固件保持
+`bias-disable`、Schmitt 输入和开漏输出。执行本节前必须核对这些条件；任何偏离都
+不能沿用基线结论：
 
-- 测试夹具必须提供并记录明确的外部上拉阻值、上拉电源和接线位置。绝不能启用
-  RP2350 内部 pull-up 来补救；固件和 Device Tree 必须保持 GP20/GP21
-  `bias-disable`。RP2350 internal RPU 为 32–86 kΩ，不满足 400 kHz 上升时间，
-  并会额外形成 VCC_3V3 到共享总线的通路。
-- 记录 VBUS/VHV、VCC_3V3 和 J8 外部连接的每个测试电源状态，验证上电/掉电时序，
-  或使用已确认 powered-off-safe 的隔离器。分别测量 idle 来源、反向电流/反灌，
-  不能把未知来源的高电平记作通过。CH224A CFG2/CFG3 虽有 7/10/15 kΩ internal
-  pull-up 并支持 400 kHz，但 datasheet 未说明上拉轨，也未给出 VHV=0 V 时的
-  powered-off Ioff，不能把它当作合格的跨域上拉。
+- 绝不能启用 RP2350 internal pull-up 来替代或并联 BOM 上拉。其 RPU 为
+  32–86 kΩ，会形成未受控的附加 VCC_3V3 通路。
+- 任何接入 J8 的器件、线缆、上拉或异域电源都构成新的总线配置。禁止任意上拉和
+  跨域上拉；必须重新核算并实测总 `Cb`、30%–70% `tr`、`VOL`/灌电流及所有
+  powered/unpowered 电流路径，未完成时外接400 kHz声明记为 `[blocked]`。
+- CH224A CFG2/CFG3 的7/10/15 kΩ internal pull-up支持400 kHz，但datasheet未说明
+  上拉轨，也未给出VHV=0 V时powered-off Ioff；CFG绝对最大值为6.5 V。
+  不能把内部上拉或轮询成功当作独立的合格上拉、掉电隔离或Ioff安全证据。
 - INA226 SCL 的绝对最大值是 `VS + 0.3 V`；当 `VS = 0 V` 时，SCL 被拉到 3.3 V
   明确违规。SDA 的绝对最大值虽为 6 V，但没有 powered-off Ioff 规格，仍须测量
   反向电流。板上 ESD5451N 是 5 V TVS，不会把总线钳在 3.3 V，也不能作为掉电
-  隔离或反灌保护。200 kHz 默认频率本身不消除上述风险。
-- 生产 Device Tree 默认必须保持 200 kHz。只有明确外部上拉和跨域时序/隔离先通过，
-  且示波器测得 `tr <= 300 ns`、VOL/灌电流与反灌均满足器件边界后，才可用单独的
-  400 kHz 验证构建修改 `clock-frequency`。报告必须明确该构建不是生产默认；任一
-  条件失败都回退到 200 kHz 并把 400 kHz 标记为 `[blocked]`。
-- 本轮 400 kHz 夹具条件必须原样记录，不能外推为生产板事实：SDA/SCL 各通过
-  4.7 kΩ 飞线上拉到板载 VCC_3V3，上拉随板掉电，J8 空载，VHV/PD 全程在线，且
+  隔离或反灌保护；这是非频率特定的硬件边界。
+- 实际软件行为是启动时probe CH224A，状态请求继续轮询。无PD源/VHV时失败后进入
+  5秒probe退避，插入源后由后续状态轮询恢复；该期间VCC_3V3供电的INA226总线
+  必须仍可工作。无PD轮询行为可在后续单独HIL验证，但不是400 kHz放行前提，且
+  轮询结果不能证明powered-off Ioff安全。
+- 400 kHz 生产默认的原始功能HIL夹具使用与正式BOM等值的SDA/SCL各4.7 kΩ
+  飞线上拉到板载VCC_3V3，上拉随板掉电，J8空载，VHV/PD全程在线，且
   **不执行单边掉电**。4.7 kΩ 分别与 CH224A 7/10/15 kΩ internal pull-up
   并联后为 2.812/3.197/3.579 kΩ；按已知 34 pF 估算
   `tr = 81.0–103.1 ns`，3.3 V 低态上拉电流为 0.922–1.174 mA。4.7 kΩ
   单独对应 `tr = 135.4 ns`、`Cbmax = 75.33 pF`；最坏并联值对应
   `Cbmax = 98.94 pF`，扣除已知 34 pF 后余量为 64.94 pF。报告仍须保存
-  示波器实测 tr/VOL；这些估算不能替代测量，也不能证明 VHV=0 或
-  VCC_3V3=0 时的 Ioff/反灌安全。
+  示波器实测 tr/VOL；这些估算不能替代测量，也不能证明完整UM10204 analog/
+  50 ns spike-filter合规或VHV=0/VCC_3V3=0时的Ioff/反灌安全。
 - 400 kHz 软件路径 HIL 需覆盖普通 data/ACK、STOP、repeated START 和九脉冲
   recovery。对 STOP、repeated START、每个 recovery high 及 recovery tail STOP，
   必须确认 SCL 释放后等待实际 SCL high，再从实际 high 起满足 setup/high 时间；
@@ -1321,6 +1333,20 @@ timeout 5s radxa-linkr-debuggerctl --json gpio input GP13
 timeout 5s radxa-linkr-debuggerctl --json gpio set GP13 0
 timeout 5s radxa-linkr-debuggerctl --json gpio input GP13
 ```
+
+同时验证以下板级与metadata合同：
+
+- safe-GPIO允许列表仍为`GP7`-`GP9`、`GP12`-`GP18`和仅输入`GP29`；允许列表
+  不代表每个GPIO都有连接器位置。GP17/GP18必须没有J8/J13映射。
+- 元件面俯视时J8左列从顶到下为pin 10→1，右列为pin 20→11；已确认控制/监测
+  子集为pin1..10依次`GP12/GP13/GP14/GP15/GP16/GP29(ADC3)/GP28(ADC2)/
+  GP27(ADC1)/GP20(SCL)/GP21(SDA)`。ADC0/GP26不是J8端子；该子集不是完整pinout。
+- J13顶排为pin2 GP9/USER、pin3 GP8/RSET；底排为pin1 GP7/MASKROM、pin4 GND。
+  pin4不是3.3 V，也不得出现在GPIO点击目标中。
+- `gpio_layout_groups`必须把J8/J13都标为`edge=right`，order分别为0/1；对应
+  safe-GPIO metadata为J8：GP29 `(row=4,col=0)`、GP16 `(5,0)`、GP15 `(6,0)`、
+  GP14 `(7,0)`、GP13 `(8,0)`、GP12 `(9,0)`；J13：GP9 `(0,0)`、GP8 `(0,1)`、
+  GP7 `(1,0)`。这些row/column不得因right edge而镜像。
 
 ### 8. watchdog 状态
 

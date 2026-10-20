@@ -35,7 +35,11 @@ Failure (`error` is present only when `ok` is `false`):
 curl http://172.29.203.1/api/v1/status
 ```
 
-Returns everything in one shot: `project`, `build` (including `profile` and `image_version`), `mcu`, `usb`, `power_inputs`, `power_outputs`, `switches`, `adc_channels`, `watchdog`, `board_monitoring`, `gpios`.
+Returns everything in one shot: `project`, `build` (including `profile` and `image_version`), `mcu`, `usb`, `power_inputs`, `power_outputs`, `switches`, `adc_channels`, `watchdog`, `board_monitoring`, `gpio_layout_groups`, and `gpios`.
+
+The encoded status body must remain strictly smaller than the dedicated
+6144-byte firmware buffer. This is a protocol size gate for additions to the
+status snapshot, not permission for clients to assume a fixed response length.
 
 ## Power
 
@@ -85,6 +89,32 @@ curl http://172.29.203.1/api/v1/gpio/GP13                    # read one
 curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"output","value":1}'
 curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"input"}'
 ```
+
+`GET /api/v1/status`, the `GET /api/v1/gpio` list response, and WebSocket
+status snapshots carry this top-level connector metadata:
+
+```json
+{
+  "gpio_layout_groups": [
+    {"name": "J8", "edge": "right", "order": 0},
+    {"name": "J13", "edge": "right", "order": 1}
+  ]
+}
+```
+
+`name` matches each GPIO's `layoutGroup`; `edge` is the board-edge placement
+hint, and `order` defines connector order independently of GPIO array order.
+For mapped pins, `layoutLabel`, `layoutRow`, and `layoutColumn` describe the
+component-side top view, with `row=0` at the top and `column=0` on the left.
+The confirmed coordinates are J8 GP12 `(9,0)`, GP13 `(8,0)`, GP14 `(7,0)`,
+GP15 `(6,0)`, GP16 `(5,0)`, GP29/ADC3 `(4,0)`; and J13 GP9 `(0,0)`, GP8
+`(0,1)`, GP7 `(1,0)`. Layout fields are optional: safe GPIOs GP17 and GP18
+have no confirmed J8/J13 placement, so firmware omits their `layoutGroup`,
+`layoutRow`, and `layoutColumn`; clients must retain them in a generic fallback.
+Clients must likewise keep an undescribed group and treat an unknown `edge`
+value as no edge-alignment hint rather than dropping its GPIOs. These GPIO
+arrays are the firmware safe-GPIO allowlist, not a complete connector pinout or
+a mating-face diagram.
 
 ## Reboot
 
@@ -496,7 +526,7 @@ ordinary `gpio_set` and `power_set` commands through the generic task runner.
 
 **Status snapshot** (pushed on state change):
 ```json
-{"type": "snapshot", "topic": "status", "power_capture_protocol": "host-stream-v1", "sequence": 1, "power_outputs": [], "switches": {}, "watchdog": {}, "gpios": [], "board_monitoring": {}}
+{"type": "snapshot", "topic": "status", "power_capture_protocol": "host-stream-v1", "sequence": 1, "power_outputs": [], "switches": {}, "watchdog": {}, "gpio_layout_groups": [{"name":"J8","edge":"right","order":0},{"name":"J13","edge":"right","order":1}], "gpios": [], "board_monitoring": {}}
 ```
 
 **ADC telemetry** (at subscribed rate):

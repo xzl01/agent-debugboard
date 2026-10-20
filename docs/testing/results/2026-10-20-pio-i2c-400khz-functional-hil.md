@@ -4,10 +4,35 @@
 
 **PASS for bounded functional characterization of this x1.2 sample and fixture.**
 
-**NO-GO for changing the production default from 200 kHz.** This run did not
-measure analog rise time, `VOL`, powered-off leakage, or arbitrary cross-domain
-power sequencing. It therefore does not close the electrical requirements for
-a production 400 kHz claim.
+**Verdict at the time of this run: NO-GO for changing the then-200 kHz
+production default.** This run did not measure analog rise time, `VOL`,
+powered-off leakage, or arbitrary cross-domain power sequencing. The historical
+run therefore did not, by itself, close every electrical requirement for a
+production 400 kHz claim.
+
+## Post-run promotion decision
+
+After the run, the user explicitly authorized the 400 kHz production Device Tree
+default under this product contract:
+
+- Production formally populates 4.7 kOhm SDA/SCL BOM pull-ups to the
+  always-powered board `VCC_3V3` rail.
+- The qualified 400 kHz baseline leaves J8 unloaded. Any external device,
+  cable, pull-up, or foreign power domain requires a new total-capacitance,
+  rise-time, `VOL`/sink-current, and powered/unpowered-path validation; arbitrary
+  or cross-domain pull-ups are not allowed.
+- The actual software contract probes CH224A at startup and polls it on status
+  requests. With no PD source/VHV, failures enter a five-second probe backoff;
+  later status polling recovers after source insertion, while the VCC_3V3-
+  powered INA226 bus remains operational.
+- CH224A CFG has a 6.5 V absolute maximum and still has no vendor-guaranteed
+  powered-off `Ioff`. Polling does not prove Ioff safety; this remains a
+  non-frequency-specific hardware boundary.
+- No-PD polling behavior may be characterized in a separate future HIL, but it
+  is not a prerequisite for the 400 kHz promotion.
+
+The bounded digital functional PASS below supports that product decision, but
+is not a complete UM10204 analog or 50 ns spike-filter certification.
 
 ## Scope and safety boundary
 
@@ -48,21 +73,18 @@ calculations, not oscilloscope measurements.
 - Restored 200 kHz combined UF2 SHA-256:
   `83412907674c06d164623958bc1843210356f4615e8a8b07c371dca65637f77d`.
 
-The 400 kHz image was a complete MCUboot-plus-application UF2. It was built by
-appending the HIL-only overlay to the application image under sysbuild; the
-production Device Tree remained at 200 kHz:
-
-```sh
-nix-shell --run \
-  'west build -p always -b rpi_pico2/rp2350a/m33/mcuboot \
-   --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger -- \
-   -Dradxa_linkr_debugger_EXTRA_DTC_OVERLAY_FILE=apps/radxa_linkr_debugger/tests/hil/i2c-400khz.overlay'
-```
+The 400 kHz image was a complete MCUboot-plus-application UF2. At the time of
+the run it appended a temporary, per-image overlay whose complete effective
+content was `&pio_i2c0 { clock-frequency=<400000>; }`; the overlay content
+SHA-256 is retained above. After 400 kHz was promoted into the base product
+Device Tree, that redundant HIL fixture was deleted. There is intentionally no
+reproduction command referring to the deleted path.
 
 Generated `zephyr.dts` contained `clock-frequency = <0x61a80>` (400000).
-The production rebuild contained `<0x30d40>` (200000).
-Rebuilding with the retained repository overlay reproduced the exact same
-400 kHz combined-UF2 SHA-256 recorded above.
+The then-production restoration build contained `<0x30d40>` (200000).
+At the time, rebuilding with the temporary overlay reproduced the exact same
+400 kHz combined-UF2 SHA-256 recorded above; the fixture was deleted only after
+the later product promotion.
 
 ## Static evidence before HIL
 
@@ -162,7 +184,7 @@ bound to the fixed address `172.29.203.1`. The SCL capture therefore used the
 same Sigrok v2 protocol over the board's WebSocket transport. This is a separate
 network-listener defect and does not change the I2C verdict.
 
-## Remaining gates before production 400 kHz
+## Unclosed characterization limits after product promotion
 
 - Measure SCL and SDA 30%–70% rise time and verify `tr <= 300 ns` across voltage,
   temperature, and component tolerance.
@@ -174,5 +196,7 @@ network-listener defect and does not change the I2C verdict.
 - Establish 50 ns spike suppression if full UM10204 conformance is claimed.
 - Repeat on enough boards to cover the CH224A 7–15 kOhm pull-up tolerance.
 
-Until these gates close, production remains at 200 kHz and this result is
-sample-specific functional evidence only.
+These limits prevent claiming complete UM10204 analog, spike-filter, arbitrary
+J8-load, or powered-off-domain certification. They do not change the later
+user-authorized 400 kHz production default under the explicit BOM/VHV/J8
+contract above. The recorded run remains sample-specific functional evidence.

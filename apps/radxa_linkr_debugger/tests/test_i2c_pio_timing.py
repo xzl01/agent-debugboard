@@ -25,7 +25,11 @@ PROJECT_SHELL_PATH = APP_PATH / "src/linkr_debugger_shell.c"
 GENERATED_CONFIG_PATH = (
     ROOT / "build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/.config"
 )
+GENERATED_DTS_PATH = (
+    ROOT / "build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.dts"
+)
 GENERATED_IMAGE_PATH = ROOT / "build/radxa_linkr_debugger/radxa_linkr_debugger"
+OBSOLETE_400KHZ_OVERLAY_PATH = APP_PATH / "tests/hil/i2c-400khz.overlay"
 
 
 def integer_define(source: str, name: str) -> int:
@@ -950,11 +954,23 @@ class PioI2cTimingTest(unittest.TestCase):
             )
         )
 
-    def test_dt_defaults_to_200khz_with_400khz_capability_ceiling(self) -> None:
-        self.assertRegex(self.overlay, r"clock-frequency\s*=\s*<200000>;")
-        self.assertNotRegex(self.overlay, r"clock-frequency\s*=\s*<400000>;")
+    def test_dt_production_default_is_400khz(self) -> None:
+        self.assertRegex(self.overlay, r"clock-frequency\s*=\s*<400000>;")
+        self.assertNotRegex(self.overlay, r"clock-frequency\s*=\s*<200000>;")
         self.assertRegex(self.binding, r"(?m)^\s+max:\s+400000\s*$")
         self.assertEqual(integer_define(self.driver, "PIO_I2C_MAX_REQUEST_HZ"), 400_000)
+        self.assertFalse(OBSOLETE_400KHZ_OVERLAY_PATH.exists())
+
+        if GENERATED_DTS_PATH.exists():
+            generated_dts = GENERATED_DTS_PATH.read_text(encoding="utf-8")
+            node = re.search(
+                r'compatible = "raspberrypi,pico-pio-i2c";(.*?)};',
+                generated_dts,
+                re.DOTALL,
+            )
+            self.assertIsNotNone(node)
+            self.assertRegex(node.group(1), r"clock-frequency = < 0x61a80 >;")
+            self.assertNotRegex(node.group(1), r"clock-frequency = < 0x30d40 >;")
 
     def test_production_config_forbids_generic_mutation_shells(self) -> None:
         forbidden_shells = (
@@ -1027,16 +1043,18 @@ class PioI2cTimingTest(unittest.TestCase):
 
     def test_cross_domain_electrical_boundaries_are_documented(self) -> None:
         required_hardware_contracts = (
-            "no board-mounted external SCL/SDA pull-up",
+            "production BOM formally populates",
+            "always-powered board VCC_3V3 rail",
             "7/10/15 kΩ internal pull-ups",
             "does not identify the pull-up rail",
+            "6.5 V absolute maximum",
             "`VS + 0.3 V`",
             "`VS = 0 V`",
             "6 V absolute",
             "32–86 kΩ",
             "5 V TVS",
             "must never enable it",
-            "200 kHz by default",
+            "400 kHz production default",
             "4.7 kΩ fly-wire pull-up",
             "2.812/3.197/3.579 kΩ",
             "`tr = 81.0–103.1 ns`",
@@ -1046,33 +1064,46 @@ class PioI2cTimingTest(unittest.TestCase):
             "64.94 pF",
             "34 pF fixture capacitance",
             "50 ns",
+            "probes CH224A at startup",
+            "five-second retry backoff",
+            "polling behavior does not prove Ioff safety",
         )
+        normalized_hardware_doc = re.sub(r"\s+", " ", self.hardware_doc)
         for contract in required_hardware_contracts:
             with self.subTest(hardware_contract=contract):
-                self.assertIn(contract, self.hardware_doc)
+                self.assertIn(contract, normalized_hardware_doc)
         self.assertNotRegex(self.hardware_doc, r"2\.2\s*kΩ|2\.2\s*kOhm")
 
         required_hil_contracts = (
-            "RP2350 internal RPU 为 32–86 kΩ",
-            "CH224A CFG2/CFG3 虽有 7/10/15 kΩ internal",
+            "RPU 为 32–86 kΩ",
+            "CH224A CFG2/CFG3 的7/10/15 kΩ internal",
+            "CFG绝对最大值为6.5 V",
             "`VS + 0.3 V`",
             "`VS = 0 V`",
             "SDA 的绝对最大值虽为 6 V",
             "ESD5451N 是 5 V TVS",
-            "200 kHz 默认频率本身不消除上述风险",
-            "4.7 kΩ 飞线上拉到板载 VCC_3V3",
+            "400 kHz 生产默认",
+            "4.7 kΩ 飞线上拉到板载VCC_3V3",
             "2.812/3.197/3.579 kΩ",
             "`tr = 81.0–103.1 ns`",
             "0.922–1.174 mA",
             "`Cbmax = 75.33 pF`",
             "`Cbmax = 98.94 pF`",
             "64.94 pF",
+            "J8 空载",
+            "启动时probe CH224A",
+            "5秒probe退避",
+            "插入源后由后续状态轮询恢复",
+            "无PD轮询行为可在后续单独HIL验证",
+            "不是400 kHz放行前提",
+            "轮询结果不能证明powered-off Ioff安全",
             "不执行单边掉电",
             "50 ns spike filter",
         )
+        normalized_hil_doc = re.sub(r"\s+", " ", self.hil_doc)
         for contract in required_hil_contracts:
             with self.subTest(hil_contract=contract):
-                self.assertIn(contract, self.hil_doc)
+                self.assertIn(contract, normalized_hil_doc)
 
         required_result_contracts = (
             "Post-run fixture evidence correction",
@@ -1085,10 +1116,19 @@ class PioI2cTimingTest(unittest.TestCase):
             "`Cbmax = 75.33 pF`",
             "`Cbmax = 98.94 pF`",
             "64.94 pF",
+            "Post-run promotion decision",
+            "400 kHz production Device Tree default",
+            "Production formally populates 4.7 kOhm",
+            "not a complete UM10204 analog or 50 ns spike-filter certification",
+            "probes CH224A at startup",
+            "five-second probe backoff",
+            "Polling does not prove Ioff safety",
+            "not a prerequisite for the 400 kHz promotion",
         )
+        normalized_hil_result = re.sub(r"\s+", " ", self.hil_result)
         for contract in required_result_contracts:
             with self.subTest(hil_result_contract=contract):
-                self.assertIn(contract, self.hil_result)
+                self.assertIn(contract, normalized_hil_result)
 
         fixture_docs = "\n".join(
             (self.hardware_doc, self.hil_doc, self.hil_result)
@@ -1098,6 +1138,13 @@ class PioI2cTimingTest(unittest.TestCase):
             r"10\s*k(?:Ω|Ohm)\s+(?:fly|flying|飞线)|"
             r"10\s*k(?:Ω|Ohm)\s+external",
         )
+        self.assertIn(
+            "8ba4dcf0448ec4f99a5fadb6d357cb93c2db5f640012a2974caf77537ae36107",
+            self.hil_result,
+        )
+        self.assertIn("&pio_i2c0 { clock-frequency=<400000>; }", self.hil_result)
+        self.assertIn("fixture was deleted", self.hil_result)
+        self.assertNotIn("EXTRA_DTC_OVERLAY_FILE", self.hil_result)
 
     def test_corrected_fixture_calculations(self) -> None:
         external_ohms = 4_700.0

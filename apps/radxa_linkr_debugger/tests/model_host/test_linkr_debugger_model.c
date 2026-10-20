@@ -136,12 +136,46 @@ static void test_safe_gpio_allowlist(void)
 	static const uint8_t expected_order[] = {
 		8, 9, 7, 15, 29, 14, 13, 12, 18, 17, 16,
 	};
+	static const struct {
+		uint8_t pin;
+		const char *note;
+		const char *group;
+		uint8_t row;
+		uint8_t column;
+	} expected_layout[] = {
+		{ 12, "J8_PIN1", "J8", 9, 0 },
+		{ 13, "J8_PIN2", "J8", 8, 0 },
+		{ 14, "J8_PIN3", "J8", 7, 0 },
+		{ 15, "J8_PIN4", "J8", 6, 0 },
+		{ 16, "J8_PIN5", "J8", 5, 0 },
+		{ 29, "J8_PIN6", "J8", 4, 0 },
+		{ 9, "CON_USER", "J13", 0, 0 },
+		{ 8, "CON_REST", "J13", 0, 1 },
+		{ 7, "CON_MAS", "J13", 1, 0 },
+	};
 	char name[LINKR_DEBUGGER_GPIO_NAME_BUFSZ];
+
+	assert(linkr_debugger_gpio_layout_group_count == 2U);
+	assert_str_eq(linkr_debugger_gpio_layout_groups[0].name, "J8");
+	assert_str_eq(linkr_debugger_gpio_layout_groups[0].edge, "right");
+	assert(linkr_debugger_gpio_layout_groups[0].order == 0U);
+	assert_str_eq(linkr_debugger_gpio_layout_groups[1].name, "J13");
+	assert_str_eq(linkr_debugger_gpio_layout_groups[1].edge, "right");
+	assert(linkr_debugger_gpio_layout_groups[1].order == 1U);
+
 	assert(linkr_debugger_safe_gpio_count == 11);
 	for (size_t i = 0; i < linkr_debugger_safe_gpio_count; i++) {
 		assert(linkr_debugger_safe_gpios[i].pin == expected_order[i]);
 		assert(linkr_debugger_safe_gpios[i].output_capable ==
 		       (linkr_debugger_safe_gpios[i].pin != 29U));
+	}
+	for (size_t i = 0; i < sizeof(expected_layout) / sizeof(expected_layout[0]); i++) {
+		gpio = linkr_debugger_find_safe_gpio_by_pin(expected_layout[i].pin);
+		assert(gpio != NULL);
+		assert_str_eq(gpio->note, expected_layout[i].note);
+		assert_str_eq(gpio->layout_group, expected_layout[i].group);
+		assert(gpio->layout_row == expected_layout[i].row);
+		assert(gpio->layout_column == expected_layout[i].column);
 	}
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(7);
@@ -150,21 +184,21 @@ static void test_safe_gpio_allowlist(void)
 	assert_str_eq(gpio->layout_group, "J13");
 	assert_str_eq(gpio->layout_label, "MASKROM");
 	assert(gpio->layout_row == 1);
-	assert(gpio->layout_column == 1);
+	assert(gpio->layout_column == 0);
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(8);
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "CON_REST");
 	assert_str_eq(gpio->layout_label, "RSET");
 	assert(gpio->layout_row == 0);
-	assert(gpio->layout_column == 0);
+	assert(gpio->layout_column == 1);
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(9);
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "CON_USER");
 	assert_str_eq(gpio->layout_label, "USER");
 	assert(gpio->layout_row == 0);
-	assert(gpio->layout_column == 1);
+	assert(gpio->layout_column == 0);
 
 	assert(linkr_debugger_find_safe_gpio_by_pin(10) == NULL);
 	assert(linkr_debugger_find_safe_gpio_by_pin(11) == NULL);
@@ -175,19 +209,33 @@ static void test_safe_gpio_allowlist(void)
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(15);
 	assert(gpio != NULL);
-	assert_str_eq(gpio->note, "J8_PIN11");
-	assert(gpio->layout_row == 0);
+	assert_str_eq(gpio->note, "J8_PIN4");
+	assert(gpio->layout_row == 6);
 	assert(gpio->layout_column == 0);
 
 	gpio = linkr_debugger_find_safe_gpio_by_pin(29);
 	assert(gpio != NULL);
-	assert_str_eq(gpio->note, "J8_PIN12");
+	assert_str_eq(gpio->note, "J8_PIN6");
 	assert_str_eq(gpio->layout_label, "ADC3");
-	assert(gpio->layout_row == 0);
-	assert(gpio->layout_column == 1);
+	assert(gpio->layout_row == 4);
+	assert(gpio->layout_column == 0);
 	assert(!gpio->output_capable);
 	assert(linkr_debugger_format_gpio_name(gpio->pin, name, sizeof(name)));
 	assert_str_eq(name, "GP29");
+
+	gpio = linkr_debugger_find_safe_gpio_by_pin(17);
+	assert(gpio != NULL);
+	assert(gpio->output_capable);
+	assert_str_eq(gpio->note, "GP17");
+	assert(gpio->layout_group == NULL);
+	assert_str_eq(gpio->layout_label, "GP17");
+
+	gpio = linkr_debugger_find_safe_gpio_by_pin(18);
+	assert(gpio != NULL);
+	assert(gpio->output_capable);
+	assert_str_eq(gpio->note, "GP18");
+	assert(gpio->layout_group == NULL);
+	assert_str_eq(gpio->layout_label, "GP18");
 
 	assert(linkr_debugger_find_safe_gpio_by_pin(6) == NULL);
 	assert(linkr_debugger_find_safe_gpio_by_pin(22) == NULL);
@@ -199,9 +247,10 @@ static void test_safe_gpio_allowlist(void)
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "CON_MAS");
 
-	gpio = linkr_debugger_find_safe_gpio_by_identifier("J8_PIN12");
+	gpio = linkr_debugger_find_safe_gpio_by_identifier("J8_PIN6");
 	assert(gpio != NULL);
 	assert(gpio->pin == 29);
+	assert(linkr_debugger_find_safe_gpio_by_identifier("J8_PIN12") == NULL);
 
 	assert(linkr_debugger_find_safe_gpio_by_identifier("not-a-gpio") == NULL);
 }

@@ -13,8 +13,9 @@
  *  - Four INA226 on a PIO I2C bus: 20V=0x40, 12V=0x41, 5V=0x44,
  *    aux 5V=0x45, 10 mOhm shunts. Each reports bus voltage, current, power.
  *  - CH224A is on the same bus and is limited to 400 kHz. The shared PIO bus
- *    defaults to 200 kHz; 400 kHz requires external pull-ups and electrical
- *    validation. INA226 HS mode requires isolation.
+ *    runs at 400 kHz with production 4.7 kOhm pull-ups to always-on VCC_3V3;
+ *    the qualified baseline leaves J8 unloaded. INA226 HS mode still requires
+ *    isolation.
  *  - The schematic nets RP2354_SCL/RP2354_SDA are on GPIO20/GPIO21
  *    respectively (SCL=GPIO20, SDA=GPIO21). This is the opposite of the
  *    RP2350 I2C0 pin functions and of the pico-examples SCL=SDA+1 layout,
@@ -99,8 +100,8 @@
 	pio_i2c0: i2c {
 		compatible = "raspberrypi,pico-pio-i2c";
 		status = "okay";
-		/* Conservative default; 400 kHz remains a validated-capability ceiling. */
-		clock-frequency = <200000>;
+		/* Production Fast-mode setting; CH224A is limited to 400 kHz. */
+		clock-frequency = <400000>;
 		pinctrl-0 = <&pio_i2c0_default>;
 		pinctrl-names = "default";
 		#address-cells = <1>;

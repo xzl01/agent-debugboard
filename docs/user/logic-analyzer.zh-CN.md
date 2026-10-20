@@ -11,15 +11,19 @@ RP2350 PIO2+DMA 高速单次 GPIO 捕获，用于 PIO 速率下的短突发诊�
 
 以下引脚可用于逻辑分析仪捕获：
 
-| 引脚 | 标签 |
+| 引脚 | x1.2 所有权 / 接入位置 |
 | --- | --- |
-| GP7 | CON_MAS |
-| GP8 | CON_REST |
-| GP9 | CON_USER |
-| GP10–GP20 | J16 排针 |
-| GP29 | ADC3 |
+| GP7–GP9 | J13 恢复控制（`CON_MAS`、`CON_REST`、`CON_USER`） |
+| GP10–GP11 | J4 目标 UART；捕获期间逻辑分析仪临时接管 UART 引脚 |
+| GP12–GP16 | J8 pin 1–5 |
+| GP17–GP18 | 尚无已确认的 J8/J13 映射；只能按固件 GPIO 名选择 |
+| GP19 | PD CFG1 strap；仅采样内部信号，绝不能驱动 |
+| GP20 | J8 pin 9，PIO I2C SCL；只读 tap，绝不能驱动或拉低 |
+| GP29 | J8 pin 6，由 ADC3 所有且仅输入 |
 
-不可使用其他 GPIO 引脚。
+不可使用其他 GPIO 引脚。特别是 GP21 为 J8 pin 10 / PIO I2C SDA，不属于
+WIDE11 通道。此表是逻辑分析仪能力列表，不是物理连接器 pinout；连接探针前应以
+固件 GPIO metadata 和 x1.2 板图为准。
 
 ## 配置参数
 
@@ -200,11 +204,15 @@ tcp-raw/<板卡IP>/80
 
 ### 通道映射
 
-| PulseView 通道 | 板卡引脚 |
+| PulseView 通道 | 固件 GPIO 映射 |
 | --- | --- |
-| D0–D11 | J16 PIN1–PIN12（GP10、GP16、GP11、GP17、GP12、GP18、GP13、GP19、GP14、GP20、GP15、GP29） |
-| D12–D14 | J13 CON 引脚（GP7、GP8、GP9） |
-| CH1（模拟） | GP29（ADC3） |
+| D0–D11 | 固定协议顺序：GP10、GP16、GP11、GP17、GP12、GP18、GP13、GP19、GP14、GP20、GP15、GP29 |
+| D12–D14 | GP7、GP8、GP9（分别为 J13 pin 1、3、2） |
+| CH1（模拟） | GP29 / ADC3（J8 pin 6） |
+
+D0–D11 顺序是兼容性通道顺序，不是连接器顺序或完整物理 pinout。GP10/GP11
+位于 J4；GP12–GP16、GP20、GP29 的 J8 位置如上表；GP17/GP18 尚无已确认的
+J8/J13 位置；GP19 仍是不可驱动的 PD CFG1 strap。
 
 ### 行为
 
@@ -272,11 +280,14 @@ beaglelogic:conn=tcp-raw/<板卡IP>/5555
 
 ### 通道
 
-14 个数字通道，按 J16 连接器顺序：
+14 个数字通道采用固定协议顺序（不是连接器顺序）：
 
-- ch0–ch11：J16 PIN1–PIN12（GP10、GP16、GP11、GP17、GP12、GP18、GP13、GP19、
-  GP14、GP20、GP15、GP29）
-- ch12–ch13：J13 CON 引脚（GP7、GP8）
+- ch0–ch11：GP10、GP16、GP11、GP17、GP12、GP18、GP13、GP19、GP14、GP20、
+  GP15、GP29
+- ch12–ch13：GP7、GP8（J13 pin 1、3）
+
+这些通道号保留 wire protocol，不表示它们位于同一排针。探针位置必须按当前
+固件 metadata 和 x1.2 板图确认。
 
 ### 速率和采样格式
 

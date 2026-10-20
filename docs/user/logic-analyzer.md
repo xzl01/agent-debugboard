@@ -12,15 +12,20 @@ alongside the serial terminal.
 
 Only the following pins are available for logic analyzer capture:
 
-| Pin | Label |
+| Pin | x1.2 ownership / access |
 | --- | --- |
-| GP7 | CON_MAS |
-| GP8 | CON_REST |
-| GP9 | CON_USER |
-| GP10–GP20 | J16 header |
-| GP29 | ADC3 |
+| GP7–GP9 | J13 recovery controls (`CON_MAS`, `CON_REST`, `CON_USER`) |
+| GP10–GP11 | J4 target UART; capture temporarily takes ownership from UART |
+| GP12–GP16 | J8 pins 1–5 |
+| GP17–GP18 | No confirmed J8/J13 mapping; select by firmware GPIO name only |
+| GP19 | PD CFG1 strap; capture-only internal signal, never drive it |
+| GP20 | J8 pin 9, PIO I2C SCL; read-only tap, never drive or pull it low |
+| GP29 | J8 pin 6, ADC3-owned and input-only |
 
-No other GPIO pins can be used.
+No other GPIO pins can be used. In particular, GP21 is J8 pin 10 / PIO I2C
+SDA and is not a WIDE11 channel. This list is an analyzer capability list, not
+a physical connector pinout; use firmware GPIO metadata and the x1.2 board
+drawing before attaching probes.
 
 ## Configuration
 
@@ -204,11 +209,16 @@ WebSocket at `ws://<board>/api/v1/scpi` for browser clients.
 
 ### Channel Map
 
-| PulseView Channel | Board Pin |
+| PulseView Channel | Firmware GPIO mapping |
 | --- | --- |
-| D0–D11 | J16 PIN1–PIN12 (GP10, GP16, GP11, GP17, GP12, GP18, GP13, GP19, GP14, GP20, GP15, GP29) |
-| D12–D14 | J13 CON pins (GP7, GP8, GP9) |
-| CH1 (analog) | GP29 (ADC3) |
+| D0–D11 | Fixed protocol order: GP10, GP16, GP11, GP17, GP12, GP18, GP13, GP19, GP14, GP20, GP15, GP29 |
+| D12–D14 | GP7, GP8, GP9 (J13 pins 1, 3, 2 respectively) |
+| CH1 (analog) | GP29 / ADC3 (J8 pin 6) |
+
+The D0–D11 sequence is a compatibility channel order, not a connector order or
+a complete physical pinout. GP10/GP11 are on J4, GP12–GP16 and GP20/GP29 have
+the J8 placements listed above, GP17/GP18 have no confirmed J8/J13 placement,
+and GP19 remains the non-drivable PD CFG1 strap.
 
 ### Behavior
 
@@ -279,11 +289,15 @@ beaglelogic:conn=tcp-raw/<board-ip>/5555
 
 ### Channels
 
-14 digital channels in J16 connector order:
+14 digital channels in fixed protocol order (not connector order):
 
-- ch0–ch11: J16 PIN1–PIN12 (GP10, GP16, GP11, GP17, GP12, GP18, GP13, GP19,
-  GP14, GP20, GP15, GP29)
-- ch12–ch13: J13 CON pins (GP7, GP8)
+- ch0–ch11: GP10, GP16, GP11, GP17, GP12, GP18, GP13, GP19, GP14, GP20,
+  GP15, GP29
+- ch12–ch13: GP7, GP8 (J13 pins 1 and 3)
+
+These channel numbers preserve the wire protocol and do not imply a shared
+header. Resolve probe locations from current firmware metadata and the x1.2
+board drawing.
 
 ### Rate and Sample Format
 

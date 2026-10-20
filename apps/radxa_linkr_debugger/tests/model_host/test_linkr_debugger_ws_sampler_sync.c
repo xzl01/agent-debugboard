@@ -124,6 +124,111 @@ static void test_reboot_reports_schedule_and_send_errors(void)
 	assert(send_calls == 1U);
 }
 
+static void test_gpio_layout_group_encoder_is_generic_and_bounded(void)
+{
+	static const struct linkr_debugger_gpio_layout_group_desc groups[] = {
+		{ .name = "P\"\\\n\x01" "\xe9\x9b\xaa",
+		  .edge = "right\t\r\b\f", .order = 7U },
+	};
+	static const struct linkr_debugger_gpio_layout_group_desc null_edge[] = {
+		{ .name = "PORT", .edge = NULL, .order = 0U },
+	};
+	static const struct linkr_debugger_gpio_layout_group_desc invalid_utf8[] = {
+		{ .name = "PORT", .edge = "\xf5\x80\x80\x80", .order = 0U },
+	};
+	static const char expected[] =
+		"[{\"name\":\"P\\\"\\\\\\n\\u0001\xe9\x9b\xaa\","
+		"\"edge\":\"right\\t\\r\\b\\f\",\"order\":7}]";
+	char encoded[sizeof(expected) + 16U];
+	char exact[sizeof(expected)];
+	char short_buffer[sizeof(expected) - 1U];
+	char empty[3];
+	size_t cursor = 0U;
+	size_t exact_cursor = 0U;
+	size_t short_cursor = 0U;
+	size_t empty_cursor = 0U;
+
+	assert(linkr_debugger_ws_append_gpio_layout_groups_from(
+		       encoded, sizeof(encoded), &cursor, groups,
+		       sizeof(groups) / sizeof(groups[0])) == 0);
+	assert(strcmp(encoded, expected) == 0);
+	assert(cursor == strlen(encoded));
+	assert(linkr_debugger_ws_append_gpio_layout_groups_from(
+		       exact, sizeof(exact), &exact_cursor, groups,
+		       sizeof(groups) / sizeof(groups[0])) == 0);
+	assert(strcmp(exact, expected) == 0);
+	assert(exact_cursor == sizeof(exact) - 1U);
+	assert(linkr_debugger_ws_append_gpio_layout_groups_from(
+		       short_buffer, sizeof(short_buffer), &short_cursor, groups,
+		       sizeof(groups) / sizeof(groups[0])) == -ENOMEM);
+	assert(short_cursor == sizeof(short_buffer) - 1U);
+	assert(linkr_debugger_ws_append_gpio_layout_groups_from(
+		       empty, sizeof(empty), &empty_cursor, NULL, 0U) == 0);
+	assert(strcmp(empty, "[]") == 0);
+	cursor = 0U;
+	assert(linkr_debugger_ws_append_gpio_layout_groups_from(
+		       encoded, sizeof(encoded), &cursor, NULL, 1U) == -EINVAL);
+	assert(cursor == 0U);
+	assert(linkr_debugger_ws_append_gpio_layout_groups_from(
+		       encoded, sizeof(encoded), &cursor, null_edge,
+		       sizeof(null_edge) / sizeof(null_edge[0])) == -EINVAL);
+	assert(cursor == 0U);
+	assert(linkr_debugger_ws_append_gpio_layout_groups_from(
+		       encoded, sizeof(encoded), &cursor, invalid_utf8,
+		       sizeof(invalid_utf8) / sizeof(invalid_utf8[0])) == -EINVAL);
+	assert(cursor == 0U);
+}
+
+static void test_safe_gpio_layout_omits_unmapped_coordinates(void)
+{
+	static const struct linkr_debugger_safe_gpio_desc mapped = {
+		.pin = 12U,
+		.layout_group = "J8",
+		.layout_label = "GP12",
+		.layout_row = 9U,
+		.layout_column = 0U,
+	};
+	static const struct linkr_debugger_safe_gpio_desc unmapped = {
+		.pin = 17U,
+		.layout_group = NULL,
+		.layout_label = "GP17",
+		.layout_row = UINT8_MAX,
+		.layout_column = UINT8_MAX,
+	};
+	static const struct linkr_debugger_safe_gpio_desc empty_group = {
+		.pin = 18U,
+		.layout_group = "",
+		.layout_label = "GP18",
+		.layout_row = UINT8_MAX,
+		.layout_column = UINT8_MAX,
+	};
+	static const struct linkr_debugger_safe_gpio_desc invalid = {
+		.pin = 12U,
+		.layout_group = "J8",
+		.layout_label = NULL,
+	};
+	char encoded[128] = "gpio";
+	size_t cursor = strlen(encoded);
+
+	assert(linkr_debugger_ws_append_safe_gpio_layout_from(
+		       encoded, sizeof(encoded), &cursor, &mapped) == 0);
+	assert(strcmp(encoded,
+		      "gpio,\"layoutGroup\":\"J8\",\"layoutLabel\":\"GP12\","
+		      "\"layoutRow\":9,\"layoutColumn\":0") == 0);
+
+	strcpy(encoded, "unchanged");
+	cursor = strlen(encoded);
+	assert(linkr_debugger_ws_append_safe_gpio_layout_from(
+		       encoded, sizeof(encoded), &cursor, &unmapped) == 0);
+	assert(strcmp(encoded, "unchanged") == 0);
+	assert(cursor == strlen("unchanged"));
+	assert(linkr_debugger_ws_append_safe_gpio_layout_from(
+		       encoded, sizeof(encoded), &cursor, &empty_group) == 0);
+	assert(strcmp(encoded, "unchanged") == 0);
+	assert(linkr_debugger_ws_append_safe_gpio_layout_from(
+		       encoded, sizeof(encoded), &cursor, &invalid) == -EINVAL);
+}
+
 static void test_old_resume_does_not_release_new_pause(void)
 {
 	struct linkr_debugger_ws_sampler_sync sync = {0};
@@ -194,5 +299,7 @@ int main(void)
 	test_sampler_deadline_skips_overrun_without_catch_up();
 	test_reboot_acknowledges_normal_reboot_then_pending();
 	test_reboot_reports_schedule_and_send_errors();
+	test_gpio_layout_group_encoder_is_generic_and_bounded();
+	test_safe_gpio_layout_omits_unmapped_coordinates();
 	return 0;
 }

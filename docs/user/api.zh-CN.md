@@ -39,7 +39,10 @@
 curl http://172.29.203.1/api/v1/status
 ```
 
-响应字段：`project`、`build`（包含 `profile` 与 `image_version`）、`mcu`、`usb`、`power_inputs`、`power_outputs`、`switches`、`adc_channels`、`watchdog`、`board_monitoring`、`gpios`。
+响应字段：`project`、`build`（包含 `profile` 与 `image_version`）、`mcu`、`usb`、`power_inputs`、`power_outputs`、`switches`、`adc_channels`、`watchdog`、`board_monitoring`、`gpio_layout_groups`、`gpios`。
+
+编码后的 status body 必须严格小于固件专用的 6144 字节缓冲区。新增状态字段时
+必须通过这一协议大小门槛；客户端不能因此假定响应具有固定长度。
 
 ## 电源控制
 
@@ -130,6 +133,29 @@ curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"output","valu
 # 切回输入模式
 curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"input"}'
 ```
+
+`GET /api/v1/status`、`GET /api/v1/gpio` 列表响应和 WebSocket status snapshot
+都携带以下顶层连接器元数据：
+
+```json
+{
+  "gpio_layout_groups": [
+    {"name": "J8", "edge": "right", "order": 0},
+    {"name": "J13", "edge": "right", "order": 1}
+  ]
+}
+```
+
+`name` 与各 GPIO 的 `layoutGroup` 对应；`edge` 是板边位置提示，`order`
+独立于 GPIO 数组顺序定义连接器顺序。对于已映射引脚，`layoutLabel`、
+`layoutRow`、`layoutColumn` 描述元件面俯视坐标，顶部为 `row=0`、左列为
+`column=0`。已确认坐标为：J8 GP12 `(9,0)`、GP13 `(8,0)`、GP14 `(7,0)`、
+GP15 `(6,0)`、GP16 `(5,0)`、GP29/ADC3 `(4,0)`；J13 GP9 `(0,0)`、
+GP8 `(0,1)`、GP7 `(1,0)`。布局字段是可选的：safe GPIO GP17、GP18 尚无已确认
+的 J8/J13 位置，因此固件不输出它们的 `layoutGroup`、`layoutRow`、
+`layoutColumn`；客户端必须通过通用 fallback 保留显示。客户端也不得丢弃元数据中
+未描述的 group；遇到未知 `edge` 时应按“无板边对齐提示”通用显示。这里的 GPIO
+数组只是固件 safe-GPIO 允许列表，不是连接器完整 pinout，也不是配合面视图。
 
 ## 重启
 
@@ -518,7 +544,7 @@ runner 组合已有的普通 `gpio_set` 与 `power_set` 命令执行。
 
 **状态快照**（状态变化时推送）：
 ```json
-{"type": "snapshot", "topic": "status", "power_capture_protocol": "host-stream-v1", "sequence": 1, "power_outputs": [], "switches": {}, "watchdog": {}, "gpios": [], "board_monitoring": {}}
+{"type": "snapshot", "topic": "status", "power_capture_protocol": "host-stream-v1", "sequence": 1, "power_outputs": [], "switches": {}, "watchdog": {}, "gpio_layout_groups": [{"name":"J8","edge":"right","order":0},{"name":"J13","edge":"right","order":1}], "gpios": [], "board_monitoring": {}}
 ```
 
 **ADC 遥测**（按订阅速率推送）：

@@ -20,8 +20,8 @@ Radxa Linkr Debugger 是一块 USB 控制的硬件桥接板，用于自动化 br
 | J5 | 12 V 输出 | 可控 `12v_out` 接线端子 |
 | J6 | 20 V 输出 | 可控 `20v_out` 接线端子 |
 | J7 | 5 V 输出 | 可控 `5v_out` 接线端子 |
-| J8 | GPIO / ADC 排针 | 安全 GPIO、ADC 输入和 PIO I2C 总线 |
-| J13 | 恢复控制 GPIO | `CON_MAS`、`CON_REST`、`CON_USER` 和 3.3 V |
+| J8 | GPIO / ADC 排针 | 安全 GPIO 子集、ADC 输入、PIO I2C、USB 信号、GND 和 hub 5 V |
+| J13 | 恢复控制 GPIO | `CON_MAS`、`CON_REST`、`CON_USER` 和 GND |
 | J4 | 目标串口 | 3 针 UART1 TX/RX/GND 排针 |
 
 连接排线或探针前，请先确认板上丝印的 1 脚标记。
@@ -84,28 +84,38 @@ radxa-linkr-debuggerctl switch route usb pc --confirm
 
 ### GPIO 排针
 
+J8 和 J13 都是从板右边缘侧出的排针。下列方向和坐标均为**元件面俯视**，不是
+连接器配合面视角。J8 在上、J13 在下。J8 左列从上到下为 pin 10 到 pin 1，
+右列从上到下为 pin 20 到 pin 11；固件以顶部为 `row=0`、左列为 `column=0`。
+
 **J13**（2×2）— 恢复控制信号：
 
-| 引脚 | GPIO | 标签 | 典型用途 |
-|------|------|------|---------|
-| 1 | GP7 | CON_MAS | MASKROM 入口信号 |
-| 2 | GP9 | CON_USER | 用户自定义 |
-| 3 | GP8 | CON_REST | 复位控制 |
-| 4 | — | 3.3 V | 参考电源 |
+| UI 行 | 左侧触点（`column=0`） | 右侧触点（`column=1`） |
+|---|---|---|
+| 0（顶部） | Pin 2：GP9 / `CON_USER` / USER | Pin 3：GP8 / `CON_REST` / RSET |
+| 1（底部） | Pin 1：GP7 / `CON_MAS` / MASKROM | Pin 4：GND（不可交互） |
 
 **J8**（2×10）— 通用 GPIO、模拟输入和 I2C：
 
-| 信号 | 说明 |
-|------|------|
-| GP12–GP18 | 数字 I/O，可用于逻辑分析仪，输出能力由固件目录声明 |
-| GP20 | PIO I2C SCL；不是 GPIO 控制；逻辑分析仪只读 tap |
-| GP21 | PIO I2C SDA；不是 GPIO 控制 |
-| GP26–GP29（ADC0–ADC3） | 模拟输入；GP29/ADC3 由 `adc3` 拥有，仅可输入 |
-| 3.3 V / GND | 排针参考电源和地 |
+| UI 行 | 左侧触点（`column=0`） | 右侧触点（`column=1`） |
+|---|---|---|
+| 0（顶部） | Pin 10：GP21 / PIO I2C SDA | Pin 20：`5V_USB_HUB` |
+| 1 | Pin 9：GP20 / PIO I2C SCL | Pin 19：USB DM |
+| 2 | Pin 8：GP27 / ADC1 | Pin 18：USB DP |
+| 3 | Pin 7：GP28 / ADC2 | Pin 17：GND |
+| 4 | Pin 6：GP29 / ADC3（安全、仅输入） | Pin 16：GP5 |
+| 5 | Pin 5：GP16（安全） | Pin 15：GP6 |
+| 6 | Pin 4：GP15（安全） | Pin 14：GND |
+| 7 | Pin 3：GP14（安全） | Pin 13：USB DM |
+| 8 | Pin 2：GP13（安全） | Pin 12：USB DP |
+| 9（底部） | Pin 1：GP12（安全） | Pin 11：GND |
 
-J13 的 GPIO 和 J8 上的 GP12–GP18 在固件安全 GPIO 允许列表中。GP10/GP11 属于
-J4 UART，GP19 是 CH224A PD strap，GP20/GP21 是 PIO I2C 总线，这些都不作为
-GPIO 控制暴露。
+映射到连接器的 safe-GPIO 控制子集是 J13 上的 GP7–GP9，以及 J8 上的
+GP12–GP16 和仅输入的 GP29/ADC3。GP17、GP18 仍是可输出的 safe GPIO，但尚无
+已确认的 J8/J13 位置；固件因此不输出它们的 `layoutGroup`、`layoutRow`、
+`layoutColumn`，客户端通过通用 fallback 显示。UI 只是允许列表内的控制子集，
+不是完整 pinout，也不是连接器配合面视图。接线时应以本节完整元件面表格和原理图
+为准。
 
 逻辑分析仪可捕获 GP10–GP20。SINGLE 和 FAST8 最高 125 MHz；WIDE11 限制为
 100 MHz。GP29 因由 ADC3 拥有而不在逻辑分析仪范围内。GP20 作为只读 SCL tap

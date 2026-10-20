@@ -21,8 +21,8 @@ definitions; the marketing top-view artwork is not a pinout.
 | J5 | 12 V output | Controllable `12v_out` screw terminal |
 | J6 | 20 V output | Controllable `20v_out` screw terminal |
 | J7 | 5 V output | Controllable `5v_out` screw terminal |
-| J8 | GPIO / ADC header | Safe GPIO, ADC inputs, and the PIO I2C bus |
-| J13 | Recovery GPIO header | `CON_MAS`, `CON_REST`, `CON_USER`, and 3.3 V |
+| J8 | GPIO / ADC header | Safe GPIO subset, ADC inputs, PIO I2C, USB signals, grounds, and hub 5 V |
+| J13 | Recovery GPIO header | `CON_MAS`, `CON_REST`, `CON_USER`, and GND |
 | J4 | Target UART | 3-pin UART1 TX/RX/GND header |
 
 Before attaching a cable or probe, confirm the pin-1 marker on the board
@@ -90,28 +90,41 @@ route. Use `radxa-linkr-debuggerctl switch get usb` to verify the active path.
 
 ### GPIO Headers
 
+J8 and J13 are side-facing headers on the board's right edge. All orientations
+and coordinates below are a **component-side top view**, not the mating-face
+view. J8 is above J13. For J8, the left column runs from pin 10 at the top to
+pin 1 at the bottom; the right column runs from pin 20 at the top to pin 11 at
+the bottom. Firmware uses `row=0` for the top and `column=0` for the left.
+
 **J13** (2×2) — recovery control signals:
 
-| Pin | GPIO | Label | Typical use |
-|-----|------|-------|-------------|
-| 1 | GP7 | CON_MAS | MASKROM entry signal |
-| 2 | GP9 | CON_USER | User-defined |
-| 3 | GP8 | CON_REST | Reset control |
-| 4 | — | 3.3 V | Reference supply |
+| UI row | Left contact (`column=0`) | Right contact (`column=1`) |
+|---|---|---|
+| 0 (top) | Pin 2: GP9 / `CON_USER` / USER | Pin 3: GP8 / `CON_REST` / RSET |
+| 1 (bottom) | Pin 1: GP7 / `CON_MAS` / MASKROM | Pin 4: GND (not interactive) |
 
 **J8** (2×10) — general-purpose GPIO, analog inputs, and I2C:
 
-| Signal | Notes |
-|--------|-------|
-| GP12–GP18 | Digital I/O, logic analyzer capable, output-capable safe GPIO |
-| GP20 | PIO I2C SCL; not a GPIO control; logic-analyzer read-only tap |
-| GP21 | PIO I2C SDA; not a GPIO control |
-| GP26–GP29 (ADC0–ADC3) | Analog inputs; GP29/ADC3 is owned by `adc3` and is input-only |
-| 3.3 V / GND | Header reference supply and ground |
+| UI row | Left contact (`column=0`) | Right contact (`column=1`) |
+|---|---|---|
+| 0 (top) | Pin 10: GP21 / PIO I2C SDA | Pin 20: `5V_USB_HUB` |
+| 1 | Pin 9: GP20 / PIO I2C SCL | Pin 19: USB DM |
+| 2 | Pin 8: GP27 / ADC1 | Pin 18: USB DP |
+| 3 | Pin 7: GP28 / ADC2 | Pin 17: GND |
+| 4 | Pin 6: GP29 / ADC3 (safe, input-only) | Pin 16: GP5 |
+| 5 | Pin 5: GP16 (safe) | Pin 15: GP6 |
+| 6 | Pin 4: GP15 (safe) | Pin 14: GND |
+| 7 | Pin 3: GP14 (safe) | Pin 13: USB DM |
+| 8 | Pin 2: GP13 (safe) | Pin 12: USB DP |
+| 9 (bottom) | Pin 1: GP12 (safe) | Pin 11: GND |
 
-The J13 GPIOs and GP12–GP18 on J8 are in the firmware safe-GPIO allowlist.
-GP10/GP11 belong to the J4 UART, GP19 is the CH224A PD strap, and GP20/GP21 are
-the PIO I2C bus, so none of those are exposed as GPIO controls.
+The mapped safe-GPIO control subset is GP7–GP9 on J13 plus GP12–GP16 and
+input-only GP29/ADC3 on J8. GP17 and GP18 remain output-capable safe GPIOs, but
+they have no confirmed J8/J13 placement; firmware therefore omits their
+`layoutGroup`, `layoutRow`, and `layoutColumn`, and clients display them through
+the generic fallback. The UI is only this allowlisted control subset, not a
+connector pinout or mating-face diagram. Use the complete component-side tables
+above and the schematic when wiring the headers.
 
 The logic analyzer can capture GP10–GP20. SINGLE and FAST8 reach 125 MHz;
 WIDE11 is limited to 100 MHz. GP29 is excluded from the logic analyzer because

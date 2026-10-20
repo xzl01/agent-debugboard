@@ -6,9 +6,15 @@
  */
 
 #include <stdbool.h>
-#include <stdint.h>
 #include <errno.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
+#include "linkr_debugger_json_cursor.h"
+#include "linkr_debugger_model.h"
 #include "linkr_debugger_reboot.h"
 
 #define LINKR_DEBUGGER_WS_ADC_MAX_SAMPLE_RATE_HZ 250U
@@ -45,6 +51,159 @@ static uint32_t linkr_debugger_ws_sampler_advance_deadline(
 	return skipped_periods > UINT32_MAX ? UINT32_MAX : (uint32_t)skipped_periods;
 }
 
+struct linkr_debugger_ws_gpio_layout_context {
+	char *buf;
+	size_t size;
+	size_t *cursor;
+};
+
+static int linkr_debugger_ws_gpio_layout_write(void *context, const char *text,
+					      size_t len)
+{
+	struct linkr_debugger_ws_gpio_layout_context *state = context;
+	size_t remaining;
+
+	if (state == NULL || state->buf == NULL || state->cursor == NULL ||
+	    text == NULL || *state->cursor >= state->size) {
+		return -ENOMEM;
+	}
+	remaining = state->size - *state->cursor;
+	if (len >= remaining) {
+		*state->cursor = state->size - 1U;
+		state->buf[*state->cursor] = '\0';
+		return -ENOMEM;
+	}
+
+	memcpy(state->buf + *state->cursor, text, len);
+	*state->cursor += len;
+	state->buf[*state->cursor] = '\0';
+	return 0;
+}
+
+static int linkr_debugger_ws_gpio_layout_append_literal(
+	struct linkr_debugger_ws_gpio_layout_context *context, const char *text)
+{
+	return linkr_debugger_ws_gpio_layout_write(context, text, strlen(text));
+}
+
+static int linkr_debugger_ws_gpio_layout_append_string(
+	struct linkr_debugger_ws_gpio_layout_context *context, const char *value)
+{
+	if (value == NULL || !linkr_debugger_json_utf8_valid(value, strlen(value))) {
+		return -EINVAL;
+	}
+
+	return linkr_debugger_json_append_string(
+		context, linkr_debugger_ws_gpio_layout_write, value, strlen(value)) == 0 ?
+		0 : -ENOMEM;
+}
+
+static int linkr_debugger_ws_append_gpio_layout_groups_from(
+	char *buf, size_t size, size_t *cursor,
+	const struct linkr_debugger_gpio_layout_group_desc *groups,
+	size_t group_count)
+{
+	struct linkr_debugger_ws_gpio_layout_context context = {
+		.buf = buf,
+		.size = size,
+		.cursor = cursor,
+	};
+	char order[4];
+	int written;
+
+	if (buf == NULL || cursor == NULL || size == 0U ||
+	    (group_count > 0U && groups == NULL)) {
+		return -EINVAL;
+	}
+	if (*cursor >= size) {
+		return -ENOMEM;
+	}
+	for (size_t i = 0; i < group_count; i++) {
+		if (groups[i].name == NULL || groups[i].edge == NULL ||
+		    !linkr_debugger_json_utf8_valid(groups[i].name, strlen(groups[i].name)) ||
+		    !linkr_debugger_json_utf8_valid(groups[i].edge, strlen(groups[i].edge))) {
+			return -EINVAL;
+		}
+	}
+	if (linkr_debugger_ws_gpio_layout_append_literal(&context, "[") < 0) {
+		return -ENOMEM;
+	}
+
+	for (size_t i = 0; i < group_count; i++) {
+		const struct linkr_debugger_gpio_layout_group_desc *group = &groups[i];
+
+		written = snprintf(order, sizeof(order), "%u", (unsigned int)group->order);
+		if (written < 0 || (size_t)written >= sizeof(order)) {
+			return -EINVAL;
+		}
+		if ((i > 0U &&
+		     linkr_debugger_ws_gpio_layout_append_literal(&context, ",") < 0) ||
+		    linkr_debugger_ws_gpio_layout_append_literal(&context, "{\"name\":") < 0 ||
+		    linkr_debugger_ws_gpio_layout_append_string(&context, group->name) < 0 ||
+		    linkr_debugger_ws_gpio_layout_append_literal(&context, ",\"edge\":") < 0 ||
+		    linkr_debugger_ws_gpio_layout_append_string(&context, group->edge) < 0 ||
+		    linkr_debugger_ws_gpio_layout_append_literal(&context, ",\"order\":") < 0 ||
+		    linkr_debugger_ws_gpio_layout_write(
+			    &context, order, (size_t)written) < 0 ||
+		    linkr_debugger_ws_gpio_layout_append_literal(&context, "}") < 0) {
+			return -ENOMEM;
+		}
+	}
+
+	return linkr_debugger_ws_gpio_layout_append_literal(&context, "]");
+}
+
+static int linkr_debugger_ws_append_safe_gpio_layout_from(
+	char *buf, size_t size, size_t *cursor,
+	const struct linkr_debugger_safe_gpio_desc *desc)
+{
+	struct linkr_debugger_ws_gpio_layout_context context = {
+		.buf = buf,
+		.size = size,
+		.cursor = cursor,
+	};
+	char coordinates[48];
+	int written;
+
+	if (buf == NULL || cursor == NULL || desc == NULL || size == 0U) {
+		return -EINVAL;
+	}
+	if (*cursor >= size) {
+		return -ENOMEM;
+	}
+	if (desc->layout_group == NULL || desc->layout_group[0] == '\0') {
+		return 0;
+	}
+	if (desc->layout_label == NULL ||
+	    !linkr_debugger_json_utf8_valid(desc->layout_group,
+					    strlen(desc->layout_group)) ||
+	    !linkr_debugger_json_utf8_valid(desc->layout_label,
+					    strlen(desc->layout_label))) {
+		return -EINVAL;
+	}
+	written = snprintf(coordinates, sizeof(coordinates),
+		",\"layoutRow\":%u,\"layoutColumn\":%u",
+		(unsigned int)desc->layout_row, (unsigned int)desc->layout_column);
+	if (written < 0 || (size_t)written >= sizeof(coordinates)) {
+		return -EINVAL;
+	}
+
+	if (linkr_debugger_ws_gpio_layout_append_literal(&context,
+						  ",\"layoutGroup\":") < 0 ||
+	    linkr_debugger_ws_gpio_layout_append_string(&context,
+						 desc->layout_group) < 0 ||
+	    linkr_debugger_ws_gpio_layout_append_literal(&context,
+						  ",\"layoutLabel\":") < 0 ||
+	    linkr_debugger_ws_gpio_layout_append_string(&context,
+						 desc->layout_label) < 0 ||
+	    linkr_debugger_ws_gpio_layout_write(
+		    &context, coordinates, (size_t)written) < 0) {
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
 #ifndef LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST
 
 #include "linkr_debugger_ws.h"
@@ -55,15 +214,9 @@ static uint32_t linkr_debugger_ws_sampler_advance_deadline(
 #include "linkr_debugger_config_summary.h"
 #include "linkr_debugger_gpio_error.h"
 #include "linkr_debugger_logic_analyzer.h"
-#include "linkr_debugger_json_cursor.h"
 #include "linkr_debugger_monitoring.h"
-#include "linkr_debugger_model.h"
 #include "linkr_debugger_sigrok_linkr.h"
 #include "linkr_debugger_capture_arbiter.h"
-
-#include <errno.h>
-#include <stdio.h>
-#include <string.h>
 
 #include <zephyr/data/json.h>
 #include <zephyr/kernel.h>
@@ -796,14 +949,16 @@ static int linkr_debugger_ws_append_safe_gpios(char *buf, size_t size, size_t *c
 		}
 
 		if (linkr_debugger_ws_append(buf, size, cursor,
-					"{\"name\":\"%s\",\"pin\":%u,\"note\":\"%s\","
-					"\"layoutGroup\":\"%s\",\"layoutLabel\":\"%s\","
-					"\"layoutRow\":%u,\"layoutColumn\":%u,"
-					"\"value\":%d,\"direction\":\"%s\"}",
-					name, (unsigned int)desc->pin,
-					desc->note, desc->layout_group, desc->layout_label,
-					(unsigned int)desc->layout_row,
-					(unsigned int)desc->layout_column,
+					"{\"name\":\"%s\",\"pin\":%u,\"note\":\"%s\"",
+					name, (unsigned int)desc->pin, desc->note) < 0) {
+			return -ENOMEM;
+		}
+		if (linkr_debugger_ws_append_safe_gpio_layout_from(
+			    buf, size, cursor, desc) < 0) {
+			return -ENOMEM;
+		}
+		if (linkr_debugger_ws_append(buf, size, cursor,
+					",\"value\":%d,\"direction\":\"%s\"}",
 					value > 0 ? 1 : 0,
 					linkr_debugger_safe_gpio_direction_name(i)) < 0) {
 			return -ENOMEM;
@@ -811,6 +966,14 @@ static int linkr_debugger_ws_append_safe_gpios(char *buf, size_t size, size_t *c
 	}
 
 	return 0;
+}
+
+static int linkr_debugger_ws_append_gpio_layout_groups(char *buf, size_t size,
+					      size_t *cursor)
+{
+	return linkr_debugger_ws_append_gpio_layout_groups_from(
+		buf, size, cursor, linkr_debugger_gpio_layout_groups,
+		linkr_debugger_gpio_layout_group_count);
 }
 
 static int linkr_debugger_ws_emit_status_snapshot(struct linkr_debugger_ws_client *client)
@@ -899,7 +1062,12 @@ static int linkr_debugger_ws_emit_status_snapshot(struct linkr_debugger_ws_clien
 			return -ENOMEM;
 		}
 	}
-	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor, ",\"gpios\":[") < 0 ||
+	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+				     ",\"gpio_layout_groups\":") < 0 ||
+	    linkr_debugger_ws_append_gpio_layout_groups(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor) < 0 ||
+	    linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+				     ",\"gpios\":[") < 0 ||
 	    linkr_debugger_ws_append_safe_gpios(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor) < 0 ||
 	    linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor, "],") < 0 ||
 	    linkr_debugger_ws_append_board_monitoring(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,

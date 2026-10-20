@@ -264,6 +264,7 @@ ${CC} -D_GNU_SOURCE -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_http_net.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_http_body.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
 	-Wl,--gc-sections \
 	-o "${OUT}/linkr_debugger_http_net_test"
 
@@ -317,6 +318,7 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 ${CC} -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_ws_sampler_sync.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
 	-o "${OUT}/linkr_debugger_ws_sampler_sync_test"
 
 "${OUT}/linkr_debugger_ws_sampler_sync_test"

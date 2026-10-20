@@ -264,13 +264,22 @@ Any safe GPIO can be used as trigger:
 ```c
 // Safe trigger pins
 static const uint8_t safe_trigger_pins[] = {
-    10, 11, 12, 13, 14, 15,     // J16: GP10-GP15
-    16, 17, 18, 19, 20,         // J16: GP16-GP20
-    29                           // J16: GP29 (ADC3)
+    10, 11,                      // J4 target UART
+    12, 13, 14, 15, 16,         // J8 pins 1-5
+    17, 18,                      // No confirmed J8/J13 placement
+    19,                          // PD CFG1 strap; sample only, never drive
+    20,                          // J8 pin 9 SCL; read-only tap
+    29                           // J8 pin 6, ADC3-owned and input-only
 };
 ```
 
 Note: GP7-GP9 are not available in Sigrok modes.
+
+This GPIO sequence is a firmware capability set, not a contiguous connector
+pinout. GP10/GP11 are on J4; GP17/GP18 have no confirmed J8/J13 placement;
+GP19 is the non-drivable PD CFG1 strap; and GP20 is the J8 pin 9 SCL read-only
+tap. GP21 is J8 pin 10 SDA and is not part of WIDE11. Resolve physical access
+from current firmware metadata and the x1.2 board drawing.
 
 ## Pre-Trigger
 

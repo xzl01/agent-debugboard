@@ -385,8 +385,8 @@ int linkr_debugger_json_append_string(void *context, linkr_debugger_json_write_f
 			break;
 		default:
 			if (ch < 0x20U) {
-				char escaped[4] = {
-					'\\', 'u', hex[ch >> 4], hex[ch & 0x0fU],
+				char escaped[6] = {
+					'\\', 'u', '0', '0', hex[ch >> 4], hex[ch & 0x0fU],
 				};
 
 				result = write(context, escaped, sizeof(escaped));

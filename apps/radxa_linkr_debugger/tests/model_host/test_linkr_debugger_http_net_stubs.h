@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 /* Keep this host test focused on the HTTP callback implementation. */
 #define RADXA_LINKR_DEBUGGER_REBOOT_H_
@@ -199,6 +200,11 @@ struct linkr_debugger_safe_gpio_desc {
 	uint8_t layout_row;
 	uint8_t layout_column;
 };
+struct linkr_debugger_gpio_layout_group_desc {
+	const char *name;
+	const char *edge;
+	uint8_t order;
+};
 struct linkr_debugger_current_sample {
 	bool rail_enabled;
 	bool raw_available;
@@ -311,7 +317,18 @@ struct linkr_debugger_monitoring_snapshot {
 	} cpu;
 };
 
-struct linkr_debugger_config_service_status { int unused; };
+struct linkr_debugger_config_service_status {
+	bool available;
+	const char *reason;
+	bool snapshot_present;
+	uint8_t snapshot_version;
+	size_t item_count;
+	size_t saved_count;
+	size_t applied_count;
+	size_t pending_count;
+	size_t failed_count;
+	int failed_errno;
+};
 struct linkr_debugger_config_summary_buffer {
 	char *data;
 	size_t capacity;
@@ -360,12 +377,66 @@ enum linkr_debugger_config_http_route { LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_CONFIG 
 #define LINKR_DEBUGGER_WS_RECV_BUFFER_SIZE 16U
 #define LINKR_DEBUGGER_REBOOT_DELAY_MS 100U
 
-static const struct linkr_debugger_rail_desc linkr_debugger_rails[1];
-static const size_t linkr_debugger_rail_count;
-static const struct linkr_debugger_current_desc linkr_debugger_currents[1];
-static const size_t linkr_debugger_adc_count;
-static const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[1];
-static const size_t linkr_debugger_safe_gpio_count;
+#define HTTP_TEST_RAIL_COUNT 4U
+#define HTTP_TEST_ADC_COUNT 5U
+#define HTTP_TEST_SAFE_GPIO_COUNT 11U
+#define HTTP_TEST_MAPPED_GPIO_COUNT 9U
+
+static const struct linkr_debugger_rail_desc linkr_debugger_rails[] = {
+	{ .name = "12v_out", .signal = "GP02_12V_EN", .pin = 2U, .controllable = true },
+	{ .name = "5v_out", .signal = "GP0_5V_EN", .pin = 0U, .controllable = true },
+	{ .name = "vdd_5v", .signal = "GP01_5V_WS_EN", .pin = 1U, .controllable = true },
+	{ .name = "20v_out", .signal = "GP03_20V_EN", .pin = 3U, .controllable = true },
+};
+static const size_t linkr_debugger_rail_count = ARRAY_SIZE(linkr_debugger_rails);
+static const struct linkr_debugger_current_desc linkr_debugger_currents[] = {
+	{ .name = "5v_out", .signal = "INA226_5V", .sensor = "INA226",
+	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .adc_index = 0U },
+	{ .name = "12v_out", .signal = "INA226_12V", .sensor = "INA226",
+	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .adc_index = 1U },
+	{ .name = "20v_out", .signal = "INA226_20V", .sensor = "INA226",
+	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .adc_index = 2U },
+	{ .name = "vdd_5v", .signal = "INA226_VDD_5V", .sensor = "INA226",
+	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .adc_index = 3U },
+	{ .name = "adc3", .signal = "GPIO29_ADC3", .sensor = "ADC",
+	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE, .adc_index = 3U },
+};
+static const size_t linkr_debugger_adc_count = ARRAY_SIZE(linkr_debugger_currents);
+static const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[] = {
+	{ .pin = 8U, .note = "CON_REST", .layout_group = "J13", .layout_label = "RSET",
+	  .layout_row = 0U, .layout_column = 1U },
+	{ .pin = 9U, .note = "CON_USER", .layout_group = "J13", .layout_label = "USER",
+	  .layout_row = 0U, .layout_column = 0U },
+	{ .pin = 7U, .note = "CON_MAS", .layout_group = "J13", .layout_label = "MASKROM",
+	  .layout_row = 1U, .layout_column = 0U },
+	{ .pin = 15U, .note = "J8_PIN4", .layout_group = "J8", .layout_label = "GP15",
+	  .layout_row = 6U, .layout_column = 0U },
+	{ .pin = 29U, .note = "J8_PIN6", .layout_group = "J8", .layout_label = "ADC3",
+	  .layout_row = 4U, .layout_column = 0U },
+	{ .pin = 14U, .note = "J8_PIN3", .layout_group = "J8", .layout_label = "GP14",
+	  .layout_row = 7U, .layout_column = 0U },
+	{ .pin = 13U, .note = "J8_PIN2", .layout_group = "J8", .layout_label = "GP13",
+	  .layout_row = 8U, .layout_column = 0U },
+	{ .pin = 12U, .note = "J8_PIN1", .layout_group = "J8", .layout_label = "GP12",
+	  .layout_row = 9U, .layout_column = 0U },
+	{ .pin = 18U, .note = "GP18", .layout_label = "GP18" },
+	{ .pin = 17U, .note = "GP17", .layout_label = "GP17" },
+	{ .pin = 16U, .note = "J8_PIN5", .layout_group = "J8", .layout_label = "GP16",
+	  .layout_row = 5U, .layout_column = 0U },
+};
+static const size_t linkr_debugger_safe_gpio_count = ARRAY_SIZE(linkr_debugger_safe_gpios);
+static struct linkr_debugger_gpio_layout_group_desc linkr_debugger_gpio_layout_groups[] = {
+	{ .name = "J8", .edge = "right", .order = 0U },
+	{ .name = "J13", .edge = "right", .order = 1U },
+};
+static const size_t linkr_debugger_gpio_layout_group_count =
+	ARRAY_SIZE(linkr_debugger_gpio_layout_groups);
+static bool http_test_power_states[HTTP_TEST_RAIL_COUNT];
+static int http_test_gpio_values[HTTP_TEST_SAFE_GPIO_COUNT];
+static const char *http_test_gpio_directions[HTTP_TEST_SAFE_GPIO_COUNT];
+static struct linkr_debugger_watchdog_status http_test_watchdog_status;
+static struct linkr_debugger_monitoring_snapshot http_test_monitoring_snapshot;
+static struct linkr_debugger_config_service_status http_test_config_status;
 
 static inline const struct linkr_debugger_rail_desc *linkr_debugger_find_rail(const char *name)
 {
@@ -388,8 +459,9 @@ static inline int linkr_debugger_power_output_set(
 static inline bool linkr_debugger_power_output_enabled(
 	const struct linkr_debugger_rail_desc *rail)
 {
-	ARG_UNUSED(rail);
-	return false;
+	size_t index = (size_t)(rail - linkr_debugger_rails);
+
+	return index < ARRAY_SIZE(http_test_power_states) && http_test_power_states[index];
 }
 static inline int linkr_debugger_sd_route_set(enum linkr_debugger_sd_route route)
 {
@@ -416,7 +488,16 @@ static inline int linkr_debugger_tf_wp_route_set(enum linkr_debugger_tf_wp_route
 static inline const struct linkr_debugger_safe_gpio_desc *
 linkr_debugger_find_safe_gpio_by_identifier(const char *identifier)
 {
-	ARG_UNUSED(identifier);
+	char name[8];
+
+	for (size_t i = 0U; i < linkr_debugger_safe_gpio_count; i++) {
+		(void)snprintf(name, sizeof(name), "GP%u",
+			       (unsigned int)linkr_debugger_safe_gpios[i].pin);
+		if (strcmp(identifier, name) == 0 ||
+		    strcmp(identifier, linkr_debugger_safe_gpios[i].note) == 0) {
+			return &linkr_debugger_safe_gpios[i];
+		}
+	}
 	return NULL;
 }
 static inline int linkr_debugger_gpio_set_input(
@@ -442,61 +523,77 @@ static inline bool linkr_debugger_captive_method_has_body(
 }
 static inline bool linkr_debugger_format_gpio_name(uint8_t pin, char *buf, size_t len)
 {
-	ARG_UNUSED(pin);
-	ARG_UNUSED(buf);
-	ARG_UNUSED(len);
-	return false;
+	int written = snprintf(buf, len, "GP%u", (unsigned int)pin);
+
+	return written > 0 && (size_t)written < len;
 }
 static inline int linkr_debugger_gpio_get(
 	const struct linkr_debugger_safe_gpio_desc *desc, int *value)
 {
-	ARG_UNUSED(desc);
-	ARG_UNUSED(value);
-	return -1;
+	size_t index = (size_t)(desc - linkr_debugger_safe_gpios);
+
+	if (index >= ARRAY_SIZE(http_test_gpio_values)) {
+		return -1;
+	}
+	*value = http_test_gpio_values[index];
+	return 0;
 }
 static inline const char *linkr_debugger_safe_gpio_direction_name(size_t index)
 {
-	ARG_UNUSED(index);
-	return "";
+	return index < ARRAY_SIZE(http_test_gpio_directions) ?
+		http_test_gpio_directions[index] : "input";
 }
 static inline const char *linkr_debugger_safe_gpio_direction(
 	const struct linkr_debugger_safe_gpio_desc *desc)
 {
-	ARG_UNUSED(desc);
-	return "";
+	size_t index = (size_t)(desc - linkr_debugger_safe_gpios);
+
+	return index < ARRAY_SIZE(http_test_gpio_directions) ?
+		http_test_gpio_directions[index] : "input";
 }
 static inline void linkr_debugger_watchdog_status_get(
 	struct linkr_debugger_watchdog_status *status)
 {
-	ARG_UNUSED(status);
+	*status = http_test_watchdog_status;
 }
-static inline const char *linkr_debugger_sd_route_name(void) { return ""; }
-static inline const char *linkr_debugger_usb_route_name(void) { return ""; }
-static inline const char *linkr_debugger_tf_wp_route_name(void) { return ""; }
+static inline const char *linkr_debugger_sd_route_name(void) { return "usb-reader"; }
+static inline const char *linkr_debugger_usb_route_name(void) { return "target"; }
+static inline const char *linkr_debugger_tf_wp_route_name(void) { return "protected"; }
 static inline void linkr_debugger_monitoring_snapshot_get(
 	struct linkr_debugger_monitoring_snapshot *snapshot)
 {
-	ARG_UNUSED(snapshot);
+	*snapshot = http_test_monitoring_snapshot;
 }
 static inline int linkr_debugger_config_service_status_get(
 	struct linkr_debugger_config_service_status *status)
 {
-	ARG_UNUSED(status);
-	return -1;
+	*status = http_test_config_status;
+	return LINKR_DEBUGGER_CONFIG_SERVICE_OK;
 }
 int linkr_debugger_pd_get_status_short(struct linkr_debugger_pd_status *status);
-static inline const char *linkr_debugger_build_profile(void) { return ""; }
-static inline const char *linkr_debugger_build_image_version(void) { return ""; }
-static inline const char *linkr_debugger_mcu_name(void) { return ""; }
-static inline const char *linkr_debugger_usb_mode(void) { return ""; }
-static inline const char *linkr_debugger_power_capture_protocol(void) { return ""; }
+static inline const char *linkr_debugger_build_profile(void) { return "production-400khz"; }
+static inline const char *linkr_debugger_build_image_version(void) { return "0.3.0-test+full"; }
+static inline const char *linkr_debugger_mcu_name(void) { return "RP2354A"; }
+static inline const char *linkr_debugger_usb_mode(void) { return "ncm-cdc-acm"; }
+static inline const char *linkr_debugger_power_capture_protocol(void) { return "host-stream-v1"; }
 static inline int linkr_debugger_config_summary_append(
 	struct linkr_debugger_config_summary_buffer *buffer,
 	const struct linkr_debugger_config_service_status *status)
 {
-	ARG_UNUSED(buffer);
-	ARG_UNUSED(status);
-	return 0;
+	char fragment[128];
+	int written = snprintf(fragment, sizeof(fragment),
+		",\"config\":{\"available\":%s,\"reason\":\"%s\","
+		"\"saved_count\":%zu,\"pending_count\":%zu}",
+		status->available ? "true" : "false", status->reason,
+		status->saved_count, status->pending_count);
+
+	if (written < 0 || (size_t)written >= sizeof(fragment) ||
+	    (size_t)written + buffer->tail_reserve >= buffer->capacity - buffer->length) {
+		return 0;
+	}
+	memcpy(buffer->data + buffer->length, fragment, (size_t)written + 1U);
+	buffer->length += (size_t)written;
+	return 1;
 }
 static inline void linkr_debugger_ws_publish_state_change(void) {}
 static inline const struct linkr_debugger_current_desc *linkr_debugger_find_adc(
@@ -513,7 +610,10 @@ static inline int linkr_debugger_current_read(
 	ARG_UNUSED(sample);
 	return -1;
 }
-static inline const char *linkr_debugger_reserved_gpios(void) { return ""; }
+static inline const char *linkr_debugger_reserved_gpios(void)
+{
+	return "GP00-GP06 GP10-GP11 GP19 GP22-GP25 GP26-GP28";
+}
 static inline const struct linkr_debugger_gpio_error *linkr_debugger_gpio_configure_error(
 	bool output, int error)
 {
@@ -561,6 +661,7 @@ static inline enum linkr_debugger_captive_action linkr_debugger_captive_select_a
 static inline void linkr_debugger_ota_init(void) {}
 
 const char *linkr_debugger_json_schema(void);
+bool linkr_debugger_json_utf8_valid(const char *text, size_t text_len);
 int linkr_debugger_json_append_string(void *context,
 				      int (*write)(void *, const char *, size_t),
 				      const char *value, size_t len);

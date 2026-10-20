@@ -103,20 +103,28 @@ _Static_assert(ARRAY_SIZE_LOCAL(linkr_debugger_currents) ==
 	       "current sensor descriptor count changed");
 
 const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[] = {
-	{ .pin = 8,  .output_capable = true, .note = "CON_REST", .layout_group = "J13", .layout_label = "RSET",    .layout_row = 0, .layout_column = 0 },
-	{ .pin = 9,  .output_capable = true, .note = "CON_USER", .layout_group = "J13", .layout_label = "USER",    .layout_row = 0, .layout_column = 1 },
-	{ .pin = 7,  .output_capable = true, .note = "CON_MAS",  .layout_group = "J13", .layout_label = "MASKROM", .layout_row = 1, .layout_column = 1 },
-	{ .pin = 15, .output_capable = true, .note = "J8_PIN11", .layout_group = "J8", .layout_label = "GP15", .layout_row = 0, .layout_column = 0 },
-	{ .pin = 29, .output_capable = false, .note = "J8_PIN12", .layout_group = "J8", .layout_label = "ADC3", .layout_row = 0, .layout_column = 1 },
-	{ .pin = 14, .output_capable = true, .note = "J8_PIN9",  .layout_group = "J8", .layout_label = "GP14", .layout_row = 1, .layout_column = 0 },
-	{ .pin = 13, .output_capable = true, .note = "J8_PIN7",  .layout_group = "J8", .layout_label = "GP13", .layout_row = 2, .layout_column = 0 },
-	{ .pin = 12, .output_capable = true, .note = "J8_PIN5",  .layout_group = "J8", .layout_label = "GP12", .layout_row = 3, .layout_column = 0 },
-	{ .pin = 18, .output_capable = true, .note = "J8_PIN6",  .layout_group = "J8", .layout_label = "GP18", .layout_row = 3, .layout_column = 1 },
-	{ .pin = 17, .output_capable = true, .note = "J8_PIN4",  .layout_group = "J8", .layout_label = "GP17", .layout_row = 4, .layout_column = 0 },
-	{ .pin = 16, .output_capable = true, .note = "J8_PIN2",  .layout_group = "J8", .layout_label = "GP16", .layout_row = 5, .layout_column = 1 },
+	{ .pin = 8,  .output_capable = true, .note = "CON_REST", .layout_group = "J13", .layout_label = "RSET",    .layout_row = 0, .layout_column = 1 },
+	{ .pin = 9,  .output_capable = true, .note = "CON_USER", .layout_group = "J13", .layout_label = "USER",    .layout_row = 0, .layout_column = 0 },
+	{ .pin = 7,  .output_capable = true, .note = "CON_MAS",  .layout_group = "J13", .layout_label = "MASKROM", .layout_row = 1, .layout_column = 0 },
+	{ .pin = 15, .output_capable = true, .note = "J8_PIN4", .layout_group = "J8", .layout_label = "GP15", .layout_row = 6, .layout_column = 0 },
+	{ .pin = 29, .output_capable = false, .note = "J8_PIN6", .layout_group = "J8", .layout_label = "ADC3", .layout_row = 4, .layout_column = 0 },
+	{ .pin = 14, .output_capable = true, .note = "J8_PIN3", .layout_group = "J8", .layout_label = "GP14", .layout_row = 7, .layout_column = 0 },
+	{ .pin = 13, .output_capable = true, .note = "J8_PIN2", .layout_group = "J8", .layout_label = "GP13", .layout_row = 8, .layout_column = 0 },
+	{ .pin = 12, .output_capable = true, .note = "J8_PIN1", .layout_group = "J8", .layout_label = "GP12", .layout_row = 9, .layout_column = 0 },
+	{ .pin = 18, .output_capable = true, .note = "GP18", .layout_label = "GP18" },
+	{ .pin = 17, .output_capable = true, .note = "GP17", .layout_label = "GP17" },
+	{ .pin = 16, .output_capable = true, .note = "J8_PIN5", .layout_group = "J8", .layout_label = "GP16", .layout_row = 5, .layout_column = 0 },
 };
 
 const size_t linkr_debugger_safe_gpio_count = ARRAY_SIZE_LOCAL(linkr_debugger_safe_gpios);
+
+const struct linkr_debugger_gpio_layout_group_desc linkr_debugger_gpio_layout_groups[] = {
+	{ .name = "J8", .edge = "right", .order = 0 },
+	{ .name = "J13", .edge = "right", .order = 1 },
+};
+
+const size_t linkr_debugger_gpio_layout_group_count =
+	ARRAY_SIZE_LOCAL(linkr_debugger_gpio_layout_groups);
 
 static bool streq(const char *a, const char *b)
 {
