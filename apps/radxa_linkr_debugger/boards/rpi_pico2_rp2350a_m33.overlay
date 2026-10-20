@@ -3,6 +3,26 @@
  *
  * Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
  * Copyright (c) Jiali Chen <chenjiali@radxa.com>
+ *
+ * Radxa Linkr Debugger x1.2 (RA051_MB_X1.2) board description.
+ *
+ * Hardware facts from docs/hardware/RA051_MB_X1.2.pdf:
+ *  - RP2354A; external QSPI (U23) not populated, 2 MB internal flash.
+ *  - Rails active-high: GPIO0=5V, GPIO1=aux 5V (vdd_5v), GPIO2=12V,
+ *    GPIO3=20V. The x1.1 VIO/1V8 regulators are gone.
+ *  - Four INA226 on a PIO I2C bus: 20V=0x40, 12V=0x41, 5V=0x44,
+ *    aux 5V=0x45, 10 mOhm shunts. Each reports bus voltage, current, power.
+ *  - CH224A is on the same bus and is limited to 400 kHz. The shared PIO bus
+ *    runs at 200 kHz with timing margin; INA226 HS mode requires isolation.
+ *  - The schematic nets RP2354_SCL/RP2354_SDA are on GPIO20/GPIO21
+ *    respectively (SCL=GPIO20, SDA=GPIO21). This is the opposite of the
+ *    RP2350 I2C0 pin functions and of the pico-examples SCL=SDA+1 layout,
+ *    so the PIO program uses an absolute GPIO wait on SCL.
+ *  - ADC0..3 are exposed on the J8 header (GPIO26..29), not rail sense.
+ *  - J4 is a 3-pin target UART (TX/RX/GND): UART1 TX=GPIO10, RX=GPIO11,
+ *    bridged to the second USB CDC ACM (cdc_acm_uart1) by uart_bridge.
+ *  - LED_BLUE=GPIO24, TF mux select=GPIO4, TF_WP=GPIO22, OTG enable=GPIO23,
+ *    CH224A PD config=GPIO19.
  */
 
 #include <zephyr/dt-bindings/adc/adc.h>
@@ -57,48 +77,112 @@
 		regulator-boot-off;
 	};
 
-	reg_1v8_vio: regulator-1v8-vio {
-		compatible = "regulator-fixed";
-		regulator-name = "1v8_vio";
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <1800000>;
-		enable-gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
-		regulator-always-on;
-		regulator-boot-on;
+	bootsel_button: bootsel-button {
+		compatible = "radxa,linkr-bootsel-button";
+		sample-interval-ms = <20>;
+		debounce-samples = <3>;
+		long-press-ms = <3000>;
+		status = "okay";
 	};
 
-	reg_vio: regulator-vio {
-		compatible = "regulator-gpio";
-		regulator-name = "vio";
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <3300000>;
-		regulator-init-microvolt = <3300000>;
-		gpios = <&gpio0 23 GPIO_ACTIVE_HIGH>;
-		states = <1800000 0>, <3300000 1>;
+	/* J4 target UART -> second USB CDC ACM, same pattern as the Pico 2 demo. */
+	j4_uart_bridge: uart-bridge-j4 {
+		compatible = "zephyr,uart-bridge";
+		peers = <&cdc_acm_uart1 &uart1>;
 	};
 
-	sense_5v_out: current-sense-5v-out {
-		compatible = "current-sense-amplifier";
-		io-channels = <&adc 0>;
-		sense-resistor-milli-ohms = <10>;
-		sense-gain-mult = <50>;
-		sense-gain-div = <1>;
+};
+
+/* PIO I2C master: schematic SCL=GPIO20, SDA=GPIO21. */
+&pio0 {
+	pio_i2c0: i2c {
+		compatible = "raspberrypi,pico-pio-i2c";
+		status = "okay";
+		/* Fast-mode operation with margin for the PIO ACK low phase. */
+		clock-frequency = <200000>;
+		pinctrl-0 = <&pio_i2c0_default>;
+		pinctrl-names = "default";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		ina226_20v: current-sense@40 {
+			compatible = "ti,ina226";
+			reg = <0x40>;
+			rshunt-micro-ohms = <10000>;
+			current-lsb-microamps = <250>;
+		};
+
+		ina226_12v: current-sense@41 {
+			compatible = "ti,ina226";
+			reg = <0x41>;
+			rshunt-micro-ohms = <10000>;
+			current-lsb-microamps = <250>;
+		};
+
+		ina226_5v: current-sense@44 {
+			compatible = "ti,ina226";
+			reg = <0x44>;
+			rshunt-micro-ohms = <10000>;
+			current-lsb-microamps = <250>;
+		};
+
+		ina226_vdd_5v: current-sense@45 {
+			compatible = "ti,ina226";
+			reg = <0x45>;
+			rshunt-micro-ohms = <10000>;
+			current-lsb-microamps = <250>;
+		};
+
+		ch224a: ch224a@22 {
+			compatible = "wch,ch224a";
+			reg = <0x22>;
+			maximum-request-millivolt = <20000>;
+			/* R97 is a series link; keep GPIO19 input/no-pull so R81 sets CFG1. */
+			cfg1-gpios = <&gpio0 19 GPIO_ACTIVE_HIGH>;
+			status = "okay";
+		};
+	};
+};
+
+&pinctrl {
+	pio_i2c0_default: pio_i2c0_default {
+		sda_pins {
+			pinmux = <PIO0_P21>;
+			bias-disable;
+			input-enable;
+		};
+
+		scl_pins {
+			pinmux = <PIO0_P20>;
+			bias-disable;
+			input-enable;
+		};
 	};
 
-	sense_12v_out: current-sense-12v-out {
-		compatible = "current-sense-amplifier";
-		io-channels = <&adc 1>;
-		sense-resistor-milli-ohms = <10>;
-		sense-gain-mult = <50>;
-		sense-gain-div = <1>;
-	};
+	/* J4 target UART: TX = GPIO10, RX = GPIO11 (UART1 alternate function),
+	 * bridged to cdc_acm_uart1 through j4_uart_bridge.
+	 * Use the raw pinmux cell: this Zephyr tree's UART1_*_P10 helpers
+	 * reference an undefined RP2_PINCTRL_GPIO_FUNC_UART_ALT symbol, while
+	 * RP2350 names function 11 RP2_PINCTRL_GPIO_FUNC_UART_AUX.
+	 */
+	uart1_default: uart1_default {
+		tx_pins {
+			pinmux = <RP2XXX_PINMUX(10, RP2_PINCTRL_GPIO_FUNC_UART_AUX)>;
+		};
 
-	sense_20v_out: current-sense-20v-out {
-		compatible = "current-sense-amplifier";
-		io-channels = <&adc 2>;
-		sense-resistor-milli-ohms = <10>;
-		sense-gain-mult = <50>;
-		sense-gain-div = <1>;
+		rx_pins {
+			pinmux = <RP2XXX_PINMUX(11, RP2_PINCTRL_GPIO_FUNC_UART_AUX)>;
+			input-enable;
+		};
+	};
+};
+
+&gpio0 {
+	ch224a_cfg1_release {
+		gpio-hog;
+		gpios = <19 GPIO_ACTIVE_HIGH>;
+		input;
+		line-name = "CH224A CFG1 high-impedance";
 	};
 };
 
@@ -145,7 +229,7 @@
 };
 
 &led0 {
-	gpios = <&gpio0 25 GPIO_ACTIVE_LOW>;
+	gpios = <&gpio0 24 GPIO_ACTIVE_HIGH>;
 };
 
 &zephyr_udc0 {
@@ -158,6 +242,11 @@
 	cdc_acm_uart0: cdc_acm_uart0 {
 		compatible = "zephyr,cdc-acm-uart";
 		label = "Radxa Linkr Debugger USB CDC ACM";
+	};
+
+	cdc_acm_uart1: cdc_acm_uart1 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "Radxa Linkr Debugger J4 UART";
 	};
 };
 
@@ -177,6 +266,17 @@
 	status = "okay";
 };
 
+/* J4 target UART (3-pin TX/RX/GND), UART1 on GPIO10/GPIO11, bridged to
+ * the second USB CDC ACM by j4_uart_bridge.
+ */
+&uart1 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart1_default>;
+	pinctrl-names = "default";
+};
+
+/* The board I2C bus is PIO-driven; the hardware I2C peripherals are unused. */
 &i2c0 {
 	status = "disabled";
 };

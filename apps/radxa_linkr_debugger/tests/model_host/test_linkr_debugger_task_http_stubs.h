@@ -9,6 +9,7 @@
 
 enum http_status {
 	HTTP_200_OK = 200,
+	HTTP_202_ACCEPTED = 202,
 	HTTP_400_BAD_REQUEST = 400,
 	HTTP_404_NOT_FOUND = 404,
 	HTTP_405_METHOD_NOT_ALLOWED = 405,
@@ -61,6 +62,7 @@ struct http_response_ctx {
 
 struct http_client_ctx {
 	enum http_method method;
+	char url_buffer[256];
 };
 
 #endif

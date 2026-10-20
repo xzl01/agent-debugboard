@@ -5,13 +5,20 @@
  * Copyright (c) Jiali Chen <chenjiali@radxa.com>
  */
 
+#include "linkr_debugger_reboot.h"
+
+#if !defined(LINKR_DEBUGGER_SHELL_REBOOT_HOST_TEST)
 #include "linkr_debugger_build_info.h"
 #include "linkr_debugger_control.h"
 #include "linkr_debugger_config_shell.h"
+#include "linkr_debugger_net_settings.h"
+#include "linkr_debugger_network.h"
+#include "linkr_debugger_pd.h"
 #include "linkr_debugger_task_shell.h"
 #include "linkr_debugger_shell.h"
 
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/kernel.h>
@@ -54,45 +61,34 @@ static int cmd_bootloader(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-static int cmd_vin_get(const struct shell *sh, size_t argc, char **argv)
+#endif /* !LINKR_DEBUGGER_SHELL_REBOOT_HOST_TEST */
+
+static int cmd_reboot(const struct shell *sh, size_t argc, char **argv)
 {
-	ARG_UNUSED(argc);
-	ARG_UNUSED(argv);
-
-	if (!linkr_debugger_vin_switch_available()) {
-		shell_error(sh, "VIN switch is not available on this board");
-		return -ENOTSUP;
-	}
-
-	shell_print(sh, "vin=%s", linkr_debugger_vin_route_name());
-	return 0;
-}
-
-static int cmd_vin_set(const struct shell *sh, size_t argc, char **argv)
-{
-	enum linkr_debugger_vin_route route;
 	int ret;
 
-	if (argc != 2 || !linkr_debugger_parse_vin_route(argv[1], &route)) {
-		shell_error(sh, "usage: vin set 1.8v|3.3v");
+	(void)argv;
+	if (argc != 1U) {
+		shell_error(sh, "usage: reboot");
 		return -EINVAL;
 	}
 
-	if (!linkr_debugger_vin_switch_available()) {
-		shell_error(sh, "VIN switch is not available on this board");
-		return -ENOTSUP;
+	ret = linkr_debugger_reboot_schedule();
+	if (ret == -EALREADY) {
+		shell_error(sh, "reboot pending: normal cold reboot already scheduled (not BOOTSEL)");
+		return ret;
 	}
-
-	ret = linkr_debugger_vin_route_set(route);
 	if (ret < 0) {
-		shell_error(sh, "failed to set VIN route: %d", ret);
+		shell_error(sh, "failed to schedule normal cold reboot: %d", ret);
 		return ret;
 	}
 
-	shell_print(sh, "vin=%s", linkr_debugger_vin_route_name());
+	shell_print(sh, "normal cold reboot in %u ms (not BOOTSEL)",
+		    LINKR_DEBUGGER_REBOOT_DELAY_MS);
 	return 0;
 }
 
+#if !defined(LINKR_DEBUGGER_SHELL_REBOOT_HOST_TEST)
 static int cmd_tf_wp_get(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
@@ -242,6 +238,53 @@ static int cmd_uname(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static void linkr_debugger_shell_print_ip_subnet(const struct shell *sh)
+{
+	char ip[16];
+	char url[48];
+	uint8_t subnet = linkr_debugger_network_subnet();
+
+	if (linkr_debugger_net_format_ipv4(subnet, LINKR_DEBUGGER_NET_DEVICE_HOST,
+					   ip, sizeof(ip)) < 0 ||
+	    linkr_debugger_net_format_captive_uri(subnet, url, sizeof(url)) < 0) {
+		shell_error(sh, "failed to format network address");
+		return;
+	}
+
+	shell_print(sh, "subnet=%u ip=%s url=%s", (unsigned int)subnet, ip, url);
+}
+
+static int cmd_ip_subnet(const struct shell *sh, size_t argc, char **argv)
+{
+	uint8_t subnet;
+	int ret;
+
+	if (argc == 1U) {
+		linkr_debugger_shell_print_ip_subnet(sh);
+		return 0;
+	}
+
+	if (argc != 2U) {
+		shell_error(sh, "usage: ip subnet [1-254]");
+		return -EINVAL;
+	}
+
+	ret = linkr_debugger_net_parse_subnet(argv[1], &subnet);
+	if (ret < 0) {
+		shell_error(sh, "subnet must be between 1 and 254");
+		return ret;
+	}
+
+	ret = linkr_debugger_network_set_subnet(subnet);
+	if (ret < 0) {
+		shell_error(sh, "failed to set network subnet: %d", ret);
+		return ret;
+	}
+
+	linkr_debugger_shell_print_ip_subnet(sh);
+	return 0;
+}
+
 #if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
 static int cmd_watchdog_fault_injection(const struct shell *sh,
 					 size_t argc, char **argv)
@@ -285,11 +328,6 @@ static int cmd_watchdog_fault_injection(const struct shell *sh,
 }
 #endif
 
-SHELL_STATIC_SUBCMD_SET_CREATE(vin_cmds,
-	SHELL_CMD(get, NULL, "Get VIN voltage route.", cmd_vin_get),
-	SHELL_CMD(set, NULL, "Set VIN voltage route: 1.8v or 3.3v.", cmd_vin_set),
-	SHELL_SUBCMD_SET_END);
-
 SHELL_STATIC_SUBCMD_SET_CREATE(tf_wp_cmds,
 	SHELL_CMD(get, NULL, "Get TF card write-protect route.", cmd_tf_wp_get),
 	SHELL_CMD(set, NULL, "Set TF card write-protect route: writable or protected.", cmd_tf_wp_set),
@@ -306,6 +344,83 @@ SHELL_STATIC_SUBCMD_SET_CREATE(task_cmds,
 	SHELL_CMD(clear, NULL, "Clear all stored tasks.", linkr_debugger_task_shell_clear),
 	SHELL_SUBCMD_SET_END);
 
+static void linkr_debugger_shell_print_pd(const struct shell *sh)
+{
+	struct linkr_debugger_pd_status status;
+	int ret = linkr_debugger_pd_get_status(&status);
+
+	if (ret < 0) {
+		shell_error(sh, "pd status failed: %d", ret);
+		return;
+	}
+
+	shell_print(sh,
+		    "pd available=%d mode=%s voltage_mv=%u gear=%u pps_mv=%u "
+		    "pd=%d qc2=%d qc3=%d bc=%d epr=%d avs=%d max_current_ma=%u error=%d",
+		    status.available,
+		    status.mode == LINKR_DEBUGGER_PD_MODE_PPS ? "pps" : "fixed",
+		    status.voltage_mv, status.gear, status.pps_mv,
+		    status.pd_active, status.qc2, status.qc3, status.bc,
+		    status.epr, status.avs, status.max_current_ma,
+		    status.last_error);
+}
+
+static int cmd_pd(const struct shell *sh, size_t argc, char **argv)
+{
+	const char *value;
+	char *end;
+	unsigned long parsed;
+	uint16_t mv;
+	bool pps = false;
+	int ret;
+
+	if (argc == 1 || strcmp(argv[1], "status") == 0) {
+		linkr_debugger_shell_print_pd(sh);
+		return 0;
+	}
+
+	if (strcmp(argv[1], "fixed") == 0 || strcmp(argv[1], "pps") == 0) {
+		pps = strcmp(argv[1], "pps") == 0;
+		if (argc != 3) {
+			shell_error(sh, "usage: pd [status] | pd fixed <mv> | pd pps <mv>");
+			return -EINVAL;
+		}
+		value = argv[2];
+	} else {
+		value = argv[1];
+	}
+	for (const unsigned char *cursor = (const unsigned char *)value;
+	     *cursor != '\0'; cursor++) {
+		if (*cursor < (unsigned char)'0' || *cursor > (unsigned char)'9') {
+			shell_error(sh, "usage: pd [status] | pd fixed <mv> | pd pps <mv>");
+			return -EINVAL;
+		}
+	}
+
+	errno = 0;
+	parsed = strtoul(value, &end, 10);
+	if (end == value || *end != '\0' || errno == ERANGE || parsed > 20000UL) {
+		shell_error(sh, "usage: pd [status] | pd fixed <mv> | pd pps <mv>");
+		return -EINVAL;
+	}
+
+	mv = parsed <= 20UL ? (uint16_t)(parsed * 1000UL) : (uint16_t)parsed;
+	ret = pps ? linkr_debugger_pd_set_pps(mv) :
+		    linkr_debugger_pd_set_fixed(mv);
+	if (ret < 0) {
+		shell_error(sh, "pd set failed: %d", ret);
+		return ret;
+	}
+
+	linkr_debugger_shell_print_pd(sh);
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(ip_cmds,
+	SHELL_CMD_ARG(subnet, NULL, "Show or set the per-device IPv4 subnet octet (1-254).",
+		      cmd_ip_subnet, 1, 1),
+	SHELL_SUBCMD_SET_END);
+
 #if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
 SHELL_STATIC_SUBCMD_SET_CREATE(watchdog_cmds,
 	SHELL_CMD(fault-injection, NULL, "Arm/disarm/status the HIL watchdog fault-injection hook.",
@@ -316,12 +431,19 @@ SHELL_STATIC_SUBCMD_SET_CREATE(watchdog_cmds,
 SHELL_CMD_REGISTER(bootloader, NULL,
 				   "Enter MCU BOOTSEL for UF2/picotool flashing.",
 				   cmd_bootloader);
+SHELL_CMD_ARG_REGISTER(reboot, NULL, "Normal cold reboot (not BOOTSEL).",
+		       cmd_reboot, 1, 0);
 SHELL_CMD_REGISTER(uname, NULL, "Print system information and firmware build id.",
 		   cmd_uname);
-SHELL_CMD_REGISTER(vin, &vin_cmds, "Control VIN voltage route.", NULL);
 SHELL_CMD_REGISTER(config, &config_cmds, "Control configuration snapshots.", NULL);
 SHELL_CMD_REGISTER(tf_wp, &tf_wp_cmds, "Control TF card write-protect route.", NULL);
 SHELL_CMD_REGISTER(task, &task_cmds, "Manage tasks stored in flash.", NULL);
+SHELL_CMD_REGISTER(ip, &ip_cmds, "Show or set the device IPv4 subnet.", NULL);
+SHELL_CMD_REGISTER(net, &ip_cmds, "Alias for 'ip'.", NULL);
+SHELL_CMD_REGISTER(pd, NULL,
+		   "Show or set PD voltage (fixed 5/9/12/15/20 V; PPS 3300-21000 mV/100 mV).",
+		   cmd_pd);
 #if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
 SHELL_CMD_REGISTER(watchdog, &watchdog_cmds, "Control watchdog diagnostics and fault injection.", NULL);
 #endif
+#endif /* !LINKR_DEBUGGER_SHELL_REBOOT_HOST_TEST */

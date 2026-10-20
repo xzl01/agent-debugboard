@@ -27,18 +27,16 @@ static const char *kind_name(const struct linkr_debugger_config_item_desc *item)
 
 static const char *switch_json(uint8_t item_id, uint8_t value)
 {
-	static const char *const values[LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID + 1U][2] = {
+	static const char *const values[LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID + 1U][2] = {
 		[LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID] =
 			{ "{\"route\":\"target\"}", "{\"route\":\"usb-reader\"}" },
 		[LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID] =
 			{ "{\"route\":\"pc\"}", "{\"route\":\"target\"}" },
 		[LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID] =
 			{ "{\"route\":\"writable\"}", "{\"route\":\"protected\"}" },
-		[LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID] =
-			{ "{\"route\":\"1.8v\"}", "{\"route\":\"3.3v\"}" },
 	};
 
-	return item_id > LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID || value > 1U ?
+	return item_id > LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID || value > 1U ?
 		NULL : values[item_id][value];
 }
 

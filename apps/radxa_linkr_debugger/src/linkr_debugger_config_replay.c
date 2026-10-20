@@ -116,8 +116,6 @@ enum linkr_debugger_config_service_result linkr_debugger_config_replay_order_sna
 		     LINKR_DEBUGGER_CONFIG_POWER_5V_OUT_ID, &ordered);
 	append_named(&indexed, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID, &ordered);
-	append_named(&indexed, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		     LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID, &ordered);
 	for (size_t i = 0U; i < linkr_debugger_config_item_count; i++) {
 		if (indexed.present[i] &&
 		    linkr_debugger_config_items[i].domain == LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO &&

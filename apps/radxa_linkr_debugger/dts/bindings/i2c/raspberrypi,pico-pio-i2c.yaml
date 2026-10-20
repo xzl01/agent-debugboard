@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
+#
+# PIO-based I2C master used by the Linkr Debugger x1.2 board. The bus is a
+# child of the PIO controller and drives SDA/SCL through a state machine.
+
+description: Raspberry Pi Pico PIO I2C master
+
+compatible: "raspberrypi,pico-pio-i2c"
+
+include: [i2c-controller.yaml, pinctrl-device.yaml]
+
+properties:
+  clock-frequency:
+    required: true

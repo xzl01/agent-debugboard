@@ -36,7 +36,8 @@ static bool task_id_valid(const char *id)
 		return false;
 	}
 	len = strlen(id);
-	if (len == 0U || len > LINKR_DEBUGGER_TASK_MAX_TASK_ID_LEN) {
+	if (len == 0U || len > LINKR_DEBUGGER_TASK_MAX_TASK_ID_LEN ||
+	    strcmp(id, "catalog") == 0 || strcmp(id, ".") == 0 || strcmp(id, "..") == 0) {
 		return false;
 	}
 	for (const char *p = id; *p != '\0'; p++) {
@@ -196,4 +197,93 @@ bool linkr_debugger_task_blob_parse(
 		return false;
 	}
 	return have_version && task_index > 0U;
+}
+
+enum linkr_debugger_task_blob_edit_result linkr_debugger_task_blob_delete_task(
+	const char *text, size_t len,
+	const char *task_id,
+	char *out, size_t out_cap, size_t *out_len, size_t *remaining_tasks)
+{
+	const size_t task_marker_len = sizeof(LINKR_DEBUGGER_TASK_MARKER_TASK) - 1U;
+	const char *line_start;
+	const char *end;
+	bool found = false;
+	bool skipping = false;
+	size_t written = 0U;
+	size_t kept_tasks = 0U;
+
+	if (text == NULL || task_id == NULL || out == NULL || out_len == NULL ||
+	    remaining_tasks == NULL) {
+		return LINKR_DEBUGGER_TASK_BLOB_EDIT_INVALID;
+	}
+	if (!task_id_valid(task_id)) {
+		return LINKR_DEBUGGER_TASK_BLOB_EDIT_INVALID;
+	}
+	if (len == 0U || len > LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE) {
+		return LINKR_DEBUGGER_TASK_BLOB_EDIT_INVALID;
+	}
+
+	end = text + len;
+	line_start = text;
+	while (line_start < end) {
+		const char *line_end = line_start;
+		size_t span_len;
+		size_t line_len;
+		char content[LINKR_DEBUGGER_TASK_MAX_LINE + 1];
+		size_t content_len;
+		bool is_task_header = false;
+		bool is_target_header = false;
+
+		while (line_end < end && *line_end != '\n') {
+			line_end++;
+		}
+		/* Preserve each kept line byte-for-byte, including its newline. */
+		span_len = (size_t)(line_end - line_start) + (line_end < end ? 1U : 0U);
+
+		line_len = (size_t)(line_end - line_start);
+		if (line_len > LINKR_DEBUGGER_TASK_MAX_LINE) {
+			return LINKR_DEBUGGER_TASK_BLOB_EDIT_INVALID;
+		}
+		memcpy(content, line_start, line_len);
+		content_len = line_len;
+		while (content_len > 0U && content[content_len - 1U] == '\r') {
+			content_len--;
+		}
+		content[content_len] = '\0';
+
+		if (strncmp(content, LINKR_DEBUGGER_TASK_MARKER_TASK, task_marker_len) == 0) {
+			const char *id = content + task_marker_len;
+
+			is_task_header = true;
+			if (strcmp(id, task_id) == 0) {
+				is_target_header = true;
+			}
+		}
+
+		if (is_target_header) {
+			skipping = true;
+			found = true;
+		} else if (skipping && !is_task_header) {
+			/* Drop the target section's request and comment lines. */
+		} else {
+			if (is_task_header) {
+				skipping = false;
+				kept_tasks++;
+			}
+			if (written + span_len > out_cap) {
+				return LINKR_DEBUGGER_TASK_BLOB_EDIT_TOO_SMALL;
+			}
+			memcpy(out + written, line_start, span_len);
+			written += span_len;
+		}
+
+		line_start = line_end < end ? line_end + 1U : line_end;
+	}
+
+	if (!found) {
+		return LINKR_DEBUGGER_TASK_BLOB_EDIT_NOT_FOUND;
+	}
+	*out_len = written;
+	*remaining_tasks = kept_tasks;
+	return LINKR_DEBUGGER_TASK_BLOB_EDIT_OK;
 }

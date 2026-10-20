@@ -91,6 +91,27 @@ static bool la_pin_is_safe(uint8_t pin)
 	return pin >= 7U && pin <= 20U;
 }
 
+static inline bool la_pin_is_pio_i2c_tap(uint8_t pin)
+{
+#if defined(DT_NODE_EXISTS)
+#if DT_NODE_EXISTS(DT_NODELABEL(pio_i2c0))
+	/*
+	 * x1.2 brings the PIO I2C SDA/SCL out on J8 at GP20/GP21. The LA may
+	 * sample GP20 as a read-only tap, but must not change its function or
+	 * direction: PIO0 keeps driving the INA226/CH224A bus while PIO2 reads
+	 * the pad input. GP21 is not in the LA range but stays reserved too.
+	 */
+	return pin == 20U || pin == 21U;
+#else
+	(void)pin;
+	return false;
+#endif
+#else
+	(void)pin;
+	return false;
+#endif
+}
+
 static bool la_is_packed_physical_plan_supported(
 	const struct linkr_debugger_la_config *config);
 static bool la_is_high_rate_packed_burst_request(
@@ -3013,13 +3034,31 @@ static uint32_t la_actual_rate_from_hw(uint32_t requested_rate)
 static void la_restore_configured_pins(void)
 {
 	const struct device *gpio_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+	bool restore_j4_uart = false;
 
 	for (uint8_t i = 0U; i < la_configured_pin_count; i++) {
 		uint8_t pin = la_configured_pins[i];
 
+		if (la_pin_is_pio_i2c_tap(pin)) {
+			continue;
+		}
+		if (pin == 10U || pin == 11U) {
+			restore_j4_uart = true;
+			continue;
+		}
 		gpio_set_function(pin, GPIO_FUNC_SIO);
 		gpio_set_dir(pin, false);
 		(void)gpio_pin_configure(gpio_dev, pin, GPIO_INPUT);
+	}
+	if (restore_j4_uart) {
+		/* FAST8/WIDE11 temporarily own GP10/11 through PIO2. Restore the
+		 * RP2350 auxiliary UART1 TX/RX mux used by the J4 CDC bridge rather
+		 * than leaving both pins as SIO inputs until reboot.
+		 */
+		gpio_set_function(10U, GPIO_FUNC_UART_AUX);
+		gpio_set_input_enabled(10U, false);
+		gpio_set_function(11U, GPIO_FUNC_UART_AUX);
+		gpio_set_input_enabled(11U, true);
 	}
 	la_configured_pin_count = 0U;
 }
@@ -3583,6 +3622,9 @@ static int la_packed_burst_configure_locked(
 
 	for (uint8_t pin = plan->lanes[0].pin_base;
 	     pin < (uint8_t)(plan->lanes[0].pin_base + plan->lanes[0].pin_count); pin++) {
+		if (la_pin_is_pio_i2c_tap(pin)) {
+			continue;
+		}
 		ret = gpio_pin_configure(gpio_dev, pin, GPIO_INPUT);
 		if (ret < 0) {
 			return ret;
@@ -3594,6 +3636,9 @@ static int la_packed_burst_configure_locked(
 	if (plan->lane_count > 1U) {
 		for (uint8_t pin = plan->lanes[1].pin_base;
 		     pin < (uint8_t)(plan->lanes[1].pin_base + plan->lanes[1].pin_count); pin++) {
+			if (la_pin_is_pio_i2c_tap(pin)) {
+				continue;
+			}
 			ret = gpio_pin_configure(gpio_dev, pin, GPIO_INPUT);
 			if (ret < 0) {
 				return ret;
@@ -3742,6 +3787,9 @@ static int la_packed_ring_configure_locked(const struct linkr_debugger_la_config
 		for (uint8_t pin = la_stream_ring_plan.lanes[lane].pin_base;
 		     pin < (uint8_t)(la_stream_ring_plan.lanes[lane].pin_base +
 		     la_stream_ring_plan.lanes[lane].pin_count); pin++) {
+			if (la_pin_is_pio_i2c_tap(pin)) {
+				continue;
+			}
 			ret = gpio_pin_configure(gpio_dev, pin, GPIO_INPUT);
 			if (ret < 0) {
 				return ret;

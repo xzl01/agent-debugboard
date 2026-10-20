@@ -9,6 +9,7 @@
 #include "linkr_debugger_capture_arena.h"
 #include "linkr_debugger_build_info.h"
 #include "linkr_debugger_control.h"
+#include "linkr_debugger_pd.h"
 #include "linkr_debugger_config_service.h"
 #include "linkr_debugger_config_store.h"
 #include "linkr_debugger_http.h"
@@ -71,18 +72,25 @@ int main(void)
 {
 	int ret;
 
-	linkr_debugger_watchdog_boot_check();
 	linkr_debugger_capture_arena_init();
 
 	ret = linkr_debugger_control_init();
 	if (ret < 0) {
-		LOG_ERR("Board control init failed: %d", ret);
-		return 0;
+		/*
+		 * Keep USB/CDC alive so a board-control fault is diagnosable and
+		 * recoverable instead of leaving an unenumerable device.
+		 */
+		LOG_ERR("Board control init failed: %d (continuing degraded)", ret);
 	}
 
 	ret = linkr_debugger_config_store_init();
 	if (ret != LINKR_DEBUGGER_CONFIG_STORE_OK) {
 		LOG_WRN("Config store init non-OK: %d", ret);
+	}
+
+	ret = linkr_debugger_pd_init();
+	if (ret < 0) {
+		LOG_WRN("PD init failed: %d (continuing)", ret);
 	}
 
 	ret = linkr_debugger_config_service_init();

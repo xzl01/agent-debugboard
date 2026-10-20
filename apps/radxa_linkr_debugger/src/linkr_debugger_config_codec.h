@@ -15,11 +15,11 @@
 #define LINKR_DEBUGGER_CONFIG_VERSION 1U
 #define LINKR_DEBUGGER_CONFIG_HEADER_SIZE 12U
 #define LINKR_DEBUGGER_CONFIG_ENTRY_SIZE 4U
-#define LINKR_DEBUGGER_CONFIG_MAX_ENTRIES 23U
-#define LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE 104U
+#define LINKR_DEBUGGER_CONFIG_MAX_ENTRIES 18U
+#define LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE 84U
 #define LINKR_DEBUGGER_CONFIG_SETTINGS_MAX_VAL_LEN 256U
 
-_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 23U,
+_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 18U,
 	       "persistent catalog entry count changed");
 _Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE ==
 	       LINKR_DEBUGGER_CONFIG_HEADER_SIZE +
@@ -51,7 +51,6 @@ enum linkr_debugger_config_switch_item_id {
 	LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID = 1,
 	LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID = 2,
 	LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID = 3,
-	LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID = 4,
 };
 
 enum linkr_debugger_config_power_value {
@@ -72,11 +71,6 @@ enum linkr_debugger_config_usb_value {
 enum linkr_debugger_config_tf_wp_value {
 	LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE = 0,
 	LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED = 1,
-};
-
-enum linkr_debugger_config_vin_value {
-	LINKR_DEBUGGER_CONFIG_VIN_1V8 = 0,
-	LINKR_DEBUGGER_CONFIG_VIN_3V3 = 1,
 };
 
 enum linkr_debugger_config_codec_result {

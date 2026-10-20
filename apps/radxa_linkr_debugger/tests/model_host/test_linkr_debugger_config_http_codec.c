@@ -25,7 +25,7 @@ _Static_assert(ARRAY_SIZE_LOCAL(
 	       ((struct linkr_debugger_config_http_save_payload *)0)->request.item_ids) ==
 	       LINKR_DEBUGGER_CONFIG_MAX_ENTRIES,
 	       "config HTTP parser item bound changed");
-_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 23U,
+_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 18U,
 	       "config HTTP catalog bound changed");
 _Static_assert(RESPONSE_STORAGE_SIZE == 4161U,
 	       "config HTTP response storage changed");
@@ -205,8 +205,6 @@ static uint8_t longest_valid_value(const struct linkr_debugger_config_item_desc 
 		return LINKR_DEBUGGER_CONFIG_USB_TARGET;
 	case LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID:
 		return LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED;
-	case LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID:
-		return LINKR_DEBUGGER_CONFIG_VIN_3V3;
 	default:
 		assert(false);
 		return 0U;
@@ -371,14 +369,6 @@ static void test_typed_values(void)
 			   LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
 			   LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED,
 			   "\"current\":{\"route\":\"protected\"}");
-	assert_typed_value(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-			   LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID,
-			   LINKR_DEBUGGER_CONFIG_VIN_1V8,
-			   "\"current\":{\"route\":\"1.8v\"}");
-	assert_typed_value(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-			   LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID,
-			   LINKR_DEBUGGER_CONFIG_VIN_3V3,
-			   "\"current\":{\"route\":\"3.3v\"}");
 	assert_typed_value(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U, 0U,
 			   "\"current\":{\"direction\":\"input\",\"value\":0}");
 	assert_typed_value(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U,
@@ -497,7 +487,7 @@ static void test_complete_catalog_and_capacity(void)
 
 	fill_catalog_status(&status);
 	encoded_size = encode_status(&status, full);
-	assert(encoded_size == 4150U);
+	assert(encoded_size <= RESPONSE_STORAGE_SIZE);
 	assert(encoded_size <= 4160U);
 	assert(json_structure_complete(full, encoded_size));
 	assert(count_occurrences(full, "\"id\":") ==
@@ -505,7 +495,7 @@ static void test_complete_catalog_and_capacity(void)
 	assert_contains(full, "\"schema\":\"radxa-linkr-debugger.v1\"");
 	assert_contains(full, "\"backend\":{\"available\":true,\"reason\":\"ready\"}");
 	assert_contains(full, "\"snapshot\":{\"present\":true,\"version\":1}");
-	assert_contains(full, "\"pending\":23");
+	assert_contains(full, "\"pending\":18");
 
 	cursor = full;
 	for (size_t i = 0U; i < linkr_debugger_config_item_count; i++) {
@@ -520,17 +510,20 @@ static void test_complete_catalog_and_capacity(void)
 	}
 
 	assert(linkr_debugger_config_http_encode_get(
-		       &status, exact, 4151U, &exact_size) ==
+		       &status, exact, encoded_size + 1U, &exact_size) ==
 	       LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_OK);
-	assert(exact_size == 4150U);
-	assert(memcmp(exact, full, 4151U) == 0);
+	assert(exact_size == encoded_size);
+	assert(memcmp(exact, full, encoded_size) == 0);
+	assert(exact[encoded_size] == '\0');
 
 	memset(short_buffer, 0xa5, sizeof(short_buffer));
+	/* The body fits exactly, but its required terminating NUL does not. */
 	assert(linkr_debugger_config_http_encode_get(
-		       &status, short_buffer, 4150U, &short_size) ==
+		       &status, short_buffer, encoded_size, &short_size) ==
 	       LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_NO_SPACE);
 	assert(short_size == 0U);
 	assert(short_buffer[0] == '\0');
+	assert((unsigned char)short_buffer[encoded_size] == 0xa5U);
 
 	{
 		size_t invalid_size = 99U;

@@ -5,6 +5,9 @@
  * Copyright (c) Jiali Chen <chenjiali@radxa.com>
  */
 
+#include "linkr_debugger_reboot.h"
+
+#if !defined(LINKR_DEBUGGER_HTTP_TASK_ROUTE_HOST_TEST)
 #include "linkr_debugger_http.h"
 
 #include "linkr_debugger_build_info.h"
@@ -22,8 +25,10 @@
 #include "linkr_debugger_task_catalog.h"
 #include "linkr_debugger_monitoring.h"
 #include "linkr_debugger_model.h"
+#include "linkr_debugger_net_settings.h"
 #include "linkr_debugger_network.h"
 #include "linkr_debugger_ota.h"
+#include "linkr_debugger_pd.h"
 #include "linkr_debugger_shell.h"
 #include "linkr_debugger_ws.h"
 
@@ -46,7 +51,6 @@ LOG_MODULE_REGISTER(linkr_debugger_http, CONFIG_LINKR_DEBUGGER_LOG_LEVEL);
 
 #define LINKR_DEBUGGER_HTTP_PORT 80U
 #define LINKR_DEBUGGER_HTTP_HOST "0.0.0.0"
-#define LINKR_DEBUGGER_HTTP_ADDR "172.29.203.1"
 #define LINKR_DEBUGGER_HTTP_BODY_BUFSZ 160U
 #define LINKR_DEBUGGER_HTTP_JSON_BUFSZ 4096U
 #define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 6144U
@@ -56,13 +60,8 @@ LOG_MODULE_REGISTER(linkr_debugger_http, CONFIG_LINKR_DEBUGGER_LOG_LEVEL);
 enum linkr_debugger_http_route_id {
 	LINKR_DEBUGGER_HTTP_ROUTE_LOGIC_ANALYZER = 1,
 	LINKR_DEBUGGER_HTTP_ROUTE_LOGIC_ANALYZER_STREAM,
-};
-
-struct linkr_debugger_http_env {
-	char *buf;
-	size_t cap;
-	size_t len;
-	bool truncated;
+	LINKR_DEBUGGER_HTTP_ROUTE_NET,
+	LINKR_DEBUGGER_HTTP_ROUTE_PD,
 };
 
 struct linkr_debugger_http_power_set_request {
@@ -77,6 +76,15 @@ struct linkr_debugger_http_gpio_write_request {
 	char direction[8];
 	int value;
 	bool has_value;
+};
+
+struct linkr_debugger_http_net_set_request {
+	int subnet;
+};
+
+struct linkr_debugger_http_pd_set_request {
+	int mode;
+	int voltage_mv;
 };
 
 static uint16_t linkr_debugger_http_port = LINKR_DEBUGGER_HTTP_PORT;
@@ -105,6 +113,15 @@ static enum linkr_debugger_http_body_event linkr_debugger_http_body_event_from_s
 		return LINKR_DEBUGGER_HTTP_BODY_ABORTED;
 	}
 }
+
+#endif /* !LINKR_DEBUGGER_HTTP_TASK_ROUTE_HOST_TEST */
+
+struct linkr_debugger_http_env {
+	char *buf;
+	size_t cap;
+	size_t len;
+	bool truncated;
+};
 
 static bool linkr_debugger_http_hex_digit(char ch, uint8_t *value)
 {
@@ -143,7 +160,7 @@ static bool linkr_debugger_http_percent_decode(const char *src, char *dst, size_
 			ch = (char)((hi << 4) | lo);
 			src += 2;
 		}
-		if (out + 1U >= dst_len) {
+		if (ch == '\0' || out + 1U >= dst_len) {
 			return false;
 		}
 		dst[out++] = ch;
@@ -153,6 +170,7 @@ static bool linkr_debugger_http_percent_decode(const char *src, char *dst, size_
 	return true;
 }
 
+#if !defined(LINKR_DEBUGGER_HTTP_TASK_ROUTE_HOST_TEST)
 static const struct json_obj_descr power_set_request_descr[] = {
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_http_power_set_request, state, JSON_TOK_STRING_BUF),
 };
@@ -164,6 +182,15 @@ static const struct json_obj_descr switch_route_request_descr[] = {
 static const struct json_obj_descr gpio_write_request_descr[] = {
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_http_gpio_write_request, direction, JSON_TOK_STRING_BUF),
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_http_gpio_write_request, value, JSON_TOK_NUMBER),
+};
+
+static const struct json_obj_descr net_set_request_descr[] = {
+	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_http_net_set_request, subnet, JSON_TOK_NUMBER),
+};
+
+static const struct json_obj_descr pd_set_request_descr[] = {
+	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_http_pd_set_request, mode, JSON_TOK_NUMBER),
+	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_http_pd_set_request, voltage_mv, JSON_TOK_NUMBER),
 };
 
 
@@ -224,12 +251,6 @@ static int linkr_debugger_http_control_switch(const char *name, const char *body
 		return linkr_debugger_parse_tf_wp_route(req.route, &route) ?
 			linkr_debugger_tf_wp_route_set(route) : -EINVAL;
 	}
-	if (strcmp(name, "vin") == 0 && linkr_debugger_vin_switch_available()) {
-		enum linkr_debugger_vin_route route;
-
-		return linkr_debugger_parse_vin_route(req.route, &route) ?
-			linkr_debugger_vin_route_set(route) : -EINVAL;
-	}
 	return -ENOENT;
 }
 
@@ -262,6 +283,8 @@ static int linkr_debugger_http_control_gpio(const char *identifier, const char *
 	return -EINVAL;
 }
 
+
+#endif /* !LINKR_DEBUGGER_HTTP_TASK_ROUTE_HOST_TEST */
 
 static int linkr_debugger_http_append(struct linkr_debugger_http_env *env, const char *fmt, ...)
 {
@@ -386,6 +409,58 @@ static void linkr_debugger_http_error(struct http_response_ctx *response_ctx, ui
 	linkr_debugger_http_set_json_response(response_ctx, buf, len, status);
 }
 
+static int linkr_debugger_http_handle_reboot(struct http_client_ctx *client,
+					   enum http_transaction_status status,
+					   const struct http_request_ctx *request_ctx,
+					   struct http_response_ctx *response_ctx,
+					   void *user_data)
+{
+	static uint8_t json_buf[256];
+	struct linkr_debugger_http_env env = {
+		.buf = (char *)json_buf,
+		.cap = sizeof(json_buf),
+	};
+	int ret;
+
+	(void)request_ctx;
+	(void)user_data;
+	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
+		return 0;
+	}
+	if (client->method != HTTP_POST) {
+		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					 HTTP_405_METHOD_NOT_ALLOWED, "reboot",
+					 "method_not_allowed", "method not allowed");
+		return 0;
+	}
+
+	if (linkr_debugger_http_json_begin(&env, "reboot", true) < 0 ||
+	    linkr_debugger_http_append(&env,
+				      ",\"reboot_delay_ms\":%u,\"message\":\"normal cold reboot (not BOOTSEL)\"}\n",
+				      LINKR_DEBUGGER_REBOOT_DELAY_MS) < 0) {
+		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					 HTTP_500_INTERNAL_SERVER_ERROR, "reboot",
+					 "response_too_large", "failed to encode reboot response");
+		return 0;
+	}
+
+	ret = linkr_debugger_reboot_schedule();
+	if (ret < 0) {
+		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					 ret == -EALREADY ? HTTP_409_CONFLICT :
+					 HTTP_500_INTERNAL_SERVER_ERROR, "reboot",
+					 ret == -EALREADY ? "reboot_pending" : "reboot_failed",
+					 ret == -EALREADY ? "normal cold reboot already pending" :
+					 "failed to schedule normal cold reboot");
+		return 0;
+	}
+
+	linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf),
+					    HTTP_202_ACCEPTED);
+	return 0;
+}
+
+#if !defined(LINKR_DEBUGGER_HTTP_TASK_ROUTE_HOST_TEST)
 static void linkr_debugger_http_set_capport_response(struct http_response_ctx *response_ctx,
 						     enum linkr_debugger_captive_method method)
 {
@@ -626,10 +701,21 @@ static int linkr_debugger_http_json_current_reading(struct linkr_debugger_http_e
 		return -ENOMEM;
 	}
 
+	if (linkr_debugger_http_append(env, "\"mv\":%d,\"voltage_valid\":%s,\"voltage_uv\":",
+				 sample->mv, sample->voltage_valid ? "true" : "false") < 0) {
+		return -ENOMEM;
+	}
+	if (sample->voltage_valid) {
+		if (linkr_debugger_http_append(env, "%d", sample->voltage_uv) < 0) {
+			return -ENOMEM;
+		}
+	} else if (linkr_debugger_http_append(env, "null") < 0) {
+		return -ENOMEM;
+	}
+
 	if (linkr_debugger_http_append(env,
-				 "\"mv\":%d,\"sensor_channel\":\"current\",\"unit\":\"A\""
+				 ",\"sensor_channel\":\"current\",\"unit\":\"A\""
 				 ",\"sensor_value\":{\"val1\":%d,\"val2\":%d},\"current_ua\":%d}",
-				 sample->mv,
 				 sample->value.val1,
 				 sample->value.val2,
 				 sample->current_ua) < 0) {
@@ -709,6 +795,77 @@ static int linkr_debugger_http_json_watchdog_status(struct linkr_debugger_http_e
 	       linkr_debugger_http_append(env, "}") < 0 ? -ENOMEM : 0;
 }
 
+static int linkr_debugger_http_json_pd_fields(struct linkr_debugger_http_env *env,
+					      const struct linkr_debugger_pd_status *status)
+{
+	static const char *const protocol_names[] = {
+		"none", "bc", "qc2", "qc3", "pd", "epr",
+	};
+	const char *protocol = status->protocol < ARRAY_SIZE(protocol_names) ?
+		protocol_names[status->protocol] : "unknown";
+
+	if (linkr_debugger_http_append(env,
+		"\"available\":%s,\"mode\":%u,\"voltage_mv\":%u,"
+		"\"gear\":%u,\"pps_mv\":%u,\"pd\":%s,\"qc2\":%s,\"qc3\":%s,"
+		"\"bc\":%s,\"epr\":%s,\"avs\":%s,\"max_current_ma\":%u,"
+		"\"last_error\":%d,\"protocol\":\"%s\",\"board_max_voltage_mv\":20000,"
+		"\"capabilities_valid\":%s,\"fixed_profiles\":[",
+		status->available ? "true" : "false",
+		(unsigned int)status->mode,
+		(unsigned int)status->voltage_mv,
+		(unsigned int)status->gear,
+		(unsigned int)status->pps_mv,
+		status->pd_active ? "true" : "false",
+		status->qc2 ? "true" : "false",
+		status->qc3 ? "true" : "false",
+		status->bc ? "true" : "false",
+		status->epr ? "true" : "false",
+		status->avs ? "true" : "false",
+		(unsigned int)status->max_current_ma,
+		status->last_error,
+		protocol,
+		status->capabilities_valid ? "true" : "false") < 0) return -ENOMEM;
+
+	for (size_t i = 0; i < status->fixed_count; i++) {
+		if ((i > 0U && linkr_debugger_http_append(env, ",") < 0) ||
+		    linkr_debugger_http_append(env,
+			"{\"voltage_mv\":%u,\"max_current_ma\":%u}",
+			(unsigned int)status->fixed[i].voltage_mv,
+			(unsigned int)status->fixed[i].max_current_ma) < 0) return -ENOMEM;
+	}
+	if (linkr_debugger_http_append(env, "],\"pps_ranges\":[") < 0) return -ENOMEM;
+	for (size_t i = 0; i < status->pps_count; i++) {
+		if ((i > 0U && linkr_debugger_http_append(env, ",") < 0) ||
+		    linkr_debugger_http_append(env,
+			"{\"min_voltage_mv\":%u,\"max_voltage_mv\":%u,\"step_mv\":%u,"
+			"\"max_current_ma\":%u}",
+			(unsigned int)status->pps[i].min_voltage_mv,
+			(unsigned int)status->pps[i].max_voltage_mv,
+			(unsigned int)status->pps[i].step_mv,
+			(unsigned int)status->pps[i].max_current_ma) < 0) return -ENOMEM;
+	}
+	if (linkr_debugger_http_append(env, "],\"avs_ranges\":[") < 0) return -ENOMEM;
+	for (size_t i = 0; i < status->avs_count; i++) {
+		if ((i > 0U && linkr_debugger_http_append(env, ",") < 0) ||
+		    linkr_debugger_http_append(env,
+			"{\"min_voltage_mv\":%u,\"max_voltage_mv\":%u,\"step_mv\":%u,"
+			"\"max_power_w\":%u}",
+			(unsigned int)status->avs_ranges[i].min_voltage_mv,
+			(unsigned int)status->avs_ranges[i].max_voltage_mv,
+			(unsigned int)status->avs_ranges[i].step_mv,
+			(unsigned int)status->avs_ranges[i].max_power_w) < 0) return -ENOMEM;
+	}
+	return linkr_debugger_http_append(env, "]") < 0 ? -ENOMEM : 0;
+}
+
+static int linkr_debugger_http_json_pd_status(struct linkr_debugger_http_env *env,
+					      const struct linkr_debugger_pd_status *status)
+{
+	return linkr_debugger_http_append(env, "{") < 0 ||
+	       linkr_debugger_http_json_pd_fields(env, status) < 0 ||
+	       linkr_debugger_http_append(env, "}") < 0 ? -ENOMEM : 0;
+}
+
 static int linkr_debugger_http_json_switches(struct linkr_debugger_http_env *env)
 {
 	if (linkr_debugger_http_append(env, "{\"sd\":{\"route\":") < 0 ||
@@ -728,16 +885,6 @@ static int linkr_debugger_http_json_switches(struct linkr_debugger_http_env *env
 				",\"routes\":[\"writable\",\"protected\"],"
 				"\"requires_confirm\":false}") < 0) {
 		return -ENOMEM;
-	}
-
-	if (linkr_debugger_vin_switch_available()) {
-		if (linkr_debugger_http_append(env, ",\"vin\":{\"route\":") < 0 ||
-		    linkr_debugger_http_json_string(env, linkr_debugger_vin_route_name()) < 0 ||
-		    linkr_debugger_http_append(env,
-					    ",\"routes\":[\"1.8v\",\"3.3v\"],"
-					    "\"requires_confirm\":true}") < 0) {
-			return -ENOMEM;
-		}
 	}
 
 	return linkr_debugger_http_append(env, "}") < 0 ? -ENOMEM : 0;
@@ -926,6 +1073,7 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 {
 	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ];
 	struct linkr_debugger_config_service_status config_status;
+	struct linkr_debugger_pd_status pd_status;
 	const struct linkr_debugger_config_service_status *config_status_ptr = NULL;
 	struct linkr_debugger_http_env env = {
 		.buf = (char *)json_buf,
@@ -950,6 +1098,7 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 	    LINKR_DEBUGGER_CONFIG_SERVICE_OK) {
 		config_status_ptr = &config_status;
 	}
+	(void)linkr_debugger_pd_get_status_short(&pd_status);
 
 	k_mutex_lock(&linkr_debugger_http_lock, K_FOREVER);
 	if (linkr_debugger_http_json_begin(&env, "status", true) < 0 ||
@@ -974,6 +1123,8 @@ static int linkr_debugger_http_handle_status(struct http_client_ctx *client,
 	    linkr_debugger_http_json_adc_channels(&env) < 0 ||
 	    linkr_debugger_http_append(&env, ",\"watchdog\":") < 0 ||
 	    linkr_debugger_http_json_watchdog_status(&env) < 0 ||
+	    linkr_debugger_http_append(&env, ",\"pd\":") < 0 ||
+	    linkr_debugger_http_json_pd_status(&env, &pd_status) < 0 ||
 	    linkr_debugger_http_append(&env, ",\"board_monitoring\":{\"temperature\":") < 0 ||
 	    linkr_debugger_http_json_board_monitoring(&env) < 0 ||
 	    linkr_debugger_http_append(&env, ",\"gpios\":") < 0 ||
@@ -1089,7 +1240,7 @@ static int linkr_debugger_http_handle_power(struct http_client_ctx *client,
 
 		ret = linkr_debugger_http_control_power(rail->name,
 						 request_ctx->data, request_ctx->data_len);
-		if (ret == -EINVAL) {
+		if (ret == -EINVAL || ret == -ERANGE || ret == -ENOTSUP) {
 			k_mutex_unlock(&linkr_debugger_http_lock);
 			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_400_BAD_REQUEST,
 					     "power", "invalid_state",
@@ -1284,15 +1435,6 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 					    "\"requires_confirm\":false}\n") < 0) {
 				break;
 			}
-		} else if (strcmp(path + 1, "vin") == 0 && linkr_debugger_vin_switch_available()) {
-			if (linkr_debugger_http_json_begin(&env, "switch", true) < 0 ||
-			    linkr_debugger_http_append(&env, ",\"action\":\"get\",\"name\":\"vin\",\"route\":") < 0 ||
-			    linkr_debugger_http_json_string(&env, linkr_debugger_vin_route_name()) < 0 ||
-			    linkr_debugger_http_append(&env,
-					    ",\"routes\":[\"1.8v\",\"3.3v\"],"
-					    "\"requires_confirm\":true}\n") < 0) {
-				break;
-			}
 		} else {
 			k_mutex_unlock(&linkr_debugger_http_lock);
 			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf), HTTP_404_NOT_FOUND,
@@ -1353,8 +1495,7 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 		    linkr_debugger_http_json_string(&env,
 			    strcmp(path + 1, "sd") == 0 ? linkr_debugger_sd_route_name() :
 			    strcmp(path + 1, "usb") == 0 ? linkr_debugger_usb_route_name() :
-			    strcmp(path + 1, "tf_wp") == 0 ? linkr_debugger_tf_wp_route_name() :
-			    linkr_debugger_vin_route_name()) < 0 ||
+			    linkr_debugger_tf_wp_route_name()) < 0 ||
 		    linkr_debugger_http_append(&env, "}\n") < 0) {
 			break;
 		}
@@ -1588,6 +1729,12 @@ static int linkr_debugger_http_handle_bootloader(struct http_client_ctx *client,
 	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
 		return 0;
 	}
+	if (client->method != HTTP_POST) {
+		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+				     HTTP_405_METHOD_NOT_ALLOWED, "bootloader",
+				     "method_not_allowed", "method not allowed");
+		return 0;
+	}
 
 	if (linkr_debugger_http_json_begin(&env, "bootloader", true) < 0 ||
 	    linkr_debugger_http_append(&env, ",\"message\":\"entering %s BOOTSEL in 250 ms\"}\n",
@@ -1780,6 +1927,18 @@ static const uint8_t linkr_debugger_web_logic_decoder_wasm_gz[] = {
 #include "linkr_debugger_web_logic_decoder_bg.wasm.gz.inc"
 };
 
+static const uint8_t linkr_debugger_web_linkr_mark_svg_gz[] = {
+#include "linkr_debugger_web_linkr_mark.svg.gz.inc"
+};
+
+static const uint8_t linkr_debugger_web_linkr_logo_svg_gz[] = {
+#include "linkr_debugger_web_linkr_logo.svg.gz.inc"
+};
+
+static const uint8_t linkr_debugger_web_robots_txt_gz[] = {
+#include "linkr_debugger_web_robots.txt.gz.inc"
+};
+
 #define LINKR_DEBUGGER_WEB_RESOURCE_DETAIL(name_, content_type_, data_)                         \
 	static struct http_resource_detail_static name_ = {                                     \
 		.common = {                                                                      \
@@ -1804,6 +1963,12 @@ LINKR_DEBUGGER_WEB_RESOURCE_DETAIL(linkr_debugger_web_logic_decoder_js_detail, "
 				   linkr_debugger_web_logic_decoder_js_gz);
 LINKR_DEBUGGER_WEB_RESOURCE_DETAIL(linkr_debugger_web_logic_decoder_wasm_detail,
 				   "application/wasm", linkr_debugger_web_logic_decoder_wasm_gz);
+LINKR_DEBUGGER_WEB_RESOURCE_DETAIL(linkr_debugger_web_linkr_mark_detail,
+				   "image/svg+xml", linkr_debugger_web_linkr_mark_svg_gz);
+LINKR_DEBUGGER_WEB_RESOURCE_DETAIL(linkr_debugger_web_linkr_logo_detail,
+				   "image/svg+xml", linkr_debugger_web_linkr_logo_svg_gz);
+LINKR_DEBUGGER_WEB_RESOURCE_DETAIL(linkr_debugger_web_robots_detail,
+				   "text/plain", linkr_debugger_web_robots_txt_gz);
 
 HTTP_RESOURCE_DEFINE(linkr_debugger_web_root_resource, linkr_debugger_http_service, "/",
 		     &linkr_debugger_web_root_detail);
@@ -1818,6 +1983,42 @@ HTTP_RESOURCE_DEFINE(linkr_debugger_web_logic_decoder_js_resource, linkr_debugge
 HTTP_RESOURCE_DEFINE(linkr_debugger_web_logic_decoder_wasm_resource, linkr_debugger_http_service,
 		     "/assets/decoder/logic-decoder_bg.wasm",
 		     &linkr_debugger_web_logic_decoder_wasm_detail);
+HTTP_RESOURCE_DEFINE(linkr_debugger_web_linkr_mark_resource, linkr_debugger_http_service,
+		     "/linkr-mark.svg", &linkr_debugger_web_linkr_mark_detail);
+HTTP_RESOURCE_DEFINE(linkr_debugger_web_linkr_logo_resource, linkr_debugger_http_service,
+		     "/linkr-logo.svg", &linkr_debugger_web_linkr_logo_detail);
+HTTP_RESOURCE_DEFINE(linkr_debugger_web_robots_resource, linkr_debugger_http_service,
+		     "/robots.txt", &linkr_debugger_web_robots_detail);
+
+#define LINKR_DEBUGGER_HTTP_DYNAMIC_RESOURCE(name_, path_, methods_)                      \
+	static struct http_resource_detail_dynamic name_##_detail = {                       \
+		.common = {                                                                    \
+			.type = HTTP_RESOURCE_TYPE_DYNAMIC,                                      \
+			.bitmask_of_supported_http_methods = methods_,                            \
+			.content_type = "application/json",                                    \
+		},                                                                             \
+		.cb = linkr_debugger_http_route_request,                                    \
+	};                                                                                  \
+	HTTP_RESOURCE_DEFINE(name_, linkr_debugger_http_service, path_, &name_##_detail)
+
+LINKR_DEBUGGER_HTTP_DYNAMIC_RESOURCE(linkr_debugger_status_resource, "/api/v1/status",
+				    BIT(HTTP_GET));
+LINKR_DEBUGGER_HTTP_DYNAMIC_RESOURCE(linkr_debugger_adc_read_resource, "/api/v1/adc/read",
+				    BIT(HTTP_GET));
+LINKR_DEBUGGER_HTTP_DYNAMIC_RESOURCE(linkr_debugger_pd_resource, "/api/v1/pd",
+				    BIT(HTTP_GET) | BIT(HTTP_PUT));
+
+static struct http_resource_detail_dynamic linkr_debugger_reboot_resource_detail = {
+	.common = {
+		.type = HTTP_RESOURCE_TYPE_DYNAMIC,
+		.bitmask_of_supported_http_methods = BIT(HTTP_GET) | BIT(HTTP_POST) |
+			BIT(HTTP_PUT) | BIT(HTTP_DELETE),
+		.content_type = "application/json",
+	},
+	.cb = linkr_debugger_http_handle_reboot,
+};
+HTTP_RESOURCE_DEFINE(linkr_debugger_reboot_resource, linkr_debugger_http_service,
+		     "/api/v1/reboot", &linkr_debugger_reboot_resource_detail);
 
 static struct http_resource_detail_dynamic fallback_resource_detail = {
 	.common = {
@@ -1947,6 +2148,335 @@ LINKR_DEBUGGER_WS_RESOURCE_DETAIL(0);
 LINKR_DEBUGGER_WS_RESOURCE_DETAIL(1);
 LINKR_DEBUGGER_WS_RESOURCE_DETAIL(2);
 LINKR_DEBUGGER_WS_RESOURCE_DETAIL(3);
+
+static int linkr_debugger_http_encode_net(struct linkr_debugger_http_env *env,
+					  const char *action, uint8_t subnet,
+					  bool reconnect_required)
+{
+	char ip[16];
+	int ret;
+
+	ret = linkr_debugger_net_format_ipv4(subnet, LINKR_DEBUGGER_NET_DEVICE_HOST,
+					     ip, sizeof(ip));
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (linkr_debugger_http_json_begin(env, "net", true) < 0 ||
+	    linkr_debugger_http_append(env, ",\"action\":") < 0 ||
+	    linkr_debugger_http_json_string(env, action) < 0 ||
+	    linkr_debugger_http_append(env, ",\"subnet\":%u,\"ip\":",
+				     (unsigned int)subnet) < 0 ||
+	    linkr_debugger_http_json_string(env, ip) < 0 ||
+	    linkr_debugger_http_append(env, ",\"reconnect_required\":%s",
+				     reconnect_required ? "true" : "false") < 0) {
+		return -ENOMEM;
+	}
+
+	if (reconnect_required &&
+	    (linkr_debugger_http_append(env, ",\"message\":") < 0 ||
+	     linkr_debugger_http_json_string(
+		     env, "Reconnect the USB NCM interface or renew its DHCP lease") < 0)) {
+		return -ENOMEM;
+	}
+
+	return linkr_debugger_http_append(env, "}\n") < 0 ? -ENOMEM : 0;
+}
+
+static int linkr_debugger_http_encode_pd(struct linkr_debugger_http_env *env,
+					 const char *action,
+					 const struct linkr_debugger_pd_status *status)
+{
+	if (linkr_debugger_http_json_begin(env, "pd", true) < 0 ||
+	    linkr_debugger_http_append(env, ",\"action\":") < 0 ||
+	    linkr_debugger_http_json_string(env, action) < 0 ||
+	    linkr_debugger_http_append(env, ",") < 0 ||
+	    linkr_debugger_http_json_pd_fields(env, status) < 0 ||
+	    linkr_debugger_http_append(env, "}\n") < 0) {
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+static int linkr_debugger_http_handle_pd(struct http_client_ctx *client,
+				  enum http_transaction_status status,
+				  const struct http_request_ctx *request_ctx,
+				  struct http_response_ctx *response_ctx,
+				  void *user_data)
+{
+	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	struct linkr_debugger_http_env env = {
+		.buf = (char *)json_buf,
+		.cap = sizeof(json_buf),
+	};
+	struct linkr_debugger_http_pd_set_request req = { 0 };
+	struct linkr_debugger_pd_status pd_status;
+	struct linkr_debugger_http_body_view body = { 0 };
+	enum linkr_debugger_http_body_event body_event =
+		linkr_debugger_http_body_event_from_status(status);
+	enum linkr_debugger_http_body_result body_result;
+	int64_t parsed_fields;
+	int ret;
+
+	ARG_UNUSED(user_data);
+
+	if (!linkr_debugger_http_body_should_handle(client->method == HTTP_PUT,
+						    body_event)) {
+		return 0;
+	}
+	if (client->method == HTTP_PUT) {
+		body_result = linkr_debugger_http_body_accumulate(
+			(uintptr_t)client, (uint16_t)client->method,
+			LINKR_DEBUGGER_HTTP_ROUTE_PD, body_event,
+			request_ctx != NULL ? request_ctx->data : NULL,
+			request_ctx != NULL ? request_ctx->data_len : 0U, &body);
+		if (body_result == LINKR_DEBUGGER_HTTP_BODY_WAITING ||
+		    body_result == LINKR_DEBUGGER_HTTP_BODY_CLEARED) {
+			return 0;
+		}
+		if (body_result == LINKR_DEBUGGER_HTTP_BODY_TOO_LARGE) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_413_PAYLOAD_TOO_LARGE, "pd",
+					     "body_too_large", "JSON request body is too large");
+			return 0;
+		}
+		if (body_result != LINKR_DEBUGGER_HTTP_BODY_READY) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_400_BAD_REQUEST, "pd", "invalid_body",
+					     "failed to assemble JSON request body");
+			return 0;
+		}
+	}
+
+	switch (client->method) {
+	case HTTP_GET:
+		ret = linkr_debugger_pd_get_status(&pd_status);
+		if (ret < 0) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_503_SERVICE_UNAVAILABLE, "pd",
+					     "unavailable", "PD controller is unavailable");
+			return 0;
+		}
+		if (linkr_debugger_http_encode_pd(&env, "get", &pd_status) < 0) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_500_INTERNAL_SERVER_ERROR, "pd",
+					     "response_too_large",
+					     "failed to encode PD response");
+			return 0;
+		}
+		linkr_debugger_http_set_json_response(response_ctx, json_buf,
+						 sizeof(json_buf), HTTP_200_OK);
+		return 0;
+
+	case HTTP_PUT:
+		if (body.len == 0U) {
+			linkr_debugger_http_body_clear((uintptr_t)client, HTTP_PUT,
+						 LINKR_DEBUGGER_HTTP_ROUTE_PD);
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_400_BAD_REQUEST, "pd", "missing_body",
+					     "missing JSON request body");
+			return 0;
+		}
+		parsed_fields = json_obj_parse((char *)body.data,
+					       body.len, pd_set_request_descr,
+					       ARRAY_SIZE(pd_set_request_descr), &req);
+		linkr_debugger_http_body_clear((uintptr_t)client, HTTP_PUT,
+					 LINKR_DEBUGGER_HTTP_ROUTE_PD);
+		/* json_obj_parse returns a bitmap, not a decoded-field count. */
+		if (parsed_fields != (BIT64(0) | BIT64(1))) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_400_BAD_REQUEST, "pd", "invalid_body",
+					     "body must be {\"mode\":0|1,\"voltage_mv\":N}");
+			return 0;
+		}
+		if (req.mode != (int)LINKR_DEBUGGER_PD_MODE_FIXED &&
+		    req.mode != (int)LINKR_DEBUGGER_PD_MODE_PPS) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_400_BAD_REQUEST, "pd", "invalid_mode",
+					     "mode must be 0 (fixed) or 1 (PPS)");
+			return 0;
+		}
+		/* Validate the signed JSON value before narrowing it for the service. */
+		if (req.voltage_mv <= 0 || req.voltage_mv > (int)LINKR_DEBUGGER_PD_VOLTAGE_20V) {
+			ret = -EINVAL;
+		} else if (req.mode == (int)LINKR_DEBUGGER_PD_MODE_PPS) {
+			ret = linkr_debugger_pd_set_pps((uint16_t)req.voltage_mv);
+		} else {
+			ret = linkr_debugger_pd_set_fixed((uint16_t)req.voltage_mv);
+		}
+		if (ret == -EINVAL || ret == -ERANGE || ret == -ENOTSUP) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_400_BAD_REQUEST, "pd", "invalid_voltage",
+					     "voltage must be within the 20 V board limit and "
+					     "advertised by the connected source");
+			return 0;
+		}
+		if (ret == -ENODEV) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_503_SERVICE_UNAVAILABLE, "pd",
+					     "unavailable", "PD controller is unavailable");
+			return 0;
+		}
+		if (ret < 0) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_500_INTERNAL_SERVER_ERROR, "pd",
+					     "set_failed", "failed to apply PD voltage");
+			return 0;
+		}
+		(void)linkr_debugger_pd_get_status(&pd_status);
+		if (linkr_debugger_http_encode_pd(&env, "set", &pd_status) < 0) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_500_INTERNAL_SERVER_ERROR, "pd",
+					     "response_too_large",
+					     "failed to encode PD response");
+			return 0;
+		}
+		linkr_debugger_http_set_json_response(response_ctx, json_buf,
+						 sizeof(json_buf), HTTP_200_OK);
+		return 0;
+
+	default:
+		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+				     HTTP_405_METHOD_NOT_ALLOWED, "pd",
+				     "method_not_allowed", "method not allowed");
+		return 0;
+	}
+}
+
+static int linkr_debugger_http_handle_net(struct http_client_ctx *client,
+					  enum http_transaction_status status,
+					  const struct http_request_ctx *request_ctx,
+					  struct http_response_ctx *response_ctx,
+					  void *user_data)
+{
+	static uint8_t json_buf[LINKR_DEBUGGER_HTTP_JSON_BUFSZ];
+	struct linkr_debugger_http_env env = {
+		.buf = (char *)json_buf,
+		.cap = sizeof(json_buf),
+	};
+	struct linkr_debugger_http_net_set_request req = { 0 };
+	struct linkr_debugger_http_body_view body = { 0 };
+	enum linkr_debugger_http_body_event body_event =
+		linkr_debugger_http_body_event_from_status(status);
+	enum linkr_debugger_http_body_result body_result;
+	bool reconnect_required = false;
+	int64_t parsed_fields;
+	uint8_t subnet;
+	int ret;
+
+	ARG_UNUSED(user_data);
+
+	if (!linkr_debugger_http_body_should_handle(client->method == HTTP_PUT,
+						    body_event)) {
+		return 0;
+	}
+
+	if (client->method == HTTP_PUT) {
+		body_result = linkr_debugger_http_body_accumulate(
+			(uintptr_t)client, (uint16_t)client->method,
+			LINKR_DEBUGGER_HTTP_ROUTE_NET, body_event,
+			request_ctx != NULL ? request_ctx->data : NULL,
+			request_ctx != NULL ? request_ctx->data_len : 0U, &body);
+		if (body_result == LINKR_DEBUGGER_HTTP_BODY_WAITING ||
+		    body_result == LINKR_DEBUGGER_HTTP_BODY_CLEARED) {
+			return 0;
+		}
+		if (body_result == LINKR_DEBUGGER_HTTP_BODY_TOO_LARGE) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_413_PAYLOAD_TOO_LARGE, "net",
+					     "body_too_large", "JSON request body is too large");
+			return 0;
+		}
+		if (body_result != LINKR_DEBUGGER_HTTP_BODY_READY) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_400_BAD_REQUEST, "net", "invalid_body",
+					     "failed to assemble JSON request body");
+			return 0;
+		}
+	}
+
+	switch (client->method) {
+	case HTTP_GET:
+		subnet = linkr_debugger_network_subnet();
+		if (linkr_debugger_http_encode_net(&env, "get", subnet, false) < 0) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_500_INTERNAL_SERVER_ERROR, "net",
+					     "response_too_large",
+					     "failed to encode network response");
+			return 0;
+		}
+
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf),
+						 HTTP_200_OK);
+		return 0;
+
+	case HTTP_PUT:
+		if (body.len == 0U) {
+			linkr_debugger_http_body_clear((uintptr_t)client,
+						HTTP_PUT, LINKR_DEBUGGER_HTTP_ROUTE_NET);
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_400_BAD_REQUEST, "net", "missing_body",
+					     "missing JSON request body");
+			return 0;
+		}
+
+		parsed_fields = json_obj_parse((char *)body.data, body.len,
+					       net_set_request_descr,
+					       ARRAY_SIZE(net_set_request_descr), &req);
+		linkr_debugger_http_body_clear((uintptr_t)client,
+					HTTP_PUT, LINKR_DEBUGGER_HTTP_ROUTE_NET);
+		if (parsed_fields != BIT64(0)) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_400_BAD_REQUEST, "net", "invalid_body",
+					     "request body must be {\"subnet\":1..254}");
+			return 0;
+		}
+
+		if (req.subnet < (int)LINKR_DEBUGGER_NET_SUBNET_MIN ||
+		    req.subnet > (int)LINKR_DEBUGGER_NET_SUBNET_MAX) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_400_BAD_REQUEST, "net", "invalid_subnet",
+					     "subnet must be between 1 and 254");
+			return 0;
+		}
+
+		ret = linkr_debugger_network_set_subnet_with_result(
+			(uint8_t)req.subnet, &reconnect_required);
+		if (ret == -EINVAL) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_400_BAD_REQUEST, "net", "invalid_subnet",
+					     "subnet must be between 1 and 254");
+			return 0;
+		}
+		if (ret < 0) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_500_INTERNAL_SERVER_ERROR, "net",
+					     "set_failed", "failed to apply network subnet");
+			return 0;
+		}
+
+		if (linkr_debugger_http_encode_net(&env, "set",
+						  linkr_debugger_network_subnet(),
+						  reconnect_required) < 0) {
+			linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+					     HTTP_500_INTERNAL_SERVER_ERROR, "net",
+					     "response_too_large",
+					     "failed to encode network response");
+			return 0;
+		}
+
+		linkr_debugger_http_set_json_response(response_ctx, json_buf, sizeof(json_buf),
+						 HTTP_200_OK);
+		return 0;
+
+	default:
+		linkr_debugger_http_error(response_ctx, json_buf, sizeof(json_buf),
+				     HTTP_405_METHOD_NOT_ALLOWED, "net",
+				     "method_not_allowed", "method not allowed");
+		return 0;
+	}
+}
 
 static int linkr_debugger_http_handle_live_sessions(struct http_client_ctx *client,
 					 enum http_transaction_status status,
@@ -2110,6 +2640,29 @@ static bool linkr_debugger_http_path_matches(const char *path, const char *prefi
 		(allow_children && path[prefix_len] == '/'));
 }
 
+#endif /* !LINKR_DEBUGGER_HTTP_TASK_ROUTE_HOST_TEST */
+
+static int linkr_debugger_http_handle_task_by_id(struct http_client_ctx *client,
+					  enum http_transaction_status status,
+					  const struct http_request_ctx *request_ctx,
+					  struct http_response_ctx *response_ctx)
+{
+	char identifier[LINKR_DEBUGGER_TASK_MAX_TASK_ID_LEN + 1];
+	char *seg;
+
+	(void)status;
+	(void)request_ctx;
+
+	seg = strchr((char *)client->url_buffer + strlen(LINKR_DEBUGGER_TASK_HTTP_PATH), '/');
+	if (seg == NULL ||
+	    !linkr_debugger_http_percent_decode(seg + 1, identifier, sizeof(identifier)) ||
+	    strcmp(identifier, ".") == 0 || strcmp(identifier, "..") == 0) {
+		identifier[0] = '\0';
+	}
+	return linkr_debugger_task_http_handle_delete_one(client, response_ctx, identifier);
+}
+
+#if !defined(LINKR_DEBUGGER_HTTP_TASK_ROUTE_HOST_TEST)
 static int linkr_debugger_http_route_request(struct http_client_ctx *client,
 					 enum http_transaction_status status,
 					 const struct http_request_ctx *request_ctx,
@@ -2119,6 +2672,18 @@ static int linkr_debugger_http_route_request(struct http_client_ctx *client,
 	char *path = (char *)client->url_buffer;
 	enum linkr_debugger_captive_method captive_method;
 	enum linkr_debugger_captive_action captive_action;
+
+	/* Network PUT owns a fragmented JSON body and must receive MORE, FINAL,
+	 * ABORTED and COMPLETE events. Other fallback routes remain final-only.
+	 */
+	if (linkr_debugger_http_path_matches(path, "/api/v1/net", false)) {
+		return linkr_debugger_http_handle_net(client, status, request_ctx,
+					      response_ctx, user_data);
+	}
+	if (linkr_debugger_http_path_matches(path, "/api/v1/pd", false)) {
+		return linkr_debugger_http_handle_pd(client, status, request_ctx,
+					     response_ctx, user_data);
+	}
 
 	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
 		return 0;
@@ -2155,6 +2720,9 @@ static int linkr_debugger_http_route_request(struct http_client_ctx *client,
 		return linkr_debugger_http_handle_bootloader(client, status, request_ctx, response_ctx, user_data);
 	}
 
+	if (linkr_debugger_http_path_matches(path, "/api/v1/reboot", false)) {
+		return linkr_debugger_http_handle_reboot(client, status, request_ctx, response_ctx, user_data);
+	}
 
 	if (linkr_debugger_http_path_matches(path, "/api/v1/watchdog", false)) {
 		return linkr_debugger_http_handle_watchdog(client, status, request_ctx, response_ctx, user_data);
@@ -2169,6 +2737,10 @@ static int linkr_debugger_http_route_request(struct http_client_ctx *client,
 
 	if (linkr_debugger_http_path_matches(path, "/api/v1/live-sessions", true)) {
 		return linkr_debugger_http_handle_live_sessions(client, status, request_ctx, response_ctx, user_data);
+	}
+
+	if (linkr_debugger_http_path_matches(path, "/api/v1/tasks", true)) {
+		return linkr_debugger_http_handle_task_by_id(client, status, request_ctx, response_ctx);
 	}
 
 	if (captive_action == LINKR_DEBUGGER_CAPTIVE_ACTION_REDIRECT) {
@@ -2202,7 +2774,15 @@ uint16_t linkr_debugger_http_listener_port(void)
 
 const char *linkr_debugger_http_listener_host(void)
 {
-	return LINKR_DEBUGGER_HTTP_ADDR;
+	static char host[16];
+
+	if (linkr_debugger_net_format_ipv4(linkr_debugger_network_subnet(),
+					    LINKR_DEBUGGER_NET_DEVICE_HOST,
+					    host, sizeof(host)) < 0) {
+		return "";
+	}
+
+	return host;
 }
 
 void linkr_debugger_http_init(void)
@@ -2218,3 +2798,4 @@ void linkr_debugger_http_publish_state_change(void)
 {
 	linkr_debugger_ws_publish_state_change();
 }
+#endif /* !LINKR_DEBUGGER_HTTP_TASK_ROUTE_HOST_TEST */

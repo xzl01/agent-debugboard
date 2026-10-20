@@ -30,8 +30,10 @@ enum linkr_debugger_usb_route {
 struct linkr_debugger_current_sample {
 	bool rail_enabled;
 	bool raw_available;
+	bool voltage_valid;
 	int32_t raw;
 	int32_t mv;
+	int32_t voltage_uv;
 	int32_t current_ua;
 	struct sensor_value value;
 };
@@ -65,6 +67,7 @@ struct linkr_debugger_watchdog_status {
 void linkr_debugger_watchdog_boot_check(void);
 int linkr_debugger_control_init(void);
 int linkr_debugger_control_snapshot_get(struct linkr_debugger_control_snapshot *snapshot);
+int linkr_debugger_watchdog_early_arm(void);
 int linkr_debugger_watchdog_supervisor_start(void);
 
 const char *linkr_debugger_json_schema(void);
@@ -87,11 +90,6 @@ int linkr_debugger_usb_route_set(enum linkr_debugger_usb_route route);
 enum linkr_debugger_tf_wp_route linkr_debugger_tf_wp_route_get(void);
 const char *linkr_debugger_tf_wp_route_name(void);
 int linkr_debugger_tf_wp_route_set(enum linkr_debugger_tf_wp_route route);
-
-bool linkr_debugger_vin_switch_available(void);
-enum linkr_debugger_vin_route linkr_debugger_vin_route_get(void);
-const char *linkr_debugger_vin_route_name(void);
-int linkr_debugger_vin_route_set(enum linkr_debugger_vin_route route);
 
 int linkr_debugger_current_read(const struct linkr_debugger_current_desc *current,
 				   struct linkr_debugger_current_sample *sample);

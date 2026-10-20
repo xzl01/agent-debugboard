@@ -150,6 +150,11 @@ static void task_http_error_result(uint8_t *json_buf, size_t json_buf_len,
 				   enum linkr_debugger_task_result result)
 {
 	switch (result) {
+	case LINKR_DEBUGGER_TASK_INVALID_ARGUMENT:
+		task_http_error(response_ctx, json_buf, json_buf_len,
+				HTTP_400_BAD_REQUEST, "invalid_argument",
+				"invalid task argument");
+		break;
 	case LINKR_DEBUGGER_TASK_BACKEND_UNAVAILABLE:
 		task_http_error(response_ctx, json_buf, json_buf_len,
 				HTTP_500_INTERNAL_SERVER_ERROR,
@@ -168,6 +173,11 @@ static void task_http_error_result(uint8_t *json_buf, size_t json_buf_len,
 		task_http_error(response_ctx, json_buf, json_buf_len,
 				HTTP_500_INTERNAL_SERVER_ERROR,
 				"storage_error", "failed to write task storage");
+		break;
+	case LINKR_DEBUGGER_TASK_NOT_FOUND:
+		task_http_error(response_ctx, json_buf, json_buf_len,
+				HTTP_404_NOT_FOUND, "not_found",
+				"no stored task with that id");
 		break;
 	default:
 		task_http_error(response_ctx, json_buf, json_buf_len,
@@ -309,6 +319,57 @@ static int task_http_handle_tasks_delete(struct http_response_ctx *response_ctx)
 				HTTP_500_INTERNAL_SERVER_ERROR,
 				"response_too_large", "failed to encode task response");
 		return -1;
+	}
+	task_http_set_json_response(response_ctx, task_http_response_buf,
+				    (size_t)written + 1U, HTTP_200_OK);
+	return 0;
+}
+
+int linkr_debugger_task_http_handle_delete_one(struct http_client_ctx *client,
+					       struct http_response_ctx *response_ctx,
+					       const char *id)
+{
+	enum linkr_debugger_task_result result;
+	int written;
+
+	if (client == NULL || response_ctx == NULL) {
+		return -1;
+	}
+	if (client->method != HTTP_DELETE) {
+		task_http_error(response_ctx, task_http_response_buf,
+				sizeof(task_http_response_buf),
+				HTTP_405_METHOD_NOT_ALLOWED,
+				"method_not_allowed", "method not allowed");
+		return 0;
+	}
+	if (id == NULL || id[0] == '\0') {
+		task_http_error(response_ctx, task_http_response_buf,
+				sizeof(task_http_response_buf),
+				HTTP_400_BAD_REQUEST, "missing_id", "missing task id in URL");
+		return 0;
+	}
+	if (linkr_debugger_task_mutation_acquire() != LINKR_DEBUGGER_TASK_OK) {
+		task_http_error(response_ctx, task_http_response_buf,
+				sizeof(task_http_response_buf),
+				HTTP_409_CONFLICT, "busy",
+				"capture or OTA activity is in progress");
+		return 0;
+	}
+	result = linkr_debugger_task_tasks_delete_one(id);
+	linkr_debugger_task_mutation_release();
+	if (result != LINKR_DEBUGGER_TASK_OK) {
+		task_http_error_result(task_http_response_buf,
+				       sizeof(task_http_response_buf), response_ctx, result);
+		return 0;
+	}
+	written = linkr_debugger_http_task_delete_one_response((char *)task_http_response_buf,
+							      sizeof(task_http_response_buf), id);
+	if (written < 0) {
+		task_http_error(response_ctx, task_http_response_buf,
+				sizeof(task_http_response_buf),
+				HTTP_500_INTERNAL_SERVER_ERROR,
+				"response_too_large", "failed to encode task response");
+		return 0;
 	}
 	task_http_set_json_response(response_ctx, task_http_response_buf,
 				    (size_t)written + 1U, HTTP_200_OK);

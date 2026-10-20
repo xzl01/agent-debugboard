@@ -26,10 +26,9 @@ extern size_t linkr_debugger_config_service_flash_release_failures;
 static void make_save_request(struct linkr_debugger_config_save_request *request,
 			      bool reverse, bool confirmed);
 
-static const uint8_t gpio_ids[] = {
-	7U, 8U, 9U, 10U, 11U, 12U, 13U, 14U,
-	15U, 16U, 17U, 18U, 19U, 20U, 29U,
-};
+	static const uint8_t gpio_ids[] = {
+		7U, 8U, 9U, 12U, 13U, 14U, 15U, 16U, 17U, 18U, 29U,
+	};
 
 struct fake_env {
 	struct linkr_debugger_control_item_state control_items[LINKR_DEBUGGER_CONFIG_MAX_ENTRIES];
@@ -122,9 +121,6 @@ static void build_full_ordered(struct linkr_debugger_config_snapshot *snapshot)
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID,
 		     LINKR_DEBUGGER_CONFIG_POWER_OFF);
-	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		     LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID,
-		     LINKR_DEBUGGER_CONFIG_VIN_1V8);
 	for (size_t i = 1U; i < ARRAY_SIZE_LOCAL(gpio_ids); i += 2U) {
 		append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, gpio_ids[i],
 			     LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT |
@@ -147,7 +143,6 @@ static void seed_default_control(struct fake_env *env)
 		LINKR_DEBUGGER_CONFIG_SD_TARGET,
 		LINKR_DEBUGGER_CONFIG_USB_TARGET,
 		LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE,
-		LINKR_DEBUGGER_CONFIG_VIN_3V3,
 	};
 
 	for (size_t i = 0U; i < linkr_debugger_config_item_count; i++) {
@@ -801,7 +796,7 @@ static void make_save_request(struct linkr_debugger_config_save_request *request
 	request->confirmed = confirmed;
 }
 
-static void test_save_happy_23_items(void)
+static void test_save_happy_20_items(void)
 {
 	struct fake_env env;
 	struct linkr_debugger_config_save_request request;
@@ -926,19 +921,19 @@ static void test_save_unavailable_and_capture_failure(void)
 	struct fake_env env;
 	struct linkr_debugger_config_save_request request;
 	struct linkr_debugger_config_operation_report report;
-	size_t vin_index = catalog_index(linkr_debugger_config_find_item(
+	size_t usb_index = catalog_index(linkr_debugger_config_find_item(
 		LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID));
+		LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID));
 
 	reset_env(&env);
 	script_store_absent(&env);
 	assert(init_fresh(&env) == LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 
-	env.control_items[vin_index].available = false;
+	env.control_items[usb_index].available = false;
 	memset(&request, 0, sizeof(request));
 	request.item_count = 2U;
 	request.item_ids[0] = linkr_debugger_config_items[0].id;
-	request.item_ids[1] = linkr_debugger_config_items[vin_index].id;
+	request.item_ids[1] = linkr_debugger_config_items[usb_index].id;
 	request.confirmed = true;
 	assert(linkr_debugger_config_service_save(&request, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_ITEM_UNAVAILABLE);
@@ -946,7 +941,7 @@ static void test_save_unavailable_and_capture_failure(void)
 	assert(env.setter_calls == 0U);
 	assert_owners_idle(&env);
 
-	env.control_items[vin_index].available = true;
+	env.control_items[usb_index].available = true;
 	env.control_snapshot_result = TEST_ERR_IO;
 	assert(linkr_debugger_config_service_save(&request, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_CONTROL_CAPTURE_FAILED);
@@ -1087,8 +1082,8 @@ static void test_save_partial_failure_reports_pending_and_retry(void)
 	assert(init_fresh(&env) == LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	make_save_request(&request, false, true);
 
-	/* All fifteen captured GPIOs are inputs and replay first in catalog
-	 * order (GP7..GP20, GP29), so replay position five is GP12. */
+	/* All eleven captured GPIOs are inputs and replay first in catalog
+	 * order (GP7..GP18, GP29), so replay position five is GP14. */
 	env.setter_fail_at = 5U;
 	env.setter_failure_errno = TEST_ERR_IO;
 	assert(linkr_debugger_config_service_save(&request, &report) ==
@@ -1101,7 +1096,7 @@ static void test_save_partial_failure_reports_pending_and_retry(void)
 	assert(report.pending_items[0] == report.failed_item);
 	assert(report.failed_item ==
 	       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO,
-				       12U));
+				       14U));
 	assert(report.failed_errno == TEST_ERR_IO);
 	assert_owners_idle(&env);
 	assert(linkr_debugger_config_service_status_get(&status) ==
@@ -1214,9 +1209,9 @@ static void test_status_merges_current_without_side_effects(void)
 	size_t rail_index = catalog_index(linkr_debugger_config_find_item(
 		LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID));
-	size_t vin_index = catalog_index(linkr_debugger_config_find_item(
+	size_t usb_index = catalog_index(linkr_debugger_config_find_item(
 		LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID));
+		LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID));
 	size_t capture_calls;
 	size_t flash_calls;
 	size_t store_save_calls;
@@ -1230,7 +1225,7 @@ static void test_status_merges_current_without_side_effects(void)
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 
 	env.control_items[rail_index].value = LINKR_DEBUGGER_CONFIG_POWER_ON;
-	env.control_items[vin_index].available = false;
+	env.control_items[usb_index].available = false;
 	capture_calls = env.capture_acquire_calls;
 	flash_calls = env.flash_acquire_calls;
 	store_save_calls = env.store_save_calls;
@@ -1250,7 +1245,7 @@ static void test_status_merges_current_without_side_effects(void)
 	assert(status.items[rail_index].current_value ==
 	       LINKR_DEBUGGER_CONFIG_POWER_ON);
 	assert(status.items[rail_index].current_requires_confirmation);
-	assert(!status.items[vin_index].current_available);
+	assert(!status.items[usb_index].current_available);
 	assert(status.items[rail_index].saved);
 	assert(status.items[rail_index].saved_value ==
 	       LINKR_DEBUGGER_CONFIG_POWER_OFF);
@@ -1446,15 +1441,15 @@ static void test_status_merge_reordered_rows(void)
 	size_t rail_index = catalog_index(linkr_debugger_config_find_item(
 		LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID));
-	size_t vin_index = catalog_index(linkr_debugger_config_find_item(
+	size_t usb_index = catalog_index(linkr_debugger_config_find_item(
 		LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID));
+		LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID));
 
 	reset_env(&env);
 	script_store_absent(&env);
 	assert(init_fresh(&env) == LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	env.control_items[rail_index].value = LINKR_DEBUGGER_CONFIG_POWER_ON;
-	env.control_items[vin_index].available = false;
+	env.control_items[usb_index].available = false;
 	for (size_t i = 0U; i < linkr_debugger_config_item_count / 2U; i++) {
 		struct linkr_debugger_control_item_state swap = env.control_items[i];
 
@@ -1468,7 +1463,7 @@ static void test_status_merge_reordered_rows(void)
 		const struct linkr_debugger_config_item_desc *item =
 			&linkr_debugger_config_items[i];
 
-		assert(status.items[i].current_available == (i != vin_index));
+		assert(status.items[i].current_available == (i != usb_index));
 		if (i == rail_index) {
 			assert(status.items[i].current_value ==
 			       LINKR_DEBUGGER_CONFIG_POWER_ON);
@@ -1481,7 +1476,7 @@ static void test_status_merge_reordered_rows(void)
 		}
 	}
 	assert(status.items[rail_index].current_requires_confirmation);
-	assert(!status.items[vin_index].current_available);
+	assert(!status.items[usb_index].current_available);
 }
 
 static void assert_current_fields_unavailable(
@@ -1625,7 +1620,7 @@ int main(void)
 	test_init_replays_snapshot_on_every_boot();
 	test_init_boot_failure_and_busy_remain_observable();
 	test_failed_reinit_preserves_initialized_state();
-	test_save_happy_23_items();
+	test_save_happy_20_items();
 	test_save_validation_failures_have_no_side_effects();
 	test_save_unavailable_and_capture_failure();
 	test_save_confirmation_flow_preserves_prior_state();
@@ -1640,7 +1635,7 @@ int main(void)
 	test_production_init_delegates_to_frozen_ops();
 	test_owner_release_failure_is_observable();
 	test_blocked_store_save_holds_no_control_lock();
-	printf("linkr_debugger_config_service: states=6 save-applies=23/23 busy=8 "
+	printf("linkr_debugger_config_service: states=6 save-applies=20/20 busy=8 "
 	       "merge=keyed fallback=checked ops=copied blocking=verified passed\n");
 	return 0;
 }

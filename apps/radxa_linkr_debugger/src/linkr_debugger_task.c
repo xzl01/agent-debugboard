@@ -205,6 +205,99 @@ enum linkr_debugger_task_result linkr_debugger_task_tasks_clear(void)
 	return LINKR_DEBUGGER_TASK_OK;
 }
 
+static bool task_delete_id_valid(const char *id)
+{
+	size_t len;
+
+	if (id == NULL) {
+		return false;
+	}
+	len = strlen(id);
+	if (len == 0U || len > LINKR_DEBUGGER_TASK_MAX_TASK_ID_LEN ||
+	    strcmp(id, "catalog") == 0 || strcmp(id, ".") == 0 ||
+	    strcmp(id, "..") == 0) {
+		return false;
+	}
+	for (const char *p = id; *p != '\0'; p++) {
+		if (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' || *p == '#') {
+			return false;
+		}
+	}
+	return true;
+}
+
+/* Scratch buffer for the delete-one blob excision. Access is serialized by
+ * task_runtime_lock, and keeping it off the stack matters: the HTTP callback
+ * runs on the http_server thread whose stack is only CONFIG_HTTP_SERVER_STACK_SIZE
+ * (3 KiB by default), far below a full 4 KiB blob.
+ */
+static char task_delete_scratch[LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE];
+
+enum linkr_debugger_task_result linkr_debugger_task_tasks_delete_one(const char *id)
+{
+	struct linkr_debugger_task_status parsed;
+	enum linkr_debugger_task_blob_edit_result edit;
+	size_t reduced_len = 0U;
+	size_t remaining = 0U;
+	int ret;
+
+	if (!task_delete_id_valid(id)) {
+		return LINKR_DEBUGGER_TASK_INVALID_ARGUMENT;
+	}
+
+	task_runtime_lock();
+	if (!task_runtime.backend_available) {
+		task_runtime_unlock();
+		return LINKR_DEBUGGER_TASK_BACKEND_UNAVAILABLE;
+	}
+	if (!task_runtime.blob_present) {
+		task_runtime_unlock();
+		return LINKR_DEBUGGER_TASK_NOT_FOUND;
+	}
+
+	edit = linkr_debugger_task_blob_delete_task(
+		task_runtime.blob, task_runtime.blob_len, id,
+		task_delete_scratch, sizeof(task_delete_scratch), &reduced_len, &remaining);
+	if (edit == LINKR_DEBUGGER_TASK_BLOB_EDIT_NOT_FOUND) {
+		task_runtime_unlock();
+		return LINKR_DEBUGGER_TASK_NOT_FOUND;
+	}
+	if (edit != LINKR_DEBUGGER_TASK_BLOB_EDIT_OK) {
+		task_runtime_unlock();
+		return LINKR_DEBUGGER_TASK_INVALID_BLOB;
+	}
+
+	if (remaining == 0U) {
+		ret = task_backend_delete_one(NULL, LINKR_DEBUGGER_TASK_TASKS_KEY);
+		if (ret < 0) {
+			task_runtime_unlock();
+			return LINKR_DEBUGGER_TASK_STORAGE_ERROR;
+		}
+		task_runtime.blob_present = false;
+		task_runtime.blob_len = 0U;
+		task_summaries_reset();
+		task_runtime_unlock();
+		return LINKR_DEBUGGER_TASK_OK;
+	}
+
+	if (!linkr_debugger_task_blob_parse(task_delete_scratch, reduced_len, &parsed)) {
+		task_runtime_unlock();
+		return LINKR_DEBUGGER_TASK_INVALID_BLOB;
+	}
+	ret = task_backend_save_one(NULL, LINKR_DEBUGGER_TASK_TASKS_KEY, task_delete_scratch,
+				    reduced_len);
+	if (ret < 0) {
+		task_runtime_unlock();
+		return LINKR_DEBUGGER_TASK_STORAGE_ERROR;
+	}
+	memcpy(task_runtime.blob, task_delete_scratch, reduced_len);
+	task_runtime.blob_len = reduced_len;
+	task_runtime.blob_present = true;
+	task_runtime.summaries = parsed;
+	task_runtime_unlock();
+	return LINKR_DEBUGGER_TASK_OK;
+}
+
 void linkr_debugger_task_init(void)
 {
 	struct linkr_debugger_task_status parsed;

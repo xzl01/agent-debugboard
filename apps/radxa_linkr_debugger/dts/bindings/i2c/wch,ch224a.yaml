@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
+description: WCH CH224A USB PD sink controller
+
+compatible: "wch,ch224a"
+
+include: [i2c-device.yaml]
+
+properties:
+  maximum-request-millivolt:
+    type: int
+    default: 28000
+    description: |
+      Maximum voltage that firmware may request from the source. This is a
+      board-level power-path limit and may be lower than the CH224A capability.
+
+  cfg1-gpios:
+    type: phandle-array
+    description: |
+      Optional MCU GPIO connected to CFG1 through a series resistor. The
+      driver configures this GPIO as a high-impedance input without pulls so the external
+      CFG1-to-GND Rset remains authoritative. I2C mode is selected by that
+      external single-resistor configuration; firmware must not drive CFG1.

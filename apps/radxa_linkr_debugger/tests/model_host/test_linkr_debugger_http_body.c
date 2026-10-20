@@ -14,9 +14,11 @@
 #define CLIENT_A ((uintptr_t)0x1000U)
 #define CLIENT_B ((uintptr_t)0x2000U)
 #define METHOD_POST 1U
+#define METHOD_PUT 3U
 #define METHOD_GET 2U
 #define ROUTE_LOGIC_ANALYZER 10U
 #define ROUTE_OTHER 11U
+#define ROUTE_NET 12U
 
 static void assert_view_eq(const struct linkr_debugger_http_body_view *view,
 			   const char *expected)
@@ -207,6 +209,48 @@ static void test_empty_fragments(void)
 	linkr_debugger_http_body_clear(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER);
 }
 
+static void test_net_put_fragmented_json(void)
+{
+	struct linkr_debugger_http_body_view view;
+
+	linkr_debugger_http_body_reset_all();
+	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_PUT, ROUTE_NET,
+						 LINKR_DEBUGGER_HTTP_BODY_MORE,
+						 "{\"sub", 5U, &view) ==
+	       LINKR_DEBUGGER_HTTP_BODY_WAITING);
+	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_PUT, ROUTE_NET,
+						 LINKR_DEBUGGER_HTTP_BODY_MORE,
+						 "net\":", 5U, &view) ==
+	       LINKR_DEBUGGER_HTTP_BODY_WAITING);
+	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_PUT, ROUTE_NET,
+						 LINKR_DEBUGGER_HTTP_BODY_FINAL,
+						 "204}", 4U, &view) ==
+	       LINKR_DEBUGGER_HTTP_BODY_READY);
+	assert_view_eq(&view, "{\"subnet\":204}");
+	linkr_debugger_http_body_clear(CLIENT_A, METHOD_PUT, ROUTE_NET);
+}
+
+static void test_net_put_abort_discards_partial_json(void)
+{
+	struct linkr_debugger_http_body_view view;
+
+	linkr_debugger_http_body_reset_all();
+	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_PUT, ROUTE_NET,
+						 LINKR_DEBUGGER_HTTP_BODY_MORE,
+						 "{\"subnet\":", 10U, &view) ==
+	       LINKR_DEBUGGER_HTTP_BODY_WAITING);
+	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_PUT, ROUTE_NET,
+						 LINKR_DEBUGGER_HTTP_BODY_ABORTED,
+						 NULL, 0U, &view) ==
+	       LINKR_DEBUGGER_HTTP_BODY_CLEARED);
+	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_PUT, ROUTE_NET,
+						 LINKR_DEBUGGER_HTTP_BODY_FINAL,
+						 "{\"subnet\":203}", 14U, &view) ==
+	       LINKR_DEBUGGER_HTTP_BODY_READY);
+	assert_view_eq(&view, "{\"subnet\":203}");
+	linkr_debugger_http_body_clear(CLIENT_A, METHOD_PUT, ROUTE_NET);
+}
+
 static void test_lifecycle_gate(void)
 {
 	assert(linkr_debugger_http_body_should_handle(true,
@@ -239,6 +283,8 @@ int main(void)
 	test_route_method_isolation();
 	test_aborted_complete_reset();
 	test_empty_fragments();
+	test_net_put_fragmented_json();
+	test_net_put_abort_discards_partial_json();
 	test_lifecycle_gate();
 	return 0;
 }

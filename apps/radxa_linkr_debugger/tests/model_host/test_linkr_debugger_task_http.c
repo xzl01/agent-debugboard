@@ -16,6 +16,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -23,6 +24,23 @@ const char *linkr_debugger_json_schema(void)
 {
 	return "radxa-linkr-debugger.v1";
 }
+
+static size_t host_http_strnlen(const char *text, size_t cap)
+{
+	const char *end = memchr(text, '\0', cap);
+
+	return end != NULL ? (size_t)(end - text) : cap;
+}
+
+/* Compile the production callbacks and JSON encoding, not test copies. */
+#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
+#define vsnprintk vsnprintf
+#define strnlen host_http_strnlen
+#define LINKR_DEBUGGER_HTTP_TASK_ROUTE_HOST_TEST 1
+#include "../../src/linkr_debugger_http.c"
+#undef strnlen
+#undef vsnprintk
+#undef ARRAY_SIZE
 
 #define ARRAY_SIZE_LOCAL(array) (sizeof(array) / sizeof((array)[0]))
 #define RESPONSE_TEXT_CAP (LINKR_DEBUGGER_TASK_HTTP_RESPONSE_CAP + 1U)
@@ -706,6 +724,181 @@ static void test_post_returns_405(void)
 			      "\"code\":\"method_not_allowed\"");
 }
 
+static void call_delete_one(enum http_method method, const char *id,
+			    struct http_response_ctx *response)
+{
+	struct http_client_ctx client;
+
+	init_client(&client, method);
+	set_response_sentinel(response);
+	assert(linkr_debugger_task_http_handle_delete_one(&client, response, id) == 0);
+}
+
+static void test_delete_one_removes_only_the_named_task(void)
+{
+	static const char blob[] =
+		"# linkr-task.v1\n"
+		"# task recovery\n"
+		"{\"method\":\"PUT\",\"path\":\"/api/v1/power/5v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\"}\n"
+		"# task alternate\n"
+		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/CON_MAS\",\"body\":\"{\\\"direction\\\":\\\"input\\\"}\"}\n";
+	struct http_response_ctx response;
+	char text[RESPONSE_TEXT_CAP];
+
+	reset_all();
+	assert(linkr_debugger_task_tasks_store(blob, sizeof(blob) - 1U) == LINKR_DEBUGGER_TASK_OK);
+	call_delete_one(HTTP_DELETE, "recovery", &response);
+	assert_well_formed_response(&response, HTTP_200_OK);
+	response_text(&response, text);
+	assert(strstr(text, "\"action\":\"delete\"") != NULL);
+	assert(strstr(text, "\"deleted\":true") != NULL);
+	assert(strstr(text, "\"id\":\"recovery\"") != NULL);
+
+	/* The untouched task is still listed and the deleted one is gone. */
+	call_final(HTTP_GET, NULL, 0U, &response);
+	response_text(&response, text);
+	assert(strstr(text, "\"task_count\":1") != NULL);
+	assert(strstr(text, "\"id\":\"alternate\"") != NULL);
+	assert(strstr(text, "\"id\":\"recovery\"") == NULL);
+}
+
+static void call_delete_path(const char *path, struct http_response_ctx *response)
+{
+	struct http_client_ctx client;
+	int written;
+
+	init_client(&client, HTTP_DELETE);
+	written = snprintf(client.url_buffer, sizeof(client.url_buffer), "%s", path);
+	assert(written > 0 && (size_t)written < sizeof(client.url_buffer));
+	set_response_sentinel(response);
+	assert(linkr_debugger_http_handle_task_by_id(
+		       &client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, response) == 0);
+}
+
+static void test_delete_path_rejects_decoded_nul_without_truncating_id(void)
+{
+	static const char blob[] =
+		"# linkr-task.v1\n# task recovery\n"
+		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP7\",\"body\":\"{}\"}\n";
+	static const char *const paths[] = {
+		"/api/v1/tasks/recovery%00junk",
+		"/api/v1/tasks/recovery%00",
+		"/api/v1/tasks/%00recovery",
+	};
+	struct http_response_ctx response;
+
+	reset_all();
+	assert(linkr_debugger_task_tasks_store(blob, sizeof(blob) - 1U) ==
+	       LINKR_DEBUGGER_TASK_OK);
+	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(paths); i++) {
+		call_delete_path(paths[i], &response);
+		assert_error_response(&response, HTTP_400_BAD_REQUEST, "\"code\":\"missing_id\"");
+		assert(capture_acquire_calls == 0U);
+		assert(flash_acquire_calls == 0U);
+		get_and_assert_blob_equals(blob, sizeof(blob) - 1U);
+	}
+}
+
+static void test_delete_path_preserves_utf8_and_percent_encoded_ids(void)
+{
+	static const struct {
+		const char *id;
+		const char *path;
+	} cases[] = {
+		{ "caf\xc3\xa9", "/api/v1/tasks/caf%C3%A9" },
+		{ "caf\xc3\xa9", "/api/v1/tasks/caf\xc3\xa9" },
+		{ "route/1?2%+", "/api/v1/tasks/route%2f1%3F2%25%2B" },
+		{ "%00", "/api/v1/tasks/%2500" },
+		{ ".hidden", "/api/v1/tasks/.hidden" },
+		{ "...", "/api/v1/tasks/..." },
+	};
+	struct http_response_ctx response;
+	char blob[256];
+	char text[RESPONSE_TEXT_CAP];
+
+	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(cases); i++) {
+		int written = snprintf(blob, sizeof(blob),
+			"# linkr-task.v1\n# task %s\n"
+			"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP7\",\"body\":\"{}\"}\n",
+			cases[i].id);
+
+		assert(written > 0 && (size_t)written < sizeof(blob));
+		reset_all();
+		assert(linkr_debugger_task_tasks_store(blob, (size_t)written) ==
+		       LINKR_DEBUGGER_TASK_OK);
+		call_delete_path(cases[i].path, &response);
+		assert_well_formed_response(&response, HTTP_200_OK);
+		response_text(&response, text);
+		assert(strstr(text, "\"deleted\":true") != NULL);
+		assert(strstr(text, cases[i].id) != NULL);
+		assert(!store_present);
+	}
+}
+
+static void test_delete_path_rejects_exact_dot_ids_even_with_empty_storage(void)
+{
+	static const char *const paths[] = {
+		"/api/v1/tasks/.", "/api/v1/tasks/..",
+		"/api/v1/tasks/%2e", "/api/v1/tasks/%2E%2e",
+	};
+	struct http_response_ctx response;
+
+	reset_all();
+	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(paths); i++) {
+		call_delete_path(paths[i], &response);
+		assert_error_response(&response, HTTP_400_BAD_REQUEST, "\"code\":\"missing_id\"");
+		assert(capture_acquire_calls == 0U);
+		assert(flash_acquire_calls == 0U);
+	}
+}
+
+static void test_delete_one_absent_id_returns_404(void)
+{
+	struct http_response_ctx response;
+
+	reset_all();
+	call_delete_one(HTTP_DELETE, "absent", &response);
+	assert_error_response(&response, HTTP_404_NOT_FOUND, "\"code\":\"not_found\"");
+}
+
+static void test_delete_one_invalid_id_returns_400(void)
+{
+	struct http_response_ctx response;
+
+	reset_all();
+	call_delete_one(HTTP_DELETE, "has space", &response);
+	assert_error_response(&response, HTTP_400_BAD_REQUEST, "\"code\":\"invalid_argument\"");
+	call_delete_one(HTTP_DELETE, "catalog", &response);
+	assert_error_response(&response, HTTP_400_BAD_REQUEST, "\"code\":\"invalid_argument\"");
+	call_delete_one(HTTP_DELETE, "", &response);
+	assert_error_response(&response, HTTP_400_BAD_REQUEST, "\"code\":\"missing_id\"");
+}
+
+static void test_delete_one_non_delete_returns_405(void)
+{
+	static const char blob[] =
+		"# linkr-task.v1\n"
+		"# task recovery\n"
+		"{\"method\":\"PUT\",\"path\":\"/api/v1/power/5v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\"}\n";
+	struct http_response_ctx response;
+
+	reset_all();
+	assert(linkr_debugger_task_tasks_store(blob, sizeof(blob) - 1U) == LINKR_DEBUGGER_TASK_OK);
+	call_delete_one(HTTP_GET, "recovery", &response);
+	assert_error_response(&response, HTTP_405_METHOD_NOT_ALLOWED,
+			      "\"code\":\"method_not_allowed\"");
+}
+
+static void test_delete_one_busy_returns_409(void)
+{
+	struct http_response_ctx response;
+
+	reset_all();
+	flash_busy = true;
+	call_delete_one(HTTP_DELETE, "recovery", &response);
+	assert_error_response(&response, HTTP_409_CONFLICT, "\"code\":\"busy\"");
+}
+
 static void test_catalog_get_returns_immutable_response(void)
 {
 	const uint8_t *catalog;
@@ -844,8 +1037,131 @@ static void test_foreign_upload_terminal_does_not_reset_owner(void)
 	}
 }
 
+static unsigned int reboot_schedule_calls;
+static unsigned int reboot_accepted;
+static int reboot_error;
+
+int linkr_debugger_reboot_schedule(void)
+{
+	reboot_schedule_calls++;
+	if (reboot_error != 0) {
+		return reboot_error;
+	}
+	if (reboot_accepted != 0U) {
+		return -EALREADY;
+	}
+	reboot_accepted++;
+	return 0;
+}
+
+static void reset_reboot(void)
+{
+	reboot_schedule_calls = 0U;
+	reboot_accepted = 0U;
+	reboot_error = 0;
+}
+
+static void assert_reboot_error(const struct http_response_ctx *response,
+				enum http_status status, const char *code)
+{
+	char text[RESPONSE_TEXT_CAP];
+
+	assert_well_formed_response(response, status);
+	response_text(response, text);
+	assert(strstr(text, "\"command\":\"reboot\"") != NULL);
+	assert(strstr(text, "\"ok\":false") != NULL);
+	assert(strstr(text, code) != NULL);
+}
+
+static void test_reboot_non_post_has_no_side_effects(void)
+{
+	const enum http_method methods[] = {HTTP_GET, HTTP_PUT, HTTP_DELETE};
+
+	reset_reboot();
+	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(methods); i++) {
+		struct http_client_ctx client;
+		struct http_response_ctx response;
+
+		init_client(&client, methods[i]);
+		set_response_sentinel(&response);
+		assert(linkr_debugger_http_handle_reboot(&client,
+			HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response, NULL) == 0);
+		assert_reboot_error(&response, HTTP_405_METHOD_NOT_ALLOWED,
+				    "\"code\":\"method_not_allowed\"");
+		assert(reboot_schedule_calls == 0U);
+		assert(reboot_accepted == 0U);
+	}
+}
+
+static void test_reboot_only_handles_final_and_needs_no_body(void)
+{
+	const enum http_transaction_status ignored[] = {
+		HTTP_SERVER_REQUEST_DATA_MORE,
+		HTTP_SERVER_TRANSACTION_ABORTED,
+		HTTP_SERVER_TRANSACTION_COMPLETE,
+	};
+	struct http_client_ctx client;
+	struct http_response_ctx response;
+	char text[RESPONSE_TEXT_CAP];
+
+	reset_reboot();
+	init_client(&client, HTTP_POST);
+	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(ignored); i++) {
+		set_response_sentinel(&response);
+		assert(linkr_debugger_http_handle_reboot(&client, ignored[i],
+			NULL, &response, NULL) == 0);
+		assert_response_sentinel(&response);
+		assert(reboot_schedule_calls == 0U);
+	}
+	assert(linkr_debugger_http_handle_reboot(&client,
+		HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response, NULL) == 0);
+	assert_well_formed_response(&response, HTTP_202_ACCEPTED);
+	response_text(&response, text);
+	assert(strcmp(text,
+		"{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":true,\"command\":\"reboot\","
+		"\"reboot_delay_ms\":250,\"message\":\"normal cold reboot (not BOOTSEL)\"}\n") == 0);
+	assert(reboot_schedule_calls == 1U);
+	assert(reboot_accepted == 1U);
+
+	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(ignored); i++) {
+		set_response_sentinel(&response);
+		assert(linkr_debugger_http_handle_reboot(&client, ignored[i],
+			NULL, &response, NULL) == 0);
+		assert_response_sentinel(&response);
+		assert(reboot_schedule_calls == 1U);
+	}
+
+	assert(linkr_debugger_http_handle_reboot(&client,
+		HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response, NULL) == 0);
+	assert_reboot_error(&response, HTTP_409_CONFLICT, "\"code\":\"reboot_pending\"");
+	assert(reboot_schedule_calls == 2U);
+	assert(reboot_accepted == 1U);
+}
+
+static void test_reboot_schedule_error_is_500(void)
+{
+	const int errors[] = {-EIO, -EBUSY};
+	struct http_client_ctx client;
+	struct http_response_ctx response;
+
+	init_client(&client, HTTP_POST);
+	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(errors); i++) {
+		reset_reboot();
+		reboot_error = errors[i];
+		assert(linkr_debugger_http_handle_reboot(&client,
+			HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response, NULL) == 0);
+		assert_reboot_error(&response, HTTP_500_INTERNAL_SERVER_ERROR,
+				    "\"code\":\"reboot_failed\"");
+		assert(reboot_schedule_calls == 1U);
+		assert(reboot_accepted == 0U);
+	}
+}
+
 int main(void)
 {
+	test_reboot_non_post_has_no_side_effects();
+	test_reboot_only_handles_final_and_needs_no_body();
+	test_reboot_schedule_error_is_500();
 	test_get_empty_returns_frozen_empty_contract();
 	test_get_with_stored_blob_returns_summaries_and_exact_blob();
 	test_put_then_get_max_blob_round_trip();
@@ -866,6 +1182,14 @@ int main(void)
 	test_delete_clears_blob_and_get_returns_empty();
 	test_delete_busy_returns_409();
 	test_post_returns_405();
+	test_delete_one_removes_only_the_named_task();
+	test_delete_path_rejects_decoded_nul_without_truncating_id();
+	test_delete_path_preserves_utf8_and_percent_encoded_ids();
+	test_delete_path_rejects_exact_dot_ids_even_with_empty_storage();
+	test_delete_one_absent_id_returns_404();
+	test_delete_one_invalid_id_returns_400();
+	test_delete_one_non_delete_returns_405();
+	test_delete_one_busy_returns_409();
 	test_catalog_get_returns_immutable_response();
 	test_catalog_non_get_returns_405();
 	test_unknown_route_returns_404();

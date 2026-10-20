@@ -31,5 +31,6 @@ int linkr_debugger_http_task_list_response(char *buf, size_t cap,
 	const struct linkr_debugger_task_status *status, const char *blob, size_t blob_len);
 int linkr_debugger_http_task_store_response(char *buf, size_t cap);
 int linkr_debugger_http_task_clear_response(char *buf, size_t cap);
+int linkr_debugger_http_task_delete_one_response(char *buf, size_t cap, const char *id);
 
 #endif

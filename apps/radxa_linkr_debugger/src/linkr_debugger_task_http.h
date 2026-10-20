@@ -24,4 +24,9 @@ int linkr_debugger_task_http_handle(
 	struct http_response_ctx *response_ctx,
 	void *user_data);
 
+int linkr_debugger_task_http_handle_delete_one(
+	struct http_client_ctx *client,
+	struct http_response_ctx *response_ctx,
+	const char *id);
+
 #endif

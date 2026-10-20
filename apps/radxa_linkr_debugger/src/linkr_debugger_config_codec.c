@@ -29,12 +29,9 @@ const struct linkr_debugger_config_item_desc linkr_debugger_config_items[] = {
 	SWITCH_ITEM(LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID, "sd"),
 	SWITCH_ITEM(LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID, "usb"),
 	SWITCH_ITEM(LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID, "tf_wp"),
-	SWITCH_ITEM(LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID, "vin"),
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U, "gpio/GP7" },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 8U, "gpio/GP8" },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 9U, "gpio/GP9" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 10U, "gpio/GP10" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 11U, "gpio/GP11" },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 12U, "gpio/GP12" },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 13U, "gpio/GP13" },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 14U, "gpio/GP14" },
@@ -42,8 +39,6 @@ const struct linkr_debugger_config_item_desc linkr_debugger_config_items[] = {
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 16U, "gpio/GP16" },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 17U, "gpio/GP17" },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 18U, "gpio/GP18" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 19U, "gpio/GP19" },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 20U, "gpio/GP20" },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 29U, "gpio/GP29" },
 };
 
@@ -100,9 +95,6 @@ static bool switch_value_valid(uint8_t item_id, uint8_t value)
 	case LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID:
 		return value == LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE ||
 		       value == LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED;
-	case LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID:
-		return value == LINKR_DEBUGGER_CONFIG_VIN_1V8 ||
-		       value == LINKR_DEBUGGER_CONFIG_VIN_3V3;
 	default:
 		return false;
 	}
@@ -149,9 +141,7 @@ enum linkr_debugger_config_codec_result linkr_debugger_config_classify_entry(
 		(entry->domain == LINKR_DEBUGGER_CONFIG_DOMAIN_POWER &&
 		 entry->value == LINKR_DEBUGGER_CONFIG_POWER_ON) ||
 		(entry->domain == LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH &&
-		 (entry->item_id == LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID ||
-		  (entry->item_id == LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID &&
-		   entry->value == LINKR_DEBUGGER_CONFIG_VIN_1V8))) ||
+		 entry->item_id == LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID) ||
 		(entry->domain == LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO &&
 		 (entry->value & LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT) != 0U);
 	return LINKR_DEBUGGER_CONFIG_CODEC_OK;

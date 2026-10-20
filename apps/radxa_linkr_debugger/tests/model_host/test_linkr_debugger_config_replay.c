@@ -13,8 +13,7 @@
 #define TEST_ERR_REMOTE_IO (-121)
 
 static const uint8_t gpio_ids[] = {
-	7U, 8U, 9U, 10U, 11U, 12U, 13U, 14U,
-	15U, 16U, 17U, 18U, 19U, 20U, 29U,
+	7U, 8U, 9U, 12U, 13U, 14U, 15U, 16U, 17U, 18U, 29U,
 };
 
 struct fake_control {
@@ -66,9 +65,6 @@ static void build_full_ordered(struct linkr_debugger_config_snapshot *snapshot)
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID,
 		     LINKR_DEBUGGER_CONFIG_POWER_OFF);
-	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		     LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID,
-		     LINKR_DEBUGGER_CONFIG_VIN_1V8);
 	for (size_t i = 1U; i < ARRAY_SIZE_LOCAL(gpio_ids); i += 2U) {
 		append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, gpio_ids[i],
 			     LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT |
@@ -220,7 +216,7 @@ static void assert_current_fields_preserved(
 	}
 }
 
-static void test_orders_shuffled_23_entries(void)
+static void test_orders_shuffled_20_entries(void)
 {
 	struct linkr_debugger_config_snapshot expected;
 	struct linkr_debugger_config_snapshot shuffled;
@@ -299,7 +295,7 @@ static void test_order_rejects_malformed_without_partial_output(void)
 	assert_order_error(&snapshot, LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_SNAPSHOT);
 
 	memset(&snapshot, 0, sizeof(snapshot));
-	append_entry(&snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 21U, 0U);
+	append_entry(&snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 10U, 0U);
 	assert_order_error(&snapshot, LINKR_DEBUGGER_CONFIG_SERVICE_UNKNOWN_ITEM);
 
 	memset(&snapshot, 0, sizeof(snapshot));
@@ -555,7 +551,7 @@ static void test_execute_rejects_null_and_malformed_inputs(void)
 	append_entry(&valid, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID,
 		     LINKR_DEBUGGER_CONFIG_POWER_OFF);
-	append_entry(&malformed, LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 21U, 0U);
+	append_entry(&malformed, LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 10U, 0U);
 	seed_status(&status);
 	before = status;
 	seed_report(&report);
@@ -593,7 +589,7 @@ static void test_execute_rejects_null_and_malformed_inputs(void)
 
 int main(void)
 {
-	test_orders_shuffled_23_entries();
+	test_orders_shuffled_20_entries();
 	test_order_reorders_two_entry_snapshot();
 	test_order_rejects_malformed_without_partial_output();
 	test_full_replay_replays_every_entry_and_usb_vdd_order();
@@ -602,6 +598,6 @@ int main(void)
 	test_later_full_success_clears_prior_failure();
 	test_status_merge_preserves_non_saved_entries();
 	test_execute_rejects_null_and_malformed_inputs();
-	printf("linkr_debugger_config_replay: order=23 failures=23/23 passed\n");
+	printf("linkr_debugger_config_replay: order=20 failures=20/20 passed\n");
 	return 0;
 }

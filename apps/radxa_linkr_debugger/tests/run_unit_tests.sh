@@ -184,6 +184,15 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 "${OUT}/linkr_debugger_config_shell_test"
 
 ${CC} -std=c11 -Wall -Wextra -Werror \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/pd_shell_stubs" \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_pd_shell.c" \
+	-o "${OUT}/linkr_debugger_pd_shell_test"
+
+"${OUT}/linkr_debugger_pd_shell_test"
+
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_OTA_HOST_TEST \
 	-DLINKR_DEBUGGER_OTA_FULL_HOST_TEST \
 	-DLINKR_DEBUGGER_FLASH_ARBITER_HOST_TEST \
@@ -214,6 +223,51 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 	-o "${OUT}/linkr_debugger_http_body_test"
 
 "${OUT}/linkr_debugger_http_body_test"
+
+HTTP_NET_STUB_DIR="${HOST_STUB_DIR}/http_net"
+mkdir -p \
+	"${HTTP_NET_STUB_DIR}/zephyr/data" \
+	"${HTTP_NET_STUB_DIR}/zephyr/logging" \
+	"${HTTP_NET_STUB_DIR}/zephyr/net/http" \
+	"${HTTP_NET_STUB_DIR}/zephyr/sys"
+for stub in \
+	zephyr/data/json.h \
+	zephyr/kernel.h \
+	zephyr/logging/log.h \
+	zephyr/net/http/service.h \
+	zephyr/net/http/parser.h \
+	zephyr/net/http/server.h \
+	zephyr/net/http/status.h \
+	zephyr/sys/printk.h
+do
+	: > "${HTTP_NET_STUB_DIR}/${stub}"
+done
+for asset in \
+	linkr_debugger_web_index.html.gz.inc \
+	linkr_debugger_web_app.css.gz.inc \
+	linkr_debugger_web_app.js.gz.inc \
+	linkr_debugger_web_logic_decoder.js.gz.inc \
+	linkr_debugger_web_logic_decoder_bg.wasm.gz.inc \
+	linkr_debugger_web_linkr_mark.svg.gz.inc \
+	linkr_debugger_web_linkr_logo.svg.gz.inc \
+	linkr_debugger_web_robots.txt.gz.inc
+do
+	printf '%s\n' '0x00' > "${HTTP_NET_STUB_DIR}/${asset}"
+done
+
+${CC} -D_GNU_SOURCE -std=c11 -Wall -Wextra -Werror \
+	-Wno-unused-function -Wno-unused-variable -Wno-unused-parameter \
+	-ffunction-sections -fdata-sections \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${HTTP_NET_STUB_DIR}" \
+	-I"${ROOT}/apps/radxa_linkr_debugger/tests/model_host" \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_http_net.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_http_body.c" \
+	-Wl,--gc-sections \
+	-o "${OUT}/linkr_debugger_http_net_test"
+
+"${OUT}/linkr_debugger_http_net_test"
 
 ${CC} -std=c11 -Wall -Wextra -Werror \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
@@ -420,3 +474,41 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 "${OUT}/linkr_debugger_sigrok_linkr_test"
 
 python3 "${ROOT}/apps/radxa_linkr_debugger/tests/test_logic_analyzer_hil_perf.py"
+
+${CC} -std=c11 -Wall -Wextra -Werror \
+	-DLINKR_DEBUGGER_NET_SETTINGS_HOST_TEST=1 \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_net_settings.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_net_settings.c" \
+	-o "${OUT}/linkr_debugger_net_settings_test"
+
+"${OUT}/linkr_debugger_net_settings_test"
+
+${CC} -std=c11 -Wall -Wextra -Werror \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/pd_stubs" \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_pd.c" \
+	-o "${OUT}/linkr_debugger_pd_test"
+
+"${OUT}/linkr_debugger_pd_test"
+
+${CC} -std=c11 -Wall -Wextra -Werror \
+	-DLINKR_DEBUGGER_BOOTSEL_BUTTON_HOST_TEST=1 \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_bootsel_button.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_bootsel_button.c" \
+	-o "${OUT}/linkr_debugger_bootsel_button_test"
+
+"${OUT}/linkr_debugger_bootsel_button_test"
+
+${CC} -std=c11 -Wall -Wextra -Werror \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/reboot_stubs" \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_reboot.c" \
+	-o "${OUT}/linkr_debugger_reboot_test"
+
+"${OUT}/linkr_debugger_reboot_test"

@@ -49,11 +49,6 @@ static int switch_entry_set(const struct linkr_debugger_config_item_desc *item,
 			entry->value == LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE ?
 				LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE :
 				LINKR_DEBUGGER_TF_WP_ROUTE_PROTECTED);
-	case LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID:
-		return linkr_debugger_vin_route_set(
-			entry->value == LINKR_DEBUGGER_CONFIG_VIN_1V8 ?
-				LINKR_DEBUGGER_VIN_ROUTE_1V8 :
-				LINKR_DEBUGGER_VIN_ROUTE_3V3);
 	default:
 		return -EINVAL;
 	}

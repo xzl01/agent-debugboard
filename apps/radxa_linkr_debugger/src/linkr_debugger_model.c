@@ -15,7 +15,7 @@
 #include <string.h>
 
 #define ARRAY_SIZE_LOCAL(array) (sizeof(array) / sizeof((array)[0]))
-#define INA139_SENSOR "INA139"
+#define INA226_SENSOR "INA226"
 #define ADC_SENSOR "ADC"
 #define CURRENT_UNIT "uA"
 #define VOLTAGE_UNIT "uV"
@@ -29,19 +29,19 @@ const struct linkr_debugger_rail_desc linkr_debugger_rails[] = {
 	},
 	{
 		.name = "5v_out",
-		.signal = "GP05_5V_EN",
+		.signal = "GP0_5V_EN",
 		.pin = 0,
 		.controllable = true,
 	},
 	{
 		.name = "vdd_5v",
-		.signal = "GP09_5V_WS_EN",
+		.signal = "GP01_5V_WS_EN",
 		.pin = 1,
 		.controllable = true,
 	},
 	{
 		.name = "20v_out",
-		.signal = "GP10_20V_EN",
+		.signal = "GP03_20V_EN",
 		.pin = 3,
 		.controllable = true,
 	},
@@ -52,27 +52,35 @@ const size_t linkr_debugger_rail_count = ARRAY_SIZE_LOCAL(linkr_debugger_rails);
 const struct linkr_debugger_current_desc linkr_debugger_currents[] = {
 	{
 		.name = "5v_out",
-		.signal = "S_C_5V",
-		.sensor = INA139_SENSOR,
+		.signal = "INA226_5V",
+		.sensor = INA226_SENSOR,
 		.kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
 		.unit = CURRENT_UNIT,
-		.adc_index = 0,
+		.sensor_index = 0,
 	},
 	{
 		.name = "12v_out",
-		.signal = "S_C_12V",
-		.sensor = INA139_SENSOR,
+		.signal = "INA226_12V",
+		.sensor = INA226_SENSOR,
 		.kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
 		.unit = CURRENT_UNIT,
-		.adc_index = 1,
+		.sensor_index = 1,
 	},
 	{
 		.name = "20v_out",
-		.signal = "S_C_20V",
-		.sensor = INA139_SENSOR,
+		.signal = "INA226_20V",
+		.sensor = INA226_SENSOR,
 		.kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
 		.unit = CURRENT_UNIT,
-		.adc_index = 2,
+		.sensor_index = 2,
+	},
+	{
+		.name = "vdd_5v",
+		.signal = "INA226_VDD_5V",
+		.sensor = INA226_SENSOR,
+		.kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
+		.unit = CURRENT_UNIT,
+		.sensor_index = 3,
 	},
 	{
 		.name = "adc3",
@@ -98,18 +106,14 @@ const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[] = {
 	{ .pin = 8,  .output_capable = true, .note = "CON_REST", .layout_group = "J13", .layout_label = "RSET",    .layout_row = 0, .layout_column = 0 },
 	{ .pin = 9,  .output_capable = true, .note = "CON_USER", .layout_group = "J13", .layout_label = "USER",    .layout_row = 0, .layout_column = 1 },
 	{ .pin = 7,  .output_capable = true, .note = "CON_MAS",  .layout_group = "J13", .layout_label = "MASKROM", .layout_row = 1, .layout_column = 1 },
-	{ .pin = 15, .output_capable = true, .note = "J16_PIN11", .layout_group = "J16", .layout_label = "GP15", .layout_row = 0, .layout_column = 0 },
-	{ .pin = 29, .output_capable = false, .note = "J16_PIN12", .layout_group = "J16", .layout_label = "ADC3", .layout_row = 0, .layout_column = 1 },
-	{ .pin = 14, .output_capable = true, .note = "J16_PIN9",  .layout_group = "J16", .layout_label = "GP14", .layout_row = 1, .layout_column = 0 },
-	{ .pin = 20, .output_capable = true, .note = "J16_PIN10", .layout_group = "J16", .layout_label = "GP20", .layout_row = 1, .layout_column = 1 },
-	{ .pin = 13, .output_capable = true, .note = "J16_PIN7",  .layout_group = "J16", .layout_label = "GP13", .layout_row = 2, .layout_column = 0 },
-	{ .pin = 19, .output_capable = true, .note = "J16_PIN8",  .layout_group = "J16", .layout_label = "GP19", .layout_row = 2, .layout_column = 1 },
-	{ .pin = 12, .output_capable = true, .note = "J16_PIN5",  .layout_group = "J16", .layout_label = "GP12", .layout_row = 3, .layout_column = 0 },
-	{ .pin = 18, .output_capable = true, .note = "J16_PIN6",  .layout_group = "J16", .layout_label = "GP18", .layout_row = 3, .layout_column = 1 },
-	{ .pin = 11, .output_capable = true, .note = "J16_PIN3",  .layout_group = "J16", .layout_label = "GP11", .layout_row = 4, .layout_column = 0 },
-	{ .pin = 17, .output_capable = true, .note = "J16_PIN4",  .layout_group = "J16", .layout_label = "GP17", .layout_row = 4, .layout_column = 1 },
-	{ .pin = 10, .output_capable = true, .note = "J16_PIN1",  .layout_group = "J16", .layout_label = "GP10", .layout_row = 5, .layout_column = 0 },
-	{ .pin = 16, .output_capable = true, .note = "J16_PIN2",  .layout_group = "J16", .layout_label = "GP16", .layout_row = 5, .layout_column = 1 },
+	{ .pin = 15, .output_capable = true, .note = "J8_PIN11", .layout_group = "J8", .layout_label = "GP15", .layout_row = 0, .layout_column = 0 },
+	{ .pin = 29, .output_capable = false, .note = "J8_PIN12", .layout_group = "J8", .layout_label = "ADC3", .layout_row = 0, .layout_column = 1 },
+	{ .pin = 14, .output_capable = true, .note = "J8_PIN9",  .layout_group = "J8", .layout_label = "GP14", .layout_row = 1, .layout_column = 0 },
+	{ .pin = 13, .output_capable = true, .note = "J8_PIN7",  .layout_group = "J8", .layout_label = "GP13", .layout_row = 2, .layout_column = 0 },
+	{ .pin = 12, .output_capable = true, .note = "J8_PIN5",  .layout_group = "J8", .layout_label = "GP12", .layout_row = 3, .layout_column = 0 },
+	{ .pin = 18, .output_capable = true, .note = "J8_PIN6",  .layout_group = "J8", .layout_label = "GP18", .layout_row = 3, .layout_column = 1 },
+	{ .pin = 17, .output_capable = true, .note = "J8_PIN4",  .layout_group = "J8", .layout_label = "GP17", .layout_row = 4, .layout_column = 0 },
+	{ .pin = 16, .output_capable = true, .note = "J8_PIN2",  .layout_group = "J8", .layout_label = "GP16", .layout_row = 5, .layout_column = 1 },
 };
 
 const size_t linkr_debugger_safe_gpio_count = ARRAY_SIZE_LOCAL(linkr_debugger_safe_gpios);
@@ -187,30 +191,6 @@ bool linkr_debugger_format_gpio_name(uint8_t pin, char *buf, size_t len)
 	return written > 0 && (size_t)written < len;
 }
 
-bool linkr_debugger_parse_vin_route(const char *arg, enum linkr_debugger_vin_route *route)
-{
-	if (arg == NULL || route == NULL) {
-		return false;
-	}
-
-	if (streq(arg, "1.8v")) {
-		*route = LINKR_DEBUGGER_VIN_ROUTE_1V8;
-		return true;
-	}
-
-	if (streq(arg, "3.3v")) {
-		*route = LINKR_DEBUGGER_VIN_ROUTE_3V3;
-		return true;
-	}
-
-	return false;
-}
-
-const char *linkr_debugger_vin_route_to_string(enum linkr_debugger_vin_route route)
-{
-	return route == LINKR_DEBUGGER_VIN_ROUTE_1V8 ? "1.8v" : "3.3v";
-}
-
 bool linkr_debugger_parse_tf_wp_route(const char *arg, enum linkr_debugger_tf_wp_route *route)
 {
 	if (arg == NULL || route == NULL) {
@@ -233,32 +213,6 @@ bool linkr_debugger_parse_tf_wp_route(const char *arg, enum linkr_debugger_tf_wp
 const char *linkr_debugger_tf_wp_route_to_string(enum linkr_debugger_tf_wp_route route)
 {
 	return route == LINKR_DEBUGGER_TF_WP_ROUTE_PROTECTED ? "protected" : "writable";
-}
-
-int linkr_debugger_vin_route_microvolt(enum linkr_debugger_vin_route route)
-{
-	return route == LINKR_DEBUGGER_VIN_ROUTE_1V8 ?
-	       LINKR_DEBUGGER_VIN_1V8_UV : LINKR_DEBUGGER_VIN_3V3_UV;
-}
-
-bool linkr_debugger_vin_route_from_microvolt(int32_t microvolt,
-					    enum linkr_debugger_vin_route *route)
-{
-	if (route == NULL) {
-		return false;
-	}
-
-	if (microvolt == LINKR_DEBUGGER_VIN_1V8_UV) {
-		*route = LINKR_DEBUGGER_VIN_ROUTE_1V8;
-		return true;
-	}
-
-	if (microvolt == LINKR_DEBUGGER_VIN_3V3_UV) {
-		*route = LINKR_DEBUGGER_VIN_ROUTE_3V3;
-		return true;
-	}
-
-	return false;
 }
 
 bool linkr_debugger_rail_initial_enabled(const struct linkr_debugger_rail_desc *rail)

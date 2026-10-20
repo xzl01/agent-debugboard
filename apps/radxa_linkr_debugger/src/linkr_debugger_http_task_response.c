@@ -140,3 +140,21 @@ int linkr_debugger_http_task_clear_response(char *buf, size_t cap)
 	}
 	return written;
 }
+
+int linkr_debugger_http_task_delete_one_response(char *buf, size_t cap, const char *id)
+{
+	struct linkr_debugger_task_http_response response = { .buf = buf, .cap = cap };
+
+	if (buf == NULL || id == NULL) {
+		return -1;
+	}
+	buf[0] = '\0';
+	if (task_response_begin(&response, "delete") < 0 ||
+	    task_response_append(&response, ",\"deleted\":true,\"id\":") < 0 ||
+	    task_response_json_string(&response, id, strlen(id)) < 0 ||
+	    task_response_append(&response, "}\n") < 0) {
+		buf[0] = '\0';
+		return -1;
+	}
+	return (int)response.len;
+}

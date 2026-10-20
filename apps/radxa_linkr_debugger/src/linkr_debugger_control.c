@@ -13,7 +13,6 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/adc.h>
-#include <zephyr/drivers/adc/current_sense_amplifier.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/regulator.h>
 #include <zephyr/drivers/sensor.h>
@@ -42,10 +41,10 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #define REGULATOR_5V_OUT_NODE DT_NODELABEL(reg_5v_out)
 #define REGULATOR_VDD_5V_NODE DT_NODELABEL(reg_vdd_5v)
 #define REGULATOR_20V_OUT_NODE DT_NODELABEL(reg_20v_out)
-#define REGULATOR_VIO_NODE DT_NODELABEL(reg_vio)
-#define CURRENT_5V_OUT_NODE DT_NODELABEL(sense_5v_out)
-#define CURRENT_12V_OUT_NODE DT_NODELABEL(sense_12v_out)
-#define CURRENT_20V_OUT_NODE DT_NODELABEL(sense_20v_out)
+#define CURRENT_5V_OUT_NODE DT_NODELABEL(ina226_5v)
+#define CURRENT_12V_OUT_NODE DT_NODELABEL(ina226_12v)
+#define CURRENT_20V_OUT_NODE DT_NODELABEL(ina226_20v)
+#define CURRENT_VDD_5V_NODE DT_NODELABEL(ina226_vdd_5v)
 #define WATCHDOG_NODE DT_NODELABEL(wdt0)
 #define HEARTBEAT_LED_NODE DT_CHOSEN(zephyr_heartbeat_led)
 
@@ -53,7 +52,7 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #define LINKR_DEBUGGER_POWER_CAPTURE_PROTOCOL "host-stream-v1"
 #define LINKR_DEBUGGER_USB_MODE "ncm-http"
 #define LINKR_DEBUGGER_MCU_NAME "rp2350"
-#define LINKR_DEBUGGER_RESERVED_GPIOS "GP00-GP06 GP22-GP25 GP26-GP28"
+#define LINKR_DEBUGGER_RESERVED_GPIOS "GP00-GP06 GP10-GP11 GP19 GP22-GP25 GP26-GP28"
 
 #define LINKR_DEBUGGER_GPIO_DIR_INPUT 1
 #define LINKR_DEBUGGER_GPIO_DIR_OUTPUT 2
@@ -61,6 +60,7 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #define REGULATOR_STATE_CAPACITY 8U
 #define SAFE_GPIO_STATE_CAPACITY 32U
 #define LINKR_DEBUGGER_WATCHDOG_TIMEOUT_MS 5000U
+#define LINKR_DEBUGGER_WATCHDOG_BOOT_TIMEOUT_MS 15000U
 #define LINKR_DEBUGGER_WATCHDOG_SUPERVISOR_PERIOD_MS 250U
 #define LINKR_DEBUGGER_WATCHDOG_STARTUP_GRACE_MS 15000U
 #define LINKR_DEBUGGER_WATCHDOG_CORE_STALE_MS 1500U
@@ -98,20 +98,15 @@ BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_20V_OUT_NODE, okay));
 
 #if DT_NODE_HAS_STATUS(CURRENT_5V_OUT_NODE, okay) && \
     DT_NODE_HAS_STATUS(CURRENT_12V_OUT_NODE, okay) && \
-    DT_NODE_HAS_STATUS(CURRENT_20V_OUT_NODE, okay)
+    DT_NODE_HAS_STATUS(CURRENT_20V_OUT_NODE, okay) && \
+    DT_NODE_HAS_STATUS(CURRENT_VDD_5V_NODE, okay)
 #define HAS_CURRENT_SENSE 1
 BUILD_ASSERT(DT_NODE_HAS_STATUS(CURRENT_5V_OUT_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(CURRENT_12V_OUT_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(CURRENT_20V_OUT_NODE, okay));
+BUILD_ASSERT(DT_NODE_HAS_STATUS(CURRENT_VDD_5V_NODE, okay));
 #else
 #define HAS_CURRENT_SENSE 0
-#endif
-
-#if defined(CONFIG_SOC_SERIES_RP2350) && DT_NODE_HAS_STATUS(REGULATOR_VIO_NODE, okay)
-#define HAS_VIN_SWITCH 1
-BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_VIO_NODE, okay));
-#else
-#define HAS_VIN_SWITCH 0
 #endif
 
 #if DT_HAS_CHOSEN(zephyr_heartbeat_led) && \
@@ -128,11 +123,11 @@ static bool regulator_states[REGULATOR_STATE_CAPACITY];
 static enum linkr_debugger_sd_route linkr_debugger_sd_route = LINKR_DEBUGGER_SD_ROUTE_TARGET;
 static enum linkr_debugger_usb_route linkr_debugger_usb_route = LINKR_DEBUGGER_USB_ROUTE_TARGET;
 static enum linkr_debugger_tf_wp_route linkr_debugger_tf_wp_route = LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE;
-static enum linkr_debugger_vin_route linkr_debugger_vin_route = LINKR_DEBUGGER_VIN_ROUTE_3V3;
 static uint8_t linkr_debugger_gpio_directions[SAFE_GPIO_STATE_CAPACITY];
 static bool linkr_debugger_gpio_output_levels[SAFE_GPIO_STATE_CAPACITY];
-static struct k_mutex linkr_debugger_control_lock;
+K_MUTEX_DEFINE(linkr_debugger_control_lock);
 static bool linkr_debugger_watchdog_armed;
+static bool linkr_debugger_watchdog_boot_timeout_active;
 static bool linkr_debugger_watchdog_planned_reboot_pending;
 static int linkr_debugger_watchdog_channel = -1;
 static bool linkr_debugger_watchdog_supervisor_started;
@@ -170,17 +165,11 @@ static const struct device *const current_sensors[] = {
 	DEVICE_DT_GET(CURRENT_5V_OUT_NODE),
 	DEVICE_DT_GET(CURRENT_12V_OUT_NODE),
 	DEVICE_DT_GET(CURRENT_20V_OUT_NODE),
-};
-static const struct current_sense_amplifier_dt_spec current_amplifiers[] = {
-	CURRENT_SENSE_AMPLIFIER_DT_SPEC_GET(CURRENT_5V_OUT_NODE),
-	CURRENT_SENSE_AMPLIFIER_DT_SPEC_GET(CURRENT_12V_OUT_NODE),
-	CURRENT_SENSE_AMPLIFIER_DT_SPEC_GET(CURRENT_20V_OUT_NODE),
+	DEVICE_DT_GET(CURRENT_VDD_5V_NODE),
 };
 BUILD_ASSERT(ARRAY_SIZE(current_sensors) == LINKR_DEBUGGER_CURRENT_SENSOR_COUNT);
-BUILD_ASSERT(ARRAY_SIZE(current_amplifiers) == LINKR_DEBUGGER_CURRENT_SENSOR_COUNT);
 #else
 static const struct device *const current_sensors[] = {};
-static const struct current_sense_amplifier_dt_spec current_amplifiers[] = {};
 #endif
 
 #if DT_NODE_HAS_STATUS(DT_PATH(zephyr_user), okay) && \
@@ -190,10 +179,6 @@ static const struct adc_dt_spec adc_channels[] = {
 };
 #else
 static const struct adc_dt_spec adc_channels[] = {};
-#endif
-
-#if HAS_VIN_SWITCH
-static const struct device *const vio_regulator = DEVICE_DT_GET(REGULATOR_VIO_NODE);
 #endif
 
 #if HAS_HEARTBEAT_LED
@@ -275,30 +260,19 @@ static const struct device *linkr_debugger_regulator_device(const struct linkr_d
 static const struct device *linkr_debugger_current_sensor(const struct linkr_debugger_current_desc *current)
 {
 	if (current == NULL || current->kind != LINKR_DEBUGGER_ADC_KIND_CURRENT ||
-	    current->adc_index >= ARRAY_SIZE(current_sensors)) {
+	    current->sensor_index >= ARRAY_SIZE(current_sensors)) {
 		return NULL;
 	}
 
-	return current_sensors[current->adc_index];
+	return current_sensors[current->sensor_index];
 }
 
-static const struct current_sense_amplifier_dt_spec *
-linkr_debugger_current_amplifier(const struct linkr_debugger_current_desc *current)
+static int32_t sensor_value_to_micro_units(const struct sensor_value *value)
 {
-	if (current == NULL || current->kind != LINKR_DEBUGGER_ADC_KIND_CURRENT ||
-	    current->adc_index >= ARRAY_SIZE(current_amplifiers)) {
-		return NULL;
-	}
+	int64_t micro_units;
 
-	return &current_amplifiers[current->adc_index];
-}
-
-static int32_t sensor_value_to_microamps(const struct sensor_value *value)
-{
-	int64_t microamps;
-
-	microamps = ((int64_t)value->val1 * 1000000) + value->val2;
-	return (int32_t)microamps;
+	micro_units = ((int64_t)value->val1 * 1000000) + value->val2;
+	return (int32_t)micro_units;
 }
 
 static void set_regulator_state(const struct linkr_debugger_rail_desc *rail, bool enabled)
@@ -366,26 +340,6 @@ static int configure_tf_wp_default(void)
 	return gpio_pin_configure(gpio0, 22, GPIO_OUTPUT_ACTIVE);
 }
 
-static int configure_vin_default(void)
-{
-#if HAS_VIN_SWITCH
-	int ret;
-
-	if (vio_regulator == NULL || !device_is_ready(vio_regulator)) {
-		return -ENODEV;
-	}
-
-	ret = regulator_set_voltage(vio_regulator,
-					LINKR_DEBUGGER_VIN_3V3_UV,
-					LINKR_DEBUGGER_VIN_3V3_UV);
-	if (ret < 0) {
-		return ret;
-	}
-	linkr_debugger_vin_route = linkr_debugger_vin_route_get();
-#endif
-	return 0;
-}
-
 static void linkr_debugger_gpio_apply_safe_drive_strength(const struct linkr_debugger_safe_gpio_desc *desc)
 {
 	if (desc != NULL) {
@@ -399,40 +353,39 @@ static int setup_adc_channels(void)
 		return 0;
 	}
 
-	if (linkr_debugger_adc_count != ARRAY_SIZE(adc_channels)) {
-		return -EINVAL;
-	}
-
 	for (size_t i = 0; i < ARRAY_SIZE(adc_channels); i++) {
 		if (!adc_is_ready_dt(&adc_channels[i])) {
-			return -ENODEV;
+			LOG_WRN("ADC channel %zu not ready; voltage telemetry degraded", i);
+			continue;
 		}
 
 		if (adc_channel_setup_dt(&adc_channels[i]) < 0) {
-			return -ENODEV;
+			LOG_WRN("ADC channel %zu setup failed; voltage telemetry degraded", i);
 		}
 	}
 
 	for (size_t i = 0; i < linkr_debugger_adc_count; i++) {
 		const struct linkr_debugger_current_desc *current = &linkr_debugger_currents[i];
 
-		if (current->adc_index != i) {
-			return -EINVAL;
-		}
-
 		switch (current->kind) {
 		case LINKR_DEBUGGER_ADC_KIND_CURRENT: {
 			const struct device *sensor = linkr_debugger_current_sensor(current);
 
-			if (sensor == NULL || linkr_debugger_current_amplifier(current) == NULL) {
-				return -EINVAL;
+			if (sensor == NULL) {
+				LOG_WRN("current sensor %s missing from devicetree", current->name);
+				continue;
 			}
 			if (!device_is_ready(sensor)) {
-				return -ENODEV;
+				LOG_WRN("current sensor %s not ready; rail telemetry degraded",
+					current->name);
+				continue;
 			}
 			break;
 		}
 		case LINKR_DEBUGGER_ADC_KIND_VOLTAGE:
+			if (current->adc_index >= ARRAY_SIZE(adc_channels)) {
+				return -EINVAL;
+			}
 			break;
 		default:
 			return -EINVAL;
@@ -478,6 +431,7 @@ static bool linkr_debugger_watchdog_heartbeat_step_locked(bool feed_success)
 static void linkr_debugger_watchdog_marker_set(void)
 {
 	watchdog_hw->scratch[LINKR_DEBUGGER_WATCHDOG_SCRATCH_INDEX] = LINKR_DEBUGGER_WATCHDOG_BOOTSEL_MARKER;
+	watchdog_hw->scratch[LINKR_DEBUGGER_WATCHDOG_SOURCE_SCRATCH] = 0U;
 }
 
 static void linkr_debugger_watchdog_marker_clear(void)
@@ -514,6 +468,7 @@ static void linkr_debugger_watchdog_force_disable_locked(void)
 {
 	hw_clear_bits(&watchdog_hw->ctrl, WATCHDOG_CTRL_ENABLE_BITS);
 	linkr_debugger_watchdog_armed = false;
+	linkr_debugger_watchdog_boot_timeout_active = false;
 	linkr_debugger_watchdog_channel = -1;
 }
 
@@ -584,16 +539,21 @@ static bool linkr_debugger_watchdog_services_healthy_locked(void)
 	}
 #endif
 
-	if (linkr_debugger_watchdog_core_alive_ms == 0 ||
-	    (now - linkr_debugger_watchdog_core_alive_ms) > LINKR_DEBUGGER_WATCHDOG_CORE_STALE_MS) {
-		linkr_debugger_watchdog_set_failing_service_locked("core");
-		return false;
-	}
-
+	/*
+	 * The supervisor is now started before main(). Bypass the runtime
+	 * liveness checks for the whole boot grace, otherwise a normal but
+	 * blocking init would look like a dead core and stop the feeds.
+	 */
 	if (linkr_debugger_watchdog_started_ms != 0 &&
 	    (now - linkr_debugger_watchdog_started_ms) < LINKR_DEBUGGER_WATCHDOG_STARTUP_GRACE_MS) {
 		linkr_debugger_watchdog_set_failing_service_locked(NULL);
 		return true;
+	}
+
+	if (linkr_debugger_watchdog_core_alive_ms == 0 ||
+	    (now - linkr_debugger_watchdog_core_alive_ms) > LINKR_DEBUGGER_WATCHDOG_CORE_STALE_MS) {
+		linkr_debugger_watchdog_set_failing_service_locked("core");
+		return false;
 	}
 
 	if (linkr_debugger_http_listener_fd() < 0) {
@@ -614,6 +574,22 @@ static bool linkr_debugger_watchdog_services_healthy_locked(void)
 static int linkr_debugger_watchdog_hw_feed_locked(void)
 {
 	int ret;
+
+	/*
+	 * The early arm covers the pre-main boot window with a long timeout.
+	 * Once the supervisor gets scheduled, drop to the runtime timeout.
+	 */
+	if (linkr_debugger_watchdog_boot_timeout_active &&
+	    linkr_debugger_watchdog_armed) {
+		int disable_ret = wdt_disable(watchdog_dev);
+
+		if (disable_ret < 0) {
+			LOG_WRN("watchdog disable for runtime re-arm failed: %d", disable_ret);
+		}
+		linkr_debugger_watchdog_armed = false;
+		linkr_debugger_watchdog_channel = -1;
+		linkr_debugger_watchdog_boot_timeout_active = false;
+	}
 
 	ret = linkr_debugger_watchdog_arm_locked();
 	if (ret < 0) {
@@ -809,12 +785,12 @@ void linkr_debugger_watchdog_boot_check(void)
 	}
 }
 
-static int linkr_debugger_watchdog_arm_locked(void)
+static int linkr_debugger_watchdog_install_locked(uint32_t timeout_ms)
 {
 	struct wdt_timeout_cfg config = {
 		.window = {
 			.min = 0U,
-			.max = LINKR_DEBUGGER_WATCHDOG_TIMEOUT_MS,
+			.max = timeout_ms,
 		},
 		.callback = NULL,
 		.flags = WDT_FLAG_RESET_SOC,
@@ -823,10 +799,6 @@ static int linkr_debugger_watchdog_arm_locked(void)
 
 	if (watchdog_dev == NULL || !device_is_ready(watchdog_dev)) {
 		return -ENODEV;
-	}
-
-	if (linkr_debugger_watchdog_armed) {
-		return 0;
 	}
 
 	linkr_debugger_watchdog_marker_set();
@@ -845,7 +817,33 @@ static int linkr_debugger_watchdog_arm_locked(void)
 	}
 
 	linkr_debugger_watchdog_armed = true;
+	linkr_debugger_watchdog_boot_timeout_active =
+		(timeout_ms != LINKR_DEBUGGER_WATCHDOG_TIMEOUT_MS);
 	return 0;
+}
+
+static int linkr_debugger_watchdog_arm_locked(void)
+{
+	if (linkr_debugger_watchdog_armed) {
+		return 0;
+	}
+
+	return linkr_debugger_watchdog_install_locked(LINKR_DEBUGGER_WATCHDOG_TIMEOUT_MS);
+}
+
+int linkr_debugger_watchdog_early_arm(void)
+{
+	int ret;
+
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	if (linkr_debugger_watchdog_armed) {
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		return 0;
+	}
+	ret = linkr_debugger_watchdog_install_locked(LINKR_DEBUGGER_WATCHDOG_BOOT_TIMEOUT_MS);
+	k_mutex_unlock(&linkr_debugger_control_lock);
+
+	return ret;
 }
 
 static int read_adc_debug(const struct linkr_debugger_current_desc *current,
@@ -866,11 +864,13 @@ static int read_adc_debug(const struct linkr_debugger_current_desc *current,
 	spec = &adc_channels[current->adc_index];
 	ret = adc_sequence_init_dt(spec, &sequence);
 	if (ret < 0) {
+		LOG_ERR("%s: adc_sequence_init_dt failed: %d", current->name, ret);
 		return ret;
 	}
 
 	ret = adc_read_dt(spec, &sequence);
 	if (ret < 0) {
+		LOG_ERR("%s: adc_read_dt failed: %d", current->name, ret);
 		return ret;
 	}
 
@@ -917,8 +917,6 @@ int linkr_debugger_control_init(void)
 {
 	int ret;
 
-	k_mutex_init(&linkr_debugger_control_lock);
-
 	if (!device_is_ready(gpio0)) {
 		return -ENODEV;
 	}
@@ -939,11 +937,6 @@ int linkr_debugger_control_init(void)
 	}
 
 	ret = configure_tf_wp_default();
-	if (ret < 0) {
-		return ret;
-	}
-
-	ret = configure_vin_default();
 	if (ret < 0) {
 		return ret;
 	}
@@ -1156,73 +1149,6 @@ int linkr_debugger_tf_wp_route_set(enum linkr_debugger_tf_wp_route route)
 	return 0;
 }
 
-bool linkr_debugger_vin_switch_available(void)
-{
-	return HAS_VIN_SWITCH != 0;
-}
-
-enum linkr_debugger_vin_route linkr_debugger_vin_route_get(void)
-{
-	enum linkr_debugger_vin_route route;
-
-	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
-	route = linkr_debugger_vin_route;
-	k_mutex_unlock(&linkr_debugger_control_lock);
-#if HAS_VIN_SWITCH
-	int32_t microvolt;
-	int ret;
-
-	if (vio_regulator == NULL || !device_is_ready(vio_regulator)) {
-		return route;
-	}
-
-	ret = regulator_get_voltage(vio_regulator, &microvolt);
-	if (ret == 0 && linkr_debugger_vin_route_from_microvolt(microvolt, &route)) {
-		k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
-		linkr_debugger_vin_route = route;
-		k_mutex_unlock(&linkr_debugger_control_lock);
-	}
-#endif
-	return route;
-}
-
-const char *linkr_debugger_vin_route_name(void)
-{
-	return linkr_debugger_vin_route_to_string(linkr_debugger_vin_route_get());
-}
-
-int linkr_debugger_vin_route_set(enum linkr_debugger_vin_route route)
-{
-#if HAS_VIN_SWITCH
-	int microvolt;
-	int ret;
-
-	if (vio_regulator == NULL || !device_is_ready(vio_regulator)) {
-		return -ENODEV;
-	}
-
-	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
-	if (linkr_debugger_vin_route == route) {
-		k_mutex_unlock(&linkr_debugger_control_lock);
-		return 0;
-	}
-
-	microvolt = linkr_debugger_vin_route_microvolt(route);
-	ret = regulator_set_voltage(vio_regulator, microvolt, microvolt);
-	if (ret < 0) {
-		k_mutex_unlock(&linkr_debugger_control_lock);
-		return ret;
-	}
-	linkr_debugger_vin_route = route;
-
-	k_mutex_unlock(&linkr_debugger_control_lock);
-	return 0;
-#else
-	ARG_UNUSED(route);
-	return -ENOTSUP;
-#endif
-}
-
 int linkr_debugger_current_read(const struct linkr_debugger_current_desc *current,
 				    struct linkr_debugger_current_sample *sample)
 {
@@ -1236,8 +1162,10 @@ int linkr_debugger_current_read(const struct linkr_debugger_current_desc *curren
 	}
 
 	sample->raw_available = false;
+	sample->voltage_valid = false;
 	sample->raw = 0;
 	sample->mv = 0;
+	sample->voltage_uv = 0;
 	sample->current_ua = 0;
 	sample->value.val1 = 0;
 	sample->value.val2 = 0;
@@ -1256,12 +1184,6 @@ int linkr_debugger_current_read(const struct linkr_debugger_current_desc *curren
 			sample->rail_enabled = linkr_debugger_power_output_enabled(rail);
 		}
 
-		ret = read_adc_debug(current, sample);
-		if (ret < 0) {
-			k_mutex_unlock(&linkr_debugger_control_lock);
-			return ret;
-		}
-
 		ret = sensor_sample_fetch_chan(sensor, SENSOR_CHAN_CURRENT);
 		if (ret < 0) {
 			k_mutex_unlock(&linkr_debugger_control_lock);
@@ -1275,7 +1197,18 @@ int linkr_debugger_current_read(const struct linkr_debugger_current_desc *curren
 		}
 
 		sample->value = value;
-		sample->current_ua = sensor_value_to_microamps(&value);
+		sample->current_ua = sensor_value_to_micro_units(&value);
+
+		/* INA226 also reports the bus voltage for this rail. */
+		ret = sensor_sample_fetch_chan(sensor, SENSOR_CHAN_VOLTAGE);
+		if (ret == 0) {
+			ret = sensor_channel_get(sensor, SENSOR_CHAN_VOLTAGE, &value);
+		}
+		if (ret == 0) {
+			sample->voltage_uv = sensor_value_to_micro_units(&value);
+			sample->mv = sample->voltage_uv / 1000;
+			sample->voltage_valid = true;
+		}
 		k_mutex_unlock(&linkr_debugger_control_lock);
 		return 0;
 	case LINKR_DEBUGGER_ADC_KIND_VOLTAGE: {
@@ -1300,44 +1233,12 @@ int linkr_debugger_current_read(const struct linkr_debugger_current_desc *curren
 	}
 }
 
-struct linkr_debugger_current_batch_timing {
-	int64_t *timestamps_us;
-	size_t count;
-};
-
-static enum adc_action linkr_debugger_current_batch_callback(
-	const struct device *dev,
-	const struct adc_sequence *sequence,
-	uint16_t sampling_index)
-{
-	struct linkr_debugger_current_batch_timing *timing = sequence->options->user_data;
-
-	ARG_UNUSED(dev);
-	if (sampling_index < timing->count) {
-		timing->timestamps_us[sampling_index] =
-			k_ticks_to_us_floor64(k_uptime_ticks());
-	}
-
-	return ADC_ACTION_CONTINUE;
-}
-
 int linkr_debugger_current_read_batch(struct linkr_debugger_current_sample *samples,
 					 size_t batch_count,
 					 size_t channel_count,
 					 int64_t *timestamps_us,
 					 uint32_t interval_us)
 {
-	int16_t raw[LINKR_DEBUGGER_CURRENT_BATCH_MAX * ARRAY_SIZE(adc_channels)];
-	struct linkr_debugger_current_batch_timing timing = {
-		.timestamps_us = timestamps_us,
-		.count = batch_count,
-	};
-	struct adc_sequence_options options = {0};
-	struct adc_sequence sequence = {
-		.buffer = raw,
-		.options = &options,
-	};
-	uint8_t previous_channel = 0U;
 	int ret;
 
 	if (samples == NULL || timestamps_us == NULL || batch_count == 0U ||
@@ -1347,42 +1248,10 @@ int linkr_debugger_current_read_batch(struct linkr_debugger_current_sample *samp
 		return -EINVAL;
 	}
 
-	options.interval_us = interval_us;
-	options.callback = linkr_debugger_current_batch_callback;
-	options.user_data = &timing;
-	options.extra_samplings = (uint16_t)(batch_count - 1U);
-	sequence.buffer_size = batch_count * channel_count * sizeof(raw[0]);
-	sequence.resolution = adc_channels[0].resolution;
-	sequence.oversampling = adc_channels[0].oversampling;
-	for (size_t i = 0; i < channel_count; i++) {
-		const struct linkr_debugger_current_desc *current = &linkr_debugger_currents[i];
-
-		if (current->adc_index != i || adc_channels[i].dev != adc_channels[0].dev ||
-		    adc_channels[i].resolution != sequence.resolution ||
-		    adc_channels[i].oversampling != sequence.oversampling ||
-		    (i > 0U && adc_channels[i].channel_id <= previous_channel)) {
-			return -EINVAL;
-		}
-		if (current->kind == LINKR_DEBUGGER_ADC_KIND_CURRENT &&
-		    linkr_debugger_current_amplifier(current) == NULL) {
-			return -EINVAL;
-		}
-		if (current->kind != LINKR_DEBUGGER_ADC_KIND_CURRENT &&
-		    current->kind != LINKR_DEBUGGER_ADC_KIND_VOLTAGE) {
-			return -EINVAL;
-		}
-		previous_channel = adc_channels[i].channel_id;
-		sequence.channels |= BIT(adc_channels[i].channel_id);
-	}
-
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
-	ret = adc_read(adc_channels[0].dev, &sequence);
-	if (ret < 0) {
-		k_mutex_unlock(&linkr_debugger_control_lock);
-		return ret;
-	}
-
 	for (size_t sample_index = 0; sample_index < batch_count; sample_index++) {
+		timestamps_us[sample_index] = k_ticks_to_us_floor64(k_uptime_ticks());
+
 		for (size_t i = 0; i < channel_count; i++) {
 			struct linkr_debugger_current_sample *sample =
 				&samples[sample_index * channel_count + i];
@@ -1390,62 +1259,91 @@ int linkr_debugger_current_read_batch(struct linkr_debugger_current_sample *samp
 				&linkr_debugger_currents[i];
 			const struct linkr_debugger_rail_desc *rail =
 				linkr_debugger_find_rail(current->name);
-			const struct current_sense_amplifier_dt_spec *amplifier;
-			int32_t raw_value = raw[sample_index * channel_count + i];
-			int32_t microvolts = raw_value;
-			int32_t millivolts = raw_value;
 
 			memset(sample, 0, sizeof(*sample));
 			sample->rail_enabled = rail == NULL || !rail->controllable ||
 				linkr_debugger_power_output_enabled(rail);
-			sample->raw_available = true;
-			sample->raw = raw_value;
 
-			ret = adc_raw_to_millivolts_dt(&adc_channels[i], &millivolts);
-			if (ret < 0) {
-				uint8_t resolution = adc_channels[i].resolution != 0U ?
-					adc_channels[i].resolution : 12U;
+			if (current->kind == LINKR_DEBUGGER_ADC_KIND_CURRENT) {
+				const struct device *sensor = linkr_debugger_current_sensor(current);
+				struct sensor_value value;
+				int sensor_ret;
 
-				millivolts = (raw_value * 3300) /
-					((1 << resolution) - 1);
-			}
-			sample->mv = millivolts;
-
-			switch (current->kind) {
-			case LINKR_DEBUGGER_ADC_KIND_CURRENT:
-				amplifier = linkr_debugger_current_amplifier(current);
-				if (amplifier == NULL) {
-					k_mutex_unlock(&linkr_debugger_control_lock);
-					return -EINVAL;
+				if (sensor == NULL || !device_is_ready(sensor)) {
+					ret = -ENODEV;
+					goto out;
 				}
-				ret = adc_raw_to_microvolts_dt(&amplifier->port, &microvolts);
+				sensor_ret = sensor_sample_fetch_chan(sensor, SENSOR_CHAN_CURRENT);
+				if (sensor_ret < 0) {
+					ret = sensor_ret;
+					goto out;
+				}
+				sensor_ret = sensor_channel_get(sensor, SENSOR_CHAN_CURRENT, &value);
+				if (sensor_ret < 0) {
+					ret = sensor_ret;
+					goto out;
+				}
+				sample->value = value;
+				sample->current_ua = sensor_value_to_micro_units(&value);
+
+				/* INA226 also reports the bus voltage for this rail. */
+				sensor_ret = sensor_sample_fetch_chan(sensor, SENSOR_CHAN_VOLTAGE);
+				if (sensor_ret == 0) {
+					sensor_ret = sensor_channel_get(sensor, SENSOR_CHAN_VOLTAGE,
+								&value);
+				}
+				if (sensor_ret == 0) {
+					sample->voltage_uv = sensor_value_to_micro_units(&value);
+					sample->mv = sample->voltage_uv / 1000;
+					sample->voltage_valid = true;
+				}
+			} else if (current->kind == LINKR_DEBUGGER_ADC_KIND_VOLTAGE) {
+				struct adc_sequence sequence = {
+					.buffer = &sample->raw,
+					.buffer_size = sizeof(sample->raw),
+				};
+				int32_t microvolts;
+
+				if (current->adc_index >= ARRAY_SIZE(adc_channels)) {
+					ret = -ERANGE;
+					goto out;
+				}
+				ret = adc_sequence_init_dt(&adc_channels[current->adc_index],
+							   &sequence);
 				if (ret < 0) {
-					k_mutex_unlock(&linkr_debugger_control_lock);
-					return ret;
+					goto out;
 				}
-				if (abs(raw_value) >= amplifier->noise_threshold) {
-					sample->current_ua = current_sense_amplifier_scale_ua_dt(
-						amplifier, microvolts);
-				}
-				(void)sensor_value_from_micro(&sample->value, sample->current_ua);
-				break;
-			case LINKR_DEBUGGER_ADC_KIND_VOLTAGE:
-				ret = adc_raw_to_microvolts_dt(&adc_channels[current->adc_index],
-							       &microvolts);
+				ret = adc_read_dt(&adc_channels[current->adc_index], &sequence);
 				if (ret < 0) {
-					microvolts = millivolts * 1000;
+					goto out;
+				}
+				sample->raw_available = true;
+				microvolts = sample->raw;
+				if (adc_raw_to_microvolts_dt(&adc_channels[current->adc_index],
+							     &microvolts) < 0) {
+					uint8_t resolution =
+						adc_channels[current->adc_index].resolution != 0U ?
+						adc_channels[current->adc_index].resolution : 12U;
+
+					microvolts = (sample->raw * 3300 * 1000) /
+						((1 << resolution) - 1);
 				}
 				(void)sensor_value_from_micro(&sample->value, microvolts);
-				break;
-			default:
-				k_mutex_unlock(&linkr_debugger_control_lock);
-				return -EINVAL;
+			} else {
+				ret = -EINVAL;
+				goto out;
 			}
 		}
-	}
-	k_mutex_unlock(&linkr_debugger_control_lock);
 
-	return 0;
+		if (interval_us != 0U && sample_index + 1U < batch_count) {
+			k_busy_wait(interval_us);
+		}
+	}
+	ret = 0;
+
+out:
+	k_mutex_unlock(&linkr_debugger_control_lock);
+	return ret;
 }
 
 int linkr_debugger_current_read_all(struct linkr_debugger_current_sample *samples,
@@ -1604,17 +1502,6 @@ int linkr_debugger_control_snapshot_get(struct linkr_debugger_control_snapshot *
 						LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE;
 				}
 				break;
-			case LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID:
-#if HAS_VIN_SWITCH
-				if (vio_regulator != NULL && device_is_ready(vio_regulator)) {
-					state->available = true;
-					state->value = linkr_debugger_vin_route ==
-						LINKR_DEBUGGER_VIN_ROUTE_1V8 ?
-						LINKR_DEBUGGER_CONFIG_VIN_1V8 :
-						LINKR_DEBUGGER_CONFIG_VIN_3V3;
-				}
-#endif
-				break;
 			default:
 				break;
 			}
@@ -1656,7 +1543,8 @@ void linkr_debugger_watchdog_status_get(struct linkr_debugger_watchdog_status *s
 	status->armed = linkr_debugger_watchdog_armed;
 	status->automatic = true;
 	status->healthy = linkr_debugger_watchdog_services_healthy_locked();
-	status->timeout_ms = LINKR_DEBUGGER_WATCHDOG_TIMEOUT_MS;
+	status->timeout_ms = linkr_debugger_watchdog_boot_timeout_active ?
+		LINKR_DEBUGGER_WATCHDOG_BOOT_TIMEOUT_MS : LINKR_DEBUGGER_WATCHDOG_TIMEOUT_MS;
 	status->bootloader_on_timeout = status->supported;
 #if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
 	status->fault_injection_available = true;
@@ -1825,6 +1713,21 @@ int linkr_debugger_watchdog_supervisor_start(void)
 
 	return 0;
 }
+
+/*
+ * The INA226 driver probes I2C from SENSOR_INIT (priority 90), before main()
+ * runs. Arm the watchdog and start its supervisor first (priority 80, after
+ * the WDT device at PRE_KERNEL_1) so a probe that blocks the bus still trips
+ * the hardware watchdog and the next boot takes the BOOTSEL marker path.
+ */
+static int linkr_debugger_watchdog_bootstrap(void)
+{
+	linkr_debugger_watchdog_boot_check();
+	(void)linkr_debugger_watchdog_early_arm();
+	return linkr_debugger_watchdog_supervisor_start();
+}
+
+SYS_INIT(linkr_debugger_watchdog_bootstrap, POST_KERNEL, 80);
 
 int linkr_debugger_bootloader_now(void)
 {

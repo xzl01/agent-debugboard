@@ -16,15 +16,14 @@
 #define ARRAY_SIZE_LOCAL(array) (sizeof(array) / sizeof((array)[0]))
 
 static const uint8_t known_vector[] = {
-	0x4c, 0x52, 0x43, 0x46, 0x01, 0x04, 0x07, 0x00,
-	0x28, 0x00, 0x00, 0x00,
+	0x4c, 0x52, 0x43, 0x46, 0x01, 0x04, 0x06, 0x00,
+	0x24, 0x00, 0x00, 0x00,
 	0x01, 0x01, 0x01, 0x00,
 	0x01, 0x02, 0x00, 0x00,
 	0x02, 0x01, 0x01, 0x00,
 	0x02, 0x02, 0x01, 0x00,
-	0x02, 0x04, 0x01, 0x00,
 	0x03, 0x07, 0x02, 0x00,
-	0x03, 0x0a, 0x01, 0x00,
+	0x03, 0x0c, 0x01, 0x00,
 };
 
 static const uint8_t legacy_gp29_output_vector[] = {
@@ -40,7 +39,7 @@ static const uint8_t v2_gp29_output_vector[] = {
 };
 
 static const struct linkr_debugger_config_snapshot known_snapshot = {
-	.entry_count = 7U,
+	.entry_count = 6U,
 	.entries = {
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		  LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID,
@@ -54,12 +53,9 @@ static const struct linkr_debugger_config_snapshot known_snapshot = {
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		  LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
 		  LINKR_DEBUGGER_CONFIG_USB_TARGET },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		  LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID,
-		  LINKR_DEBUGGER_CONFIG_VIN_3V3 },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U,
 		  LINKR_DEBUGGER_CONFIG_GPIO_LEVEL },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 10U,
+		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 12U,
 		  LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT },
 	},
 };
@@ -128,10 +124,10 @@ static void build_max_snapshot(struct linkr_debugger_config_snapshot *snapshot)
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		     LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
 		     LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE);
-	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		     LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID,
-		     LINKR_DEBUGGER_CONFIG_VIN_3V3);
-	for (uint8_t pin = 7U; pin <= 20U; pin++) {
+	for (uint8_t pin = 7U; pin <= 18U; pin++) {
+		if (pin == 10U || pin == 11U) {
+			continue;
+		}
 		append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, pin,
 			     (uint8_t)(pin & LINKR_DEBUGGER_CONFIG_GPIO_VALUE_MASK));
 	}
@@ -161,13 +157,9 @@ static void test_constants_and_catalog(void)
 		  LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID, "switch/usb" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		  LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID, "switch/tf_wp" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		  LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID, "switch/vin" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U, "gpio/GP7" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 8U, "gpio/GP8" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 9U, "gpio/GP9" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 10U, "gpio/GP10" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 11U, "gpio/GP11" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 12U, "gpio/GP12" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 13U, "gpio/GP13" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 14U, "gpio/GP14" },
@@ -175,16 +167,14 @@ static void test_constants_and_catalog(void)
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 16U, "gpio/GP16" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 17U, "gpio/GP17" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 18U, "gpio/GP18" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 19U, "gpio/GP19" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 20U, "gpio/GP20" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 29U, "gpio/GP29" },
 	};
 
 	assert(LINKR_DEBUGGER_CONFIG_VERSION == 1U);
 	assert(LINKR_DEBUGGER_CONFIG_HEADER_SIZE == 12U);
 	assert(LINKR_DEBUGGER_CONFIG_ENTRY_SIZE == 4U);
-	assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 23U);
-	assert(LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE == 104U);
+	assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 18U);
+	assert(LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE == 84U);
 	assert(LINKR_DEBUGGER_CONFIG_SETTINGS_MAX_VAL_LEN == 256U);
 	assert(linkr_debugger_config_item_count == ARRAY_SIZE_LOCAL(expected));
 
@@ -200,9 +190,9 @@ static void test_constants_and_catalog(void)
 	}
 
 	assert(linkr_debugger_config_find_item(0U, 0U) == NULL);
-	assert(linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 21U) == NULL);
+	assert(linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 10U) == NULL);
 	assert(linkr_debugger_config_find_item_by_name(NULL) == NULL);
-	assert(linkr_debugger_config_find_item_by_name("gpio/GP21") == NULL);
+	assert(linkr_debugger_config_find_item_by_name("gpio/GP10") == NULL);
 }
 
 static void assert_classification(uint8_t domain, uint8_t item_id, uint8_t value,
@@ -244,12 +234,6 @@ static void test_risk_classification(void)
 	assert_classification(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 			      LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
 			      LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED, false);
-	assert_classification(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-			      LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID,
-			      LINKR_DEBUGGER_CONFIG_VIN_1V8, true);
-	assert_classification(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-			      LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID,
-			      LINKR_DEBUGGER_CONFIG_VIN_3V3, false);
 
 	for (size_t i = 0; i < linkr_debugger_config_item_count; i++) {
 		if (linkr_debugger_config_items[i].domain != LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO) {
@@ -297,7 +281,7 @@ static void test_maximum_round_trip(void)
 	assert(linkr_debugger_config_encode(&source, encoded, sizeof(encoded), &encoded_len) ==
 	       LINKR_DEBUGGER_CONFIG_CODEC_OK);
 	assert(encoded_len == LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE);
-	assert(encoded[8] == 0x68U);
+	assert(encoded[8] == 0x54U);
 	assert(encoded[9] == 0x00U);
 	for (size_t i = 0; i < source.entry_count; i++) {
 		const size_t offset = LINKR_DEBUGGER_CONFIG_HEADER_SIZE +
@@ -500,7 +484,6 @@ static void test_switch_value_rejections(void)
 		LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID,
 		LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
 		LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
-		LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID,
 	};
 
 	for (size_t i = 0; i < ARRAY_SIZE_LOCAL(switch_ids); i++) {

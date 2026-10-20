@@ -52,6 +52,7 @@ enum linkr_debugger_task_result {
 	LINKR_DEBUGGER_TASK_INVALID_BLOB,
 	LINKR_DEBUGGER_TASK_BUSY,
 	LINKR_DEBUGGER_TASK_STORAGE_ERROR,
+	LINKR_DEBUGGER_TASK_NOT_FOUND,
 };
 
 typedef void (*linkr_debugger_task_blob_visitor)(const char *blob, size_t blob_len,
@@ -66,6 +67,11 @@ enum linkr_debugger_task_result linkr_debugger_task_blob_visit(
 	linkr_debugger_task_blob_visitor visitor, void *context);
 enum linkr_debugger_task_result linkr_debugger_task_tasks_store(const char *blob, size_t len);
 enum linkr_debugger_task_result linkr_debugger_task_tasks_clear(void);
+/* Removes the single task section identified by id, preserving every other
+ * task. Returns NOT_FOUND when id is absent (or no blob is stored). Removing
+ * the last remaining task clears the backing key entirely.
+ */
+enum linkr_debugger_task_result linkr_debugger_task_tasks_delete_one(const char *id);
 
 #ifdef LINKR_DEBUGGER_TASK_HOST_TEST
 

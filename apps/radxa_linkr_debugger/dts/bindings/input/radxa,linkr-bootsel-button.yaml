@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
+description: Radxa Linkr Debugger button connected to the RP2350 QSPI CS pin
+
+compatible: "radxa,linkr-bootsel-button"
+
+properties:
+  sample-interval-ms:
+    type: int
+    required: true
+    description: Polling interval in milliseconds.
+
+  debounce-samples:
+    type: int
+    required: true
+    description: Number of consecutive samples required to confirm an edge.
+
+  long-press-ms:
+    type: int
+    required: true
+    description: Confirmed press duration required before waiting for release.

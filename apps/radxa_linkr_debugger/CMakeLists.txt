@@ -52,6 +52,9 @@ set(linkr_debugger_web_dist_files
   ${linkr_debugger_web_dist_dir}/assets/app.js
   ${linkr_debugger_web_dist_dir}/assets/decoder/logic-decoder.js
   ${linkr_debugger_web_dist_dir}/assets/decoder/logic-decoder_bg.wasm
+  ${linkr_debugger_web_dist_dir}/linkr-mark.svg
+  ${linkr_debugger_web_dist_dir}/linkr-logo.svg
+  ${linkr_debugger_web_dist_dir}/robots.txt
 )
 
 file(GLOB_RECURSE linkr_debugger_web_sources CONFIGURE_DEPENDS
@@ -64,6 +67,9 @@ list(APPEND linkr_debugger_web_sources
   ${linkr_debugger_web_dir}/decoder/Cargo.lock
   ${linkr_debugger_web_dir}/decoder/Cargo.toml
   ${linkr_debugger_web_dir}/index.html
+  ${linkr_debugger_web_dir}/public/linkr-mark.svg
+  ${linkr_debugger_web_dir}/public/linkr-logo.svg
+  ${linkr_debugger_web_dir}/public/robots.txt
   ${linkr_debugger_web_dir}/package-lock.json
   ${linkr_debugger_web_dir}/package.json
   ${linkr_debugger_web_dir}/postcss.config.js
@@ -78,6 +84,15 @@ add_custom_command(
   COMMAND ${NPM_EXECUTABLE} ci --ignore-scripts --no-audit --no-fund
   COMMAND ${CMAKE_COMMAND} -E env VITE_OUT_DIR=${linkr_debugger_web_dist_dir}
           ${NPM_EXECUTABLE} run build:firmware
+  COMMAND ${CMAKE_COMMAND} -E copy
+          ${linkr_debugger_web_dir}/public/linkr-mark.svg
+          ${linkr_debugger_web_dist_dir}/linkr-mark.svg
+  COMMAND ${CMAKE_COMMAND} -E copy
+          ${linkr_debugger_web_dir}/public/linkr-logo.svg
+          ${linkr_debugger_web_dist_dir}/linkr-logo.svg
+  COMMAND ${CMAKE_COMMAND} -E copy
+          ${linkr_debugger_web_dir}/public/robots.txt
+          ${linkr_debugger_web_dist_dir}/robots.txt
   DEPENDS ${linkr_debugger_web_sources}
   WORKING_DIRECTORY ${linkr_debugger_web_dir}
   COMMENT "Building embedded Web UI"
@@ -87,6 +102,21 @@ add_custom_command(
 generate_inc_file_for_target(app
   ${linkr_debugger_web_dist_dir}/index.html
   ${linkr_debugger_web_gen_dir}/linkr_debugger_web_index.html.gz.inc
+  --gzip
+)
+generate_inc_file_for_target(app
+  ${linkr_debugger_web_dist_dir}/linkr-mark.svg
+  ${linkr_debugger_web_gen_dir}/linkr_debugger_web_linkr_mark.svg.gz.inc
+  --gzip
+)
+generate_inc_file_for_target(app
+  ${linkr_debugger_web_dist_dir}/linkr-logo.svg
+  ${linkr_debugger_web_gen_dir}/linkr_debugger_web_linkr_logo.svg.gz.inc
+  --gzip
+)
+generate_inc_file_for_target(app
+  ${linkr_debugger_web_dist_dir}/robots.txt
+  ${linkr_debugger_web_gen_dir}/linkr_debugger_web_robots.txt.gz.inc
   --gzip
 )
 generate_inc_file_for_target(app
@@ -112,7 +142,9 @@ generate_inc_file_for_target(app
 
 target_sources(app PRIVATE
   src/main.c
+  src/i2c_rpi_pico_pio.c
   src/linkr_debugger_build_info.c
+  src/linkr_debugger_bootsel_button.c
   src/linkr_debugger_captive_portal.c
   src/linkr_debugger_capture_arbiter.c
   src/linkr_debugger_capture_arena.c
@@ -145,6 +177,10 @@ target_sources(app PRIVATE
   src/linkr_debugger_monitoring.c
   src/linkr_debugger_model.c
   src/linkr_debugger_network.c
+  src/linkr_debugger_net_settings.c
+  src/linkr_debugger_pd.c
+  src/linkr_debugger_reboot.c
+  src/wch_ch224a.c
   src/linkr_debugger_task.c
   src/linkr_debugger_task_parse.c
   src/linkr_debugger_task_mutation.c

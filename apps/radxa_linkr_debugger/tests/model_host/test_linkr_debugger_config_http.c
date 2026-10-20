@@ -80,8 +80,6 @@ static uint8_t default_value(const struct linkr_debugger_config_item_desc *item)
 		return LINKR_DEBUGGER_CONFIG_USB_TARGET;
 	case LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID:
 		return LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE;
-	case LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID:
-		return LINKR_DEBUGGER_CONFIG_VIN_3V3;
 	default:
 		assert(false);
 		return 0U;

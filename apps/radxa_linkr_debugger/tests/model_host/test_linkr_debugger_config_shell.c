@@ -11,12 +11,16 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Exercise the top-level reboot command without the unrelated Zephyr shell. */
+#define LINKR_DEBUGGER_SHELL_REBOOT_HOST_TEST 1
+#include "../../src/linkr_debugger_shell.c"
+
 #define ARRAY_SIZE_LOCAL(array) (sizeof(array) / sizeof((array)[0]))
 #define SHELL_OUTPUT_CAP 32U
 #define SHELL_OUTPUT_LINE_CAP 160U
 #define SAVED_ID_CAP 64U
 
-_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 23U,
+_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 18U,
 	       "config shell selection limit changed");
 
 enum fake_shell_line_kind {
@@ -67,11 +71,6 @@ static const struct linkr_debugger_config_item_desc item_switch_usb = {
 	.domain = LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 	.item_id = LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
 	.id = "switch/usb",
-};
-static const struct linkr_debugger_config_item_desc item_switch_vin = {
-	.domain = LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-	.item_id = LINKR_DEBUGGER_CONFIG_SWITCH_VIN_ID,
-	.id = "switch/vin",
 };
 static const struct linkr_debugger_config_item_desc item_gpio_7 = {
 	.domain = LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO,
@@ -341,7 +340,7 @@ static void test_save_accepts_confirmation_after_maximum_selection(void)
 
 	/* Then */
 	assert(result == 0);
-	assert_print_line("config save saved_count=23 pending_count=0");
+	assert_print_line("config save saved_count=18 pending_count=0");
 	assert(service.saved_item_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
 	assert(service.last_save_confirmed);
 	assert(strcmp(service.saved_ids[0], "power/12v_out") == 0);
@@ -399,7 +398,7 @@ static void test_save_rejects_too_many_ids_before_service_io(void)
 
 	/* Then */
 	assert(result == -E2BIG);
-	assert_error_line("config save error=too_many_items max=23");
+	assert_error_line("config save error=too_many_items max=18");
 	assert_no_service_calls();
 }
 
@@ -449,9 +448,8 @@ static void test_save_maps_non_failure_service_results(void)
 		service.save_result = cases[index].result;
 		if (cases[index].result ==
 		    LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED) {
-			service.save_report.confirmation_count = 2U;
+			service.save_report.confirmation_count = 1U;
 			service.save_report.confirmation_items[0] = &item_switch_usb;
-			service.save_report.confirmation_items[1] = &item_switch_vin;
 		}
 
 		/* When */
@@ -465,7 +463,6 @@ static void test_save_maps_non_failure_service_results(void)
 			const char *const expected_lines[] = {
 				"config save error=confirmation_required",
 				"config save confirmation_id=switch/usb",
-				"config save confirmation_id=switch/vin",
 			};
 
 			assert_shell_output(FAKE_SHELL_LINE_ERROR, expected_lines,
@@ -591,6 +588,72 @@ static void test_clear_maps_service_failure(void)
 	assert_service_calls((struct service_call_counts){.clear = 1U});
 }
 
+static unsigned int reboot_schedule_calls;
+static unsigned int reboot_accepted;
+static int reboot_error;
+
+int linkr_debugger_reboot_schedule(void)
+{
+	reboot_schedule_calls++;
+	if (reboot_error != 0) {
+		return reboot_error;
+	}
+	if (reboot_accepted != 0U) {
+		return -EALREADY;
+	}
+	reboot_accepted++;
+	return 0;
+}
+
+static void reset_reboot(void)
+{
+	reset_fixture();
+	reboot_schedule_calls = 0U;
+	reboot_accepted = 0U;
+	reboot_error = 0;
+}
+
+static void test_reboot_rejects_arguments_without_scheduling(void)
+{
+	char *argv[] = {"reboot", "extra"};
+	const size_t invalid_argc[] = {0U, 2U};
+
+	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(invalid_argc); i++) {
+		reset_reboot();
+		assert(cmd_reboot(&test_shell, invalid_argc[i], argv) == -EINVAL);
+		assert_error_line("usage: reboot");
+		assert(reboot_schedule_calls == 0U);
+		assert_no_service_calls();
+	}
+}
+
+static void test_reboot_schedules_once_and_reports_pending(void)
+{
+	char *argv[] = {"reboot"};
+
+	reset_reboot();
+	assert(cmd_reboot(&test_shell, ARRAY_SIZE_LOCAL(argv), argv) == 0);
+	assert_print_line("normal cold reboot in 250 ms (not BOOTSEL)");
+	memset(&shell_output, 0, sizeof(shell_output));
+	assert(cmd_reboot(&test_shell, ARRAY_SIZE_LOCAL(argv), argv) == -EALREADY);
+	assert_error_line("reboot pending: normal cold reboot already scheduled (not BOOTSEL)");
+	assert(reboot_schedule_calls == 2U);
+	assert(reboot_accepted == 1U);
+	assert_no_service_calls();
+}
+
+static void test_reboot_reports_schedule_failure(void)
+{
+	char *argv[] = {"reboot"};
+
+	reset_reboot();
+	reboot_error = -EIO;
+	assert(cmd_reboot(&test_shell, ARRAY_SIZE_LOCAL(argv), argv) == -EIO);
+	assert_error_line("failed to schedule normal cold reboot: -5");
+	assert(reboot_schedule_calls == 1U);
+	assert(reboot_accepted == 0U);
+}
+
 int main(void)
 {
 	test_show_prints_public_status_when_service_succeeds();
@@ -607,5 +670,8 @@ int main(void)
 	test_clear_only_calls_clear_and_reports_hardware_unchanged();
 	test_clear_rejects_invalid_grammar_before_service_io();
 	test_clear_maps_service_failure();
+	test_reboot_rejects_arguments_without_scheduling();
+	test_reboot_schedules_once_and_reports_pending();
+	test_reboot_reports_schedule_failure();
 	return 0;
 }

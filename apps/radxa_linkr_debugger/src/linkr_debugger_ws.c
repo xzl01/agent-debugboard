@@ -5,6 +5,48 @@
  * Copyright (c) Jiali Chen <chenjiali@radxa.com>
  */
 
+#include <stdbool.h>
+#include <stdint.h>
+#include <errno.h>
+
+#include "linkr_debugger_reboot.h"
+
+#define LINKR_DEBUGGER_WS_ADC_MAX_SAMPLE_RATE_HZ 250U
+
+static bool linkr_debugger_ws_adc_sample_rate_supported(int rate_hz)
+{
+	return rate_hz >= 1 &&
+		(uint32_t)rate_hz <= LINKR_DEBUGGER_WS_ADC_MAX_SAMPLE_RATE_HZ;
+}
+
+static uint32_t linkr_debugger_ws_sampler_delay_us(int64_t deadline_us,
+						   int64_t now_us)
+{
+	uint64_t delay_us;
+
+	if (deadline_us <= now_us) {
+		return 0U;
+	}
+	delay_us = (uint64_t)(deadline_us - now_us);
+	return delay_us > UINT32_MAX ? UINT32_MAX : (uint32_t)delay_us;
+}
+
+static uint32_t linkr_debugger_ws_sampler_advance_deadline(
+	int64_t *deadline_us, int64_t now_us, uint32_t period_us)
+{
+	uint64_t skipped_periods = 0U;
+	int64_t next_deadline_us = *deadline_us + period_us;
+
+	if (next_deadline_us <= now_us) {
+		skipped_periods = (uint64_t)(now_us - next_deadline_us) / period_us + 1U;
+		next_deadline_us += (int64_t)(skipped_periods * period_us);
+	}
+	*deadline_us = next_deadline_us;
+	return skipped_periods > UINT32_MAX ? UINT32_MAX : (uint32_t)skipped_periods;
+}
+
+#ifndef LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST
+
 #include "linkr_debugger_ws.h"
 #include "linkr_debugger_ws_sampler_sync.h"
 
@@ -36,7 +78,12 @@ LOG_MODULE_REGISTER(linkr_debugger_ws, LOG_LEVEL_INF);
 
 #define LINKR_DEBUGGER_WS_STACK_SIZE 4096
 #define LINKR_DEBUGGER_WS_PRIORITY K_PRIO_PREEMPT(8)
-#define LINKR_DEBUGGER_ADC_SAMPLER_PRIORITY K_PRIO_PREEMPT(9)
+/* Sampling at 250 Hz must not be preempted by the client thread while it
+ * serializes and sends each 20-sample batch. The sampler sleeps to an absolute
+ * deadline after every read, so priority 1 remains bounded. WIDE11/FAST8
+ * capture uses the same producer priority but explicitly pauses telemetry.
+ */
+#define LINKR_DEBUGGER_ADC_SAMPLER_PRIORITY K_PRIO_PREEMPT(1)
 #define LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE 6144
 #define LINKR_DEBUGGER_WS_IDLE_WAIT_MS 100
 #define LINKR_DEBUGGER_WS_SIGROK_QDEPTH_LIMIT LINKR_DEBUGGER_SIGROK_LINKR_STREAM_QDEPTH_LIMIT
@@ -61,6 +108,10 @@ LOG_MODULE_REGISTER(linkr_debugger_ws, LOG_LEVEL_INF);
 	LINKR_DEBUGGER_ADC_TELEMETRY_CHANNEL_COUNT
 #define LINKR_DEBUGGER_POWER_CAPTURE_CURRENT_CHANNELS \
 	LINKR_DEBUGGER_CURRENT_SENSOR_COUNT
+#define LINKR_DEBUGGER_WS_ADC_I2C_BUS_HZ 200000U
+#define LINKR_DEBUGGER_WS_ADC_INA_REGISTER_READS_PER_SAMPLE 2U
+#define LINKR_DEBUGGER_WS_ADC_I2C_CLOCKS_PER_REGISTER_READ 45U
+#define LINKR_DEBUGGER_WS_ADC_I2C_BUDGET_PERCENT 50U
 #define LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE 256U
 #define LINKR_DEBUGGER_WS_MAX_BATCH_SIZE 20U
 #define LINKR_DEBUGGER_WS_SIGROK_SLOW_SEND_LOG_LIMIT 4U
@@ -95,10 +146,21 @@ BUILD_ASSERT(LINKR_DEBUGGER_CAPTURE_ARENA_BURST_TERMINAL_BYTES == 16U,
 	"Sigrok WS burst terminal slot capacity must stay 16 bytes");
 
 BUILD_ASSERT(LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE > LINKR_DEBUGGER_WS_MAX_BATCH_SIZE);
-BUILD_ASSERT(LINKR_DEBUGGER_WS_TELEMETRY_ADC_CHANNELS == 4U,
-	"WS telemetry must retain all four ADC channels");
-BUILD_ASSERT(LINKR_DEBUGGER_POWER_CAPTURE_CURRENT_CHANNELS == 3U,
-	"power capture must retain only three current channels");
+BUILD_ASSERT(LINKR_DEBUGGER_WS_TELEMETRY_ADC_CHANNELS == 5U,
+	"WS telemetry must retain four current channels plus ADC3");
+BUILD_ASSERT(LINKR_DEBUGGER_POWER_CAPTURE_CURRENT_CHANNELS == 4U,
+	"power capture must retain four current channels");
+/* Each INA sample reads current and voltage. A register-pointer write plus a
+ * two-byte read consumes at least 45 I2C clocks. Keeping those eight reads
+ * below 50% of the 200 kHz bus leaves margin for driver, ADC and scheduler
+ * overhead; 250 Hz uses about 45% of the raw wire budget.
+ */
+BUILD_ASSERT(LINKR_DEBUGGER_WS_ADC_MAX_SAMPLE_RATE_HZ *
+	LINKR_DEBUGGER_POWER_CAPTURE_CURRENT_CHANNELS *
+	LINKR_DEBUGGER_WS_ADC_INA_REGISTER_READS_PER_SAMPLE *
+	LINKR_DEBUGGER_WS_ADC_I2C_CLOCKS_PER_REGISTER_READ * 100U <=
+	LINKR_DEBUGGER_WS_ADC_I2C_BUS_HZ * LINKR_DEBUGGER_WS_ADC_I2C_BUDGET_PERCENT,
+	"WS ADC sample rate exceeds the budgeted INA I2C bus utilization");
 
 struct linkr_debugger_ws_request {
 	char type[16];
@@ -206,11 +268,60 @@ struct linkr_debugger_ws_client {
 	uint32_t sigrok_stream_generation;
 };
 
+static int linkr_debugger_ws_send_json(struct linkr_debugger_ws_client *client,
+				     const char *payload);
+static int linkr_debugger_ws_send_json_timeout(struct linkr_debugger_ws_client *client,
+					     const char *payload, int32_t timeout_ms);
+
+#endif /* LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST */
+
+static int linkr_debugger_ws_emit_error(struct linkr_debugger_ws_client *client,
+				    const char *command,
+				    const char *code,
+				    const char *message)
+{
+	char *buf = (char *)client->tx_buffer;
+
+	snprintk(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+		 "{\"type\":\"error\",\"schema\":\"%s\",\"command\":\"%s\","
+		 "\"error\":{\"code\":\"%s\",\"message\":\"%s\"}}",
+		 linkr_debugger_json_schema(), command, code, message);
+	return linkr_debugger_ws_send_json(client, buf);
+}
+
+static int linkr_debugger_ws_handle_reboot(struct linkr_debugger_ws_client *client,
+					  const char *id)
+{
+	char *buf = (char *)client->tx_buffer;
+	int ret = linkr_debugger_reboot_schedule();
+
+	if (ret == -EALREADY) {
+		return linkr_debugger_ws_emit_error(client, "reboot", "reboot_pending",
+						    "normal cold reboot already pending");
+	}
+	if (ret < 0) {
+		return linkr_debugger_ws_emit_error(client, "reboot", "reboot_failed",
+						    "failed to schedule normal cold reboot");
+	}
+
+	snprintk(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+		 "{\"type\":\"result\",\"schema\":\"%s\",\"command\":\"reboot\","
+		 "\"id\":\"%s\",\"ok\":true,\"status\":\"rebooting\",\"mode\":\"normal\","
+		 "\"reboot_delay_ms\":%u,\"message\":\"normal cold reboot (not BOOTSEL)\"}",
+		 linkr_debugger_json_schema(), id != NULL ? id : "",
+		 LINKR_DEBUGGER_REBOOT_DELAY_MS);
+	/* Send the acknowledgement within the deferred reboot's 250 ms window. */
+	return linkr_debugger_ws_send_json_timeout(client, buf,
+						 LINKR_DEBUGGER_REBOOT_DELAY_MS / 2U);
+}
+
+#ifndef LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST
 struct linkr_debugger_ws_adc_sample {
 	struct linkr_debugger_current_sample readings[LINKR_DEBUGGER_WS_TELEMETRY_ADC_CHANNELS];
 	uint64_t sequence;
 	int64_t uptime_us;
 	int source_rate_hz;
+	uint32_t source_dropped_before;
 };
 
 struct linkr_debugger_ws_client_thread_arg {
@@ -761,14 +872,6 @@ static int linkr_debugger_ws_emit_status_snapshot(struct linkr_debugger_ws_clien
 		return -ENOMEM;
 	}
 
-	if (linkr_debugger_vin_switch_available() &&
-		linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
-					 ",\"vin\":{\"route\":\"%s\","
-					 "\"routes\":[\"1.8v\",\"3.3v\"],\"requires_confirm\":true}",
-					 linkr_debugger_vin_route_name()) < 0) {
-		return -ENOMEM;
-	}
-
 	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor, "},") < 0) {
 		return -ENOMEM;
 	}
@@ -1030,7 +1133,8 @@ static void linkr_debugger_ws_store_adc_samples(
 		readings[][LINKR_DEBUGGER_WS_TELEMETRY_ADC_CHANNELS],
 	const int64_t *timestamps_us,
 	size_t sample_count,
-	int rate_hz)
+	int rate_hz,
+	uint32_t source_dropped_before)
 {
 	for (size_t i = 0; i < sample_count; i++) {
 		struct linkr_debugger_ws_adc_sample *sample;
@@ -1044,6 +1148,7 @@ static void linkr_debugger_ws_store_adc_samples(
 		sample->sequence = linkr_debugger_ws_latest_sample_sequence;
 		sample->uptime_us = timestamps_us[i];
 		sample->source_rate_hz = rate_hz;
+		sample->source_dropped_before = i == 0U ? source_dropped_before : 0U;
 		linkr_debugger_ws_sampler_workspace.ingest_sample = *sample;
 		k_mutex_unlock(&linkr_debugger_ws_sample_ring_lock);
 
@@ -1055,6 +1160,11 @@ static void linkr_debugger_ws_store_adc_samples(
 static void linkr_debugger_adc_sampler_thread(void *p1, void *p2, void *p3)
 {
 	const int64_t tick_us = k_ticks_to_us_ceil64(1);
+	int64_t next_sample_deadline_us = 0;
+	int64_t last_overrun_log_us = 0;
+	uint64_t schedule_overruns = 0U;
+	uint32_t pending_source_drops = 0U;
+	int scheduled_rate_hz = 0;
 
 	ARG_UNUSED(p1);
 	ARG_UNUSED(p2);
@@ -1063,11 +1173,17 @@ static void linkr_debugger_adc_sampler_thread(void *p1, void *p2, void *p3)
 	while (true) {
 		int rate_hz;
 		uint32_t period_us;
-		size_t sample_count;
+		uint32_t events = 0U;
+		uint32_t wait_us;
+		uint32_t skipped_periods;
+		int64_t now_us;
 		int ret;
 		bool telemetry_paused;
 
 		if (linkr_debugger_ws_adc_sampler_pause_if_requested()) {
+			next_sample_deadline_us = 0;
+			scheduled_rate_hz = 0;
+			pending_source_drops = 0U;
 			continue;
 		}
 
@@ -1075,6 +1191,9 @@ static void linkr_debugger_adc_sampler_thread(void *p1, void *p2, void *p3)
 		telemetry_paused = linkr_debugger_ws_sigrok_telemetry_pause_requested;
 		k_mutex_unlock(&linkr_debugger_ws_sample_ring_lock);
 		if (telemetry_paused) {
+			next_sample_deadline_us = 0;
+			scheduled_rate_hz = 0;
+			pending_source_drops = 0U;
 			(void)k_event_wait_safe(&linkr_debugger_ws_sampler_events,
 					   LINKR_DEBUGGER_WS_SAMPLER_EVENT_CONFIG,
 					   false, K_MSEC(50));
@@ -1084,6 +1203,9 @@ static void linkr_debugger_adc_sampler_thread(void *p1, void *p2, void *p3)
 		rate_hz = linkr_debugger_ws_requested_sample_rate();
 
 		if (rate_hz == 0) {
+			next_sample_deadline_us = 0;
+			scheduled_rate_hz = 0;
+			pending_source_drops = 0U;
 			(void)k_event_wait_safe(&linkr_debugger_ws_sampler_events,
 					   LINKR_DEBUGGER_WS_SAMPLER_EVENT_CONFIG,
 					   false, K_FOREVER);
@@ -1091,59 +1213,65 @@ static void linkr_debugger_adc_sampler_thread(void *p1, void *p2, void *p3)
 		}
 
 		period_us = DIV_ROUND_UP(1000000, rate_hz);
-		if (rate_hz <= 100) {
-			uint32_t events = k_event_wait_safe(&linkr_debugger_ws_sampler_events,
-						       LINKR_DEBUGGER_WS_SAMPLER_EVENT_CONFIG,
-						       false, K_USEC(period_us));
+		now_us = k_ticks_to_us_floor64(k_uptime_ticks());
+		if (next_sample_deadline_us == 0 || scheduled_rate_hz != rate_hz) {
+			next_sample_deadline_us = now_us + period_us;
+			scheduled_rate_hz = rate_hz;
+			pending_source_drops = 0U;
+		}
 
-			if (events != 0U) {
-				continue;
-			}
-			sample_count = 1U;
-		} else {
-			sample_count = MIN(LINKR_DEBUGGER_CURRENT_BATCH_MAX,
-					   DIV_ROUND_UP((uint32_t)rate_hz, 50U));
+		wait_us = linkr_debugger_ws_sampler_delay_us(next_sample_deadline_us, now_us);
+		if (wait_us > (uint32_t)tick_us) {
+			events = k_event_wait_safe(&linkr_debugger_ws_sampler_events,
+						 LINKR_DEBUGGER_WS_SAMPLER_EVENT_CONFIG,
+						 false, K_USEC(wait_us - (uint32_t)tick_us));
+		}
+		if (events != 0U) {
+			continue;
+		}
+		now_us = k_ticks_to_us_floor64(k_uptime_ticks());
+		wait_us = linkr_debugger_ws_sampler_delay_us(next_sample_deadline_us, now_us);
+		if (wait_us != 0U) {
+			k_busy_wait(wait_us);
 		}
 
 		ret = linkr_debugger_current_read_batch(
-			&linkr_debugger_ws_sampler_workspace.readings[0][0], sample_count,
+			&linkr_debugger_ws_sampler_workspace.readings[0][0], 1U,
 			linkr_debugger_adc_count,
 			linkr_debugger_ws_sampler_workspace.timestamps_us,
-			sample_count > 1U ? period_us : 0U);
+			0U);
 		if (ret < 0) {
 			LOG_ERR("ADC batch read failed: %d", ret);
-			k_msleep(10);
-			continue;
-		}
-		linkr_debugger_ws_store_adc_samples(
-			linkr_debugger_ws_sampler_workspace.readings,
-			linkr_debugger_ws_sampler_workspace.timestamps_us,
-			sample_count, rate_hz);
-		/* Batch subscribers are intentionally timer-driven. Waking them for
-		 * every ADC sample (or every hardware batch) makes each wake emit a
-		 * partial JSON frame, defeating batch_size and saturating USB-NCM.
-		 * Single-sample subscribers still get the lowest possible latency.
-		 */
-		linkr_debugger_ws_publish_unbatched_sample();
-		if (sample_count > 1U) {
-			int64_t now_us;
-			int64_t next_batch_us;
-			uint32_t events = 0U;
-
-			next_batch_us = linkr_debugger_ws_sampler_workspace
-				.timestamps_us[sample_count - 1U] + period_us;
-			now_us = k_ticks_to_us_floor64(k_uptime_ticks());
-			if (now_us < next_batch_us - tick_us) {
-				events = k_event_wait_safe(&linkr_debugger_ws_sampler_events,
-						      LINKR_DEBUGGER_WS_SAMPLER_EVENT_CONFIG,
-						      false,
-						      K_USEC(next_batch_us - now_us - tick_us));
+			if (pending_source_drops < UINT32_MAX) {
+				pending_source_drops++;
 			}
-			if (events == 0U) {
-				now_us = k_ticks_to_us_floor64(k_uptime_ticks());
-				if (now_us < next_batch_us) {
-					k_busy_wait((uint32_t)(next_batch_us - now_us));
-				}
+		} else {
+			linkr_debugger_ws_store_adc_samples(
+				linkr_debugger_ws_sampler_workspace.readings,
+				linkr_debugger_ws_sampler_workspace.timestamps_us,
+				1U, rate_hz, pending_source_drops);
+			pending_source_drops = 0U;
+			/* Batch subscribers are intentionally timer-driven. Waking them for
+			 * every ADC sample makes each wake emit a partial JSON frame,
+			 * defeating batch_size and saturating USB-NCM. Single-sample
+			 * subscribers still get the lowest possible latency.
+			 */
+			linkr_debugger_ws_publish_unbatched_sample();
+		}
+
+		now_us = k_ticks_to_us_floor64(k_uptime_ticks());
+		skipped_periods = linkr_debugger_ws_sampler_advance_deadline(
+			&next_sample_deadline_us, now_us, period_us);
+		if (skipped_periods != 0U) {
+			pending_source_drops = skipped_periods > UINT32_MAX - pending_source_drops ?
+				UINT32_MAX : pending_source_drops + skipped_periods;
+			schedule_overruns += skipped_periods;
+			if (last_overrun_log_us == 0 ||
+			    now_us - last_overrun_log_us >= 1000000LL) {
+				LOG_WRN("ADC sampler overrun: skipped=%u total=%llu rate_hz=%d",
+					(unsigned int)skipped_periods,
+					(unsigned long long)schedule_overruns, rate_hz);
+				last_overrun_log_us = now_us;
 			}
 		}
 	}
@@ -1166,6 +1294,7 @@ static bool linkr_debugger_ws_sample_get(struct linkr_debugger_ws_client *client
 {
 	uint32_t period_us = DIV_ROUND_UP(1000000U,
 					   (uint32_t)client->telemetry_rate_hz);
+	uint64_t scan_sequence;
 	uint64_t latest;
 	uint64_t oldest;
 
@@ -1185,16 +1314,20 @@ static bool linkr_debugger_ws_sample_get(struct linkr_debugger_ws_client *client
 
 	oldest = latest >= LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE ?
 		 latest - LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE + 1U : 1U;
-	if (client->next_sample_sequence < oldest) {
-		*dropped_samples = (uint32_t)(oldest - client->next_sample_sequence);
-		client->next_sample_sequence = oldest;
+	scan_sequence = client->next_sample_sequence;
+	if (scan_sequence < oldest) {
+		*dropped_samples = (uint32_t)(oldest - scan_sequence);
+		scan_sequence = oldest;
 	}
 
-	while (client->next_sample_sequence <= latest) {
+	while (scan_sequence <= latest) {
 		const struct linkr_debugger_ws_adc_sample *sample =
-			&linkr_debugger_ws_sample_ring[(client->next_sample_sequence - 1U) %
+			&linkr_debugger_ws_sample_ring[(scan_sequence - 1U) %
 						       LINKR_DEBUGGER_WS_SAMPLE_RING_SIZE];
 		bool use_all_samples = client->telemetry_rate_hz >= sample->source_rate_hz;
+
+		*dropped_samples = sample->source_dropped_before > UINT32_MAX - *dropped_samples ?
+			UINT32_MAX : *dropped_samples + sample->source_dropped_before;
 
 		if (use_all_samples || client->next_sample_due_us == 0 ||
 		    sample->uptime_us >= client->next_sample_due_us) {
@@ -1207,11 +1340,11 @@ static bool linkr_debugger_ws_sample_get(struct linkr_debugger_ws_client *client
 					client->next_sample_due_us += period_us;
 				} while (client->next_sample_due_us <= sample->uptime_us);
 			}
-			client->next_sample_sequence++;
+			client->next_sample_sequence = scan_sequence + 1U;
 			k_mutex_unlock(&linkr_debugger_ws_sample_ring_lock);
 			return true;
 		}
-		client->next_sample_sequence++;
+		scan_sequence++;
 	}
 	k_mutex_unlock(&linkr_debugger_ws_sample_ring_lock);
 
@@ -1264,8 +1397,13 @@ static int linkr_debugger_ws_append_adc_readings(char *buf, size_t size, size_t 
 		}
 		switch (adc->kind) {
 		case LINKR_DEBUGGER_ADC_KIND_CURRENT:
-			if (linkr_debugger_ws_append(buf, size, cursor, ",\"power_enabled\":%s",
-						     sample->rail_enabled ? "true" : "false") < 0) {
+			if (linkr_debugger_ws_append(buf, size, cursor,
+						     ",\"power_enabled\":%s,\"current_ua\":%d,"
+						     "\"voltage_valid\":%s,\"voltage_uv\":%d",
+						     sample->rail_enabled ? "true" : "false",
+						     sample->current_ua,
+						     sample->voltage_valid ? "true" : "false",
+						     sample->voltage_uv) < 0) {
 				return -ENOMEM;
 			}
 			break;
@@ -1378,19 +1516,25 @@ static int linkr_debugger_ws_emit_adc_batch(struct linkr_debugger_ws_client *cli
 			return -ENOMEM;
 		}
 		uint8_t power_enabled_mask = 0U;
+		uint8_t voltage_valid_mask = 0U;
 
 		for (size_t current_index = 0; current_index < linkr_debugger_current_count;
 		     current_index++) {
 			if (sample.readings[current_index].rail_enabled) {
 				power_enabled_mask |= BIT(current_index);
 			}
+			if (sample.readings[current_index].voltage_valid) {
+				voltage_valid_mask |= BIT(current_index);
+			}
 		}
 		if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
 					 "{\"sequence\":%llu,\"uptime_us\":%lld,\"power_enabled_mask\":%u,"
+					 "\"voltage_valid_mask\":%u,"
 					 "\"values\":[",
 					 (unsigned long long)sample.sequence,
 					 (long long)sample.uptime_us,
-					 (unsigned int)power_enabled_mask) < 0) {
+					 (unsigned int)power_enabled_mask,
+					 (unsigned int)voltage_valid_mask) < 0) {
 			return -ENOMEM;
 		}
 		for (size_t j = 0; j < linkr_debugger_adc_count; j++) {
@@ -1405,6 +1549,22 @@ static int linkr_debugger_ws_emit_adc_batch(struct linkr_debugger_ws_client *cli
 			if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
 						     &cursor, "%d",
 						     linkr_debugger_ws_adc_sample_value(adc, reading)) < 0) {
+				return -ENOMEM;
+			}
+		}
+		if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+					     &cursor, "],\"voltages_uv\":[") < 0) {
+			return -ENOMEM;
+		}
+		for (size_t j = 0; j < linkr_debugger_current_count; j++) {
+			if (j > 0U && linkr_debugger_ws_append(buf,
+							    LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+							    &cursor, ",") < 0) {
+				return -ENOMEM;
+			}
+			if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
+						     &cursor, "%d",
+						     sample.readings[j].voltage_uv) < 0) {
 				return -ENOMEM;
 			}
 		}
@@ -1500,20 +1660,6 @@ static int linkr_debugger_ws_emit_capture_pending(struct linkr_debugger_ws_clien
 	return linkr_debugger_ws_emit_capture_triggered(client);
 }
 
-static int linkr_debugger_ws_emit_error(struct linkr_debugger_ws_client *client,
-				    const char *command,
-				    const char *code,
-				    const char *message)
-{
-	char *buf = (char *)client->tx_buffer;
-
-	snprintk(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
-		 "{\"type\":\"error\",\"schema\":\"%s\",\"command\":\"%s\","
-		 "\"error\":{\"code\":\"%s\",\"message\":\"%s\"}}",
-		 linkr_debugger_json_schema(), command, code, message);
-	return linkr_debugger_ws_send_json(client, buf);
-}
-
 static int linkr_debugger_ws_emit_result(struct linkr_debugger_ws_client *client,
 				     const char *id,
 				     const char *command,
@@ -1561,9 +1707,9 @@ static int linkr_debugger_ws_capture_arm(struct linkr_debugger_ws_client *client
 			"capture_arm requires mode=host-stream-v1; update the Web UI or firmware");
 	}
 
-	if (rate_hz < 1 || rate_hz > 1000) {
+	if (!linkr_debugger_ws_adc_sample_rate_supported(rate_hz)) {
 		return linkr_debugger_ws_emit_error(client, "capture", "invalid_rate",
-						"rate_hz must be between 1 and 1000");
+						"rate_hz must be between 1 and 250");
 	}
 	if (request->pre_samples < 0 || request->post_samples < 0) {
 		return linkr_debugger_ws_emit_error(client, "capture", "invalid_sample_count",
@@ -1744,16 +1890,9 @@ static int linkr_debugger_ws_handle_control_message(struct linkr_debugger_ws_cli
 						"tf_wp route must be writable or protected");
 			}
 			ret = linkr_debugger_tf_wp_route_set(route);
-		} else if (strcmp(request->output, "vin") == 0 && linkr_debugger_vin_switch_available()) {
-			enum linkr_debugger_vin_route route;
-			if (!linkr_debugger_parse_vin_route(request->route, &route)) {
-				return linkr_debugger_ws_emit_error(client, "switch", "invalid_route",
-						"vin route must be 1.8v or 3.3v");
-			}
-			ret = linkr_debugger_vin_route_set(route);
 		} else {
 			return linkr_debugger_ws_emit_error(client, "switch", "unknown_switch",
-					"switch target must be sd, usb, tf_wp, or an available vin switch");
+					"switch target must be sd, usb, or tf_wp");
 		}
 
 		if (ret < 0) {
@@ -1795,6 +1934,10 @@ static int linkr_debugger_ws_handle_control_message(struct linkr_debugger_ws_cli
 
 		linkr_debugger_ws_publish_state_change();
 		return linkr_debugger_ws_emit_result_and_snapshot(client, request->id, "gpio_set", "ok");
+	}
+
+	if (strcmp(request->command, "reboot") == 0) {
+		return linkr_debugger_ws_handle_reboot(client, request->id);
 	}
 
 	if (strcmp(request->command, "bootloader") == 0) {
@@ -1848,8 +1991,9 @@ static int linkr_debugger_ws_handle_message(struct linkr_debugger_ws_client *cli
 						"sampling rate cannot change during an active capture");
 		}
 		telemetry_rate_hz = request.rate_hz > 0 ? request.rate_hz : 10;
-		if (telemetry_rate_hz > 1000) {
-			telemetry_rate_hz = 1000;
+		if (!linkr_debugger_ws_adc_sample_rate_supported(telemetry_rate_hz)) {
+			return linkr_debugger_ws_emit_error(client, "subscribe", "invalid_rate",
+						"rate_hz must be between 1 and 250");
 		}
 		telemetry_batch_size = (uint8_t)CLAMP(request.batch_size,
 							      1,
@@ -4105,3 +4249,5 @@ void linkr_debugger_ws_publish_sample(void)
 {
 	linkr_debugger_ws_publish_unbatched_sample();
 }
+
+#endif /* LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST */

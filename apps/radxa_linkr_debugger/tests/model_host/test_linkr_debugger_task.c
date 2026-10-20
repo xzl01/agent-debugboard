@@ -279,6 +279,35 @@ static void test_requires_one_leading_version_marker(void)
 	       LINKR_DEBUGGER_TASK_OK);
 }
 
+static void test_rejects_exact_dot_ids_before_persistence(void)
+{
+	static const char *const ids[] = { ".", ".." };
+	struct fake_backend backend = { 0 };
+	char blob[128];
+	char snapshot[LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE];
+	size_t snapshot_len;
+
+	init_with_backend(&backend);
+	assert(linkr_debugger_task_tasks_store(TASK_BLOB_VALID, strlen(TASK_BLOB_VALID)) ==
+	       LINKR_DEBUGGER_TASK_OK);
+	for (size_t i = 0U; i < sizeof(ids) / sizeof(ids[0]); i++) {
+		int written = snprintf(blob, sizeof(blob),
+			"# linkr-task.v1\n# task %s\n"
+			"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP7\",\"body\":\"{}\"}\n", ids[i]);
+
+		assert(written > 0 && (size_t)written < sizeof(blob));
+		assert(linkr_debugger_task_tasks_store(blob, (size_t)written) ==
+		       LINKR_DEBUGGER_TASK_INVALID_BLOB);
+		assert(backend.tasks_present);
+		assert(backend.tasks_length == strlen(TASK_BLOB_VALID));
+		assert(memcmp(backend.tasks_value, TASK_BLOB_VALID, backend.tasks_length) == 0);
+		assert(linkr_debugger_task_blob_snapshot(snapshot, sizeof(snapshot), &snapshot_len) ==
+		       LINKR_DEBUGGER_TASK_OK);
+		assert(snapshot_len == strlen(TASK_BLOB_VALID));
+		assert(memcmp(snapshot, TASK_BLOB_VALID, snapshot_len) == 0);
+	}
+}
+
 struct invalid_task_blob {
 	const char *name;
 	const char *blob;
@@ -548,6 +577,67 @@ static void test_snapshot_is_never_partial_during_store(void)
 	assert(pthread_join(reader, NULL) == 0);
 }
 
+static void test_delete_one_task(void)
+{
+	static const char two_tasks[] =
+		"# linkr-task.v1\n"
+		"# task recovery\n"
+		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP10\",\"body\":\"{\\\"direction\\\":\\\"input\\\"}\",\"wait_ms\":0}\n"
+		"# task alternate\n"
+		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP11\",\"body\":\"{\\\"direction\\\":\\\"input\\\"}\",\"wait_ms\":0}\n";
+	static const char only_alternate[] =
+		"# linkr-task.v1\n"
+		"# task alternate\n"
+		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP11\",\"body\":\"{\\\"direction\\\":\\\"input\\\"}\",\"wait_ms\":0}\n";
+	struct fake_backend backend = { 0 };
+	struct linkr_debugger_task_status status;
+	char snapshot[LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE];
+	size_t snapshot_len;
+
+	init_with_backend(&backend);
+	assert(linkr_debugger_task_tasks_store(two_tasks, sizeof(two_tasks) - 1U) ==
+	       LINKR_DEBUGGER_TASK_OK);
+
+	/* An absent id leaves storage untouched and reports not-found. */
+	assert(linkr_debugger_task_tasks_delete_one("absent") == LINKR_DEBUGGER_TASK_NOT_FOUND);
+	assert(backend.tasks_length == sizeof(two_tasks) - 1U);
+
+	/* An invalid id is rejected before any storage touch. */
+	assert(linkr_debugger_task_tasks_delete_one("has space") ==
+	       LINKR_DEBUGGER_TASK_INVALID_ARGUMENT);
+	assert(linkr_debugger_task_tasks_delete_one("catalog") ==
+	       LINKR_DEBUGGER_TASK_INVALID_ARGUMENT);
+	assert(linkr_debugger_task_tasks_delete_one(".") ==
+	       LINKR_DEBUGGER_TASK_INVALID_ARGUMENT);
+	assert(linkr_debugger_task_tasks_delete_one("..") ==
+	       LINKR_DEBUGGER_TASK_INVALID_ARGUMENT);
+	assert(linkr_debugger_task_tasks_delete_one("") == LINKR_DEBUGGER_TASK_INVALID_ARGUMENT);
+	assert(backend.tasks_length == sizeof(two_tasks) - 1U);
+
+	/* Deleting one task preserves the other byte-for-byte. */
+	assert(linkr_debugger_task_tasks_delete_one("recovery") == LINKR_DEBUGGER_TASK_OK);
+	assert(backend.tasks_present);
+	assert(backend.tasks_length == sizeof(only_alternate) - 1U);
+	assert(memcmp(backend.tasks_value, only_alternate, backend.tasks_length) == 0);
+	assert(linkr_debugger_task_status_get(&status) == LINKR_DEBUGGER_TASK_OK);
+	assert(status.task_count == 1U);
+	assert(strcmp(status.tasks[0].id, "alternate") == 0);
+	assert(linkr_debugger_task_blob_snapshot(snapshot, sizeof(snapshot), &snapshot_len) ==
+	       LINKR_DEBUGGER_TASK_OK);
+	assert(snapshot_len == sizeof(only_alternate) - 1U);
+	assert(memcmp(snapshot, only_alternate, snapshot_len) == 0);
+
+	/* Deleting the last remaining task clears the backing key. */
+	assert(linkr_debugger_task_tasks_delete_one("alternate") == LINKR_DEBUGGER_TASK_OK);
+	assert(!backend.tasks_present);
+	assert(linkr_debugger_task_status_get(&status) == LINKR_DEBUGGER_TASK_OK);
+	assert(status.task_count == 0U);
+
+	/* Deleting from an empty store reports not-found. */
+	assert(linkr_debugger_task_tasks_delete_one("alternate") == LINKR_DEBUGGER_TASK_NOT_FOUND);
+	assert(backend.unexpected_key_calls == 0U);
+}
+
 int main(void)
 {
 	test_store_list_and_clear();
@@ -555,6 +645,7 @@ int main(void)
 	test_rejects_malformed_records_and_waits();
 	test_rejects_invalid_utf8_before_persistence();
 	test_requires_one_leading_version_marker();
+	test_rejects_exact_dot_ids_before_persistence();
 	test_rejects_strict_json_and_path_corpus();
 	test_accepts_decoded_escapes_and_enforces_json_depth();
 	test_rejects_duplicate_task_ids_with_different_actions();
@@ -562,6 +653,7 @@ int main(void)
 	test_request_limit();
 	test_maximum_snapshot_and_one_over_rejection();
 	test_snapshot_is_never_partial_during_store();
+	test_delete_one_task();
 	puts("linkr_debugger_task: all tests passed");
 	return 0;
 }

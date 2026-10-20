@@ -1533,7 +1533,7 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertEqual(rates["effective_receive_samples_per_s"], 500.0)
         self.assertEqual(rates["effective_receive_bytes_per_s"], 1000.0)
 
-    def test_wide11_mapping_validator_accepts_independent_gp10_gp11_gp18_gp20_pattern(self) -> None:
+    def test_wide11_mapping_validator_accepts_independent_gp10_gp11_gp18_pattern(self) -> None:
         pattern = list(runner.WIDE11_MAPPING_DEFAULT_PATTERN_NIBBLES)
         hold = 4
         sample_count = len(pattern) * hold * 3
@@ -1548,9 +1548,15 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         )
 
         self.assertTrue(result["pass"], result)
-        for bit in ("0", "1", "8", "10"):
+        self.assertEqual(set(result["bit_values"]), {"0", "1", "8"})
+        self.assertEqual(set(result["bit_transitions"]), {"0", "1", "8"})
+        for bit in ("0", "1", "8"):
             self.assertEqual(result["bit_values"][bit], [0, 1])
             self.assertGreater(result["bit_transitions"][bit], 0)
+        self.assertEqual(result["unverified_bits"], [2, 3, 4, 5, 6, 7, 9, 10])
+        self.assertFalse(result["read_only_taps"]["read_only_no_contention_verified"])
+        self.assertEqual(result["read_only_taps"]["GP20"]["bit"], 10)
+        self.assertFalse(result["read_only_taps"]["GP20"]["dynamic_scl_mapping_validated"])
 
     def test_wide11_mapping_validator_rejects_malformed_payload(self) -> None:
         with self.assertRaisesRegex(ValueError, "even"):
@@ -1561,16 +1567,13 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
                 check_samples=1,
             )
 
-    def test_wide11_mapping_validator_rejects_gp20_one_sample_skew(self) -> None:
+    def test_wide11_mapping_validator_rejects_pattern_mismatch(self) -> None:
         pattern = list(runner.WIDE11_MAPPING_DEFAULT_PATTERN_NIBBLES)
         hold = 4
         sample_count = len(pattern) * hold * 3
-        expected = [runner.wide11_mapping_expected_sample(pattern, hold, index) for index in range(sample_count)]
-        skewed = []
-        for index, sample in enumerate(expected):
-            previous_gp20 = expected[index - 1] & (1 << 10) if index > 0 else sample & (1 << 10)
-            skewed.append((sample & ~(1 << 10)) | previous_gp20)
-        payload = b"".join(sample.to_bytes(2, "little") for sample in skewed)
+        samples = [runner.wide11_mapping_expected_sample(pattern, hold, index) for index in range(sample_count)]
+        samples[5] ^= 0x1
+        payload = b"".join(sample.to_bytes(2, "little") for sample in samples)
 
         result = runner.validate_wide11_mapping_payload(
             payload,
@@ -1583,17 +1586,39 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertEqual(result["reason"], "WIDE11 mapping payload mismatches expected pattern")
         self.assertGreater(result["mismatch_count"], 0)
 
-    def test_wide11_mapping_validator_rejects_gp20_mapped_to_bit9(self) -> None:
+    def test_wide11_mapping_validator_reports_gp20_as_read_only_observation(self) -> None:
+        pattern = list(runner.WIDE11_MAPPING_DEFAULT_PATTERN_NIBBLES)
+        hold = 4
+        sample_count = len(pattern) * hold * 3
+        samples = []
+        for index in range(sample_count):
+            sample = runner.wide11_mapping_expected_sample(pattern, hold, index)
+            gp20 = 1 if (index // hold) % 2 == 0 else 0
+            samples.append((sample & ~(1 << 10)) | (gp20 << 10))
+        payload = b"".join(sample.to_bytes(2, "little") for sample in samples)
+
+        result = runner.validate_wide11_mapping_payload(
+            payload,
+            pattern_nibbles=pattern,
+            hold_samples=hold,
+            check_samples=sample_count,
+        )
+
+        self.assertTrue(result["pass"], result)
+        self.assertNotIn("10", result["bit_values"])
+        gp20_tap = result["read_only_taps"]["GP20"]
+        self.assertEqual(gp20_tap["bit"], 10)
+        self.assertEqual(gp20_tap["values_seen"], [0, 1])
+        self.assertGreater(gp20_tap["transitions"], 0)
+        self.assertEqual(gp20_tap["status"], "not_verified")
+        self.assertFalse(gp20_tap["fixed_level_validated"])
+        self.assertFalse(gp20_tap["dynamic_scl_mapping_validated"])
+
+    def test_wide11_mapping_validator_rejects_pattern_without_independent_required_bits(self) -> None:
         pattern = list(runner.WIDE11_MAPPING_DEFAULT_PATTERN_NIBBLES)
         hold = 4
         sample_count = len(pattern) * hold * 2
-        wrong = []
-        for index in range(sample_count):
-            sample = runner.wide11_mapping_expected_sample(pattern, hold, index)
-            gp20 = (sample >> 10) & 1
-            sample = (sample & ~(1 << 10)) | (gp20 << 9)
-            wrong.append(sample)
-        payload = b"".join(sample.to_bytes(2, "little") for sample in wrong)
+        payload = b"".join((0).to_bytes(2, "little") for _ in range(sample_count))
 
         result = runner.validate_wide11_mapping_payload(
             payload,
@@ -1603,12 +1628,10 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         )
 
         self.assertFalse(result["pass"])
-        self.assertIn(result["reason"], [
-            "WIDE11 mapping payload mismatches expected pattern",
-            "WIDE11 mapping pattern did not independently exercise every required bit",
-        ])
+        self.assertEqual(result["reason"], "WIDE11 mapping pattern did not independently exercise every required bit")
+        self.assertEqual(result["inactive_bits"], ["0", "1", "8"])
 
-    def test_wide11_gp10_uart_low_others_validator_accepts_gp10_activity_and_zero_others(self) -> None:
+    def test_wide11_gp10_uart_low_others_validator_accepts_gp10_activity_without_zero_mask_claim(self) -> None:
         samples = [0, 0, 1, 1, 0, 0, 1, 1] * 4
         payload = b"".join(sample.to_bytes(2, "little") for sample in samples)
 
@@ -1616,22 +1639,27 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
 
         self.assertTrue(result["pass"], result)
         self.assertEqual(result["profile"], "gp10_uart_low_others")
-        self.assertEqual(result["zero_mask"], 0x07FE)
+        self.assertEqual(result["zero_mask"], 0)
+        self.assertFalse(result["zero_mask_validated"])
+        self.assertEqual(result["zero_mask_bits"], {})
+        self.assertEqual(result["unverified_bits"], list(range(1, 11)))
         self.assertEqual(result["gp10_values"], [0, 1])
         self.assertTrue(result["gp10_low_high_seen"])
-        self.assertEqual(result["zero_mask_violation_count"], 0)
-        self.assertIn("GP11/GP18/GP20", result["limitations"][1])
+        self.assertIn("GP11-GP20", result["limitations"][1])
+        self.assertIn("unverified", result["limitations"][1])
 
-    def test_wide11_gp10_uart_low_others_validator_rejects_crosstalk_on_low_bits(self) -> None:
+    def test_wide11_gp10_uart_low_others_validator_does_not_claim_zero_mask_for_unverified_bits(self) -> None:
         samples = [0, 1, 0, 1, 0x0002, 1, 0x0400, 0x0201]
         payload = b"".join(sample.to_bytes(2, "little") for sample in samples)
 
         result = runner.validate_wide11_gp10_uart_low_others_payload(payload, check_samples=len(samples))
 
-        self.assertFalse(result["pass"])
-        self.assertEqual(result["reason"], "WIDE11 GP10 UART low-others check saw unexpected high/crosstalk on bits1..10")
-        self.assertEqual(result["zero_mask_violation_count"], 3)
-        self.assertEqual(result["first_zero_mask_violations"][0]["unexpected_mask"], 0x0002)
+        self.assertTrue(result["pass"], result)
+        self.assertEqual(result["zero_mask"], 0)
+        self.assertFalse(result["zero_mask_validated"])
+        self.assertNotIn("zero_mask_violation_count", result)
+        self.assertEqual(result["unverified_bits"], list(range(1, 11)))
+        self.assertEqual(result["gp10_values"], [0, 1])
 
     def test_wide11_gp10_uart_low_others_validator_rejects_missing_gp10_high(self) -> None:
         payload = b"".join((0).to_bytes(2, "little") for _ in range(16))
@@ -1649,7 +1677,7 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
             "wide11-mapping",
             "--wide11-map-external-generator",
             "--wide11-map-pattern",
-            "0x1,0x2,0x4,0x8",
+            "0x1,0x2,0x4,0x7",
             "--wide11-map-hold-samples",
             "8",
             "--wide11-map-check-samples",
@@ -1657,14 +1685,17 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         ])
         self.assertEqual(args.matrix, ["wide11-mapping"])
         self.assertTrue(args.wide11_map_external_generator)
-        self.assertEqual(args.wide11_map_pattern, [1, 2, 4, 8])
+        self.assertEqual(args.wide11_map_pattern, [1, 2, 4, 7])
         self.assertEqual(args.wide11_map_hold_samples, 8)
         self.assertEqual(args.wide11_map_check_samples, 128)
         plan = runner.build_plan(args)
+        case = plan["matrices"][0]["cases"][0]
         self.assertEqual(plan["matrices"][0]["name"], "sigrok_tcp_wide11_deep_burst_mapping")
-        self.assertEqual(plan["matrices"][0]["cases"][0]["mapping_profile"], "external_4bit")
-        self.assertEqual(plan["matrices"][0]["cases"][0]["validation_scope"], "multi_channel_external_4bit")
-        self.assertTrue(plan["matrices"][0]["cases"][0]["external_generator_acknowledged"])
+        self.assertEqual(case["mapping_profile"], "external_3bit")
+        self.assertEqual(case["validation_scope"], "multi_channel_external_3bit")
+        self.assertEqual(case["fixture_driven_mapping"], {"GP10": 0, "GP11": 1, "GP18": 8})
+        self.assertEqual(case["read_only_mapping"], {"GP19": 9, "GP20": 10})
+        self.assertTrue(case["external_generator_acknowledged"])
 
     def test_wide11_mapping_cli_parses_gp10_uart_low_others_profile(self) -> None:
         args = runner.parse_args([
@@ -1688,7 +1719,9 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertEqual(case["mapping_profile"], "gp10_uart_low_others")
         self.assertEqual(case["validation_scope"], "single_channel_reduced")
         self.assertFalse(case["requires_external_generator"])
-        self.assertEqual(case["zero_mask"], 0x07FE)
+        self.assertEqual(case["zero_mask"], 0)
+        self.assertFalse(case["read_only_no_contention_verified"])
+        self.assertFalse(case["dynamic_scl_mapping_validated"])
         self.assertEqual(case["uart_stimulus"]["sent_after"], "START_RESP trigger-safe barrier")
 
     def test_wide11_mapping_cli_rejects_invalid_pattern_and_check_window(self) -> None:
@@ -1752,13 +1785,16 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertEqual(result["reason"], "exact WIDE11 deep-burst sample count not received")
         self.assertEqual(result["stimulus_profile"], "gp10_uart_low_others")
         self.assertEqual(result["validation_scope"], "single_channel_reduced")
-        self.assertFalse(result["selected_external_4bit_mapping_validated"])
+        self.assertFalse(result["selected_external_3bit_mapping_validated"])
         self.assertTrue(result["mapping_validation"]["pass"])
-        self.assertEqual(result["mapping_validation"]["zero_mask"], 0x07FE)
+        self.assertEqual(result["mapping_validation"]["zero_mask"], 0)
+        self.assertFalse(result["mapping_validation"]["zero_mask_validated"])
         self.assertTrue(result["gp10_bit0_activity_validated"])
-        self.assertTrue(result["low_others_zero_mask_validated"])
-        self.assertFalse(result["selected_gp11_gp18_gp20_high_mapping_validated"])
-        self.assertIn("not validated", result["validation_limitations"][0])
+        self.assertFalse(result["low_others_zero_mask_validated"])
+        self.assertFalse(result["selected_gp11_gp18_high_mapping_validated"])
+        self.assertEqual(result["read_only_taps"]["GP20"]["bit"], 10)
+        self.assertIn("read-only", result["validation_limitations"][0])
+        self.assertIn("not validated", result["validation_limitations"][1])
 
     def test_telemetry_record_from_message_accepts_single_and_batch_adc(self) -> None:
         single = runner.telemetry_record_from_message({"type": "telemetry", "topic": "adc", "sequence": 7, "sample_sequence": 17, "uptime_us": 100, "device_t_mono_us": 101}, 1.25)

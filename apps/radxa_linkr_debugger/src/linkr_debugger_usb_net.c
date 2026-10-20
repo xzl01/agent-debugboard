@@ -8,8 +8,11 @@
 #include "linkr_debugger_usb_net.h"
 
 #include <errno.h>
+#include <stdint.h>
 
 #include <zephyr/device.h>
+#include <zephyr/drivers/uart.h>
+#include <zephyr/drivers/uart/uart_bridge.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/usb/usbd.h>
 #include <zephyr/usb/usbd_msg.h>
@@ -19,6 +22,8 @@ LOG_MODULE_REGISTER(linkr_debugger_usb_net, LOG_LEVEL_INF);
 #define LINKR_DEBUGGER_USB_VID  sys_cpu_to_le16(0x2fe3U)
 #define LINKR_DEBUGGER_USB_PID  sys_cpu_to_le16(0xDB01U)
 #define LINKR_DEBUGGER_USB_POWER_MA 50U
+#define LINKR_DEBUGGER_J4_UART_MIN_BAUD 2400U
+#define LINKR_DEBUGGER_J4_UART_MAX_BAUD (UINT32_MAX / 16U)
 
 USBD_DEVICE_DEFINE(linkr_debugger_usbd,
 		   DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)),
@@ -39,12 +44,38 @@ static void linkr_debugger_fix_code_triple(struct usbd_context *uds_ctx)
 				    USB_BCC_MISCELLANEOUS, 0x02, 0x01);
 }
 
+#define DEVICE_DT_GET_COMMA(node_id) DEVICE_DT_GET(node_id),
+
+static const struct device *const uart_bridges[] = {
+	DT_FOREACH_STATUS_OKAY(zephyr_uart_bridge, DEVICE_DT_GET_COMMA)
+};
+
 static void linkr_debugger_usbd_msg_cb(struct usbd_context *const ctx,
 				   const struct usbd_msg *const msg)
 {
 	ARG_UNUSED(ctx);
 
 	LOG_INF("usb event: %s", usbd_msg_type_string(msg->type));
+
+	/* DTR/RTS changes do not alter the UART format. Reconfiguring PL011 on
+	 * every CONTROL_LINE_STATE event can race consecutive open-time events
+	 * (stale line coding, new line coding, then DTR) and wedge the bridge long
+	 * enough for the hardware watchdog to enter BOOTSEL. Apply settings only
+	 * after the host has delivered a new line-coding tuple.
+	 */
+	if (msg->type == USBD_MSG_CDC_ACM_LINE_CODING) {
+		struct uart_config config;
+
+		if (uart_config_get(msg->dev, &config) < 0 ||
+		    config.baudrate < LINKR_DEBUGGER_J4_UART_MIN_BAUD ||
+		    config.baudrate > LINKR_DEBUGGER_J4_UART_MAX_BAUD) {
+			LOG_WRN("ignoring unsafe CDC UART line coding");
+			return;
+		}
+		for (size_t i = 0; i < ARRAY_SIZE(uart_bridges); i++) {
+			uart_bridge_settings_update(msg->dev, uart_bridges[i]);
+		}
+	}
 }
 
 static struct usbd_context *linkr_debugger_usbd_setup(void)

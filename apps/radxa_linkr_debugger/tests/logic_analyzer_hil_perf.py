@@ -82,29 +82,43 @@ WIDE11_MAPPING_TRIGGER_CHANNEL = 0
 WIDE11_MAPPING_TRIGGER_TYPE = TRIGGER_RISING
 WIDE11_MAPPING_DEFAULT_HOLD_SAMPLES = 64
 WIDE11_MAPPING_DEFAULT_CHECK_SAMPLES = 8192
-WIDE11_MAPPING_OBSERVED_BITS = (0, 1, 8, 10)
-WIDE11_MAPPING_NIBBLE_TO_SAMPLE_BITS = (0, 1, 8, 10)
-WIDE11_MAPPING_LOW_OTHERS_ZERO_MASK = 0x07FE
+WIDE11_MAPPING_OBSERVED_BITS = (0, 1, 8)
+WIDE11_MAPPING_NIBBLE_TO_SAMPLE_BITS = (0, 1, 8)
+WIDE11_MAPPING_PATTERN_MASK = 0x0103
+# The reduced profile leaves other lanes unconnected; none has an expected-low gate.
+WIDE11_MAPPING_LOW_OTHERS_ZERO_MASK = 0x0000
 WIDE11_MAPPING_GP10_UART_DEFAULT_STIMULUS = "UUUUUUUU"
 WIDE11_MAPPING_GP10_UART_DEFAULT_DEVICE = "/dev/ttyACM1"
 WIDE11_MAPPING_GP10_UART_DEFAULT_BAUD = 115200
-WIDE11_MAPPING_DEFAULT_PATTERN_NIBBLES = (0x1, 0x3, 0x2, 0x6, 0x4, 0xC, 0x8, 0x9, 0xB, 0xF, 0x5, 0xD, 0x0, 0xA, 0x2, 0x1)
+WIDE11_MAPPING_DEFAULT_PATTERN_NIBBLES = (0x1, 0x3, 0x2, 0x6, 0x4, 0x5, 0x7, 0x0)
 UART_STIMULUS_BUSY_RETRY_WINDOW_S = 5.0
 UART_STIMULUS_BUSY_RETRY_SLEEP_S = 0.05
 WIDE11_MAPPING_PHYSICAL_PREREQUISITE = (
     "External 3.3V-compatible pattern generator required: connect generator D0->GP10 "
-    "(captured bit0 and trigger channel 0), D1->GP11 (bit1), D2->GP18 (bit8), "
-    "D3->GP20 (bit10), and generator ground to Linkr Debugger ground. "
-    "Hold the initial idle state with GP10 low before arming, then emit the declared "
-    "repeating nibble pattern with each nibble held for --wide11-map-hold-samples "
-    "100MHz sample ticks. Do not use HTTP safe-GPIO outputs as stimulus: WIDE11 PIO "
-    "preparation configures GP10-GP20 as inputs for capture."
+    "(captured bit0 and trigger channel 0), D1->GP11 (bit1), D2->GP18 (bit8) through "
+    "at least 1k series resistors, "
+    "and generator ground to Linkr Debugger ground. Leave GP19 (CH224A strap) "
+    "and GP20 (PIO I2C SCL read-only tap) unconnected; never drive or pull them low. "
+    "Keep the generator high-impedance until the capture START response, then emit the declared "
+    "repeating 3-bit pattern (0..0x7) with each value held for --wide11-map-hold-samples "
+    "100MHz sample ticks, and return all outputs high-impedance before STOP/automatic cleanup "
+    "can restore UART1 on GP10/GP11. The series resistors are mandatory protection if handoff "
+    "timing is imperfect. Do not use HTTP safe-GPIO outputs as stimulus: WIDE11 PIO "
+    "preparation takes over the driven pins as inputs, but must leave the "
+    "GP20/GP21 PIO0 I2C mux and direction unchanged."
 )
 WIDE11_MAPPING_GP10_UART_PREREQUISITE = (
-    "Reduced single-wire setup: connect /dev/ttyACM1 TX to GP10 and share ground; "
-    "leave GP11-GP20 externally low. This validates only GP10 DATA bit0 activity "
-    "and absence of high/crosstalk on bits1..10. It does not validate independent "
-    "high-state mapping for GP11-GP20."
+    "Reduced single-wire setup: connect /dev/ttyACM1 TX to GP10 through at least a 1k "
+    "series resistor and share ground; "
+    "leave GP11-GP20 unconnected, especially GP19 (CH224A strap) and GP20 "
+    "(PIO I2C SCL read-only tap). This validates only GP10 DATA bit0 activity, "
+    "not independent high-state mapping or fixed-low levels for other lanes."
+)
+WIDE11_MAPPING_READ_ONLY_CHECKS = (
+    "Verify the fixture never drives GP19 or GP20 and leaves both high-impedance",
+    "Verify capture leaves GP20=SCL/GP21=SDA PIO0 mux and direction unchanged",
+    "Correlate GP20 transitions and pulled-up idle with successful board-owned I2C traffic; static levels are not a dynamic mapping pass",
+    "Verify GP19 remains at its board-owned strap level without fixture contention",
 )
 WIDE11_BURST_EXPECTED_DATA_FRAMES = 98
 TELEMETRY_ISOLATION_DEFAULT_RATE_HZ = 100
@@ -330,9 +344,9 @@ def parse_csv_nibbles(value: str) -> list[int]:
     nibbles = parse_csv_ints(value)
     if not nibbles:
         raise ValueError("at least one WIDE11 mapping pattern nibble is required")
-    invalid = [nibble for nibble in nibbles if not 0 <= nibble <= 0xF]
+    invalid = [nibble for nibble in nibbles if not 0 <= nibble <= 0x7]
     if invalid:
-        raise ValueError(f"WIDE11 mapping pattern nibbles must be 0..0xf: {invalid}")
+        raise ValueError(f"WIDE11 mapping pattern values must be 0..0x7 (GP10/GP11/GP18 only): {invalid}")
     return nibbles
 
 
@@ -349,8 +363,8 @@ def parse_csv_trigger_types(value: str) -> list[int]:
 
 
 def wide11_mapping_nibble_to_sample(nibble: int) -> int:
-    if not 0 <= nibble <= 0xF:
-        raise ValueError("WIDE11 mapping nibble must be 0..0xf")
+    if not 0 <= nibble <= 0x7:
+        raise ValueError("WIDE11 mapping value must be 0..0x7 (GP10/GP11/GP18 only)")
     sample = 0
     for nibble_bit, sample_bit in enumerate(WIDE11_MAPPING_NIBBLE_TO_SAMPLE_BITS):
         if (nibble & (1 << nibble_bit)) != 0:
@@ -373,6 +387,28 @@ def decode_wide11_sample_words(sample_payload: bytes) -> list[int]:
     return [sample_payload[offset] | (sample_payload[offset + 1] << 8) for offset in range(0, len(sample_payload), 2)]
 
 
+def wide11_read_only_tap_observations(samples: list[int]) -> dict[str, Any]:
+    """Report passive levels, not proof of pin mux, I2C identity, or no contention."""
+    observations: dict[str, Any] = {}
+    for pin, role in ((19, "CH224A PD strap"), (20, "PIO I2C SCL read-only tap")):
+        levels = [(sample >> (pin - 10)) & 1 for sample in samples]
+        observations[f"GP{pin}"] = {
+            "bit": pin - 10,
+            "role": role,
+            "values_seen": sorted(set(levels)),
+            "transitions": sum(before != after for before, after in zip(levels, levels[1:])),
+            "fixed_level_validated": False,
+        }
+    scl = observations["GP20"]
+    scl["status"] = "not_verified" if scl["transitions"] else "not_exercised"
+    scl["dynamic_scl_mapping_validated"] = False
+    return {
+        **observations,
+        "read_only_no_contention_verified": False,
+        "required_checks": list(WIDE11_MAPPING_READ_ONLY_CHECKS),
+    }
+
+
 def validate_wide11_mapping_payload(
     sample_payload: bytes,
     *,
@@ -388,6 +424,11 @@ def validate_wide11_mapping_payload(
     pattern_period_samples = hold_samples * len(pattern_nibbles)
     if pattern_period_samples <= 1:
         raise ValueError("WIDE11 mapping pattern period must be at least two samples")
+    scope = {
+        "pattern_mask": WIDE11_MAPPING_PATTERN_MASK,
+        "unverified_bits": [bit for bit in range(11) if bit not in WIDE11_MAPPING_OBSERVED_BITS],
+        "read_only_taps": wide11_read_only_tap_observations(samples[:check_samples]),
+    }
 
     best: dict[str, Any] | None = None
     for phase in range(pattern_period_samples):
@@ -395,19 +436,19 @@ def validate_wide11_mapping_payload(
         mismatch_count = 0
         bit_values = {bit: set() for bit in WIDE11_MAPPING_OBSERVED_BITS}
         bit_transitions = {bit: 0 for bit in WIDE11_MAPPING_OBSERVED_BITS}
-        previous_expected = wide11_mapping_expected_sample(pattern_nibbles, hold_samples, 0, phase)
+        previous_observed = samples[0] & WIDE11_MAPPING_PATTERN_MASK
         for index in range(check_samples):
-            observed = samples[index] & MASK_WIDE11
+            observed = samples[index] & WIDE11_MAPPING_PATTERN_MASK
             expected = wide11_mapping_expected_sample(pattern_nibbles, hold_samples, index, phase)
             for bit in WIDE11_MAPPING_OBSERVED_BITS:
                 bit_values[bit].add((observed >> bit) & 1)
-                if index > 0 and ((previous_expected >> bit) & 1) != ((expected >> bit) & 1):
+                if index > 0 and ((previous_observed >> bit) & 1) != ((observed >> bit) & 1):
                     bit_transitions[bit] += 1
             if observed != expected:
                 mismatch_count += 1
                 if len(mismatches) < MAX_STREAM_DIAGNOSTIC_RECORDS:
                     mismatches.append({"sample_index": index, "expected": expected, "observed": observed, "xor": observed ^ expected})
-            previous_expected = expected
+            previous_observed = observed
         candidate = {
             "phase_samples": phase,
             "mismatch_count": mismatch_count,
@@ -420,7 +461,7 @@ def validate_wide11_mapping_payload(
         if mismatch_count == 0:
             independent_bits = all(bit_values[bit] == {0, 1} and bit_transitions[bit] > 0 for bit in WIDE11_MAPPING_OBSERVED_BITS)
             if independent_bits:
-                return {"pass": True, "reason": "ok", "checked_samples": check_samples, **candidate}
+                return {"pass": True, "reason": "ok", "checked_samples": check_samples, **scope, **candidate}
 
     assert best is not None
     inactive_bits = [
@@ -428,8 +469,8 @@ def validate_wide11_mapping_payload(
         if values != [0, 1] or int(cast(dict[str, int], best["bit_transitions"])[bit]) <= 0
     ]
     if inactive_bits:
-        return {"pass": False, "reason": "WIDE11 mapping pattern did not independently exercise every required bit", "inactive_bits": inactive_bits, "checked_samples": check_samples, **best}
-    return {"pass": False, "reason": "WIDE11 mapping payload mismatches expected pattern", "checked_samples": check_samples, **best}
+        return {"pass": False, "reason": "WIDE11 mapping pattern did not independently exercise every required bit", "inactive_bits": inactive_bits, "checked_samples": check_samples, **scope, **best}
+    return {"pass": False, "reason": "WIDE11 mapping payload mismatches expected pattern", "checked_samples": check_samples, **scope, **best}
 
 
 def validate_wide11_gp10_uart_low_others_payload(sample_payload: bytes, *, check_samples: int) -> dict[str, Any]:
@@ -443,8 +484,6 @@ def validate_wide11_gp10_uart_low_others_payload(sample_payload: bytes, *, check
     gp10_runs: list[dict[str, int]] = []
     current_value: int | None = None
     current_run_start = 0
-    zero_mask_violations: list[dict[str, int]] = []
-    zero_mask_violation_count = 0
 
     for index, sample in enumerate(samples[:check_samples]):
         observed = sample & MASK_WIDE11
@@ -459,39 +498,33 @@ def validate_wide11_gp10_uart_low_others_payload(sample_payload: bytes, *, check
             current_value = gp10
             current_run_start = index
 
-        unexpected = observed & WIDE11_MAPPING_LOW_OTHERS_ZERO_MASK
-        if unexpected != 0:
-            zero_mask_violation_count += 1
-            if len(zero_mask_violations) < MAX_STREAM_DIAGNOSTIC_RECORDS:
-                zero_mask_violations.append({"sample_index": index, "observed": observed, "unexpected_mask": unexpected})
-
     if current_value is not None and len(gp10_runs) < MAX_STREAM_DIAGNOSTIC_RECORDS:
         gp10_runs.append({"value": current_value, "start": current_run_start, "length": check_samples - current_run_start})
 
     gp10_low_high_seen = gp10_values == {0, 1}
     gp10_transition_count = sum(1 for run in gp10_runs[1:] if run["length"] > 0)
     result = {
-        "pass": gp10_low_high_seen and zero_mask_violation_count == 0,
+        "pass": gp10_low_high_seen,
         "reason": "ok",
         "checked_samples": check_samples,
         "profile": "gp10_uart_low_others",
         "gp10_bit": 0,
         "zero_mask": WIDE11_MAPPING_LOW_OTHERS_ZERO_MASK,
-        "zero_mask_bits": {f"GP{pin}": pin - 10 for pin in range(11, 21)},
+        "zero_mask_bits": {},
+        "zero_mask_validated": False,
+        "unverified_bits": list(range(1, 11)),
         "gp10_values": sorted(gp10_values),
         "gp10_low_high_seen": gp10_low_high_seen,
         "gp10_transition_count": gp10_transition_count,
         "first_gp10_runs": gp10_runs,
-        "zero_mask_violation_count": zero_mask_violation_count,
-        "first_zero_mask_violations": zero_mask_violations,
+        "read_only_taps": wide11_read_only_tap_observations(samples[:check_samples]),
         "limitations": [
             "Independent high-state mapping for GP11-GP20 is not validated by this reduced single-wire test",
-            "Selected external mapping coverage for GP11/GP18/GP20 is not exercised when only GP10 is driven",
+            "GP11-GP20 are unconnected; their levels are unverified, not expected-low zero-mask passes",
+            "GP20 SCL identity, pin mux preservation, and no contention require separate board-owned I2C evidence",
         ],
     }
-    if zero_mask_violation_count != 0:
-        result["reason"] = "WIDE11 GP10 UART low-others check saw unexpected high/crosstalk on bits1..10"
-    elif not gp10_low_high_seen:
+    if not gp10_low_high_seen:
         result["reason"] = "WIDE11 GP10 UART low-others check did not observe both low and high runs on bit0"
     return result
 
@@ -1986,7 +2019,7 @@ def sigrok_tcp_wide11_mapping_case(args: argparse.Namespace) -> dict[str, Any]:
     mode = MODE_CASES["WIDE11"]
     stats = StreamStats()
     decoded_payload = bytearray()
-    stimulus_profile = "gp10_uart_low_others" if args.wide11_map_gp10_uart_low_others else "external_4bit"
+    stimulus_profile = "gp10_uart_low_others" if args.wide11_map_gp10_uart_low_others else "external_3bit"
     result: dict[str, Any] = {
         "case": "sigrok_tcp_wide11_gp10_uart_low_others" if stimulus_profile == "gp10_uart_low_others" else "sigrok_tcp_wide11_deep_burst_mapping",
         "transport": "tcp",
@@ -2001,25 +2034,32 @@ def sigrok_tcp_wide11_mapping_case(args: argparse.Namespace) -> dict[str, Any]:
         "trigger_name": TRIGGER_NAMES[WIDE11_MAPPING_TRIGGER_TYPE],
         "trigger_channel": WIDE11_MAPPING_TRIGGER_CHANNEL,
         "config_must_be_v2": True,
-        "observed_mapping": {"GP10": 0, "GP11": 1, "GP18": 8, "GP20": 10},
+        "observed_mapping": {"GP10": 0, "GP11": 1, "GP18": 8},
+        "read_only_mapping": {"GP19": 9, "GP20": 10},
+        "read_only_checks_required": list(WIDE11_MAPPING_READ_ONLY_CHECKS),
+        "read_only_no_contention_verified": False,
+        "dynamic_scl_mapping_validated": False,
         "stimulus_profile": stimulus_profile,
         "mapping_profile": stimulus_profile,
-        "validation_scope": "single_channel_reduced" if stimulus_profile == "gp10_uart_low_others" else "multi_channel_external_4bit",
-        "selected_external_4bit_mapping_validated": False,
+        "validation_scope": "single_channel_reduced" if stimulus_profile == "gp10_uart_low_others" else "multi_channel_external_3bit",
+        "selected_external_3bit_mapping_validated": False,
         "stimulus_method": "uart_tx_to_gp10" if stimulus_profile == "gp10_uart_low_others" else "external_pattern_generator",
         "physical_prerequisite": WIDE11_MAPPING_GP10_UART_PREREQUISITE if stimulus_profile == "gp10_uart_low_others" else WIDE11_MAPPING_PHYSICAL_PREREQUISITE,
         "external_generator_acknowledged": bool(args.wide11_map_external_generator),
         "gp10_uart_low_others_acknowledged": bool(args.wide11_map_gp10_uart_low_others),
         "expected_pattern_nibbles": args.wide11_map_pattern,
+        "pattern_mask": WIDE11_MAPPING_PATTERN_MASK if stimulus_profile == "external_3bit" else None,
         "expected_hold_samples": args.wide11_map_hold_samples,
         "check_samples": args.wide11_map_check_samples,
         "zero_mask": WIDE11_MAPPING_LOW_OTHERS_ZERO_MASK if stimulus_profile == "gp10_uart_low_others" else None,
-        "validation_limitations": [] if stimulus_profile == "external_4bit" else [
+        "validation_limitations": [
+            "GP19/GP20 are read-only; passive levels cannot verify pin mux preservation, dynamic SCL identity, or no contention",
+        ] + ([] if stimulus_profile == "external_3bit" else [
             "Independent high-state mapping for GP11-GP20 is not validated by this reduced single-wire test",
-            "Selected external mapping coverage for GP11/GP18/GP20 is not exercised when only GP10 is driven",
-        ],
+            "GP11-GP20 are unconnected; no fixed-low zero-mask pass is claimed",
+        ]),
     }
-    if stimulus_profile == "external_4bit" and not args.wide11_map_external_generator:
+    if stimulus_profile == "external_3bit" and not args.wide11_map_external_generator:
         result.update({"pass": False, "blocked": True, "reason": "WIDE11 mapping HIL requires --wide11-map-external-generator and the documented physical wiring"})
         return result
 
@@ -2142,14 +2182,15 @@ def sigrok_tcp_wide11_mapping_case(args: argparse.Namespace) -> dict[str, Any]:
         "stats": asdict(stats),
         "decoded_payload_bytes": len(decoded_payload),
         "mapping_validation": mapping_validation,
-        "selected_external_4bit_mapping_validated": stimulus_profile == "external_4bit" and bool(mapping_validation.get("pass")),
+        "selected_external_3bit_mapping_validated": stimulus_profile == "external_3bit" and bool(mapping_validation.get("pass")),
         "gp10_bit0_activity_validated": bool(mapping_validation.get("pass")) if stimulus_profile == "gp10_uart_low_others" else None,
-        "low_others_zero_mask_validated": bool(mapping_validation.get("pass")) if stimulus_profile == "gp10_uart_low_others" else None,
-        "selected_gp11_gp18_gp20_high_mapping_validated": stimulus_profile == "external_4bit" and bool(mapping_validation.get("pass")),
+        "low_others_zero_mask_validated": False,
+        "selected_gp11_gp18_high_mapping_validated": stimulus_profile == "external_3bit" and bool(mapping_validation.get("pass")),
+        "read_only_taps": mapping_validation.get("read_only_taps"),
         "trigger_event_received": stats.triggered_events > 0,
         "stop_response": stop_response,
         "board_http_health_after": board_health_after,
-        "pin_state_restore": "STOP_REQ sent and STOP_RESP required; firmware cleanup restores GP10-GP20 to SIO GPIO_INPUT",
+        "pin_state_restore": "STOP_REQ sent and STOP_RESP required; firmware restores GP10/GP11 UART and captured safe GPIO inputs, leaves GP19 high-impedance, and preserves GP20/GP21 PIO0 I2C ownership; independently verify no contention",
     })
     return result
 
@@ -2904,7 +2945,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "name": "sigrok_high_rate_packed_burst",
             "cases": list(iter_high_rate_packed_burst_cases(args)),
             "timeout_policy": f"per-operation timeout is bounded by --timeout (default {args.timeout:g}s); health recovery probes cap at {HIGH_RATE_PACKED_BURST_HEALTH_RECOVERY_TIMEOUT_S:g}s",
-            "wiring_scope": "Available HIL wiring is /dev/ttyACM1 TX -> GP10. Unconnected selected pins are expected-low only; this matrix does not invent high-state evidence for those pins.",
+            "wiring_scope": "Available HIL wiring is /dev/ttyACM1 TX -> GP10. Leave other selected pins unconnected, never drive GP19/GP20, and do not infer fixed-low or independent high-state evidence for them.",
         })
     if "wide11-telemetry-isolation" in args.matrix:
         matrices.append({
@@ -2918,7 +2959,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             }],
         })
     if "wide11-mapping" in args.matrix:
-        stimulus_profile = "gp10_uart_low_others" if args.wide11_map_gp10_uart_low_others else "external_4bit"
+        stimulus_profile = "gp10_uart_low_others" if args.wide11_map_gp10_uart_low_others else "external_3bit"
         matrices.append({
             "name": "sigrok_tcp_wide11_gp10_uart_low_others" if stimulus_profile == "gp10_uart_low_others" else "sigrok_tcp_wide11_deep_burst_mapping",
             "cases": [{
@@ -2929,13 +2970,19 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
                 "trigger": {"type": WIDE11_MAPPING_TRIGGER_TYPE, "name": TRIGGER_NAMES[WIDE11_MAPPING_TRIGGER_TYPE], "channel": WIDE11_MAPPING_TRIGGER_CHANNEL},
                 "stimulus_profile": stimulus_profile,
                 "mapping_profile": stimulus_profile,
-                "validation_scope": "single_channel_reduced" if stimulus_profile == "gp10_uart_low_others" else "multi_channel_external_4bit",
-                "selected_external_4bit_mapping_validated": False,
-                "requires_external_generator": stimulus_profile == "external_4bit",
+                "validation_scope": "single_channel_reduced" if stimulus_profile == "gp10_uart_low_others" else "multi_channel_external_3bit",
+                "selected_external_3bit_mapping_validated": False,
+                "requires_external_generator": stimulus_profile == "external_3bit",
+                "fixture_driven_mapping": {"GP10": 0} if stimulus_profile == "gp10_uart_low_others" else {"GP10": 0, "GP11": 1, "GP18": 8},
+                "read_only_mapping": {"GP19": 9, "GP20": 10},
+                "read_only_checks_required": list(WIDE11_MAPPING_READ_ONLY_CHECKS),
+                "read_only_no_contention_verified": False,
+                "dynamic_scl_mapping_validated": False,
                 "external_generator_acknowledged": bool(args.wide11_map_external_generator),
                 "gp10_uart_low_others_acknowledged": bool(args.wide11_map_gp10_uart_low_others),
                 "physical_prerequisite": WIDE11_MAPPING_GP10_UART_PREREQUISITE if stimulus_profile == "gp10_uart_low_others" else WIDE11_MAPPING_PHYSICAL_PREREQUISITE,
                 "pattern_nibbles": args.wide11_map_pattern,
+                "pattern_mask": WIDE11_MAPPING_PATTERN_MASK if stimulus_profile == "external_3bit" else None,
                 "hold_samples": args.wide11_map_hold_samples,
                 "check_samples": args.wide11_map_check_samples,
                 "zero_mask": WIDE11_MAPPING_LOW_OTHERS_ZERO_MASK if stimulus_profile == "gp10_uart_low_others" else None,
@@ -2990,10 +3037,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--uart-stimulus", help="optional text stimulus written through pyserial")
     parser.add_argument("--uart-device", help="must be explicitly /dev/ttyACM1 when UART stimulus is used")
     parser.add_argument("--uart-baud", type=int, help="explicit UART baud for 8N1 pyserial stimulus")
-    parser.add_argument("--wide11-map-external-generator", action="store_true", help="acknowledge the documented external GP10/GP11/GP18/GP20 pattern-generator wiring and enable the WIDE11 mapping HIL")
-    parser.add_argument("--wide11-map-gp10-uart-low-others", action="store_true", help="run the reduced single-wire WIDE11 mapping HIL: /dev/ttyACM1 TX drives GP10 while GP11-GP20 remain externally low")
-    parser.add_argument("--wide11-map-pattern", default=",".join(f"0x{value:x}" for value in WIDE11_MAPPING_DEFAULT_PATTERN_NIBBLES), help="comma-separated 4-bit external-generator pattern nibbles; nibble bit0->GP10, bit1->GP11, bit2->GP18, bit3->GP20")
-    parser.add_argument("--wide11-map-hold-samples", type=int, default=WIDE11_MAPPING_DEFAULT_HOLD_SAMPLES, help="number of 100MHz sample ticks each WIDE11 mapping pattern nibble is held")
+    parser.add_argument("--wide11-map-external-generator", action="store_true", help="acknowledge external wiring to GP10/GP11/GP18 only; never drive GP19 (PD strap) or GP20 (read-only SCL tap); separate read-only/no-contention verification is required")
+    parser.add_argument("--wide11-map-gp10-uart-low-others", action="store_true", help="reduced single-wire HIL: /dev/ttyACM1 TX drives GP10; leave GP11-GP20 unconnected, not held low (zero_mask=0)")
+    parser.add_argument("--wide11-map-pattern", default=",".join(f"0x{value:x}" for value in WIDE11_MAPPING_DEFAULT_PATTERN_NIBBLES), help="comma-separated 3-bit pattern values 0..0x7; bit0->GP10, bit1->GP11, bit2->GP18; no GP20 stimulus")
+    parser.add_argument("--wide11-map-hold-samples", type=int, default=WIDE11_MAPPING_DEFAULT_HOLD_SAMPLES, help="number of 100MHz sample ticks each WIDE11 mapping pattern value is held")
     parser.add_argument("--wide11-map-check-samples", type=int, default=WIDE11_MAPPING_DEFAULT_CHECK_SAMPLES, help="decoded samples checked against the WIDE11 mapping pattern")
     parser.add_argument("--telemetry-isolation-rate-hz", type=int, default=TELEMETRY_ISOLATION_DEFAULT_RATE_HZ, help="JSON WS ADC telemetry subscription rate for wide11-telemetry-isolation")
     parser.add_argument("--telemetry-isolation-baseline-samples", type=int, default=TELEMETRY_ISOLATION_DEFAULT_BASELINE_SAMPLES, help="baseline ADC telemetry records required before raw TCP deep burst")
