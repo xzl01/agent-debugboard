@@ -1,9 +1,21 @@
 use super::controls::{navigate, Nav};
 use super::events::handle_key;
-use super::gpio_fixture::{item_index, projection_model};
+use super::gpio_fixture::{generic_edge_model, item_index, projection_model};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;
+
+#[test]
+fn metadata_order_does_not_clamp_selection_to_the_last_visual_cells_raw_index() -> Result<()> {
+    let mut model = generic_edge_model()?;
+    // The last visual cell is GP9, whose raw index precedes both IO pins.
+    model.control_idx = item_index(&model, "GP10")?;
+    assert_eq!(navigate(&model, Nav::Right), item_index(&model, "GP16")?);
+    model.control_idx = item_index(&model, "GP16")?;
+    assert_eq!(navigate(&model, Nav::Left), item_index(&model, "GP10")?);
+    assert_eq!(navigate(&model, Nav::Down), item_index(&model, "GP9")?);
+    Ok(())
+}
 
 #[test]
 fn right_selects_the_metadata_sibling_cell() -> Result<()> {

@@ -1,4 +1,4 @@
-use super::gpio_fixture::{projection_model, STATUS_JSON};
+use super::gpio_fixture::{projection_model, x1_2_model, STATUS_JSON, X1_2_STATUS_JSON};
 use crate::ws_status::{TuiStatusGpio, WsStatusSnapshot};
 use anyhow::{anyhow, Result};
 
@@ -8,6 +8,56 @@ fn find_gpio<'a>(snapshot: &'a WsStatusSnapshot, name: &str) -> Result<&'a TuiSt
         .iter()
         .find(|gpio| gpio.name == name)
         .ok_or_else(|| anyhow!("{name} missing from fixture snapshot"))
+}
+
+#[test]
+fn status_group_metadata_is_optional_and_preserves_wire_fields() -> Result<()> {
+    for json in ["{}", STATUS_JSON] {
+        let snapshot: WsStatusSnapshot = serde_json::from_str(json)?;
+        assert!(snapshot.gpio_layout_groups.is_empty());
+    }
+    let snapshot: WsStatusSnapshot = serde_json::from_str(X1_2_STATUS_JSON)?;
+    let groups = &snapshot.gpio_layout_groups;
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0].name, "J13");
+    assert_eq!(groups[0].edge, "right");
+    assert_eq!(groups[0].order, 1);
+    assert_eq!(groups[1].name, "J8");
+    assert_eq!(groups[1].order, 0);
+
+    let encoded = serde_json::to_value(&snapshot)?;
+    let original: serde_json::Value = serde_json::from_str(X1_2_STATUS_JSON)?;
+    assert_eq!(
+        encoded["gpio_layout_groups"],
+        original["gpio_layout_groups"]
+    );
+    assert!(encoded.get("gpioLayoutGroups").is_none());
+    Ok(())
+}
+
+#[test]
+fn model_replaces_group_metadata_including_unknown_edges() -> Result<()> {
+    let mut model = x1_2_model()?;
+    let j8 = model
+        .gpio_layout_groups
+        .get("J8")
+        .ok_or_else(|| anyhow!("J8 metadata missing"))?;
+    assert_eq!(j8.edge, "right");
+    assert_eq!(j8.order, 0);
+
+    model.apply_status_snapshot(serde_json::from_str(
+        r#"{"gpio_layout_groups":[{"name":"PORT","edge":"future-edge","order":7}]}"#,
+    )?);
+    assert_eq!(model.gpio_layout_groups.len(), 1);
+    assert_eq!(model.gpio_layout_groups["PORT"].edge, "future-edge");
+    assert_eq!(model.gpio_layout_groups["PORT"].order, 7);
+
+    model.apply_status_snapshot(serde_json::from_str(STATUS_JSON)?);
+    assert!(
+        model.gpio_layout_groups.is_empty(),
+        "stale groups must clear"
+    );
+    Ok(())
 }
 
 #[test]
@@ -68,8 +118,8 @@ fn model_associates_layouts_by_gpio_name() -> Result<()> {
 fn con_mas_gpios_keep_their_layout_entries() -> Result<()> {
     let snapshot: WsStatusSnapshot = serde_json::from_str(
         r#"{"gpios":[
-          {"name":"GP7","pin":7,"value":0,"direction":"input","note":"CON_MAS","layoutGroup":"J13","layoutLabel":"MASKROM","layoutRow":1,"layoutColumn":1},
-          {"name":"GP8","pin":8,"value":0,"direction":"input","note":"CON_REST","layoutGroup":"J13","layoutLabel":"RSET","layoutRow":0,"layoutColumn":0}
+          {"name":"GP7","pin":7,"value":0,"direction":"input","note":"CON_MAS","layoutGroup":"J13","layoutLabel":"MASKROM","layoutRow":1,"layoutColumn":0},
+          {"name":"GP8","pin":8,"value":0,"direction":"input","note":"CON_REST","layoutGroup":"J13","layoutLabel":"RSET","layoutRow":0,"layoutColumn":1}
         ]}"#,
     )
     .map_err(anyhow::Error::msg)?;
@@ -91,7 +141,7 @@ fn con_mas_gpios_keep_their_layout_entries() -> Result<()> {
     assert_eq!(gp7.group.as_deref(), Some("J13"));
     assert_eq!(gp7.label.as_deref(), Some("MASKROM"));
     assert_eq!(gp7.row, Some(1));
-    assert_eq!(gp7.column, Some(1));
+    assert_eq!(gp7.column, Some(0));
     assert!(model.gpio_layouts.contains_key("GP8"));
     Ok(())
 }

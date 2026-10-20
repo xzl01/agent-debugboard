@@ -67,10 +67,7 @@ pub(super) fn navigate(model: &TuiModel, nav: Nav) -> usize {
     if lines.is_empty() {
         return 0;
     }
-    let last_index = lines
-        .last()
-        .and_then(|line| line.last().copied())
-        .unwrap_or(0);
+    let last_index = lines.iter().flatten().copied().max().unwrap_or(0);
     let current = model.control_idx.min(last_index);
     let (line, side) = locate(&lines, current);
     match nav {

@@ -4,7 +4,7 @@ use super::config_state::SavedConfigState;
 use super::confirm::HardwareConfirmation;
 use super::controls::control_items;
 use super::gpio_io::{GpioJob, GpioWorker};
-use super::gpio_layout::TuiGpioLayout;
+use super::gpio_layout::{TuiGpioLayout, TuiGpioLayoutGroup};
 use super::hit::HitMap;
 use super::pages::ActivePage;
 use super::{TuiActionMsg, TUI_HISTORY_LIMIT};
@@ -63,6 +63,7 @@ pub struct TuiModel {
     pub gpio_levels: std::collections::HashMap<String, bool>,
     pub gpio_is_input: std::collections::HashMap<String, bool>,
     pub(super) gpio_layouts: std::collections::HashMap<String, TuiGpioLayout>,
+    pub(super) gpio_layout_groups: std::collections::HashMap<String, TuiGpioLayoutGroup>,
     pub monitoring: BoardMonitoring,
     pub(super) saved_config: SavedConfigState,
     pub(super) config_worker: ConfigWorker,
@@ -106,6 +107,7 @@ impl TuiModel {
             gpio_levels: std::collections::HashMap::new(),
             gpio_is_input: std::collections::HashMap::new(),
             gpio_layouts: std::collections::HashMap::new(),
+            gpio_layout_groups: std::collections::HashMap::new(),
             monitoring: BoardMonitoring::default(),
             saved_config: SavedConfigState::default(),
             config_worker: ConfigWorker::new(),
@@ -201,6 +203,19 @@ impl TuiModel {
         self.gpio_levels.clear();
         self.gpio_is_input.clear();
         self.gpio_layouts.clear();
+        self.gpio_layout_groups = snapshot
+            .gpio_layout_groups
+            .into_iter()
+            .map(|group| {
+                (
+                    group.name,
+                    TuiGpioLayoutGroup {
+                        edge: group.edge,
+                        order: group.order,
+                    },
+                )
+            })
+            .collect();
         for gpio in &snapshot.gpios {
             self.gpio_notes.insert(gpio.name.clone(), gpio.note.clone());
             self.gpio_levels

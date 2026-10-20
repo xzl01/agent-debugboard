@@ -9,6 +9,7 @@ pub(super) struct GpioCell {
     pub(super) item_index: usize,
     pub(super) name: String,
     pub(super) group: String,
+    pub(super) right_edge: bool,
     pub(super) label: String,
     pub(super) note: String,
 }
@@ -58,11 +59,12 @@ fn pending_pins(model: &TuiModel) -> Vec<PendingPin> {
         .collect()
 }
 
-fn to_cell(pin: &PendingPin, group: &str, label: &str) -> GpioCell {
+fn to_cell(pin: &PendingPin, group: &str, label: &str, right_edge: bool) -> GpioCell {
     GpioCell {
         item_index: pin.item_index,
         name: pin.name.clone(),
         group: group.to_string(),
+        right_edge,
         label: label.to_string(),
         note: pin.note.clone(),
     }
@@ -77,6 +79,7 @@ fn chunk_row(cells: Vec<GpioCell>, rows: &mut Vec<GpioVisualRow>) {
 }
 
 fn project_complete(
+    model: &TuiModel,
     pins: &[PendingPin],
     rows: &mut Vec<GpioVisualRow>,
     fallback: &mut Vec<PendingPin>,
@@ -89,7 +92,17 @@ fn project_complete(
             }
         }
     }
+    // Stable sorting preserves first appearance for equal orders and for all
+    // undescribed groups, which follow the explicitly ordered groups.
+    group_order.sort_by_key(|group| match model.gpio_layout_groups.get(group) {
+        Some(metadata) => (false, metadata.order),
+        None => (true, 0),
+    });
     for group in &group_order {
+        let right_edge = model
+            .gpio_layout_groups
+            .get(group)
+            .is_some_and(|metadata| metadata.edge == "right");
         let members: Vec<&PendingPin> = pins
             .iter()
             .filter(|pin| pin.group.as_ref() == Some(group))
@@ -122,7 +135,7 @@ fn project_complete(
                 .iter()
                 .map(|pin| {
                     let label = pin.label.as_deref().unwrap_or(&pin.name);
-                    to_cell(pin, group, label)
+                    to_cell(pin, group, label, right_edge)
                 })
                 .collect();
             chunk_row(cells, rows);
@@ -140,11 +153,11 @@ fn paired_rows(model: &TuiModel) -> Vec<GpioVisualRow> {
         .cloned()
         .collect();
     fallback.extend(pins.iter().filter(|pin| !pin.is_complete()).cloned());
-    project_complete(&complete, &mut rows, &mut fallback);
+    project_complete(model, &complete, &mut rows, &mut fallback);
     fallback.sort_by_key(|pin| pin.item_index);
     let cells: Vec<GpioCell> = fallback
         .iter()
-        .map(|pin| to_cell(pin, FALLBACK_GROUP, &pin.name))
+        .map(|pin| to_cell(pin, FALLBACK_GROUP, &pin.name, false))
         .collect();
     chunk_row(cells, &mut rows);
     rows

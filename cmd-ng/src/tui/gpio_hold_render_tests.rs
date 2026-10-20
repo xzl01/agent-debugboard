@@ -1,5 +1,6 @@
 use super::gpio_fixture::{
-    body_line, control_rect, draw, find_row, item_index, projection_model, row_text,
+    body_line, control_rect, draw, find_row, generic_edge_model, item_index, projection_model,
+    row_text,
 };
 use super::gpio_gesture::GpioGestureInput;
 use super::gpio_io::{GpioAction, GpioJob};
@@ -13,6 +14,7 @@ use ratatui::style::{Color, Modifier};
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 
+// Synthetic paired metadata, not the x1.2 pin map.
 // Every firmware row holds exactly two entries, so no half-empty paired row
 // distorts the full-width measurement.
 const PAIRED_STATUS_JSON: &str = r#"{"gpios":[
@@ -57,6 +59,23 @@ fn set_pending(model: &mut TuiModel, target: &str, action: GpioAction) {
         action,
         target: target.to_string(),
     });
+}
+
+#[test]
+fn right_edge_decoration_yields_to_hold_at_all_canonical_widths() -> Result<()> {
+    for width in [80, 48, 47, 32] {
+        let mut model = generic_edge_model()?;
+        model.width = width;
+        hold_down(&mut model, "GP10");
+        let line = body_line(&model, width, "GP10")?;
+        assert!(line.contains("GP10 ● OUT HIGH [HOLD…]"), "{line:?}");
+        if width == 48 {
+            assert!(line.starts_with("GP10 ● OUT HIGH [HOLD…]"), "{line:?}");
+        }
+        assert_eq!(model.gpio_levels.get("GP10"), Some(&true));
+        assert_eq!(model.gpio_is_input.get("GP10"), Some(&false));
+    }
+    Ok(())
 }
 
 fn tag_start(buffer: &Buffer, y: u16, tag: &str) -> Option<u16> {

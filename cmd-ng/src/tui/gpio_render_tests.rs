@@ -1,5 +1,6 @@
 use super::gpio_fixture::{
-    body_line, control_rect, draw, find_row, item_index, projection_model, row_text,
+    body_line, control_rect, draw, find_row, generic_edge_model, item_index, projection_model,
+    row_text,
 };
 use super::gpio_io::{GpioAction, GpioJob};
 use super::model::TuiModel;
@@ -12,7 +13,11 @@ use ratatui::style::{Color, Modifier};
 use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
 
-const CJK_STATUS_JSON: &str = r#"{"gpios":[
+// Synthetic paired metadata for clipping tests, not the x1.2 pin map.
+const CJK_STATUS_JSON: &str = r#"{"gpio_layout_groups":[
+  {"name":"J13","edge":"right","order":0},
+  {"name":"J16","edge":"right","order":1}
+],"gpios":[
   {"name":"GP8","pin":8,"value":0,"direction":"input","note":"复位按键","layoutGroup":"J13","layoutLabel":"复位","layoutRow":0,"layoutColumn":0},
   {"name":"GP9","pin":9,"value":1,"direction":"input","note":"用户按键","layoutGroup":"J13","layoutLabel":"用户","layoutRow":0,"layoutColumn":1},
   {"name":"GP10","pin":10,"value":1,"direction":"output","note":"J16_PIN1","layoutGroup":"J16","layoutLabel":"GP10","layoutRow":5,"layoutColumn":0},
@@ -56,6 +61,81 @@ fn tag_start(buffer: &Buffer, y: u16, tag: &str) -> Option<u16> {
         }
         text == tag
     })
+}
+
+#[test]
+fn right_edge_decoration_is_metadata_driven_and_disposable() -> Result<()> {
+    let mut model = generic_edge_model()?;
+    for width in [80, 48, 47, 32] {
+        model.width = width;
+        let first = body_line(&model, width, "GP10")?;
+        assert!(first.contains("IO› GP10 ● OUT HIGH"), "{first:?}");
+        let second = body_line(&model, width, "RSET")?;
+        assert!(second.contains("KEY› RSET ◌ IN LOW"), "{second:?}");
+        assert!(body_widths(&model, width).iter().all(|size| *size == width));
+    }
+    model.width = 32;
+    for (width, expected) in [
+        (19, "IO› GP10 ● OUT HIGH"),
+        (18, "IO GP10 ● OUT HIGH"),
+        (17, "GP10 ● OUT HIGH"),
+        (10, "● OUT HIGH"),
+        (8, "● OUT HI"),
+    ] {
+        let line = body_line(&model, width, "OUT")?;
+        assert_eq!(line.trim_end(), expected, "cell width {width}");
+        assert_eq!(UnicodeWidthStr::width(line.as_str()), width);
+    }
+
+    // An arbitrary connector gets the same decoration; an unknown edge stays
+    // generic regardless of the connector name.
+    let metadata = model
+        .gpio_layout_groups
+        .remove("IO")
+        .ok_or_else(|| anyhow!("missing IO metadata"))?;
+    model
+        .gpio_layout_groups
+        .insert("侧边".to_string(), metadata);
+    for layout in model.gpio_layouts.values_mut() {
+        if layout.group.as_deref() == Some("IO") {
+            layout.group = Some("侧边".to_string());
+        }
+    }
+    model
+        .gpio_layout_groups
+        .get_mut("KEY")
+        .ok_or_else(|| anyhow!("missing KEY metadata"))?
+        .edge = "future-edge".to_string();
+    for (width, expected) in [
+        (21, "侧边› GP10 ● OUT HIGH"),
+        (20, "侧边 GP10 ● OUT HIGH"),
+        (19, "GP10 ● OUT HIGH"),
+    ] {
+        let line = body_line(&model, width, "GP10")?;
+        assert_eq!(line.trim_end(), expected);
+        assert_eq!(UnicodeWidthStr::width(line.as_str()), width);
+    }
+    let generic = body_line(&model, 32, "RSET")?;
+    assert!(generic.contains("KEY RSET"));
+    assert!(!generic.contains('›'));
+    Ok(())
+}
+
+#[test]
+fn right_edge_decoration_yields_to_pending_at_all_canonical_widths() -> Result<()> {
+    for width in [80, 48, 47, 32] {
+        let mut model = generic_edge_model()?;
+        model.width = width;
+        set_pending(&mut model, "GP10", GpioAction::DriveHigh);
+        let line = body_line(&model, width, "GP10")?;
+        assert!(line.contains("GP10 ● OUT HIGH [HIGH…]"), "{line:?}");
+        if width == 48 {
+            assert!(line.starts_with("GP10 ● OUT HIGH [HIGH…]"), "{line:?}");
+        }
+        assert_eq!(model.gpio_levels.get("GP10"), Some(&true));
+        assert_eq!(model.gpio_is_input.get("GP10"), Some(&false));
+    }
+    Ok(())
 }
 
 #[test]
@@ -162,7 +242,7 @@ fn selected_pending_cell_keeps_focus_background_and_a_visible_bold_tag() -> Resu
 
 #[test]
 fn pending_cell_layout_holds_at_every_canonical_width() -> Result<()> {
-    for width in [47usize, 48, 80, 120] {
+    for width in [32usize, 47, 48, 80, 120] {
         let mut model = cjk_model()?;
         model.width = width;
         set_pending(&mut model, "GP10", GpioAction::DriveHigh);
@@ -189,7 +269,7 @@ fn pending_cell_layout_holds_at_every_canonical_width() -> Result<()> {
 
 #[test]
 fn cjk_cells_never_split_wide_glyphs_or_wrap() -> Result<()> {
-    for width in [47usize, 48, 80, 120] {
+    for width in [32usize, 47, 48, 80, 120] {
         let mut model = cjk_model()?;
         model.width = width;
         let widths = body_widths(&model, width);

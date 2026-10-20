@@ -64,6 +64,13 @@ pub struct TuiPdStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TuiStatusGpioLayoutGroup {
+    pub name: String,
+    pub edge: String,
+    pub order: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TuiStatusGpio {
     pub name: String,
@@ -130,6 +137,8 @@ pub struct WsStatusSnapshot {
     pub watchdog: TuiStatusWatchdog,
     #[serde(default)]
     pub gpios: Vec<TuiStatusGpio>,
+    #[serde(default)]
+    pub gpio_layout_groups: Vec<TuiStatusGpioLayoutGroup>,
     #[serde(default)]
     pub board_monitoring: BoardMonitoring,
     #[serde(default)]

@@ -6,3 +6,9 @@ pub(super) struct TuiGpioLayout {
     pub(super) row: Option<u32>,
     pub(super) column: Option<u32>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TuiGpioLayoutGroup {
+    pub(super) edge: String,
+    pub(super) order: u32,
+}

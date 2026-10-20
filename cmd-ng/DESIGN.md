@@ -160,8 +160,11 @@ Grounded in `cmd-ng/src/tui/confirm.rs`, `render_modal.rs`,
   reported GPIO remains represented, including entries whose note is `CON_MAS`.
 - GPIO layout metadata is firmware-owned: each status GPIO entry may carry
   `layoutGroup`, `layoutLabel`, `layoutRow`, and `layoutColumn` alongside
-  `pin`/`name`/`note`/`direction`/`value`. The TUI consumes these fields
-  generically and never substitutes its own connector maps.
+  `pin`/`name`/`note`/`direction`/`value`. HTTP status and WS snapshots may also
+  advertise top-level `gpio_layout_groups: [{name, edge, order}]`; absent
+  metadata defaults to an empty catalog and each snapshot replaces it. The
+  TUI consumes these fields generically and never substitutes its own
+  connector maps. Raw CLI JSON output is not transformed by this projection.
 - Firmware-ordered Power rows then switch (BTreeMap key order) row ordering is
   frozen. GPIO
   visual rows are produced by the projection in section 6.1; that
@@ -348,9 +351,15 @@ are right-aligned.
 GPIO pins are laid out from firmware metadata only. For each GPIO the TUI
 consumes `pin`, `name`, `note`, `direction`, `value`, and the optional
 layout fields `layoutGroup`, `layoutLabel`, `layoutRow`, `layoutColumn`.
+The optional top-level `gpio_layout_groups` catalog supplies group `name`,
+`edge` (string), and `order` (unsigned integer) metadata.
 
 - A pin's metadata is COMPLETE when all four layout fields are present.
-  Groups are ordered by their first appearance in the firmware snapshot.
+  Described groups sort by ascending catalog `order`, with ties retaining
+  first appearance in the GPIO snapshot. Undescribed groups follow all
+  described groups and retain their first-appearance order. Catalog entries
+  without GPIO members do not create rows. With no catalog, the generic
+  first-appearance ordering is unchanged.
 - Coordinate collisions: when two complete-metadata pins in one group share
   the same (`layoutRow`, `layoutColumn`), the first pin in snapshot order
   keeps the coordinate; every later duplicate is demoted to the fallback
@@ -377,7 +386,13 @@ layout fields `layoutGroup`, `layoutLabel`, `layoutRow`, `layoutColumn`.
 - Cell text, left to right: `<group> <label> <marker> <DIR> <LEVEL>`
   followed by the optional `<note>`/`<pin>` detail. `group` is the firmware
   `layoutGroup` (or `GPIO` for the fallback); `label` is `layoutLabel`
-  (fallback: the firmware `name`). The marker and words are exactly:
+  (fallback: the firmware `name`). Only catalog `edge: "right"` appends the
+  compact, disposable `›` to the group (`J8›`, `J13›`, or any other firmware
+  name); unknown edges and undescribed groups use the generic undecorated
+  form. Connector names never determine order or edge. For example, x1.2
+  advertises J8/right/order 0 and J13/right/order 1, so J8 precedes J13 even
+  when their GPIO entries or catalog records arrive in the opposite order.
+  The marker and words are exactly:
 
   | Direction | Level | Rendered form  |
   |-----------|-------|----------------|
@@ -396,7 +411,8 @@ layout fields `layoutGroup`, `layoutLabel`, `layoutRow`, `layoutColumn`.
   (Yellow + bold) on an unselected cell; on a selected cell the
   `accent.select` background still covers the whole hit region and the tag
   stays visible and bold. Clipping priority is: state suffix, tag,
-  `<group> <label>`, note. When the cell is too narrow for the tag, the tag
+  `<group> <label>`, note. Edge decoration never takes space from the state
+  or tag. When the cell is too narrow for the tag, the tag
   drops whole and the status line keeps carrying the in-flight
   `gpio <name>=…` text.
 - Hold tag: while the GPIO gesture is in its initial left-button Down state
@@ -410,16 +426,58 @@ layout fields `layoutGroup`, `layoutLabel`, `layoutRow`, `layoutColumn`.
   suffix -- the marker plus the `IN`/`OUT` and `LOW`/`HIGH` words, at most
   10 columns (`● OUT HIGH`) -- has priority: whenever the cell width is at
   least the suffix width, the suffix is always rendered whole at the right
-  edge of the cell, and the remaining width belongs to `<group> <label>`,
-  which is hard-clipped to fit. Only a cell inherently narrower than the
+  edge of the cell, and the remaining width belongs to `<group> <label>`.
+  A right-edge core degrades from `<group>› <label>` to `<group> <label>`,
+  then to `<label>` before hard-clipping the label. Undecorated generic
+  cores keep their existing hard-clip behavior. Notes yield before these
+  core forms. Only a cell inherently narrower than the
   suffix width may hard-clip the suffix itself (tail cut), which can happen
-  only on an inherently narrow terminal.
+  only on an inherently narrow terminal; even there no group/label is
+  allowed to displace the state prefix. Clipping uses display columns, so
+  CJK glyphs are never split.
 - Hit regions: one rectangle per selectable element. Power/switch rows span
   the full row width. A paired GPIO cell spans exactly its half of the row;
   a single-cell GPIO row spans the full row. Left-button input on a GPIO cell
   selects it and follows the gesture timing in section 10. Middle and right
   button input is inert. Power and switch left-button primary behavior remains
-  unchanged when no GPIO gesture is active.
+  unchanged when no GPIO gesture is active. Edge decoration and its degradation
+  never alter these rectangles or the pin-based selection identity. Widths
+  80/48 retain half-row cells; 47/32 use full-row cells.
+
+#### x1.2 representative fixture (test data only)
+
+`gpio_fixture::X1_2_STATUS_JSON` models the user-confirmed x1.2 hardware below.
+This is regression-test input, not a host-side production pin map; firmware /
+Device Tree remains the owner of the hardware description. Synthetic paired
+fixtures (including arbitrary `IO`/`KEY` groups) remain separate to exercise
+generic metadata handling without claiming to describe x1.2.
+
+| Connector pin | Safe GPIO | Label   | layoutRow | layoutColumn |
+|---------------|-----------|---------|-----------|--------------|
+| J8 pin 1      | GP12      | GP12    | 9         | 0            |
+| J8 pin 2      | GP13      | GP13    | 8         | 0            |
+| J8 pin 3      | GP14      | GP14    | 7         | 0            |
+| J8 pin 4      | GP15      | GP15    | 6         | 0            |
+| J8 pin 5      | GP16      | GP16    | 5         | 0            |
+| J8 pin 6      | GP29      | ADC3    | 4         | 0            |
+| J13 pin 1     | GP9       | USER    | 0         | 0            |
+| J13 pin 2     | GP8       | RSET    | 0         | 1            |
+| J13 pin 3     | GP7       | MASKROM | 1         | 0            |
+| J13 pin 4     | — (GND)   | —       | —         | —            |
+
+The catalog advertises J8/right/order 0 and J13/right/order 1. GP17 and GP18
+remain safe GPIOs but have empty `layoutGroup`; they belong to the generic
+`GPIO` fallback and must not be described as J8 pins. GP29 remains represented
+as ADC3/input, not omitted because ADC owns it. GND is not a selectable GPIO.
+
+Despite deliberately shuffled GPIO/catalog input, the projected cell order is
+`ADC3, GP16, GP15, GP14, GP13, GP12, USER, RSET, MASKROM, GP17, GP18`.
+At 80/48 columns, the six J8 entries occupy separate left-half rows, USER/RSET
+share one row in that left/right order, MASKROM occupies its own left-half
+row, and GP17/GP18 pair in fallback order. At 47/32 columns all 11 entries
+occupy separate full-width rows. The regression checks that no pin is lost,
+all cells retain GPIO-name selection/hit identity, and the RSET selection
+survives width changes and raw snapshot reordering.
 
 ### 6.2 Saved Config page
 

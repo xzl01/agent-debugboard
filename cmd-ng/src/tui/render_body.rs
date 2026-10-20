@@ -140,6 +140,22 @@ fn cell_tag(model: &TuiModel, name: &str) -> Option<&'static str> {
     None
 }
 
+fn cell_core(cell: &GpioCell, budget: usize) -> String {
+    let generic = format!("{} {}", cell.group, cell.label);
+    if !cell.right_edge {
+        return clip_display(&generic, budget);
+    }
+    let decorated = format!("{}› {}", cell.group, cell.label);
+    if display_width(&decorated) <= budget {
+        clip_display(&decorated, budget)
+    } else if display_width(&generic) <= budget {
+        // The edge is decoration, not a reason to clip the label or state.
+        clip_display(&generic, budget)
+    } else {
+        clip_display(&cell.label, budget)
+    }
+}
+
 fn cell_spans(
     cell: &GpioCell,
     model: &TuiModel,
@@ -168,8 +184,7 @@ fn cell_spans(
         RowTone::GpioLow.state_style()
     };
 
-    let core = format!("{} {}", cell.group, cell.label);
-    let core_width = display_width(&core);
+    let core = cell_core(cell, usize::MAX);
     let plain = selection_style(Style::default(), selected);
     let state = selection_style(state_style, selected);
     let pending = selection_style(RowTone::GpioPending.state_style(), selected);
@@ -178,11 +193,12 @@ fn cell_spans(
     let mut spans = Vec::new();
     if width >= tail_width {
         let mut used = 0usize;
-        let mut core_used = 0usize;
+        let mut core_complete = false;
         if width > tail_width {
             let core_budget = width - tail_width - 1;
-            let clipped_core = clip_display(&core, core_budget);
-            core_used = display_width(&clipped_core);
+            let clipped_core = cell_core(cell, core_budget);
+            let core_used = display_width(&clipped_core);
+            core_complete = clipped_core == core;
             spans.push(Span::styled(clipped_core, plain));
             spans.push(Span::styled(" ", plain));
             used += core_used + 1;
@@ -193,7 +209,7 @@ fn cell_spans(
             spans.push(Span::styled(format!(" {tag}"), pending));
             used += display_width(tag) + 1;
         }
-        if core_used == core_width && !cell.note.is_empty() {
+        if core_complete && !cell.note.is_empty() {
             let note = format!(" {}", cell.note);
             let clipped_note = clip_display(&note, width - used);
             let note_used = display_width(&clipped_note);
@@ -204,9 +220,9 @@ fn cell_spans(
         }
         spans.push(Span::styled(" ".repeat(width - used), plain));
     } else {
-        let clipped = clip_display(&format!("{core} {suffix}"), width);
+        let clipped = clip_display(&suffix, width);
         let used = display_width(&clipped);
-        spans.push(Span::styled(clipped, plain));
+        spans.push(Span::styled(clipped, state));
         spans.push(Span::styled(" ".repeat(width - used), plain));
     }
     spans
