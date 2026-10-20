@@ -83,10 +83,10 @@ to open automatically. If not, navigate manually.
 The dashboard shows power controls, ADC readings, switch routes, and GPIO.
 Try it: click the `5v_out` toggle in the Power Controls card, then watch the
 ADC card update with the current reading. Switch to the **Terminal** workspace
-to find the logic analyzer and serial console.
-
-On Linux, if Web Serial or Bridge cannot open `/dev/ttyUSB*` or `/dev/ttyACM*`,
-follow [Linux serial device permissions](webui.md#linux-serial-device-permissions).
+to find the logic analyzer and the auto-connected xterm.js J4 console. The
+embedded terminal uses the MCU `serial.j4` WebSocket; it does not open a host
+serial device or display a browser chooser. Raw clients can alternatively use
+`nc 172.29.203.1 5555`.
 
 More: [Web UI Guide](webui.md)
 

@@ -4,8 +4,9 @@
 
 ## Recommended: unified desktop install
 
-The desktop release archive installs the Web UI, Serial Broker, resident HTTP
-MCP, CLI/TUI, and tray supervisor together:
+The desktop release archive installs the host Web/API gateway, resident HTTP
+MCP, CLI/TUI, tray supervisor, and the still-shipped legacy Serial Broker
+together:
 
 | OS / CPU | Unified desktop archive |
 | --- | --- |
@@ -29,18 +30,23 @@ On Windows PowerShell:
 The installer does not use sudo or modify `PATH`. It writes to the current
 user's application-data directory and registers login autostart. The tray icon
 uses green, amber, and red states for running, starting, and unavailable
-Web/Broker/MCP services. Its menu opens the Web console, Host JSON status, and
-Host UART archives, restarts its managed services, or quits. UART sessions
-opened through Bridge are archived as raw RX on this computer by default;
-direct Web Serial sessions remain browser-local. The default policy uses
-64 MiB segments, a 2 GiB unpinned quota, and 30-day retention.
+Web/Host/MCP services. Its menu opens the host Web console, Host JSON status,
+and legacy Host UART archives, restarts managed services, or quits. The archive
+policy uses 64 MiB segments, a 2 GiB unpinned quota, and 30-day retention.
+
+The host gateway and MCP endpoint remain real packaged features. Their
+`uart0`/`uart1` CH347 broker, serial archive, and MCP serial tools are legacy
+non-J4 paths pending separate removal. Do not use them for the production J4
+terminal. J4 is served by MCU firmware through the board-hosted xterm.js page,
+CDC ACM, and raw TCP 5555; it never requires a browser chooser or Host broker.
 
 Resident endpoints:
 
 - Web: <http://127.0.0.1:8787/>
 - MCP (Streamable HTTP): <http://127.0.0.1:8787/mcp>
 - Status: <http://127.0.0.1:8787/host/api/v1/status>
-- UART archive status: <http://127.0.0.1:8787/host/api/v1/serial-logging/status>
+- Legacy non-J4 UART archive status:
+  <http://127.0.0.1:8787/host/api/v1/serial-logging/status>
 
 The Linux desktop archive requires GTK 3 and Ayatana AppIndicator 3 runtime
 libraries for its graphical icon. On a headless machine, the CLI/TUI and `-d` /
@@ -169,7 +175,7 @@ cargo build --manifest-path cmd-ng/Cargo.toml
 ./cmd-ng/target/debug/radxa-linkr-debuggerctl --help
 ```
 
-## Run the Web UI, shared Serial Broker, and MCP manually
+## Run the host Web gateway and MCP manually
 
 Developers can also build the stack manually from a checkout:
 
@@ -179,18 +185,23 @@ npm --prefix web run build
 cargo build --release --manifest-path host-tools/Cargo.toml
 ```
 
-Start the combined Web host, board gateway, and shared Serial Broker:
+Start the combined Web host, board gateway, MCP endpoint, and still-shipped
+legacy Serial Broker:
 
 ```sh
 host-tools/target/release/linkr-host serve
 ```
 
-Then open <http://127.0.0.1:8787/>. To verify Web assets, the loopback Host,
-the board API, and CH347F serial discovery together, run:
+Then open <http://127.0.0.1:8787/>. To verify Web assets, the loopback Host and
+board API, run:
 
 ```sh
 host-tools/target/release/linkr-host doctor
 ```
+
+`doctor` may still report CH347 serial discovery because that legacy non-J4
+subsystem remains compiled. Such a result does not validate J4. Validate J4 on
+the embedded board page, MCU WebSocket `serial.j4`, CDC ACM, or raw TCP 5555.
 
 `serve` also exposes the resident MCP URL at
 <http://127.0.0.1:8787/mcp>. Agent clients that support only stdio can still

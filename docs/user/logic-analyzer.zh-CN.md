@@ -187,10 +187,19 @@ DELETE /api/v1/logic-analyzer
 | CSV | 带时间戳的原始样本数据 |
 | PulseView `.sr` | Sigrok 兼容文件，可在 PulseView 中使用配置的采样率打开 |
 
-## PulseView 原生集成
+## 传输与端口分配
 
-固件模拟 Rigol DS1102D 混合信号示波器，PulseView 和 sigrok-cli 可直接
-连接，无需客户端修改。
+| 端点 | 用途 |
+| --- | --- |
+| raw TCP 5556 | 原生 Sigrok/BeagleLogic 逻辑分析仪协议 |
+| raw TCP 5555 | 仅 J4 raw UART；绝不承载逻辑分析仪流量 |
+| TCP 80、`rigol-ds` | 独立的 Rigol SCPI 兼容人格 |
+| `/api/v1/scpi` WebSocket | 浏览器 SCPI 兼容传输 |
+
+## Rigol SCPI 兼容
+
+除原生 raw TCP 5556 外，固件还在既有 SCPI 兼容路径上模拟 Rigol DS1102D
+混合信号示波器，PulseView 和 sigrok-cli 可通过 `rigol-ds` 驱动连接。
 
 ### 连接
 
@@ -269,13 +278,17 @@ PREPARING/CAPTURING 进度，将样本下载到波形视图，并可导出最多
 
 ## BeagleLogic 模拟
 
-TCP 端口 **5555** 上的第二 sigrok 人格模拟 BeagleLogic 内核驱动，在
-PulseView 中提供无限连续采集。
+原生 Sigrok/BeagleLogic 协议监听 raw TCP **5556**，模拟 BeagleLogic 内核驱动，
+在 PulseView 中提供连续采集。listener 绑定 `0.0.0.0`，连接时使用板卡当前 NCM
+地址。
+
+端口 **5555 不是逻辑分析仪端口**；它是 MCU 拥有的 J4 目标串口 binary raw-UART
+传输。Sigrok/BeagleLogic client 连接 5555 无法协商或获得捕获帧。
 
 ### 连接
 
 ```
-beaglelogic:conn=tcp-raw/<板卡IP>/5555
+beaglelogic:conn=tcp-raw/<板卡IP>/5556
 ```
 
 ### 通道
@@ -297,6 +310,13 @@ beaglelogic:conn=tcp-raw/<板卡IP>/5555
 | 8-bit | 最高约 100 kHz |
 
 ≥100 kHz 的速率使用硬件 PIO+DMA 路径。较低速率使用定时 GPIO 寄存器循环。
+
+### 连接故障排查
+
+- 原生 Sigrok/BeagleLogic 使用 raw TCP **5556**；raw TCP **5555** 仅用于 J4 UART。
+- 5556 拒绝连接时，确认板卡当前 NCM 地址，并确认没有 WebSocket 或 TCP Sigrok
+  session 已占有分析仪。
+- 如果收到目标控制台字节而不是协议帧，说明误连到了 5555 的 J4；断开后改用 5556。
 
 ## 流式模式（1–25 MHz）
 
@@ -331,8 +351,11 @@ Web UI 循环流式传输 600 样本的实时帧。每帧是一个无间隙的�
 4. 点击 **Arm capture**
 5. 查看波形，或导出 CSV / PulseView `.sr`
 6. 实时监控请点击 **Stream**（1–25 MHz）
-7. 直接 PulseView 访问请使用 `rigol-ds` 驱动，连接字符串
+7. Rigol SCPI 兼容访问使用 `rigol-ds` 驱动，连接字符串
    `tcp-raw/172.29.203.1/80`
+8. 原生 Sigrok/BeagleLogic raw TCP 使用
+   `beaglelogic:conn=tcp-raw/172.29.203.1/5556`
+9. raw TCP 5555 保留给 J4 UART 控制台
 
 ## 延伸阅读
 

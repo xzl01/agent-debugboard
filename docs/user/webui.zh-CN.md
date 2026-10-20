@@ -42,7 +42,8 @@ http://172.29.203.1/
 - **ADC 监测** — 各电源轨的实时电流读数。
 - **Switch 路由** — TF/SD 在 `target` 和 `usb-reader` 之间切换；J12 下层插入的
   USB 设备可在主机（`pc`）和 J12 上层所接目标板（`target`）之间切换。
-- **GPIO** — 读写安全 GPIO（`GP7`-`GP20`、`GP29`）。
+- **GPIO** — safe/control GPIO `GP7`-`GP9`、`GP12`-`GP16`，以及仅输入的
+  `GP29`/ADC3。
 
 在 **Configuration > Saved** 标签页内，**已保存配置**卡片始终可见。配置行和操作
 显示在标题栏下方；电源和 Switch 分组默认展开，GPIO 分组默认折叠。分组折叠只改变
@@ -62,10 +63,10 @@ Terminal 工作区与主仪表盘并列，包含：
   完成的捕获可在波形视图中预览，并导出为 CSV 或 PulseView `.sr` 文件。
   还提供连续流式模式（1-25 MHz）。浏览器内 Rust/WASM 解码器支持
   UART、I2C 和 SPI 协议解码。
-- **串口终端** — 通过 CH347F 提供独立的 UART0 和 UART1 会话。Tab 模式
-  切换可见终端而不中断任一通道；分屏模式同时显示两个终端。使用 xterm
-  兼容终端界面：直接点击并输入。默认发送 CRLF；工具栏可切换 CR 和
-  LF 模式。
+- **J4 串口终端** — 使用 xterm.js 显示一个逻辑目标控制台。页面创建固件
+  live session 并订阅 `serial.j4`，不经过浏览器设备选择器、主机串口 broker
+  或本机 tty。进入工作区时自动连接；手动断开后在当前页面 session 内保持
+  sticky disconnected，不自动重试，用户显式点击 reconnect 后才恢复。
 
 ## 工作区标签页
 
@@ -146,86 +147,31 @@ BOOTSEL 只能刷写合成完整 `radxa-linkr-debugger-rp2350.uf2`（MCUboot + �
 采样并进入 ROM BOOTSEL。按键由固件线程处理，无法恢复完全卡死的核心；该
 故障模式下硬件 watchdog 仍是兜底路径。
 
-## 串口控制台
+## 连接目标串口
 
-### Web Serial（安全来源）
+打开板载页面并进入 **Web 串口终端**。xterm.js J4 终端使用与仪表盘相同的
+USB-NCM 地址：
 
-Edge 和 Chrome/Chromium 可以从安全来源（如本地 Vite 开发服务器或 GitHub
-Pages）直接使用 Web Serial。用户需要点击 **Web Serial** 按钮并接受
-浏览器设备选择器。
+1. 页面创建 `/api/v1/live-sessions` slot；
+2. 连接返回的 `/api/v1/ws/<slot>`；
+3. 订阅 `topic:"serial.j4"` 并显示原始 binary 下行。
 
-### 板载页面
+每个浏览器 binary frame 是一条原子 J4 写，最大 480 字节。页面区分
+`serial_write_accepted` 与之后的 `serial_write_complete`；accepted 不代表 UART
+最后一个 stop bit 已上 wire。`serial_state` 上报 line coding、generation、
+DTR/RTS、USB、队列和 pause/fault 状态；overrun 同时包含本次 drop 增量和累计值。
 
-板载页面运行在 `http://172.29.203.1/`，使用明文 HTTP，默认不是安全上下文。
-要从板载页面启用直接 CH347 Web Serial：
+逻辑分析仪占用 GP10/GP11 时，终端连接保持存在，J4 进入 PAUSED 并明确拒绝输入；
+采集 cleanup 恢复 UART1 和 fresh sink epoch 后，同一终端无需刷新即可继续。手动
+disconnect 后不自动重试。
 
-1. 复制下方 Chromium 标志页地址，手动粘贴到地址栏（普通网页无法导航到
-   `chrome://` URL）：
-
-   ```text
-   chrome://flags/#unsafely-treat-insecure-origin-as-secure
-   ```
-
-2. 添加精确来源：
-
-   ```text
-   http://172.29.203.1
-   ```
-
-3. 启用标志并重启浏览器。
-
-Edge 也接受此 Chromium 地址。
-
-### Linkr Host 桥接 fallback
-
-如果不启用上述标志，保持板载页面打开，改用主机侧桥接：
-
-```sh
-cd web
-npm ci
-npm run host
-```
-
-然后在任一串口终端中使用 **Bridge** 按钮。桥接优先使用 CH347F `D1`
-设备对应 UART0、`D3` 对应 UART1，当这些后缀不可用时回退到排序设备顺序。
-
-### Linux 串口设备权限
-
-直连 Web Serial 和 Linkr Host 桥接都会以当前桌面用户身份打开串口设备。在 Linux
-上，CH347 串口通常显示为 `/dev/ttyUSB0` 和 `/dev/ttyUSB1`；板载 CDC ACM
-fallback 可能显示为 `/dev/ttyACM0`。
-
-如果浏览器提示无法打开串口，或 Bridge 报告 `EACCES`、`EPERM`、
-`Permission denied`、`Access denied`，先检查设备所有者和当前用户组：
-
-```sh
-ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
-id -nG
-```
-
-Debian 和 Ubuntu 通常把串口设备分配给 `dialout` 组。执行：
-
-```sh
-sudo usermod -aG dialout "$(id -un)"
-```
-
-随后注销并重新登录，或直接重启系统；重新插拔调试板，重启浏览器或
-`npm run host`，再尝试连接。已经运行的浏览器和终端进程不会自动
-获得新增的用户组权限。
-
-如果设备属于其他串口访问组，请使用 `ls -l` 显示的组，并遵循当前发行版
-的设备权限规则。如果权限已经正确，再检查是否有串口监视器或系统服务占用：
-
-```sh
-fuser /dev/ttyACM0
-```
-
-请把路径替换成实际打开失败的设备。不要用 root 身份运行浏览器或 Bridge，
-也不要把 `chmod` 当作永久修复：USB 设备重新连接后会重新创建设备权限。
+非浏览器访问可连接板卡当前 NCM 地址的 raw TCP 5555，或使用 J4 CDC ACM
+interface。raw TCP 最多两个客户端，是纯二进制流，不是 Telnet、SSH 或 noVNC。
+主机 tty 编号不稳定，必须按 interface 身份识别 J4，不能假定固定设备号。
 
 ## 启动功率分析
 
-启动工作流位于 **电源分析**工作区标签页。需要已选择的 UART0 或 UART1 连接
+启动工作流位于 **电源分析**工作区标签页。需要已连接的 J4 session
 以及空闲的功率捕获会话。经一次明确确认后：
 
 1. 清除并录制目标串口控制台。
@@ -238,32 +184,11 @@ fuser /dev/ttyACM0
 启动固件选择器默认自动检测，可固定为 U-Boot 或 UEFI。任务可在上电前
 取消。完成后可下载串口日志。
 
-## GitHub Pages 部署
+## 开发预览
 
-推送到 `dev` 分支会将生产构建部署到
-<https://xzl01.github.io/agent-debugboard/>。GitHub Pages 通过 HTTPS 提供
-UI，而板载 API 通过 USB-NCM 网络上的 HTTP 暴露。从托管页面使用硬件控制
-前需要启动 Linkr Host：
-
-```sh
-cd web
-npm ci
-npm run host
-```
-
-Pages 构建连接到 `http://127.0.0.1:8787/api/v1`。网关默认将 HTTP 和
-WebSocket 流量直接转发到固件服务 `http://172.29.203.1`，并提供
-浏览器所需的 CORS 和 Private Network Access 头。需要时可覆盖上游地址：
-
-```sh
-LINKR_BOARD_URL=http://172.29.203.1 npm run host
-```
-
-在 macOS 上，`npm run dev` 连接默认 USB-NCM 地址时，会自动插入一个仅监听
-本机回环地址的原始 TCP 转发器。这样可避免
-macOS 允许 `curl` 等系统工具访问该接口、却拒绝 Node.js 直接 socket 时
-持续出现 Vite `502 Bad Gateway`。Linkr Host 直接访问 USB-NCM 地址，不再
-需要旧的 Node/Ruby 转发器。
+支持的硬件 UI 是烧入固件并由板卡 port 80 提供的 production bundle。port 5173
+上的 Vite 服务只用于开发预览，不是设备传输或 J4 broker。GitHub Pages 可用于
+静态外观评审；当前 J4 产品验收使用板载页面及其直连固件 HTTP/WebSocket 路径。
 
 ## 相关文档
 

@@ -38,8 +38,60 @@ curl http://172.29.203.1/api/v1/status
 Returns everything in one shot: `project`, `build` (including `profile` and `image_version`), `mcu`, `usb`, `power_inputs`, `power_outputs`, `switches`, `adc_channels`, `watchdog`, `board_monitoring`, `gpio_layout_groups`, and `gpios`.
 
 The encoded status body must remain strictly smaller than the dedicated
-6144-byte firmware buffer. This is a protocol size gate for additions to the
+6656-byte firmware buffer. This is a protocol size gate for additions to the
 status snapshot, not permission for clients to assume a fixed response length.
+
+## J4 Target Serial
+
+The product exposes one logical target serial port, `j4`. It is the dedicated
+RP2350 UART1 path on GP10/GP11. Firmware fans one shared
+4096-byte UART RX ring out independently to USB CDC ACM4, four WebSocket sinks,
+and two raw-TCP sinks. A slow sink loses only its own oldest bytes.
+
+### `GET /api/v1/serial/j4`
+
+Returns availability, runtime state, current line coding, configuration
+generation, DTR/RTS and USB-configuration state, attached sink counts, queue
+state, transport counters, and per-sink drop counters. `state` is `ready`,
+`reconfig`, `paused`, `faulted`, or `unavailable`.
+
+```sh
+curl -fsS http://172.29.203.1/api/v1/serial/j4
+```
+
+### `PUT /api/v1/serial/j4/config`
+
+Queues an asynchronous compare-and-swap line-coding update. Read the current
+`generation`, then send the complete tuple and that generation:
+
+```sh
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"baud":115200,"data_bits":8,"parity":"none","stop_bits":1,"flow_control":"none","expected_generation":1}' \
+  http://172.29.203.1/api/v1/serial/j4/config
+```
+
+Success is HTTP 202 with `accepted:true` and `request_id`. A stale generation
+or an in-progress transition returns HTTP 409. Supported baud rates are 9600,
+19200, 38400, 57600, 115200, 230400, 460800, 921600, and 1500000; data bits are
+5–8, parity is `none`/`odd`/`even`, stop bits are 1 or 2, and flow control is
+currently `none` only. Poll `GET /api/v1/serial/j4` for the asynchronous result.
+
+### Streaming transports
+
+- The embedded Web terminal creates an ordinary live session and subscribes
+  with `{"type":"subscribe","topic":"serial.j4"}`. MCU-to-browser bytes are
+  binary WebSocket messages. Each browser-to-MCU binary message is one atomic
+  serial write and may contain at most 480 bytes.
+- Raw TCP listens on `0.0.0.0:5555`, with at most two clients. It is a binary
+  stream with no banner, echo, CR/LF conversion, Telnet/IAC negotiation, SSH,
+  or noVNC semantics. For example: `nc 172.29.203.1 5555`.
+- USB CDC ACM4 is the direct USB fallback for the same logical J4 stream. USB
+  tty numbering is host-dependent; identify the interface rather than assuming
+  a `/dev/ttyACM*` number.
+
+Legacy desktop-local serial transports are retired and are not product paths.
+Port 5173 is only a Vite development preview; the tested embedded
+UI is served by the board on port 80.
 
 ## Power
 
@@ -58,11 +110,16 @@ curl http://172.29.203.1/api/v1/adc/read                    # all channels
 curl http://172.29.203.1/api/v1/adc/read?channel=5v_out      # single channel
 ```
 
-The four INA226 current channels are `5v_out`, `12v_out`, `20v_out`, and
-`vdd_5v`; `adc3` is a separate monitor-only ADC voltage channel. Each INA226
-reading carries: `name`, `signal`, `power_enabled`, `raw`, `mv`, `current_ua`,
-`voltage_valid`, `voltage_uv`, `sensor_value`, `unit`. `adc3` carries `name`,
-`signal`, `raw`, `mv`, `sensor_channel`, `unit`, and `sensor_value`.
+The endpoint returns eight readings in fixed order: the four INA226 current
+channels `5v_out`, `12v_out`, `20v_out`, and `vdd_5v`, followed by the four
+monitor-only pad-voltage channels `adc0`, `adc1`, `adc2`, and `adc3`. Each INA226
+reading carries `name`, `signal`, `power_enabled`, `raw`, `mv`, `current_ua`,
+`voltage_valid`, `voltage_uv`, `sensor_value`, and `unit`. Each ADC reading
+carries `name`, `signal`, `raw`, `mv`, `sensor_channel`, `unit`, and
+`sensor_value`; `adc0` also carries the firmware note
+`PD input divider; ADC pad voltage`. Its scalar is the direct ADC0 pad voltage,
+not a divider-reconstructed source voltage, so clients must not multiply it by
+`115/15`.
 
 ## Switch Routes
 
@@ -108,12 +165,11 @@ For mapped pins, `layoutLabel`, `layoutRow`, and `layoutColumn` describe the
 component-side top view, with `row=0` at the top and `column=0` on the left.
 The confirmed coordinates are J8 GP12 `(9,0)`, GP13 `(8,0)`, GP14 `(7,0)`,
 GP15 `(6,0)`, GP16 `(5,0)`, GP29/ADC3 `(4,0)`; and J13 GP9 `(0,0)`, GP8
-`(0,1)`, GP7 `(1,0)`. Layout fields are optional: safe GPIOs GP17 and GP18
-have no confirmed J8/J13 placement, so firmware omits their `layoutGroup`,
-`layoutRow`, and `layoutColumn`; clients must retain them in a generic fallback.
-Clients must likewise keep an undescribed group and treat an unknown `edge`
+`(0,1)`, GP7 `(1,0)`. GP17 and GP18 are not part of the current safe/control
+GPIO catalog and must not be fabricated as generic or connector controls.
+Clients must keep any future firmware-described group and treat an unknown `edge`
 value as no edge-alignment hint rather than dropping its GPIOs. These GPIO
-arrays are the firmware safe-GPIO allowlist, not a complete connector pinout or
+arrays are the current nine-entry firmware safe-GPIO allowlist, not a complete connector pinout or
 a mating-face diagram.
 
 ## Reboot
@@ -476,7 +532,21 @@ Up to 4 concurrent clients.
 {"type": "subscribe", "topic": "live", "rate_hz": 60, "batch_size": 1}
 ```
 - `rate_hz`: 1–250 (default 10); values above 250 return error code `invalid_rate`
-- `batch_size`: 1–20 (>1 enables batch mode)
+- `batch_size`: 1–18 (>1 enables batch mode)
+
+**J4 serial subscribe**:
+```json
+{"type":"subscribe","topic":"serial.j4","id":"terminal-j4"}
+```
+
+`serial.j4`, live ADC, and sigrok are mutually exclusive modes within one WS
+slot. Open a separate live session when the page needs terminal and telemetry
+at the same time. Binary payloads received in serial mode are admitted only
+when J4 is ready. The server first emits `serial_write_accepted`, then emits a
+matching `serial_write_complete` only after UART physical-wire completion (or
+with `disposition:"canceled"` if the runtime cancels it). A queue-full,
+paused, reconfiguring, faulted, or oversized write receives an explicit JSON
+error and is not acknowledged as accepted.
 
 **Unsubscribe**:
 ```json
@@ -549,6 +619,11 @@ debugger capture RAM.
 ```json
 {"type": "result", "command": "power_set", "id": "1", "ok": true}
 ```
+
+J4 serial mode additionally emits `serial_state`, `serial_write_accepted`,
+`serial_write_complete`, and `serial_overrun`. `serial_overrun.dropped_bytes`
+is the increment since the preceding notice, while `total_dropped_bytes` is the
+sink's cumulative counter. Binary downlink frames contain raw UART bytes.
 
 **Capture event**:
 ```json

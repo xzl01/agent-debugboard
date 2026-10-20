@@ -28,6 +28,20 @@ defaults. When defaults are coordinated across multiple outputs (e.g. USB mux
 route must match `vdd_5v` regulator state at boot), make them consistent in the
 firmware boot path, not in the client.
 
+### SDA/SCL electrical safety
+
+- Shared PIO I2C SCL (GP20) and SDA (GP21) must have **no internal pull-up or
+  pull-down** (`bias-disable`, PUE=0, PDE=0).
+- Keep output latches at zero. Only use output enable / PINDIRS to pull LOW
+  or release to high impedance; **never actively drive HIGH**, even briefly.
+- Preserve these invariants during initialization, pinctrl/mux changes,
+  transfers, NAK cleanup, timeout, recovery, and rearm. Force physical OE off
+  and disable pulls before pinctrl can remove pad isolation.
+- Never enable internal pulls or push-pull HIGH to fix idle levels, rise time,
+  communication failures, or higher bus rates. Pull-ups belong to hardware.
+- ADC0/PD access gating does not isolate the bus or eliminate static current
+  paths through external pull-ups or unpowered devices.
+
 ## Upstream/public repository boundaries
 
 Keep fixes repo-local. Do not modify Zephyr itself, Rust toolchain crates, west
@@ -117,6 +131,12 @@ radxa-linkr-debuggerctl ota confirm
 - 解决：使用 `radxa-linkr-debugger-rp2350-ota.bin` 文件
 
 ## HIL functional test requirements
+
+After every flash, board startup, or reboot, the first hardware mutation once
+the control transport is ready must enable `5v_out`. Then request fixed PD
+20 V and verify the enabled 5 V rail with valid INA226 voltage/current data.
+Do not start other functional HIL steps until this preflight passes; stop if
+it cannot pass. These are HIL fixture steps, not firmware boot defaults.
 
 Firmware and host control logic changes must not be considered complete based only on compilation, static analysis, or unit tests. When a change affects real hardware behavior, the author must also perform a board-level HIL functional test.
 

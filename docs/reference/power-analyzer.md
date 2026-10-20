@@ -61,7 +61,7 @@ for the CSV time column.
 ## Startup workflow
 
 The Web UI exposes a startup power-analysis task inside its advanced toolbox.
-The workflow requires the selected UART0 or UART1 session to already be
+The workflow requires the MCU `j4` live-session terminal to already be
 connected, powers the selected rail off, arms a `power_on` capture, and only
 then restores the rail. Serial RX
 is recorded independently so the first post-power UART byte, U-Boot or UEFI,

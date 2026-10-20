@@ -33,18 +33,19 @@ silkscreen.
 Single USB-C connection at J15 to the PC. The board enumerates as a composite device:
 - **USB NCM** — network interface, control plane at `http://172.29.203.1`
 - **USB CDC ACM** — console serial fallback for the Zephyr shell and BOOTSEL recovery
-- **USB CDC ACM (J4)** — dedicated target UART bridge
+- **USB CDC ACM (J4)** — one sink/source of the MCU J4 serial runtime; observed
+  as ACM4 in the final x1.2 HIL, but host tty numbering is not stable
 
 No driver installation is needed on Linux or macOS. Windows needs the standard
 CDC ACM driver.
 
 ### Target Debug (CH347F)
 
-The onboard CH347F is a standalone USB debug bridge on the board's USB hub. It
-provides target UART and JTAG/SWD channels and appears as its own USB device.
-The RP2354A firmware is not in its JTAG/SWD data path. x1.2 has no VIO voltage
-selection; use 3.3 V signaling. The J4 UART below is the RP2354A UART1 bridge,
-not a CH347F channel.
+The onboard CH347F is a standalone USB debug device on the board's USB hub. Its
+valid product role documented here is target JTAG/SWD; RP2354A firmware is not
+in that debug path. x1.2 has no VIO voltage selection, so use 3.3 V signaling.
+Any still-shipped host CH347 UART tooling is a legacy non-J4 path. The J4 UART
+below is owned by the RP2354A runtime and never traverses CH347.
 
 ### Power Outputs
 
@@ -61,8 +62,8 @@ as a controllable output in the CLI/API, and firmware gates it with the
 `switch usb` route.
 
 Each rail has an INA226 current/voltage/power monitor readable via `adc read`.
-ADC3 (`GP29`) is a separate monitor-only voltage input and is not a rail-current
-sensor.
+ADC0 through ADC3 are four separate monitor-only pad-voltage inputs and are not
+rail-current sensors; ADC3 is GP29 and input-only in the safe GPIO catalog.
 
 ### TF/SD Card Slot
 
@@ -119,10 +120,9 @@ the bottom. Firmware uses `row=0` for the top and `column=0` for the left.
 | 9 (bottom) | Pin 1: GP12 (safe) | Pin 11: GND |
 
 The mapped safe-GPIO control subset is GP7–GP9 on J13 plus GP12–GP16 and
-input-only GP29/ADC3 on J8. GP17 and GP18 remain output-capable safe GPIOs, but
-they have no confirmed J8/J13 placement; firmware therefore omits their
-`layoutGroup`, `layoutRow`, and `layoutColumn`, and clients display them through
-the generic fallback. The UI is only this allowlisted control subset, not a
+input-only GP29/ADC3 on J8. GP17 and GP18 are not in the current safe/control
+catalog and must not be fabricated as generic or connector controls. The UI is
+only this nine-entry allowlisted control subset, not a
 connector pinout or mating-face diagram. Use the complete component-side tables
 above and the schematic when wiring the headers.
 
@@ -133,7 +133,7 @@ pulled low while the I2C bus is active.
 
 ### Target UART (J4)
 
-J4 is a 3-pin UART on UART1, bridged to a dedicated USB CDC ACM:
+J4 is one logical 3-pin target serial port on UART1:
 
 | Pin | Signal |
 |-----|--------|
@@ -141,11 +141,15 @@ J4 is a 3-pin UART on UART1, bridged to a dedicated USB CDC ACM:
 | 2 | UART1 RX (GP11) |
 | 3 | GND |
 
-GP10/GP11 are shared with the logic analyzer. While a capture selects either
-pin, PIO2 owns it and the J4 UART is unavailable; do not expect serial traffic
-during the capture. After the capture ends, firmware restores the
-`GPIO_FUNC_UART_AUX` mux on GP10/GP11 and the J4 bridge works again without a
-reboot.
+The repo-local `linkr_debugger_serial` runtime owns UART1 and a 4096-byte shared
+RX ring. It fans out independently to J4 CDC ACM, four `serial.j4` WebSocket
+sinks, and two raw-TCP clients on port 5555. The board-hosted xterm.js terminal
+uses the MCU WebSocket path; it does not use host Web Serial or CH347.
+
+GP10/GP11 are shared with the logic analyzer. Before PIO2 takes either pin,
+firmware pauses J4 and handles active TX wire completion; capture traffic is
+then unavailable. Cleanup restores `GPIO_FUNC_UART_AUX`, resumes fresh sink
+epochs, and the same J4 sessions can continue without reboot.
 
 ### Status LED
 

@@ -22,7 +22,7 @@ radxa-linkr-debuggerctl power list
 
 配合串口监控做硬重启：
 ```sh
-# （另一个终端通过 Web Serial 或 screen 连接串口）
+# （打开板载 Web Terminal，或运行：nc 172.29.203.1 5555）
 
 radxa-linkr-debuggerctl power set 5v_out off
 sleep 2
@@ -123,11 +123,12 @@ picotool load -v -x radxa-linkr-debugger-rp2350.uf2
 
 ## 边控制电源边监控目标串口
 
-用 Web UI 的串口终端（Terminal 工作区）配合仪表盘电源控制。或者 CLI + screen 并行：
+用板载 Web UI 自动连接的 xterm.js J4 终端配合仪表盘电源控制，或并行使用
+固件 raw-TCP 路径：
 
 ```sh
-# 终端 1：通过 CH347F 连接串口
-screen /dev/ttyUSB0 115200
+# 终端 1：binary J4 console（按板卡当前 NCM 地址替换）
+nc 172.29.203.1 5555
 
 # 终端 2：控制电源
 radxa-linkr-debuggerctl power set 5v_out off
@@ -135,7 +136,15 @@ sleep 2
 radxa-linkr-debuggerctl power set 5v_out on
 ```
 
-CH347F 提供两路独立 UART（UART0 在 `D1`，UART1 在 `D3`）。Web UI 支持 Tab 模式（切换通道）或分屏模式（同时显示）。
+J4 是一个逻辑串口。固件把同一个 4096 字节 RX ring fan-out 到 CDC ACM4、最多
+四个 `serial.j4` WebSocket session 和最多两个 raw-TCP client。raw TCP 是纯
+binary，不做 Telnet negotiation、echo、banner 或行尾转换；慢 client 只影响自己的
+sink。
+
+逻辑分析仪选择 GP10/GP11 时，固件暂停 J4，等待 active TX wire-complete（有界
+timeout），取消未开始的 queued write，再把引脚交给 PIO2。采集 cleanup 恢复 UART
+mux 和 fresh sink epoch。采集中应看到静默和明确写拒绝，之后必须验证同一 J4 路径
+恢复。
 
 ## 自动化测试
 

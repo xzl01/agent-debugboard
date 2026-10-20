@@ -22,7 +22,7 @@ sizing so a partial waveform cannot be mistaken for a complete energy result.
 
 Pre-trigger history is different from the hours-long record after the trigger:
 it must remain immediately available in page memory. The Web UI therefore caps
-it at 60,000 samples (120 seconds at the Web UI's 500 Hz continuous-recording
+it at 60,000 samples (240 seconds at the firmware's 250 Hz recording ceiling
 limit). Post-trigger samples continue to
 stream to IndexedDB and are not subject to that page-memory limit.
 
@@ -149,8 +149,8 @@ radxa-linkr-debuggerctl adc record /tmp/adc.csv 1000 --rate-hz 250
   then `0`
 - **Ring overruns**: reported as `metadata.dropped_samples` on the first affected
   row
-- **Rate**: defaults to 1000 Hz websocket subscription; `--rate-hz` accepts lower
-  rates. Requests above 100 Hz use batch JSON on the wire, then the recorder
+- **Rate**: defaults to a 250 Hz WebSocket subscription; `--rate-hz` accepts
+  `1..250`. Batch JSON carries up to 18 samples on the wire, then the recorder
   expands each device sample into its own row.
 
 ## Startup Power Analysis
@@ -160,7 +160,7 @@ workspace. Records power-on current waveform and serial boot milestones together
 
 ### Requirements
 
-- An active UART0 or UART1 serial session must be connected
+- An active MCU `j4` live-session terminal must be connected
 - An idle power-capture session
 
 ### Workflow

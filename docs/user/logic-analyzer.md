@@ -192,10 +192,20 @@ Annotations are rendered directly on the waveform view.
 | CSV | Raw sample data with timestamps |
 | PulseView `.sr` | Sigrok-compatible file, openable in PulseView with the configured sample rate |
 
-## PulseView Native Integration
+## Transport And Port Allocation
 
-The firmware emulates a Rigol DS1102D mixed-signal oscilloscope, so PulseView
-and sigrok-cli connect directly with no client-side changes.
+| Endpoint | Purpose |
+| --- | --- |
+| raw TCP 5556 | Native Sigrok/BeagleLogic logic-analyzer protocol |
+| raw TCP 5555 | J4 raw UART only; never logic-analyzer traffic |
+| TCP 80, `rigol-ds` | Separate Rigol SCPI compatibility personality |
+| `/api/v1/scpi` WebSocket | Browser SCPI compatibility transport |
+
+## Rigol SCPI Compatibility
+
+Separately from native raw TCP 5556, firmware emulates a Rigol DS1102D
+mixed-signal oscilloscope on the existing SCPI compatibility path, so PulseView
+and sigrok-cli can connect through the `rigol-ds` driver.
 
 ### Connection
 
@@ -278,13 +288,18 @@ waveform view, and exports CSV or PulseView `.sr` of up to 1 million samples.
 
 ## BeagleLogic Emulation
 
-A second sigrok personality on TCP port **5555** emulates the BeagleLogic kernel
-driver, providing unlimited continuous acquisition in PulseView.
+The native Sigrok/BeagleLogic protocol listens on raw TCP port **5556** and
+emulates the BeagleLogic kernel driver, providing continuous acquisition in
+PulseView. The listener binds `0.0.0.0`, so use the board's current NCM address.
+
+Port **5555 is not a logic-analyzer port**. It is the binary raw-UART transport
+for the MCU-owned J4 target serial console. Connecting a Sigrok/BeagleLogic
+client to 5555 cannot negotiate or produce capture frames.
 
 ### Connection
 
 ```
-beaglelogic:conn=tcp-raw/<board-ip>/5555
+beaglelogic:conn=tcp-raw/<board-ip>/5556
 ```
 
 ### Channels
@@ -308,6 +323,15 @@ board drawing.
 
 Rates at or above 100 kHz use the hardware PIO+DMA path. Lower rates use a
 paced GPIO-register loop.
+
+### Connection troubleshooting
+
+- Use raw TCP **5556** for native Sigrok/BeagleLogic and raw TCP **5555** only
+  for J4 UART.
+- If 5556 refuses a connection, verify the current board NCM address and that no
+  WebSocket or TCP Sigrok session already owns the analyzer.
+- If the client receives target-console bytes instead of protocol frames, it is
+  connected to J4 on 5555; disconnect and use 5556.
 
 ## Streaming Mode (1–25 MHz)
 
@@ -345,8 +369,11 @@ stream data.
 4. Click **Arm capture**
 5. View the waveform, or export as CSV / PulseView `.sr`
 6. For live monitoring, click **Stream** (1–25 MHz)
-7. For direct PulseView access, connect with `rigol-ds` driver via
+7. For Rigol SCPI compatibility, connect with the `rigol-ds` driver via
    `tcp-raw/172.29.203.1/80`
+8. For native Sigrok/BeagleLogic raw TCP, connect to
+   `beaglelogic:conn=tcp-raw/172.29.203.1/5556`
+9. Keep raw TCP 5555 reserved for the J4 UART console
 
 ## Further Reading
 

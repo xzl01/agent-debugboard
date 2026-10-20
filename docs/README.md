@@ -36,13 +36,15 @@ shapes, persistence, capture behavior, and inter-service protocols.
 
 - [Logic Analyzer](reference/logic-analyzer.md): packed arena, WIDE11
   capture, raw-TCP Sigrok
-- [ADC Telemetry](reference/adc-telemetry.md): ADC3 wire shapes,
-  GP29 ownership rules
+- [ADC Telemetry](reference/adc-telemetry.md): fixed eight-channel wire shapes,
+  ADC0 metadata, and GP29 ownership rules
 - [Persistent Configuration](reference/persistent-configuration.md):
   firmware-owned v1 snapshot contract
 - [Capture Trigger Architecture](reference/capture-trigger-architecture.md)
-- [MCP Server](reference/mcp-server.md)
-- [Serial Broker](reference/serial-broker.md)
+- [MCP Server](reference/mcp-server.md): current board tools plus explicitly
+  labeled legacy non-J4 host-serial tools
+- [J4 MCU Serial Transport](reference/serial-broker.md): current MCU J4 contract;
+  filename retained for old links and a clearly marked retired host path
 - [Sigrok Linkr v2](reference/sigrok-linkr-v2.md)
 - [Power Analyzer](reference/power-analyzer.md)
 - [Ring Buffer Gap Analysis](reference/ring-buffer-gap-analysis.md)

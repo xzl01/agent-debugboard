@@ -18,24 +18,26 @@
 | USB NCM、HTTP、captive portal 或托管 Web UI | [Web UI](../user/webui.zh-CN.md) 与 [故障排除](../user/troubleshooting.zh-CN.md) |
 | 原始 HTTP 响应结构或状态端点 | [HTTP API](../user/api.zh-CN.md) |
 | MCP 可用性、工具结果或进度协议 | [MCP Server](../reference/mcp-server.md) |
-| 共享 UART 所有权、游标或 RX 归档 | [Serial Broker](../reference/serial-broker.md) |
+| MCU J4 状态、sink、framing、raw TCP 或 capture pause | [J4 Serial Transport](../reference/serial-broker.md) |
+| legacy host `uart0`/`uart1` broker、MCP cursor 或归档 | [MCP Server](../reference/mcp-server.md) 与 [J4 Serial Transport](../reference/serial-broker.md) 的退役路径一节 |
 | ADC、GP29 或遥测 wire shape | [ADC Telemetry](../reference/adc-telemetry.md) |
 | 逻辑分析仪传输或捕获语义 | [Logic Analyzer](../reference/logic-analyzer.md) |
 | OpenOCD/JTAG adapter 或目标复位 | [OpenOCD](../user/openocd.zh-CN.md) |
 | 必需的板级验收 | [HIL 功能测试规范](../testing/hil-functional-test-spec.md) |
 
-## 浏览器与桥接修改
+## 浏览器与 Gateway 修改
 
 对于板载页面，导航或资源加载超时首先指向 USB NCM、HTTP 服务或浏览器设置；
 页面已渲染后的断言失败则指向 Web UI 回归。测试报告和问题分流必须保留这一区别。
 
-板载页面由 HTTP 提供。直连 Web Serial 因此需要文档规定的安全来源覆盖、用户
-手势和浏览器选择器。浏览器自动化可以覆盖设置 UI 和 bridge 行为，但不能替代
-手动接受选择器或实际串口 I/O。支持的 bridge 与权限路径见
-[Web UI](../user/webui.zh-CN.md)。
+生产板载页面直接访问固件 HTTP/WebSocket。J4 xterm.js 终端创建 live session
+并订阅 `serial.j4`，不使用浏览器串口 API、chooser、CH347 port 或 host broker。
+auto-connect、sticky 手动断开、binary framing 和 pause/resume 应按
+[Web UI](../user/webui.zh-CN.md) 的 MCU 路径排查。
 
-当托管 Web 页面需要访问板子时，先通过该页面排查 bridge 进程及其 REST、OTA 和
-WebSocket 转发，再修改固件或协议代码。不要在操作 skill 中记录开发 bridge 命令。
+port 8787 的独立 loopback Host gateway 仍用于打包 Web gateway/MCP。只有它确实
+位于失败路径时，才排查其 REST、OTA 和 WebSocket 转发；其 legacy serial broker
+不是 J4。不要在操作 skill 中记录开发 gateway 命令。
 
 ## 控制面隔离
 
@@ -43,9 +45,11 @@ WebSocket 转发，再修改固件或协议代码。不要在操作 skill 中记
 拒绝操作；超时、连接被拒绝或无路由表示传输或 USB NCM 状态问题。字段和错误含义
 以 [HTTP API](../user/api.zh-CN.md) 为准。
 
-MCP 和 Web UI 共用串口基础设施。游标过期、共享订阅、独占写和 RX 归档完整性应
-按照 [Serial Broker](../reference/serial-broker.md) 排查，不要通过添加主机端重试或
-回放来掩盖问题。变更硬件状态的操作出错后必须重新由操作员决定。
+内嵌 Web UI 与 J4 共用 MCU serial runtime；J4 sink overrun、accepted/complete
+事件和 raw TCP 应按 [J4 Serial Transport](../reference/serial-broker.md) 排查。
+MCP 另有仍存在的 legacy `uart0`/`uart1` cursor/archive 工具，它们由 host broker
+支持，应按 [MCP Server](../reference/mcp-server.md) 排查，不能称为 J4。变更硬件
+状态的操作出错后必须重新由操作员决定。
 
 ## 固件与恢复修改
 

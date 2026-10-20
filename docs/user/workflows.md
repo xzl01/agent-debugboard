@@ -23,7 +23,7 @@ radxa-linkr-debuggerctl power list
 For a hard reset with serial monitoring:
 ```sh
 # Start recording serial output
-# (in another terminal, connect via Web Serial or screen)
+# (open the embedded Web Terminal, or run: nc 172.29.203.1 5555)
 
 radxa-linkr-debuggerctl power set 5v_out off
 sleep 2
@@ -126,12 +126,12 @@ Or drag-and-drop the `.uf2` file onto the `RPI-RP2` volume.
 
 ## Monitor a target's serial output while controlling power
 
-Use the Web UI's serial terminal (Terminal workspace) alongside the dashboard
-power controls. Or use CLI + screen in parallel:
+Use the embedded Web UI's auto-connected xterm.js J4 terminal alongside the
+dashboard power controls. Or use the firmware raw-TCP path in parallel:
 
 ```sh
-# Terminal 1: serial console via CH347F
-screen /dev/ttyUSB0 115200
+# Terminal 1: binary J4 console (replace with the board's current NCM address)
+nc 172.29.203.1 5555
 
 # Terminal 2: power control
 radxa-linkr-debuggerctl power set 5v_out off
@@ -139,9 +139,16 @@ sleep 2
 radxa-linkr-debuggerctl power set 5v_out on
 ```
 
-The CH347F provides two independent UART channels (UART0 on `D1`, UART1 on
-`D3`). The Web UI supports tab mode (switch between channels) or split mode
-(both visible).
+J4 is one logical serial port. Firmware fans its shared 4096-byte RX ring out to
+CDC ACM4, up to four `serial.j4` WebSocket sessions, and up to two raw-TCP
+clients. Raw TCP is binary and performs no Telnet negotiation, echo, banner, or
+line-ending conversion. A slow client only advances or drops its own sink.
+
+When a logic-analyzer capture selects GP10 or GP11, firmware pauses J4, waits
+for any active UART TX to reach wire-complete (with bounded timeout), cancels
+queued writes, and transfers pin ownership to PIO2. Capture cleanup restores
+the UART mux and resumes fresh sink epochs. Expect silence and explicit write
+rejection during capture, then verify that the same J4 path works afterward.
 
 ## Run automated tests
 

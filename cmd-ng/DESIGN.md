@@ -154,8 +154,12 @@ Grounded in `cmd-ng/src/tui/confirm.rs`, `render_modal.rs`,
 
 - Power outputs and row order come from the latest firmware `power_outputs`
   catalog through `control_targets()`; the TUI keeps no host-side rail list.
-- Scope channels come from `model.channel_ids`: `5v_out`, `12v_out`,
-  `20v_out`.
+- Scope channels come from current descriptors in `model.channel_ids`:
+  `5v_out`, `12v_out`, `20v_out`, `vdd_5v` today. Voltage descriptor IDs are
+  retained separately in `model.voltage_channel_ids`, in firmware order;
+  both kinds retain their latest readings, but only currents enter power
+  state/history. ADC metadata (`signal`, optional `note`/`label`) is consumed
+  generically, without host GPIO maps, connector rules, or divider ratios.
 - GPIOs are named and enumerated by the firmware status snapshot; every
   reported GPIO remains represented, including entries whose note is `CON_MAS`.
 - GPIO layout metadata is firmware-owned: each status GPIO entry may carry
@@ -175,7 +179,7 @@ Grounded in `cmd-ng/src/tui/confirm.rs`, `render_modal.rs`,
 
 ## 4. Frame layout and vertical budgets
 
-The frame is a single vertical stack of six bands. All bands are borderless.
+The frame is a single vertical stack of seven bands. All bands are borderless.
 No blank separator rows exist anywhere in normal regions.
 
 ```
@@ -184,6 +188,8 @@ No blank separator rows exist anywhere in normal regions.
 +----------------------------------------------------------+
 | SCOPE band (0 or 7 rows, borderless: 1 header + 6 graph  |  ...
 | rows; zero height when no channel has data)              |
++----------------------------------------------------------+
+| ADC VOLTAGE strip (0 or 1 row, descriptor-driven)         |
 +----------------------------------------------------------+
 | TAB bar (1 row): Controls | Saved Config | Status        |
 +----------------------------------------------------------+
@@ -196,33 +202,37 @@ No blank separator rows exist anywhere in normal regions.
 +----------------------------------------------------------+
 ```
 
-### 4.1 Canonical budget: 80x24 (scope populated)
+### 4.1 Canonical budget: 80x24 (scope and voltage catalog populated)
 
 ```
 band            rows    row range (1-based)
 STATUS          2       1-2
 SCOPE           7       3-9    (1 header + 6 graph)
-TABS            1       10
-TABLE HEADER    1       11
-DATA            12      12-23
+ADC VOLTAGE     1       10
+TABS            1       11
+TABLE HEADER    1       12
+DATA            11      13-23
 KEYBAR          1       24
 ```
 
-### 4.2 Canonical budget: 120x32 (scope populated)
+### 4.2 Canonical budget: 120x32 (scope and voltage catalog populated)
 
 ```
 band            rows    row range (1-based)
 STATUS          2       1-2
 SCOPE           7       3-9    (1 header + 6 graph)
-TABS            1       10
-TABLE HEADER    1       11
-DATA            20      12-31
+ADC VOLTAGE     1       10
+TABS            1       11
+TABLE HEADER    1       12
+DATA            19      13-31
 KEYBAR          1       32
 ```
 
 When no scope channel has data, the SCOPE band occupies zero rows and every
-band below it moves up: at 80x24 the tabs land on row 3, the table header on
-row 4, and DATA starts on row 5.
+band below it moves up: with voltage descriptors at 80x24 the voltage strip
+lands on row 3, tabs on row 4, table header on row 5, and DATA starts on row 6.
+Without voltage descriptors the strip has zero height, preserving the prior
+current-only layout (tabs on row 3 without scope, row 10 with scope).
 
 ### 4.3 General rule (all other sizes)
 
@@ -231,12 +241,14 @@ Let `H` = terminal height, `W` = terminal width.
 - scope_rows = 7 when at least one scope channel has data (section 7) and
   H >= 24; otherwise 0. The scope never takes a partial height: it is either
   the full 7-row form or absent.
+- voltage_rows = 1 when voltage descriptors exist and H >= 7; otherwise 0.
 - Shrink order when H < 24: the scope shrinks to 0 first; then DATA shrinks
-  below its canonical size. STATUS (2), TABS (1), TABLE HEADER (1), and
+  below its canonical size. At H = 6 the voltage strip also drops, retaining
+  at least one DATA row. STATUS (2), TABS (1), TABLE HEADER (1), and
   KEYBAR (1) never shrink. Minimum renderable height is 6 rows; below that
   the UI draws nothing but must not panic.
-- data_rows = H - 2 - scope_rows - 1 (tabs) - 1 (table header) - 1 (keybar)
-  = H - 5 - scope_rows.
+- data_rows = H - 2 - scope_rows - voltage_rows - 1 (tabs) - 1 (table header)
+  - 1 (keybar) = H - 5 - scope_rows - voltage_rows.
 - Width has no effect on the vertical budget. Width only affects scope column
   split (section 7), table column clipping (section 6), GPIO cell pairing
   (section 6.1), and keybar segmentation (section 8).
@@ -465,19 +477,30 @@ generic metadata handling without claiming to describe x1.2.
 | J13 pin 3     | GP7       | MASKROM | 1         | 0            |
 | J13 pin 4     | — (GND)   | —       | —         | —            |
 
-The catalog advertises J8/right/order 0 and J13/right/order 1. GP17 and GP18
-remain safe GPIOs but have empty `layoutGroup`; they belong to the generic
-`GPIO` fallback and must not be described as J8 pins. GP29 remains represented
-as ADC3/input, not omitted because ADC owns it. GND is not a selectable GPIO.
+The catalog advertises J8/right/order 0 and J13/right/order 1. The controls-only
+safe/status/config catalog contains exactly nine GPIOs: GP7/8/9/12/13/14/15/16/29.
+GP17 and GP18 are absent, not unmapped fallback controls. GP29 remains represented
+as ADC3/input-only, not omitted because ADC owns it. GND is not selectable.
+The complete 24-position physical layout is Web-only; the CLI/TUI neither
+fetches `/gpio/layout` nor maintains a physical pin map.
 
 Despite deliberately shuffled GPIO/catalog input, the projected cell order is
-`ADC3, GP16, GP15, GP14, GP13, GP12, USER, RSET, MASKROM, GP17, GP18`.
+`ADC3, GP16, GP15, GP14, GP13, GP12, USER, RSET, MASKROM`.
 At 80/48 columns, the six J8 entries occupy separate left-half rows, USER/RSET
 share one row in that left/right order, MASKROM occupies its own left-half
-row, and GP17/GP18 pair in fallback order. At 47/32 columns all 11 entries
-occupy separate full-width rows. The regression checks that no pin is lost,
+row, and no fallback row exists (eight GPIO visual rows total). At 47/32
+columns all nine entries occupy separate full-width rows. The regression
+checks that no advertised pin is lost and no removed pin gains a hit target,
 all cells retain GPIO-name selection/hit identity, and the RSET selection
-survives width changes and raw snapshot reordering.
+survives width changes and raw snapshot reordering. Generic fallback behavior
+is still exercised separately with synthetic arbitrary pin/group names.
+
+The corresponding config catalog has 16 items: four power outputs, three
+switches, and nine GPIOs. Its firmware-side serialized snapshot maximum is
+16 entries / 76 bytes; the host consumes JSON and does not encode that binary
+format or enforce a board-specific item limit. Old `gpio/GP17` / `gpio/GP18`
+save requests receive the firmware's `unknown_item` error, which the CLI
+reports without remapping, silently dropping, or accepting those IDs.
 
 ### 6.2 Saved Config page
 
@@ -535,9 +558,10 @@ selection; Up/Down scroll only (frozen from `handle_key`).
 The scope replaces the legacy one-row sparkline strip. It is a borderless
 7-row band: 1 header row + 6 graph rows.
 
-- Live channels: channels from `model.channel_ids` (`5v_out`, `12v_out`,
-  `20v_out`) that have at least one ADC reading in `model.latest` or a
-  non-empty series in `model.history`. At most 3 channels today.
+- Live channels: current descriptors from `model.channel_ids` (`5v_out`,
+  `12v_out`, `20v_out`, `vdd_5v` today) that have at least one ADC reading in
+  `model.latest` or a non-empty series in `model.history`. ADC0..3 voltage
+  readings are never scope channels or power/current-history samples.
 - Zero-height rule: when no channel has data, the band occupies 0 rows. It
   never renders placeholder boxes or `(no data)` lines.
 - Columns: the live channels are laid out left to right in `channel_ids`
@@ -549,7 +573,7 @@ The scope replaces the legacy one-row sparkline strip. It is a borderless
   receive base + 1 content cells while the rest receive base. A single live
   channel therefore keeps the full width. Each reserved gutter is exactly
   one unstyled blank cell in the header and in all six graph rows; it is not
-  a border and adds no row. Canonical three-channel content splits and
+  a border and adds no row. Synthetic three-channel test content splits and
   zero-based gutter columns are: W=47 -> 15/15/15 with gutters 15 and 31;
   W=48 -> 16/15/15 with gutters 16 and 32; W=80 -> 26/26/26 with gutters 26
   and 53; W=120 -> 40/39/39 with gutters 40 and 80. Content plus gutters
@@ -572,6 +596,63 @@ The scope replaces the legacy one-row sparkline strip. It is a borderless
   samples, the clamped latest reading, and 1; the scale is the saturating
   integer `ceil(peak * 5 / 4)` = `(peak * 5 + 3) / 4` with saturating
   arithmetic. The scale is recomputed per render from the visible window.
+
+### 7.1 ADC voltage strip
+
+This one-row, non-interactive strip mechanically reuses the scope's column
+split, one-cell gutters, Cyan voltage text, DarkGray optional notes, and
+display-column clipping. It does not introduce borders or a new page. It
+appears after the current scope and before tabs on every page. No strip cell
+registers a hit rectangle; body hits, scrolling, pin selection, and resize
+invalidation still use the existing frame layout and projection.
+
+- Iterate `voltage_channel_ids` in descriptor order, not a host ADC/pin list.
+  Use the firmware channel `name` as the stable identity, never a long or
+  shared-prefix `signal`/`label`. A complete optional signal (for example
+  `GPIO26_ADC0`) follows the value only when it fits without sacrificing name
+  or numeric precision; optional labels/notes use remaining space. Metadata
+  has no effect on electrical units or numeric conversion.
+- The common eight-descriptor catalog is ordered `5v_out, 12v_out, 20v_out,
+  vdd_5v, adc0, adc1, adc2, adc3`. Only the last four enter this strip.
+  ADC0 is a raw pad measurement: `2608696 uV` displays as `2.608696V` when
+  space permits, never as an inferred 20 V input. No divider or pin-map
+  calculation exists in the client.
+- Use up to six fractional volt digits. Drop optional signal/details first,
+  then `V` before reducing decimal precision; the name never yields to those
+  decorations or the value. Unknown data is `--`, never a synthetic zero.
+  A measured zero remains numeric. With the usual `adc0`..`adc3` names,
+  80/120 columns preserve all six decimals, 47 preserves four (without `V`).
+  At 32, the deterministic content widths are 8/7/7/7 plus three gutters:
+  all four names survive, but two decimals plus `name=` would require at
+  least 39 total columns. Shorter descriptor names retain extra decimals
+  whenever their actual column budget allows it. All clipping uses display
+  width and cannot split CJK glyphs or wrap onto another row.
+- H >= 7 preserves the strip, DATA and the final-row keybar; H = 6 drops
+  only the strip. At H < 6 the existing minimal-render rule applies.
+
+### 7.2 ADC wire and recorder contract
+
+HTTP rich readings and WS compact readings normalize into the same eight
+channels. Voltage entries use `kind: "voltage"`, `unit: "uV"`, and signed
+integer pad microvolts in `value` (or HTTP `sensor_value` volts); `name`,
+`signal`, and optional default-empty `note`/`label` remain firmware metadata.
+Existing raw JSON command semantics remain unchanged.
+
+WS batches carry eight scalar `values`, one per descriptor; `voltages_uv`
+has one entry per current descriptor (four today). Both `power_enabled_mask`
+and `voltage_valid_mask` use current-descriptor indices, not raw descriptor
+positions, with only bits 0..3 valid for the current catalog. Expansion
+rejects mismatched value/rail-voltage lengths, mask bits outside the current
+catalog, more than four current descriptors, and more than 18 samples.
+There is no old five-channel/tuple-specific compatibility path.
+
+The recorder requests 18-sample batches above 100 Hz. NDJSON retains all
+eight normalized readings. CSV keeps its four timing columns and existing
+four-rail `power_enabled,current_ua,voltage_uv` triplets, then appends voltage
+columns in firmware descriptor order: normally `adc0_voltage_uv` through
+`adc3_voltage_uv`. The first telemetry message establishes those columns;
+later missing/invalid readings produce empty cells, while measured zero
+produces `0`. See the ADC CLI examples in [README.md](README.md#adc-cli与记录格式).
 
 ## 8. Keybar segmentation
 

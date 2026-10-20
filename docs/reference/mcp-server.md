@@ -8,14 +8,15 @@ host adapters, not a second device protocol:
 ```text
 Agent -- Streamable HTTP MCP /mcp -- Linkr device gateway -- USB NCM -- RP2350
                |                         |
-               |                         +-- linkr-serial-broker.v1 -- CH347F
-               |                                      |
-               +-- stdio compatibility                +-- Web/Agent subscribers
+               +-- stdio compatibility  +-- legacy linkr-serial-broker.v1
+                                                   +-- CH347 uart0/uart1 fixtures
 ```
 
-The Web application continues to use the loopback HTTP/WebSocket gateway. MCP
-uses the same gateway and Serial Broker, so it does not open a second CH347F
-handle, disconnect Web readers, or invent a separate UART ownership model.
+The loopback gateway and MCP endpoint are still shipped. The Serial Broker and
+`SerialBrokerClient` also still exist, but their CH347 `uart0`/`uart1` tools are
+legacy non-J4 compatibility/test paths pending separate removal. They must not
+be presented as the production J4 terminal. J4 is MCU-owned and uses the
+embedded xterm.js page, firmware `serial.j4`, CDC ACM, or raw TCP 5555.
 
 ## Start and configure
 
@@ -60,8 +61,8 @@ USB-NCM or the debugger, so a temporary local dependency failure does not make
 the Agent disable the server for the rest of its session. Listing MCP tools
 does not touch the board.
 
-By default the MCP process supervises the Web UI, device gateway and Serial
-Broker in the background. Failed startup and unexpected Host exit are retried
+By default the MCP process supervises the host Web UI, device gateway and the
+still-shipped legacy Serial Broker in the background. Failed startup and unexpected Host exit are retried
 with exponential backoff from 250 ms up to 30 seconds. An already-running Host
 is health-checked every two seconds and adopted without opening a competing
 listener. Use `--no-autostart` when process lifetime is managed separately;
@@ -108,7 +109,7 @@ Environment overrides:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `LINKR_MCP_API_BASE` | `http://127.0.0.1:8787/api/v1` | Device-gateway REST base |
-| `LINKR_MCP_SERIAL_URL` | `ws://127.0.0.1:8787/serial` | Serial Broker endpoint |
+| `LINKR_MCP_SERIAL_URL` | `ws://127.0.0.1:8787/serial` | Legacy non-J4 Serial Broker endpoint |
 | `LINKR_WEB_ROOT` | auto-discovered `web/dist` | Built Web UI served by an auto-started Host |
 | `LINKR_BOARD_URL` | `http://172.29.203.1` | Debugger USB-NCM HTTP/WebSocket service |
 
@@ -125,10 +126,10 @@ the only supported adapter.
 | Tool | Behavior |
 | --- | --- |
 | `linkr_board_status` | Read a compact firmware/power/route summary; pass `detail: "full"` for GPIO and complete diagnostics |
-| `linkr_adc_read` | Read all current-monitor ADC channels |
+| `linkr_adc_read` | Read the firmware eight-channel ADC/current catalog |
 | `linkr_power_set` | Set `5v_out`, `12v_out` or `20v_out`; requires `confirm: true` |
-| `linkr_switch_route` | Set SD, USB or VIO routing; requires `confirm: true` |
-| `linkr_serial_connect` | Subscribe to UART0/UART1 at a selected baud rate |
+| `linkr_switch_route` | Set x1.2 SD or USB routing; requires `confirm: true` |
+| `linkr_serial_connect` | **Legacy non-J4:** subscribe to host-broker UART0/UART1 at a selected baud rate |
 | `linkr_serial_status` | Read connection, baud, subscriber and write-owner state without opening the UART |
 | `linkr_serial_read` | Return bounded text after a cursor |
 | `linkr_serial_expect` | Wait for text or a regular expression after a cursor |
@@ -136,7 +137,11 @@ the only supported adapter.
 | `linkr_serial_command` | Claim, write, wait for a prompt, then release |
 | `linkr_serial_shell_command` | Run an authenticated POSIX shell command and return its exit code plus bounded output |
 | `linkr_serial_login` | Detect an existing shell or complete username/password login under one short claim |
-| `linkr_serial_disconnect` | Release only this MCP subscriber |
+| `linkr_serial_disconnect` | **Legacy non-J4:** release only this MCP subscriber |
+
+The `linkr_serial_*` rows document code that still ships; they are not a
+recommended operator route to J4 and do not proxy MCU `serial.j4`. Do not infer
+that those tools migrated to the firmware serial runtime.
 
 Every result uses the `radxa-linkr-debugger.mcp.v1` envelope. Successful board
 results preserve the firmware `radxa-linkr-debugger.v1` payload inside
@@ -155,7 +160,7 @@ messages contain only the tool activity and elapsed time; passwords and full
 commands remain excluded. Clients that do not render MCP progress retain the
 same final structured result.
 
-Serial cursors are local to one MCP process and count retained UTF-16 text
+For the legacy non-J4 serial tools, cursors are local to one MCP process and count retained UTF-16 text
 offsets. Reuse `next_cursor` for subsequent reads. A Broker reconnect inside the
 same MCP process carries each channel's cursor checkpoint forward, so new data
 never reuses an old offset. Each channel keeps at most 1 MiB of decoded text; an
@@ -174,8 +179,8 @@ whose login or shell prompts differ from the defaults.
 Use `linkr_serial_shell_command` after login when the target provides a POSIX
 shell. It appends a unique exit-status marker, defaults to failing the tool when
 the command returns non-zero, and returns structured `exit_code` and `output`.
-The Serial Broker keeps the unique status probe raw only for the MCP owner;
-shared Web terminals and their logs receive the real command output without
+The legacy Serial Broker keeps the unique status probe raw only for the MCP
+owner; other legacy broker subscribers and their logs receive the real command output without
 the internal variable assignment, `printf`, or `__LINKR_RC_*` marker. The
 returned MCP output is sanitized the same way.
 Keep `linkr_serial_command` for U-Boot, UEFI, bootloaders, or other consoles
@@ -185,9 +190,10 @@ that are not POSIX shells.
 
 MCP v1 deliberately excludes arbitrary REST paths, GPIO mutation, OTA,
 BOOTSEL, Qualcomm EDL and Rockchip MASKROM. Those actions require the explicit
-CLI/curl/manual workflows documented by the project. Ordinary target UART
-commands remain explicit Agent actions and can change the test target; callers
-must still choose commands appropriate for the connected device.
+CLI/curl/manual workflows documented by the project. Legacy host-broker UART
+commands remain explicit Agent actions and can change an external test target;
+callers must choose commands appropriate for that fixture. They are not the
+production J4 control path.
 
 The gateway and MCP server listen only through local stdio/loopback defaults.
 There is no authentication or authorization layer, so do not expose port 8787

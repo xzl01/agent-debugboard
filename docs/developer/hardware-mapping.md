@@ -34,7 +34,7 @@ canonical board description.
 | TF write-protect | `switch tf_wp` | `TF_WP` | 22 |
 | USB OTG enable | — | `OTG_USB_EN` | 23 |
 | Status LED | — | `LED_BLUE` | 24 |
-| ADC0 | — | `GPIO26_ADC0` | 26 |
+| ADC0 / CH224A input gate | private `ch224a_input_voltage` | `GPIO26_ADC0`, DC20V divider | 26 |
 | ADC1 | — | `GPIO27_ADC1` | 27 |
 | ADC2 | — | `GPIO28_ADC2` | 28 |
 | ADC3 / GP29 | `adc3` | `GPIO29_ADC3` | 29 |
@@ -116,10 +116,43 @@ The qualified baseline uses production 4.7 kOhm pull-ups to always-powered
 VCC_3V3 with J8 unloaded. Each INA226 reports current, bus voltage, and power
 for one rail; there is no on-board ADC current path. Any J8 device, cable,
 pull-up, or foreign power domain requires a new capacitance/rise-time/VOL and
-power-domain validation. Firmware probes CH224A at startup and status requests
-continue polling it. When no PD source is attached and VHV is absent, failed
-probes enter a five-second backoff; polling recovers after a source is inserted.
-INA226 telemetry remains available from VCC_3V3 during that interval.
+power-domain validation. After deferred CH224A initialization from `main`, a
+dedicated low-priority thread samples only the private input gate about every
+100 ms. It performs no steady-state CH224A I2C traffic or capability reads. A
+stable absent-to-present edge triggers one gated probe/status discovery without
+waiting for the old source's five-second backoff; removal or ADC failure clears
+PD state without I2C. This is polling, not an interrupt. INA226 telemetry remains
+available from VCC_3V3 while PD is absent.
+
+CH224A access is gated by a private standard `voltage-divider` sensor on ADC0.
+R46 (100 kOhm) and R47 (15 kOhm) scale `DC20V` after Q28 and before U10; this is
+the source-side input path, not a direct CH224A VHV measurement. Device Tree is
+the sole owner of the 15 kOhm output / 115 kOhm full-divider facts and the
+2.8 V present / 2.5 V absent hysteresis. From absent/unknown state the driver
+requires three samples at least 5 ms apart before any CH224A I2C transaction;
+while present, every transaction gets a fresh sample.
+
+CH224A register `0x09` is considered readable whenever I2C acknowledges and
+returns one byte. The driver decodes only named status masks; it does not reject
+`0x00`, `0x80`, `0x88`, `0xff`, or future values because an unknown/reserved bit
+is set. Unknown bits produce one boot-time warning containing the raw byte and
+are otherwise ignored; they do not trigger retries, bus recovery, or presence
+and PD-cache clearing.
+
+Probe errors classified as bus busy/stuck or timeout may request one standard
+`i2c_recover_bus()` attempt per CH224A probe sequence. The existing PIO driver
+performs that bounded recovery under its bus lock using its fail-closed,
+open-drain-only sequence. Ordinary address NAK (`-EIO`) never triggers bus
+clear, and the generic Zephyr I2C shell remains disabled. Recovery itself is
+ADC-gated both before its SCL pulses and before the following probe retry.
+
+The voltage-divider instance is private to the CH224A lock and is not itself a
+public telemetry descriptor. The separate public `adc0` descriptor reads the
+same ADC pad through the raw ADC driver and reports pad voltage, not the
+divider's reconstructed source-side voltage. The ADC driver's `adc_context`
+serializes ADC0 with the other channels. Any future source-side value must be a
+distinct firmware-derived field scaled from Device Tree, never a host-side
+`115/15` conversion of public `adc0`.
 
 | Rail | Device | 7-bit address | Shunt |
 | --- | --- | --- | --- |
@@ -129,10 +162,11 @@ INA226 telemetry remains available from VCC_3V3 during that interval.
 | `vdd_5v` | U12 | `0x45` | 10 mOhm |
 
 J8 exposes ADC1/GP27, ADC2/GP28, and ADC3/GP29; ADC0/GP26 is not a J8 terminal.
-ADC1/ADC2 are not rail-sense inputs. ADC3 (`GP29`) is a monitor-only voltage
-channel owned by `adc3`; it has no power state. The firmware reports all five
-descriptors and the host presents them without a host-side calibration table or
-zero-point correction. See the
+ADC1/ADC2 are not rail-sense inputs. ADC0 through ADC3 are monitor-only pad
+voltage channels with no power state; ADC3 (`GP29`) remains owned by `adc3` and
+input-only. The firmware reports four INA226 current descriptors followed by
+these four ADC descriptors, and the host presents them without a host-side
+calibration table, zero-point correction, or divider conversion. See the
 [ADC telemetry contract](../reference/adc-telemetry.md).
 
 ## Schematic reference

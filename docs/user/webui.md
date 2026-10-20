@@ -44,7 +44,8 @@ The main dashboard provides cards for:
 - **Switch routes** — TF/SD routing between `target` and `usb-reader`; the J12
   lower-port USB device can be switched between the PC (`pc`) and the target
   connected to J12's upper port (`target`).
-- **GPIO** — read/write safe GPIOs (`GP7`-`GP20`, `GP29`).
+- **GPIO** — safe controls `GP7`-`GP9` and `GP12`-`GP16`, plus input-only
+  `GP29`/ADC3.
 
 Within the **Configuration > Saved** tab, the **Saved configuration** card is
 always visible. Its saved rows and actions appear below the header; power and
@@ -68,11 +69,12 @@ The Terminal workspace lives alongside the primary dashboard and contains:
   waveform view and exported as CSV or PulseView `.sr` files. A continuous
   streaming mode (1-25 MHz) is also available. The browser-based Rust/WASM
   decoder supports UART, I2C, and SPI protocol decoding.
-- **Serial terminal** — independent UART0 and UART1 sessions via CH347F. Tab
-  mode switches the visible terminal without disconnecting either channel; split
-  mode shows both. Uses an xterm-compatible terminal surface: click and type
-  directly. Enter sends CRLF by default; CR and LF modes are available from the
-  toolbar.
+- **J4 serial terminal** — one logical target console rendered by xterm.js. The
+  page creates a firmware live session and subscribes to `serial.j4`; no browser
+  device chooser, desktop serial broker, or local tty access is involved. The
+  terminal auto-connects on entry. A manual disconnect is sticky for that page
+  session and suppresses automatic retries, avoiding reconnect storms. Reconnect
+  explicitly when desired.
 
 ## Workspace Tabs
 
@@ -178,92 +180,35 @@ core; the hardware watchdog remains the fallback for that failure mode.
 
 ## Connecting Target Serial
 
-### Web Serial (secure origins)
+Open the board-hosted page and select **Web Terminal**. The xterm.js J4 terminal
+uses the same USB-NCM address as the rest of the dashboard:
 
-Edge and Chrome/Chromium can use Web Serial directly from secure origins such as
-the local Vite dev server or GitHub Pages. Users must click the **Web Serial**
-button and accept the browser device chooser.
+1. The page creates one `/api/v1/live-sessions` slot.
+2. It connects to the returned `/api/v1/ws/<slot>` URL.
+3. It subscribes to `topic: "serial.j4"` and displays raw binary downlink.
 
-### Board-hosted page
+Each browser binary frame is one atomic J4 write and is limited to 480 bytes.
+The page distinguishes `serial_write_accepted` from the later
+`serial_write_complete`; an accepted write is not yet proof of UART wire
+completion. `serial_state` reports line coding, generation, DTR/RTS, USB state,
+queue state, and pause/fault transitions. Overrun messages carry both the new
+drop delta and the cumulative total for this browser sink.
 
-The board-hosted page runs at `http://172.29.203.1/`, which is plain HTTP and
-therefore not a secure context by default. To enable direct CH347 Web Serial
-from the board page:
+The terminal remains connected while J4 is temporarily paused for a logic
+analyzer capture on GP10/GP11. Input is rejected explicitly during the pause;
+after capture cleanup restores UART1 and resumes the runtime, the same terminal
+continues without a page reload. Manual disconnect remains sticky and does not
+start a retry loop.
 
-1. Copy the Chromium flag-page address below and paste it into the address bar
-   manually (ordinary web pages cannot navigate to `chrome://` URLs):
-
-   ```text
-   chrome://flags/#unsafely-treat-insecure-origin-as-secure
-   ```
-
-2. Add the exact origin:
-
-   ```text
-   http://172.29.203.1
-   ```
-
-3. Enable the flag and relaunch the browser.
-
-Edge also accepts this Chromium address.
-
-### Device-bridge fallback
-
-If you do not enable the override, keep the board page open and use the
-host-side bridge instead:
-
-```sh
-cd web
-npm ci
- npm run host
-```
-
-Then use the **Bridge** button in either serial terminal. The bridge prefers the
-CH347F `D1` device for UART0 and `D3` for UART1, with sorted device order as
-the fallback when those suffixes are unavailable.
-
-### Linux serial device permissions
-
-Direct Web Serial and the Linkr Host bridge both open serial devices as the current
-desktop user. On Linux, CH347 ports normally appear as `/dev/ttyUSB0` and
-`/dev/ttyUSB1`; the board CDC ACM fallback may appear as `/dev/ttyACM0`.
-
-If the browser reports that it failed to open the serial port, or the bridge
-reports `EACCES`, `EPERM`, `Permission denied`, or `Access denied`, inspect the
-device ownership:
-
-```sh
-ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
-id -nG
-```
-
-On Debian and Ubuntu, serial devices are normally assigned to the `dialout`
-group. Add the current account to that group:
-
-```sh
-sudo usermod -aG dialout "$(id -un)"
-```
-
-Then sign out and back in, or reboot. Reconnect the board, restart the browser
-or `npm run host`, and try again. The new group membership does not
-apply to browser or terminal processes that were already running.
-
-If the device is owned by a different serial-access group, use the group shown
-by `ls -l` and follow that distribution's device-access policy. If access is
-already correct, check whether another serial monitor or service owns the port:
-
-```sh
-fuser /dev/ttyACM0
-```
-
-Replace the path with the device that failed to open. Avoid running the browser
-or bridge as root, and do not rely on `chmod` as a permanent fix: device
-permissions are recreated when USB reconnects.
+For non-browser access, connect to raw TCP `0.0.0.0:5555` using the board's
+current NCM address, or use the board's J4 CDC ACM interface. Raw TCP is binary,
+has at most two clients, and is not Telnet, SSH, or noVNC. USB tty numbering is
+host-dependent; identify the J4 interface instead of assuming a device number.
 
 ## Startup Power Analysis
 
-The startup workflow lives in the **Power Analysis** workspace tab. It requires the
-selected UART0 or UART1 connection and an idle power-capture session. After one
+The startup workflow lives in the **Power Analysis** workspace tab. It requires
+the J4 terminal connection and an idle power-capture session. After one
 explicit confirmation it:
 
 1. Clears and records the target serial console.
@@ -278,34 +223,13 @@ The boot firmware selector defaults to automatic detection and can be pinned to
 U-Boot or UEFI. The task can be cancelled before power-on. Serial logs can be
 downloaded after completion.
 
-## GitHub Pages Deployment
+## Development previews
 
-Pushes to `dev` deploy the production build to
-<https://xzl01.github.io/agent-debugboard/>. GitHub Pages serves the UI over
-HTTPS, while the board exposes its APIs over HTTP on the USB-NCM network. Start
-Linkr Host before using hardware controls from the hosted page:
-
-```sh
-cd web
-npm ci
-npm run host
-```
-
-The Pages build connects to `http://127.0.0.1:8787/api/v1`. By default, the
-gateway forwards HTTP and WebSocket traffic directly to the firmware service
-at `http://172.29.203.1` and supplies the CORS and Private Network Access
-headers needed by the browser. Override the upstream address when necessary:
-
-```sh
-LINKR_BOARD_URL=http://172.29.203.1 npm run host
-```
-
-On macOS, `npm run dev` automatically inserts a
-loopback-only raw TCP forwarder when targeting the default USB-NCM address.
-This avoids repeated Vite `502 Bad Gateway` responses when macOS permits native
-tools such as `curl` to use the interface but rejects direct Node.js sockets.
-Linkr Host talks directly to the USB-NCM address and does not need the legacy
-Node/Ruby forwarder.
+The supported hardware UI is the production bundle embedded in firmware and
+served at the board's port 80. The Vite server on port 5173 is a development
+preview, not a device transport or serial broker. GitHub Pages may be used to
+review static presentation, but current J4 product validation is performed
+against the embedded page and its direct firmware HTTP/WebSocket paths.
 
 ## Related
 

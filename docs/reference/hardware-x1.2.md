@@ -134,13 +134,52 @@ Device Tree-selected input pin.
   cannot use INA226 High-Speed mode (2.94 MHz) without a hardware
   bridge/isolator. The PIO master also implements Fast mode only.
 - CH224A VHV (PD VBUS) and INA226 VS (VCC_3V3) are separate power domains.
-  Firmware probes CH224A at startup and status requests continue polling it.
-  Without a PD source/VHV, a failed probe marks PD unavailable and starts a
-  five-second retry backoff; inserting a source allows a later status poll to
-  recover. VCC_3V3-powered INA226 traffic remains operational during the
-  backoff. CH224A still has no vendor-guaranteed powered-off Ioff; polling
-  behavior does not prove Ioff safety. This is a non-frequency-specific
-  hardware boundary that 400 kHz timing or the 5 V TVS cannot resolve.
+  ADC0 observes the `DC20V` source after Q28 and before U10 through R46/R47
+  (100 kΩ upper, 15 kΩ lower; 115 kΩ full path). This source-side divider is
+  not a direct VHV measurement. A private standard `voltage-divider` sensor
+  owns these Device Tree facts and is used only under the CH224A driver lock;
+  the RP2350 ADC driver's `adc_context` serializes it with other ADC channels.
+  It is not added as a public telemetry descriptor.
+- Every real CH224A I2C read or write is preceded by a fresh source-voltage
+  sample, including each probe address/attempt, each I2C retry, every one of the
+  48 capability bytes, and both PPS writes. From unknown/absent state, three
+  consecutive samples of at least 2.8 V at 5 ms intervals establish presence
+  (at least 10 ms total). Once present, each transaction may continue at or
+  above 2.5 V; the 2.5–2.8 V band retains only an already-present state. A
+  value below 2.5 V, sensor-not-ready state, ADC fetch/get error, or conversion
+  error immediately clears input/device presence and prevents any remaining
+  retry or subsequent write. Status and capability reads perform one additional
+  fresh endpoint check after their final I2C byte.
+- The CH224A Device Tree node uses standard `zephyr,deferred-init` so its
+  priority-51 init entry is skipped during automatic boot initialization.
+  `linkr_debugger_pd_init()` calls `device_init()` from the application main
+  path, after the I2C controller and voltage-divider sensor are initialized;
+  this explicit initializer remains bus-silent. It then starts one dedicated
+  priority-12, 1024-byte-stack monitor thread. About every 100 ms the monitor
+  takes only a private gate sample while input remains present; it does not use
+  the system workqueue and does not repeatedly read status or the 48-byte
+  capability window. A stable absent-to-present edge triggers gated
+  probe/current-status discovery and any initial capability read required by
+  the existing cache rules. A fresh source edge clears only the old probe
+  backoff, so recovery does not depend on an HTTP/WS/client status request and
+  never restores an old voltage request. This is periodic ADC polling, not an
+  IRQ or comparator interrupt. A gate/ADC/I2C failure clears requested voltage,
+  gear/PPS state, and
+  capability data, then starts the existing five-second probe backoff; source
+  insertion can recover only through a fresh stable probe and does not revive
+  an old voltage request. A complete capability window containing no valid PDO
+  uses only capability backoff, and short status never publishes an expired
+  five-second capability cache. The 5 V fallback skips capability parsing but
+  never bypasses the voltage gate.
+- The gate prevents the **next** transaction after a low observation. It cannot
+  eliminate the ADC-sample-to-I2C-start TOCTOU window or cancel an in-flight
+  transaction. It also cannot remove DC20V residual charge/backfeed, static
+  paths through the external 4.7 kΩ pull-ups or an unpowered device, or clocks
+  shared with the INA226 devices. CH224A still has no vendor-guaranteed
+  powered-off Ioff; polling or successful ADC gating does not prove Ioff safety,
+  zero bus waveforms while VHV is absent, or isolation. These are
+  non-frequency-specific hardware boundaries that 400 kHz timing and the 5 V
+  TVS cannot resolve.
 - CH224A CFG1 uses board R81 (120 kOhm to GND) as the single-resistor Rset,
   which enables its I2C interface on CFG2/SCL and CFG3/SDA. R97 is only the
   0-ohm series link from CFG1 to GPIO19; firmware keeps GPIO19 as a
@@ -149,8 +188,16 @@ Device Tree-selected input pin.
 - Although CH224A itself supports a 28 V fixed request, the x1.2 power path is
   limited to **20 V**. The CH224A Device Tree node sets
   `maximum-request-millivolt = <20000>`, which caps fixed and PPS requests.
-- Register `0x09` may validly read zero when no charging protocol is active;
-  presence is determined by I2C transaction success, not a nonzero status.
+- Register `0x09` presence/read validity is defined solely by a successful I2C
+  ACK and one-byte read, not by the returned value. Firmware decodes only its
+  named bit masks and ignores unknown or reserved bits for forward
+  compatibility; values including `0x00`, `0x80`, `0x88`, and `0xff` are not
+  rejected. The first status byte per boot containing unknown bits emits one
+  warning with the raw byte, without log flooding, retries, bus recovery, or PD
+  state loss. A divider-reconstructed source candidate around 3.3 V (about
+  0.43 V at the ADC pad) therefore permits a probe but is not sufficient by
+  itself: an acknowledged one-byte CH224A status read is still required before
+  the device is available.
   Register `0x0A` and the PPS/AVS control registers are write-only. Register
   `0x50` is read only while a PD contract is active.
 - Driver: `apps/radxa_linkr_debugger/src/i2c_rpi_pico_pio.c`, compatible
@@ -162,10 +209,18 @@ Device Tree-selected input pin.
   finds a non-idle electrical bus. Startup passively settles the lines and
   performs at most one automatic, open-drain bus clear only for stable
   SCL-high/SDA-low; a later transfer can rearm only after both lines are stably
-  idle. The generic Zephyr I2C shell is disabled because its raw write command
-  can bypass CH224A power policy, so there is no production `i2c recover`
-  command. After correcting the electrical fault, reboot to retry any INA226
-  initializer that already failed; Zephyr does not re-run it in place.
+  idle. The driver's standard `.recover_bus` callback already runs the same
+  bounded, bus-locked, fail-closed sequence: output latches stay zero, physical
+  OE is released before reconfiguration, SCL is pulled low/released only through
+  PINDIRS, and no internal pull or push-pull HIGH is introduced. A CH224A probe
+  may invoke it once only for `-ETIMEDOUT` or `-EBUSY`, with a fresh ADC gate
+  before recovery and again before the retry. Clean address/data NAK (`-EIO`)
+  never invokes recovery, preventing a bus-clear storm across address retries.
+  Recovery failure leaves CH224A unavailable under the five-second probe
+  backoff. The generic Zephyr I2C shell remains disabled because its raw commands
+  can bypass CH224A power policy; no arbitrary-address/configuration interface
+  is added. After correcting an INA226 initialization fault, reboot is still
+  required because Zephyr does not re-run that sensor initializer in place.
 - GP20 is the I2C **SCL** and also the WIDE11 logic-analyzer lane 10. The LA
   leaves the PIO0 function and pad input enable untouched for GP20/GP21 and
   samples GP20 only as a read-only tap; it must not reconfigure those pins as
@@ -178,19 +233,28 @@ Device Tree-selected input pin.
 ## J4 Target UART
 
 J4 is a 3-pin (TX/RX/GND) target UART on **UART1** (TX=GPIO10, RX=GPIO11,
-default `115200`). The production firmware bridges UART1 to a second USB CDC
-ACM (`cdc_acm_uart1`) with the `zephyr,uart-bridge` driver. The host sees a
-dedicated J4 tty in addition to the console CDC ACM (`cdc_acm_uart0`) and the
-NCM interface. The x1.2 CH347F is not used for this path; the x1.1 CH347 is a
-separate USB device on the older board.
+default `115200`). Production does **not** use Zephyr's generic UART bridge.
+The repo-local `linkr_debugger_serial` runtime owns the physical UART, line
+coding, bounded TX queue, completion events, and the shared 4096-byte RX ring.
+It fans RX independently to the J4 CDC ACM interface, four WebSocket sinks, and
+two raw-TCP sinks; raw TCP listens on `0.0.0.0:5555`.
 
 - The overlay enables `&uart1` on GPIO10/11. The upstream `UART1_TX_P10`/
   `UART1_RX_P11` helpers reference an undefined
   `RP2_PINCTRL_GPIO_FUNC_UART_ALT` in this Zephyr tree, so the overlay uses
   `RP2XXX_PINMUX(..., RP2_PINCTRL_GPIO_FUNC_UART_AUX)` (RP2350 function 11)
   directly.
-- `j4_uart_bridge` has `peers = <&cdc_acm_uart1 &uart1>`; the USB message
-  callback applies CDC ACM line coding to the bridge.
+- `/chosen` binds `radxa,linkr-j4-uart = &uart1` and
+  `radxa,linkr-j4-cdc = &cdc_acm_uart1`. Application code resolves those as
+  `DT_CHOSEN(radxa_linkr_j4_uart)` and `DT_CHOSEN(radxa_linkr_j4_cdc)`; no
+  board pin map or peer list is duplicated in host tools.
+- USB CDC line-coding, DTR/RTS, reset, and configuration notifications enter
+  the same serial runtime used by HTTP/WS/TCP. The final x1.2 HIL enumerated the
+  control shell as ACM3 and J4 as ACM4, but host tty numbering is not a stable
+  API.
+- The embedded xterm.js terminal subscribes to live-session topic `serial.j4`.
+  The current product J4 path never uses the still-shipped legacy host
+  `uart0`/`uart1` broker or browser Web Serial.
 
 ## Header GPIO And Board Controls
 
@@ -219,10 +283,9 @@ separate USB device on the older board.
 - J13 is 2x2 in the same view: top-left pin 2 is GP9/USER, top-right pin 3 is
   GP8/RSET, bottom-left pin 1 is GP7/MASKROM, and bottom-right pin 4 is **GND**,
   not 3.3 V.
-- The safe-GPIO allowlist remains `GP7`-`GP9`, `GP12`-`GP18`, and input-only
-  `GP29`. It is independent of connector placement: GP17 and GP18 have no J8 or
-  J13 mapping and remain reachable in the generic GPIO group. Empty physical
-  positions are not GPIO controls. `GP10`/`GP11`
+- The safe-GPIO allowlist is `GP7`-`GP9`, `GP12`-`GP16`, and input-only
+  `GP29`. GP17 and GP18 are absent from the current safe/control catalog; empty
+  physical positions are not GPIO controls. `GP10`/`GP11`
   belong to J4 UART and `GP19` is the CH224A PD strap, so they are reserved.
 - `LED_BLUE` = GPIO24, `GP06_TF_SW` = GPIO4 (TF/SD mux), `TF_WP` = GPIO22,
   `OTG_USB_EN` = GPIO23, `RP2354_PD_CFG1` = GPIO19.
@@ -268,6 +331,8 @@ register `0x4127`, and line levels in that specific setup; those observed levels
 do not identify a pull-up source or prove cross-domain safety. CH224A
 (`0x22/0x23`) I2C, any 400 kHz enablement with explicit external pull-ups and
 the required rise-time/VOL/reverse-current evidence, rail current calibration,
-rail/LED polarity, the J4 UART bridge, INA226 telemetry while WIDE11 captures
-the GP20/SCL tap, and the new reboot and physical BOOTSEL button paths remain
-HIL items.
+rail/LED polarity, INA226 telemetry while WIDE11 captures the GP20/SCL tap, and
+the new reboot and physical BOOTSEL button paths remain HIL items. Current J4
+CDC/WS/raw-TCP fan-out and post-capture restoration evidence is in
+[the 2026-10-21 x1.2 report](../testing/results/2026-10-21-x1.2-adc-pinout-j4-hil.md);
+its stated limitations remain authoritative.

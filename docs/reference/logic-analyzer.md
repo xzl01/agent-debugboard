@@ -16,8 +16,9 @@ Bounded pre-trigger is available for `rising`, `falling`, and `either` under the
 contract in the Capture Parameters section.
 
 **Native sigrok/PulseView**: Connects directly via raw-TCP on port 5556.
-Use `sigrok-cli -d linkr-debugger:conn=tcp-raw/172.29.203.1/5556` or the
-PulseView GUI with the same connection string.
+Use `sigrok-cli -d "linkr-debugger:conn=tcp-raw/${BOARD_IPV4}/5556"` or the
+PulseView GUI with the same connection string, substituting the board's reachable
+NCM IPv4 address for `BOARD_IPV4`.
 
 ### Supported Modes
 
@@ -418,10 +419,14 @@ only, not on stream data.
 
 ## Native Sigrok Integration
 
-Native sigrok-cli and PulseView connect via raw-TCP on port 5556:
+Native sigrok-cli and PulseView connect via raw-TCP on port 5556. The listener
+binds `0.0.0.0:5556` rather than a fixed subnet address. Set `BOARD_IPV4` to the
+board's reachable IPv4 address on the local NCM interface; `0.0.0.0` is a bind
+address, not a client destination. This does not change protocol or access-control
+semantics.
 
 ```sh
-sigrok-cli -d linkr-debugger:conn=tcp-raw/172.29.203.1/5556 --scan
+sigrok-cli -d "linkr-debugger:conn=tcp-raw/${BOARD_IPV4}/5556" --scan
 ```
 
 The protocol is the sigrok binary protocol (see `docs/reference/sigrok-linkr-v2.md`).

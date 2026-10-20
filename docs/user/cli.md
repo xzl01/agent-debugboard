@@ -28,6 +28,12 @@ running a graphical debug binary directly from the source tree on NixOS,
 launch it inside `nix-shell` so `libayatana-appindicator3` is available to the
 Tray. Headless mode does not construct the AppIndicator UI.
 
+The daemon still contains the legacy CH347 `uart0`/`uart1` Serial Broker and MCP
+serial client. Those commands are non-J4 compatibility/test-fixture paths
+pending separate removal. They are not the production target terminal. Use the
+board-hosted xterm.js terminal, MCU `serial.j4`, J4 CDC ACM, or raw TCP 5555 for
+J4.
+
 ```sh
 # Check connection and board health
 radxa-linkr-debuggerctl doctor
@@ -75,7 +81,7 @@ radxa-linkr-debuggerctl power set vdd_5v on
 ## ADC (Current And Voltage Monitor)
 
 Four INA226 channels cover `5v_out`, `12v_out`, `20v_out`, and `vdd_5v`;
-`adc3` is a separate monitor-only voltage channel on GP29. Default output is
+`adc0` through `adc3` are four monitor-only pad-voltage channels. Default output is
 concise (`5v_out=0.540000A`); add `-v` for raw ADC fields like `signal` and
 `mv`.
 
@@ -83,6 +89,7 @@ concise (`5v_out=0.540000A`); add `-v` for raw ADC fields like `signal` and
 radxa-linkr-debuggerctl adc read
 radxa-linkr-debuggerctl adc read 5v_out
 radxa-linkr-debuggerctl adc read vdd_5v
+radxa-linkr-debuggerctl adc read adc0
 radxa-linkr-debuggerctl adc read adc3
 ```
 
@@ -101,22 +108,25 @@ radxa-linkr-debuggerctl adc record /tmp/adc.csv 500 --rate-hz 250
 - Each output record includes host receive timestamps plus `metadata.requested_rate_hz`
 - Device timing is preserved under `metadata.device_timing`
 - Ring overruns are reported as `metadata.dropped_samples` on the first affected row
-- NDJSON preserves all five descriptors. CSV is a fixed four-current-rail
-  table; unknown or unavailable rail fields are empty cells.
+- NDJSON preserves all eight descriptors. CSV starts with the four current
+  rails and appends `adc0_voltage_uv` through `adc3_voltage_uv`; unknown or
+  unavailable fields are empty cells.
 
 ### JSON ADC output
 
-`--json adc read` carries the raw diagnostic chain: `raw`, `mv`, `current_ua`, `voltage_uv`, `sensor_value`, plus the power-output state for the four current rails and the ADC3 voltage. The host CLI presents firmware values directly without host-side calibration. PD control is available through `pd status`, `pd fixed MV`, and `pd pps MV` (board limit 20 V).
+`--json adc read` carries the raw diagnostic chain for the fixed eight-channel
+order: four current rails followed by ADC0..ADC3 pad voltages. The host CLI
+presents firmware values directly without host-side calibration. PD control is
+available through `pd status`, `pd fixed MV`, and `pd pps MV` (board limit 20 V).
 
 ## Switch Routes
 
-Three mux switches control physical signal routing:
+Two mux switches control physical signal routing on x1.2:
 
 | Switch | Routes between | Values |
 |--------|---------------|--------|
 | `sd` | TF/SD card path | `target`, `usb-reader` |
 | `usb` | J12 lower-port USB device routed to PC or target | `pc`, `target` |
-| `vin` | CH347 VIO voltage | `3.3v`, `1.8v` |
 
 ```sh
 radxa-linkr-debuggerctl switch list
@@ -126,7 +136,8 @@ radxa-linkr-debuggerctl switch route usb target --confirm
 radxa-linkr-debuggerctl switch route usb pc --confirm
 ```
 
-USB and VIN routes require `--confirm` because they have visible side effects. VIN defaults to 3.3V at boot. Switching to 1.8V is an expert operation — confirm the target supports 1.8V signaling first and connect physical VIO measurement equipment.
+USB route changes require `--confirm` because they have visible side effects.
+x1.2 has no VIN/VIO route; old `switch vin` examples do not apply.
 
 For `switch usb`, J12's upper port connects to the target and the lower port
 holds the USB device being switched. Route `pc` connects that device to the PC
@@ -145,7 +156,12 @@ radxa-linkr-debuggerctl gpio input GP13
 
 ## Automated Test Scripts
 
-`test run` executes a `linkr-test.v1` NDJSON script. `--serial` remains an alias for `--serial-uart0`; use `--serial-uart1` when a script contains UART1 steps. UART1 is never silently routed to UART0: its device path must be explicit. `--output` writes the result to disk; `.json`, `.csv`, and `.ndjson` extensions select the report format, while other extensions default to JSON.
+`test run` executes a `linkr-test.v1` NDJSON script. Its `--serial` /
+`--serial-uart0` / `--serial-uart1` options are retained generic legacy
+dual-UART/CH347 test fixtures; they do not select MCU J4 and are not recommended
+for operator J4 use. Within that legacy runner, UART1 still requires an explicit
+device path and is never silently routed to UART0. `--output` writes the result
+to disk; `.json`, `.csv`, and `.ndjson` select the report format.
 
 ```sh
 radxa-linkr-debuggerctl test run startup.ndjson --serial /dev/tty.usbserial-1234

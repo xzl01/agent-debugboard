@@ -37,7 +37,7 @@ class on `<html>` swaps the ramp; `color-scheme` follows the active theme.
 | `--c-terminal-ink` | `15 23 42` | `226 232 240` | Terminal foreground |
 | `--c-scroll` | `148 163 184` | `71 85 105` | Scrollbar thumb (CSS only, no Tailwind alias) |
 | `--c-overlay` | `15 23 42` | `0 0 0` | Drawer and modal backdrop |
-| `--c-gpio-low` | `15 23 42` | `2 6 23` | Safe-GPIO pinout LOW live-level disc (CSS only, no Tailwind alias) |
+| `--c-gpio-low` | `15 23 42` | `148 163 184` | Neutral Safe-GPIO LOW indicator; contrasts with connector and panel surfaces in both themes (CSS only, no Tailwind alias) |
 | `--c-gpio-on-level` | `255 255 255` | `255 255 255` | Label text on live-level GPIO discs (CSS only, no Tailwind alias) |
 
 Opacity modifiers are part of the language: surfaces and borders commonly use
@@ -168,15 +168,27 @@ Composite patterns outside `ui.tsx` that are part of the language:
   lockup uses the fixed `--c-identity` token. Neither replaces the semantic
   `brand`, `ok`, `warn`, or `danger` UI ramps.
 - Shared measurement sparkline (`PowerSparkline.tsx`): one reusable SVG/history
-  implementation serves rail current/power and GPIO29/ADC3 voltage. It retains
-  exactly 90 samples, uses the existing inset surface (`rounded-lg
+  implementation serves rail current/power and firmware-reported ADC voltage
+  channels. It retains up to 600 browser-observed samples per channel, previews
+  the latest 90, uses the existing inset surface (`rounded-lg
   border-line/50 bg-panel2/35`), technical values in `font-mono`, token-only
-  grid/trace colors, and a localized meaningful `aria-label`. Rail current and
-  power preserve their existing auto-scale plus `brand`/`warn` traces. ADC3 is
-  monitor-only, renders only when firmware reports `adc3`, uses a fixed
-  `0..3,300,000 uV` (0..3.3 V) scale, and formats the latest value to three
-  decimal volts. Its section sits below the current rows and above the Power
-  analyzer, with no controls, trigger, probe scaling, or export affordance.
+  grid/trace colors, and a localized meaningful `aria-label`. The four current
+  channels preserve their current/voltage/power overlay and independent scales.
+  The monitor-only voltage section follows descriptor order below the current
+  rows: `grid grid-cols-1 gap-3 sm:grid-cols-2` gives four reported channels a
+  desktop 2×2 layout and a mobile single column. Each inset card uses
+  `rounded-lg border-line/60 bg-panel2/40 p-3`, displays the firmware name,
+  signal and optional note verbatim, and has its own chart and latest value.
+  Channel histories are keyed by mode, name and signal, never by array position.
+  All ADC charts use a fixed `0..3,300,000 uV` (0..3.3 V) scale and format the
+  latest ADC-pad voltage to three decimal volts, with no host divider conversion
+  or pin map. A visible section disclaimer distinguishes ADC-pin voltage from
+  power-rail/source voltage. Unreported or invalid readings are never fabricated
+  or replaced with zero; missing samples break history instead of joining across
+  the gap. Compact mode keeps identities and latest values but no charts.
+  Voltage channels have no controls, trigger, probe scaling, capture or export
+  affordance; the Power analyzer capture stays current-only.
+- Watchdog status badges use a wrapping `flex` row with `gap-2`; long localized badges move to the next line instead of overflowing the card.
 - Segmented control (switch routes, layout pickers): container `grid
   grid-cols-2 rounded-lg border border-line/70 bg-panel2/60 p-0.5`, segments
   `min-h-9 rounded-md px-3 py-1 text-xs font-medium transition-colors`, active
@@ -191,18 +203,39 @@ Composite patterns outside `ui.tsx` that are part of the language:
   py-3`, danger icon + title, dim detail, retry `Button`.
 - Inline error note: `rounded-lg border border-danger/30 bg-danger/10 px-3
   py-2 text-xs text-danger`.
-- Modal dialog (SerialCard setup): backdrop `fixed inset-0 z-50 flex
-  items-center justify-center bg-terminal/70 px-4 py-6` closing on outside
-  click; dialog `role="dialog" aria-modal="true" aria-labelledby` `w-full
-  max-w-lg rounded-xl border border-line/80 bg-panel shadow-2xl`, header row
-  with ghost close icon button, body `px-4 py-4 text-xs text-ink-dim`. While
-  open: focus moves into the dialog, Tab is trapped across
-  `FOCUSABLE_SELECTOR`, Escape closes, `body` scroll locks, focus restores to
-  the opener on close. Modal overlays render through a `document.body` portal
-  so transformed page ancestors cannot establish their fixed-position
-  containing block. Dialogs use `max-h-[calc(100dvh-3rem)] overflow-y-auto`,
-  matching the overlay's `py-6`, so short dynamic viewports keep every section
-  reachable without clipping.
+- J4 terminal: one xterm.js surface, with a visible `xterm.js · MCU UART`
+  renderer identity even while disconnected, and no
+  dual-UART tabs, split layout, external-device chooser, Host archive drawer,
+  or browser-security setup modal. Connect/disconnect stays directly in the
+  wrapping toolbar. UART settings expand inline with `aria-expanded`, actual
+  firmware values and generation, explicit Apply, pending state, and a visible
+  USB ACM/DTR ownership note. No host, noVNC, Telnet, or SSH transport controls
+  appear. Icon controls use 40px targets and localized labels/titles; the
+  screen-reader-enabled terminal retains keyboard focus, font controls,
+  ResizeObserver fit, theme updates, and fullscreen fit on mobile/desktop.
+- J4 owns a separate MCU live-session WS, never the ADC connection. Binary RX
+  goes straight to xterm's streaming byte decoder. Binary TX is <=480 bytes per
+  message with <=8 outstanding and one MCU in-flight message; browser-buffer pressure is visible and never
+  silently queues an unlimited paste. UART-complete events, not accepted/socket
+  sends, advance TX. Read-only, suspended, faulted, and configuring states stop
+  input. The App attempts the shared session once after board availability,
+  and once per explicit availability/reboot epoch (uptime decrease or restart
+  recovery). A failed/unavailable/closed connection or manual Disconnect stays
+  quiet through later status ticks; there are no retry timers. Manual Connect
+  remains available. Every new connection uses a fresh independent session,
+  deletes only its own old one and never replays old TX. StrictMode's effect
+  probe does not consume or duplicate the single automatic attempt. Missing
+  serial firmware is a calm Unavailable state. Drops are warn-toned, errors inline, and
+  current settings remain the authority after a conflict. A per-instance 1 MiB
+  raw RX tail supports byte-exact download; it is not a persistent Host archive.
+- The App-owned J4 session is shared by the terminal renderer, startup analysis,
+  and automation through `useJ4Serial`/`J4SerialSession`, not terminal DOM state.
+  Unmounting the renderer does not close an automation connection. The workflow
+  schema, conditions, defaults, import/export, and state badges use only `j4`;
+  there are no unpublished-channel aliases or browser-draft migrations. Serial
+  preflight reads this backend's actual MCU state and refuses read-only,
+  suspended, configuring, faulted, disconnected, or pending-write states before
+  hardware operations. Automation ownership disables manual xterm input.
 - Blocking confirmations elsewhere (Boot, OTA test boot, VIN change, switch
   `requires_confirm`, task runs) currently use `window.confirm` with an
   interpolated message naming the target and consequence. Task-run
@@ -210,6 +243,13 @@ Composite patterns outside `ui.tsx` that are part of the language:
   source, request count) and carries the non-transactional hardware warning;
   a cancelled run renders as partial/uncertain (`warn` tone), never as a
   rollback.
+- PD requested voltage starts unknown (`voltage_mv: 0` is a client-side
+  unknown sentinel, never a 0 V request). The initial draft is empty and its
+  controls are disabled until an authoritative status/PD GET reports voltage.
+  Neither 5 V nor the first advertised profile is a client default. A reported
+  20 V is shown directly, including while capability discovery is pending;
+  an older GET cannot replace a newer status voltage. Mounting/rendering never
+  applies PD settings or saves persistent configuration.
 
 ## 5. Interaction states
 
@@ -237,11 +277,11 @@ Composite patterns outside `ui.tsx` that are part of the language:
   cycle), while Offline flashes all four together on the same 1.2s cycle.
 - In Ready, the original wedge positions have fixed meanings. Upper-left is
   `5v_out`, upper-right is `12v_out`, lower-left is `20v_out`, and lower-right
-  is Host Bridge UART. A main-rail wedge is identity green only while the
+  is reserved. A main-rail wedge is identity green only while the
   latest firmware snapshot reports that rail on; otherwise it stays dim
-  `ink-dim`. The UART wedge stays dim while disconnected and uses a repeating
-  `brand` heartbeat while either UART channel is connected through Host
-  Bridge. Direct Web Serial never drives that heartbeat.
+  `ink-dim`. The reserved wedge stays dim. J4 connection/readiness is reported
+  by the workbench status badge using the shared MCU session state, not host
+  process activity or a second transport's heartbeat.
 - The original X leaves a central diamond; that existing negative-space shape
   is filled with `ok` and runs a 0.8s double heartbeat while the board is
   Ready. It is static under reduced motion and absent while Starting or
@@ -366,51 +406,87 @@ and interaction behavior only; implementation lands with the card itself.
 
 ## 11. Safe-GPIO pinout live-level contract
 
-The GPIO card (`GpioCard.tsx`) is a single compact pinout section: connector
-SVG, a 2x2 four-swatch legend, and a localized gesture hint. The pinout
-grouping is firmware-authoritative: `groupGpioLayout` (`gpioLayout.ts`)
-derives connector groups and their row/column extents from the
-`layoutGroup`/`layoutRow`/`layoutColumn` metadata in the latest `SafeGpio`
-snapshot. Top-level HTTP/WS `gpio_layout_groups` entries (`name`, `edge`,
-`order`) provide group presentation: ascending `order`, with snapshot order
-breaking ties and unlisted groups following listed groups. Only the explicit
-`right` edge enables a right-edge side-exit illustration; missing or unknown
-edges keep the neutral generic container. No connector name is special-cased.
-The host owns no connector dimensions, pin maps, or mirroring; extents come
-from the reported nonnegative integer coordinates. Pins with
-missing, invalid, or duplicate-cell metadata are never dropped: they render
-in a generic single-column fallback group (labeled `logicAnalyzer.fallbackGroup`)
-in snapshot order, presented as a plain list that claims no board geometry.
-Every illustration shows only allowlisted controllable pins, never a complete
-physical header. Unreported cells remain blank and inert, not inferred power
-or ground pins. Right-edge groups replace the closed frame with a muted
-`panel2` board-interior fill, an open-right outline, and short horizontal
-`ink-dim` contacts extending 10 SVG units beyond the existing group width.
-The group name stays on the board-interior side. All this decoration is
-`aria-hidden` and `pointer-events="none"`; pin centers, labels, and hit radii
-are unchanged. Localized visible and accessible descriptions explain both
-the side exit (only where reported) and the controllable-pin subset.
+The IO drawer has one GPIO surface: the complete physical connector diagram
+inside `GpioCard.tsx`, directly above Watchdog on desktop and mobile. There is
+no separate nine-item control list, Safe GPIO heading, or GPIO title/subtitle.
+The nine safe physical circles themselves carry the original gestures and live
+level/direction. There are no static pin-key tables, duplicate connector lists,
+visible level legend or long gesture paragraphs between the circles and
+Watchdog. Complete instructions remain linked through aria-describedby as
+sr-only text; only the quiet orientation line and mobile scroll tooltip remain
+visible in the diagram card. All fifteen other physical
+contacts remain inert, without button roles, tab stops or event handlers.
 
-The test-only x1.2 snapshot (`gpioLayout.testFixtures.ts`) follows the confirmed
-J8 numbering: left top-to-bottom 10..1 and right 20..11. Its controllable J8
-subset occupies only left-column rows 4..9; the top four rows remain empty,
-and no right column is invented. J13 shows USER at top-left, RSET at top-right,
-and MASKROM at bottom-left; its physical pin4 GND stays an empty, inert cell.
-GP17/GP18 remain in the GPIO catalog but have no connector group, so they
-appear in the generic fallback, not on J8. These are representative test
-inputs, not host-side mapping rules. The long J8 viewBox preserves the
-firmware coordinates and leading blank rows; do not crop, mirror, or compact
-them implicitly. Any future empty-row folding needs an explicit gap marker
-and a separate design decision, never changed physical coordinates.
+The sole physical geometry authority is GET
+`/api/v1/gpio/layout`: `view: component-top`, ordered groups, explicit matrix
+dimensions and every physical cell. The host has no pin map, connector-name
+special cases, inferred cells, mirroring, compaction, or fallback diagram.
+The final display contract is explicit and supersedes rotation/view wording:
+**solder pins facing down; J13 on the left; J8 on the right; upright text;
+no mirroring**. The localized caption reads **焊接引脚朝下** / **Solder pins
+facing down**. `placePhysicalAssembly` places headers side by side in reverse
+metadata order, with one matrix-unit gap. Within each header, source column
+becomes display row and source rows run right-to-left. J8 is two rows of ten:
+upper 1..10, lower 11..20, both left-to-right. J13 is 1/2 above 4/3.
+Tests assert J13-left/J8-right/pins-down directly, every adjacency and the
+signed orientation to prevent a mirrored implementation. No board-specific
+mapping is copied into production code.
 
-The legend maps
-level and direction independently: a LOW disc, a HIGH disc, a dashed ring
-labeled input, and a solid ring labeled output, all reusing the existing
-`gpio.low/high/input/output` strings and token colors. The hint is four
-phrase-level `inline-block` chunks (short press, double press, hold, keys)
-with separators between chunks, so CJK phrases such as `输出高电平` wrap
-only as a unit at narrow widths instead of orphaning a character. There is
-no selection
+All glyphs remain upright: no SVG/CSS rotate transform is applied to text.
+Signal purpose sits **inside** the double-ring circles: ADC0–ADC3, SDA/SCL,
+USB D+/D− or hub purpose, power/GND, or a generic safe GPIO name. These are
+formatted from firmware label/role metadata, not MCU-number mappings. Small
+physical pin numbers sit outside the circle. Dedicated route contacts have
+brand-tinted double rings, their purpose inside (`USB MUX`, `TF SW`), and a
+tooltip/accessible name explaining that route controls own them. Raw signals
+for these contacts are explicitly labeled **net name**, never interpreted as
+MCU GPIO numbers or converted into gpioName. Full identity, signal and role
+remain available in accessible names/tooltips instead of duplicate static
+tables beneath the diagram.
+Only `edge: right` opens the posed frame downward and adds downward side-exit
+contacts; unknown edges retain a neutral frame. Decoration is non-interactive
+and aria-hidden. The diagram stays at one CSS pixel per SVG unit so its
+44px targets never shrink or overlap. Desktop shows the complete assembly.
+On narrow phones only the pin diagram scrolls horizontally, with a visible
+swipe hint; the page itself never overflows. Watchdog follows below in normal
+vertical document order.
+
+`gpioPhysicalLayout.ts` validates the response envelope, unique group names
+and orders, bounded integer dimensions, exact rows×columns coverage, unique
+coordinates and physical pin numbers within each connector, and consistent
+control/output capability flags. Controllable cells require unique gpioName.
+Every live SafeGpio must match exactly one controllable cell by **gpioName**,
+and vice versa. Physical numbers are never MCU GPIO numbers. Unknown roles
+are retained as neutral text, not promoted to controls.
+
+`useBoardGpioLayout` reads once after the first successful status read per
+connection epoch, including live mode. Disconnect invalidates metadata and
+aborts its request; a reconnect reads again. Identity and AbortController
+checks prevent late results from an earlier epoch or unmount replacing the
+current layout. A layout failure does not make the board offline and does not
+retry on every poll. The GPIO card instead shows a localized read-only error,
+with no guessed host-side layout. A live board without the endpoint may keep
+showing that error until its firmware is updated and it reconnects.
+
+The current firmware reports full J8 2×10 and J13 2×2 matrices: 24 positions,
+nine interactive physical circles and fifteen inert sockets. GP17/GP18 are
+absent. Every gesture is joined to the live GPIO by the exact gpioName and
+guarded again at GpioCard's request boundary; physical numbers and raw net
+names never become request identifiers. Inert cells have purpose/identity,
+no fabricated level/direction, and no invisible hit circles.
+The test-only
+`gpioPhysicalLayout.testFixtures.ts` contains explicitly illustrative inert
+signals and synthetic future connectors, never production fallback data.
+
+LogicAnalyzerCard keeps the separate dynamic `GpioPinoutSvg` /
+`groupGpioLayout` path and its current selectable safe-GPIO subset. Physical
+inert connector cells are never logic-analyzer selection targets.
+
+Level and direction remain independent: a LOW disc, a HIGH disc, a dashed
+input ring and a solid output ring use the existing tokens and accessible
+state labels. The complete short/double/hold/keyboard instructions are sr-only,
+localized and connected to every interactive pin. Error/success feedback
+still appears after the stable diagram when needed. There is no selection
 state, no selection ring, and no action row: pointers act on a pin directly
 through a short/hold/double-press gesture, and the keyboard acts immediately.
 GPIO pins bind no context-menu action. The pinout always reflects the latest
@@ -460,15 +536,16 @@ the direction boundary at any scale:
 - The pin label on a live-level disc uses `rgb(var(--c-gpio-on-level))`
   (white), matching the existing white-on-danger `Button variant="danger"`
   precedent.
-- The transparent hit-target circle (`r = 17`) stays the outermost interactive
-  layer. Each group has an independent SVG at a minimum `22 / 17` CSS-pixel
-  scale, rounding viewport dimensions up to whole CSS pixels so subpixel
-  layout cannot reduce the 44px hit diameter. Pin centers stay unchanged. Groups wrap
-  using `gap-2` instead of shrinking the whole diagram at 320/375px. A
-  `max-w-full overflow-x-auto` viewport contains unusually wide, arbitrary
-  firmware groups without causing horizontal page overflow. Normal two-column
-  groups need no horizontal scrolling. The GPIO inset may use `max-w-md`;
-  the logic-analyzer sidebar keeps its existing 300px layout.
+- GpioCard now renders the original concentric layers at 1 CSS px per SVG
+  unit instead of `22 / 17`. Visible circle diameter is about 23% smaller,
+  with the same radii, separate level disc, dashed/solid direction ring,
+  hold arc, focus and pending rings. Its transparent hit circle is explicitly
+  `r = 22`, preserving a 44px target without making the visible control
+  larger. Physical columns are 46px apart, so targets never overlap or invade
+  another control. The nine physical targets have keyboard access
+  and each control includes its connector/pin number in the accessible name.
+  `GpioPin`'s legacy default `r = 17` remains unchanged for the independent
+  dynamic pinout/logic-analyzer consumers.
 
 Timing constants (GPIO variant only) — shared by every pointer path:
 
@@ -541,9 +618,12 @@ Firmware authority and feedback:
   holds no local direction or level mirror. Pin name, direction, and level
   are re-derived from the latest `SafeGpio` snapshot on every render, and a
   request argument object always comes from that snapshot.
-- The card holds no machine-readable per-pin output capability (GP29
-  included): unsupported output requests are rejected by the firmware and
-  surfaced through the standard inline `role="alert"` error. Successful
+- Physical outputCapable metadata gates both GpioPin gesture dispatch and
+  the GpioCard request entry. Input-only cells (including GP29) never request
+  output LOW/HIGH through taps, holds or keys, and show no HIGH hold arc.
+  The pre-existing double-tap and I input actions remain available; the
+  input-only exception is included in the sr-only instructions and accessible pin name.
+  Successful
   actions announce a localized polite status (`role="status"`,
   `aria-live="polite"`).
 - Async feedback (success status and error alert) renders after the stable

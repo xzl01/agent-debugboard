@@ -103,25 +103,11 @@ Pushes to `dev` deploy the production build to
 path automatically; local development continues to use `/`.
 
 GitHub Pages serves the UI over HTTPS, while the board exposes its REST and
-WebSocket APIs over HTTP on the USB-NCM network. Start the loopback device
-gateway before using hardware controls from the hosted page:
-
-```sh
-npm --prefix web ci
-npm --prefix web run build
-npm --prefix web run host
-```
-
-The Pages build connects to `http://127.0.0.1:8787/api/v1`. Linkr Host forwards
-HTTP and WebSocket traffic directly to the firmware service at
-`http://172.29.203.1` and supplies the CORS and Private Network Access headers
-needed by the browser. Override the upstream with `LINKR_BOARD_URL`. The Rust
-Host talks directly to the USB-NCM address and does not use the legacy Node/Ruby
-gateway implementation.
-The gateway listens on loopback only and does not expose board controls to the
-LAN. Browser requests are limited to the official Pages origin and local
-development origins. Additional trusted origins can be supplied as a
-comma-separated `LINKR_TRUSTED_ORIGINS` value.
+WebSocket APIs over HTTP on USB NCM. Prefer the board-hosted page for direct
+device access. A static deployment needs an API origin compatible with the
+browser's HTTPS, CORS, and local-network restrictions; configure that origin with
+`VITE_DEVICE_API_BASE`. J4 uses the configured MCU API and has no separate host
+serial connection or fallback transport.
 
 The power analyzer arms firmware-side manual, current-threshold, power-on, or
 GPIO-edge captures. It overlays the latest four runs and exports CSV/NDJSON with
@@ -210,102 +196,81 @@ is not a libsigrokdecode Python plugin compatibility layer. The capture and
 decode workflow: arm capture, wait for done, then decode in-browser using the
 WASM decoder with annotations rendered in the waveform view.
 
-The serial card keeps independent UART0 and UART1 sessions. Tab mode switches
-the visible terminal without disconnecting either channel; split mode shows both
-terminals and routes keyboard input only to the focused terminal. Both channels
-share the CH347F UART VIO level shown in the card header. Changing between 3.3V
-and 1.8V requires an explicit risk confirmation; both active serial connections
-are closed before the firmware VIN route is changed.
-The console uses an xterm-compatible terminal surface: click the terminal and
-type directly, without a separate command input. Terminal writes are serialized
-so fast typing cannot contend for the Web Serial writer lock. The terminal only
-renders data returned by the target; successful host writes are reflected by the
-TX counter. Enter sends CRLF by default, matching the previous line-input
-console; CR and LF modes are also available from the terminal toolbar.
+## J4 target serial terminal
 
-## Target serial console
+The Web product exposes **one J4 terminal**, backed by the board MCU.
+Click **Connect J4** and type directly in xterm.js.
+There is no browser-device chooser, insecure-origin override, local serial
+broker, host connection button, noVNC, Telnet, or SSH control in this workspace.
+Generic Host/MCP tooling remains separate; its serial implementation is not used
+by the J4 terminal.
 
-Edge and Chrome/Chromium can use Web Serial directly from secure origins such as
-the local Vite server or GitHub Pages. Users must still click the **Web
-Serial** button and accept the browser device chooser.
+The terminal reads `GET /api/v1/serial/j4` before allocating its own
+`POST /api/v1/live-sessions` session. The returned `ws_url` is rewritten through
+`api.liveWebSocketUrl`, keeping development and board-hosted WebSocket upgrades
+on the configured API origin. It sends the text subscription
+`{"type":"subscribe","topic":"serial.j4"}`. This is a separate socket from
+ADC telemetry or the logic analyzer. Binary WS payloads are raw UART bytes,
+written to xterm as `Uint8Array` so its UTF-8 decoder can span frames; invalid
+UTF-8 remains a terminal-display limitation, not a transport conversion.
 
-The board-hosted page runs at `http://172.29.203.1/`, which is plain HTTP
-and therefore not a secure context by default. Ordinary web pages cannot
-navigate to browser-internal `chrome://` URLs; the address must be copied and
-pasted into the address bar manually. Edge also accepts this Chromium address.
+Keyboard text is UTF-8 encoded; xterm binary input keeps its original bytes.
+Each binary TX message contains at most 480 bytes. At most eight TX messages
+may be outstanding, with only one admitted to the MCU at a time; the next is
+sent after physical completion. An oversized paste or high browser `bufferedAmount` rejects
+input visibly rather than growing an unbounded queue. TX counts only completed
+UART writes, not socket sends or admission acknowledgements. Enter line endings
+remain selectable (CR, CRLF, LF). No local echo is added.
 
-To enable direct CH347 Web Serial from the board-hosted page:
+**UART settings** shows the actual baud, 5–8 data bits, parity, stop bits,
+flow control, generation, and USB ACM DTR. Applying a tuple uses
+`PUT /api/v1/serial/j4/config` with `expected_generation`; admission is asynchronous,
+not a successful apply. A bounded poll follows the pending operation if a WS
+state update has not completed it. USB ACM line-coding/CAS conflicts refresh the
+actual tuple without retrying the mutation. Suspended, faulted, read-only,
+applying-settings, and backpressure states disable manual TX.
 
-1. Copy the Chromium flag-page address below.
-2. Copy the exact origin address.
-3. Enable the flag and relaunch the browser.
+Reconnect is explicit: it creates a fresh session, deletes only the terminal's
+own old session, and never replays queued input. Configuration generations also
+invalidate pending TX and decoder state. Old firmware without the J4 endpoint
+shows **Unavailable** without opening a WS or repeatedly retrying. Receive drops
+are visible. Each mounted terminal holds at most the latest 1 MiB of raw RX for
+byte-exact `.bin` download; this memory-only log is cleared on page closure.
+For `serial_overrun`, `dropped_bytes` is the event delta and
+`total_dropped_bytes` is cumulative. A fresh subscription anchors to its first
+delta, then counts only increasing totals; duplicate/stale totals and a reused
+firmware slot's historical losses are not counted again.
 
-```text
-chrome://flags/#unsafely-treat-insecure-origin-as-secure
-```
+`useJ4Serial` creates one App-owned `J4SerialSession`. The xterm renderer,
+startup analysis, and workflow runner use that same backend owner, including
+its actual connection/configuration state, bounded TX queue, and streaming UTF-8
+RX subscriptions. Hiding or unmounting only the renderer does not disconnect an
+active automation task. App teardown closes the owned session. Manual terminal
+input is locked while automation owns J4; no DOM scraping or keyboard injection
+is used by serial steps. Independent future pipelines can create separate
+owners without a shared global socket.
 
-Add exactly:
-
-```text
-http://172.29.203.1
-```
-
-The board-hosted setup dialog surfaces both addresses as independent copy
-buttons. Copy success confirms the text was copied to the clipboard; it does not
-confirm that the serial connection works. The browser device chooser still
-appears when the **Web Serial** button beside **Bridge** is clicked and must be
-accepted manually.
-
-Because the board page is served over HTTP (not HTTPS), the Clipboard API may
-not be available in all browser contexts. The copy buttons therefore try an
-HTTP-compatible copy fallback; if copying still fails, the full address remains
-visible for manual selection. Chooser acceptance and user gesture requirements
-are never removed by the override.
-
-If you do not enable the override, keep the board page open and use the host-side
-bridge instead:
-
-```sh
-npm run build
-npm run host
-```
-
-Then use the **Bridge** button in either serial terminal. The bridge prefers the
-CH347F `D1` device for UART0 and `D3` for UART1, with sorted device order as the
-fallback when those suffixes are unavailable. Bridge mode uses the versioned
-`linkr-serial-broker.v1` protocol: one host-owned connection per UART is shared
-by Web, automation, and MCP clients; receive data is broadcast, writes
-are ordered and acknowledged, and an automation client can claim exclusive
-write access. The old unversioned/raw-text WebSocket protocol is intentionally
-unsupported. See [the Serial Broker protocol](../docs/reference/serial-broker.md).
+All serial wait/send/expect steps, including condition checks and nested Units,
+use `channel: "j4"`. Import, export, defaults, browser-draft parsing, and runtime
+plan validation enforce that single value. Obsolete unpublished channel drafts
+are rejected rather than migrated. Preflight requires the MCU serial state to
+be ready, writable, and free of pending writes before any hardware steps run.
+Receive matching remains streaming UTF-8 text; raw bytes are preserved in the
+terminal/download path, while invalid UTF-8 displays as replacement characters.
 
 ## Local MCP server
 
-Agents can use the same gateway and Serial Broker through a local stdio MCP
-server:
-
-```sh
-npm run build
-npm run --silent mcp
-```
-
-The npm command invokes the Rust `linkr-host mcp` adapter. It exposes bounded
-status, ADC, confirmed power/route controls, and cursor-based UART tools without
-opening a second CH347F handle. MCP automatically starts the loopback Host when
-needed; tool listing does not touch the board. Configuration, tool contracts
-and safety exclusions are documented in
-[the local MCP server guide](../docs/reference/mcp-server.md).
-
-The gateway exposes a host-only `/healthz` readiness endpoint, so MCP does not
-issue an extra firmware status request before every operation. Board status is
-compact by default; dedicated serial status and login tools avoid repeated
-full-log reads and hand-written prompt sequences.
+Native agent tooling is independent from the Web J4 backend. Its configuration,
+tool contracts, and safety exclusions are documented in
+[the local MCP server guide](../docs/reference/mcp-server.md); none of its serial
+transport code is imported into the Web product.
 
 ## Startup power analysis
 
 The infrequent startup workflow lives under **Debugger maintenance** rather than
-on the primary dashboard. It requires the selected UART0 or UART1 connection and
-an idle power-capture session. After one explicit confirmation it:
+on the primary dashboard. It requires a ready J4 MCU serial connection and an
+idle power-capture session.
+After one explicit confirmation it:
 
 1. clears and records the target serial console;
 2. turns the selected rail off and waits for the configured discharge delay;

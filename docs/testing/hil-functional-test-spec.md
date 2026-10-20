@@ -30,6 +30,12 @@
 6. OTA 路径相关改动必须验证上传、测试启动、手动确认基本流程
 7. 新增功能补对应 functional test（可行时）
 
+持久化配置可能在 HTTP/CDC/WS control transport ready 之前重放并打开 `5v_out`
+或 `vdd_5v`。这不改变 HIL 操作顺序：transport ready 后的**第一条 host hardware
+mutation**仍必须显式确认/设置 `5v_out=on`，第二条 mutation 请求 fixed PD 20 V，
+随后用 INA226 验证 5 V rail 后才能继续其它硬件操作。报告必须区分“启动重放已为
+on”和“host 首次 mutation 再次确认 on”。
+
 ## 标准构建与烧录
 
 ### 构建
@@ -184,12 +190,12 @@ print('Phase 2 memory schema check passed')
 "
 ```
 
-验证 HTTP 响应 JSON 长度低于专用 6144 字节 status buffer（协议限制检查）：
+验证 HTTP 响应 JSON 长度低于专用 6656 字节 status buffer（协议限制检查）：
 
 ```sh
 LEN=$(timeout 5s curl -fsS http://172.29.203.1/api/v1/status | wc -c)
 echo "status response size: $LEN bytes"
-[ "$LEN" -lt 6144 ] || { echo "status response must be below 6144 bytes"; exit 1; }
+[ "$LEN" -lt 6656 ] || { echo "status response must be below 6656 bytes"; exit 1; }
 ```
 
 验证 WebSocket `snapshot/status` 的 initial snapshot 只用于形状校验，后续 event-driven subsequent snapshots 由状态变化触发：
@@ -321,38 +327,33 @@ timeout 5s curl --compressed -fsS http://172.29.203.1/assets/app.js >/dev/null
 再用 Edge/Chromium 打开 `http://172.29.203.1/`，确认页面识别正确 MCU、状态轮询
 没有失败请求，并切换到实时模式验证 `/api/v1/ws/<slot>` 持续收帧。
 
-串口卡片必须按以下两个分支之一完成验证：
+#### J4 xterm.js terminal
 
-**分支 A（override 已启用，直连 Web Serial）**：
+产品只提供单一逻辑串口 `j4`。使用 Edge/Chromium 打开板载页面后进入 **Web
+Terminal**，必须验证：
 
-1. 在 `chrome://flags/#unsafely-treat-insecure-origin-as-secure` 中加入精确来源
-   `http://172.29.203.1`（将地址复制后粘贴到浏览器地址栏，普通网页无法直接导航到
-   `chrome://` 页面）。Edge 同样接受该 Chromium 地址。
-2. 重启浏览器，重新打开板载页面 `http://172.29.203.1/`。
-3. 确认卡片不再显示红色设置状态，每个可见 UART pane 只在 **Bridge** 旁显示一个
-   **Web Serial** 按钮；该按钮可发起浏览器设备选择器。手动选择 CH347 设备，验证可以收发
-   串口数据。chooser 是浏览器的强制安全机制，测试中不可绕过。
+1. xterm.js 终端自动创建 `/api/v1/live-sessions`、连接返回的 WS slot 并订阅
+   `topic:"serial.j4"`，无需 browser chooser、本机 tty、host broker 或安全来源 override。
+2. 终端连接到真实目标 Linux console，可看到启动/登录输出并完成一次双向输入。手动点击
+   disconnect 后必须保持 sticky disconnected，不得出现自动 retry storm；显式 reconnect
+   后恢复。
+3. 一个完整 final binary WS message 才能成为一条 J4 TX；分别验证两段到达的 480 字节、
+   NUL/`0xff`、前一帧 TEXT 后 BINARY、continuation FIN。481 字节及以上返回明确 error，
+   不能写入 UART。每次成功写先收到 `serial_write_accepted`，物理 wire complete 后再收到
+   同 event id 的 `serial_write_complete`；断连/复用 slot 不得收到旧 completion。
+4. 同时打开 J4 CDC ACM、四个 WS sink 中至少一个，以及两个 `nc <board-ip> 5555`
+   raw-TCP 客户端；让一个 TCP 客户端故意变慢。其它 sink 必须持续收到数据，慢 sink 只增长
+   自己的 drop/overrun。raw 5555 必须保持 binary-transparent，无 Telnet/IAC、banner、echo
+   或 CR/LF 转换。
+5. `GET /api/v1/serial/j4` 的 state、line coding、generation、DTR/RTS、USB configured、
+   sink count、queue/counters 可解析。用当前 generation 执行一次 PUT CAS 并确认新
+   generation；旧 generation 返回 conflict，非法 tuple 不窄化/不排队。
+6. 用 SINGLE/FAST8/WIDE11 中拥有 GP10/GP11 的模式执行一次采集：J4 必须先报告 PAUSED，
+   capture 中 payload 明确被拒绝但 WS/TCP session 不被注销；STOP/terminal cleanup 后
+   UART mux 与 fresh sink epoch 恢复，同一终端无需刷新即可继续。
 
-该 override 属于实验性配置，会降低该来源安全性；它不会移除用户手势或设备选择器要求。
-
-**分支 B（override 未启用，bridge 回退）**：
-
-1. 确认板载页面每个可见 UART pane 只在 **Bridge** 旁显示一个红色 **Web Serial** 按钮，
-   卡片标题区不显示该按钮，原串口说明控件不再渲染；点击 pane 内按钮后弹出三步设置说明。
-2. 依次点击 Chromium 标志页地址块和精确来源地址块，确认两项都能独立复制并各自显示成功反馈。
-   copy 成功仅确认剪贴板写入，不代表串口连接建立。
-3. 因板载页面为 HTTP，Clipboard API 在部分浏览器上下文中可能不可用；此时复制控件必须
-   尝试 HTTP 兼容 fallback。若 fallback 也失败，完整地址仍需可见并允许手动选择复制。
-4. 弹窗需满足无障碍要求：`role="dialog"`、`aria-modal="true"`、初始焦点在弹窗内、
-   Tab/Shift+Tab 限于弹窗内、Escape 关闭弹窗并恢复焦点到触发元素、关闭后恢复 body 滚动。
-5. 另开终端在 `web/` 目录运行 `npm run host` 并保持进程存活，使用 **Bridge**
-   按钮连接 CH347，验证可以收发串口数据。
-
-**Playwright 自动化路径**：区分两类失败模式。`page.goto` 失败或资源加载超时，指向板子
-NCM、HTTP 服务或浏览器配置问题；页面加载成功后断言失败，指向 UI 回归。insecure-context
-（HTTP）测试必须确认红色按钮只打开设置弹窗、不请求串口；override-active 测试必须确认按钮
-进入直连 Web Serial 路径。chooser 展示、手动选择 CH347 和实际串口收发仍由分支 A 的人工 HIL
-完成，不得在自动化中绕过浏览器安全机制。
+测试必须针对板载 port 80 production bundle。port 5173 只是 Vite 开发预览，可额外做
+UI 回归，但不能代替 embedded Web 与真实 MCU WS 路径。所有轮询使用有界重试。
 
 **bounded retries 要求**：所有轮询检测均使用有界重试（有限次数 + 有限间隔），不得使用无限循环。
 超时时间使用 `timeout 5s` 前缀。
@@ -637,8 +638,8 @@ sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh --dry-run safe-
   全绿，且 firmware sysbuild 通过。
 - 指定的目标板身份已记录，包括板子型号、RP2350 批次和固件版本；已从实际
   枚举中识别用于 Zephyr cmdline 的 CDC device，并在所有 CDC 流程中显式传给
-  runner `--serial <identified-cdc-device>`。CH347 target UART 不是持久化
-  配置的前置条件。
+  runner `--serial <identified-cdc-device>`。J4 target UART 不是持久化配置
+  的前置条件。
 - 启动用的合成完整 UF2 文件 `radxa-linkr-debugger-rp2350.uf2` 已构建并
   校验 SHA256，OTA 用 `.bin` 文件 `radxa-linkr-debugger-rp2350-ota.bin`
   已生成。应用产物
@@ -822,8 +823,8 @@ docs/testing/results/<YYYY-MM-DD>-persistent-config-hil.SHA256SUMS
   出线方向。缺失/非法引脚坐标或坐标冲突的引脚进入通用fallback，并按快照顺序
   保留可达性；host不得硬编码连接器、pin map或镜像规则。
 - 固件GPIO数组和布局图只描述可控制safe-GPIO子集，不是完整connector pinout。
-  J8/J13的GND、保留脚和空位必须保持inert，不得命中其它引脚。GP17/GP18仍作为
-  通用GPIO组内的真实控件可达，但不能在J8/J13物理图上虚构孔位。无ADC数据的密度
+  J8/J13的GND、保留脚和空位必须保持inert，不得命中其它引脚。GP17/GP18不属于
+  当前safe/control目录，不能出现在通用GPIO组或J8/J13物理图。无ADC数据的密度
   基准fixture须保持`dense_layout_tests.rs`的预算：80x24至少14行、120x32至少20行。
   实板有ADC时保留七行示波器，按实际目录及物理行配对核对可见数量，不能为凑数
   虚构引脚或跨行配对；所有项目必须可滚动到达。Saved Config每个条目占一行，
@@ -980,7 +981,7 @@ timeout 5s radxa-linkr-debuggerctl --json power set 20v_out on
 timeout 5s radxa-linkr-debuggerctl --json power set 20v_out off
 ```
 
-### 4. ADC 电流监测
+### 4. ADC 电流与 pad 电压监测
 
 四路 INA226 和 CH224A 共用 GP20/GP21 I2C 总线。400 kHz 生产默认的合格基线是：
 生产 BOM 在 SDA/SCL 各装 4.7 kΩ 到常供电板载 VCC_3V3，J8 空载，固件保持
@@ -999,10 +1000,48 @@ timeout 5s radxa-linkr-debuggerctl --json power set 20v_out off
   明确违规。SDA 的绝对最大值虽为 6 V，但没有 powered-off Ioff 规格，仍须测量
   反向电流。板上 ESD5451N 是 5 V TVS，不会把总线钳在 3.3 V，也不能作为掉电
   隔离或反灌保护；这是非频率特定的硬件边界。
-- 实际软件行为是启动时probe CH224A，状态请求继续轮询。无PD源/VHV时失败后进入
-  5秒probe退避，插入源后由后续状态轮询恢复；该期间VCC_3V3供电的INA226总线
-  必须仍可工作。无PD轮询行为可在后续单独HIL验证，但不是400 kHz放行前提，且
-  轮询结果不能证明powered-off Ioff安全。
+- ADC0通过R46/R47（100 kΩ/15 kΩ，full 115 kΩ）观测Q28之后、U10之前的
+  `DC20V`源侧分压，不是直接测量CH224A VHV。CH224A节点只通过Device Tree引用
+  这个私有标准`voltage-divider` sensor；它不与公共telemetry直接共用sensor实例。
+  底层raw ADC访问仍由RP2350 ADC driver的`adc_context`在ADC0及其它通道之间
+  串行化；源侧电压换算必须由firmware按Device Tree完成，不能放到host。
+- CH224A节点使用标准`zephyr,deferred-init`；自动POST_KERNEL init必须被跳过，
+  再由`main`在PIO I2C和voltage-divider已ready后显式`device_init()`一次。该init
+  必须bus-silent，完整target build的init-priority checker不得报告依赖倒序。
+- 每笔真实CH224A I2C read/write之前必须fresh-sample ADC gate，包括probe每个地址/
+  attempt、每次I2C retry、48个capability字节和PPS两次write。absent/unknown要求
+  连续3次`>=2800 mV`、间隔5 ms后才可启动第一笔I2C（总稳定时间至少10 ms）；
+  present后每笔fresh sample `>=2500 mV`可继续，2500–2800 mV仅保持已present。
+  `<2500 mV`、sensor not-ready、fetch/get/换算错误必须立即清presence并阻止剩余
+  retry/write。status和capability在最后一字节后还必须进行一次fresh终点检查。
+- CH224A `0x09` status的有效性只取决于I2C ACK和成功的一字节读取，不能把寄存器
+  值当作器件身份或协议校验。仅解析已命名mask；`0x00`、`0x80`、`0x88`、`0xff`
+  均不得仅因unknown/reserved bit而失败、重试、recover或清PD状态。每次启动首次
+  观察到未知位时应有一条包含raw `0x%02x`值的warning，后续不得刷屏。该warning
+  不属于transport failure，也不能触发5秒probe backoff。
+- gate/ADC/I2C错误使PD unavailable，清除旧gear/PPS/request和capabilities并进入
+  5秒probe退避；除新source的稳定上升边沿外，退避期不得产生CH224A事务。独立
+  低优先级thread约每100 ms只轮询ADC gate，不使用system workqueue，present稳态
+  不读status/capability。稳定复插边沿应清旧source的probe backoff并自动执行一次
+  probe/current status，使恢复不依赖客户端轮询，但不能复活旧请求。完整读取但无
+  有效PDO的`-ENODATA`只进入capability退避；short status不得发布过期的5秒
+  capability缓存。5 V fallback可跳过capability读取，但不能绕过ADC gate。
+- CH224A probe仅可对`-ETIMEDOUT`/`-EBUSY`执行一次标准`i2c_recover_bus()`；普通
+  地址/数据NAK的`-EIO`不得触发bus clear。recovery在发SCL脉冲前和retry前都要
+  fresh ADC gate，失败后维持unavailable和5秒退避。PIO recovery必须继续在bus
+  lock下fail-close，latch=0，仅以OE/PINDIRS下拉或释放，禁止internal pull和主动
+  drive HIGH。`CONFIG_I2C_SHELL=n`保持不变，不增加任意地址/配置入口。
+- ADC gate的板级HIL保持`pending`：后续应独立覆盖absent启动/状态/5 V/20 V/PPS
+  零I2C、三次稳定、迟滞、ADC错误、retry间掉电、capability第N字节掉电、PPS两写
+  之间掉电、约100 ms无人客户端自动拔插恢复、稳态无重复probe/capability、5秒
+  backoff、新源快速重入，以及stuck/timeout时单次恢复和普通NAK不恢复。stuck
+  recovery必须只观测既有/安全故障条件；未经另行授权不得用外部拉线制造电气短路。
+  这些项目不是本次400 kHz数字功能放行前提。
+- gate与约100 ms轮询只能在观测到低电压后阻止**下一笔**事务；它不是IRQ，
+  ADC采样与I2C START之间仍有
+  TOCTOU，正在进行的事务不能撤销。它也不能消除DC20V残压/反灌、外部4.7 kΩ
+  静态路径、未供电器件路径或与INA226共享的SCL波形。不得声称VHV无效时总线
+  零波形、powered-off Ioff合格或已实现物理隔离。
 - 400 kHz 生产默认的原始功能HIL夹具使用与正式BOM等值的SDA/SCL各4.7 kΩ
   飞线上拉到板载VCC_3V3，上拉随板掉电，J8空载，VHV/PD全程在线，且
   **不执行单边掉电**。4.7 kΩ 分别与 CH224A 7/10/15 kΩ internal pull-up
@@ -1026,58 +1065,96 @@ timeout 5s radxa-linkr-debuggerctl --json adc read 5v_out
 timeout 5s radxa-linkr-debuggerctl --json adc read 12v_out
 timeout 5s radxa-linkr-debuggerctl --json adc read 20v_out
 timeout 5s radxa-linkr-debuggerctl --json adc read vdd_5v
+timeout 5s radxa-linkr-debuggerctl --json adc read adc0
+timeout 5s radxa-linkr-debuggerctl --json adc read adc1
+timeout 5s radxa-linkr-debuggerctl --json adc read adc2
 timeout 5s radxa-linkr-debuggerctl --json adc read adc3
 ```
 
 验证：
 
-- 返回恰好五个 descriptor，顺序固定为
-  `5v_out`、`12v_out`、`20v_out`、`vdd_5v`、`adc3`。
-- 前四个是 INA226 电流通道，`adc3` 是 ADC3 电压通道；`adc3` 没有
-  `power_enabled`。
+- 返回恰好八个 descriptor，顺序固定为 `5v_out`、`12v_out`、`20v_out`、
+  `vdd_5v`、`adc0`、`adc1`、`adc2`、`adc3`。
+- 前四个是 INA226 电流通道，后四个是 ADC pad 电压通道；四个电压通道都没有
+  `power_enabled`。`adc0` 带固件提供的 `PD input divider; ADC pad voltage` note，
+  但公开值仍是 ADC0 pad 电压，不能乘 `115/15` 还原源侧电压。
 - `raw / mv / current_ua / sensor_value` 可解析，host 不做校准或零点修正。
 
-### 4b. ADC3 Compact Telemetry & GP29 Ownership
+### 4b. Eight-channel Compact Telemetry & GP29 Ownership
 
 本节与第 4 节组合形成 ADC 验收表面。完整合约以
 [docs/reference/adc-telemetry.md](../reference/adc-telemetry.md) 为准；这里只列出 HIL
-要确认的最小集合。当前固件固定上报五个 descriptor，顺序为
-`5v_out`、`12v_out`、`20v_out`、`vdd_5v`、`adc3`：前四个是 INA226 电流通道，
-`adc3` 是 ADC3 纯监测电压通道。
+要确认的最小集合。当前固件固定上报八个 descriptor，顺序为
+`5v_out`、`12v_out`、`20v_out`、`vdd_5v`、`adc0`、`adc1`、`adc2`、`adc3`：
+前四个是 INA226 电流通道，后四个是纯监测 ADC pad 电压通道。
 
-2026-07-31 的板卡 HIL 只覆盖旧的四个 descriptor（三路 INA226 加 ADC3），
-不能作为当前五 descriptor / 四路 INA226 形状的证据。因此 4b.1、4b.2、4b.3
-的当前五 descriptor 验收，以及 4b.4 中新增 `vdd_5v` 电流 row 的断言，均保持
-`pending`，需要未来真实板卡 HIL 重新执行。4b.4 的 ADC3 90-point /
-render / responsive 子集和 4b.5 的 GP29 直接所有权子项仍由历史
-[2026-07-31 报告](results/2026-07-31-adc3-telemetry-hil.md)覆盖；历史报告中的
-三路电流结论不外推到 `vdd_5v`。`capture_arm` / `subscribe` 的 `rate_hz`
+2026-10-21 的 x1.2 板卡 HIL 已覆盖 4b.1 HTTP 八 descriptor 固定顺序、4b.2/4b.3
+WebSocket 八通道与 18×8 batch、CLI 八通道、内嵌 Web row/pinout，以及 GP29 input-only；
+权威证据见
+[2026-10-21 ADC/pinout/J4 报告](results/2026-10-21-x1.2-adc-pinout-j4-hil.md)。
+该报告没有执行 ADC0 的真实 PD-source 物理拔出/重插自动 monitor，也没有执行 stuck-line
+电气故障注入；这两项仍为 `pending`，不得从数字协议/常态读数外推为通过。历史
+[2026-07-31 报告](results/2026-07-31-adc3-telemetry-hil.md)仅保留为旧四 descriptor
+背景。`capture_arm` / `subscribe` 的 `rate_hz`
 范围为 `1..250`，250 Hz 是当前上限；超过 250 必须返回 `invalid_rate`，不得
 静默 clamp。rolling nightly 检查（第 12h 节）独立于本节，不在本报告范围内。
 
-**4b.1 HTTP rich read shape (`required`, current five-descriptor shape `pending`)**
+**4b.1 HTTP rich read shape (`required`, eight-descriptor digital shape passed 2026-10-21)**
 
-```text
-timeout 5s curl -fsS http://172.29.203.1/api/v1/adc/read
-timeout 5s curl -fsS 'http://172.29.203.1/api/v1/adc/read?channel=adc3'
-timeout 5s curl -fsS 'http://172.29.203.1/api/v1/adc/read?channel=5v_out'
-timeout 5s curl -fsS 'http://172.29.203.1/api/v1/adc/read?channel=vdd_5v'
+```sh
+timeout 5s curl -fsS http://172.29.203.1/api/v1/adc/read > /tmp/linkr-adc-all.json
+for channel in 5v_out 12v_out 20v_out vdd_5v adc0 adc1 adc2 adc3; do
+  timeout 5s curl -fsS \
+    "http://172.29.203.1/api/v1/adc/read?channel=$channel" \
+    > "/tmp/linkr-adc-$channel.json"
+done
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+names = ['5v_out', '12v_out', '20v_out', 'vdd_5v',
+         'adc0', 'adc1', 'adc2', 'adc3']
+current_names = set(names[:4])
+voltage_names = set(names[4:])
+payload = json.loads(Path('/tmp/linkr-adc-all.json').read_text())
+readings = payload.get('readings')
+assert isinstance(readings, list) and len(readings) == 8, 'HTTP must return 8 readings'
+assert [reading.get('name') for reading in readings] == names, 'HTTP descriptor order mismatch'
+
+for reading in readings:
+    name = reading['name']
+    if name in current_names:
+        assert reading.get('sensor_channel') == 'current' and reading.get('unit') == 'A'
+        assert isinstance(reading.get('current_ua'), int)
+        assert isinstance(reading.get('power_enabled'), bool)
+        assert isinstance(reading.get('voltage_valid'), bool)
+        if reading['voltage_valid']:
+            assert isinstance(reading.get('voltage_uv'), int)
+        else:
+            assert reading.get('voltage_uv') is None
+    else:
+        assert name in voltage_names
+        assert reading.get('sensor_channel') == 'voltage' and reading.get('unit') == 'V'
+        assert isinstance(reading.get('raw'), int) and isinstance(reading.get('mv'), int)
+        sensor_value = reading.get('sensor_value', {})
+        assert isinstance(sensor_value.get('val1'), int) and isinstance(sensor_value.get('val2'), int)
+        pad_uv = sensor_value['val1'] * 1_000_000 + sensor_value['val2']
+        assert abs(pad_uv - reading['mv'] * 1000) < 1000, f'{name} is not direct pad voltage'
+        for forbidden in ('value', 'current_ua', 'power_enabled', 'voltage_valid', 'voltage_uv'):
+            assert forbidden not in reading, f'{name} must not carry {forbidden}'
+
+assert readings[4].get('note') == 'PD input divider; ADC pad voltage'
+for index, name in enumerate(names):
+    single = json.loads(Path(f'/tmp/linkr-adc-{name}.json').read_text()).get('readings')
+    assert isinstance(single, list) and len(single) == 1 and single[0].get('name') == name
+print('eight-channel HTTP ADC shape accepted')
+PY
 ```
 
-验证（运行时断言）：
+上面的 `pad_uv` 与 `mv` 一致性断言同时禁止把 ADC0 的公开 `sensor_value` 换算为
+分压器源侧电压。host 不做 ADC 校准、零点修正或 `115/15` 倍乘。
 
-- readings 数组恰好五个条目（顺序固定：`5v_out`、`12v_out`、
-  `20v_out`、`vdd_5v`、`adc3`），且 name 与 schema 一致。
-- `5v_out` / `12v_out` / `20v_out` / `vdd_5v` 的 `sensor_channel` 为
-  `current`，`unit` 为 `A`，`current_ua` 是 signed integer µA，
-  `power_enabled` 是 bool；`voltage_valid=true` 时 `voltage_uv` 是同一
-  INA226 样本的总线电压。
-- `adc3` 的 `sensor_channel` 为 `voltage`，`unit` 为 `V`，`sensor_value`
-  存在且客户端据此重建 signed integer µV；**没有** `value`、
-  `current_ua` 或 `power_enabled`。`raw` / `mv` / `sensor_value` 仍存在。
-- host 不做 ADC 校准或零点修正；值即为固件直读。
-
-**4b.2 WebSocket compact single-sample shape (`required`, current five-descriptor shape `pending`)**
+**4b.2 WebSocket compact single-sample shape (`required`, passed 2026-10-21)**
 
 ```text
 timeout 5s node <<'NODE'
@@ -1094,20 +1171,25 @@ wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
 
 await new Promise((resolve, reject) => {
   const ws = new WebSocket(wsUrl);
-  const timer = setTimeout(() => reject(new Error('ADC3 single frame timeout')), 5000);
+  const timer = setTimeout(() => reject(new Error('eight-channel single frame timeout')), 5000);
   ws.addEventListener('open', () => {
-    ws.send(JSON.stringify({ type: 'subscribe', topic: 'live', rate_hz: 250, id: 'adc3-single' }));
+    ws.send(JSON.stringify({ type: 'subscribe', topic: 'live', rate_hz: 250, id: 'adc8-single' }));
   });
   ws.addEventListener('message', (event) => {
     const data = JSON.parse(event.data);
     if (data.type !== 'telemetry') return;
-    if (!Array.isArray(data.readings) || data.readings.length !== 5) {
-      reject(new Error('single frame must carry five readings'));
+    if (!Array.isArray(data.readings) || data.readings.length !== 8) {
+      reject(new Error('single frame must carry eight readings'));
       return;
     }
     const names = data.readings.map((r) => r.name);
-    if (names.join(',') !== '5v_out,12v_out,20v_out,vdd_5v,adc3') {
+    if (names.join(',') !== '5v_out,12v_out,20v_out,vdd_5v,adc0,adc1,adc2,adc3') {
       reject(new Error(`unexpected reading order: ${names.join(',')}`));
+      return;
+    }
+    if (data.readings.filter((r) => r.kind === 'current').length !== 4 ||
+        data.readings.filter((r) => r.kind === 'voltage').length !== 4) {
+      reject(new Error('single frame must carry four current and four voltage readings'));
       return;
     }
     for (const reading of data.readings) {
@@ -1132,7 +1214,7 @@ await new Promise((resolve, reject) => {
         return;
       }
       if (reading.kind === 'voltage' && 'power_enabled' in reading) {
-        reject(new Error('adc3 must not carry power_enabled'));
+        reject(new Error(`${reading.name} must not carry power_enabled`));
         return;
       }
       if (reading.kind === 'current' &&
@@ -1149,22 +1231,26 @@ await new Promise((resolve, reject) => {
         }
       }
     }
+    if (data.readings[4].note !== 'PD input divider; ADC pad voltage') {
+      reject(new Error('adc0 firmware note missing'));
+      return;
+    }
     clearTimeout(timer);
     ws.close();
     resolve();
   });
   ws.addEventListener('error', () => reject(new Error('WebSocket error')));
 });
-console.log('ADC3 compact single-sample frame accepted');
+console.log('eight-channel compact single-sample frame accepted');
 NODE
 ```
 
 记号含义：紧凑单样本帧没有 `raw`/`mv`/`sensor_value`；电流通道携带
 `current_ua`、`voltage_valid`、`voltage_uv` 双遥测。`rate_hz` 的验收上限是
 250；251 及以上必须返回 `invalid_rate`，不得 clamp。外部 WS 客户端以前如果按
-旧四 descriptor 或旧字段解析，必须迁移；没有 dual-emission shim。
+旧 descriptor 数量或旧字段解析，必须迁移；没有 dual-emission shim。
 
-**4b.3 WebSocket compact batch shape (`required`, current five-descriptor shape `pending`)**
+**4b.3 WebSocket compact batch shape (`required`, 18×8 passed 2026-10-21)**
 
 ```text
 timeout 5s node <<'NODE'
@@ -1179,76 +1265,87 @@ if (!rawUrl) throw new Error('session response missing ws_url');
 const wsUrl = new URL(rawUrl, base);
 wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
 
-const seen = { adc3: 0 };
 await new Promise((resolve, reject) => {
   const ws = new WebSocket(wsUrl);
-  const timer = setTimeout(() => reject(new Error('ADC3 batch timeout')), 5000);
+  const timer = setTimeout(() => reject(new Error('eight-channel batch timeout')), 5000);
   ws.addEventListener('open', () => {
     ws.send(JSON.stringify({
-      type: 'subscribe', topic: 'live', rate_hz: 250, batch_size: 10, id: 'adc3-batch',
+      type: 'subscribe', topic: 'live', rate_hz: 250, batch_size: 18, id: 'adc8-batch18',
     }));
   });
   ws.addEventListener('message', (event) => {
     const data = JSON.parse(event.data);
     if (data.type !== 'telemetry-batch') return;
-    if (!Array.isArray(data.channels) || data.channels.length !== 5) {
-      reject(new Error('batch channels must be 5'));
+    if (!Array.isArray(data.channels) || data.channels.length !== 8) {
+      reject(new Error('batch channels must be 8'));
       return;
     }
-    const adc3Idx = data.channels.findIndex((c) => c.name === 'adc3');
-    if (adc3Idx < 0 || data.channels[adc3Idx].kind !== 'voltage' || data.channels[adc3Idx].unit !== 'uV') {
-      reject(new Error('adc3 channel metadata wrong'));
+    const names = data.channels.map((channel) => channel.name);
+    if (names.join(',') !== '5v_out,12v_out,20v_out,vdd_5v,adc0,adc1,adc2,adc3') {
+      reject(new Error(`unexpected batch channel order: ${names.join(',')}`));
       return;
     }
-    for (const sample of data.samples ?? []) {
-      if (!Array.isArray(sample.values) || sample.values.length !== 5) {
+    for (let index = 0; index < data.channels.length; index++) {
+      const channel = data.channels[index];
+      const current = index < 4;
+      if (channel.kind !== (current ? 'current' : 'voltage') ||
+          channel.unit !== (current ? 'uA' : 'uV')) {
+        reject(new Error(`batch channel metadata wrong: ${channel.name}`));
+        return;
+      }
+    }
+    if (data.channels[4].note !== 'PD input divider; ADC pad voltage') {
+      reject(new Error('adc0 batch note missing'));
+      return;
+    }
+    if (!Array.isArray(data.samples) || data.samples.length !== 18) {
+      reject(new Error('batch must carry exactly 18 samples'));
+      return;
+    }
+    for (const sample of data.samples) {
+      if (!Array.isArray(sample.values) || sample.values.length !== 8 ||
+          !sample.values.every(Number.isInteger)) {
         reject(new Error('sample values length mismatch'));
         return;
       }
       if (!Array.isArray(sample.voltages_uv) ||
           sample.voltages_uv.length !== 4 ||
+          !sample.voltages_uv.every(Number.isInteger) ||
+          !Number.isInteger(sample.power_enabled_mask) ||
           !Number.isInteger(sample.voltage_valid_mask)) {
         reject(new Error('batch missing four-channel INA226 voltage telemetry'));
         return;
       }
-      const voltage = sample.values[adc3Idx];
-      if (!Number.isInteger(voltage)) {
-        reject(new Error(`adc3 sample value is not integer: ${voltage}`));
+      if ((sample.power_enabled_mask & ~0x0f) !== 0 ||
+          (sample.voltage_valid_mask & ~0x0f) !== 0) {
+        reject(new Error('batch masks must use only four current-channel bits'));
         return;
       }
-      seen.adc3 += 1;
-      break;
     }
-    if (seen.adc3 > 0) {
-      clearTimeout(timer);
-      ws.close();
-      resolve();
-    }
+    clearTimeout(timer);
+    ws.close();
+    resolve();
   });
   ws.addEventListener('error', () => reject(new Error('WebSocket error')));
 });
-console.log('ADC3 compact batch frame accepted');
+console.log('eight-channel 18-sample compact batch frame accepted');
 NODE
 ```
 
-**4b.4 Web sparkline 10 Hz / 90-sample (`required`, ADC3 90-point/render/responsive subcase `[passed]` by 2026-07-31 HIL; four-current-row layout including `vdd_5v` `pending`)**
+**4b.4 Web sparkline 10 Hz / 90-sample (`required`; eight-row presence/order and production tests passed 2026-10-21, full manual 90-point observation remains required when changed)**
 
 用 Playwright 打开板载页面 `http://172.29.203.1/`，在 Power & measurements 卡片内
-断言：四路电流 row（`5v_out`、`12v_out`、`20v_out`、`vdd_5v`）与可选 ADC3 区块的
-SVG 历史长度都不超过 90 个采样点，且在稳定供电下两个方向各能保持 ~9 秒
-（`±1 秒`）的窗口宽度。ADC3 区段只在固件出现 `adc3` 读数时渲染，且使用固定
-0..3,300,000 µV Y 轴；不得擅自 host-side 重新标定。Web 自动化节点使用既有的
-`web/` 项目脚手架。
+断言：四路电流 row（`5v_out`、`12v_out`、`20v_out`、`vdd_5v`）与 ADC0..ADC3
+四个电压区块的 SVG 历史长度都不超过 90 个采样点，且在稳定供电下两个方向各能
+保持 ~9 秒（`±1 秒`）的窗口宽度。ADC 区段按固件 descriptor 渲染并使用固定
+0..3,300,000 µV Y 轴；ADC0 展示固件 note，但不得擅自 host-side 重新标定或分压
+换算。Web 自动化节点使用既有的 `web/` 项目脚手架。
 
-本次真实板卡 HIL 仅覆盖 ADC3 90-point / render / responsive 直接观测
-子集：live ADC3 在 1280 px 与 375 px 两个 viewport 下，rolling window
-充满后 SVG 历史恰好 90 点，零水平溢出，无浏览器 console error。历史
-post-HIL 本地 production-build 视觉 QA 只覆盖旧的三路电流 row 加 ADC3
-（共四路 sparkline）；它不覆盖新增的 `vdd_5v` row，也不覆盖当前五路
-sparkline 布局。本地验证不属于板卡 HIL；当前四路电流 row 的 90-point
-行为仍 `pending`，需要未来真实板卡 HIL 或针对新布局的独立 production-build
-视觉 QA。不得用历史三路 QA 替代当前四路电流 row 的板卡 HIL，也不得反过来
-用 ADC3 的板卡 HIL 主张电流 row 的视觉行为。
+2026-10-21 当前固件与 production Web build 已确认八个 descriptor 的存在和固定
+顺序，Web Node/Vitest 回归覆盖八路解析/渲染；历史 2026-07-31 实板直接观测过 ADC3
+90-point / responsive 子集。若修改 sparkline 时间窗、八路布局或隐藏页 cadence，仍需
+重新执行本节全部人工/浏览器 HIL；不能把协议顺序 PASS 写成所有通道的模拟精度或
+独立 90 点视觉认证。
 
 **4b.5 GP29 ADC3 ownership (`required`, direct ownership subcase `[passed]` by 2026-07-31 HIL; v1 snapshot compatibility subcases `pending`)**
 
@@ -1271,15 +1368,10 @@ timeout 5s curl -fsS -X PUT -H 'Content-Type: application/json' \
 
 **4b.6 HIL 边界**
 
-2026-07-31 真实板卡 HIL 通过的子集是旧四 descriptor 形状下的 4b.1、4b.2、
-4b.3、4b.4 中 ADC3 90-point / render / responsive 直接观测子集，以及 4b.5 中
-GP29 直接所有权子项（HTTP GPIO 列表保留 GP29、`PUT direction=output`
-被固件层拒绝、`PUT direction=input` 幂等）。该旧形状只有三路 INA226 电流
-descriptor；当前固件固定上报四路 INA226 电流加 ADC3，共五个 descriptor，
-因此 4b.1、4b.2、4b.3 的当前形状验收和 4b.4 的四路电流 row 布局断言
-均为 `pending`，必须在当前固件上重新执行。历史 post-HIL 本地
-production-build 视觉 QA 只覆盖旧三路电流 row 加 ADC3，不能外推到
-`vdd_5v` row 或五路 sparkline 布局；该 QA 不属于板卡 HIL。4b.5 中 v1 输入
+2026-10-21 当前八 descriptor 的 HTTP、WS single/batch、CLI、GP29 input-only 和
+production Web 形状已通过，见当日报告。ADC0 实际 PD source 物理拔出/重插后的
+约 100 ms 自动 monitor 恢复、stuck-line 安全故障注入和模拟电气测量未执行，仍为
+`pending`。4b.5 中 v1 输入
 快照继续解码并在 firmware-defaults 之后自动恢复、v1 输出快照在重放命中
 GP29 时停在第一个硬件失败、GP29 `apply_state="failed"`
 而后续 GPIO output 仍 `pending` 这两个历史 v1 snapshot 兼容子项仍
@@ -1336,8 +1428,8 @@ timeout 5s radxa-linkr-debuggerctl --json gpio input GP13
 
 同时验证以下板级与metadata合同：
 
-- safe-GPIO允许列表仍为`GP7`-`GP9`、`GP12`-`GP18`和仅输入`GP29`；允许列表
-  不代表每个GPIO都有连接器位置。GP17/GP18必须没有J8/J13映射。
+- safe-GPIO允许列表为`GP7`-`GP9`、`GP12`-`GP16`和仅输入`GP29`，共九项；
+  GP17/GP18不得出现在safe/control列表或J8/J13映射中。
 - 元件面俯视时J8左列从顶到下为pin 10→1，右列为pin 20→11；已确认控制/监测
   子集为pin1..10依次`GP12/GP13/GP14/GP15/GP16/GP29(ADC3)/GP28(ADC2)/
   GP27(ADC1)/GP20(SCL)/GP21(SDA)`。ADC0/GP26不是J8端子；该子集不是完整pinout。
@@ -1366,12 +1458,17 @@ binary protocol runs over two transports: Web UI uses `/api/v1/live-sessions` th
 
 Pin ownership is part of the HIL contract. FAST8/WIDE11 take over both J4
 UART1 pins (TX GP10 and RX GP11) through PIO2; a SINGLE capture on GP10 takes
-TX only. While the capture holds a pin, the J4 CDC ACM bridge cannot use that
-UART path and serial traffic must not be expected. After STOP or terminal
-cleanup the firmware restores `GPIO_FUNC_UART_AUX` on the configured GP10/GP11
-pins, so J4 works again without a reboot. Verify J4 loopback/serial before and
-after a capture; do not treat the expected mid-capture silence as a bridge
-failure.
+TX only. Before changing mux ownership, the serial runtime freezes admission,
+waits a bounded interval for any active TX to reach physical wire-complete,
+cancels queued events that cannot start, advances sink epochs, and enters
+PAUSED. While capture owns a pin, CDC ACM4, `serial.j4`, and raw TCP 5555 remain
+transport sessions but cannot use that UART path; WS writes receive an explicit
+paused error and TCP input is backpressured. After STOP or terminal cleanup the
+firmware restores `GPIO_FUNC_UART_AUX` on GP10/GP11, resumes fresh sink epochs,
+and J4 works again without reboot. Verify CDC, WS, and raw TCP before and after
+capture; do not treat expected mid-capture silence as a bridge failure. The
+active worst-case 480-byte write at 9600 baud through the pause timeout is a
+host-model result unless separately reproduced on board.
 
 On x1.2, GP20 is the PIO I2C SCL and GP21 is SDA. The LA samples GP20 as a
 read-only tap without reconfiguring the pin. Never drive GP20 or hold it low
@@ -1799,7 +1896,8 @@ the stimulus. Confirm `/dev/ttyACM1` is the WCH serial device and is not held
 by any terminal program before starting.
 
 Prerequisites:
-- `/dev/ttyACM1` is the WCH CH347 serial port; verify with `fuser` or `ls -la /dev/ttyACM*`
+- `/dev/ttyACM1` is the external WCH CH347 stimulus-fixture serial port; verify
+  with `fuser` or `ls -la /dev/ttyACM*`
 - `/dev/ttyACM2` is the firmware CDC ACM port
 - No terminal program is attached to `/dev/ttyACM1`
 - `/dev/ttyACM1` TX reaches GP10 through at least a 1 kΩ series resistor. Direct
@@ -1948,10 +2046,11 @@ trigger channel, the reported `triggerIndex` must be within the expected range a
 `triggerOffset` must be 0. Re-arm and re-trigger to confirm offset remains
 consistent.
 
-CDC `/dev/ttyACM2` BOOTSEL and combined-UF2 restore: the final HIL confirmed
-that issuing `bootloader` from the CDC ACM shell on `/dev/ttyACM2` entered ROM
-BOOTSEL as the RPI vendor disk, and copying the combined UF2 restored HTTP
-after the board re-enumerated and the flash health check passed.
+CDC BOOTSEL tests must discover the control-shell interface from the current
+USB topology instead of assuming a tty number. The 2026-10-21 topology exposed
+control on ACM3 and J4 on ACM4; no ACM2 interface existed. This paragraph is
+separate from `/dev/ttyACM1` references in 8b.5, where ACM1 is an external WCH
+logic-analyzer stimulus fixture rather than a board control or J4 endpoint.
 
 #### 8b.6 Owner/Mutual-Exclusion
 
@@ -2016,13 +2115,16 @@ reboot 通过都不能替代第 9、10 节的 ROM BOOTSEL 证据，反之亦然�
 
 冷启动后 `5v_out`、`12v_out`、`20v_out` 全部回到 Device Tree 的
 `regulator-boot-off`，`vdd_5v` 跟随 `switch usb` 启动路由。如果存在持久化
-v1 配置快照，启动重放可能再次打开其中保存的电源轨；因此 reboot 测试前必须
-确认没有会恢复这些电源轨的 snapshot。若存在，先记录并按持久化配置流程清除，
-或把它作为单独用例，不能把重放后的 `on` 状态当作 boot-off 证据。
+v1 配置快照，启动重放可能在 control transport ready 前再次打开其中保存的
+`5v_out` 或 `vdd_5v`。必须记录这个 replay 结果，但不能把重放后的 `on` 当作
+Device Tree boot-off 证据，也不能因此跳过 host 前置动作。只有专门验证无 snapshot
+boot default 的用例才要求先清除 snapshot；普通功能 HIL 可保留并明确记录 replay。
 
 每次上电或启动（包括初次烧录后的启动）、reboot、ROM BOOTSEL 返回或
 watchdog 复位后，HIL 都必须先重新建立测试前置电源并验证，再继续任何依赖
-目标供电的步骤：
+目标供电的步骤。transport ready 后，下面第一个 PUT 必须是本轮**第一条 host
+hardware mutation**，第二个 PUT 必须是本轮第二条；二者之间不得插入 route、GPIO、
+其它 rail 或配置写操作：
 
 ```sh
 BOARD_URL=http://172.29.203.1
@@ -2039,6 +2141,10 @@ curl -fsS "$BOARD_URL/api/v1/pd"
 `[blocked]`，不得用 5 V 结果冒充通过。每次 reboot 测试迭代和每次 BOOTSEL
 恢复后都重复这条前置检查。如果后续步骤还需要 `12v_out` 或 `20v_out`，也必须
 重新设置并逐项验证；不得复用复位前的电源状态。
+
+即使启动 replay 已显示 `5v_out=on`，第一条 host mutation 仍发送/确认
+`5v_out=on`，第二条仍请求 PD 20 V；随后必须读取 INA226，确认 enabled 5 V rail
+具有有效电压和电流数据。报告同时记录 replay 状态与 host mutation 顺序。
 
 #### 四个客户端的正常 reboot
 
@@ -2671,6 +2777,14 @@ x1.2 不执行已删除的 VIN 路由用例。OTA 上传/测试/确认流程属�
 - 失败项与风险说明
 
 ## Final Post-Fix HIL Evidence
+
+The current combined ADC, connector-layout, J4 serial, raw-TCP 5555, embedded
+Web terminal, persistent-startup and post-capture evidence is recorded in
+[2026-10-21 x1.2 ADC/pinout/J4 HIL](results/2026-10-21-x1.2-adc-pinout-j4-hil.md).
+Its PASS scope is digital/functional and explicitly excludes the unperformed
+ADC0 physical source unplug/replug monitor, stuck-line electrical injection,
+analog 50 ns/tr/VOL/Ioff certification, and the active worst-case
+480-byte-at-9600 pause-timeout board case.
 
 The current bounded pre-trigger and UART sample-0 decoder results are recorded in
 `docs/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md`, including

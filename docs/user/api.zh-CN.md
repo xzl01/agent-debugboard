@@ -41,8 +41,55 @@ curl http://172.29.203.1/api/v1/status
 
 响应字段：`project`、`build`（包含 `profile` 与 `image_version`）、`mcu`、`usb`、`power_inputs`、`power_outputs`、`switches`、`adc_channels`、`watchdog`、`board_monitoring`、`gpio_layout_groups`、`gpios`。
 
-编码后的 status body 必须严格小于固件专用的 6144 字节缓冲区。新增状态字段时
+编码后的 status body 必须严格小于固件专用的 6656 字节缓冲区。新增状态字段时
 必须通过这一协议大小门槛；客户端不能因此假定响应具有固定长度。
+
+## J4 目标串口
+
+产品只公开一个逻辑目标串口 `j4`，即 GP10/GP11 上的专用 RP2350 UART1 路径。
+固件把同一个 4096 字节 UART RX ring 独立 fan-out 到
+USB CDC ACM4、四个 WebSocket sink 和两个 raw-TCP sink；慢 sink 只丢自己的
+最旧数据。
+
+### `GET /api/v1/serial/j4`
+
+返回 available、运行状态、当前 line coding、配置 generation、DTR/RTS、USB
+configured、sink 数、队列状态、传输计数和各 sink drop 计数。`state` 为
+`ready`、`reconfig`、`paused`、`faulted` 或 `unavailable`。
+
+```sh
+curl -fsS http://172.29.203.1/api/v1/serial/j4
+```
+
+### `PUT /api/v1/serial/j4/config`
+
+异步排队一次 line-coding compare-and-swap。先读取当前 `generation`，再提交完整
+tuple 和该 generation：
+
+```sh
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"baud":115200,"data_bits":8,"parity":"none","stop_bits":1,"flow_control":"none","expected_generation":1}' \
+  http://172.29.203.1/api/v1/serial/j4/config
+```
+
+成功返回 HTTP 202、`accepted:true` 和 `request_id`；generation 过期或转换进行中
+返回 HTTP 409。baud 白名单为 9600、19200、38400、57600、115200、230400、
+460800、921600、1500000；data bits 为 5–8，parity 为 `none`/`odd`/`even`，
+stop bits 为 1 或 2，flow control 当前仅支持 `none`。通过 GET 轮询异步结果。
+
+### 流式传输
+
+- 内嵌 Web 终端创建普通 live session，再订阅
+  `{"type":"subscribe","topic":"serial.j4"}`。下行是 binary WS；每个上行
+  binary message 是一条原子串口写，最大 480 字节。
+- raw TCP 监听 `0.0.0.0:5555`，最多两个客户端。它是纯二进制流，没有 banner、
+  echo、CR/LF 转换、Telnet/IAC、SSH 或 noVNC 语义，例如
+  `nc 172.29.203.1 5555`。
+- USB CDC ACM4 是同一个 J4 逻辑流的 USB fallback。主机 tty 编号不稳定，必须按
+  interface 身份识别，不能假定固定 `/dev/ttyACM*`。
+
+旧桌面本地串口路径已经退役，不属于产品传输。5173 仅用于 Vite 开发预览；
+已验收的内嵌 UI 由板卡 port 80 提供。
 
 ## 电源控制
 
@@ -77,13 +124,16 @@ curl http://172.29.203.1/api/v1/adc/read
 curl http://172.29.203.1/api/v1/adc/read?channel=5v_out
 ```
 
-查询参数：`channel=<name>`（可选，如 `5v_out`、`12v_out`、`20v_out`、`vdd_5v`、`adc3`）
+查询参数：`channel=<name>`（可选：`5v_out`、`12v_out`、`20v_out`、`vdd_5v`、
+`adc0`、`adc1`、`adc2`、`adc3`）。
 
-四路 INA226 电流通道为 `5v_out`、`12v_out`、`20v_out`、`vdd_5v`；`adc3`
-是独立的仅监测 ADC 电压通道。INA226 响应 `readings` 数组字段：`name`、
-`signal`、`power_enabled`、`raw`、`mv`、`current_ua`、`voltage_valid`、
-`voltage_uv`、`sensor_value`、`unit`。`adc3` 携带 `name`、`signal`、`raw`、
-`mv`、`sensor_channel`、`unit`、`sensor_value`。
+响应按固定顺序包含八路：先是 `5v_out`、`12v_out`、`20v_out`、`vdd_5v`
+四路 INA226 电流通道，再是 `adc0`、`adc1`、`adc2`、`adc3` 四路仅监测pad电压
+通道。INA226 reading 携带 `name`、`signal`、`power_enabled`、`raw`、`mv`、
+`current_ua`、`voltage_valid`、`voltage_uv`、`sensor_value`、`unit`。ADC reading
+携带 `name`、`signal`、`raw`、`mv`、`sensor_channel`、`unit`、`sensor_value`；
+`adc0` 还携带固件note `PD input divider; ADC pad voltage`。其数值是ADC0 pad
+直读电压，不是分压器还原后的源侧电压，客户端不得乘以`115/15`。
 
 ## Switch 路由
 
@@ -151,11 +201,10 @@ curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"input"}'
 `layoutRow`、`layoutColumn` 描述元件面俯视坐标，顶部为 `row=0`、左列为
 `column=0`。已确认坐标为：J8 GP12 `(9,0)`、GP13 `(8,0)`、GP14 `(7,0)`、
 GP15 `(6,0)`、GP16 `(5,0)`、GP29/ADC3 `(4,0)`；J13 GP9 `(0,0)`、
-GP8 `(0,1)`、GP7 `(1,0)`。布局字段是可选的：safe GPIO GP17、GP18 尚无已确认
-的 J8/J13 位置，因此固件不输出它们的 `layoutGroup`、`layoutRow`、
-`layoutColumn`；客户端必须通过通用 fallback 保留显示。客户端也不得丢弃元数据中
-未描述的 group；遇到未知 `edge` 时应按“无板边对齐提示”通用显示。这里的 GPIO
-数组只是固件 safe-GPIO 允许列表，不是连接器完整 pinout，也不是配合面视图。
+GP8 `(0,1)`、GP7 `(1,0)`。GP17、GP18 不属于当前 safe/control GPIO 目录，客户端
+不得把它们虚构成通用或连接器控件。未来固件若描述未知 group，客户端仍不得丢弃；
+遇到未知 `edge` 时应按“无板边对齐提示”通用显示。这里的九项 GPIO 数组只是固件
+safe-GPIO 允许列表，不是连接器完整 pinout，也不是配合面视图。
 
 ## 重启
 
@@ -497,7 +546,19 @@ Arm 捕获。
 {"type": "subscribe", "topic": "live", "rate_hz": 60, "batch_size": 1}
 ```
 - `rate_hz`：1–250（默认 10）；大于 250 返回错误码 `invalid_rate`
-- `batch_size`：1–20（>1 启用批处理模式）
+- `batch_size`：1–18（>1 启用批处理模式）
+
+**订阅 J4 串口**：
+```json
+{"type":"subscribe","topic":"serial.j4","id":"terminal-j4"}
+```
+
+同一个 WS slot 内，`serial.j4`、live ADC 和 sigrok 三种模式互斥。页面同时需要
+终端和遥测时应分别创建 live session。串口模式中的 binary payload 只在 J4 ready
+时准入。服务端先发 `serial_write_accepted`，仅在 UART 物理 wire complete 后发送
+匹配的 `serial_write_complete`；runtime 取消时 disposition 为 `canceled`。队列满、
+paused、reconfig、faulted 或超过 480 字节都会得到明确 JSON error，不会被误报为
+accepted。
 
 **取消订阅**：
 ```json
@@ -566,6 +627,11 @@ RAM 中。
 ```json
 {"type": "result", "command": "power_set", "id": "1", "ok": true}
 ```
+
+J4 串口模式还会发送 `serial_state`、`serial_write_accepted`、
+`serial_write_complete` 和 `serial_overrun`。`serial_overrun.dropped_bytes` 是相对
+上一次通知的增量，`total_dropped_bytes` 是该 sink 的累计值；binary 下行帧就是
+原始 UART 字节。
 
 **捕获事件**：
 ```json

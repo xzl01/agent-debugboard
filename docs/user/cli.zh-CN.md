@@ -24,6 +24,10 @@ Tray 与 Host 服务位于同一进程。使用 `-d` / `--desktop` 可只启动�
 GTK 与 `libayatana-appindicator3`；headless 模式不会构造 AppIndicator UI，
 但 Linux 二进制仍需 GTK loader。
 
+该 daemon 仍包含 legacy CH347 `uart0`/`uart1` Serial Broker 与 MCP serial
+client；这些是等待单独移除的非 J4 兼容/测试夹具路径，不是生产目标终端。J4 应使用
+板载 xterm.js、MCU `serial.j4`、J4 CDC ACM 或 raw TCP 5555。
+
 ```sh
 # 检查连接和板子健康状态
 radxa-linkr-debuggerctl doctor
@@ -78,13 +82,14 @@ radxa-linkr-debuggerctl power list
 ## ADC（电流与电压监测）
 
 四路 INA226 电流监测覆盖 `5v_out`、`12v_out`、`20v_out`、`vdd_5v`；
-`adc3` 是 GP29 上独立的仅监测电压通道。默认输出简洁
+`adc0` 到 `adc3` 是四路仅监测 pad 电压通道。默认输出简洁
 （`5v_out=0.540000A`），加 `-v` 可看到 `signal`、`mv` 等原始 ADC 字段。
 
 ```sh
 radxa-linkr-debuggerctl adc read
 radxa-linkr-debuggerctl adc read 5v_out
 radxa-linkr-debuggerctl adc read vdd_5v
+radxa-linkr-debuggerctl adc read adc0
 radxa-linkr-debuggerctl adc read adc3
 ```
 
@@ -103,25 +108,24 @@ radxa-linkr-debuggerctl adc record /tmp/adc.csv 500 --rate-hz 250
 - 每条输出记录包含主机接收时间戳和 `metadata.requested_rate_hz`
 - 设备时间保留在 `metadata.device_timing` 中
 - 采样环覆盖通过 `metadata.dropped_samples` 在首个受影响行报告
-- NDJSON 保留全部五个描述符；CSV 是固定的四路电流表，未知或不可用的
-  rail 字段写为空单元格
+- NDJSON 保留全部八个描述符；CSV 先写四路电流 rail，再追加
+  `adc0_voltage_uv` 到 `adc3_voltage_uv`，未知或不可用字段写为空单元格
 
 ### JSON ADC 输出
 
-`--json adc read` 返回完整诊断链路：四路电流的 `raw`、`mv`、`current_ua`、
-`voltage_uv`、`sensor_value` 和电源状态，以及 ADC3 电压。主机 CLI 直接展示
-固件值，不做主机侧校准。PD 控制使用 `pd status`、`pd fixed MV` 和
+`--json adc read` 返回固定八通道顺序的完整诊断链路：四路电流 rail 后接
+ADC0..ADC3 pad 电压。主机 CLI 直接展示固件值，不做主机侧校准。PD 控制使用
+`pd status`、`pd fixed MV` 和
 `pd pps MV`（整板上限 20 V）。
 
 ## Switch 路由
 
-三个物理信号路由切换器：
+x1.2 有两个物理信号路由切换器：
 
 | Switch | 切换内容 | 可选值 |
 |--------|---------|--------|
 | `sd` | TF/SD 卡路径 | `target`、`usb-reader` |
 | `usb` | J12 下层 USB 设备在主机与目标板之间切换 | `pc`、`target` |
-| `vin` | CH347 VIO 电压 | `3.3v`、`1.8v` |
 
 ```sh
 radxa-linkr-debuggerctl switch list
@@ -131,7 +135,8 @@ radxa-linkr-debuggerctl switch route usb target --confirm
 radxa-linkr-debuggerctl switch route usb pc --confirm
 ```
 
-USB 和 VIN 路由需要 `--confirm`，因为它们有可见的硬件副作用。VIN 启动默认 3.3V。切换到 1.8V 属于专家操作——先确认目标板支持 1.8V 信号电平，并连接 VIO 物理测量设备。
+USB 路由变更需要 `--confirm`，因为它有可见硬件副作用。x1.2 没有 VIN/VIO
+路由，旧 `switch vin` 示例不适用。
 
 对于 `switch usb`，J12 上层连接目标板，下层插入待切换 USB 设备。`pc` 路由把
 该设备连接到 J15 所接主机；`target` 路由把该设备连接到 J12 上层所接目标板。
@@ -149,7 +154,10 @@ radxa-linkr-debuggerctl gpio input GP13
 
 ## 自动化测试脚本
 
-`test run` 执行 `linkr-test.v1` NDJSON 脚本。`--serial` 保留为 `--serial-uart0` 的兼容别名；脚本包含 UART1 步骤时必须用 `--serial-uart1` 明确指定设备路径，UART1 不会被静默路由到 UART0。`--output` 会将结果写入文件，扩展名决定格式：`.json`、`.csv` 或 `.ndjson`，其他扩展名默认使用 JSON。
+`test run` 执行 `linkr-test.v1` NDJSON 脚本。其 `--serial` / `--serial-uart0` /
+`--serial-uart1` 是保留的 generic legacy 双 UART/CH347 测试夹具，不选择 MCU J4，
+不建议操作员用于 J4。在该 legacy runner 内，UART1 仍必须显式指定设备路径，绝不
+静默路由到 UART0。`--output` 按 `.json`、`.csv`、`.ndjson` 扩展名选择格式。
 
 ```sh
 radxa-linkr-debuggerctl test run startup.ndjson --serial /dev/tty.usbserial-1234

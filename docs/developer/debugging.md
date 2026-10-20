@@ -20,29 +20,30 @@ evidence of board behavior.
 | USB NCM, HTTP, captive portal, or hosted Web UI | [Web UI](../user/webui.md) and [Troubleshooting](../user/troubleshooting.md) |
 | Raw HTTP response schema or status endpoint | [HTTP API](../user/api.md) |
 | MCP availability, tool result, or progress protocol | [MCP Server](../reference/mcp-server.md) |
-| Shared UART ownership, cursors, or archived RX data | [Serial Broker](../reference/serial-broker.md) |
+| MCU J4 state, sinks, framing, raw TCP, or capture pause | [J4 Serial Transport](../reference/serial-broker.md) |
+| Legacy host `uart0`/`uart1` broker, MCP cursors, or archives | [MCP Server](../reference/mcp-server.md) and the retired-path section of [J4 Serial Transport](../reference/serial-broker.md) |
 | ADC, GP29, or telemetry wire shape | [ADC Telemetry](../reference/adc-telemetry.md) |
 | Logic analyzer transport or capture semantics | [Logic Analyzer](../reference/logic-analyzer.md) |
 | OpenOCD/JTAG adapter or target reset | [OpenOCD](../user/openocd.md) |
 | Required board-level acceptance | [HIL Functional Test Spec](../testing/hil-functional-test-spec.md) |
 
-## Browser And Bridge Changes
+## Browser And Gateway Changes
 
 For a board-hosted page, a navigation or resource-load timeout identifies the
 USB NCM, HTTP service, or browser setup boundary. An assertion failure after
 the page renders identifies a Web UI regression. Preserve this distinction in
 test reports and bug triage.
 
-The board page is served over HTTP. Direct Web Serial therefore needs its
-documented secure-origin override, a user gesture, and the browser chooser.
-Browser automation can cover setup UI and bridge behavior, but it cannot
-replace manual chooser acceptance or serial I/O. The supported bridge and
-permissions paths are documented in [Web UI](../user/webui.md).
+The production board page talks directly to firmware HTTP/WebSocket. Its J4
+xterm.js terminal creates a live session and subscribes to `serial.j4`; it does
+not use a browser serial API, chooser, CH347 port, or host broker. Diagnose
+auto-connect, sticky manual disconnect, binary framing, and pause/resume against
+the MCU path documented in [Web UI](../user/webui.md).
 
-When a hosted Web page needs board access, diagnose the bridge process and its
-REST, OTA, and WebSocket forwarding through that page before changing firmware
-or protocol code. Do not document a development bridge command in the operator
-skill.
+The separate loopback Host gateway on port 8787 still exists for packaged Web
+gateway/MCP use. Diagnose its REST, OTA, and WebSocket forwarding only when that
+gateway is actually in the failing path. Its legacy serial broker is not J4.
+Do not document a development gateway command in the operator skill.
 
 ## Control Plane Isolation
 
@@ -52,11 +53,12 @@ rejection; a timeout, connection refusal, or route failure is transport or USB
 NCM state. Protocol fields and error meanings remain authoritative in the
 [HTTP API](../user/api.md).
 
-MCP and the Web UI share serial infrastructure. Diagnose cursor expiry, shared
-subscriber behavior, exclusive writes, and RX archive completeness against the
-[Serial Broker](../reference/serial-broker.md), not by adding host-side retry
-or replay behavior. Mutating operations require a new operator decision after
-an error.
+The embedded Web UI and J4 share the MCU serial runtime. Diagnose J4 sink
+overruns, accepted/completed events and raw TCP against the
+[J4 Serial Transport](../reference/serial-broker.md). Separately, MCP still has
+legacy `uart0`/`uart1` cursor/archive tools backed by the host broker; diagnose
+those against [MCP Server](../reference/mcp-server.md) without claiming they are
+J4. Mutating operations require a new operator decision after an error.
 
 ## Firmware And Recovery Changes
 

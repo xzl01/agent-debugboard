@@ -74,10 +74,11 @@ http://172.29.203.1/
 
 大多数系统会自动弹出板子的 captive portal 提示。如果没有，手动导航即可。
 
-仪表盘有电源控制、ADC 读数、switch 路由和 GPIO。试试看：在 Power Controls 卡片点 `5v_out` 的开关，然后看 ADC 卡片的电流读数变化。切到 **Terminal** 工作区可以找到逻辑分析仪和串口控制台。
-
-Linux 上如果 Web Serial 或 Bridge 无法打开 `/dev/ttyUSB*` 或
-`/dev/ttyACM*`，请参阅 [Linux 串口设备权限](webui.zh-CN.md#linux-串口设备权限)。
+仪表盘有电源控制、ADC 读数、switch 路由和 GPIO。试试看：在 Power Controls
+卡片点 `5v_out` 的开关，然后看 ADC 卡片的电流读数变化。切到 **Terminal**
+工作区可以找到逻辑分析仪和自动连接的 xterm.js J4 控制台。内嵌终端使用 MCU
+`serial.j4` WebSocket，不打开主机串口，也不弹浏览器 chooser。raw client 也可使用
+`nc 172.29.203.1 5555`。
 
 更多：[Web UI 指南](webui.zh-CN.md)
 

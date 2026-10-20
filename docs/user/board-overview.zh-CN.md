@@ -31,16 +31,17 @@ Radxa Linkr Debugger 是一块 USB 控制的硬件桥接板，用于自动化 br
 单根 USB-C 连接到 J15 所接 PC。板子枚举为复合设备：
 - **USB NCM** — 网络接口，控制面地址 `http://172.29.203.1`
 - **USB CDC ACM** — console 串口 fallback，用于 Zephyr shell 和 BOOTSEL 恢复
-- **USB CDC ACM（J4）** — 专用目标串口桥
+- **USB CDC ACM（J4）** — MCU J4 serial runtime 的一个 sink/source；最终 x1.2
+  HIL 中枚举为 ACM4，但主机 tty 编号不稳定
 
 Linux 和 macOS 无需安装驱动。Windows 需要标准 CDC ACM 驱动。
 
 ### 目标板调试口（CH347F）
 
-板载 CH347F 是挂在板载 USB hub 上的独立 USB 调试桥，提供目标 UART 和
-JTAG/SWD 通道，并作为独立 USB 设备出现。RP2354A 固件不在其 JTAG/SWD 数据链路
-中。x1.2 没有 VIO 电压选择，使用 3.3 V 信号电平。下方 J4 是 RP2354A 的 UART1
-桥，不是 CH347F 通道。
+板载 CH347F 是挂在 USB hub 上的独立调试设备；这里仍有效的产品用途是目标
+JTAG/SWD，RP2354A 固件不在该数据链路中。x1.2 没有 VIO 电压选择，使用 3.3 V
+信号电平。仍随 host tools 提供的 CH347 UART 功能属于 legacy 非 J4 路径。下方
+J4 由 RP2354A runtime 拥有，绝不经过 CH347。
 
 ### 电源输出
 
@@ -55,8 +56,9 @@ JTAG/SWD 通道，并作为独立 USB 设备出现。RP2354A 固件不在其 JTA
 `vdd_5v` 是 USB hub 的内部辅助 5 V 电源轨，同时在 CLI/API 中作为可控输出暴露；
 固件让它随 `switch usb` 路由联动。
 
-每条电源轨都有 INA226 电流/电压/功率监测，可通过 `adc read` 读取。ADC3
-（`GP29`）是独立的纯监测电压输入，不是电源轨电流传感器。
+每条电源轨都有 INA226 电流/电压/功率监测，可通过 `adc read` 读取。ADC0 到
+ADC3 是四路独立的纯监测 pad 电压输入，不是电源轨电流传感器；ADC3 为 GP29，
+在 safe GPIO 目录中仅允许输入。
 
 ### TF/SD 卡槽
 
@@ -111,9 +113,8 @@ J8 和 J13 都是从板右边缘侧出的排针。下列方向和坐标均为**�
 | 9（底部） | Pin 1：GP12（安全） | Pin 11：GND |
 
 映射到连接器的 safe-GPIO 控制子集是 J13 上的 GP7–GP9，以及 J8 上的
-GP12–GP16 和仅输入的 GP29/ADC3。GP17、GP18 仍是可输出的 safe GPIO，但尚无
-已确认的 J8/J13 位置；固件因此不输出它们的 `layoutGroup`、`layoutRow`、
-`layoutColumn`，客户端通过通用 fallback 显示。UI 只是允许列表内的控制子集，
+GP12–GP16 和仅输入的 GP29/ADC3。GP17、GP18 不在当前 safe/control 目录中，
+客户端不得把它们虚构成通用或连接器控件。UI 只是这九项允许列表控制子集，
 不是完整 pinout，也不是连接器配合面视图。接线时应以本节完整元件面表格和原理图
 为准。
 
@@ -123,7 +124,7 @@ GP12–GP16 和仅输入的 GP29/ADC3。GP17、GP18 仍是可输出的 safe GPIO
 
 ### 目标串口（J4）
 
-J4 是 UART1 上的 3 针串口，桥接到专用 USB CDC ACM：
+J4 是 UART1 上的单一逻辑 3 针目标串口：
 
 | 引脚 | 信号 |
 |-----|------|
@@ -131,9 +132,14 @@ J4 是 UART1 上的 3 针串口，桥接到专用 USB CDC ACM：
 | 2 | UART1 RX（GP11） |
 | 3 | GND |
 
-GP10/GP11 与逻辑分析仪共享。捕获选中其中任一引脚时，PIO2 拥有该引脚，J4
-串口在捕获期间不可用；不要在捕获期间期待串口收发。捕获结束后，固件会把
-GP10/GP11 恢复为 `GPIO_FUNC_UART_AUX` mux，J4 桥无需重启即可继续工作。
+repo-local `linkr_debugger_serial` runtime 拥有 UART1 和共享 4096 字节 RX ring，
+独立 fan-out 到 J4 CDC ACM、四个 `serial.j4` WebSocket sink 和 raw TCP 5555
+上的两个 client。板载 xterm.js 终端使用 MCU WebSocket，不使用 host Web Serial
+或 CH347。
+
+GP10/GP11 与逻辑分析仪共享。PIO2 接管前固件暂停 J4，并处理 active TX 的物理
+wire completion；捕获期间串口不可用。cleanup 恢复 `GPIO_FUNC_UART_AUX` 和 fresh
+sink epoch，同一 J4 session 无需重启即可继续。
 
 ### 状态 LED
 

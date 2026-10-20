@@ -1,23 +1,25 @@
 # ADC Telemetry Contract
 
 This document is the authoritative contract for ADC telemetry in
-`radxa-linkr-debugger`. It describes the five descriptors the firmware
+`radxa-linkr-debugger`. It describes the eight descriptors the firmware
 exposes, the HTTP read shape, the WebSocket telemetry shapes (single
 sample and batch), the Web UI rendering scope, and the related `GP29`
 ownership rules. CLI, Web, Agent skill, firmware app, and HIL
 documentation reference this file rather than restating the same shape.
 
-> **Status:** This contract describes the current firmware, Rust host, and
-> Web UI implementation for the four-INA226 plus ADC3 telemetry topology.
-> It is not a HIL report and makes no board-level validation claim. The
-> executable board checklist and the current validation status live in
-> [the HIL functional test spec](../testing/hil-functional-test-spec.md).
-> Do not cite an older ADC telemetry HIL run as evidence for this
-> five-descriptor shape.
+> **Status:** This contract describes the eight-channel firmware protocol for
+> the four INA226 and four RP2350 ADC inputs. The complete HTTP order, compact
+> 18×8 WebSocket batch, CLI eight-channel output, and embedded Web rendering
+> were exercised on x1.2 on 2026-10-21; see the
+> [dated HIL report](../testing/results/2026-10-21-x1.2-adc-pinout-j4-hil.md).
+> That run did **not** perform the physical ADC0 PD-source unplug/replug monitor
+> case, stuck-line fault injection, or analog electrical certification. The
+> executable checklist and remaining requirements stay authoritative in the
+> [HIL functional test spec](../testing/hil-functional-test-spec.md).
 
 ## 1. Descriptors And Types
 
-The firmware reports exactly five ADC descriptors, in this fixed order,
+The firmware reports exactly eight ADC descriptors, in this fixed order,
 on both `GET /api/v1/adc/read` and live WebSocket telemetry:
 
 | `name`    | `kind`    | `unit` (HTTP) | `unit` (WS compact) | Physical source | Notes |
@@ -26,12 +28,20 @@ on both `GET /api/v1/adc/read` and live WebSocket telemetry:
 | `12v_out` | `current` | `A`           | `uA`                | INA226, signal `INA226_12V` | controllable 12 V output rail |
 | `20v_out` | `current` | `A`           | `uA`                | INA226, signal `INA226_20V` | controllable 20 V output rail |
 | `vdd_5v`  | `current` | `A`           | `uA`                | INA226, signal `INA226_VDD_5V` | controllable auxiliary 5 V rail |
+| `adc0`    | `voltage` | `V`           | `uV`                | ADC0 / `GP26`, signal `GPIO26_ADC0` | `PD input divider; ADC pad voltage` |
+| `adc1`    | `voltage` | `V`           | `uV`                | ADC1 / `GP27`, signal `GPIO27_ADC1` | ADC pad voltage |
+| `adc2`    | `voltage` | `V`           | `uV`                | ADC2 / `GP28`, signal `GPIO28_ADC2` | ADC pad voltage |
 | `adc3`    | `voltage` | `V`           | `uV`                | ADC3 / `GP29`, signal `GPIO29_ADC3` | monitor-only; no power state |
 
 All four current descriptors are backed by INA226 devices. Each INA226
 reading carries both the current-channel sample and the bus voltage
-sampled from the same device. `adc3` is a separate ADC voltage channel;
-it is not a rail-current sensor and has no `power_enabled` state.
+sampled from the same device. `adc0` through `adc3` are separate ADC
+voltage channels; they are not rail-current sensors and have no
+`power_enabled` state. `adc0` has firmware-owned `note` metadata identifying
+the PD input divider, while its reported scalar remains the voltage at the ADC
+pad. Clients must not multiply it by the board divider ratio. The remaining ADC
+channels are identified by their firmware `signal` metadata; clients must not
+embed connector-layout mappings in the telemetry model.
 
 Descriptor order is part of the wire contract: it is also the order of
 `readings[]` and `channels[]`, and the current descriptors are the base
@@ -50,11 +60,11 @@ hardcoding a count or assuming a different order.
   unit. Hosts must not assume it is non-negative and must not apply
   their own ADC calibration or zero-point correction.
 - The firmware does not clamp samples to a display range. The Web UI's
-  ADC3 chart uses a fixed `0..3,300,000 uV` (nominal `0..3.3 V`) scale;
+  ADC charts use a fixed `0..3,300,000 uV` (nominal `0..3.3 V`) scale;
   current, bus-voltage, and power traces auto-scale. That chart scale is
   a rendering choice, not a calibrated accuracy or validity claim.
 - In the current batch shape, `values` has one entry per descriptor
-  (five) and `voltages_uv` has one entry per current descriptor (four).
+  (eight) and `voltages_uv` has one entry per current descriptor (four).
   The two masks use the low four bits; higher bits are zero.
 - `voltage_valid` is the authority for a bus-voltage sample. A current
   reading can legitimately carry a `voltage_uv` slot while
@@ -102,12 +112,14 @@ For the four current descriptors:
   emit `"raw": null`. Clients must accept `null` and must not render it
   as a zero measurement.
 
-The `adc3` reading has a different shape:
+An ADC voltage reading has a different shape. ADC0 additionally carries its
+firmware-owned `note`; ADC1 through ADC3 omit that optional field:
 
 ```json
 {
-  "name": "adc3",
-  "signal": "GPIO29_ADC3",
+  "name": "adc0",
+  "signal": "GPIO26_ADC0",
+  "note": "PD input divider; ADC pad voltage",
   "raw": 2048,
   "mv": 1650,
   "sensor_channel": "voltage",
@@ -116,13 +128,22 @@ The `adc3` reading has a different shape:
 }
 ```
 
-- `adc3` has `sensor_channel="voltage"` and `unit="V"`.
+- `adc0` through `adc3` have `sensor_channel="voltage"` and `unit="V"`.
 - The canonical scalar is reconstructed by clients from
   `sensor_value` as `val1 * 1,000,000 + val2` microvolts.
 - HTTP does not add `value`, `current_ua`, `power_enabled`,
-  `voltage_valid`, or `voltage_uv` to the `adc3` reading. `raw`, `mv`,
-  and `sensor_value` remain present for pipeline diagnostics; a
-  successful `adc3` read populates both `raw` and `mv`.
+  `voltage_valid`, or `voltage_uv` to ADC voltage readings. `raw`, `mv`,
+  and `sensor_value` remain present for pipeline diagnostics; a successful ADC
+  read populates both `raw` and `mv`. These are direct ADC-pad values, including
+  on ADC0; no `115/15` divider conversion is part of public telemetry.
+- ADC0 through ADC3 map to raw ADC indexes 0 through 3 respectively. Firmware
+  configures and reads all four indexes. If the Device Tree microvolt helper is
+  unavailable, firmware performs the nominal 3.3 V conversion in 64-bit
+  arithmetic and clamps only at the signed 32-bit wire boundary; it does not
+  apply a divider ratio or a display-range clamp.
+- The complete eight-reading HTTP response uses the ordinary fixed 4096-byte
+  JSON buffer. Encoding failure returns `response_too_large`; it never emits a
+  partial JSON document.
 
 Host clients do not apply any host-side ADC calibration table. They
 surface the firmware's direct readings. The host CLI may present concise
@@ -151,6 +172,9 @@ only the fields the high-rate WebSocket path needs:
     {"name": "12v_out", "signal": "INA226_12V",    "kind": "current", "unit": "uA", "power_enabled": false, "current_ua": 120000, "voltage_valid": true,  "voltage_uv": 12020000, "value": 120000},
     {"name": "20v_out", "signal": "INA226_20V",    "kind": "current", "unit": "uA", "power_enabled": true,  "current_ua": 20000,  "voltage_valid": true,  "voltage_uv": 20030000, "value": 20000},
     {"name": "vdd_5v",  "signal": "INA226_VDD_5V", "kind": "current", "unit": "uA", "power_enabled": true,  "current_ua": 150000, "voltage_valid": true,  "voltage_uv": 5000000,  "value": 150000},
+    {"name": "adc0",    "signal": "GPIO26_ADC0",   "kind": "voltage", "unit": "uV", "note": "PD input divider; ADC pad voltage", "value": 1234000},
+    {"name": "adc1",    "signal": "GPIO27_ADC1",   "kind": "voltage", "unit": "uV", "value": 1100000},
+    {"name": "adc2",    "signal": "GPIO28_ADC2",   "kind": "voltage", "unit": "uV", "value": 2200000},
     {"name": "adc3",    "signal": "GPIO29_ADC3",   "kind": "voltage", "unit": "uV", "value": 1234000}
   ]
 }
@@ -168,10 +192,13 @@ Rules:
   on this frame; it is meaningful only when `voltage_valid` is `true`.
   When `voltage_valid` is `false`, clients must ignore the voltage slot
   rather than graph it as a real zero.
-- The voltage descriptor (`adc3`) never carries `power_enabled`,
+- The voltage descriptors (`adc0` through `adc3`) never carry `power_enabled`,
   `current_ua`, `voltage_valid`, or `voltage_uv`. Its `value` is the
   reconstructed signed microvolt sample.
 - The single-sample frame never carries `raw`, `mv`, or `sensor_value`.
+- `note` is optional firmware-owned channel metadata. It is present on ADC0
+  readings and must be displayed or passed through rather than re-created from
+  a host-side board map.
 - Companion timing fields (`uptime_us`, `sample_sequence`,
   `device_t_mono_us`, optional `dropped_samples`) stay on the envelope,
   not on each reading.
@@ -193,6 +220,9 @@ sample, positionally aligned with `channels`:
     {"name": "12v_out", "signal": "INA226_12V",    "kind": "current", "unit": "uA"},
     {"name": "20v_out", "signal": "INA226_20V",    "kind": "current", "unit": "uA"},
     {"name": "vdd_5v",  "signal": "INA226_VDD_5V", "kind": "current", "unit": "uA"},
+    {"name": "adc0",    "signal": "GPIO26_ADC0",   "kind": "voltage", "unit": "uV", "note": "PD input divider; ADC pad voltage"},
+    {"name": "adc1",    "signal": "GPIO27_ADC1",   "kind": "voltage", "unit": "uV"},
+    {"name": "adc2",    "signal": "GPIO28_ADC2",   "kind": "voltage", "unit": "uV"},
     {"name": "adc3",    "signal": "GPIO29_ADC3",   "kind": "voltage", "unit": "uV"}
   ],
   "samples": [
@@ -201,7 +231,7 @@ sample, positionally aligned with `channels`:
       "uptime_us": 234567,
       "power_enabled_mask": 15,
       "voltage_valid_mask": 15,
-      "values": [540000, 120000, 20000, 150000, 1234000],
+      "values": [540000, 120000, 20000, 150000, 1234000, 1100000, 2200000, 1234000],
       "voltages_uv": [5010000, 12020000, 20030000, 5000000]
     }
   ]
@@ -220,13 +250,17 @@ Rules:
   the **current-channel index**, not the raw `channels[]` index in
   general. Bit 0 is the first current-kind channel, bit 1 the second,
   and so on. With the current fixed order, bits 0..3 are `5v_out`,
-  `12v_out`, `20v_out`, and `vdd_5v`. The voltage channel (`adc3`) has
-  no power state and contributes no bit; bits 4..7 are zero.
+  `12v_out`, `20v_out`, and `vdd_5v`. The four voltage channels have no
+  power state and contribute no bits; bits 4..7 are zero.
 - `voltage_valid_mask` and `voltages_uv[]` use that same current-channel
   index. `voltages_uv` always has one slot per current-kind channel
   (four in the current order). A cleared mask bit means the matching
   array slot is not a measurement and must not be presented as one; it
   does not change the indexing of the other slots.
+- `note` is carried once in `channels[]`, not repeated in each batch sample.
+- `batch_size` is clamped to `1..18`. Eighteen worst-case eight-channel
+  samples, including the actual ADC0 note and widest valid numeric values, fit
+  the fixed 6144-byte client transmit buffer; twenty do not.
 - Batch samples carry `sequence` and `uptime_us` but not
   `sample_sequence` or `device_t_mono_us`. The Rust recorder expands
   those two aliases from `sequence` and `uptime_us` when it writes
@@ -265,8 +299,8 @@ live path consume the fields defined in sections 2.2 and 2.3.
 ## 3. Reading Model Across Surfaces
 
 The Rust CLI and the Web UI keep an internal `AdcReading` model with
-`kind`, `unit`, `name`, `signal`, `value`, plus optional
-`power_enabled` (current only), current-rail voltage state, and the
+`kind`, `unit`, `name`, `signal`, `value`, an optional firmware-owned `note`,
+optional `power_enabled` (current only), current-rail voltage state, and the
 HTTP diagnostics (`raw`, `mv`, `sensor_value`, `current_ua`). The Web
 model retains `voltage_valid` next to `voltage_uv`; a model that keeps
 only `voltage_uv` must treat it as absent when the flag is false or the
@@ -304,12 +338,13 @@ telemetry. It keeps:
   current, measured bus voltage, and power from the 60 Hz live
   subscription with a 90-sample window (about 1.5 seconds of history).
   The traces share the sample history but auto-scale independently.
-- A monitor-only ADC3 (`adc3`) section between the current rows and
-  the PowerAnalyzer, rendered only when the firmware emits an `adc3`
-  reading. ADC3 uses a fixed `0..3,300,000 uV` scale (nominal
-  `0..3.3 V`). The shared sparkline component reuses the same 90-sample
-  SVG history with the same animation-frame cadence; only the Y scale
-  is fixed.
+- Monitor-only sections for ADC0 through ADC3 between the current rows and the
+  PowerAnalyzer, rendered from the firmware descriptors. Each ADC uses a fixed
+  `0..3,300,000 uV` scale (nominal `0..3.3 V`). ADC0 may display the firmware
+  note `PD input divider; ADC pad voltage`; all four rows use the firmware
+  `signal` and never a host-owned connector map. The shared sparkline component
+  reuses the same 90-sample SVG history with the same animation-frame cadence;
+  only the Y scale is fixed.
 - PowerAnalyzer remains a current-only triggered capture story. The
   capture stream retains all four current descriptors, while the
   analyzer's comparison and its Web capture CSV export are scoped to
@@ -354,24 +389,24 @@ the input-only behaviour.
 
 ## 6. CLI And TUI Examples
 
-The host CLI mirrors the contract. `adc read` and `adc read adc3`
-return the five-descriptor list. `adc read -v <channel>` adds the
+The host CLI mirrors the contract. `adc read` and `adc read adc0`
+return the eight-descriptor list. `adc read -v <channel>` adds the
 diagnostic fields. `adc record` creates a live session and writes one
 record per device sample, using the compact shape as the source of
 truth and surfacing it through the internal `AdcReading` model.
 
 ```sh
-# Inspect all five descriptors
+# Inspect all eight descriptors
 radxa-linkr-debuggerctl --json adc read
 
-# Read the voltage monitor
-radxa-linkr-debuggerctl --json adc read adc3
-radxa-linkr-debuggerctl --json adc read adc3 -v
+# Read the PD-divider ADC pad voltage and its metadata
+radxa-linkr-debuggerctl --json adc read adc0
+radxa-linkr-debuggerctl --json adc read adc0 -v
 
-# Record all five descriptors as NDJSON at the default 250 Hz
+# Record all eight descriptors as NDJSON at the default 250 Hz
 radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 500
 
-# Record the fixed current-rail CSV table at 250 Hz
+# Record current rails plus ADC voltage columns at 250 Hz
 radxa-linkr-debuggerctl adc record /tmp/adc.csv 500 --rate-hz 250
 ```
 
@@ -379,15 +414,15 @@ radxa-linkr-debuggerctl adc record /tmp/adc.csv 500 --rate-hz 250
 range `1..250`; the CLI and firmware reject higher values instead of
 silently clamping them.
 
-NDJSON records preserve every descriptor, including `adc3`. CSV output
-is a fixed per-rail table for the four current rails `5v_out`,
-`12v_out`, `20v_out`, and `vdd_5v`; `adc3` is not a CSV column. Each
-rail contributes `power_enabled`, `current_ua`, and `voltage_uv`
-columns. Any unknown per-rail field, including an unknown power state,
-current, or bus voltage, is written as an empty CSV cell, never as
-`false` or `0`, so an unknown value cannot be confused with a real zero.
-The exact column order is owned by the Rust recorder; consumers should
-use the header row rather than positional assumptions.
+NDJSON records preserve every descriptor, including `adc0` through `adc3`.
+CSV output starts with the fixed per-rail columns for `5v_out`, `12v_out`,
+`20v_out`, and `vdd_5v`; each contributes `power_enabled`, `current_ua`, and
+`voltage_uv`. It then appends one `<name>_voltage_uv` column per voltage-kind
+descriptor in firmware descriptor order, normally `adc0_voltage_uv` through
+`adc3_voltage_uv`. Any unknown per-rail field or ADC voltage is written as an
+empty CSV cell, never as `false` or `0`, so an unknown value cannot be confused
+with a real zero. The exact column order is owned by the Rust recorder;
+consumers should use the header row rather than positional assumptions.
 
 The `raw` diagnostics are HTTP-only and are not exposed by the WS
 compact frame. Clients that want raw diagnostics must use the HTTP path
@@ -398,9 +433,9 @@ explicitly.
 This contract is enforced through a small, consistent set of files:
 
 - `apps/radxa_linkr_debugger/src/linkr_debugger_model.c` defines the
-  five-descriptor catalog and each descriptor's fixed order.
+  eight-descriptor catalog, ADC0 note, and each descriptor's fixed order.
 - `apps/radxa_linkr_debugger/src/linkr_debugger_control.c` samples the
-  four INA226 devices and the ADC3 channel and fills `current_ua`,
+  four INA226 devices and all four raw ADC channels and fills `current_ua`,
   `voltage_valid`, `voltage_uv`, and the raw ADC diagnostics.
 - `apps/radxa_linkr_debugger/src/linkr_debugger_http.c` emits the rich
   HTTP readings, including JSON `null` for unavailable `raw` and
@@ -417,7 +452,7 @@ This contract is enforced through a small, consistent set of files:
   `MeasurementSparkline` rendered in both `mode="power"` and
   `mode="voltage"` shapes.
 - `web/src/components/PowerCard.tsx` renders the four current rows and
-  inserts the ADC3 section between those rows and the PowerAnalyzer.
+  inserts the four ADC sections between those rows and the PowerAnalyzer.
 - `skills/radxa-linkr-debugger/SKILL.md` keeps the curl-first examples
   and points users back here for the wire shapes.
 - `docs/testing/hil-functional-test-spec.md` carries the board-level

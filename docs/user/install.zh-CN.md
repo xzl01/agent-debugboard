@@ -4,8 +4,8 @@
 
 ## 推荐：统一桌面安装
 
-桌面 release 包一次安装 Web UI、Serial Broker、常驻 HTTP MCP、CLI/TUI 和
-托盘监督器：
+桌面 release 包一次安装 host Web/API gateway、常驻 HTTP MCP、CLI/TUI、托盘
+监督器，以及仍随包提供的 legacy Serial Broker：
 
 | 系统 / CPU | 统一桌面包 |
 | --- | --- |
@@ -26,17 +26,23 @@ Windows PowerShell：
 ```
 
 安装器不使用 sudo、不修改 PATH，只写入当前用户的应用数据目录，并注册登录
-自启动。启动后托盘图标用绿色、黄色、红色显示 Web/Broker/MCP 的运行、启动中、
-不可用状态。菜单可打开 Web 控制台、查看 Host JSON 状态和 UART 归档、重启托管
-服务或退出。通过 Bridge 打开的 UART 默认会把原始 RX 归档到本机；直接 Web Serial
-仍只保存在浏览器内。默认按 64 MiB 分段，未固定日志总配额 2 GiB，保留 30 天。
+自启动。启动后托盘图标用绿色、黄色、红色显示 Web/Host/MCP 的运行、启动中、
+不可用状态。菜单可打开 host Web 控制台、查看 Host JSON 状态和 legacy UART
+归档、重启托管服务或退出。归档默认按 64 MiB 分段，未固定日志总配额 2 GiB，
+保留 30 天。
+
+host gateway 与 MCP 仍是实际打包功能；其中 `uart0`/`uart1` CH347 broker、串口归档
+和 MCP serial tools 是等待单独移除的 legacy 非 J4 路径。生产 J4 终端不得使用这些
+入口。J4 由 MCU 固件通过板载 xterm.js 页面、CDC ACM 和 raw TCP 5555 提供，不需要
+浏览器 chooser 或 Host broker。
 
 常驻入口：
 
 - Web：<http://127.0.0.1:8787/>
 - MCP（Streamable HTTP）：<http://127.0.0.1:8787/mcp>
 - 状态：<http://127.0.0.1:8787/host/api/v1/status>
-- UART 归档状态：<http://127.0.0.1:8787/host/api/v1/serial-logging/status>
+- legacy 非 J4 UART 归档状态：
+  <http://127.0.0.1:8787/host/api/v1/serial-logging/status>
 
 Linux 桌面包的图形图标需要系统提供 GTK 3 和 Ayatana AppIndicator 3 运行库。
 无桌面托盘的服务器环境中，CLI/TUI 与 `-d` / `--desktop` 会把同一个
@@ -157,7 +163,7 @@ cargo build --manifest-path cmd-ng/Cargo.toml
 ./cmd-ng/target/debug/radxa-linkr-debuggerctl --help
 ```
 
-## 手动运行 Web UI、共享 Serial Broker 与 MCP
+## 手动运行 host Web gateway 与 MCP
 
 开发者也可以从 checkout 手动构建：
 
@@ -167,18 +173,22 @@ npm --prefix web run build
 cargo build --release --manifest-path host-tools/Cargo.toml
 ```
 
-启动组合的 Web Host、板端网关和共享 Serial Broker：
+启动组合的 Web Host、板端 gateway、MCP endpoint 和仍随包提供的 legacy
+Serial Broker：
 
 ```sh
 host-tools/target/release/linkr-host serve
 ```
 
-然后打开 <http://127.0.0.1:8787/>。如需同时检查 Web 资产、本地 Host、
-板端 API 和 CH347F 串口发现，运行：
+然后打开 <http://127.0.0.1:8787/>。如需检查 Web 资产、本地 Host 和板端 API，运行：
 
 ```sh
 host-tools/target/release/linkr-host doctor
 ```
+
+`doctor` 仍可能报告 CH347 串口发现，因为 legacy 非 J4 子系统仍在编译；该结果
+不构成 J4 验证。J4 应通过板载页面、MCU WebSocket `serial.j4`、CDC ACM 或 raw
+TCP 5555 验证。
 
 `serve` 同时提供常驻 MCP 地址 <http://127.0.0.1:8787/mcp>。只支持 stdio
 的 Agent 客户端可以继续用 `mcp` 参数启动兼容适配器：

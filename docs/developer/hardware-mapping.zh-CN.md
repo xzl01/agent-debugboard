@@ -31,7 +31,7 @@ MCUboot board。权威板级说明见
 | TF 写保护 | `switch tf_wp` | `TF_WP` | 22 |
 | USB OTG 使能 | — | `OTG_USB_EN` | 23 |
 | 状态 LED | — | `LED_BLUE` | 24 |
-| ADC0 | — | `GPIO26_ADC0` | 26 |
+| ADC0 / CH224A输入门控 | 私有`ch224a_input_voltage` | `GPIO26_ADC0`、DC20V分压 | 26 |
 | ADC1 | — | `GPIO27_ADC1` | 27 |
 | ADC2 | — | `GPIO28_ADC2` | 28 |
 | ADC3 / GP29 | `adc3` | `GPIO29_ADC3` | 29 |
@@ -102,9 +102,34 @@ USB5V 生成；x1.2 没有可切换的 VIO/1.8 V regulator，也没有 `switch/v
 四颗 INA226 共享生产默认400 kHz的PIO I2C总线。合格基线使用生产BOM中的
 4.7 kΩ上拉到常供电VCC_3V3，并保持J8空载。每颗INA226为一个电源轨上报电流、
 总线电压和功率；板上没有ADC电流采样路径。任何J8器件、线缆、上拉或异域电源
-都必须重新验证总电容、上升时间、VOL和电源域边界。固件启动时probe CH224A，
-状态请求继续轮询；无PD源/VHV时失败后进入5秒退避，插入源后恢复。该期间
-VCC_3V3供电的INA226遥测仍可工作。
+都必须重新验证总电容、上升时间、VOL和电源域边界。`main`显式完成CH224A的
+deferred init后，由独立低优先级线程约每100 ms只采样私有输入gate；present稳态
+不产生CH224A I2C事务，也不重复读取capability。稳定的absent→present边沿会跳过
+旧source的5秒probe退避并执行一次gate保护的probe/status discovery；移除或ADC错误
+则不发I2C而立即清PD状态。这是轮询，不是IRQ。PD absent期间，VCC_3V3供电的
+INA226遥测仍可工作。
+
+CH224A访问由ADC0上的私有标准`voltage-divider` sensor门控。R46（100 kΩ）和
+R47（15 kΩ）测量Q28之后、U10之前的`DC20V`分压；这是源侧输入路径，不是直接
+测量CH224A VHV。15 kΩ输出电阻、115 kΩ全分压以及2.8 V present/2.5 V absent
+迟滞均只由Device Tree描述。输入为absent/unknown时，驱动必须取得间隔至少5 ms
+的三次稳定样本后才允许任何CH224A I2C事务；present后每笔事务仍重新采样。
+
+CH224A寄存器`0x09`只要获得I2C ACK并成功读回一个字节，就视为有效读取。驱动只
+解析已命名的status mask；不能因为unknown/reserved bit置位而拒绝`0x00`、`0x80`、
+`0x88`、`0xff`或未来值。未知位每次启动最多记录一次包含原始字节的warning，随后
+忽略；不得因此触发retry、bus recovery，也不得清presence或PD capability缓存。
+
+CH224A probe遇到bus busy/stuck或timeout分类时，每个probe序列最多调用一次标准
+`i2c_recover_bus()`。现有PIO driver在bus lock下执行有界、fail-closed且仅开漏的
+恢复序列；普通地址NAK（`-EIO`）绝不触发bus clear，Zephyr通用I2C shell继续禁用。
+恢复SCL脉冲之前和恢复后的probe retry之前都必须重新通过ADC gate。
+
+该voltage-divider实例只在CH224A锁内使用，本身不是公共telemetry descriptor。
+独立的公共`adc0` descriptor通过raw ADC driver读取同一个ADC pad，上报的是pad电压，
+不是分压器还原后的源侧电压；driver的`adc_context`负责串行化ADC0与其它通道。
+未来若上报源侧电压，必须新增由firmware按Device Tree换算的独立字段，不能由host对
+公共`adc0`执行`115/15`倍乘。
 
 | 电源轨 | 器件 | 7 位地址 | 采样电阻 |
 | --- | --- | --- | --- |
@@ -114,9 +139,10 @@ VCC_3V3供电的INA226遥测仍可工作。
 | `vdd_5v` | U12 | `0x45` | 10 mOhm |
 
 J8只引出ADC1/GP27、ADC2/GP28和ADC3/GP29；ADC0/GP26不是J8端子。
-ADC1/ADC2不是电源轨采样输入。ADC3（`GP29`）是由`adc3`拥有的纯监测电压通道，
-没有电源状态。固件上报五个descriptor，主机直接展示固件值，不做主机侧校准表
-或零点修正。合约见
+ADC1/ADC2不是电源轨采样输入。ADC0至ADC3均为没有电源状态的纯监测pad电压通道；
+ADC3（`GP29`）仍由`adc3`拥有且仅输入。固件先上报四个INA226电流descriptor，再
+上报这四个ADC descriptor；主机直接展示固件值，不做主机侧校准表、零点修正或
+分压换算。合约见
 [ADC telemetry 合约](../reference/adc-telemetry.md)。
 
 ## 原理图参考
