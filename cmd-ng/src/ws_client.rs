@@ -135,7 +135,11 @@ pub struct WsTelemetryBatchSample {
     pub device_t_mono_us: Option<u64>,
     #[serde(default)]
     pub power_enabled_mask: u32,
+    #[serde(default)]
+    pub voltage_valid_mask: u32,
     pub values: Vec<i32>,
+    #[serde(default)]
+    pub voltages_uv: Vec<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -351,6 +355,31 @@ pub fn expand_telemetry_batch(batch: WsTelemetryBatch) -> Result<Vec<WsTelemetry
                     kind: channel.kind,
                     unit: channel.unit.clone(),
                     power_enabled,
+                    voltage_valid: match channel.kind {
+                        AdcKind::Current => {
+                            let current_index = batch.channels[..channel_index]
+                                .iter()
+                                .filter(|candidate| candidate.kind == AdcKind::Current)
+                                .count();
+                            let bit = if current_index < u32::BITS as usize {
+                                1u32 << current_index
+                            } else {
+                                0
+                            };
+                            Some(sample.voltage_valid_mask & bit != 0)
+                        }
+                        AdcKind::Voltage => None,
+                    },
+                    voltage_uv: match channel.kind {
+                        AdcKind::Current => {
+                            let current_index = batch.channels[..channel_index]
+                                .iter()
+                                .filter(|candidate| candidate.kind == AdcKind::Current)
+                                .count();
+                            sample.voltages_uv.get(current_index).copied()
+                        }
+                        AdcKind::Voltage => None,
+                    },
                     value,
                 }
                 .into_reading()
@@ -423,7 +452,7 @@ mod tests {
         assert!(!legacy.switches["usb"].requires_confirm);
 
         let current: WsStatusSnapshot = serde_json::from_str(
-            r#"{"switches":{"sd":{"route":"target","routes":["target","usb-reader"],"requires_confirm":false},"tf_wp":{"route":"writable","routes":["writable","protected"],"requires_confirm":false},"vin":{"route":"1.8v","routes":["1.8v","3.3v"],"requires_confirm":true}}}"#,
+            r#"{"switches":{"sd":{"route":"target","routes":["target","usb-reader"],"requires_confirm":false},"tf_wp":{"route":"writable","routes":["writable","protected"],"requires_confirm":false}}}"#,
         )
         .unwrap();
         assert_eq!(current.switches["tf_wp"].route, "writable");
@@ -431,7 +460,6 @@ mod tests {
             current.switches["tf_wp"].routes,
             vec!["writable".to_string(), "protected".to_string()]
         );
-        assert!(current.switches["vin"].requires_confirm);
     }
 
     #[test]
@@ -654,8 +682,8 @@ mod tests {
         assert_eq!(messages[1].extra["device_t_mono_us"], 2001);
         assert!(messages[1].extra.get("dropped_samples").is_none());
 
-        let request = subscribe_batch_request(1000, 10);
-        assert_eq!(request.rate_hz, Some(1000));
+        let request = subscribe_batch_request(250, 10);
+        assert_eq!(request.rate_hz, Some(250));
         assert_eq!(request.batch_size, Some(10));
     }
 
@@ -693,7 +721,7 @@ mod tests {
                     {"name":"20v_out","signal":"S_C_20V","kind":"current","unit":"uA"},
                     {"name":"adc3","signal":"ADC3","kind":"voltage","unit":"uV"}
                 ],
-                "samples":[{"sequence":12,"uptime_us":3000,"power_enabled_mask":5,"values":[540000,120000,20000,1234000]}]
+                "samples":[{"sequence":12,"uptime_us":3000,"power_enabled_mask":5,"voltage_valid_mask":7,"values":[540000,120000,20000,1234000],"voltages_uv":[5010000,12020000,20030000]}]
             }"#,
         )
         .unwrap();
@@ -703,6 +731,9 @@ mod tests {
         assert_eq!(message.readings[0].power_enabled, Some(true));
         assert_eq!(message.readings[1].power_enabled, Some(false));
         assert_eq!(message.readings[2].power_enabled, Some(true));
+        assert_eq!(message.readings[0].voltage_uv, Some(5_010_000));
+        assert_eq!(message.readings[1].voltage_uv, Some(12_020_000));
+        assert_eq!(message.readings[2].voltage_uv, Some(20_030_000));
         assert_eq!(message.readings[3].kind, AdcKind::Voltage);
         assert_eq!(message.readings[3].voltage_uv, Some(1_234_000));
         assert_eq!(message.readings[3].current_ua, None);

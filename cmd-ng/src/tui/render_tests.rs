@@ -1,4 +1,4 @@
-use super::controls::control_targets;
+use super::controls::{control_items, ControlItem};
 use super::gpio_fixture::current_power_outputs;
 use super::model::TuiModel;
 use super::render::render_ui;
@@ -102,10 +102,10 @@ fn buffer_text(buffer: &Buffer) -> String {
 fn controls_page_renders_one_row_per_object_without_separators() {
     let model = dashboard_model();
     let content = build_body_content(&model, 80);
-    // dashboard_model: 4 power + 1 switch + 1 gpio = 6 object rows, nothing else.
-    assert_eq!(content.lines.len(), 6);
+    // dashboard_model: 4 power + 1 switch + Reboot + 1 gpio = 7 dense rows.
+    assert_eq!(content.lines.len(), 7);
     assert_eq!(content.selection_line, Some(0));
-    assert_eq!(content.marks.len(), 6);
+    assert_eq!(content.marks.len(), 7);
     let rendered: Vec<String> = content.lines.iter().map(ToString::to_string).collect();
     assert!(rendered[0].contains("power"));
     assert!(rendered[0].contains("12v_out"));
@@ -113,10 +113,12 @@ fn controls_page_renders_one_row_per_object_without_separators() {
     assert!(rendered[4].contains("switch"));
     assert!(rendered[4].contains("sd"));
     assert!(rendered[4].contains("target"));
-    assert!(rendered[5].contains("GPIO"));
-    assert!(rendered[5].contains("GP10"));
-    assert!(rendered[5].contains("● OUT HIGH"));
-    assert!(rendered[5].contains("J16_PIN1"));
+    assert!(rendered[5].contains("system"));
+    assert!(rendered[5].contains("Reboot"));
+    assert!(rendered[6].contains("GPIO"));
+    assert!(rendered[6].contains("GP10"));
+    assert!(rendered[6].contains("● OUT HIGH"));
+    assert!(rendered[6].contains("J16_PIN1"));
     assert!(rendered
         .iter()
         .all(|line| !line.trim().is_empty() && !line.contains("Power")));
@@ -161,7 +163,10 @@ fn controls_page_scrolls_to_keep_the_selection_visible() -> Result<()> {
     for pin in 7..=20 {
         model.gpio_names.push(format!("GP{pin}"));
     }
-    model.control_idx = model.gpio_names.len() - 1 + control_targets(&model).len();
+    model.control_idx = control_items(&model)
+        .iter()
+        .position(|item| item == &ControlItem::Gpio("GP20".to_string()))
+        .unwrap();
 
     let buffer = draw(&mut model, 80, 16)?;
     let text = buffer_text(&buffer);

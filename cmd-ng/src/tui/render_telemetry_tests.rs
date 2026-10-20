@@ -257,3 +257,54 @@ fn scope_is_zero_height_without_data() -> Result<()> {
     assert!(row_text(&buffer, 3).contains("TYPE"));
     Ok(())
 }
+
+#[test]
+fn scope_uses_snapshot_current_descriptors_including_vdd_and_new_channels() -> Result<()> {
+    let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+    let snapshot = serde_json::from_value(serde_json::json!({
+        "adc_channels": [
+            {"name": "vdd_5v", "sensor_channel": "current"},
+            {"name": "adc3", "sensor_channel": "voltage"},
+            {"name": "5v_out", "sensor_channel": "current"},
+            {"name": "12v_out", "sensor_channel": "current"},
+            {"name": "20v_out", "sensor_channel": "current"},
+            {"name": "aux", "sensor_channel": "current"}
+        ]
+    }))?;
+    model.apply_status_snapshot(snapshot);
+    assert_eq!(
+        model.channel_ids,
+        ["vdd_5v", "5v_out", "12v_out", "20v_out", "aux"]
+    );
+    let mut readings: Vec<_> = model
+        .channel_ids
+        .iter()
+        .map(|name| AdcReading {
+            name: name.clone(),
+            current_ua: Some(900_000),
+            power_enabled: Some(true),
+            ..Default::default()
+        })
+        .collect();
+    readings.push(AdcReading {
+        name: "adc3".to_string(),
+        kind: crate::adc::AdcKind::Voltage,
+        voltage_uv: Some(1_200_000),
+        ..Default::default()
+    });
+    model.apply_adc_response(readings);
+
+    let buffer = draw(&mut model, 180, 24)?;
+    let header = row_text(&buffer, 2);
+    for name in ["vdd_5v", "5v_out", "12v_out", "20v_out", "aux"] {
+        assert!(header.contains(name), "header={header}");
+    }
+    assert!(header.starts_with("vdd_5v on 900mA"), "header={header}");
+    assert!(!header.contains("adc3"));
+    assert!(BAR_GLYPHS.contains(buffer[(0, 8)].symbol()));
+
+    model.apply_status_snapshot(crate::ws_status::WsStatusSnapshot::default());
+    let buffer = draw(&mut model, 180, 24)?;
+    assert!(row_text(&buffer, 2).contains("Controls"));
+    Ok(())
+}

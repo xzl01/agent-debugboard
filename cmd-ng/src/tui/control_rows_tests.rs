@@ -1,7 +1,7 @@
 use super::control_columns::{column_plan, row_line, Column, RowLayout};
 use super::control_rows::{control_rows, ControlRow, RowTone};
 use super::controls::control_targets;
-use super::gpio_fixture::current_power_outputs;
+use super::gpio_fixture::{current_adc_channels, current_power_outputs};
 use super::model::TuiModel;
 use crate::adc::AdcReading;
 use crate::client::DEFAULT_BASE_URL;
@@ -14,6 +14,7 @@ fn model_with_states() -> TuiModel {
     let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
     let mut snapshot = WsStatusSnapshot {
         power_outputs: current_power_outputs(),
+        adc_channels: current_adc_channels(),
         ..Default::default()
     };
     snapshot.switches.insert(
@@ -25,10 +26,10 @@ fn model_with_states() -> TuiModel {
         },
     );
     snapshot.switches.insert(
-        "vin".to_string(),
+        "tf_wp".to_string(),
         TuiStatusSwitchInfo {
-            route: "3.3v".to_string(),
-            routes: vec!["3.3v".to_string(), "1.8v".to_string()],
+            route: "writable".to_string(),
+            routes: vec!["writable".to_string(), "protected".to_string()],
             requires_confirm: true,
         },
     );
@@ -63,17 +64,39 @@ fn row_named<'a>(rows: &'a [ControlRow], name: &str) -> Result<&'a ControlRow> {
 fn rows_follow_frozen_control_items_order() {
     let model = model_with_states();
     let rows = control_rows(&model);
-    assert_eq!(rows.len(), control_targets(&model).len() + 2 + 2);
+    assert_eq!(rows.len(), control_targets(&model).len() + 2 + 1 + 2);
     let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
     assert_eq!(
         names,
-        vec!["12v_out", "5v_out", "20v_out", "vdd_5v", "sd", "vin", "GP13", "GP14"]
+        vec!["12v_out", "5v_out", "20v_out", "vdd_5v", "sd", "tf_wp", "Reboot", "GP13", "GP14"]
     );
     let kinds: Vec<&str> = rows.iter().map(|row| row.kind).collect();
     assert_eq!(
         kinds,
-        vec!["power", "power", "power", "power", "switch", "switch", "gpio", "gpio"]
+        vec!["power", "power", "power", "power", "switch", "switch", "system", "gpio", "gpio"]
     );
+}
+
+#[test]
+fn reboot_row_is_a_static_normal_restart_after_switches() -> Result<()> {
+    let model = model_with_states();
+    let rows = control_rows(&model);
+    let reboot = row_named(&rows, "Reboot")?;
+
+    assert_eq!(reboot.kind, "system");
+    assert_eq!(reboot.state_route, "ready");
+    assert_eq!(reboot.mode, "confirm");
+    assert_eq!(reboot.description, "normal cold restart; not ROM BOOTSEL");
+    assert_eq!(reboot.tone, RowTone::System);
+    assert!(
+        rows.iter().position(|row| row.name == "tf_wp").unwrap()
+            < rows.iter().position(|row| row.name == "Reboot").unwrap()
+    );
+    assert!(
+        rows.iter().position(|row| row.name == "Reboot").unwrap()
+            < rows.iter().position(|row| row.name == "GP13").unwrap()
+    );
+    Ok(())
 }
 
 #[test]
@@ -92,8 +115,8 @@ fn power_row_exposes_state_live_mode_and_description() -> Result<()> {
     assert_eq!(off.state_route, "off");
     assert_eq!(off.tone, RowTone::PowerOff);
 
-    let unmonitored = row_named(&rows, "vdd_5v")?;
-    assert_eq!(unmonitored.description, "-");
+    let vdd = row_named(&rows, "vdd_5v")?;
+    assert_eq!(vdd.description, "vdd_5v");
 
     model.latest.insert(
         "12v_out".to_string(),
@@ -119,7 +142,7 @@ fn switch_row_covers_state_tones_and_effective_confirm_mode() -> Result<()> {
     assert_eq!(ready.mode, "confirm");
     assert_eq!(ready.description, "target/usb-reader");
 
-    let confirm = row_named(&rows, "vin")?;
+    let confirm = row_named(&rows, "tf_wp")?;
     assert_eq!(confirm.mode, "confirm");
 
     if let Some(state) = model.switches.get_mut("sd") {

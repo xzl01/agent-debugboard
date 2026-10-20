@@ -1,4 +1,4 @@
-use super::controls::{control_targets, navigate, Nav};
+use super::controls::{control_items, control_targets, navigate, ControlItem, Nav};
 use super::gpio_fixture::current_power_outputs;
 use super::model::TuiModel;
 use crate::client::DEFAULT_BASE_URL;
@@ -67,32 +67,58 @@ fn navigation_is_independent_of_terminal_width() {
 #[test]
 fn down_crosses_section_boundaries_along_object_rows() {
     let mut model = model_with_switch_and_gpio();
-    // One object per row: power idx 0..=3, switch idx 4, gpio idx 5.
+    let switch = control_items(&model)
+        .iter()
+        .position(|item| item == &ControlItem::Switch("sd".to_string()))
+        .unwrap();
+    let reboot = control_items(&model)
+        .iter()
+        .position(|item| item == &ControlItem::Reboot)
+        .unwrap();
+    let gpio = control_items(&model)
+        .iter()
+        .position(|item| item == &ControlItem::Gpio("GP13".to_string()))
+        .unwrap();
     model.control_idx = control_targets(&model).len() - 1;
     model.control_idx = navigate(&model, Nav::Down);
-    assert_eq!(model.control_idx, control_targets(&model).len());
+    assert_eq!(model.control_idx, switch);
     model.control_idx = navigate(&model, Nav::Down);
-    assert_eq!(model.control_idx, control_targets(&model).len() + 1);
+    assert_eq!(model.control_idx, reboot);
+    model.control_idx = navigate(&model, Nav::Down);
+    assert_eq!(model.control_idx, gpio);
 }
 
 #[test]
 fn up_crosses_section_boundaries_along_object_rows() {
     let mut model = model_with_switch_and_gpio();
-    model.control_idx = control_targets(&model).len() + 1;
+    let switch = control_items(&model)
+        .iter()
+        .position(|item| matches!(item, ControlItem::Switch(_)))
+        .unwrap();
+    let reboot = control_items(&model)
+        .iter()
+        .position(|item| item == &ControlItem::Reboot)
+        .unwrap();
+    let gpio = control_items(&model)
+        .iter()
+        .position(|item| matches!(item, ControlItem::Gpio(_)))
+        .unwrap();
+    model.control_idx = gpio;
     model.control_idx = navigate(&model, Nav::Up);
-    assert_eq!(model.control_idx, control_targets(&model).len());
+    assert_eq!(model.control_idx, reboot);
     model.control_idx = navigate(&model, Nav::Up);
-    assert_eq!(model.control_idx, control_targets(&model).len() - 1);
+    assert_eq!(model.control_idx, switch);
 }
 
 #[test]
 fn down_stops_at_the_last_object_row() {
     let mut model = model_with_switch_and_gpio();
-    model.control_idx = control_targets(&model).len() + 1;
-    assert_eq!(
-        navigate(&model, Nav::Down),
-        control_targets(&model).len() + 1
-    );
+    let gpio = control_items(&model)
+        .iter()
+        .position(|item| matches!(item, ControlItem::Gpio(_)))
+        .unwrap();
+    model.control_idx = gpio;
+    assert_eq!(navigate(&model, Nav::Down), gpio);
 }
 
 #[test]
@@ -123,7 +149,10 @@ fn page_down_and_page_up_move_three_object_rows() {
     model.control_idx = navigate(&model, Nav::PageDown);
     assert_eq!(model.control_idx, 3);
     model.control_idx = navigate(&model, Nav::PageDown);
-    assert_eq!(model.control_idx, control_targets(&model).len() + 1);
+    assert_eq!(
+        control_items(&model).get(model.control_idx),
+        Some(&ControlItem::Gpio("GP13".to_string()))
+    );
     model.control_idx = navigate(&model, Nav::PageUp);
-    assert_eq!(model.control_idx, 2);
+    assert_eq!(model.control_idx, 3);
 }

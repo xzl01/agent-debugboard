@@ -1,7 +1,9 @@
 use crate::client::{
-    ota_upload_timeout, BoardBinaryUpload, BoardClient, BoardRequest, BoardTransport,
+    ota_upload_timeout, BoardBinaryUpload, BoardClient, BoardHttpError, BoardRawJsonRequest,
+    BoardRequest, BoardTransport,
 };
-use reqwest::Method;
+use anyhow::Context;
+use reqwest::{Method, StatusCode};
 use std::io::{Read, Write};
 use std::time::Duration;
 
@@ -49,6 +51,53 @@ fn preserves_base_path_when_sending_request() {
         raw.starts_with("GET /prefix/api/v1/status HTTP/1.1"),
         "{raw}"
     );
+}
+
+#[test]
+fn non_success_responses_retain_status_and_raw_body() {
+    let body =
+        " \n{\"ok\":false,\"error\":{\"code\":\"rejected\",\"message\":\"Request rejected\"}}\n ";
+    for status in [StatusCode::BAD_REQUEST, StatusCode::INTERNAL_SERVER_ERROR] {
+        for raw_json in [false, true] {
+            let (client, server) = mock_http_response(status, body);
+            let response = if raw_json {
+                client.send_raw_json(BoardRawJsonRequest {
+                    method: Method::PUT,
+                    path: "/api/v1/net".to_string(),
+                    query: vec![],
+                    body: r#"{"subnet":204}"#.to_string(),
+                })
+            } else {
+                client.send_text(BoardRequest {
+                    method: Method::GET,
+                    path: "/api/v1/net".to_string(),
+                    query: vec![],
+                    body: None,
+                })
+            };
+            let error = response.unwrap_err();
+            assert_eq!(error.to_string(), format!("HTTP {status}: {}", body.trim()));
+            let error = Err::<(), _>(error).context("request failed").unwrap_err();
+            let error = error.downcast_ref::<BoardHttpError>().unwrap();
+            assert_eq!(error.status, status);
+            assert_eq!(error.body, body);
+            server.join().unwrap();
+        }
+    }
+}
+
+#[test]
+fn http_error_display_keeps_existing_empty_body_format() {
+    for body in ["", " \n\t"] {
+        let error = BoardHttpError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            body: body.to_string(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "HTTP 500 Internal Server Error: 500 Internal Server Error"
+        );
+    }
 }
 
 #[test]
@@ -136,6 +185,32 @@ fn upload_binary_preserves_non_success_json_body() {
     assert!(output.contains(r#""code":"image_too_large""#));
 }
 
+pub(crate) fn mock_http_response(
+    status: StatusCode,
+    body: &str,
+) -> (BoardClient, std::thread::JoinHandle<String>) {
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = server.local_addr().unwrap();
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = server.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let request = read_full_http_request(&mut stream);
+        stream.write_all(response.as_bytes()).unwrap();
+        request
+    });
+    let client = BoardClient::new(&format!("http://{addr}"), Duration::from_secs(2)).unwrap();
+    (client, server)
+}
+
 fn read_full_http_request(stream: &mut std::net::TcpStream) -> String {
     let mut data = Vec::new();
     let mut buf = [0u8; 1024];
@@ -147,8 +222,11 @@ fn read_full_http_request(stream: &mut std::net::TcpStream) -> String {
         if content_length.is_none() {
             if let Some(header_end) = find_header_end(&data) {
                 let headers = String::from_utf8_lossy(&data[..header_end]);
-                content_length = header_value(&headers, "content-length")
-                    .and_then(|value| value.parse::<usize>().ok());
+                content_length = Some(
+                    header_value(&headers, "content-length")
+                        .map(|value| value.parse::<usize>().unwrap())
+                        .unwrap_or(0),
+                );
             }
         }
         if let (Some(header_end), Some(len)) = (find_header_end(&data), content_length) {

@@ -1,4 +1,4 @@
-use super::controls::control_targets;
+use super::controls::{control_items, ControlItem};
 use super::model::TuiModel;
 
 pub(super) const FALLBACK_GROUP: &str = "GPIO";
@@ -36,22 +36,24 @@ impl PendingPin {
 }
 
 fn pending_pins(model: &TuiModel) -> Vec<PendingPin> {
-    let offset = control_targets(model).len() + model.switches.len();
+    let items = control_items(model);
     model
         .gpio_names
         .iter()
-        .enumerate()
-        .map(|(position, name)| {
+        .filter_map(|name| {
+            let item_index = items
+                .iter()
+                .position(|item| matches!(item, ControlItem::Gpio(gpio) if gpio == name))?;
             let layout = model.gpio_layouts.get(name);
-            PendingPin {
-                item_index: offset + position,
+            Some(PendingPin {
+                item_index,
                 name: name.clone(),
                 group: layout.and_then(|layout| layout.group.clone()),
                 label: layout.and_then(|layout| layout.label.clone()),
                 row: layout.and_then(|layout| layout.row),
                 column: layout.and_then(|layout| layout.column),
                 note: model.gpio_notes.get(name).cloned().unwrap_or_default(),
-            }
+            })
         })
         .collect()
 }
@@ -165,8 +167,11 @@ pub(super) fn gpio_visual_rows(model: &TuiModel) -> Vec<GpioVisualRow> {
 }
 
 pub(super) fn projected_lines(model: &TuiModel) -> Vec<Vec<usize>> {
-    let mut lines: Vec<Vec<usize>> = (0..control_targets(model).len() + model.switches.len())
-        .map(|index| vec![index])
+    let mut lines: Vec<Vec<usize>> = control_items(model)
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| !matches!(item, ControlItem::Gpio(_)))
+        .map(|(index, _)| vec![index])
         .collect();
     for row in gpio_visual_rows(model) {
         lines.push(row.cells.iter().map(|cell| cell.item_index).collect());
@@ -175,5 +180,8 @@ pub(super) fn projected_lines(model: &TuiModel) -> Vec<Vec<usize>> {
 }
 
 pub(super) fn gpio_line_start(model: &TuiModel) -> usize {
-    control_targets(model).len() + model.switches.len()
+    control_items(model)
+        .iter()
+        .filter(|item| !matches!(item, ControlItem::Gpio(_)))
+        .count()
 }

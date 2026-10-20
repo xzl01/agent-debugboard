@@ -79,6 +79,19 @@ pub(super) fn status_header_line(width: usize) -> Line<'static> {
 
 pub(super) fn status_lines(model: &TuiModel, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+    if let Some(pd) = &model.pd {
+        let mode = if pd.mode == 1 { "pps" } else { "fixed" };
+        lines.push(Line::from(clip_display(
+            &format!(
+                "pd: {mode} {:.1}V limit={}mA available={} error={}",
+                pd.voltage_mv as f64 / 1000.0,
+                pd.max_current_ma,
+                pd.available,
+                pd.last_error
+            ),
+            width,
+        )));
+    }
     for state in model.switches.values() {
         lines.push(switch_line(state, width));
     }

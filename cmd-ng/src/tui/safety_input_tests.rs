@@ -53,6 +53,7 @@ fn gpio_pending_blocks_shared_primary_power_and_switch_activation() -> Result<()
     for item in [
         ControlItem::Power("12v_out".to_string()),
         ControlItem::Switch("sd".to_string()),
+        ControlItem::Reboot,
     ] {
         model.control_idx = item_index(&model, &item)?;
         model.gpio_pending = Some(pending_gpio());
@@ -71,6 +72,7 @@ fn gpio_pending_blocks_keyboard_enter_and_space_for_power_and_switch() -> Result
     for item in [
         ControlItem::Power("12v_out".to_string()),
         ControlItem::Switch("sd".to_string()),
+        ControlItem::Reboot,
     ] {
         model.control_idx = item_index(&model, &item)?;
         for code in [KeyCode::Enter, KeyCode::Char(' ')] {
@@ -97,6 +99,7 @@ fn gpio_pending_blocks_mouse_primary_power_and_switch_activation() -> Result<()>
     for item in [
         ControlItem::Power("12v_out".to_string()),
         ControlItem::Switch("sd".to_string()),
+        ControlItem::Reboot,
     ] {
         model.control_idx = item_index(&model, &item)?;
         let rect = control_rect(&model, &item).ok_or_else(|| anyhow!("missing row"))?;

@@ -40,6 +40,13 @@ fn transform_reading(mut reading: AdcReading) -> Result<AdcReading, String> {
             if reading.unit != "A" && reading.unit != "uA" {
                 return Err(format!("invalid current ADC unit {:?}", reading.unit));
             }
+            reading.voltage_uv = if reading.voltage_valid == Some(false) {
+                None
+            } else {
+                reading
+                    .voltage_uv
+                    .or_else(|| reading.mv.map(|mv| mv.saturating_mul(1000)))
+            };
             let current_ua = match (
                 reading.current_ua,
                 reading.value,

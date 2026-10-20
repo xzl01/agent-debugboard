@@ -3,12 +3,12 @@ use super::controls::{control_items, control_targets, first_gpio_index, ControlI
 use super::model::TuiModel;
 use crate::client::DEFAULT_BASE_URL;
 use crate::ws_status::{
-    TuiStatusGpio, TuiStatusPowerOutput, TuiStatusSwitchInfo, WsStatusSnapshot,
+    TuiPdStatus, TuiStatusGpio, TuiStatusPowerOutput, TuiStatusSwitchInfo, WsStatusSnapshot,
 };
 use std::time::Duration;
 
 #[test]
-fn control_items_include_switches_between_power_and_gpio() {
+fn control_items_include_reboot_between_switches_and_gpio() {
     let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
     model.gpio_names = vec!["GP13".to_string()];
     let mut snapshot = WsStatusSnapshot::default();
@@ -47,6 +47,10 @@ fn control_items_include_switches_between_power_and_gpio() {
     );
     assert_eq!(
         items[control_targets(&model).len() + 2],
+        ControlItem::Reboot
+    );
+    assert_eq!(
+        items[control_targets(&model).len() + 3],
         ControlItem::Gpio("GP13".to_string())
     );
 }
@@ -60,10 +64,10 @@ fn switch_control_is_visible_only_when_reported_by_firmware() {
 
     let mut snapshot = WsStatusSnapshot::default();
     snapshot.switches.insert(
-        "vin".to_string(),
+        "tf_wp".to_string(),
         TuiStatusSwitchInfo {
-            route: "3.3v".to_string(),
-            routes: vec!["1.8v".to_string(), "3.3v".to_string()],
+            route: "writable".to_string(),
+            routes: vec!["protected".to_string(), "writable".to_string()],
             ..Default::default()
         },
     );
@@ -78,15 +82,15 @@ fn switch_control_is_visible_only_when_reported_by_firmware() {
     let items = control_items(&model);
     assert_eq!(
         items[control_targets(&model).len()],
-        ControlItem::Switch("vin".to_string())
+        ControlItem::Switch("tf_wp".to_string())
     );
     assert_eq!(
         first_gpio_index(&model),
-        Some(control_targets(&model).len() + 1)
+        Some(control_targets(&model).len() + 2)
     );
     assert!(control_rows(&model)
         .iter()
-        .any(|row| row.kind == "switch" && row.name == "vin" && row.state_route == "3.3v"));
+        .any(|row| row.kind == "switch" && row.name == "tf_wp" && row.state_route == "writable"));
 }
 
 #[test]
@@ -149,6 +153,7 @@ fn power_controls_follow_firmware_catalog_order_including_future_outputs() {
         vec![
             ControlItem::Power("future_aux".to_string()),
             ControlItem::Power("12v_out".to_string()),
+            ControlItem::Reboot,
         ]
     );
 }
@@ -186,9 +191,61 @@ fn power_controls_remove_outputs_absent_from_the_latest_snapshot() {
     // Then: both the catalog and state map drop the stale rail.
     assert_eq!(
         control_items(&model),
-        vec![ControlItem::Power("12v_out".to_string())]
+        vec![
+            ControlItem::Power("12v_out".to_string()),
+            ControlItem::Reboot,
+        ]
     );
     assert_eq!(model.power_states.get("retired_aux"), None);
+}
+
+#[test]
+fn dynamic_pd_and_static_reboot_do_not_shift_gpio_projection() {
+    let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
+    let mut snapshot = WsStatusSnapshot {
+        power_outputs: vec![TuiStatusPowerOutput {
+            name: "12v_out".to_string(),
+            state: "off".to_string(),
+            value: 0,
+        }],
+        pd: Some(TuiPdStatus {
+            available: true,
+            pd: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    snapshot.switches.insert(
+        "sd".to_string(),
+        TuiStatusSwitchInfo {
+            route: "target".to_string(),
+            routes: vec!["target".to_string(), "usb-reader".to_string()],
+            ..Default::default()
+        },
+    );
+    snapshot.gpios.push(TuiStatusGpio {
+        name: "GP13".to_string(),
+        pin: 13,
+        direction: "input".to_string(),
+        ..Default::default()
+    });
+    model.apply_status_snapshot(snapshot);
+
+    assert_eq!(
+        control_items(&model),
+        vec![
+            ControlItem::Power("12v_out".to_string()),
+            ControlItem::Pd,
+            ControlItem::Switch("sd".to_string()),
+            ControlItem::Reboot,
+            ControlItem::Gpio("GP13".to_string()),
+        ]
+    );
+    assert_eq!(first_gpio_index(&model), Some(4));
+    assert_eq!(
+        super::gpio_projection::gpio_visual_rows(&model)[0].cells[0].item_index,
+        4
+    );
 }
 
 #[test]

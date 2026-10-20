@@ -115,12 +115,7 @@ fn keybar_keeps_complete_segments_at_supported_sizes() -> Result<()> {
 fn status_content_renders_one_row_per_switch_and_monitor_field() {
     let mut model = model();
     model.set_page(ActivePage::Status);
-    for (name, route) in [
-        ("sd", "usb-reader"),
-        ("tf_wp", "writable"),
-        ("usb", "pc"),
-        ("vin", "3.3v"),
-    ] {
+    for (name, route) in [("sd", "usb-reader"), ("tf_wp", "writable"), ("usb", "pc")] {
         model.switches.insert(
             name.to_string(),
             TuiSwitchState {
@@ -134,7 +129,7 @@ fn status_content_renders_one_row_per_switch_and_monitor_field() {
 
     let content = build_body_content(&model, 76);
 
-    assert_eq!(content.lines.len(), 8, "4 switch rows + 4 monitor rows");
+    assert_eq!(content.lines.len(), 7, "3 switch rows + 4 monitor rows");
     assert!(content.lines.iter().all(|line| line.width() <= 76));
 }
 

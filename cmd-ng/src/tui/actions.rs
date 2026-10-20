@@ -1,4 +1,4 @@
-use super::board_io::{perform_control_action, set_switch_route};
+use super::board_io::{perform_control_action, reboot_board, set_pd_fixed, set_switch_route};
 use super::confirm::{ConfirmableCommand, HardwareConfirmation};
 use super::controls::{next_switch_route, ControlItem};
 use super::gpio_io::{GpioAction, GpioJob};
@@ -53,6 +53,28 @@ pub(super) fn resolve_activation(
                 route: next_route,
             })
         }
+        (ControlItem::Pd, ControlIntent::Primary) => {
+            let Some(pd) = model.pd.as_ref() else {
+                return Activation::Ignored;
+            };
+            if pd.fixed_profiles.is_empty() {
+                return Activation::Rejected(
+                    "PD source reports no safe fixed profiles".to_string(),
+                );
+            }
+            let current = pd.voltage_mv;
+            let next = pd
+                .fixed_profiles
+                .iter()
+                .position(|profile| profile.voltage_mv == current)
+                .map_or(pd.fixed_profiles[0].voltage_mv, |index| {
+                    pd.fixed_profiles[(index + 1) % pd.fixed_profiles.len()].voltage_mv
+                });
+            Activation::Confirm(ConfirmableCommand::SetPd { voltage_mv: next })
+        }
+        (ControlItem::Reboot, ControlIntent::Primary) => {
+            Activation::Confirm(ConfirmableCommand::Reboot)
+        }
         (ControlItem::Gpio(_), ControlIntent::Primary) => Activation::Ignored,
         (ControlItem::Gpio(name), ControlIntent::DriveLow) => {
             Activation::Immediate(ControlCommand::SetGpioOutput {
@@ -84,7 +106,10 @@ pub(super) fn activate_item(
         && matches!(
             (&item, intent),
             (
-                ControlItem::Power(_) | ControlItem::Switch(_),
+                ControlItem::Power(_)
+                    | ControlItem::Pd
+                    | ControlItem::Switch(_)
+                    | ControlItem::Reboot,
                 ControlIntent::Primary
             )
         )
@@ -118,7 +143,9 @@ pub(super) fn confirm_hardware(model: &mut TuiModel, now: Instant) -> Result<()>
         ConfirmableCommand::SetPower { output, next_state } => {
             toggle_power(model, &output, next_state)
         }
+        ConfirmableCommand::SetPd { voltage_mv } => set_pd(model, voltage_mv),
         ConfirmableCommand::RouteSwitch { name, route } => route_switch(model, &name, &route),
+        ConfirmableCommand::Reboot => reboot(model),
     }
 }
 
@@ -211,6 +238,26 @@ fn route_switch(model: &mut TuiModel, name: &str, route: &str) -> Result<()> {
         state.pending_until = Some(Instant::now() + Duration::from_secs(2));
         state.route_intent_active = true;
     }
+    model.apply_action_msg(action);
+    Ok(())
+}
+
+fn set_pd(model: &mut TuiModel, voltage_mv: u16) -> Result<()> {
+    let action = set_pd_fixed(&model.base_url, model.timeout, voltage_mv)?;
+    if let Some(status) = model.pd.as_mut() {
+        status.mode = 0;
+        status.voltage_mv = voltage_mv;
+        status.pps_mv = 0;
+    }
+    model.apply_action_msg(action);
+    Ok(())
+}
+
+fn reboot(model: &mut TuiModel) -> Result<()> {
+    let action = reboot_board(&model.base_url, model.timeout)?;
+    // Start the bounded reconnect window only after the board has accepted the
+    // request. Polling owns recovery and never repeats this POST.
+    model.begin_reboot_reconnect(Instant::now());
     model.apply_action_msg(action);
     Ok(())
 }

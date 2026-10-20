@@ -8,10 +8,11 @@ pub use crate::client_url::{resolve_base_url, DEFAULT_BASE_URL};
 use crate::persistent_config::{
     ConfigAction, ConfigItemId, ConfigSaveRequest, PersistentConfigResponse,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use reqwest::blocking::{Body, Client};
-use reqwest::{Method, Url};
+use reqwest::{Method, StatusCode, Url};
 use serde_json::Value;
+use std::fmt;
 use std::fs::File;
 use std::time::Duration;
 
@@ -28,11 +29,35 @@ pub struct BoardClient {
     timeout: Duration,
 }
 
+/// A rejected HTTP response, retaining its body independently of the display text.
+#[derive(Debug)]
+pub struct BoardHttpError {
+    pub status: StatusCode,
+    pub body: String,
+}
+
+impl fmt::Display for BoardHttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let detail = self.body.trim();
+        if detail.is_empty() {
+            write!(f, "HTTP {}: {}", self.status, self.status)
+        } else {
+            write!(f, "HTTP {}: {detail}", self.status)
+        }
+    }
+}
+
+impl std::error::Error for BoardHttpError {}
+
 pub trait BoardTransport {
     fn send_text(&self, request: BoardRequest) -> Result<String>;
     fn send_raw_json(&self, request: BoardRawJsonRequest) -> Result<String>;
     fn upload_binary(&self, request: BoardBinaryUpload) -> Result<String>;
     fn base_url(&self) -> &str;
+
+    fn send_reboot(&self) -> Result<Option<String>> {
+        self.send_text(reboot_request()).map(Some)
+    }
 
     fn config_show(&self) -> Result<PersistentConfigResponse> {
         config_response(self.send_text(config_show_request())?, &ConfigAction::Get)
@@ -106,6 +131,20 @@ impl BoardClient {
         Ok(url)
     }
 
+    fn send_request(&self, request: BoardRequest) -> Result<reqwest::blocking::Response> {
+        let url = self.request_url(&request.path, &request.query)?;
+        let mut builder = self
+            .http
+            .request(request.method, url)
+            .header("Accept", "application/json");
+        if let Some(body) = request.body {
+            builder = builder
+                .header("Content-Type", "application/json")
+                .json(&body);
+        }
+        Ok(builder.send()?)
+    }
+
     fn send_config(
         &self,
         request: BoardRequest,
@@ -134,13 +173,7 @@ impl BoardClient {
         let status = response.status();
         let text = Self::response_body(response)?;
         if !status.is_success() {
-            let message = text.trim();
-            let detail = if message.is_empty() {
-                status.to_string()
-            } else {
-                message.to_string()
-            };
-            bail!("HTTP {status}: {detail}");
+            return Err(BoardHttpError { status, body: text }.into());
         }
 
         Ok(text)
@@ -153,18 +186,7 @@ impl BoardClient {
 
 impl BoardTransport for BoardClient {
     fn send_text(&self, request: BoardRequest) -> Result<String> {
-        let url = self.request_url(&request.path, &request.query)?;
-        let mut builder = self
-            .http
-            .request(request.method, url)
-            .header("Accept", "application/json");
-        if let Some(body) = request.body {
-            builder = builder
-                .header("Content-Type", "application/json")
-                .json(&body);
-        }
-
-        Self::response_text(builder.send()?)
+        Self::response_text(self.send_request(request)?)
     }
 
     fn send_raw_json(&self, request: BoardRawJsonRequest) -> Result<String> {
@@ -198,6 +220,14 @@ impl BoardTransport for BoardClient {
         &self.base_url
     }
 
+    fn send_reboot(&self) -> Result<Option<String>> {
+        let response = self.send_request(reboot_request())?;
+        if response.status() == StatusCode::ACCEPTED {
+            return Ok(None);
+        }
+        Self::response_text(response).map(Some)
+    }
+
     fn config_show(&self) -> Result<PersistentConfigResponse> {
         self.send_config(config_show_request(), ConfigAction::Get)
     }
@@ -212,6 +242,15 @@ impl BoardTransport for BoardClient {
 
     fn config_clear(&self) -> Result<PersistentConfigResponse> {
         self.send_config(config_clear_request(), ConfigAction::Clear)
+    }
+}
+
+pub(crate) fn reboot_request() -> BoardRequest {
+    BoardRequest {
+        method: Method::POST,
+        path: "/api/v1/reboot".to_string(),
+        query: vec![],
+        body: None,
     }
 }
 

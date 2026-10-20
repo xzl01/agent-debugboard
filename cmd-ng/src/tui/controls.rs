@@ -21,7 +21,9 @@ pub(super) fn next_switch_route(state: &TuiSwitchState) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ControlItem {
     Power(String),
+    Pd,
     Switch(String),
+    Reboot,
     Gpio(String),
 }
 
@@ -30,9 +32,13 @@ pub(super) fn control_items(model: &TuiModel) -> Vec<ControlItem> {
     for output in control_targets(model) {
         items.push(ControlItem::Power(output.clone()));
     }
+    if model.pd.is_some() {
+        items.push(ControlItem::Pd);
+    }
     for name in model.switches.keys() {
         items.push(ControlItem::Switch(name.clone()));
     }
+    items.push(ControlItem::Reboot);
     for gpio in &model.gpio_names {
         items.push(ControlItem::Gpio(gpio.clone()));
     }
@@ -40,10 +46,10 @@ pub(super) fn control_items(model: &TuiModel) -> Vec<ControlItem> {
 }
 
 pub(super) fn first_gpio_index(model: &TuiModel) -> Option<usize> {
-    let lines = super::gpio_projection::projected_lines(model);
-    lines
-        .get(super::gpio_projection::gpio_line_start(model))
-        .and_then(|line| line.first().copied())
+    super::gpio_projection::gpio_visual_rows(model)
+        .first()
+        .and_then(|row| row.cells.first())
+        .map(|cell| cell.item_index)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -7,6 +7,7 @@ use std::time::Duration;
 
 pub(super) enum Reply {
     Http(u16, &'static str),
+    Truncated(u16, usize),
     Slow(u16, &'static str),
     Gated(u16, &'static str, Arc<Barrier>),
     Disconnect,
@@ -22,6 +23,9 @@ pub(super) fn mock_server(replies: Vec<Reply>) -> (String, Receiver<String>) {
             sender.send(read_request(&mut stream)).unwrap();
             match reply {
                 Reply::Http(status, body) => write_response(&mut stream, status, body),
+                Reply::Truncated(status, declared_length) => {
+                    write_truncated_response(&mut stream, status, declared_length)
+                }
                 Reply::Slow(status, body) => {
                     thread::sleep(Duration::from_millis(300));
                     write_response(&mut stream, status, body);
@@ -35,6 +39,13 @@ pub(super) fn mock_server(replies: Vec<Reply>) -> (String, Receiver<String>) {
         }
     });
     (format!("http://{address}"), receiver)
+}
+
+fn write_truncated_response(stream: &mut TcpStream, status: u16, declared_length: usize) {
+    let response = format!(
+        "HTTP/1.1 {status} Response\r\nConnection: close\r\nContent-Length: {declared_length}\r\n\r\n"
+    );
+    stream.write_all(response.as_bytes()).unwrap();
 }
 
 fn write_response(stream: &mut TcpStream, status: u16, body: &str) {

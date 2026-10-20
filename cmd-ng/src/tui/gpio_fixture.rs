@@ -3,7 +3,7 @@ use super::model::TuiModel;
 use super::render::render_ui;
 use super::render_body::build_body_content;
 use crate::client::DEFAULT_BASE_URL;
-use crate::ws_status::{TuiStatusPowerOutput, WsStatusSnapshot};
+use crate::ws_status::{TuiStatusAdcChannel, TuiStatusPowerOutput, WsStatusSnapshot};
 use anyhow::{anyhow, Result};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -30,6 +30,16 @@ pub(super) fn current_power_outputs() -> Vec<TuiStatusPowerOutput> {
             name: name.to_string(),
             state: "off".to_string(),
             value: 0,
+        })
+        .collect()
+}
+
+pub(super) fn current_adc_channels() -> Vec<TuiStatusAdcChannel> {
+    ["5v_out", "12v_out", "20v_out", "vdd_5v"]
+        .into_iter()
+        .map(|name| TuiStatusAdcChannel {
+            name: name.to_string(),
+            sensor_channel: "current".to_string(),
         })
         .collect()
 }

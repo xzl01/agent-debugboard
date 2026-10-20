@@ -1,5 +1,5 @@
 use super::confirm::ConfirmableCommand;
-use super::controls::control_targets;
+use super::controls::{control_items, control_targets, first_gpio_index, ControlItem};
 use super::events::{handle_key, KeyOutcome};
 use super::events_fixture::{model_with_switch, press};
 use super::gpio_fixture::current_power_outputs;
@@ -15,10 +15,7 @@ fn g_jumps_to_first_gpio_in_unified_grid() {
     let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
     model.gpio_names = vec!["GP13".to_string(), "GP14".to_string()];
     press(&mut model, KeyCode::Char('g'));
-    assert_eq!(
-        model.control_idx,
-        control_targets(&model).len() + model.switches.len()
-    );
+    assert_eq!(model.control_idx, first_gpio_index(&model).unwrap());
 }
 
 #[test]
@@ -123,15 +120,23 @@ fn tab_is_ignored_while_hardware_confirmation_is_open() {
 #[test]
 fn down_crosses_sections_and_right_stays_through_key_handling() {
     let mut model = model_with_switch();
+    let switch = control_items(&model)
+        .iter()
+        .position(|item| item == &ControlItem::Switch("sd".to_string()))
+        .unwrap();
+    let reboot = control_items(&model)
+        .iter()
+        .position(|item| item == &ControlItem::Reboot)
+        .unwrap();
 
     model.control_idx = control_targets(&model).len() - 1;
     press(&mut model, KeyCode::Down);
-    assert_eq!(model.control_idx, control_targets(&model).len());
+    assert_eq!(model.control_idx, switch);
     press(&mut model, KeyCode::Down);
-    assert_eq!(model.control_idx, control_targets(&model).len());
-    // Up from the switch row moves one object row back into the power section.
+    assert_eq!(model.control_idx, reboot);
+    // Up from the system row moves one object row back to the switch.
     press(&mut model, KeyCode::Up);
-    assert_eq!(model.control_idx, control_targets(&model).len() - 1);
+    assert_eq!(model.control_idx, switch);
     model.control_idx = control_targets(&model).len() - 1;
     press(&mut model, KeyCode::Right);
     assert_eq!(model.control_idx, control_targets(&model).len() - 1);

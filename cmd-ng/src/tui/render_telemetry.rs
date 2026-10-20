@@ -125,6 +125,10 @@ pub(super) fn render_telemetry(frame: &mut ratatui::Frame, area: Rect, model: &T
             },
         );
         let current_ma = reading.map(current_milliamp_estimate).unwrap_or(0);
+        let voltage_text = reading
+            .and_then(|reading| reading.voltage_uv)
+            .map(|uv| format!(" {:.2}V", uv as f64 / 1_000_000.0))
+            .unwrap_or_default();
         let (grid, scale) = graph_column(model, channel, width);
         grids.push(grid);
 
@@ -140,6 +144,12 @@ pub(super) fn render_telemetry(frame: &mut ratatui::Frame, area: Rect, model: &T
             &mut header_spans,
             format!(" {current_ma}mA"),
             Style::default(),
+            budget,
+        );
+        budget = push_clipped(
+            &mut header_spans,
+            voltage_text,
+            Style::default().fg(Color::Cyan),
             budget,
         );
         budget = push_clipped(

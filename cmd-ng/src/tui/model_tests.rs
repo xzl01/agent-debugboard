@@ -85,6 +85,7 @@ fn apply_adc_response_updates_history_and_power_state() {
         value: Some(500000),
         sensor_value: None,
         current_ua: Some(500000),
+        voltage_valid: None,
         voltage_uv: None,
     }]);
 
@@ -108,6 +109,7 @@ fn milliamp_estimate_falls_back_to_current_microamps() {
         value: Some(850_000),
         sensor_value: None,
         current_ua: Some(850_000),
+        voltage_valid: None,
         voltage_uv: None,
     };
 
@@ -134,6 +136,7 @@ fn voltage_reading_is_ignored_by_power_history_and_tui_sections() {
         }),
         value: Some(1_234_000),
         current_ua: None,
+        voltage_valid: None,
         voltage_uv: Some(1_234_000),
     }]);
 

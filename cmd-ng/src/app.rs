@@ -6,7 +6,7 @@
 use crate::adc;
 use crate::cli::Cli;
 use crate::client::{
-    resolve_base_url, BoardBinaryUpload, BoardClient, BoardRequest, BoardTransport,
+    reboot_request, resolve_base_url, BoardBinaryUpload, BoardClient, BoardRequest, BoardTransport,
     DEFAULT_BASE_URL,
 };
 use crate::json_contract::{parse_envelope, render_failure, EnvelopeError, JsonError, JSON_SCHEMA};
@@ -21,6 +21,8 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
+
+const ADC_RECORD_USAGE: &str = "usage: radxa-linkr-debuggerctl adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ] (HZ: 1..=250; default: 250)";
 
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -177,12 +179,12 @@ where
         return run_doctor(client, cli.json, stdout, stderr);
     }
 
-    if !cli.raw && is_switch_usb_route_command(&cli.command_args) {
-        return run_switch_usb(client, &cli.command_args, cli.json, stdout, stderr);
+    if cli.command_args.first().map(String::as_str) == Some("reboot") {
+        return run_reboot(client, &cli.command_args, cli.json, stdout, stderr);
     }
 
-    if !cli.raw && is_switch_vin_route_command(&cli.command_args) {
-        return run_switch_vin(client, &cli.command_args, cli.json, stdout, stderr);
+    if !cli.raw && is_switch_usb_route_command(&cli.command_args) {
+        return run_switch_usb(client, &cli.command_args, cli.json, stdout, stderr);
     }
 
     if cli.command_args.first().map(String::as_str) == Some("task") {
@@ -195,6 +197,13 @@ where
 
     if cli.command_args.first().map(String::as_str) == Some("config") {
         return crate::config_command::run(client, &cli.command_args, cli.json, stdout, stderr);
+    }
+
+    if matches!(
+        cli.command_args.first().map(String::as_str),
+        Some("ip") | Some("net")
+    ) {
+        return crate::net_command::run(client, &cli.command_args, cli.json, stdout, stderr);
     }
 
     let adc_read_command = is_adc_read_command(&cli.command_args);
@@ -292,6 +301,15 @@ where
         }
     };
 
+    finish_standard(command, output, json_output, stdout)
+}
+
+fn finish_standard(
+    command: &str,
+    output: String,
+    json_output: bool,
+    stdout: &mut dyn Write,
+) -> Result<u8> {
     if json_output || looks_like_json(&output) {
         match parse_envelope(&output, true) {
             Ok(envelope) => {
@@ -309,6 +327,60 @@ where
         writeln!(stdout, "{}", output.trim())?;
     }
     Ok(0)
+}
+
+fn run_reboot<TClient>(
+    client: &TClient,
+    args: &[String],
+    json_output: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8>
+where
+    TClient: BoardTransport,
+{
+    if args.len() != 1 {
+        let usage = "usage: radxa-linkr-debuggerctl reboot";
+        if json_output {
+            write_json_error(stdout, "reboot", "usage", usage)?;
+        } else {
+            writeln!(stderr, "{usage}")?;
+        }
+        return Ok(2);
+    }
+
+    match client.send_reboot() {
+        Ok(Some(output)) => finish_standard("reboot", output, json_output, stdout),
+        Ok(None) => {
+            if json_output {
+                write_json(
+                    stdout,
+                    &json!({
+                        "schema": JSON_SCHEMA,
+                        "ok": true,
+                        "command": "reboot",
+                        "accepted": true,
+                        "mode": "normal",
+                        "rom_bootsel": false,
+                    }),
+                )?;
+            } else {
+                writeln!(
+                    stdout,
+                    "reboot accepted: normal cold restart (not ROM BOOTSEL)"
+                )?;
+            }
+            Ok(0)
+        }
+        Err(err) => {
+            if json_output {
+                write_json_error(stdout, "reboot", "transport_error", &err.to_string())?;
+            } else {
+                writeln!(stderr, "{err}")?;
+            }
+            Ok(1)
+        }
+    }
 }
 
 fn run_adc<TClient>(
@@ -537,10 +609,8 @@ fn run_adc_record(
     stderr: &mut dyn Write,
 ) -> Result<u8> {
     let cleaned = strip_passthrough_flags(args);
-    let usage =
-        "usage: radxa-linkr-debuggerctl adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]";
     if cleaned.len() < 3 {
-        writeln!(stderr, "{usage}")?;
+        writeln!(stderr, "{ADC_RECORD_USAGE}")?;
         return Ok(2);
     }
 
@@ -696,10 +766,8 @@ struct AdcRecordArgs {
 }
 
 fn parse_adc_record_args(cleaned: &[String]) -> Result<AdcRecordArgs, String> {
-    let usage =
-        "usage: radxa-linkr-debuggerctl adc record OUTPUT_PATH [MAX_SAMPLES] [--rate-hz HZ]";
     if cleaned.len() < 3 {
-        return Err(usage.to_string());
+        return Err(ADC_RECORD_USAGE.to_string());
     }
 
     let output = cleaned[2].clone();
@@ -710,7 +778,7 @@ fn parse_adc_record_args(cleaned: &[String]) -> Result<AdcRecordArgs, String> {
         match cleaned[index].as_str() {
             "--rate-hz" => {
                 let Some(value) = cleaned.get(index + 1) else {
-                    return Err(usage.to_string());
+                    return Err(ADC_RECORD_USAGE.to_string());
                 };
                 rate_hz = parse_adc_record_rate_hz(value)?;
                 index += 2;
@@ -730,7 +798,7 @@ fn parse_adc_record_args(cleaned: &[String]) -> Result<AdcRecordArgs, String> {
         }
     }
     if positional.len() > 1 {
-        return Err(usage.to_string());
+        return Err(ADC_RECORD_USAGE.to_string());
     }
 
     let max_samples = match positional.first() {
@@ -751,9 +819,9 @@ fn parse_adc_record_args(cleaned: &[String]) -> Result<AdcRecordArgs, String> {
 fn parse_adc_record_rate_hz(value: &str) -> Result<i32, String> {
     let rate_hz: i32 = value
         .parse()
-        .map_err(|_| "--rate-hz must be a positive integer up to 1000".to_string())?;
-    if !(1..=1000).contains(&rate_hz) {
-        return Err("--rate-hz must be a positive integer up to 1000".to_string());
+        .map_err(|_| "--rate-hz must be an integer in 1..=250".to_string())?;
+    if !(1..=crate::recorder::MAX_ADC_RECORD_RATE_HZ).contains(&rate_hz) {
+        return Err("--rate-hz must be an integer in 1..=250".to_string());
     }
     Ok(rate_hz)
 }
@@ -772,11 +840,18 @@ fn request_from_args(args: &[String]) -> Result<BoardRequest, String> {
             Ok(get_request("/api/v1/status"))
         }
         "power" => power_request(&cleaned),
+        "pd" => pd_request(&cleaned),
         "switch" => switch_request(&cleaned),
         "adc" => adc_request(&cleaned),
         "ota" => ota_request(&cleaned),
         "gpio" => gpio_request(&cleaned),
         "watchdog" => watchdog_request(&cleaned),
+        "reboot" => {
+            if cleaned.len() != 1 {
+                return Err("usage: radxa-linkr-debuggerctl reboot".to_string());
+            }
+            Ok(reboot_request())
+        }
         "bootloader" => {
             if cleaned.len() != 1 {
                 return Err("usage: radxa-linkr-debuggerctl bootloader".to_string());
@@ -784,6 +859,36 @@ fn request_from_args(args: &[String]) -> Result<BoardRequest, String> {
             Ok(post_request("/api/v1/bootloader"))
         }
         other => Err(format!("unsupported command {:?} over HTTP", other)),
+    }
+}
+
+fn pd_request(args: &[String]) -> Result<BoardRequest, String> {
+    let usage = "usage: radxa-linkr-debuggerctl pd status|fixed MV|pps MV";
+    match args.get(1).map(String::as_str) {
+        None | Some("status") if args.len() <= 2 => Ok(get_request("/api/v1/pd")),
+        Some("fixed") | Some("pps") if args.len() == 3 => {
+            let voltage_mv: u16 = args[2]
+                .parse()
+                .map_err(|_| format!("{usage}; MV must be an integer"))?;
+            let is_pps = args[1] == "pps";
+            if !is_pps && ![5000, 9000, 12000, 15000, 20000].contains(&voltage_mv) {
+                return Err(format!(
+                    "{usage}; fixed MV must be 5000/9000/12000/15000/20000"
+                ));
+            }
+            if is_pps && (!(3300..=20000).contains(&voltage_mv) || !voltage_mv.is_multiple_of(100))
+            {
+                return Err(format!(
+                    "{usage}; PPS MV must be 3300..20000 in 100 mV steps"
+                ));
+            }
+            let mode = usize::from(is_pps);
+            Ok(put_request(
+                "/api/v1/pd",
+                json!({ "mode": mode, "voltage_mv": voltage_mv }),
+            ))
+        }
+        _ => Err(usage.to_string()),
     }
 }
 
@@ -844,14 +949,14 @@ fn switch_request(args: &[String]) -> Result<BoardRequest, String> {
         }
         "get" => {
             if args.len() != 3 {
-                return Err("usage: radxa-linkr-debuggerctl switch get sd|usb|vin".to_string());
+                return Err("usage: radxa-linkr-debuggerctl switch get sd|usb|tf_wp".to_string());
             }
             Ok(get_request(format!("/api/v1/switch/{}", args[2])))
         }
         "route" => {
             if args.len() != 4 {
                 return Err(
-                    "usage: radxa-linkr-debuggerctl switch route sd|usb|vin ROUTE".to_string(),
+                    "usage: radxa-linkr-debuggerctl switch route sd|usb|tf_wp ROUTE".to_string(),
                 );
             }
             Ok(put_request(
@@ -866,11 +971,6 @@ fn switch_request(args: &[String]) -> Result<BoardRequest, String> {
 fn is_switch_usb_route_command(args: &[String]) -> bool {
     let cleaned = strip_passthrough_flags(args);
     cleaned.len() >= 4 && cleaned[0] == "switch" && cleaned[1] == "route" && cleaned[2] == "usb"
-}
-
-fn is_switch_vin_route_command(args: &[String]) -> bool {
-    let cleaned = strip_passthrough_flags(args);
-    cleaned.len() >= 4 && cleaned[0] == "switch" && cleaned[1] == "route" && cleaned[2] == "vin"
 }
 
 fn run_switch_usb<TClient>(
@@ -926,63 +1026,6 @@ where
             stdout,
             stderr,
         ),
-        Err(err) => {
-            if json_output {
-                write_json_error(stdout, "switch", "usage", &err)?;
-            } else {
-                writeln!(stderr, "{err}")?;
-            }
-            Ok(2)
-        }
-    }
-}
-
-fn run_switch_vin<TClient>(
-    client: &TClient,
-    args: &[String],
-    json_output: bool,
-    stdout: &mut dyn Write,
-    stderr: &mut dyn Write,
-) -> Result<u8>
-where
-    TClient: BoardTransport,
-{
-    let has_confirm = args.iter().any(|arg| arg == "--confirm" || arg == "-y");
-    if !has_confirm {
-        if json_output {
-            write_json_error(
-                stdout,
-                "switch",
-                "confirm_required",
-                "switch route vin requires --confirm because it changes the CH347 I/O voltage.",
-            )?;
-        } else {
-            writeln!(
-                stderr,
-                "switch route vin: voltage change requires --confirm.\nusage: radxa-linkr-debuggerctl switch route vin 1.8v|3.3v --confirm"
-            )?;
-        }
-        return Ok(2);
-    }
-
-    let switch_args: Vec<String> = args
-        .iter()
-        .filter(|arg| *arg != "--confirm" && *arg != "-y")
-        .cloned()
-        .collect();
-    let route = switch_args.get(3).map(String::as_str).unwrap_or("");
-    if switch_args.len() != 4 || !matches!(route, "1.8v" | "3.3v") {
-        let message = "usage: radxa-linkr-debuggerctl switch route vin 1.8v|3.3v --confirm";
-        if json_output {
-            write_json_error(stdout, "switch", "usage", message)?;
-        } else {
-            writeln!(stderr, "{message}")?;
-        }
-        return Ok(2);
-    }
-
-    match switch_request(&switch_args) {
-        Ok(request) => run_standard(client, "switch", request, json_output, stdout, stderr),
         Err(err) => {
             if json_output {
                 write_json_error(stdout, "switch", "usage", &err)?;
@@ -1180,6 +1223,8 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
     writeln!(writer, "  radxa-linkr-debuggerctl --json status")?;
     writeln!(writer, "  radxa-linkr-debuggerctl doctor")?;
     writeln!(writer, "  radxa-linkr-debuggerctl power set 12v_out on")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl pd fixed 5000")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl pd pps 9000")?;
     writeln!(writer, "  radxa-linkr-debuggerctl adc read")?;
     writeln!(writer, "  radxa-linkr-debuggerctl adc read -v 5v_out")?;
     writeln!(writer, "  radxa-linkr-debuggerctl config show")?;
@@ -1188,9 +1233,15 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
         "  radxa-linkr-debuggerctl config save power/12v_out"
     )?;
     writeln!(writer, "  radxa-linkr-debuggerctl config clear")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl ip subnet")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl ip subnet 204")?;
     writeln!(
         writer,
         "  radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 1000 --rate-hz 250"
+    )?;
+    writeln!(
+        writer,
+        "  adc record --rate-hz HZ: 1..=250 Hz (default: 250 Hz)"
     )?;
     writeln!(writer, "  radxa-linkr-debuggerctl ota status")?;
     writeln!(
@@ -1203,6 +1254,16 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
         "  radxa-linkr-debuggerctl task run builtin/maskrom/5v_out --confirm"
     )?;
     writeln!(writer, "  radxa-linkr-debuggerctl watchdog status\n")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl reboot")?;
+    writeln!(
+        writer,
+        "      Normal cold restart; does not enter ROM BOOTSEL"
+    )?;
+    writeln!(writer, "  radxa-linkr-debuggerctl bootloader")?;
+    writeln!(
+        writer,
+        "      Enter ROM BOOTSEL; separate from normal reboot\n"
+    )?;
     writeln!(writer, "      --url <URL>")?;
     writeln!(writer, "      --addr <ADDR>")?;
     writeln!(writer, "      --port <PORT>")?;
@@ -1233,6 +1294,7 @@ mod tests {
         upload_response: String,
         err: Option<String>,
         upload_err: Option<String>,
+        reboot_accepted_without_body: bool,
         base_url: String,
     }
 
@@ -1281,6 +1343,18 @@ mod tests {
                 DEFAULT_BASE_URL
             } else {
                 &self.base_url
+            }
+        }
+
+        fn send_reboot(&self) -> Result<Option<String>> {
+            self.requests.borrow_mut().push(reboot_request());
+            if let Some(err) = &self.err {
+                return Err(anyhow::anyhow!(err.clone()));
+            }
+            if self.reboot_accepted_without_body {
+                Ok(None)
+            } else {
+                Ok(Some(self.response.clone()))
             }
         }
     }
@@ -1361,6 +1435,22 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method, Method::GET);
         assert_eq!(requests[0].path, "/api/v1/status");
+    }
+
+    #[test]
+    fn pd_fixed_and_pps_requests_use_pd_endpoint() {
+        let fixed = request_from_args(&["pd".into(), "fixed".into(), "5000".into()]).unwrap();
+        assert_eq!(fixed.method, Method::PUT);
+        assert_eq!(fixed.path, "/api/v1/pd");
+        assert_eq!(fixed.body, Some(json!({"mode": 0, "voltage_mv": 5000})));
+
+        let pps = request_from_args(&["pd".into(), "pps".into(), "9000".into()]).unwrap();
+        assert_eq!(pps.method, Method::PUT);
+        assert_eq!(pps.path, "/api/v1/pd");
+        assert_eq!(pps.body, Some(json!({"mode": 1, "voltage_mv": 9000})));
+
+        assert!(request_from_args(&["pd".into(), "fixed".into(), "28000".into()]).is_err());
+        assert!(request_from_args(&["pd".into(), "pps".into(), "20050".into()]).is_err());
     }
 
     #[test]
@@ -1457,7 +1547,7 @@ mod tests {
         assert_eq!(code, 0);
         assert_eq!(
             String::from_utf8(stdout).unwrap().trim(),
-            "5v_out=0.850000A"
+            "5v_out=0.850000A voltage=0.019000V"
         );
     }
 
@@ -1481,10 +1571,13 @@ mod tests {
     #[test]
     fn parse_adc_record_rate_accepts_firmware_supported_range() {
         assert_eq!(parse_adc_record_rate_hz("1").unwrap(), 1);
-        assert_eq!(parse_adc_record_rate_hz("1000").unwrap(), 1000);
-        assert!(parse_adc_record_rate_hz("0").is_err());
-        assert!(parse_adc_record_rate_hz("1001").is_err());
-        assert!(parse_adc_record_rate_hz("fast").is_err());
+        assert_eq!(parse_adc_record_rate_hz("250").unwrap(), 250);
+        for invalid in ["-1", "0", "251", "1000", "2147483648", "1.5", "fast", ""] {
+            assert_eq!(
+                parse_adc_record_rate_hz(invalid).unwrap_err(),
+                "--rate-hz must be an integer in 1..=250"
+            );
+        }
     }
 
     #[test]
@@ -1495,13 +1588,13 @@ mod tests {
             "/tmp/adc.ndjson".to_string(),
             "42".to_string(),
             "--rate-hz".to_string(),
-            "250".to_string(),
+            "125".to_string(),
         ])
         .unwrap();
 
         assert_eq!(parsed.output, "/tmp/adc.ndjson");
         assert_eq!(parsed.max_samples, Some(42));
-        assert_eq!(parsed.rate_hz, 250);
+        assert_eq!(parsed.rate_hz, 125);
     }
 
     #[test]
@@ -1514,7 +1607,34 @@ mod tests {
         .unwrap();
 
         assert_eq!(parsed.max_samples, None);
-        assert_eq!(parsed.rate_hz, crate::recorder::DEFAULT_ADC_RECORD_RATE_HZ);
+        assert_eq!(parsed.rate_hz, 250);
+    }
+
+    #[test]
+    fn parse_adc_record_args_accepts_equals_rate_option() {
+        let args = ["adc", "record", "/tmp/adc.ndjson", "--rate-hz=250"].map(str::to_string);
+        assert_eq!(parse_adc_record_args(&args).unwrap().rate_hz, 250);
+    }
+
+    #[test]
+    fn adc_record_rejects_out_of_range_rate_options_before_connecting() {
+        for options in [vec!["--rate-hz", "251"], vec!["--rate-hz=251"]] {
+            let args: Vec<_> = ["adc", "record", "/tmp/adc.ndjson"]
+                .into_iter()
+                .chain(options)
+                .map(str::to_string)
+                .collect();
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let code = run_adc_record("not-a-url", Duration::ZERO, &args, &mut stdout, &mut stderr)
+                .unwrap();
+            assert_eq!(code, 2);
+            assert!(stdout.is_empty());
+            assert_eq!(
+                String::from_utf8(stderr).unwrap().trim(),
+                "--rate-hz must be an integer in 1..=250"
+            );
+        }
     }
 
     #[test]
@@ -1552,74 +1672,6 @@ mod tests {
         assert_eq!(requests[0].method, Method::PUT);
         assert_eq!(requests[0].path, "/api/v1/power/vdd_5v");
         assert_eq!(requests[0].body.as_ref().unwrap()["state"], "off");
-    }
-
-    #[test]
-    fn run_switch_get_vin_maps_to_switch_endpoint() {
-        let cli = Cli::parse_from(["cmd", "switch", "get", "vin"]);
-        let client = FakeClient {
-            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"switch","action":"get","name":"vin","route":"3.3v"}"#.to_string(),
-            ..Default::default()
-        };
-        let tui = FakeTuiRunner::new(0);
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
-        assert_eq!(code, 0);
-        let requests = client.requests.borrow();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].method, Method::GET);
-        assert_eq!(requests[0].path, "/api/v1/switch/vin");
-    }
-
-    #[test]
-    fn run_switch_vin_requires_confirmation() {
-        let cli = Cli::parse_from(["cmd", "switch", "route", "vin", "1.8v"]);
-        let client = FakeClient::default();
-        let tui = FakeTuiRunner::new(0);
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
-        assert_eq!(code, 2);
-        assert!(client.requests.borrow().is_empty());
-        assert!(String::from_utf8(stderr)
-            .unwrap()
-            .contains("requires --confirm"));
-    }
-
-    #[test]
-    fn run_switch_vin_sends_only_confirmed_switch_request() {
-        let cli = Cli::parse_from(["cmd", "switch", "route", "vin", "1.8v", "--confirm"]);
-        let client = FakeClient {
-            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"switch","action":"route","name":"vin","route":"1.8v"}"#.to_string(),
-            ..Default::default()
-        };
-        let tui = FakeTuiRunner::new(0);
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
-        assert_eq!(code, 0);
-        let requests = client.requests.borrow();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].method, Method::PUT);
-        assert_eq!(requests[0].path, "/api/v1/switch/vin");
-        assert_eq!(requests[0].body.as_ref().unwrap()["route"], "1.8v");
-    }
-
-    #[test]
-    fn run_switch_vin_rejects_invalid_route_before_board_access() {
-        let cli = Cli::parse_from(["cmd", "switch", "route", "vin", "1v8", "--confirm"]);
-        let client = FakeClient::default();
-        let tui = FakeTuiRunner::new(0);
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
-        assert_eq!(code, 2);
-        assert!(client.requests.borrow().is_empty());
     }
 
     #[test]
@@ -1666,6 +1718,92 @@ mod tests {
         assert_eq!(requests[0].method, Method::PUT);
         assert_eq!(requests[0].path, "/api/v1/switch/usb");
         assert_eq!(requests[0].body.as_ref().unwrap()["route"], "pc");
+    }
+
+    #[test]
+    fn run_reboot_posts_once_to_the_normal_reboot_endpoint() {
+        let cli = Cli::parse_from(["cmd", "reboot"]);
+        let client = FakeClient {
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"reboot","accepted":true}"#
+                .to_string(),
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        let requests = client.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, Method::POST);
+        assert_eq!(requests[0].path, "/api/v1/reboot");
+        assert_eq!(requests[0].body, None);
+    }
+
+    #[test]
+    fn reboot_strictly_rejects_every_extra_argument_without_board_access() {
+        for args in [
+            vec!["cmd", "reboot", "now"],
+            vec!["cmd", "reboot", "--json"],
+            vec!["cmd", "--json", "reboot", "extra"],
+        ] {
+            let cli = Cli::parse_from(args.clone());
+            let client = FakeClient::default();
+            let tui = FakeTuiRunner::new(0);
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+
+            let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+
+            assert_eq!(code, 2, "args={args:?}");
+            assert!(client.requests.borrow().is_empty(), "args={args:?}");
+            assert!(
+                String::from_utf8_lossy(&stdout).contains("radxa-linkr-debuggerctl reboot")
+                    || String::from_utf8_lossy(&stderr)
+                        .contains("usage: radxa-linkr-debuggerctl reboot"),
+                "args={args:?} stdout={} stderr={}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn json_reboot_treats_accepted_response_without_body_as_success() {
+        let cli = Cli::parse_from(["cmd", "--json", "reboot"]);
+        let client = FakeClient {
+            reboot_accepted_without_body: true,
+            ..Default::default()
+        };
+        let tui = FakeTuiRunner::new(0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = execute_with_io(cli, &client, &tui, &mut stdout, &mut stderr).unwrap();
+
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        assert_eq!(client.requests.borrow().len(), 1);
+        let output: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(output["command"], "reboot");
+        assert_eq!(output["accepted"], true);
+        assert_eq!(output["mode"], "normal");
+        assert_eq!(output["rom_bootsel"], false);
+    }
+
+    #[test]
+    fn reboot_and_bootloader_remain_distinct_post_endpoints() {
+        let reboot = request_from_args(&["reboot".to_string()]).unwrap();
+        let bootloader = request_from_args(&["bootloader".to_string()]).unwrap();
+
+        assert_eq!(reboot.method, Method::POST);
+        assert_eq!(reboot.path, "/api/v1/reboot");
+        assert_eq!(bootloader.method, Method::POST);
+        assert_eq!(bootloader.path, "/api/v1/bootloader");
+        assert_ne!(reboot.path, bootloader.path);
     }
 
     #[test]
@@ -2024,8 +2162,13 @@ mod tests {
 
         let code = run_with_io(["cmd", "--help"], &mut stdout, &mut stderr).unwrap();
         assert_eq!(code, 0);
-        let _ = String::from_utf8(stdout).unwrap();
-        let _ = String::from_utf8(stderr).unwrap();
+        let stdout = String::from_utf8(stdout).unwrap();
+        let stderr = String::from_utf8(stderr).unwrap();
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("ip subnet"));
+        assert!(stderr.contains("adc record --rate-hz HZ: 1..=250 Hz (default: 250 Hz)"));
+        assert!(stderr.contains("Normal cold restart; does not enter ROM BOOTSEL"));
+        assert!(stderr.contains("Enter ROM BOOTSEL; separate from normal reboot"));
     }
 
     #[test]

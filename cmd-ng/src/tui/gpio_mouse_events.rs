@@ -22,7 +22,11 @@ pub(super) fn handle_controls_mouse_at(
     let input = GpioGestureInput {
         pin: match &item {
             Some(ControlItem::Gpio(pin)) => Some(pin),
-            Some(ControlItem::Power(_)) | Some(ControlItem::Switch(_)) | None => None,
+            Some(ControlItem::Power(_))
+            | Some(ControlItem::Pd)
+            | Some(ControlItem::Switch(_))
+            | Some(ControlItem::Reboot)
+            | None => None,
         },
         column: mouse.column,
         row: mouse.row,
@@ -68,7 +72,10 @@ fn on_left_down(
             }
             Ok(())
         }
-        Some(item @ ControlItem::Power(_)) | Some(item @ ControlItem::Switch(_)) => {
+        Some(item @ ControlItem::Power(_))
+        | Some(item @ ControlItem::Pd)
+        | Some(item @ ControlItem::Switch(_))
+        | Some(item @ ControlItem::Reboot) => {
             if model.gpio_pending.is_some() {
                 model.gpio_gesture.cancel();
                 return Ok(());

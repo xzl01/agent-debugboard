@@ -1,3 +1,4 @@
+use super::confirm::ConfirmableCommand;
 use super::controls::{control_items, ControlItem};
 use super::gpio_worker_fixture::{ADC_EMPTY, GPIO_OK};
 use super::keyboard_boundary_fixture::{key, left_down, switch_model, SWITCH_NAME};
@@ -159,18 +160,27 @@ fn refresh_removing_power_defers_stale_coordinate_until_fresh_render() -> Result
     // Then: the old coordinate remains queued until a frame with no such hit exists.
     assert_eq!(disposition, EventDisposition::Redraw);
     assert_eq!(events.len(), 1);
-    assert!(control_items(&model).is_empty());
+    assert_eq!(control_items(&model), vec![ControlItem::Reboot]);
     assert!(model.hardware_confirm.is_none());
     assert_refresh_requests(&requests)?;
 
     draw_sized(&mut model, 80, 8)?;
-    assert!(model.hit_map.controls.at(old_row.x, old_row.y).is_none());
+    assert_eq!(
+        model.hit_map.controls.at(old_row.x, old_row.y),
+        Some(&ControlItem::Reboot)
+    );
     assert_eq!(
         drain_ready_events(&mut model, || Ok(events.pop_front()))?,
-        EventDisposition::Continue
+        EventDisposition::Redraw
     );
     assert!(events.is_empty());
-    assert!(model.hardware_confirm.is_none());
+    assert_eq!(
+        model
+            .hardware_confirm
+            .as_ref()
+            .map(|confirm| &confirm.command),
+        Some(&ConfirmableCommand::Reboot)
+    );
     assert!(model.gpio_pending.is_none());
     assert!(requests.recv_timeout(Duration::from_millis(30)).is_err());
     Ok(())

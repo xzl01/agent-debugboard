@@ -68,11 +68,20 @@ pub fn write_text(output: &str, verbose: bool) -> Result<String, String> {
 
         if let Some(current_ua) = reading.current_ua {
             match reading.kind {
-                AdcKind::Current => lines.push(format!(
-                    "{}={}",
-                    reading.name,
-                    current_text_from_microamps(current_ua)
-                )),
+                AdcKind::Current => {
+                    let mut text = format!(
+                        "{}={}",
+                        reading.name,
+                        current_text_from_microamps(current_ua)
+                    );
+                    if let Some(voltage_uv) = reading.voltage_uv {
+                        text.push_str(&format!(
+                            " voltage={}",
+                            voltage_text_from_microvolts(voltage_uv)
+                        ));
+                    }
+                    lines.push(text);
+                }
                 AdcKind::Voltage => {}
             }
         } else {

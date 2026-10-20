@@ -58,6 +58,10 @@ fn status_band_marks_paused_polling() -> Result<()> {
 #[test]
 fn scope_band_shows_channel_power_current_scale_and_stays_borderless() -> Result<()> {
     let mut model = model();
+    model.apply_status_snapshot(crate::ws_status::WsStatusSnapshot {
+        adc_channels: super::gpio_fixture::current_adc_channels(),
+        ..Default::default()
+    });
     model.latest.insert(
         "5v_out".to_string(),
         AdcReading {

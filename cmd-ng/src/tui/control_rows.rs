@@ -10,6 +10,7 @@ pub(super) enum RowTone {
     SwitchReady,
     SwitchPending,
     SwitchMismatch,
+    System,
     GpioHigh,
     GpioLow,
     GpioPending,
@@ -23,6 +24,7 @@ impl RowTone {
             Self::SwitchReady => Style::default().fg(Color::Cyan),
             Self::SwitchPending => Style::default().fg(Color::Yellow),
             Self::SwitchMismatch => Style::default().fg(Color::Red),
+            Self::System => Style::default().fg(Color::Cyan),
             Self::GpioHigh => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             Self::GpioLow => Style::default().fg(Color::DarkGray),
             Self::GpioPending => Style::default()
@@ -54,8 +56,65 @@ pub(super) fn control_rows(model: &TuiModel) -> Vec<ControlRow> {
 fn build_row(model: &TuiModel, item: &ControlItem) -> ControlRow {
     match item {
         ControlItem::Power(output) => power_row(model, item, output),
+        ControlItem::Pd => pd_row(model, item),
         ControlItem::Switch(name) => switch_row(model, item, name),
+        ControlItem::Reboot => reboot_row(item),
         ControlItem::Gpio(gpio) => gpio_row(model, item, gpio),
+    }
+}
+
+fn reboot_row(item: &ControlItem) -> ControlRow {
+    ControlRow {
+        item: item.clone(),
+        kind: "system",
+        name: "Reboot".to_string(),
+        state_route: "ready".to_string(),
+        live: "-".to_string(),
+        mode: "confirm".to_string(),
+        description: "normal cold restart; not ROM BOOTSEL".to_string(),
+        tone: RowTone::System,
+    }
+}
+
+fn pd_row(model: &TuiModel, item: &ControlItem) -> ControlRow {
+    let pd = model.pd.as_ref();
+    let voltage_mv = pd.map_or(0, |status| status.voltage_mv);
+    let mode = if pd.is_some_and(|status| status.mode == 1) {
+        "pps"
+    } else {
+        "fixed"
+    };
+    ControlRow {
+        item: item.clone(),
+        kind: "pd",
+        name: "usb_pd".to_string(),
+        state_route: if voltage_mv > 0 {
+            format!("{:.1}V", voltage_mv as f64 / 1000.0)
+        } else {
+            "hardware".to_string()
+        },
+        live: pd.map_or_else(
+            || "-".to_string(),
+            |status| format!("{}mA", status.max_current_ma),
+        ),
+        mode: mode.to_string(),
+        description: pd.map_or_else(
+            || "source capabilities unavailable".to_string(),
+            |status| {
+                let fixed = status
+                    .fixed_profiles
+                    .iter()
+                    .map(|profile| format!("{}V", profile.voltage_mv / 1000))
+                    .collect::<Vec<_>>()
+                    .join("/");
+                format!("{} {}", status.protocol, fixed)
+            },
+        ),
+        tone: if pd.is_some_and(|status| status.available) {
+            RowTone::PowerOn
+        } else {
+            RowTone::PowerOff
+        },
     }
 }
 
@@ -83,14 +142,19 @@ fn power_row(model: &TuiModel, item: &ControlItem, output: &str) -> ControlRow {
 }
 
 fn live_current_text(reading: &AdcReading) -> String {
+    let voltage = reading
+        .voltage_uv
+        .map(|uv| format!(" {:.3}V", uv as f64 / 1_000_000.0))
+        .unwrap_or_default();
     if let Some(current_ua) = reading.current_ua {
         let prefix = if current_ua < 0 { "-" } else { "" };
         let abs = (current_ua as i64).abs();
-        return format!("{prefix}{:.6}A", abs as f64 / 1_000_000.0);
+        return format!("{prefix}{:.6}A{voltage}", abs as f64 / 1_000_000.0);
     }
     format!(
-        "{:>5.2}A",
-        current_milliamp_estimate(reading) as f64 / 1000.0
+        "{:>5.2}A{}",
+        current_milliamp_estimate(reading) as f64 / 1000.0,
+        voltage
     )
 }
 

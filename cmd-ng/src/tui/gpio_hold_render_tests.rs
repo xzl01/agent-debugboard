@@ -1,4 +1,6 @@
-use super::gpio_fixture::{body_line, control_rect, draw, find_row, projection_model, row_text};
+use super::gpio_fixture::{
+    body_line, control_rect, draw, find_row, item_index, projection_model, row_text,
+};
 use super::gpio_gesture::GpioGestureInput;
 use super::gpio_io::{GpioAction, GpioJob};
 use super::model::TuiModel;
@@ -127,6 +129,7 @@ fn unselected_hold_tag_is_warn_yellow_and_bold() -> Result<()> {
 #[test]
 fn selected_hold_cell_keeps_focus_background_and_a_visible_bold_tag() -> Result<()> {
     let mut model = projection_model()?;
+    model.control_idx = item_index(&model, "GP10")?;
     hold_down(&mut model, "GP10");
     let buffer = draw(&mut model, 80, 24)?;
 

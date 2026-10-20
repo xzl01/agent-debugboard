@@ -1,4 +1,4 @@
-use super::controls::control_targets;
+use super::controls::{control_targets, first_gpio_index};
 use super::events::handle_key;
 use super::events_fixture::{model_with_switch, press};
 use super::gpio_fixture::{item_index, projection_model};
@@ -14,6 +14,7 @@ fn gpio_key_model() -> TuiModel {
     model.gpio_names = vec!["GP13".to_string()];
     model.gpio_levels.insert("GP13".to_string(), true);
     model.gpio_is_input.insert("GP13".to_string(), true);
+    model.control_idx = first_gpio_index(&model).unwrap();
     model
 }
 

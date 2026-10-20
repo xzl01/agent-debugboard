@@ -12,6 +12,7 @@ mod config_command;
 mod desktop;
 mod json_contract;
 mod monitoring;
+mod net_command;
 mod persistent_config;
 mod persistent_config_render;
 mod persistent_config_validate;

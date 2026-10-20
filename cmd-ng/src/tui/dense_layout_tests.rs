@@ -1,3 +1,4 @@
+use super::controls::{control_items, ControlItem};
 use super::model::TuiModel;
 use super::render::render_ui;
 use crate::client::DEFAULT_BASE_URL;
@@ -14,7 +15,7 @@ use std::time::{Duration, Instant};
 const WIDTH: u16 = 80;
 const HEIGHT: u16 = 24;
 const POWER_NAMES: [&str; 4] = ["12v_out", "5v_out", "20v_out", "vdd_5v"];
-const SWITCH_NAMES: [&str; 4] = ["sd", "tf_wp", "usb", "vin"];
+const SWITCH_NAMES: [&str; 3] = ["sd", "tf_wp", "usb"];
 const GPIO_COUNT: u32 = 13;
 const CONTROLS_SEGMENTS: [&str; 7] = [
     "q quit",
@@ -33,6 +34,7 @@ fn gpio_name(index: u32) -> String {
 fn object_names() -> Vec<String> {
     let mut names: Vec<String> = POWER_NAMES.iter().map(|name| name.to_string()).collect();
     names.extend(SWITCH_NAMES.iter().map(|name| name.to_string()));
+    names.push("Reboot".to_string());
     names.extend((0..GPIO_COUNT).map(gpio_name));
     names
 }
@@ -46,11 +48,10 @@ fn fixture_model() -> TuiModel {
             value: (index % 2 == 0) as i32,
         });
     }
-    let switch_routes: [(&str, &str, [&str; 2]); 4] = [
+    let switch_routes: [(&str, &str, [&str; 2]); 3] = [
         ("sd", "target", ["target", "usb-reader"]),
         ("tf_wp", "writable", ["writable", "protected"]),
         ("usb", "pc", ["pc", "target"]),
-        ("vin", "3.3v", ["3.3v", "1.8v"]),
     ];
     for (name, route, routes) in switch_routes {
         snapshot.switches.insert(
@@ -58,7 +59,7 @@ fn fixture_model() -> TuiModel {
             TuiStatusSwitchInfo {
                 route: route.to_string(),
                 routes: routes.iter().map(|route| route.to_string()).collect(),
-                requires_confirm: name == "vin",
+                requires_confirm: name == "usb",
             },
         );
     }
@@ -177,7 +178,7 @@ fn object_rows_are_dense_without_separator_rows() -> Result<()> {
 #[test]
 fn visible_object_rows_meet_canonical_budgets() -> Result<()> {
     let names = object_names();
-    for (width, height, minimum) in [(80u16, 24u16, 14usize), (120, 32, 21)] {
+    for (width, height, minimum) in [(80u16, 24u16, 14usize), (120, 32, 20)] {
         let mut model = fixture_model();
         let buffer = draw(&mut model, width, height)?;
         let count = (0..buffer.area.height)
@@ -197,7 +198,10 @@ fn visible_object_rows_meet_canonical_budgets() -> Result<()> {
 #[test]
 fn selected_row_background_spans_the_full_terminal_width() -> Result<()> {
     let mut model = fixture_model();
-    model.control_idx = POWER_NAMES.len() + SWITCH_NAMES.len();
+    model.control_idx = control_items(&model)
+        .iter()
+        .position(|item| item == &ControlItem::Gpio("GP7".to_string()))
+        .unwrap();
     let buffer = draw(&mut model, WIDTH, HEIGHT)?;
     let row = find_row(&buffer, "GP7").ok_or_else(|| anyhow!("selected GP7 row is missing"))?;
     for x in 0..buffer.area.width {
@@ -217,7 +221,10 @@ fn selected_row_background_spans_the_full_terminal_width() -> Result<()> {
 #[test]
 fn unfocused_gpio_low_cell_has_no_white_background() -> Result<()> {
     let mut model = fixture_model();
-    model.control_idx = POWER_NAMES.len() + SWITCH_NAMES.len();
+    model.control_idx = control_items(&model)
+        .iter()
+        .position(|item| item == &ControlItem::Gpio("GP7".to_string()))
+        .unwrap();
     let buffer = draw(&mut model, WIDTH, HEIGHT)?;
     let row = find_row(&buffer, "GP8").ok_or_else(|| anyhow!("GP8 row is missing"))?;
     let white_cells = (0..buffer.area.width)

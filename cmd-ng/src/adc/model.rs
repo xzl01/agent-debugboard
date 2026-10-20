@@ -42,6 +42,8 @@ pub struct AdcReading {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_ua: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub voltage_valid: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub voltage_uv: Option<i32>,
 }
 
@@ -54,6 +56,10 @@ pub struct AdcCompactReading {
     pub unit: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub power_enabled: Option<bool>,
+    #[serde(default)]
+    pub voltage_valid: Option<bool>,
+    #[serde(default)]
+    pub voltage_uv: Option<i32>,
     pub value: i32,
 }
 
@@ -61,7 +67,14 @@ impl AdcCompactReading {
     pub fn into_reading(self) -> Result<AdcReading, String> {
         validate_compact_kind_unit(self.kind, &self.unit)?;
         let (current_ua, voltage_uv, sensor_channel) = match self.kind {
-            AdcKind::Current => (Some(self.value), None, "current"),
+            AdcKind::Current => (
+                Some(self.value),
+                self.voltage_valid
+                    .unwrap_or(self.voltage_uv.is_some())
+                    .then_some(self.voltage_uv)
+                    .flatten(),
+                "current",
+            ),
             AdcKind::Voltage => (None, Some(self.value), "voltage"),
         };
         Ok(AdcReading {
@@ -78,6 +91,10 @@ impl AdcCompactReading {
             value: Some(self.value),
             sensor_value: None,
             current_ua,
+            voltage_valid: match self.kind {
+                AdcKind::Current => self.voltage_valid,
+                AdcKind::Voltage => None,
+            },
             voltage_uv,
         })
     }

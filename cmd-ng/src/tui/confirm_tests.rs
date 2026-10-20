@@ -31,11 +31,26 @@ fn power_confirmation_texts_name_the_exact_target() {
 #[test]
 fn switch_confirmation_texts_name_the_exact_route() {
     let command = ConfirmableCommand::RouteSwitch {
-        name: "vin".to_string(),
-        route: "1.8v".to_string(),
+        name: "tf_wp".to_string(),
+        route: "protected".to_string(),
     };
     assert_eq!(command.title(), "Confirm Switch Route");
-    assert_eq!(command.target_text(), "switch vin -> 1.8v");
+    assert_eq!(command.target_text(), "switch tf_wp -> protected");
     assert_eq!(command.cancel_message(), "Switch cancelled");
     assert_eq!(command.timeout_message(), "Switch confirmation timed out");
+}
+
+#[test]
+fn reboot_confirmation_is_explicitly_normal_and_not_rom_bootsel() {
+    let command = ConfirmableCommand::Reboot;
+    assert_eq!(command.title(), "Confirm Normal Reboot");
+    assert_eq!(
+        command.target_text(),
+        "normal cold restart (not ROM BOOTSEL)"
+    );
+    assert_eq!(command.cancel_message(), "Normal reboot cancelled");
+    assert_eq!(
+        command.timeout_message(),
+        "Normal reboot confirmation timed out"
+    );
 }

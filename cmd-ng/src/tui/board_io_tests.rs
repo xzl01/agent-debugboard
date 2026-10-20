@@ -1,4 +1,6 @@
-use super::board_io::{perform_control_action, set_gpio_input, set_gpio_output, set_switch_route};
+use super::board_io::{
+    perform_control_action, reboot_board, set_gpio_input, set_gpio_output, set_switch_route,
+};
 use super::mock_board::{mock_server, Reply};
 use super::TuiActionMsg;
 use anyhow::Result;
@@ -139,4 +141,20 @@ fn board_io_operations_reject_exact_dot_segments_before_connecting() {
             handle.join().unwrap();
         }
     }
+}
+
+#[test]
+fn reboot_accepts_202_without_reading_a_body_cut_short_by_restart() {
+    let (base_url, requests) = mock_server(vec![Reply::Truncated(202, 128)]);
+
+    let outcome = reboot_board(&base_url, TIMEOUT).unwrap();
+
+    assert_eq!(
+        outcome.status,
+        "Normal reboot accepted; waiting for reconnect (not ROM BOOTSEL)"
+    );
+    assert!(outcome.err.is_none());
+    let request = requests.recv_timeout(TIMEOUT).unwrap();
+    assert_eq!(request_line(&request), "POST /api/v1/reboot HTTP/1.1");
+    assert_eq!(request.split_once("\r\n\r\n").unwrap().1, "");
 }

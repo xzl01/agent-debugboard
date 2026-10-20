@@ -6,14 +6,18 @@ pub(super) const CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ConfirmableCommand {
     SetPower { output: String, next_state: bool },
+    SetPd { voltage_mv: u16 },
     RouteSwitch { name: String, route: String },
+    Reboot,
 }
 
 impl ConfirmableCommand {
     pub(super) fn title(&self) -> String {
         match self {
             Self::SetPower { .. } => "Confirm Power Toggle".to_string(),
+            Self::SetPd { .. } => "Confirm PD Voltage".to_string(),
             Self::RouteSwitch { .. } => "Confirm Switch Route".to_string(),
+            Self::Reboot => "Confirm Normal Reboot".to_string(),
         }
     }
 
@@ -27,20 +31,29 @@ impl ConfirmableCommand {
             Self::RouteSwitch { name, route } => {
                 sanitize_display(&format!("switch {name} -> {route}"))
             }
+            Self::SetPd { voltage_mv } => sanitize_display(&format!(
+                "PD fixed voltage -> {:.1}V",
+                *voltage_mv as f64 / 1000.0
+            )),
+            Self::Reboot => "normal cold restart (not ROM BOOTSEL)".to_string(),
         }
     }
 
     pub(super) fn cancel_message(&self) -> String {
         match self {
             Self::SetPower { .. } => "Power toggle cancelled".to_string(),
+            Self::SetPd { .. } => "PD voltage change cancelled".to_string(),
             Self::RouteSwitch { .. } => "Switch cancelled".to_string(),
+            Self::Reboot => "Normal reboot cancelled".to_string(),
         }
     }
 
     pub(super) fn timeout_message(&self) -> String {
         match self {
             Self::SetPower { .. } => "Power confirmation timed out".to_string(),
+            Self::SetPd { .. } => "PD voltage confirmation timed out".to_string(),
             Self::RouteSwitch { .. } => "Switch confirmation timed out".to_string(),
+            Self::Reboot => "Normal reboot confirmation timed out".to_string(),
         }
     }
 }
@@ -72,6 +85,8 @@ impl HardwareConfirmation {
             ConfirmableCommand::SetPower { output, .. } => {
                 power_names.iter().any(|name| name == output)
             }
+            ConfirmableCommand::SetPd { .. } => true,
+            ConfirmableCommand::Reboot => true,
             ConfirmableCommand::RouteSwitch { name, route } => switches
                 .get(name)
                 .is_some_and(|state| state.routes.iter().any(|advertised| advertised == route)),

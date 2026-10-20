@@ -1,3 +1,4 @@
+use super::board_io::PdWorker;
 use super::config_io::ConfigWorker;
 use super::config_state::SavedConfigState;
 use super::confirm::HardwareConfirmation;
@@ -9,9 +10,17 @@ use super::pages::ActivePage;
 use super::{TuiActionMsg, TUI_HISTORY_LIMIT};
 use crate::adc::AdcReading;
 use crate::monitoring::BoardMonitoring;
-use crate::ws_status::WsStatusSnapshot;
+use crate::ws_status::{TuiPdStatus, WsStatusSnapshot};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+
+pub(super) const REBOOT_RECONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RebootReconnect {
+    pub(super) accepted_at: Instant,
+    pub(super) deadline: Instant,
+}
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct TuiSwitchState {
@@ -32,6 +41,7 @@ pub struct TuiModel {
     pub paused: bool,
     pub err: Option<String>,
     pub last_http_poll: Option<Instant>,
+    pub(super) reboot_reconnect: Option<RebootReconnect>,
     pub status: String,
     pub history: std::collections::HashMap<String, Vec<i32>>,
     pub latest: std::collections::HashMap<String, AdcReading>,
@@ -41,7 +51,10 @@ pub struct TuiModel {
     pub config_scroll: usize,
     pub status_scroll: usize,
     pub(super) power_names: Vec<String>,
+    status_snapshot_received: bool,
     pub power_states: std::collections::HashMap<String, bool>,
+    pub pd: Option<TuiPdStatus>,
+    pub(super) pd_worker: PdWorker,
     pub(super) switches: BTreeMap<String, TuiSwitchState>,
     pub(super) hardware_confirm: Option<HardwareConfirmation>,
     pub(super) hit_map: HitMap,
@@ -71,6 +84,7 @@ impl TuiModel {
             paused: false,
             err: None,
             last_http_poll: None,
+            reboot_reconnect: None,
             status: "HTTP mode".to_string(),
             history: std::collections::HashMap::new(),
             latest: std::collections::HashMap::new(),
@@ -80,7 +94,10 @@ impl TuiModel {
             config_scroll: 0,
             status_scroll: 0,
             power_names: Vec::new(),
+            status_snapshot_received: false,
             power_states: std::collections::HashMap::new(),
+            pd: None,
+            pd_worker: PdWorker::default(),
             switches: BTreeMap::new(),
             hardware_confirm: None,
             hit_map: HitMap::default(),
@@ -97,16 +114,15 @@ impl TuiModel {
             gpio_gesture: super::gpio_gesture::GpioGesture::default(),
             gpio_poll_defer_until: None,
             closed: false,
-            channel_ids: vec![
-                "5v_out".to_string(),
-                "12v_out".to_string(),
-                "20v_out".to_string(),
-            ],
+            channel_ids: Vec::new(),
         }
     }
 
     pub(super) fn apply_status_snapshot(&mut self, snapshot: WsStatusSnapshot) -> bool {
-        let selected = control_items(self).get(self.control_idx).cloned();
+        let selected = self
+            .status_snapshot_received
+            .then(|| control_items(self).get(self.control_idx).cloned())
+            .flatten();
         let config_changed = self.saved_config.observe_summary(snapshot.config);
         self.power_names.clear();
         self.power_states.clear();
@@ -117,6 +133,13 @@ impl TuiModel {
                 output.value != 0 || output.state == "on",
             );
         }
+        self.apply_pd_status(snapshot.pd);
+        self.channel_ids = snapshot
+            .adc_channels
+            .into_iter()
+            .filter(|channel| channel.sensor_channel == "current")
+            .map(|channel| channel.name)
+            .collect();
         let now = Instant::now();
         let mut switches = BTreeMap::new();
         for (name, info) in snapshot.switches {
@@ -200,6 +223,7 @@ impl TuiModel {
         self.control_idx = selected
             .and_then(|selected| items.iter().position(|item| item == &selected))
             .unwrap_or_else(|| self.control_idx.min(items.len().saturating_sub(1)));
+        self.status_snapshot_received = true;
         config_changed
     }
 
@@ -223,6 +247,19 @@ impl TuiModel {
         }
     }
 
+    pub(super) fn apply_pd_status(&mut self, mut pd: Option<TuiPdStatus>) {
+        if !pd.as_ref().is_some_and(|pd| pd.available && pd.pd) {
+            self.pd_worker.reset();
+            if let Some(pd) = pd.as_mut() {
+                pd.capabilities_valid = false;
+                pd.fixed_profiles.clear();
+                pd.pps_ranges.clear();
+                pd.avs_ranges.clear();
+            }
+        }
+        self.pd = pd;
+    }
+
     pub(super) fn apply_action_msg(&mut self, msg: TuiActionMsg) {
         self.err = msg.err.clone();
         if let Some(err) = msg.err {
@@ -230,6 +267,18 @@ impl TuiModel {
         } else {
             self.status = msg.status;
         }
+    }
+
+    pub(super) fn begin_reboot_reconnect(&mut self, accepted_at: Instant) {
+        self.last_http_poll = Some(accepted_at);
+        self.reboot_reconnect = Some(RebootReconnect {
+            accepted_at,
+            deadline: accepted_at + REBOOT_RECONNECT_TIMEOUT,
+        });
+    }
+
+    pub(super) fn clear_reboot_reconnect(&mut self) {
+        self.reboot_reconnect = None;
     }
 }
 

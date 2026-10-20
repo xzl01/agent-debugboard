@@ -1,5 +1,5 @@
 use super::confirm::ConfirmableCommand;
-use super::controls::{control_targets, ControlItem};
+use super::controls::{control_items, ControlItem};
 use super::hit_types::HardwareModalTarget;
 use super::mouse_fixture::{click, control_rect, draw, draw_sized, model, power_confirmation};
 use anyhow::{anyhow, Result};
@@ -154,7 +154,10 @@ fn hit_rects_follow_the_selection_driven_scroll_offset() -> Result<()> {
         model.gpio_is_input.insert(name, true);
     }
     // Select the last GPIO so the selection-driven scroll pushes power rows out.
-    model.control_idx = control_targets(&model).len() + model.gpio_names.len() - 1;
+    model.control_idx = control_items(&model)
+        .iter()
+        .position(|item| item == &ControlItem::Gpio("GP20".to_string()))
+        .unwrap();
     draw_sized(&mut model, 80, 16)?;
 
     assert!(

@@ -11,6 +11,59 @@ pub struct TuiStatusPowerOutput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TuiStatusAdcChannel {
+    pub name: String,
+    pub sensor_channel: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TuiPdFixedProfile {
+    pub voltage_mv: u16,
+    pub max_current_ma: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TuiPdProgrammableRange {
+    pub min_voltage_mv: u16,
+    pub max_voltage_mv: u16,
+    pub step_mv: u16,
+    #[serde(default)]
+    pub max_current_ma: u16,
+    #[serde(default)]
+    pub max_power_w: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TuiPdStatus {
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default)]
+    pub mode: u8,
+    #[serde(default)]
+    pub voltage_mv: u16,
+    #[serde(default)]
+    pub pps_mv: u16,
+    #[serde(default)]
+    pub pd: bool,
+    #[serde(default)]
+    pub max_current_ma: u16,
+    #[serde(default)]
+    pub last_error: i32,
+    #[serde(default)]
+    pub protocol: String,
+    #[serde(default)]
+    pub board_max_voltage_mv: u16,
+    #[serde(default)]
+    pub capabilities_valid: bool,
+    #[serde(default)]
+    pub fixed_profiles: Vec<TuiPdFixedProfile>,
+    #[serde(default)]
+    pub pps_ranges: Vec<TuiPdProgrammableRange>,
+    #[serde(default)]
+    pub avs_ranges: Vec<TuiPdProgrammableRange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TuiStatusGpio {
     pub name: String,
@@ -67,6 +120,10 @@ pub struct WsStatusSnapshot {
     pub sequence: Option<u64>,
     #[serde(default)]
     pub power_outputs: Vec<TuiStatusPowerOutput>,
+    #[serde(default)]
+    pub adc_channels: Vec<TuiStatusAdcChannel>,
+    #[serde(default)]
+    pub pd: Option<TuiPdStatus>,
     #[serde(default)]
     pub switches: TuiStatusSwitches,
     #[serde(default)]

@@ -17,6 +17,12 @@ use std::time::{Duration, Instant};
 const HTTP_POLL_INTERVAL: Duration = Duration::from_secs(2);
 pub(super) const READY_EVENT_DRAIN_LIMIT: usize = 64;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpPollOutcome {
+    Updated,
+    WaitingForReboot,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum EventDisposition {
     Continue,
@@ -124,16 +130,49 @@ pub(super) fn on_time_tick(model: &mut TuiModel, now: Instant) -> Result<()> {
         return Ok(());
     }
 
+    let reconnect_deadline = model.reboot_reconnect.map(|reconnect| reconnect.deadline);
     let should_poll = match model.last_http_poll {
-        Some(t) => t.elapsed() >= HTTP_POLL_INTERVAL,
+        Some(last_poll) => {
+            now.saturating_duration_since(last_poll) >= HTTP_POLL_INTERVAL
+                || reconnect_deadline.is_some_and(|deadline| now >= deadline)
+        }
         None => true,
     };
     let gesture_defers_poll = model.gpio_gesture.is_active()
         && model.gpio_poll_defer_until.is_some_and(|until| now < until);
-    if should_poll && !gesture_defers_poll {
-        poll_http(model)?;
+    if should_poll
+        && !gesture_defers_poll
+        && poll_http_at(model, now)? == HttpPollOutcome::WaitingForReboot
+    {
+        return Ok(());
     }
+    if model.reboot_reconnect.is_some() {
+        // Do not start or surface ancillary PD reads while USB networking is
+        // expected to be absent. A complete HTTP refresh clears this state.
+        return Ok(());
+    }
+    poll_pd(model, now.max(Instant::now()));
     Ok(())
+}
+
+pub(super) fn poll_pd(model: &mut TuiModel, now: Instant) {
+    if let Some(result) = model.pd_worker.poll(now) {
+        match result {
+            Ok(pd) => model.apply_pd_status(Some(pd)),
+            Err(error) => model.err = Some(format!("PD capability read failed: {error}")),
+        }
+    }
+    if !model.closed
+        && !model.paused
+        && model
+            .pd
+            .as_ref()
+            .is_some_and(|pd| pd.available && pd.pd && !pd.capabilities_valid)
+    {
+        model
+            .pd_worker
+            .start(model.base_url.clone(), model.timeout, now);
+    }
 }
 
 pub(super) fn process_event(
@@ -171,7 +210,34 @@ fn gesture_can_fire(model: &TuiModel) -> bool {
 }
 
 pub(super) fn poll_http(model: &mut TuiModel) -> Result<()> {
-    model.last_http_poll = Some(Instant::now());
+    poll_http_at(model, Instant::now()).map(|_| ())
+}
+
+fn poll_http_at(model: &mut TuiModel, now: Instant) -> Result<HttpPollOutcome> {
+    match try_poll_http_at(model, now) {
+        Ok(()) => {
+            model.clear_reboot_reconnect();
+            Ok(HttpPollOutcome::Updated)
+        }
+        Err(error) => match model.reboot_reconnect {
+            Some(reconnect) if now < reconnect.deadline => Ok(HttpPollOutcome::WaitingForReboot),
+            Some(_) => {
+                model.clear_reboot_reconnect();
+                let message = format!(
+                    "Normal reboot reconnect timed out after {}s: {error}",
+                    super::model::REBOOT_RECONNECT_TIMEOUT.as_secs()
+                );
+                model.err = Some(message.clone());
+                model.status = message.clone();
+                Err(anyhow::anyhow!(message))
+            }
+            None => Err(error),
+        },
+    }
+}
+
+fn try_poll_http_at(model: &mut TuiModel, now: Instant) -> Result<()> {
+    model.last_http_poll = Some(now);
     let client = crate::client::BoardClient::new(&model.base_url, model.timeout)?;
     let status_data = client.send_text(BoardRequest {
         method: reqwest::Method::GET,

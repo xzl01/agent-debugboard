@@ -19,7 +19,8 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub const DEFAULT_ADC_RECORD_RATE_HZ: i32 = 1000;
+pub const MAX_ADC_RECORD_RATE_HZ: i32 = 250;
+pub const DEFAULT_ADC_RECORD_RATE_HZ: i32 = MAX_ADC_RECORD_RATE_HZ;
 const ADC_RECORD_BATCH_SIZE: u8 = 20;
 
 const DEVICE_TIMING_FIELDS: &[&str] = &[
@@ -38,7 +39,7 @@ const DEVICE_TIMING_FIELDS: &[&str] = &[
     "uptime_seconds",
 ];
 
-const CSV_RAILS: &[&str] = &["5v_out", "12v_out", "20v_out"];
+const CSV_RAILS: &[&str] = &["5v_out", "12v_out", "20v_out", "vdd_5v"];
 
 #[derive(Debug, Clone, Deserialize)]
 struct LiveSessionCreateResponse {
@@ -130,6 +131,10 @@ pub fn record_adc_ws_to_file(
     max_samples: Option<usize>,
     requested_rate_hz: i32,
 ) -> Result<()> {
+    anyhow::ensure!(
+        (1..=MAX_ADC_RECORD_RATE_HZ).contains(&requested_rate_hz),
+        "ADC record rate must be in 1..={MAX_ADC_RECORD_RATE_HZ} Hz"
+    );
     let session = request_live_session(base_url, timeout)?;
     let ws_client = WsClient::with_ws_url(base_url.to_string(), session.ws_url);
     let result =
@@ -210,7 +215,10 @@ fn record_adc_ws_to_file_with_session(
 fn write_csv_header(writer: &mut BufWriter<File>) -> Result<()> {
     write!(writer, "sequence,t_mono_ns,t_unix_ns,device_t_mono_us")?;
     for rail in CSV_RAILS {
-        write!(writer, ",{rail}_power_enabled,{rail}_current_ua")?;
+        write!(
+            writer,
+            ",{rail}_power_enabled,{rail}_current_ua,{rail}_voltage_uv"
+        )?;
     }
     writer.write_all(b"\n")?;
     Ok(())
@@ -250,18 +258,27 @@ fn write_telemetry_csv_row(
             .readings
             .iter()
             .find(|reading| reading.name == *rail && reading.kind == AdcKind::Current);
-        write!(
+        write_csv_cell(writer, reading.and_then(|reading| reading.power_enabled))?;
+        write_csv_cell(writer, reading.and_then(|reading| reading.current_ua))?;
+        write_csv_cell(
             writer,
-            ",{},{}",
             reading
-                .and_then(|reading| reading.power_enabled)
-                .unwrap_or(false),
-            reading
-                .and_then(|reading| reading.current_ua)
-                .unwrap_or_default()
+                .filter(|reading| reading.voltage_valid != Some(false))
+                .and_then(|reading| reading.voltage_uv),
         )?;
     }
     writer.write_all(b"\n")?;
+    Ok(())
+}
+
+fn write_csv_cell(
+    writer: &mut impl Write,
+    value: Option<impl std::fmt::Display>,
+) -> std::io::Result<()> {
+    writer.write_all(b",")?;
+    if let Some(value) = value {
+        write!(writer, "{value}")?;
+    }
     Ok(())
 }
 
@@ -319,6 +336,97 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::thread;
+    use tungstenite::{accept, Message};
+
+    #[test]
+    fn recorder_subscribes_at_requested_rate_and_preserves_it_in_ndjson() {
+        assert_eq!(DEFAULT_ADC_RECORD_RATE_HZ, 250);
+        for rate_hz in [1, 100, 101, DEFAULT_ADC_RECORD_RATE_HZ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut socket = accept(stream).unwrap();
+                let request: Value =
+                    serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+                let interval_us = 1_000_000 / rate_hz;
+                if request.get("batch_size").is_some() {
+                    socket
+                        .send(Message::Text(
+                            json!({
+                                "type": "telemetry-batch", "topic": "adc", "schema": JSON_SCHEMA,
+                                "channels": [{"name": "vdd_5v", "kind": "current", "unit": "uA"}],
+                                "samples": [
+                                    {"sequence": 1, "uptime_us": interval_us, "values": [0]},
+                                    {"sequence": 2, "uptime_us": interval_us * 2, "values": [100]}
+                                ]
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .unwrap();
+                } else {
+                    for sequence in 1..=2 {
+                        socket.send(Message::Text(json!({
+                            "type": "telemetry", "topic": "adc", "schema": JSON_SCHEMA,
+                            "sequence": sequence, "uptime_us": interval_us * sequence,
+                            "readings": [{"name": "vdd_5v", "kind": "current", "unit": "uA", "value": (sequence - 1) * 100}]
+                        }).to_string().into())).unwrap();
+                    }
+                }
+                request
+            });
+            let ws =
+                WsClient::with_ws_url(format!("http://{addr}"), format!("ws://{addr}/api/v1/ws/0"));
+            let path = temp_file_path(&format!("subscription-{rate_hz}"));
+            record_adc_ws_to_file_with_session(&ws, path.to_str().unwrap(), Some(2), rate_hz)
+                .unwrap();
+            ws.close().unwrap();
+            let request = server.join().unwrap();
+            assert_eq!(request["type"], "subscribe");
+            assert_eq!(request["topic"], "live");
+            assert_eq!(request["rate_hz"], rate_hz);
+            assert_eq!(
+                request.get("batch_size").and_then(Value::as_u64),
+                (rate_hz > 100).then_some(20)
+            );
+
+            let ndjson = std::fs::read_to_string(&path).unwrap();
+            let _ = std::fs::remove_file(&path);
+            let records: Vec<Value> = ndjson
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(records.len(), 2);
+            for (index, record) in records.iter().enumerate() {
+                assert_eq!(record["metadata"]["requested_rate_hz"], request["rate_hz"]);
+                assert!(record["metadata"]["requested_rate_hz"].as_i64().unwrap() <= 250);
+                assert_eq!(record["sequence"], index + 1);
+                assert_eq!(record["readings"][0]["current_ua"], index * 100);
+            }
+        }
+    }
+
+    #[test]
+    fn recorder_rejects_invalid_rates_before_creating_a_live_session() {
+        for rate_hz in [-1, 0, 251, 1000] {
+            let error = record_adc_ws_to_file(
+                "not-a-url",
+                Duration::ZERO,
+                "unused.ndjson",
+                Some(1),
+                rate_hz,
+            )
+            .unwrap_err();
+            assert_eq!(error.to_string(), "ADC record rate must be in 1..=250 Hz");
+        }
+    }
 
     #[test]
     fn telemetry_record_includes_requested_rate_metadata() {
@@ -333,7 +441,7 @@ mod tests {
             extra: serde_json::Map::new(),
         };
 
-        write_telemetry_record(&mut writer, &message, Duration::from_millis(2), 123, 250).unwrap();
+        write_telemetry_record(&mut writer, &message, Duration::from_millis(2), 123, 25).unwrap();
         writer.flush().unwrap();
 
         drop(writer);
@@ -342,7 +450,7 @@ mod tests {
         let record: Value = serde_json::from_str(data.trim()).unwrap();
         assert_eq!(record["schema"], JSON_SCHEMA);
         assert_eq!(record["type"], "telemetry-record");
-        assert_eq!(record["metadata"]["requested_rate_hz"], 250);
+        assert_eq!(record["metadata"]["requested_rate_hz"], 25);
         assert!(record["metadata"].get("device_timing").is_none());
         assert_eq!(record["t_mono_ns"], 2_000_000);
         assert_eq!(record["t_unix_ns"], 123);
@@ -365,14 +473,14 @@ mod tests {
             extra,
         };
 
-        write_telemetry_record(&mut writer, &message, Duration::from_millis(3), 456, 500).unwrap();
+        write_telemetry_record(&mut writer, &message, Duration::from_millis(3), 456, 50).unwrap();
         writer.flush().unwrap();
 
         drop(writer);
         let data = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         let record: Value = serde_json::from_str(data.trim()).unwrap();
-        assert_eq!(record["metadata"]["requested_rate_hz"], 500);
+        assert_eq!(record["metadata"]["requested_rate_hz"], 50);
         assert_eq!(record["metadata"]["device_timing"]["device_t_mono_us"], 42);
         assert_eq!(record["metadata"]["device_timing"]["sample_sequence"], 99);
     }
@@ -398,7 +506,7 @@ mod tests {
         .unwrap();
         let message = expand_telemetry_batch(batch).unwrap().remove(0);
 
-        write_telemetry_record(&mut writer, &message, Duration::from_millis(5), 999, 1000).unwrap();
+        write_telemetry_record(&mut writer, &message, Duration::from_millis(5), 999, 100).unwrap();
         writer.flush().unwrap();
         drop(writer);
 
@@ -433,6 +541,7 @@ mod tests {
                 sensor_value: None,
                 value: Some(123_000),
                 current_ua: Some(123_000),
+                voltage_valid: Some(false),
                 voltage_uv: None,
             }],
             extra,
@@ -446,7 +555,10 @@ mod tests {
         let data = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert!(data.contains("device_t_mono_us"));
-        assert!(data.contains("9,2000000,77,55,true,123000"));
+        let row: Vec<_> = data.lines().nth(1).unwrap().split(',').collect();
+        assert_eq!(row.len(), 16);
+        assert_eq!(&row[..6], &["9", "2000000", "77", "55", "true", "123000"]);
+        assert!(row[6..].iter().all(|cell| cell.is_empty()));
     }
 
     #[test]
@@ -478,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn ndjson_retains_voltage_adc3_while_csv_schema_stays_three_rails() {
+    fn ndjson_retains_voltage_adc3_while_csv_records_all_four_current_rails() {
         let path = temp_file_path("adc3");
         let mut writer = BufWriter::new(File::create(&path).unwrap());
         let batch: WsTelemetryBatch = serde_json::from_value(serde_json::json!({
@@ -489,27 +601,30 @@ mod tests {
                 {"name":"5v_out","signal":"S_C_5V","kind":"current","unit":"uA"},
                 {"name":"12v_out","signal":"S_C_12V","kind":"current","unit":"uA"},
                 {"name":"20v_out","signal":"S_C_20V","kind":"current","unit":"uA"},
+                {"name":"vdd_5v","signal":"S_C_VDD_5V","kind":"current","unit":"uA"},
                 {"name":"adc3","signal":"ADC3","kind":"voltage","unit":"uV"}
             ],
             "samples": [{
                 "sequence": 14,
                 "uptime_us": 4321,
-                "power_enabled_mask": 7,
-                "values": [100, 200, 300, 1234000]
+                "power_enabled_mask": 15,
+                "voltage_valid_mask": 13,
+                "voltages_uv": [5000000, 0, 20000000, 5001000],
+                "values": [100, 200, 300, 400, 1234000]
             }]
         }))
         .unwrap();
         let message = expand_telemetry_batch(batch).unwrap().remove(0);
 
-        write_telemetry_record(&mut writer, &message, Duration::ZERO, 1, 1000).unwrap();
+        write_telemetry_record(&mut writer, &message, Duration::ZERO, 1, 100).unwrap();
         writer.flush().unwrap();
         drop(writer);
         let data = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         let record: Value = serde_json::from_str(data.trim()).unwrap();
 
-        assert_eq!(record["readings"][3]["name"], "adc3");
-        assert_eq!(record["readings"][3]["voltage_uv"], 1_234_000);
+        assert_eq!(record["readings"][4]["name"], "adc3");
+        assert_eq!(record["readings"][4]["voltage_uv"], 1_234_000);
 
         let csv_path = temp_file_path("adc3-csv");
         let mut csv = BufWriter::new(File::create(&csv_path).unwrap());
@@ -519,8 +634,81 @@ mod tests {
         drop(csv);
         let csv = std::fs::read_to_string(&csv_path).unwrap();
         let _ = std::fs::remove_file(&csv_path);
-        assert_eq!(csv.lines().next(), Some("sequence,t_mono_ns,t_unix_ns,device_t_mono_us,5v_out_power_enabled,5v_out_current_ua,12v_out_power_enabled,12v_out_current_ua,20v_out_power_enabled,20v_out_current_ua"));
+        assert_eq!(csv.lines().next(), Some("sequence,t_mono_ns,t_unix_ns,device_t_mono_us,5v_out_power_enabled,5v_out_current_ua,5v_out_voltage_uv,12v_out_power_enabled,12v_out_current_ua,12v_out_voltage_uv,20v_out_power_enabled,20v_out_current_ua,20v_out_voltage_uv,vdd_5v_power_enabled,vdd_5v_current_ua,vdd_5v_voltage_uv"));
+        assert_eq!(
+            csv.lines().nth(1),
+            Some("14,0,1,4321,true,100,5000000,true,200,,true,300,20000000,true,400,5001000")
+        );
         assert!(!csv.contains("adc3"));
+    }
+
+    #[test]
+    fn csv_distinguishes_unknown_vdd_voltage_from_measured_zero() {
+        let path = temp_file_path("csv-voltage-validity");
+        let mut writer = BufWriter::new(File::create(&path).unwrap());
+        for (valid, voltage_uv) in [(false, None), (false, Some(5_000_000)), (true, Some(0))] {
+            let message = WsTelemetryMessage {
+                readings: vec![crate::adc::AdcReading {
+                    name: "vdd_5v".to_string(),
+                    power_enabled: Some(false),
+                    current_ua: Some(0),
+                    voltage_valid: Some(valid),
+                    voltage_uv,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            write_telemetry_csv_row(&mut writer, &message, Duration::ZERO, 1).unwrap();
+        }
+        writer.flush().unwrap();
+        drop(writer);
+        let csv = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let rows: Vec<Vec<&str>> = csv.lines().map(|row| row.split(',').collect()).collect();
+        assert!(rows.iter().all(|row| row.len() == 16));
+        assert_eq!(&rows[0][13..], &["false", "0", ""]);
+        assert_eq!(&rows[1][13..], &["false", "0", ""]);
+        assert_eq!(&rows[2][13..], &["false", "0", "0"]);
+    }
+
+    #[test]
+    fn csv_missing_rails_and_unknown_fields_are_empty_cells() {
+        let path = temp_file_path("csv-unknown-fields");
+        let mut writer = BufWriter::new(File::create(&path).unwrap());
+        let partial = WsTelemetryMessage {
+            readings: vec![
+                crate::adc::AdcReading {
+                    name: "5v_out".to_string(),
+                    power_enabled: Some(false),
+                    voltage_valid: Some(true),
+                    voltage_uv: Some(0),
+                    ..Default::default()
+                },
+                crate::adc::AdcReading {
+                    name: "12v_out".to_string(),
+                    ..Default::default()
+                },
+                crate::adc::AdcReading {
+                    name: "vdd_5v".to_string(),
+                    current_ua: Some(0),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        for message in [WsTelemetryMessage::default(), partial] {
+            write_telemetry_csv_row(&mut writer, &message, Duration::ZERO, 1).unwrap();
+        }
+        writer.flush().unwrap();
+        drop(writer);
+        let csv = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let rows: Vec<Vec<_>> = csv.lines().map(|line| line.split(',').collect()).collect();
+        assert!(rows.iter().all(|row| row.len() == 16));
+        assert!(rows[0][4..].iter().all(|cell| cell.is_empty()));
+        assert_eq!(&rows[1][4..7], &["false", "", "0"]);
+        assert!(rows[1][7..13].iter().all(|cell| cell.is_empty()));
+        assert_eq!(&rows[1][13..], &["", "0", ""]);
     }
 
     #[test]
@@ -535,7 +723,7 @@ mod tests {
             ..Default::default()
         };
 
-        write_telemetry_record(&mut writer, &message, Duration::from_millis(4), 789, 1000).unwrap();
+        write_telemetry_record(&mut writer, &message, Duration::from_millis(4), 789, 100).unwrap();
         writer.flush().unwrap();
         drop(writer);
 
