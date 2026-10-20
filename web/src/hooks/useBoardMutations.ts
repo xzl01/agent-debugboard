@@ -1,4 +1,7 @@
 import { useCallback } from "react";
+import type { Dispatch, SetStateAction } from "react";
+import type { BoardSnapshot } from "@/lib/types";
+import { parsePdStatus } from "@/lib/pd";
 import * as api from "@/lib/api";
 import {
   isCurrentAdcReading,
@@ -12,18 +15,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export interface UseBoardMutationsOptions {
   readonly live: boolean;
   readonly refresh: () => Promise<void>;
+  readonly setSnapshot: Dispatch<SetStateAction<BoardSnapshot>>;
 }
 
 export interface UseBoardMutations {
   readonly setPower: (name: string, on: boolean) => Promise<void>;
-  readonly readPower: (name: string) => Promise<{ state: string; currentUa: number }>;
+  readonly readPower: (name: string) => Promise<{ state: string; currentUa: number; voltageUv: number }>;
+  readonly setPd: (mode: 0 | 1, voltageMv: number) => Promise<void>;
   readonly setSwitch: (name: string, route: string) => Promise<void>;
   readonly setGpio: (identifier: string, direction: "input" | "output", value?: number) => Promise<void>;
   readonly enterBootloader: () => Promise<void>;
 }
 
 export function useBoardMutations(options: UseBoardMutationsOptions): UseBoardMutations {
-  const { live, refresh } = options;
+  const { live, refresh, setSnapshot } = options;
 
   const setPower = useCallback(
     async (name: string, on: boolean) => {
@@ -55,6 +60,7 @@ export function useBoardMutations(options: UseBoardMutationsOptions): UseBoardMu
     return {
       state: typeof output.state === "string" ? output.state : "",
       currentUa: Math.max(0, reading?.value ?? 0),
+      voltageUv: Math.max(0, reading?.voltage_uv ?? 0),
     };
   }, []);
 
@@ -64,6 +70,15 @@ export function useBoardMutations(options: UseBoardMutationsOptions): UseBoardMu
       if (!live) await refresh();
     },
     [live, refresh]
+  );
+
+  const setPd = useCallback(
+    async (mode: 0 | 1, voltageMv: number) => {
+      const response = await api.setPd(mode, voltageMv);
+      setSnapshot((prev) => ({ ...prev, pd: parsePdStatus(response, prev.pd) }));
+      if (!live) await refresh();
+    },
+    [live, refresh, setSnapshot]
   );
 
   const setGpio = useCallback(
@@ -78,5 +93,5 @@ export function useBoardMutations(options: UseBoardMutationsOptions): UseBoardMu
     await api.enterBootloader();
   }, []);
 
-  return { setPower, readPower, setSwitch, setGpio, enterBootloader };
+  return { setPower, readPower, setPd, setSwitch, setGpio, enterBootloader };
 }

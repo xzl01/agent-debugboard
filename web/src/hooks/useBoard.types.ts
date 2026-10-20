@@ -19,10 +19,14 @@ export interface UseBoard {
   setLive: (v: boolean) => void;
   refresh: () => Promise<void>;
   setPower: (name: string, on: boolean) => Promise<void>;
-  readPower: (name: string) => Promise<{ state: string; currentUa: number }>;
+  setPd: (mode: 0 | 1, voltageMv: number) => Promise<void>;
+  readPower: (name: string) => Promise<{ state: string; currentUa: number; voltageUv: number }>;
   setSwitch: (name: string, route: string) => Promise<void>;
   setGpio: (identifier: string, direction: "input" | "output", value?: number) => Promise<void>;
   enterBootloader: () => Promise<void>;
+  rebootBoard: () => Promise<void>;
+  restarting: boolean;
+  restartTimedOut: boolean;
   captureState: BoardCaptureState;
   captureProgress: BoardCaptureProgress | null;
   captures: PowerCapture[];

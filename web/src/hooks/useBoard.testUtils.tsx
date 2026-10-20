@@ -7,11 +7,14 @@ const hoistedApiMocks = vi.hoisted(() => ({
   createLiveSession: vi.fn<typeof import("@/lib/api").createLiveSession>(),
   deleteLiveSession: vi.fn<typeof import("@/lib/api").deleteLiveSession>(),
   enterBootloader: vi.fn<typeof import("@/lib/api").enterBootloader>(),
+  rebootBoard: vi.fn<typeof import("@/lib/api").rebootBoard>(),
   getAdc: vi.fn<typeof import("@/lib/api").getAdc>(),
+  getPd: vi.fn<typeof import("@/lib/api").getPd>(),
   getStatus: vi.fn<typeof import("@/lib/api").getStatus>(),
   liveWebSocketUrl: vi.fn<typeof import("@/lib/api").liveWebSocketUrl>(),
   setGpio: vi.fn<typeof import("@/lib/api").setGpio>(),
   setPower: vi.fn<typeof import("@/lib/api").setPower>(),
+  setPd: vi.fn<typeof import("@/lib/api").setPd>(),
   setSwitch: vi.fn<typeof import("@/lib/api").setSwitch>(),
 }));
 
@@ -137,7 +140,9 @@ export function setupUseBoardHarness(): void {
     connected: true,
   });
   apiMocks.deleteLiveSession.mockResolvedValue(undefined);
+  apiMocks.rebootBoard.mockResolvedValue(undefined);
   apiMocks.getAdc.mockResolvedValue({ readings: [] });
+  apiMocks.getPd.mockResolvedValue({ available: false, mode: 0, voltage_mv: 5000 });
   apiMocks.getStatus.mockResolvedValue({
     power_capture_protocol: "host-stream-v1",
     power_outputs: [],

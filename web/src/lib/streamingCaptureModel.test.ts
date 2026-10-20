@@ -39,11 +39,16 @@ function previewSample(offset: number, triggered: boolean): CaptureSample {
 test("streaming capture constants keep their protocol values", () => {
   // Given the extracted model module
   // Then every limit keeps the exact value the wire protocol and UI rely on
-  assert.equal(MAX_WEB_STREAMING_RATE_HZ, 500);
+  assert.equal(MAX_WEB_STREAMING_RATE_HZ, 250);
   assert.equal(POWER_ARCHIVE_CHUNK_SAMPLES, 200);
   assert.equal(POWER_PREVIEW_MAX_SAMPLES, 3000);
   assert.equal(POWER_ARCHIVE_MAX_QUEUED_CHUNKS, 8);
   assert.equal(POWER_CAPTURE_LEASE_RENEW_INTERVAL_MS, 10_000);
+});
+
+test("streaming sessions cannot be created above the ADC wire limit", () => {
+  assert.equal(createStreamingCaptureSession({ ...CONFIG, rateHz: 250 }, "owner").config.rateHz, 250);
+  assert.throws(() => createStreamingCaptureSession({ ...CONFIG, rateHz: 500 }, "owner"), /whole number from 1 to 250 Hz/);
 });
 
 test("createArchiveId returns distinct non-empty identifiers", () => {

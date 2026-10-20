@@ -11,7 +11,8 @@ type SensorValue = {
   readonly val2: number;
 };
 
-export const MEASUREMENT_HISTORY_LIMIT = 90;
+export const MEASUREMENT_PREVIEW_SAMPLES = 90;
+export const MEASUREMENT_HISTORY_LIMIT = 600;
 
 function isRecord(value: unknown): value is RecordValue {
   return typeof value === "object" && value !== null;
@@ -56,6 +57,8 @@ function parseHttpReading(value: unknown): AdcReading | null {
       signal: value.signal,
       value: value.current_ua,
       power_enabled: value.power_enabled,
+      ...(typeof value.voltage_valid === "boolean" ? { voltage_valid: value.voltage_valid } : {}),
+      ...(isSafeInteger(value.voltage_uv) ? { voltage_uv: value.voltage_uv } : {}),
       ...httpDiagnostics(value, "current"),
     };
   }
@@ -99,6 +102,8 @@ function parseCompactReading(value: unknown): AdcReading | null {
       signal: value.signal,
       value: value.value,
       power_enabled: value.power_enabled,
+      ...(typeof value.voltage_valid === "boolean" ? { voltage_valid: value.voltage_valid } : {}),
+      ...(isSafeInteger(value.voltage_uv) ? { voltage_uv: value.voltage_uv } : {}),
     };
   }
 
@@ -133,6 +138,8 @@ function parseCaptureCurrentReading(value: unknown): CaptureCurrentReading | nul
     value: value.current_ua,
     power_enabled: value.power_enabled,
     current_ua: value.current_ua,
+    ...(typeof value.voltage_valid === "boolean" ? { voltage_valid: value.voltage_valid } : {}),
+    ...(isSafeInteger(value.voltage_uv) ? { voltage_uv: value.voltage_uv } : {}),
     raw: null,
     mv: 0,
     sensor_channel: "current",

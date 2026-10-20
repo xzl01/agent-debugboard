@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   appendMeasurementHistory,
   MEASUREMENT_HISTORY_LIMIT,
+  MEASUREMENT_PREVIEW_SAMPLES,
   parseCaptureCurrentReadings,
   parseCompactAdcReadings,
   parseHttpAdcReadings,
@@ -137,14 +138,16 @@ test("keeps power-capture readings current-only", () => {
   ]);
 });
 
-test("retains exactly the latest 90 measurement samples", () => {
+test("retains a bounded 600-sample browser history independently from the 90-sample preview", () => {
   const history = Array.from({ length: MEASUREMENT_HISTORY_LIMIT + 1 }, (_, index) => index)
     .reduce<readonly number[]>(
       (previous, sample) => appendMeasurementHistory(previous, sample),
       [],
     );
 
-  assert.equal(history.length, 90);
+  assert.equal(MEASUREMENT_HISTORY_LIMIT, 600);
+  assert.equal(MEASUREMENT_PREVIEW_SAMPLES, 90);
+  assert.equal(history.length, MEASUREMENT_HISTORY_LIMIT);
   assert.equal(history[0], 1);
-  assert.equal(history.at(-1), 90);
+  assert.equal(history.at(-1), MEASUREMENT_HISTORY_LIMIT);
 });

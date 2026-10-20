@@ -32,6 +32,13 @@ const boardMocks = vi.hoisted(() => ({
   setSwitch: vi.fn((_name: string, _route: string) => Promise.resolve()),
   setPower: vi.fn((_name: string, _on: boolean) => Promise.resolve()),
   refresh: vi.fn(() => Promise.resolve()),
+  rebootBoard: vi.fn(() => Promise.resolve()),
+  rebootTransport: vi.fn(() => Promise.resolve()),
+  useRealReboot: false,
+  uptimeMs: null as number | null,
+  enterBootloader: vi.fn(() => Promise.resolve()),
+  restarting: false,
+  restartTimedOut: false,
   connected: true,
   lastVerifiedAt: null as number | null,
   config: null as null | {
@@ -64,9 +71,15 @@ const automationMocks = vi.hoisted(() => ({
   lastAcquire: null as boolean | null,
 }));
 
-vi.mock("@/hooks/useBoard", () => ({
-  useBoard: () => ({
+vi.mock("@/hooks/useBoard", async () => {
+  const { useBoardReboot } = await import("@/hooks/useBoardReboot");
+  return { useBoard: () => {
+    const reboot = useBoardReboot(boardMocks.connected, boardMocks.uptimeMs);
+    return {
     connected: boardMocks.connected,
+    restarting: boardMocks.useRealReboot ? reboot.restarting : boardMocks.restarting,
+    restartTimedOut: boardMocks.useRealReboot ? reboot.restartTimedOut : boardMocks.restartTimedOut,
+    rebootBoard: boardMocks.useRealReboot ? reboot.rebootBoard : boardMocks.rebootBoard,
     lastVerifiedAt: boardMocks.lastVerifiedAt,
     loading: false,
     hasData: true,
@@ -78,7 +91,7 @@ vi.mock("@/hooks/useBoard", () => ({
       powerOutputs: boardMocks.powerOutputs,
       adc: [],
       gpios: [{ name: "GP10", pin: 10, note: "", value: 1, direction: "output" }],
-      switches: { vin: { route: "3.3v" } },
+      switches: {},
     },
     captureState: "idle",
     captureProgress: null,
@@ -94,15 +107,16 @@ vi.mock("@/hooks/useBoard", () => ({
     clearCaptures: vi.fn(),
     setSwitch: boardMocks.setSwitch,
     setGpio: vi.fn(),
-    enterBootloader: vi.fn(),
-  }),
-}));
+    enterBootloader: boardMocks.enterBootloader,
+    };
+  } };
+});
 
 vi.mock("@/hooks/usePersistentConfig", () => ({
   usePersistentConfig: () => persistentMocks.state,
 }));
 
-vi.mock("@/lib/api", () => ({}));
+vi.mock("@/lib/api", () => ({ rebootBoard: boardMocks.rebootTransport }));
 vi.mock("@/lib/i18n", () => ({
   useI18n: () => ({
     t: (key: string) => key,
@@ -113,6 +127,7 @@ vi.mock("./StatusBar", () => ({ StatusBar: () => null }));
 vi.mock("./PowerCard", () => ({ PowerCard: () => null }));
 vi.mock("./SwitchCard", () => ({ SwitchCard: () => null }));
 vi.mock("./BootCard", () => ({ BootCard: () => null }));
+vi.mock("./NetworkCard", () => ({ NetworkCard: () => null }));
 vi.mock("./GpioCard", () => ({
   GpioCard: ({ workspaceTabs }: { readonly workspaceTabs?: ReactNode }) => (
     <div data-testid="gpio-card">{workspaceTabs}</div>
@@ -157,8 +172,6 @@ vi.mock("./OtaCard", () => ({ OtaCard: () => null }));
 vi.mock("./PersistentConfigCard", () => ({ PersistentConfigCard: () => null }));
 
 type SerialCardMockProps = {
-  readonly vinRoute?: string;
-  readonly onSetVin: (route: "1.8v" | "3.3v") => Promise<void>;
   readonly workspaceTabs?: ReactNode;
   readonly onConnectionChange?: (connections: { uart0: boolean; uart1: boolean }) => void;
 };
@@ -167,18 +180,15 @@ vi.mock("./SerialCard", async () => {
   const { forwardRef, useEffect } = await import("react");
   return {
     SerialCard: forwardRef<unknown, SerialCardMockProps>(function SerialCardMock(
-      { vinRoute, onSetVin, workspaceTabs, onConnectionChange },
+      { workspaceTabs, onConnectionChange },
       _ref
     ) {
       useEffect(() => {
         onConnectionChange?.({ uart0: true, uart1: false });
       }, [onConnectionChange]);
       return (
-        <div data-testid="serial-card" data-vin-route={vinRoute}>
+        <div data-testid="serial-card">
           {workspaceTabs}
-          <button type="button" data-testid="set-vin" onClick={() => void onSetVin("1.8v")}>
-            set-vin
-          </button>
         </div>
       );
     }),
@@ -207,6 +217,7 @@ vi.mock("./LogicAnalyzerCard", () => ({
 
 type AppView = {
   readonly host: HTMLDivElement;
+  readonly rerender: () => void;
   readonly close: () => void;
 };
 
@@ -219,6 +230,7 @@ function mountApp(): AppView {
   act(() => root.render(<App />));
   currentView = {
     host,
+    rerender: () => act(() => root.render(<App />)),
     close: () => act(() => {
       root.unmount();
       host.remove();
@@ -256,6 +268,13 @@ afterEach(() => {
   boardMocks.setPower.mockReset();
   boardMocks.setPower.mockImplementation((_name: string, _on: boolean) => Promise.resolve());
   boardMocks.refresh.mockClear();
+  boardMocks.rebootBoard.mockReset().mockResolvedValue(undefined);
+  boardMocks.rebootTransport.mockReset().mockResolvedValue(undefined);
+  boardMocks.useRealReboot = false;
+  boardMocks.uptimeMs = null;
+  boardMocks.enterBootloader.mockClear();
+  boardMocks.restarting = false;
+  boardMocks.restartTimedOut = false;
   boardMocks.connected = true;
   boardMocks.lastVerifiedAt = null;
   boardMocks.config = null;
@@ -273,6 +292,7 @@ afterEach(() => {
   vi.useRealTimers();
   localStorage.clear();
   scrollIntoViewMock.mockClear();
+  vi.restoreAllMocks();
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
     value: originalMatchMedia,
@@ -280,6 +300,83 @@ afterEach(() => {
 });
 
 describe("App workspace", () => {
+  it("releases the real reboot task after an uptime-confirmed restart with no offline transition", async () => {
+    boardMocks.useRealReboot = true;
+    boardMocks.uptimeMs = 100_000;
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const view = mountApp();
+    click(byId(view.host, "workspace-tab-configuration"));
+    click(byTestId(view.host, "configuration-section-tab-firmware"));
+    const restart = [...view.host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "reboot.action")!;
+    await act(async () => restart.click());
+    expect(boardMocks.rebootTransport).toHaveBeenCalledTimes(1);
+    expect(restart.disabled).toBe(true);
+    click(byTestId(view.host, "acquire-test-task"));
+    expect(automationMocks.lastAcquire).toBe(false);
+    boardMocks.uptimeMs = 500;
+    view.rerender();
+    expect(boardMocks.connected).toBe(true);
+    expect(restart.disabled).toBe(false);
+    expect(restart.textContent).toBe("reboot.action");
+    expect(view.host.textContent).not.toContain("reboot.reconnectTimeout");
+    click(byTestId(view.host, "acquire-test-task"));
+    expect(automationMocks.lastAcquire).toBe(true);
+  });
+
+  it("holds a distinct reboot task across maintenance navigation, hides expected outage errors and releases after reconnect", async () => {
+    boardMocks.rebootBoard.mockImplementation(async () => { boardMocks.restarting = true; });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const view = mountApp();
+    click(byId(view.host, "workspace-tab-configuration"));
+    click(byTestId(view.host, "configuration-section-tab-firmware"));
+    const restart = [...view.host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "reboot.action")!;
+    await act(async () => restart.click());
+    expect(confirm).toHaveBeenCalledWith("reboot.confirm");
+    expect(boardMocks.rebootBoard).toHaveBeenCalledTimes(1);
+    expect(boardMocks.enterBootloader).not.toHaveBeenCalled();
+    expect(boardMocks.refresh).not.toHaveBeenCalled();
+    click(byTestId(view.host, "configuration-section-tab-saved"));
+    click(byTestId(view.host, "acquire-test-task"));
+    expect(automationMocks.lastAcquire).toBe(false);
+    boardMocks.connected = false;
+    view.rerender();
+    expect(view.host.textContent).toContain("reboot.wait");
+    expect(view.host.textContent).not.toContain("banner.unreachable");
+    boardMocks.connected = true;
+    boardMocks.restarting = false;
+    view.rerender();
+    click(byTestId(view.host, "acquire-test-task"));
+    expect(automationMocks.lastAcquire).toBe(true);
+  });
+
+  it("blocks the restart entry while another global hardware task holds the debugger", () => {
+    const view = mountApp();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    click(byTestId(view.host, "acquire-test-task"));
+    click(byId(view.host, "workspace-tab-configuration"));
+    click(byTestId(view.host, "configuration-section-tab-firmware"));
+    const restart = [...view.host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "reboot.action")!;
+    expect(restart.disabled).toBe(true);
+    click(restart);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(boardMocks.rebootBoard).not.toHaveBeenCalled();
+  });
+
+  it("checks the actual task lock again after confirmation before sending a restart", async () => {
+    const view = mountApp();
+    click(byId(view.host, "workspace-tab-configuration"));
+    click(byTestId(view.host, "configuration-section-tab-firmware"));
+    vi.spyOn(window, "confirm").mockImplementation(() => {
+      byTestId<HTMLButtonElement>(view.host, "acquire-test-task").click();
+      return true;
+    });
+    const restart = [...view.host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "reboot.action")!;
+    await act(async () => restart.click());
+    expect(automationMocks.lastAcquire).toBe(true);
+    expect(boardMocks.rebootBoard).not.toHaveBeenCalled();
+    expect(view.host.querySelector('[role="alert"]')?.textContent).toContain("task.error.busy");
+  });
+
   it("renders the terminal as the initial workspace and keeps maintenance separate", () => {
     const { host } = mountApp();
 
@@ -297,7 +394,6 @@ describe("App workspace", () => {
     expect(configurationTab.getAttribute("aria-selected")).toBe("false");
     expect(terminalPanel.hidden).toBe(false);
     expect(logicPanel.hidden).toBe(true);
-    expect(byTestId(host, "serial-card").dataset.vinRoute).toBe("3.3v");
     expect(byTestId(host, "logic-analyzer").textContent).toBe("GP10");
   });
 
@@ -387,16 +483,6 @@ describe("App workspace", () => {
     const terminalTab = byId<HTMLButtonElement>(host, "workspace-tab-terminal");
     expect(document.activeElement).toBe(terminalTab);
     expect(terminalTab.getAttribute("aria-selected")).toBe("true");
-  });
-
-  it("keeps the serial VIN callback mapped to the board vin switch", () => {
-    const { host } = mountApp();
-    const setVin = byTestId(host, "set-vin");
-
-    click(setVin);
-
-    expect(boardMocks.setSwitch).toHaveBeenCalledOnce();
-    expect(boardMocks.setSwitch).toHaveBeenCalledWith("vin", "1.8v");
   });
 
   it("keeps automation full-width and opens device controls on demand", () => {

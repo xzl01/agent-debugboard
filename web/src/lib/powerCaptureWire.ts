@@ -1,5 +1,6 @@
 import { parseCaptureCurrentReadings } from "./adc.ts";
 import { POWER_CAPTURE_PROTOCOL } from "./powerCapture.ts";
+import { validateAdcTelemetryRate } from "./liveSubscribe.ts";
 import type {
   CaptureConfig,
   CaptureSample,
@@ -69,6 +70,7 @@ export function completeLegacyCapture(
 }
 
 export function powerCaptureArmMessage(config: CaptureConfig) {
+  validateAdcTelemetryRate(config.rateHz);
   return {
     type: "command",
     command: "capture_arm",

@@ -30,6 +30,17 @@ test("accepts task as an automation owner", () => {
   assert.equal(lock.owner(), null);
 });
 
+test("normal reboot and ROM boot owners are distinct and mutually exclusive", () => {
+  const lock = createAutomationTaskLock();
+  assert.equal(lock.acquire("reboot"), true);
+  assert.equal(lock.acquire("boot"), false);
+  lock.release("boot");
+  assert.equal(lock.owner(), "reboot");
+  lock.release("reboot");
+  assert.equal(lock.acquire("boot"), true);
+  assert.equal(lock.acquire("reboot"), false);
+});
+
 const mutuallyExclusiveOwners = ["startup", "test", "task"] as const;
 
 // Compile-time guard: if the removed "recovery" variant returns to the

@@ -86,11 +86,9 @@ export interface SerialAutomationHandle {
 export const SerialCard = forwardRef<
   SerialAutomationHandle,
   {
-    vinRoute?: string;
-    onSetVin: (route: "1.8v" | "3.3v") => Promise<void>;
     onConnectionChange?: (connections: SerialConnectionSummary) => void;
   }
->(function SerialCard({ vinRoute, onSetVin, onConnectionChange }, automationRef) {
+>(function SerialCard({ onConnectionChange }, automationRef) {
   const { t } = useI18n();
   const isSecureContext = typeof window !== "undefined" && window.isSecureContext;
   const hasWebSerialApi = typeof navigator !== "undefined" && "serial" in navigator;
@@ -98,7 +96,6 @@ export const SerialCard = forwardRef<
 
   const [activeChannel, setActiveChannel] = useState<SerialChannelId>("uart0");
   const [layout, setLayout] = useState<LayoutMode>("tabs");
-  const [changingVoltage, setChangingVoltage] = useState(false);
   const [sharedError, setSharedError] = useState<string | null>(null);
   const [showSetupModal, setShowSetupModal] = useState(false);
   const [showContextDrawer, setShowContextDrawer] = useState(false);
@@ -293,47 +290,6 @@ export const SerialCard = forwardRef<
     };
   }, [showSetupModal]);
 
-  async function changeVin(next: "1.8v" | "3.3v") {
-    if (next === vinRoute) return;
-    if (
-      CHANNELS.some(
-        (channel) =>
-          statuses[channel].automationActive ||
-          Boolean(channelHandle(channel)?.isAutomationActive())
-      )
-    ) {
-      setSharedError(t("serial.vioAutomationLocked"));
-      return;
-    }
-
-    const current =
-      vinRoute === "1.8v" || vinRoute === "3.3v" ? vinRoute : t("serial.vioUnknown");
-    const connected = CHANNELS.filter((channel) => statuses[channel].connected);
-    const confirmed = window.confirm(
-      t("serial.vioConfirm")
-        .replaceAll("{current}", current)
-        .replaceAll("{next}", next)
-        .replaceAll(
-          "{channels}",
-          connected.length > 0
-            ? connected.map((channel) => channel.toUpperCase()).join(" / ")
-            : t("serial.none")
-        )
-    );
-    if (!confirmed) return;
-
-    setChangingVoltage(true);
-    setSharedError(null);
-    try {
-      await Promise.all(CHANNELS.map((channel) => channelHandle(channel)?.disconnect()));
-      await onSetVin(next);
-    } catch (reason) {
-      setSharedError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setChangingVoltage(false);
-    }
-  }
-
   async function copyValue(value: string, target: CopyTarget) {
     if (typeof window === "undefined" || typeof document === "undefined") {
       setCopyState((prev) => ({ ...prev, [target]: "error" }));
@@ -525,28 +481,6 @@ export const SerialCard = forwardRef<
               <Archive size={15} aria-hidden="true" />
               {t("serial.connectedCount").replaceAll("{count}", String(connectedCount))}
             </Button>
-            <label
-              className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-warn/35 bg-warn/10 px-2.5 text-xs font-medium text-warn"
-              title={t("serial.vioWarning")}
-            >
-              <ShieldAlert size={15} aria-hidden="true" />
-              <span>VIO</span>
-              <select
-                aria-label={t("serial.vioLabel")}
-                value={vinRoute === "1.8v" || vinRoute === "3.3v" ? vinRoute : ""}
-                onChange={(event) =>
-                  void changeVin(event.target.value as "1.8v" | "3.3v")
-                }
-                disabled={!vinRoute || changingVoltage || anyAutomationActive}
-                className="rounded-md border border-warn/30 bg-panel px-2 py-1 text-xs font-semibold text-ink outline-none focus-visible:ring-2 focus-visible:ring-warn/40 disabled:opacity-50"
-              >
-                <option value="" disabled>
-                  —
-                </option>
-                <option value="3.3v">3.3V</option>
-                <option value="1.8v">1.8V</option>
-              </select>
-            </label>
           </div>
         </div>
 
@@ -719,28 +653,6 @@ export const SerialCard = forwardRef<
                       );
                     })}
                   </div>
-
-                  <section className="rounded-xl border border-warn/30 bg-warn/5 p-3">
-                    <div className="flex items-center gap-2 text-xs font-semibold text-ink">
-                      <ShieldAlert size={14} className="text-warn" />
-                      {t("serial.vioLabel")}
-                    </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                      {(["1.8v", "3.3v"] as const).map((route) => (
-                        <Button
-                          key={route}
-                          type="button"
-                          variant={vinRoute === route ? "primary" : "default"}
-                          className="min-h-9 rounded-lg px-3 py-1 text-xs"
-                          disabled={!vinRoute || changingVoltage || anyAutomationActive}
-                          onClick={() => void changeVin(route)}
-                        >
-                          {route.toUpperCase()}
-                        </Button>
-                      ))}
-                    </div>
-                    <p className="mt-2 text-[11px] leading-4 text-warn">{t("serial.vioWarning")}</p>
-                  </section>
                 </div>
               )}
             </div>

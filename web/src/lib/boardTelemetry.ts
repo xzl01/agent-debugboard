@@ -17,14 +17,29 @@ function compactBatchReadings(
   sample: Record<string, unknown>,
 ): readonly AdcReading[] {
   const values = Array.isArray(sample.values) ? sample.values : [];
+  const voltagesUv = Array.isArray(sample.voltages_uv) ? sample.voltages_uv : [];
+  const hasVoltageData = Array.isArray(sample.voltages_uv) || typeof sample.voltage_valid_mask === "number";
   const powerEnabledMask = Number(sample.power_enabled_mask ?? 0);
-  return parseCompactAdcReadings(channels.map((channel, index) => ({
-    ...channel,
-    value: values[index],
-    ...(channel.kind === "current"
-      ? { power_enabled: (powerEnabledMask & (1 << index)) !== 0 }
-      : {}),
-  })));
+  const voltageValidMask = Number(sample.voltage_valid_mask ?? 0);
+  let currentIndex = 0;
+  return parseCompactAdcReadings(channels.map((channel, index) => {
+    const current = channel.kind === "current" ? currentIndex++ : -1;
+    return {
+      ...channel,
+      value: values[index],
+      ...(current >= 0
+        ? {
+            power_enabled: (powerEnabledMask & (1 << current)) !== 0,
+            ...(hasVoltageData
+              ? {
+                  voltage_valid: (voltageValidMask & (1 << current)) !== 0,
+                  voltage_uv: voltagesUv[current],
+                }
+              : {}),
+          }
+        : {}),
+    };
+  }));
 }
 
 export function decodeTelemetryReadings(

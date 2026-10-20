@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   liveSubscribeMessage,
   TELEMETRY_STREAM_BATCH_SIZE,
+  validateAdcTelemetryRate,
 } from "@/lib/liveSubscribe";
 import {
   MAX_POWER_CAPTURE_PRE_TRIGGER_SAMPLES,
@@ -24,7 +25,6 @@ import {
 import {
   createArchiveId,
   createStreamingCaptureSession,
-  MAX_WEB_STREAMING_RATE_HZ,
   type StreamingCaptureSession,
 } from "@/lib/streamingCaptureModel";
 import type {
@@ -120,15 +120,16 @@ export function useBoardCapture(options: UseBoardCaptureOptions): UseBoardCaptur
   }, [discardStreamingCapture]);
 
   const armCapture = useCallback(async (config: CaptureConfig) => {
+    try {
+      validateAdcTelemetryRate(config.rateHz);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      throw reason;
+    }
     if (config.streaming) {
       if (powerCaptureProtocol !== POWER_CAPTURE_PROTOCOL) {
         const reported = powerCaptureProtocol ?? "not reported";
         const message = `Power capture requires firmware protocol ${POWER_CAPTURE_PROTOCOL}; the debugger reported ${reported}`;
-        setError(message);
-        throw new Error(message);
-      }
-      if (config.rateHz > MAX_WEB_STREAMING_RATE_HZ) {
-        const message = `Continuous Web recording is limited to ${MAX_WEB_STREAMING_RATE_HZ} Hz to keep USB telemetry and the control API responsive`;
         setError(message);
         throw new Error(message);
       }

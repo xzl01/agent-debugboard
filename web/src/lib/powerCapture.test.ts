@@ -130,7 +130,8 @@ test("builds exact long-running summaries without retaining every preview sample
 });
 
 test("bounds rich pre-trigger history independently from long recordings", () => {
-  assert.equal(powerCapturePreTriggerLimitSeconds(1000), 60);
+  assert.equal(powerCapturePreTriggerLimitSeconds(250), 240);
+  assert.equal(calculateCaptureWindow(500, 0, 1, 2048).rateHz, 250);
   assert.equal(
     powerCapturePreTriggerSamples(1000, 4 * 60 * 60),
     MAX_POWER_CAPTURE_PRE_TRIGGER_SAMPLES,

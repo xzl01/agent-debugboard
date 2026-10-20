@@ -293,6 +293,15 @@ export function cancelButton(view: HTMLElement, taskName: string): HTMLButtonEle
   return found;
 }
 
+export function deleteButton(view: HTMLElement, taskName: string): HTMLButtonElement {
+  const row = rowFor(view, taskName);
+  const found = [...row.querySelectorAll("button")].find(
+    (candidate) => candidate.textContent?.trim() === "Delete",
+  );
+  if (!found) throw new TypeError(`Delete button not found for ${taskName}`);
+  return found;
+}
+
 export function catalogRowIds(view: HTMLElement): (string | undefined)[] {
   return [...view.querySelectorAll<HTMLElement>("div.rounded-lg")].map(
     (row) => row.querySelector(".font-mono")?.textContent?.split(" ")[0],

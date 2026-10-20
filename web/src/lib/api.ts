@@ -40,7 +40,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-async function request<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+async function request<T = unknown>(path: string, init?: RequestInit, acknowledgeStatus?: number): Promise<T> {
   let res: Response;
   try {
     res = await fetch(BASE + path, {
@@ -56,6 +56,13 @@ async function request<T = unknown>(path: string, init?: RequestInit): Promise<T
       `${e instanceof Error ? e.message : "Network request failed"}. ` +
         "If this page is hosted on GitHub Pages, start Linkr Host with `npm run host`."
     );
+  }
+
+  // A lifecycle POST is accepted at its acknowledgement status. The board can
+  // drop the transport immediately afterwards; do not wait for its JSON body.
+  if (acknowledgeStatus !== undefined && res.status === acknowledgeStatus) {
+    void res.body?.cancel().catch(() => {});
+    return undefined as T;
   }
 
   const text = await res.text();
@@ -85,6 +92,9 @@ async function request<T = unknown>(path: string, init?: RequestInit): Promise<T
       data
     );
   }
+  if (acknowledgeStatus !== undefined && res.status !== acknowledgeStatus) {
+    throw new BoardApiError(`Device endpoint returned ${res.status}; expected ${acknowledgeStatus}.`, "invalid_response", data);
+  }
   return data as T;
 }
 
@@ -99,6 +109,12 @@ export const apiEndpoint = () => BASE;
 
 export const getStatus = () => request("/status");
 export const getAdc = () => request("/adc/read");
+export const getPd = () => request("/pd");
+export const setPd = (mode: 0 | 1, voltageMv: number) =>
+  request("/pd", {
+    method: "PUT",
+    body: JSON.stringify({ mode, voltage_mv: voltageMv }),
+  });
 
 function encodeDynamicPathSegment(name: string): string {
   if (name === "" || name === "." || name === "..") {
@@ -142,6 +158,11 @@ export const deleteLiveSession = (sessionId: number) =>
 export const enterBootloader = () =>
   request("/bootloader", { method: "POST" });
 
+// Normal cold restart is deliberately separate from ROM BOOTSEL entry.
+export const rebootBoard = async (signal?: AbortSignal): Promise<void> => {
+  await request<void>("/reboot", { method: "POST", signal }, 202);
+};
+
 export const getTasks = async (signal?: AbortSignal): Promise<TaskListData> =>
   parseTaskListResponse(await request<unknown>("/tasks", { signal }));
 
@@ -156,6 +177,9 @@ export const storeTaskBlob = (blob: string) =>
 
 export const clearTasks = () =>
   request<unknown>("/tasks", { method: "DELETE" });
+
+export const deleteTask = (id: string) =>
+  request<unknown>(`/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
 
 const BOARD_API_PREFIX = "/api/v1";
 
@@ -184,3 +208,40 @@ export const savePersistentConfig = async (items: readonly string[], confirm: bo
 export const clearPersistentConfig = async () => {
   parsePersistentConfigMutation(await configRequest("/config", "clear", { method: "DELETE" }), "clear");
 };
+
+export interface NetSettings {
+  readonly subnet: number;
+  readonly ip: string;
+  readonly reconnect_required?: boolean;
+  readonly message?: string;
+}
+
+function parseNetSettings(data: unknown): NetSettings {
+  const record = asRecord(data);
+  const subnet = record?.subnet;
+  const ip = record?.ip;
+  if (
+    typeof subnet !== "number" ||
+    !Number.isInteger(subnet) ||
+    subnet < 1 ||
+    subnet > 254 ||
+    typeof ip !== "string"
+  ) {
+    throw new BoardApiError("Device returned an invalid network settings response.", "invalid_response", data);
+  }
+  return {
+    subnet,
+    ip,
+    ...(typeof record?.reconnect_required === "boolean" ? { reconnect_required: record.reconnect_required } : {}),
+    ...(typeof record?.message === "string" && record.message.trim() ? { message: record.message.trim() } : {}),
+  };
+}
+
+export const getNetSettings = async (): Promise<NetSettings> =>
+  parseNetSettings(await request("/net"));
+
+export const setNetSubnet = async (subnet: number): Promise<NetSettings> =>
+  parseNetSettings(await request("/net", {
+    method: "PUT",
+    body: JSON.stringify({ subnet }),
+  }));

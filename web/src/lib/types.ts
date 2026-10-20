@@ -58,7 +58,41 @@ export type CurrentAdcReading = AdcReadingBase & {
   readonly kind: "current";
   readonly unit: "uA";
   readonly power_enabled: boolean;
+  readonly voltage_valid?: boolean;
+  readonly voltage_uv?: number;
 };
+
+export interface PdStatus {
+  available: boolean;
+  mode: 0 | 1;
+  voltage_mv: number;
+  gear: number;
+  pps_mv: number;
+  pd: boolean;
+  qc2: boolean;
+  qc3: boolean;
+  bc: boolean;
+  epr: boolean;
+  avs: boolean;
+  max_current_ma: number;
+  last_error: number;
+  protocol: string;
+  board_max_voltage_mv: number;
+  capabilities_valid: boolean;
+  fixed_profiles: readonly { voltage_mv: number; max_current_ma: number }[];
+  pps_ranges: readonly {
+    min_voltage_mv: number;
+    max_voltage_mv: number;
+    step_mv: number;
+    max_current_ma: number;
+  }[];
+  avs_ranges: readonly {
+    min_voltage_mv: number;
+    max_voltage_mv: number;
+    step_mv: number;
+    max_power_w: number;
+  }[];
+}
 
 export type VoltageAdcReading = AdcReadingBase & {
   readonly kind: "voltage";
@@ -210,6 +244,7 @@ export interface BoardSnapshot {
   watchdog: WatchdogStatus;
   monitoring: BoardMonitoring;
   adc: readonly AdcReading[];
+  pd?: PdStatus;
   config?: PersistentConfigSummary;
 }
 

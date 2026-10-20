@@ -54,6 +54,13 @@ test("powerCaptureArmMessage routes the source to gpio for a gpio trigger", () =
   assert.equal(message.gpio, "GP7");
 });
 
+test("capture arm messages enforce the 250 Hz ADC contract before serialization", () => {
+  assert.equal(powerCaptureArmMessage(config({ rateHz: 250 })).rate_hz, 250);
+  for (const rateHz of [251, 500, 1000, NaN]) {
+    assert.throws(() => powerCaptureArmMessage(config({ rateHz })), /whole number from 1 to 250 Hz/);
+  }
+});
+
 test("createLegacyCaptureBuilder maps every capture_begin field", () => {
   // Given a complete capture_begin frame
   // When the legacy builder is created
@@ -63,7 +70,7 @@ test("createLegacyCaptureBuilder maps every capture_begin field", () => {
     source: "12v_out",
     edge: "falling",
     threshold_ua: 900,
-    rate_hz: 1000,
+    rate_hz: 250,
     pre_samples: 5,
     post_samples: 6,
     trigger_offset: 5,
@@ -77,7 +84,7 @@ test("createLegacyCaptureBuilder maps every capture_begin field", () => {
     source: "12v_out",
     edge: "falling",
     thresholdUa: 900,
-    rateHz: 1000,
+    rateHz: 250,
     preSamples: 5,
     postSamples: 6,
     triggerOffset: 5,

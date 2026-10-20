@@ -50,6 +50,7 @@ import {
   type PowerCaptureExportProgress,
 } from "@/lib/powerCaptureExport";
 import { useI18n } from "@/lib/i18n";
+import { MAX_ADC_TELEMETRY_RATE_HZ } from "@/lib/liveSubscribe";
 import type { AutomationTaskControl } from "@/lib/automationTask";
 import { buildPowerChartAxis, PowerChartYAxis } from "./PowerChartAxis";
 
@@ -61,8 +62,7 @@ const COLORS = [
 ];
 const WIDTH = 720;
 const HEIGHT = 180;
-const SAMPLE_RATE_PRESETS = [10, 50, 100, 250, 500];
-const MAX_CONTINUOUS_SAMPLE_RATE_HZ = 500;
+const SAMPLE_RATE_PRESETS = [10, 50, 100, MAX_ADC_TELEMETRY_RATE_HZ];
 const DURATION_PRESETS_SECONDS = [10, 30, 300, 1800, 3600, 14400];
 const PRE_TRIGGER_PRESETS_SECONDS = [0, 1, 2, 5];
 const DEVICE_TELEMETRY_BUFFER_SAMPLES = 256;
@@ -578,10 +578,10 @@ export function PowerAnalyzer({
               <input
                 type="number"
                 min="1"
-                max={MAX_CONTINUOUS_SAMPLE_RATE_HZ}
+                max={MAX_ADC_TELEMETRY_RATE_HZ}
                 value={rateHz}
                 onChange={(event) => setRateHz(Math.min(
-                  MAX_CONTINUOUS_SAMPLE_RATE_HZ,
+                  MAX_ADC_TELEMETRY_RATE_HZ,
                   Number(event.target.value),
                 ))}
                 disabled={disabled}

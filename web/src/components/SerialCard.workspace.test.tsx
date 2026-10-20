@@ -54,13 +54,8 @@ vi.mock("@/lib/i18n", () => ({
       "serial.disconnect": "Disconnect",
       "serial.noConnection": "No connection yet.",
       "serial.connect": "Connect to the target UART.",
-      "serial.vioLabel": "UART VIO voltage",
-      "serial.vioWarning": "Changing VIO changes the target logic level.",
-      "serial.vioConfirm": "Switch {current} to {next}; disconnect {channels}?",
-      "serial.vioUnknown": "unknown",
-      "serial.vioAutomationLocked": "VIO is locked by local automation.",
       "serial.none": "none",
-      "serial.dualHint": "Both channels remain connected and share VIO.",
+      "serial.dualHint": "Both channels remain connected while switching tabs.",
       "serial.setupClose": "Close",
     }[key] ?? key),
   }),
@@ -105,7 +100,6 @@ type View = { host: HTMLDivElement; root: Root };
 let view: View | null = null;
 
 function mount(
-  onSetVin = vi.fn(async () => {}),
   onConnectionChange?: (connections: SerialConnectionSummary) => void,
 ): View {
   const host = document.createElement("div");
@@ -113,8 +107,6 @@ function mount(
   const root = createRoot(host);
   act(() => root.render(
     <SerialCard
-      vinRoute="3.3v"
-      onSetVin={onSetVin}
       onConnectionChange={onConnectionChange}
     />,
   ));
@@ -170,7 +162,7 @@ afterEach(() => {
 describe("SerialCard practical workspace", () => {
   it("reports the live channel summary to the workbench status bar", async () => {
     const onConnectionChange = vi.fn();
-    mount(vi.fn(async () => {}), onConnectionChange);
+    mount(onConnectionChange);
     await flush();
 
     expect(onConnectionChange).toHaveBeenLastCalledWith({
@@ -186,7 +178,7 @@ describe("SerialCard practical workspace", () => {
       source: "bridge",
     });
     const onConnectionChange = vi.fn();
-    mount(vi.fn(async () => {}), onConnectionChange);
+    mount(onConnectionChange);
     await flush();
 
     expect(onConnectionChange).toHaveBeenLastCalledWith({
@@ -216,68 +208,6 @@ describe("SerialCard practical workspace", () => {
     const archiveTab = [...host.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "Host UART archive");
     click(archiveTab ?? null);
     expect(host.querySelector('[data-testid="host-log-panel"]')).not.toBeNull();
-  });
-
-  it("blocks VIO at both entry points while either UART is owned by local automation", async () => {
-    serialMock.statuses.uart0.automationActive = true;
-    Object.assign(serialMock.statuses.uart1, {
-      connected: true,
-      source: "bridge",
-      portInfo: "CH347F · Host Broker",
-    });
-    const onSetVin = vi.fn(async () => {});
-    const { host } = mount(onSetVin);
-    await flush();
-
-    const topVio = host.querySelector('select[aria-label="UART VIO voltage"]');
-    expect(topVio).toBeInstanceOf(HTMLSelectElement);
-    expect((topVio as HTMLSelectElement).disabled).toBe(true);
-
-    click(host.querySelector('button[aria-label="Serial channels / Host UART archive"]'));
-    const uart0Disconnect = host.querySelector('[data-testid="serial-session-uart0"] button');
-    expect(uart0Disconnect).toBeInstanceOf(HTMLButtonElement);
-    expect((uart0Disconnect as HTMLButtonElement).disabled).toBe(true);
-    const drawerVio = [...host.querySelectorAll("button")].filter((button) =>
-      button.textContent === "1.8V" || button.textContent === "3.3V"
-    );
-    expect(drawerVio).toHaveLength(2);
-    expect(drawerVio.every((button) => button.disabled)).toBe(true);
-
-    if (!(topVio instanceof HTMLSelectElement)) throw new TypeError("VIO selector missing");
-    act(() => {
-      topVio.value = "1.8v";
-      topVio.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await flush();
-
-    expect(window.confirm).not.toHaveBeenCalled();
-    expect(serialMock.disconnect.uart0).not.toHaveBeenCalled();
-    expect(serialMock.disconnect.uart1).not.toHaveBeenCalled();
-    expect(onSetVin).not.toHaveBeenCalled();
-    expect(host.textContent).toContain("VIO is locked by local automation.");
-  });
-
-  it("disconnects both sessions before a confirmed VIO change", async () => {
-    Object.assign(serialMock.statuses.uart1, {
-      connected: true,
-      source: "bridge",
-      portInfo: "CH347F · Host Broker",
-    });
-    const onSetVin = vi.fn(async () => {});
-    const { host } = mount(onSetVin);
-    await flush();
-
-    const vio = host.querySelector('select[aria-label="UART VIO voltage"]');
-    if (!(vio instanceof HTMLSelectElement)) throw new TypeError("VIO selector missing");
-    act(() => {
-      vio.value = "1.8v";
-      vio.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await flush();
-
-    expect(serialMock.disconnect.uart0).toHaveBeenCalledOnce();
-    expect(serialMock.disconnect.uart1).toHaveBeenCalledOnce();
-    expect(onSetVin).toHaveBeenCalledWith("1.8v");
   });
 
   it("allows a browser subscriber to disconnect when only the remote broker write claim is active", async () => {

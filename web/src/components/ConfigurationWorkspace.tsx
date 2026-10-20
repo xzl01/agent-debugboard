@@ -6,6 +6,8 @@ import { useI18n } from "@/lib/i18n";
 import type { OtaStatus } from "@/lib/ota";
 import { Badge } from "./ui";
 import { BootCard } from "./BootCard";
+import { RebootCard } from "./RebootCard";
+import { NetworkCard } from "./NetworkCard";
 import { OtaCard } from "./OtaCard";
 import { PersistentConfigCard } from "./PersistentConfigCard";
 
@@ -15,6 +17,9 @@ export function ConfigurationWorkspace({
   connected,
   persistentConfig,
   onEnterBootloader,
+  onReboot,
+  restarting,
+  restartTimedOut,
   ota,
   setOta,
   disabled,
@@ -23,6 +28,9 @@ export function ConfigurationWorkspace({
   readonly connected: boolean;
   readonly persistentConfig: UsePersistentConfig;
   readonly onEnterBootloader: () => Promise<void>;
+  readonly onReboot: () => Promise<void>;
+  readonly restarting: boolean;
+  readonly restartTimedOut: boolean;
   readonly ota: OtaStatus | null;
   readonly setOta: Dispatch<SetStateAction<OtaStatus | null>>;
   readonly disabled: boolean;
@@ -114,6 +122,7 @@ export function ConfigurationWorkspace({
             </div>
           </dl>
           <PersistentConfigCard state={persistentConfig} connected={connected} taskControl={taskControl} />
+          <NetworkCard connected={connected} disabled={disabled} />
         </div>
       ) : (
         <div
@@ -129,11 +138,17 @@ export function ConfigurationWorkspace({
             disabled={disabled}
             taskControl={taskControl}
           />
-          <BootCard
-            onBoot={onEnterBootloader}
-            disabled={disabled}
-            taskControl={taskControl}
-          />
+          <div className="min-w-0 space-y-4">
+            <RebootCard
+              connected={connected}
+              onReboot={onReboot}
+              restarting={restarting}
+              restartTimedOut={restartTimedOut}
+              disabled={disabled}
+              taskControl={taskControl}
+            />
+            <BootCard onBoot={onEnterBootloader} disabled={disabled} taskControl={taskControl} />
+          </div>
         </div>
       )}
     </section>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, RefreshCw, Workflow } from "lucide-react";
-import { clearTasks, getTaskCatalog, getTasks, storeTaskBlob } from "@/lib/api";
+import { clearTasks, deleteTask, getTaskCatalog, getTasks, storeTaskBlob } from "@/lib/api";
 import type { AutomationTaskControl } from "@/lib/automationTask";
 import { mergeTaskCatalog, type BuiltInTask } from "@/lib/builtinTasks";
 import type { TaskRunSnapshot } from "@/lib/taskExecution";
@@ -121,6 +121,11 @@ export function TaskCard({
     }
   };
 
+  const handleDelete = (id: string) => {
+    if (!window.confirm(t("task.delete.confirm", { id }))) return;
+    void runBusy(() => deleteTask(id));
+  };
+
   return (
     <Card
       title={t("task.title")}
@@ -209,6 +214,16 @@ export function TaskCard({
                       onClick={() => void runTask(task.id, builtIns)}
                     >
                       {t("task.run")}
+                    </Button>
+                  )}
+                  {(task.source === "stored" || task.shadowedStored) && !running && (
+                    <Button
+                      variant="ghost"
+                      className="px-2 py-1 text-xs text-danger"
+                      disabled={busy || !connected}
+                      onClick={() => handleDelete(task.id)}
+                    >
+                      {t("task.delete")}
                     </Button>
                   )}
                 </div>

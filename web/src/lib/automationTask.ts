@@ -5,7 +5,8 @@ export type AutomationTaskOwner =
   | "power"
   | "persistent"
   | "ota"
-  | "boot";
+  | "boot"
+  | "reboot";
 
 export interface AutomationTaskControl {
   owner: AutomationTaskOwner | null;

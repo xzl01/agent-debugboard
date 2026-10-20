@@ -1,4 +1,5 @@
 import { nominalVoltage } from "./power.ts";
+import { MAX_ADC_TELEMETRY_RATE_HZ } from "./liveSubscribe.ts";
 import type {
   CaptureSample,
   PowerCapture,
@@ -55,7 +56,7 @@ function clampFinite(value: number, minimum: number, maximum: number): number {
 }
 
 export function powerCapturePreTriggerLimitSeconds(rateHz: number): number {
-  const normalizedRateHz = Math.round(clampFinite(rateHz, 1, 1000));
+  const normalizedRateHz = Math.round(clampFinite(rateHz, 1, MAX_ADC_TELEMETRY_RATE_HZ));
   return MAX_POWER_CAPTURE_PRE_TRIGGER_SAMPLES / normalizedRateHz;
 }
 
@@ -63,7 +64,7 @@ export function powerCapturePreTriggerSamples(
   rateHz: number,
   durationSeconds: number,
 ): number {
-  const normalizedRateHz = Math.round(clampFinite(rateHz, 1, 1000));
+  const normalizedRateHz = Math.round(clampFinite(rateHz, 1, MAX_ADC_TELEMETRY_RATE_HZ));
   return Math.min(
     MAX_POWER_CAPTURE_PRE_TRIGGER_SAMPLES,
     Math.max(0, Math.round(clampFinite(
@@ -168,7 +169,7 @@ export function calculateCaptureWindow(
   postSamples: number,
   capacity: number,
 ): CaptureWindowSummary {
-  const normalizedRateHz = Math.round(clampFinite(rateHz, 1, 1000));
+  const normalizedRateHz = Math.round(clampFinite(rateHz, 1, MAX_ADC_TELEMETRY_RATE_HZ));
   const normalizedPreSamples = Math.floor(clampFinite(preSamples, 0, Number.MAX_SAFE_INTEGER));
   const normalizedPostSamples = Math.floor(clampFinite(postSamples, 1, Number.MAX_SAFE_INTEGER));
   const totalSamples = normalizedPreSamples + normalizedPostSamples + 1;
@@ -192,7 +193,7 @@ export function calculateTimedCaptureWindow(
   recordDurationSeconds: number,
   capacity: number,
 ): CaptureWindowSummary {
-  const normalizedRateHz = Math.round(clampFinite(rateHz, 1, 1000));
+  const normalizedRateHz = Math.round(clampFinite(rateHz, 1, MAX_ADC_TELEMETRY_RATE_HZ));
   const preSamples = powerCapturePreTriggerSamples(normalizedRateHz, preDurationSeconds);
   const postSamples = Math.max(1, Math.round(
     clampFinite(recordDurationSeconds, 0, Number.MAX_SAFE_INTEGER) * normalizedRateHz,
@@ -205,7 +206,7 @@ export function calculateManualCaptureWindow(
   preDurationSeconds: number,
   capacity: number,
 ): CaptureWindowSummary {
-  const normalizedRateHz = Math.round(clampFinite(rateHz, 1, 1000));
+  const normalizedRateHz = Math.round(clampFinite(rateHz, 1, MAX_ADC_TELEMETRY_RATE_HZ));
   const preSamples = powerCapturePreTriggerSamples(normalizedRateHz, preDurationSeconds);
   const postSamples = Math.max(1, capacity - preSamples - 1);
   return calculateCaptureWindow(normalizedRateHz, preSamples, postSamples, capacity);

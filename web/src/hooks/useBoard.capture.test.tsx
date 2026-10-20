@@ -29,7 +29,7 @@ describe("useBoard hidden capture fidelity", () => {
       source: "5v_out",
       edge: "rising",
       thresholdUa: 0,
-      rateHz: 500,
+      rateHz: 250,
       preSamples: 0,
       postSamples: 0,
       streaming: true,
@@ -42,7 +42,7 @@ describe("useBoard hidden capture fidelity", () => {
     const armPromise: Promise<void> = armPromiseBox;
     await flushMicrotasks();
     expect(JSON.parse(socket.sent[1] ?? "")).toEqual(
-      liveSubscribeMessage(500, TELEMETRY_STREAM_BATCH_SIZE),
+      liveSubscribeMessage(250, TELEMETRY_STREAM_BATCH_SIZE),
     );
     act(() => {
       socket.emitMessage({ type: "result", command: "capture_arm", id: "web-capture" });

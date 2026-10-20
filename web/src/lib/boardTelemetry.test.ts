@@ -52,6 +52,29 @@ test("decodeTelemetryReadings previews only the latest batch sample", () => {
   ]);
 });
 
+test("decodeTelemetryReadings attaches rail voltage to current channels", () => {
+  const readings = decodeTelemetryReadings({
+    type: "telemetry-batch",
+    channels: [CURRENT_CHANNEL, CURRENT_CHANNEL_2, VOLTAGE_CHANNEL],
+    samples: [{
+      sample_sequence: 3,
+      values: [100, 200, 300],
+      power_enabled_mask: 0b11,
+      voltage_valid_mask: 0b01,
+      voltages_uv: [5_010_000, 12_020_000],
+    }],
+  });
+
+  assert.deepEqual(readings[0], {
+    kind: "current", unit: "uA", name: "5v_out", signal: "S_C_5V", value: 100,
+    power_enabled: true, voltage_valid: true, voltage_uv: 5_010_000,
+  });
+  assert.deepEqual(readings[1], {
+    kind: "current", unit: "uA", name: "12v_out", signal: "S_C_12V", value: 200,
+    power_enabled: true, voltage_valid: false, voltage_uv: 12_020_000,
+  });
+});
+
 test("decodeTelemetryReadings returns empty readings for unsupported frames", () => {
   // Given malformed or unknown messages
   // When preview readings are decoded

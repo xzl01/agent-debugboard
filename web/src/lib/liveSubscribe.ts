@@ -1,4 +1,5 @@
 export const TELEMETRY_STREAM_BATCH_SIZE = 20;
+export const MAX_ADC_TELEMETRY_RATE_HZ = 250;
 
 // The default live subscription requests a 60 Hz wire stream with one sample
 // per WebSocket frame. The UI republishes the newest readings once per
@@ -14,11 +15,18 @@ export interface LiveSubscribeMessage {
   id: "web";
 }
 
+export function validateAdcTelemetryRate(rateHz: number): void {
+  if (!Number.isInteger(rateHz) || rateHz < 1 || rateHz > MAX_ADC_TELEMETRY_RATE_HZ) {
+    throw new Error(`ADC telemetry rate must be a whole number from 1 to ${MAX_ADC_TELEMETRY_RATE_HZ} Hz`);
+  }
+}
+
 export function liveSubscribeMessage(rateHz: number, batchSize: number): LiveSubscribeMessage {
+  validateAdcTelemetryRate(rateHz);
   return {
     type: "subscribe",
     topic: "live",
-    rate_hz: Math.max(1, Math.min(1000, Math.round(rateHz))),
+    rate_hz: rateHz,
     batch_size: Math.max(1, Math.min(TELEMETRY_STREAM_BATCH_SIZE, Math.round(batchSize))),
     id: "web",
   };

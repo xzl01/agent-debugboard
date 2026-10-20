@@ -103,7 +103,7 @@ const incompleteCapture: PowerCapture = {
   source: "5v_out",
   edge: "rising",
   thresholdUa: 0,
-  rateHz: 500,
+  rateHz: 250,
   preSamples: 0,
   postSamples: 6000,
   triggerOffset: 0,

@@ -1,10 +1,14 @@
 import {
   forwardRef,
+  useEffect,
+  useId,
+  useRef,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type ReactNode,
 } from "react";
-import type { LucideIcon } from "lucide-react";
+import { createPortal } from "react-dom";
+import { X, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function Card({
@@ -174,19 +178,109 @@ export const Button = forwardRef<
   );
 });
 
+/** Mounted only while open. The portal also works above the hardware drawer. */
+export function Dialog({ title, description, closeLabel, onClose, children }: {
+  title: string;
+  description: string;
+  closeLabel: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const titleId = useId();
+  const descriptionId = useId();
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    const background = [...document.body.children].filter((item): item is HTMLElement =>
+      item instanceof HTMLElement && item !== overlayRef.current,
+    ).map((element) => ({ element, inert: element.inert, hidden: element.getAttribute("aria-hidden") }));
+    closeRef.current?.focus();
+    for (const { element } of background) {
+      element.inert = true;
+      element.setAttribute("aria-hidden", "true");
+    }
+    document.body.style.overflow = "hidden";
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation(); // Do not also dismiss the hardware drawer.
+        onClose();
+      } else if (event.key === "Tab") {
+        event.stopPropagation();
+        const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), [tabindex="0"]',
+        ) ?? [])];
+        const first = focusable[0];
+        const last = focusable.at(-1);
+        if (!dialogRef.current?.contains(document.activeElement) || (event.shiftKey && document.activeElement === first)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first)?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first?.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.body.style.overflow = previousOverflow;
+      for (const { element, inert, hidden } of background) {
+        element.inert = inert;
+        if (hidden === null) element.removeAttribute("aria-hidden");
+        else element.setAttribute("aria-hidden", hidden);
+      }
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+    };
+  }, [onClose]);
+
+  return createPortal(
+    <div ref={overlayRef} className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-3 backdrop-blur-sm sm:p-6">
+      <section
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-6xl min-w-0 flex-col overflow-hidden rounded-2xl border border-line bg-panel shadow-2xl sm:max-h-[calc(100dvh-3rem)]"
+      >
+        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-line/70 p-4 sm:px-6">
+          <div className="min-w-0">
+            <h2 id={titleId} className="text-base font-semibold text-ink">{title}</h2>
+            <p id={descriptionId} className="mt-1 text-xs leading-relaxed text-ink-dim">{description}</p>
+          </div>
+          <Button ref={closeRef} type="button" variant="ghost" aria-label={closeLabel} onClick={onClose} className="shrink-0 px-2.5">
+            <X size={18} aria-hidden="true" />
+          </Button>
+        </header>
+        <div className="min-h-0 overflow-y-auto p-3 sm:p-6">{children}</div>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 export function Toggle({
   checked,
   onChange,
   disabled,
+  "aria-label": ariaLabel,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   disabled?: boolean;
+  "aria-label"?: string;
 }) {
   return (
     <button
       type="button"
       role="switch"
+      aria-label={ariaLabel}
       aria-checked={checked}
       disabled={disabled}
       onClick={() => onChange(!checked)}

@@ -25,6 +25,8 @@ import type {
 
 import type { BoardCaptureMessageHandler } from "./useBoardCaptureMessages";
 
+const LIVE_STATUS_POLL_MS = 10_000;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -82,6 +84,27 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
       let cancelled = false;
       let sessionId: number | null = null;
       let sessionReleased = false;
+      let statusTimer: ReturnType<typeof setTimeout> | undefined;
+
+      // Firmware snapshots do not currently include PD. Read only the short
+      // /status endpoint, without ADC or capability scans, at a low cadence.
+      // Schedule after completion so slow reads cannot overlap one another.
+      const scheduleStatus = () => {
+        statusTimer = setTimeout(async () => {
+          if (cancelled) return;
+          if (!document.hidden && ws?.readyState === WebSocket.OPEN) {
+            try {
+              const status = await api.getStatus();
+              if (cancelled) return;
+              setSnapshot((prev) => mapBoardStatus(status, prev.adc, prev.pd));
+              setConnected(true);
+            } catch {
+              // The independent live stream still determines connectivity.
+            }
+          }
+          if (!cancelled) scheduleStatus();
+        }, LIVE_STATUS_POLL_MS);
+      };
 
       // The live preview republishes the newest ADC readings once per
       // animation frame. Capture ingestion below stays immediate and never
@@ -113,7 +136,7 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
           const status = await api.getStatus();
           const adcResponse: unknown = await api.getAdc();
           if (cancelled) return;
-          setSnapshot(mapBoardStatus(status, parseHttpAdcReadings(adcResponse)));
+          setSnapshot((prev) => mapBoardStatus(status, parseHttpAdcReadings(adcResponse), prev.pd));
           setHasData(true);
           setConnected(true);
           setError(null);
@@ -147,6 +170,7 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
         ws = new WebSocket(api.liveWebSocketUrl(session.ws_url));
         wsRef.current = ws;
         ws.onopen = () => {
+          scheduleStatus();
           const pending = pendingCaptureRef.current;
           ws?.send(JSON.stringify(
             pending?.streaming
@@ -190,6 +214,7 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
           }
         };
         ws.onclose = () => {
+          clearTimeout(statusTimer);
           previewScheduler.cancel();
           if (wsRef.current === ws) wsRef.current = null;
           void releaseSession();
@@ -203,6 +228,7 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
 
       return () => {
         cancelled = true;
+        clearTimeout(statusTimer);
         previewScheduler.cancel();
         if (typeof document !== "undefined") {
           document.removeEventListener("visibilitychange", cancelPreviewWhenHidden);

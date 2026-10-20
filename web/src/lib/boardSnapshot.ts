@@ -9,7 +9,9 @@ import type {
   PowerOutput,
   SafeGpio,
   WatchdogStatus,
+  PdStatus,
 } from "./types.ts";
+import { EMPTY_PD_STATUS, parsePdStatus } from "./pd.ts";
 
 export const EMPTY_BOARD_SNAPSHOT: BoardSnapshot = {
   powerOutputs: [],
@@ -31,6 +33,7 @@ export const EMPTY_BOARD_SNAPSHOT: BoardSnapshot = {
     cpu: { available: false },
   },
   adc: [],
+  pd: EMPTY_PD_STATUS,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -128,7 +131,7 @@ function parseWatchdog(
   };
 }
 
-export function mapBoardStatus(status: unknown, adc: readonly AdcReading[]): BoardSnapshot {
+export function mapBoardStatus(status: unknown, adc: readonly AdcReading[], pd: PdStatus = EMPTY_PD_STATUS): BoardSnapshot {
   const record = isRecord(status) ? status : {};
   const rawOutputs = Array.isArray(record.power_outputs)
     ? record.power_outputs.filter(isRecord)
@@ -171,6 +174,7 @@ export function mapBoardStatus(status: unknown, adc: readonly AdcReading[]): Boa
     watchdog: parseWatchdog(record.watchdog, EMPTY_BOARD_SNAPSHOT.watchdog),
     monitoring: parseMonitoring(record.board_monitoring, EMPTY_BOARD_SNAPSHOT.monitoring),
     adc,
+    pd: parsePdStatus(record.pd, pd),
     ...(config ? { config } : {}),
   };
 }
@@ -218,6 +222,7 @@ export function mergeBoardWsSnapshot(prev: BoardSnapshot, msg: unknown): BoardSn
     gpios,
     watchdog: parseWatchdog(record.watchdog, prev.watchdog),
     monitoring: parseMonitoring(record.board_monitoring, prev.monitoring),
+    pd: parsePdStatus(record.pd, prev.pd),
     ...(config ? { config } : {}),
   };
 }

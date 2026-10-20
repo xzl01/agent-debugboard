@@ -149,6 +149,23 @@ afterEach(() => {
 });
 
 describe("PowerAnalyzer task workflow", () => {
+  it("offers no rates above 250 Hz and cannot arm a 500 Hz input", async () => {
+    const onArm = vi.fn(() => Promise.resolve());
+    const { host } = mount("idle", [], { onArm });
+    const rateInput = host.querySelector<HTMLInputElement>('input[max="250"]');
+    expect(rateInput).not.toBeNull();
+    expect([...host.querySelectorAll("button")].map((item) => item.textContent)).not.toContain("500 Hz");
+    expect(button(host, "250 Hz")).toBeDefined();
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(rateInput, "500");
+      rateInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(rateInput!.value).toBe("250");
+    click(button(host, "analyzer.stage.continue"));
+    await act(async () => button(host, "analyzer.arm").click());
+    expect(onArm).toHaveBeenCalledWith(expect.objectContaining({ rateHz: 250 }));
+  });
+
   it("shows configuration first without adding a third navigation layer", () => {
     const { host } = mount();
 

@@ -89,6 +89,8 @@ const readings: AdcReading[] = [
     unit: "uA",
     value: 184_000,
     power_enabled: true,
+    voltage_valid: true,
+    voltage_uv: 5_000_000,
   },
   {
     name: "adc3",

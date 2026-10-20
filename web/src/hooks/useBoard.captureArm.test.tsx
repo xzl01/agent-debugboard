@@ -109,17 +109,20 @@ describe("useBoard capture arm and validation", () => {
 
   it("rejects streaming arms above the rate and pre-trigger limits", async () => {
     // Given a live session with the streaming protocol
-    const { view } = await renderLiveBoard();
+    const { view, socket } = await renderLiveBoard();
+    const sentBefore = socket.sent.length;
 
-    // When the rate exceeds the Web streaming limit
+    // The obsolete 500 Hz request must never reach the wire.
     let fastArm: Promise<void> | null = null;
     act(() => {
-      fastArm = view.current().armCapture(streamingCaptureConfig({ rateHz: 501 }));
+      fastArm = view.current().armCapture(streamingCaptureConfig({ rateHz: 500 }));
     });
     if (!fastArm) throw new Error("fast arm did not start");
     await expect(fastArm).rejects.toThrow(
-      "Continuous Web recording is limited to 500 Hz to keep USB telemetry and the control API responsive",
+      "ADC telemetry rate must be a whole number from 1 to 250 Hz",
     );
+    expect(socket.sent).toHaveLength(sentBefore);
+    expect(powerCaptureStoreMocks.ensurePowerCaptureStorageCapacity).not.toHaveBeenCalled();
 
     // When the pre-trigger history exceeds the browser memory limit
     let deepArm: Promise<void> | null = null;

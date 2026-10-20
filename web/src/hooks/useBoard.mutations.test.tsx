@@ -1,5 +1,6 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { EMPTY_PD_STATUS } from "@/lib/pd";
 import {
   apiMocks,
   flushMicrotasks,
@@ -99,6 +100,44 @@ describe("useBoard REST mutations", () => {
     view.close();
   });
 
+  it("parses the PD PUT response into the live snapshot without status, ADC or capability reads", async () => {
+    const initial = {
+      ...EMPTY_PD_STATUS, available: true, pd: true, protocol: "pd", capabilities_valid: true,
+      fixed_profiles: [{ voltage_mv: 5000, max_current_ma: 3000 }, { voltage_mv: 9000, max_current_ma: 2000 }],
+    };
+    apiMocks.getStatus.mockResolvedValue({ ...POWER_STATUS, pd: initial });
+    apiMocks.setPd.mockResolvedValue({
+      available: true, pd: true, mode: 1, voltage_mv: 9000, pps_mv: 9000,
+      max_current_ma: 2000, protocol: "pd",
+    });
+    const { view } = await renderLiveBoard();
+    const before = [apiMocks.getStatus.mock.calls.length, apiMocks.getAdc.mock.calls.length];
+    await act(async () => view.current().setPd(1, 9000));
+    expect(apiMocks.setPd).toHaveBeenCalledWith(1, 9000);
+    expect(view.current().snapshot.pd).toEqual({
+      ...initial, mode: 1, voltage_mv: 9000, pps_mv: 9000, max_current_ma: 2000,
+    });
+    expect([apiMocks.getStatus.mock.calls.length, apiMocks.getAdc.mock.calls.length]).toEqual(before);
+    expect(apiMocks.getPd).not.toHaveBeenCalled();
+    view.close();
+  });
+
+  it("clears cached PD capabilities when the PUT response explicitly invalidates them", async () => {
+    apiMocks.getStatus.mockResolvedValue({ ...POWER_STATUS, pd: {
+      ...EMPTY_PD_STATUS, available: true, pd: true, capabilities_valid: true,
+      fixed_profiles: [{ voltage_mv: 9000, max_current_ma: 3000 }],
+    } });
+    apiMocks.setPd.mockResolvedValue({ capabilities_valid: false, voltage_mv: 9000 });
+    apiMocks.getPd.mockRejectedValue(new Error("capability read temporarily unavailable"));
+    const { view } = await renderLiveBoard();
+    await act(async () => view.current().setPd(0, 9000));
+    await flushMicrotasks();
+    expect(view.current().snapshot.pd?.capabilities_valid).toBe(false);
+    expect(view.current().snapshot.pd?.fixed_profiles).toEqual([]);
+    expect(apiMocks.getPd).toHaveBeenCalledTimes(1);
+    view.close();
+  });
+
   it("reads status before ADC and returns the reported state and current", async () => {
     // Given a device reporting the rail on with a positive current reading
     apiMocks.getStatus.mockResolvedValue(POWER_STATUS);
@@ -119,7 +158,7 @@ describe("useBoard REST mutations", () => {
       throw new Error("readPower did not perform both reads");
     }
     expect(statusOrder).toBeLessThan(adcOrder);
-    expect(result).toEqual({ state: "on", currentUa: 1234 });
+    expect(result).toEqual({ state: "on", currentUa: 1234, voltageUv: 0 });
     view.close();
   });
 
@@ -151,7 +190,7 @@ describe("useBoard REST mutations", () => {
     });
 
     // Then the current is clamped to zero
-    expect(result).toEqual({ state: "on", currentUa: 0 });
+    expect(result).toEqual({ state: "on", currentUa: 0, voltageUv: 0 });
     view.close();
   });
 

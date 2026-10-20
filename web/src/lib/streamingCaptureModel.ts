@@ -5,13 +5,14 @@ import {
 } from "./powerCapture.ts";
 import { POWER_CAPTURE_LEASE_DURATION_MS } from "./powerCaptureStore.ts";
 import type { PowerCaptureStopHandshake } from "./powerCaptureStop.ts";
+import { MAX_ADC_TELEMETRY_RATE_HZ, validateAdcTelemetryRate } from "./liveSubscribe.ts";
 import type {
   CaptureConfig,
   CaptureSample,
   PowerCapture,
 } from "./types.ts";
 
-export const MAX_WEB_STREAMING_RATE_HZ = 500;
+export const MAX_WEB_STREAMING_RATE_HZ = MAX_ADC_TELEMETRY_RATE_HZ;
 export const POWER_ARCHIVE_CHUNK_SAMPLES = 200;
 export const POWER_PREVIEW_MAX_SAMPLES = 3000;
 export const POWER_ARCHIVE_MAX_QUEUED_CHUNKS = 8;
@@ -64,6 +65,7 @@ export function createStreamingCaptureSession(
   config: CaptureConfig,
   ownerId: string,
 ): StreamingCaptureSession {
+  validateAdcTelemetryRate(config.rateHz);
   return {
     config,
     archiveId: createArchiveId(),

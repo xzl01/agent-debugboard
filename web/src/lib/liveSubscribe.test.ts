@@ -19,19 +19,25 @@ test("default live telemetry subscription requests a 60 Hz wire stream with one 
   });
 });
 
-test("custom subscription clamps rate and batch size to the wire contract", () => {
-  assert.deepEqual(liveSubscribeMessage(0, 0), {
+test("custom subscription accepts the 250 Hz wire maximum and clamps batch size", () => {
+  assert.deepEqual(liveSubscribeMessage(1, 0), {
     type: "subscribe",
     topic: "live",
     rate_hz: 1,
     batch_size: 1,
     id: "web",
   });
-  assert.deepEqual(liveSubscribeMessage(5000, 500), {
+  assert.deepEqual(liveSubscribeMessage(250, 500), {
     type: "subscribe",
     topic: "live",
-    rate_hz: 1000,
+    rate_hz: 250,
     batch_size: TELEMETRY_STREAM_BATCH_SIZE,
     id: "web",
   });
+});
+
+test("invalid rates cannot produce subscription requests, including the obsolete 500 Hz rate", () => {
+  for (const rate of [0, -1, 1.5, 251, 500, 1000, NaN, Infinity]) {
+    assert.throws(() => liveSubscribeMessage(rate, 20), /whole number from 1 to 250 Hz/);
+  }
 });

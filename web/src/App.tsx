@@ -119,6 +119,19 @@ export default function App() {
     release: releaseAutomation,
   }), [acquireAutomation, automationOwner, releaseAutomation]);
 
+  const rebootDebugger = useCallback(async () => {
+    if (!acquireAutomation("reboot")) throw new Error(t("task.error.busy"));
+    try {
+      await board.rebootBoard();
+    } catch (error) {
+      releaseAutomation("reboot");
+      throw error;
+    }
+  }, [acquireAutomation, board.rebootBoard, releaseAutomation, t]);
+  useEffect(() => {
+    if (!board.restarting && automationOwner === "reboot") releaseAutomation("reboot");
+  }, [automationOwner, board.restarting, releaseAutomation]);
+
   const workspaceTabRefs = useRef<Record<WorkspaceTabId, HTMLButtonElement | null>>({
     terminal: null,
     powerAnalysis: null,
@@ -330,7 +343,9 @@ export default function App() {
         <PowerCard
           outputs={board.snapshot.powerOutputs}
           readings={board.snapshot.adc}
+          pd={board.snapshot.pd}
           onSet={board.setPower}
+          onSetPd={board.setPd}
           disabled={!board.connected || automationOwner != null}
           stale={!board.connected}
         />
@@ -404,7 +419,15 @@ export default function App() {
         </div>
       </nav>
 
-      {!board.connected && (
+      {board.restarting && (
+        <div role="status" className="mx-auto max-w-[1440px] px-6 pt-4">
+          <div className="flex items-center gap-3 rounded-xl border border-brand/25 bg-brand/10 px-4 py-3 text-brand">
+            <Loader2 size={20} className="animate-spin" aria-hidden="true" />
+            <div><p className="text-sm font-medium">{t("reboot.restarting")}</p><p className="mt-0.5 text-xs leading-5">{t("reboot.wait")}</p></div>
+          </div>
+        </div>
+      )}
+      {!board.connected && !board.restarting && (
         <div className="mx-auto max-w-[1440px] px-6 pt-4">
           <div className="flex items-center gap-3 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3">
             <ServerCrash size={20} className="text-danger" />
@@ -455,8 +478,6 @@ export default function App() {
                 >
                   <SerialCard
                     ref={serialAutomationRef}
-                    vinRoute={board.snapshot.switches.vin?.route}
-                    onSetVin={(route) => board.setSwitch("vin", route)}
                     onConnectionChange={setSerialConnections}
                   />
                 </div>
@@ -526,6 +547,9 @@ export default function App() {
                     connected={board.connected}
                     persistentConfig={persistentConfig}
                     onEnterBootloader={board.enterBootloader}
+                    onReboot={rebootDebugger}
+                    restarting={board.restarting}
+                    restartTimedOut={board.restartTimedOut}
                     ota={ota}
                     setOta={setOta}
                     disabled={!board.connected || automationOwner != null}

@@ -204,7 +204,7 @@ export function StepParams({
             <select className={inputCls} value={p.switch} onChange={(e) => onParamChange("switch", e.target.value)}>
               <option value="sd">{t("test.opt.sd")}</option>
               <option value="usb">{t("test.opt.usb")}</option>
-              <option value="vin">{t("test.opt.vin")}</option>
+              <option value="tf_wp">TF_WP</option>
             </select>
           </ParamRow>
           <ParamRow label={t("test.param.route")}>
