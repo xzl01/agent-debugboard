@@ -11,6 +11,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -56,6 +57,18 @@ int64_t json_obj_parse(char *payload, size_t len,
 	text[len] = '\0';
 
 	if (descr_len == 1U) {
+		if (descr[0].type == JSON_TOK_STRING_BUF) {
+			char route[16];
+
+			if ((sscanf(text, "{\"route\":\"%15[^\"]\"}%n", route,
+				    &consumed) != 1 || consumed != (int)len) &&
+			    (sscanf(text, "{\"state\":\"%15[^\"]\"}%n", route,
+				    &consumed) != 1 || consumed != (int)len)) {
+				return -EINVAL;
+			}
+			strcpy((char *)value + descr[0].offset, route);
+			return BIT64(0);
+		}
 		int subnet;
 
 		if (sscanf(text, "{\"subnet\":%d}%n", &subnet, &consumed) != 1 ||
@@ -216,8 +229,23 @@ static void reset_test(void)
 			.cdc_rx_dropped = 6U,
 			.cdc_tx_stale_dropped = 7U,
 			.completion_overflow = 2U,
+			.invalid_line_coding = 3U,
+			.config_mailbox_busy = 4U,
+		},
+		.config_counters = {
+			.cdc_requests = 5U,
+			.web_requests = 6U,
+			.invalid = 7U,
+			.conflicts = 8U,
+			.no_change = 9U,
+			.configure_count = 10U,
+			.apply_succeeded = 11U,
+			.apply_failed = 12U,
+			.rollback_succeeded = 13U,
+			.rollback_failed = 14U,
 		},
 		.generation = 9U,
+		.cdc_responder_generation = 15U,
 		.rx_head = 1234U,
 		.tx_bytes_committed = 456U,
 		.tx_accepted = 12U,
@@ -372,8 +400,8 @@ static void reset_test(void)
 		.reason = "ready",
 		.snapshot_present = true,
 		.snapshot_version = 1U,
-		.item_count = 16U,
-		.saved_count = 16U,
+		.item_count = 18U,
+		.saved_count = 18U,
 		.applied_count = 15U,
 		.pending_count = 2U,
 		.failed_count = 1U,
@@ -682,7 +710,7 @@ static void test_pd_invalid_prefix_cannot_be_replaced_by_valid_final_fragment(vo
 static void test_serial_status_config_and_methods(void)
 {
 	static const char config_json[] =
-		"{\"baud\":230400,\"data_bits\":8,\"parity\":\"even\","
+		"{\"baud\":57600,\"data_bits\":8,\"parity\":\"even\","
 		"\"stop_bits\":1,\"flow_control\":\"none\","
 		"\"expected_generation\":9}";
 	struct http_response_ctx response = { 0 };
@@ -698,6 +726,18 @@ static void test_serial_status_config_and_methods(void)
 	assert(strstr(body, "\"available\":true,\"state\":\"ready\"") != NULL);
 	assert(strstr(body, "\"baud\":115200,\"data_bits\":8") != NULL);
 	assert(strstr(body, "\"generation\":9") != NULL);
+	assert(strstr(body, "\"responder_generation\":15") != NULL);
+	assert(strstr(body,
+	      "\"terminal_responder\":{\"transport\":\"cdc\",\"slot\":0}") !=
+	       NULL);
+	assert(strstr(body,
+	      "\"config_counters\":{\"cdc_requests\":5,\"web_requests\":6,"
+	      "\"invalid\":7,\"conflicts\":8,\"no_change\":9,"
+	      "\"configure_count\":10,\"apply_succeeded\":11,"
+	      "\"apply_failed\":12,\"rollback_succeeded\":13,"
+	      "\"rollback_failed\":14}") != NULL);
+	assert(strstr(body, "\"invalid_line_coding\":3") != NULL);
+	assert(strstr(body, "\"config_mailbox_busy\":4") != NULL);
 	assert(strstr(body, "\"dtr\":true,\"rts\":false,\"usb_configured\":true") != NULL);
 	assert(strstr(body, "\"total\":4,\"cdc\":1,\"ws\":1,\"tcp\":2") != NULL);
 	assert(strstr(body, "\"bind\":\"0.0.0.0\",\"port\":5555,\"max_clients\":2") != NULL);
@@ -712,7 +752,7 @@ static void test_serial_status_config_and_methods(void)
 	client.method = HTTP_PUT;
 	strcpy(client.url_buffer, "/api/v1/serial/j4/config");
 	route(&client, HTTP_SERVER_REQUEST_DATA_MORE,
-	      "{\"baud\":230400,\"data_bits\":8,\"parity\":\"even\",",
+	      "{\"baud\":57600,\"data_bits\":8,\"parity\":\"even\",",
 	      &response);
 	assert(serial_config_calls == 0U);
 	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL,
@@ -720,7 +760,7 @@ static void test_serial_status_config_and_methods(void)
 	      "\"expected_generation\":9}", &response);
 	assert(response.status == HTTP_202_ACCEPTED);
 	assert(serial_config_calls == 1U);
-	assert(serial_config_request.baud == 230400U);
+	assert(serial_config_request.baud == 57600U);
 	assert(serial_config_request.parity == LINKR_DEBUGGER_SERIAL_PARITY_EVEN);
 	assert(serial_config_expected_generation == 9U);
 	assert(strstr((const char *)response.body,
@@ -746,7 +786,7 @@ static void test_serial_status_config_and_methods(void)
 	memset(&response, 0, sizeof(response));
 	serial_config_result = 0;
 	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL,
-	      "{\"baud\":230400,\"data_bits\":8,\"parity\":\"none\","
+	      "{\"baud\":57600,\"data_bits\":8,\"parity\":\"none\","
 	      "\"stop_bits\":1,\"flow_control\":\"rts_cts\","
 	      "\"expected_generation\":9}", &response);
 	assert(response.status == HTTP_400_BAD_REQUEST);
@@ -772,6 +812,56 @@ static void test_serial_status_reports_unavailable_without_secrets(void)
 		      "\"available\":false,\"state\":\"unavailable\"") != NULL);
 	assert(strstr((const char *)response.body, "password") == NULL);
 	assert(strstr((const char *)response.body, "token") == NULL);
+}
+
+static void test_serial_status_all_u64_max_fits_static_buffer(void)
+{
+	struct http_response_ctx response = { 0 };
+	struct http_client_ctx client = { .method = HTTP_GET };
+
+	reset_test();
+	memset(&serial_status.runtime_counters, 0xff,
+	       sizeof(serial_status.runtime_counters));
+	memset(&serial_status.config_counters, 0xff,
+	       sizeof(serial_status.config_counters));
+	serial_status.generation = UINT64_MAX;
+	serial_status.cdc_responder_generation = UINT64_MAX;
+	serial_status.rx_head = UINT64_MAX;
+	serial_status.tx_bytes_committed = UINT64_MAX;
+	serial_status.tx_accepted = UINT64_MAX;
+	serial_status.tx_completed = UINT64_MAX;
+	serial_status.tx_canceled = UINT64_MAX;
+	serial_status.last_config_request_id = UINT64_MAX;
+	serial_status.active_event_id = UINT64_MAX;
+	serial_status.last_config_result = INT_MAX;
+	serial_status.dtr = false;
+	memset(&serial_net_status.counters, 0xff,
+	       sizeof(serial_net_status.counters));
+	memset(serial_net_status.ws, 0xff, sizeof(serial_net_status.ws));
+	memset(serial_net_status.tcp, 0xff, sizeof(serial_net_status.tcp));
+	serial_net_status.terminal_responder =
+		(struct linkr_debugger_serial_terminal_responder){
+			.transport =
+				LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_WEBSOCKET,
+			.slot = 3,
+			.valid = true,
+		};
+
+	strcpy(client.url_buffer, "/api/v1/serial/j4");
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response);
+	assert(response.status == HTTP_200_OK);
+	assert(response.body == serial_http_json);
+	assert(response.body_len == strlen((const char *)response.body));
+	assert(response.body_len < sizeof(serial_http_json));
+	assert(strstr((const char *)response.body, "18446744073709551615") !=
+	       NULL);
+	assert(strstr((const char *)response.body,
+	      "\"terminal_responder\":{\"transport\":\"websocket\","
+	      "\"slot\":3}") != NULL);
+	fprintf(stderr, "Serial HTTP all-U64 fixture: %zu/%zu bytes "
+			"(%zu-byte margin)\n",
+		response.body_len, sizeof(serial_http_json),
+		sizeof(serial_http_json) - response.body_len);
 }
 
 static void test_serial_config_poison_survives_final_until_complete(void)
@@ -844,6 +934,32 @@ static void test_serial_config_rejects_wide_values_before_narrowing(void)
 		assert(serial_config_calls == 0U);
 		route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
 	}
+}
+
+static void test_serial_config_accepts_continuous_baud_range(void)
+{
+	struct http_response_ctx response = { 0 };
+	struct http_client_ctx client = { .method = HTTP_PUT };
+
+	reset_test();
+	serial_status.dtr = false;
+	strcpy(client.url_buffer, "/api/v1/serial/j4/config");
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL,
+	      "{\"baud\":5200,\"data_bits\":8,\"parity\":\"none\","
+	      "\"stop_bits\":1,\"flow_control\":\"none\","
+	      "\"expected_generation\":9}", &response);
+	assert(response.status == HTTP_202_ACCEPTED);
+	assert(serial_config_calls == 1U);
+	assert(serial_config_request.baud == 5200U);
+	assert(serial_config_expected_generation == 9U);
+
+	memset(&response, 0, sizeof(response));
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL,
+	      "{\"baud\":115201,\"data_bits\":8,\"parity\":\"none\","
+	      "\"stop_bits\":1,\"flow_control\":\"none\","
+	      "\"expected_generation\":9}", &response);
+	assert(response.status == HTTP_400_BAD_REQUEST);
+	assert(serial_config_calls == 1U);
 }
 
 static void test_gpio_layout_group_encoder_is_generic_and_bounded(void)
@@ -929,7 +1045,11 @@ static void test_gpio_layout_groups_are_top_level_http_contract(void)
 	assert(LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ - response.body_len >= 256U);
 	body = (const char *)response.body;
 	assert(count_substring(body, "\"gp\":") == HTTP_TEST_RAIL_COUNT);
+	assert(strstr(body,
+		      "\"name\":\"5v_usb_hub\",\"signal\":\"GPIO24_USB_CRL\","
+		      "\"gp\":24,\"controllable\":true") != NULL);
 	assert(count_substring(body, "\"adc_index\":") == HTTP_TEST_ADC_COUNT);
+	assert(strstr(strstr(body, "\"adc_channels\":["), "\"name\":\"5v_usb_hub\"") == NULL);
 	assert(count_substring(body, "\"note\":\"PD input divider; ADC pad voltage\"") == 1U);
 	assert(count_substring(body, "\"layoutGroup\":") == HTTP_TEST_MAPPED_GPIO_COUNT);
 	assert(count_substring(body, "\"direction\":") == HTTP_TEST_SAFE_GPIO_COUNT);
@@ -940,10 +1060,21 @@ static void test_gpio_layout_groups_are_top_level_http_contract(void)
 		      "\"note\":\"CON_USER\",\"layoutGroup\":\"J13\","
 		      "\"layoutLabel\":\"GP9 / USER\",\"layoutRow\":0,"
 		      "\"layoutColumn\":0") != NULL);
+	assert(strstr(body,
+		      "\"name\":\"GP5\",\"pin\":5,\"note\":\"J8_PIN16\","
+		      "\"layoutGroup\":\"J8\",\"layoutLabel\":\"GP5\","
+		      "\"layoutRow\":4,\"layoutColumn\":1") != NULL);
+	assert(strstr(body,
+		      "\"name\":\"GP6\",\"pin\":6,\"note\":\"J8_PIN15\","
+		      "\"layoutGroup\":\"J8\",\"layoutLabel\":\"GP6\","
+		      "\"layoutRow\":5,\"layoutColumn\":1") != NULL);
 	assert(strstr(body, "\"name\":\"GP17\"") == NULL);
 	assert(strstr(body, "\"name\":\"GP18\"") == NULL);
 	assert(strstr(body, "\"fixed_profiles\":[") != NULL);
 	assert(strstr(body, "\"avs_ranges\":[") != NULL);
+	assert(strstr(body, "\"switches\":{\"sd\":") != NULL);
+	assert(strstr(body, "\"tf_wp\":{\"route\":") != NULL);
+	assert(strstr(body, "\"usb\":{\"route\":") == NULL);
 	assert(strstr(body, "\"board_monitoring\":{\"temperature\":{\"available\":true") != NULL);
 	assert(strstr(body, "\"config\":{\"available\":true,\"reason\":\"ready\"") != NULL);
 	{
@@ -984,9 +1115,27 @@ static void test_gpio_layout_groups_are_top_level_http_contract(void)
 	assert(strstr(body, "\"action\":\"list\"") != NULL);
 	assert(count_substring(body, "\"layoutGroup\":") == HTTP_TEST_MAPPED_GPIO_COUNT);
 	assert(count_substring(body, "\"direction\":") == HTTP_TEST_SAFE_GPIO_COUNT);
+	assert(strstr(body,
+		      "\"reserved\":\"GP00-GP04 GP10-GP11 GP19 GP22-GP25 GP26-GP28\"") != NULL);
 	match = strstr(body, expected_groups);
 	assert(match != NULL);
 	assert(strstr(match + 1, "\"gpio_layout_groups\"") == NULL);
+
+	memset(&response, 0, sizeof(response));
+	strcpy(client.url_buffer, "/api/v1/gpio/J8_PIN16");
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response);
+	assert(response.status == HTTP_200_OK);
+	body = (const char *)response.body;
+	assert(strstr(body, "\"name\":\"GP5\"") != NULL);
+	assert(strstr(body, "\"note\":\"J8_PIN16\"") != NULL);
+
+	memset(&response, 0, sizeof(response));
+	strcpy(client.url_buffer, "/api/v1/gpio/J8_PIN15");
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response);
+	assert(response.status == HTTP_200_OK);
+	body = (const char *)response.body;
+	assert(strstr(body, "\"name\":\"GP6\"") != NULL);
+	assert(strstr(body, "\"note\":\"J8_PIN15\"") != NULL);
 
 	memset(&response, 0, sizeof(response));
 	strcpy(client.url_buffer, "/api/v1/gpio/GP17");
@@ -1000,6 +1149,66 @@ static void test_gpio_layout_groups_are_top_level_http_contract(void)
 	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response);
 	assert(response.status == HTTP_403_FORBIDDEN);
 	assert(strstr((const char *)response.body, "\"code\":\"not_allowed\"") != NULL);
+}
+
+static void test_removed_usb_switch_is_unadvertised_and_not_found(void)
+{
+	struct http_response_ctx response = {0};
+	struct http_client_ctx client = { .method = HTTP_GET };
+	struct http_request_ctx request = {0};
+	const char *body;
+
+	reset_test();
+	strcpy(client.url_buffer, "/api/v1/switch");
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response);
+	assert(response.status == HTTP_200_OK);
+	body = (const char *)response.body;
+	assert(strstr(body, "\"sd\":") != NULL);
+	assert(strstr(body, "\"tf_wp\":") != NULL);
+	assert(strstr(body, "\"usb\":") == NULL);
+
+	memset(&response, 0, sizeof(response));
+	strcpy(client.url_buffer, "/api/v1/switch/usb");
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response);
+	assert(response.status == HTTP_404_NOT_FOUND);
+	assert(strstr((const char *)response.body, "\"code\":\"not_found\"") != NULL);
+
+	memset(&response, 0, sizeof(response));
+	client.method = HTTP_PUT;
+	request.data = "{\"route\":\"target\"}";
+	request.data_len = strlen(request.data);
+	assert(linkr_debugger_http_route_request(
+		       &client, HTTP_SERVER_REQUEST_DATA_FINAL, &request,
+		       &response, NULL) == 0);
+	assert(response.status == HTTP_404_NOT_FOUND);
+	assert(strstr((const char *)response.body, "\"code\":\"not_found\"") != NULL);
+}
+
+static void test_usb_hub_power_endpoint_get_and_put(void)
+{
+	struct http_response_ctx response = {0};
+	struct http_client_ctx client = { .method = HTTP_GET };
+	struct http_request_ctx request = {
+		.data = "{\"state\":\"on\"}",
+		.data_len = strlen("{\"state\":\"on\"}"),
+	};
+
+	reset_test();
+	strcpy(client.url_buffer, "/api/v1/power/5v_usb_hub");
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response);
+	assert(response.status == HTTP_200_OK);
+	assert(strstr((const char *)response.body,
+		      "\"name\":\"5v_usb_hub\"") != NULL);
+	assert(strstr((const char *)response.body,
+		      "\"signal\":\"GPIO24_USB_CRL\"") != NULL);
+
+	memset(&response, 0, sizeof(response));
+	client.method = HTTP_PUT;
+	assert(linkr_debugger_http_route_request(
+		       &client, HTTP_SERVER_REQUEST_DATA_FINAL, &request,
+		       &response, NULL) == 0);
+	assert(response.status == HTTP_200_OK);
+	assert(strstr((const char *)response.body, "\"state\":\"on\"") != NULL);
 }
 
 static void test_gpio_layout_catalog_encoder_is_exact_bounded_and_utf8_safe(void)
@@ -1091,6 +1300,16 @@ static void test_gpio_layout_endpoint_is_static_complete_and_get_only(void)
 		      "\"label\":\"GP29 / ADC3\",\"signal\":\"GPIO29_ADC3\","
 		      "\"role\":\"adc\",\"controllable\":true,"
 		      "\"outputCapable\":false,\"gpioName\":\"GP29\"}") != NULL);
+	assert(strstr(body,
+		      "{\"pinNumber\":16,\"row\":4,\"column\":1,"
+		      "\"label\":\"GP5\",\"signal\":\"GPIO5_CON\","
+		      "\"role\":\"gpio\",\"controllable\":true,"
+		      "\"outputCapable\":true,\"gpioName\":\"GP5\"}") != NULL);
+	assert(strstr(body,
+		      "{\"pinNumber\":15,\"row\":5,\"column\":1,"
+		      "\"label\":\"GP6\",\"signal\":\"GPIO6_CON\","
+		      "\"role\":\"gpio\",\"controllable\":true,"
+		      "\"outputCapable\":true,\"gpioName\":\"GP6\"}") != NULL);
 	assert(strstr(body, "\"direction\":") == NULL);
 	assert(strstr(body, "\"value\":") == NULL);
 	memset(&response, 0, sizeof(response));
@@ -1222,12 +1441,16 @@ int main(void)
 	test_pd_invalid_prefix_cannot_be_replaced_by_valid_final_fragment();
 	test_serial_status_config_and_methods();
 	test_serial_status_reports_unavailable_without_secrets();
+	test_serial_status_all_u64_max_fits_static_buffer();
 	test_serial_config_poison_survives_final_until_complete();
 	test_serial_config_rejects_wide_values_before_narrowing();
+	test_serial_config_accepts_continuous_baud_range();
 	test_gpio_layout_group_encoder_is_generic_and_bounded();
 	test_gpio_layout_catalog_encoder_is_exact_bounded_and_utf8_safe();
 	test_gpio_layout_endpoint_is_static_complete_and_get_only();
 	test_gpio_layout_groups_are_top_level_http_contract();
+	test_removed_usb_switch_is_unadvertised_and_not_found();
+	test_usb_hub_power_endpoint_get_and_put();
 	test_adc_read_route_emits_eight_readings_and_adc0_note();
 	test_status_budget_rejects_inflated_group_metadata();
 	test_status_budget_rejects_inflated_adc_note_metadata();

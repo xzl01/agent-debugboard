@@ -20,7 +20,7 @@
 #define SHELL_OUTPUT_LINE_CAP 160U
 #define SAVED_ID_CAP 64U
 
-_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 16U,
+_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 18U,
 	       "config shell selection limit changed");
 
 enum fake_shell_line_kind {
@@ -67,10 +67,10 @@ static const struct linkr_debugger_config_item_desc item_switch_sd = {
 	.item_id = LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID,
 	.id = "switch/sd",
 };
-static const struct linkr_debugger_config_item_desc item_switch_usb = {
-	.domain = LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-	.item_id = LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
-	.id = "switch/usb",
+static const struct linkr_debugger_config_item_desc item_gpio_5 = {
+	.domain = LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO,
+	.item_id = 5U,
+	.id = "gpio/GP5",
 };
 static const struct linkr_debugger_config_item_desc item_gpio_7 = {
 	.domain = LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO,
@@ -340,7 +340,7 @@ static void test_save_accepts_confirmation_after_maximum_selection(void)
 
 	/* Then */
 	assert(result == 0);
-	assert_print_line("config save saved_count=16 pending_count=0");
+	assert_print_line("config save saved_count=18 pending_count=0");
 	assert(service.saved_item_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
 	assert(service.last_save_confirmed);
 	assert(strcmp(service.saved_ids[0], "power/12v_out") == 0);
@@ -398,7 +398,7 @@ static void test_save_rejects_too_many_ids_before_service_io(void)
 
 	/* Then */
 	assert(result == -E2BIG);
-	assert_error_line("config save error=too_many_items max=16");
+	assert_error_line("config save error=too_many_items max=18");
 	assert_no_service_calls();
 }
 
@@ -449,7 +449,7 @@ static void test_save_maps_non_failure_service_results(void)
 		if (cases[index].result ==
 		    LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED) {
 			service.save_report.confirmation_count = 1U;
-			service.save_report.confirmation_items[0] = &item_switch_usb;
+			service.save_report.confirmation_items[0] = &item_gpio_5;
 		}
 
 		/* When */
@@ -462,7 +462,7 @@ static void test_save_maps_non_failure_service_results(void)
 		    LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED) {
 			const char *const expected_lines[] = {
 				"config save error=confirmation_required",
-				"config save confirmation_id=switch/usb",
+				"config save confirmation_id=gpio/GP5",
 			};
 
 			assert_shell_output(FAKE_SHELL_LINE_ERROR, expected_lines,
@@ -478,23 +478,23 @@ static void test_save_reports_partial_failure_in_report_order(void)
 {
 	char *argv[] = {"save", "--confirm", "power/12v_out"};
 	const char *const expected_lines[] = {
-		"config save error=apply_failed failed_id=switch/usb failed_errno=-17",
+		"config save error=apply_failed failed_id=gpio/GP5 failed_errno=-17",
 		"config save applied_id=power/12v_out",
 		"config save applied_id=switch/sd",
-		"config save pending_id=switch/usb",
+		"config save pending_id=gpio/GP5",
 		"config save pending_id=gpio/GP7",
 	};
 
 	/* Given */
 	reset_fixture();
 	service.save_result = LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED;
-	service.save_report.failed_item = &item_switch_usb;
+	service.save_report.failed_item = &item_gpio_5;
 	service.save_report.failed_errno = -17;
 	service.save_report.applied_count = 2U;
 	service.save_report.applied_items[0] = &item_power_12v;
 	service.save_report.applied_items[1] = &item_switch_sd;
 	service.save_report.pending_count = 2U;
-	service.save_report.pending_items[0] = &item_switch_usb;
+	service.save_report.pending_items[0] = &item_gpio_5;
 	service.save_report.pending_items[1] = &item_gpio_7;
 
 	/* When */

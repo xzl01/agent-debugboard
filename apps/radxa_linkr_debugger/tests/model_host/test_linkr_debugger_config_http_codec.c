@@ -25,7 +25,7 @@ _Static_assert(ARRAY_SIZE_LOCAL(
 	       ((struct linkr_debugger_config_http_save_payload *)0)->request.item_ids) ==
 	       LINKR_DEBUGGER_CONFIG_MAX_ENTRIES,
 	       "config HTTP parser item bound changed");
-_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 16U,
+_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 18U,
 	       "config HTTP catalog bound changed");
 _Static_assert(RESPONSE_STORAGE_SIZE == 4161U,
 	       "config HTTP response storage changed");
@@ -201,8 +201,6 @@ static uint8_t longest_valid_value(const struct linkr_debugger_config_item_desc 
 	switch (item->item_id) {
 	case LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID:
 		return LINKR_DEBUGGER_CONFIG_SD_USB_READER;
-	case LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID:
-		return LINKR_DEBUGGER_CONFIG_USB_TARGET;
 	case LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID:
 		return LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED;
 	default:
@@ -353,15 +351,6 @@ static void test_typed_values(void)
 			   LINKR_DEBUGGER_CONFIG_SD_USB_READER,
 			   "\"current\":{\"route\":\"usb-reader\"}");
 	assert_typed_value(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-			   LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
-			   LINKR_DEBUGGER_CONFIG_USB_PC,
-			   "\"current\":{\"route\":\"pc\"}");
-	assert_typed_value(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-			   LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
-			   LINKR_DEBUGGER_CONFIG_USB_TARGET,
-			   "\"id\":\"switch/usb\",\"kind\":\"switch\"," \
-			   "\"current\":{\"route\":\"target\"}");
-	assert_typed_value(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 			   LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
 			   LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE,
 			   "\"current\":{\"route\":\"writable\"}");
@@ -495,7 +484,7 @@ static void test_complete_catalog_and_capacity(void)
 	assert_contains(full, "\"schema\":\"radxa-linkr-debugger.v1\"");
 	assert_contains(full, "\"backend\":{\"available\":true,\"reason\":\"ready\"}");
 	assert_contains(full, "\"snapshot\":{\"present\":true,\"version\":1}");
-	assert_contains(full, "\"pending\":16");
+	assert_contains(full, "\"pending\":18");
 
 	cursor = full;
 	for (size_t i = 0U; i < linkr_debugger_config_item_count; i++) {
@@ -736,13 +725,12 @@ static void test_operation_encoders_and_error_details(void)
 		linkr_debugger_config_find_item(
 			LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 			LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID);
-	const struct linkr_debugger_config_item_desc *usb =
+	const struct linkr_debugger_config_item_desc *gpio =
 		linkr_debugger_config_find_item(
-			LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-			LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID);
+			LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 5U);
 	struct linkr_debugger_config_save_request request = {
 		.item_count = 2U,
-		.item_ids = { "switch/usb", "power/12v_out" },
+		.item_ids = { "gpio/GP5", "power/12v_out" },
 		.confirmed = true,
 	};
 	struct linkr_debugger_config_operation_report report = {0};
@@ -750,17 +738,17 @@ static void test_operation_encoders_and_error_details(void)
 	char buffer[RESPONSE_STORAGE_SIZE];
 	size_t encoded_size;
 
-	assert(power != NULL && usb != NULL);
+	assert(power != NULL && gpio != NULL);
 	report.snapshot_version = LINKR_DEBUGGER_CONFIG_VERSION;
 	report.confirmation_count = 1U;
-	report.confirmation_items[0] = usb;
+	report.confirmation_items[0] = gpio;
 	assert(linkr_debugger_config_http_encode_save(
 		       &request, &report, buffer, sizeof(buffer), &encoded_size) ==
 	       LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_OK);
 	assert_contains(buffer, "\"action\":\"save\"");
 	assert_contains(buffer,
-		"\"saved_items\":[\"switch/usb\",\"power/12v_out\"]");
-	assert_contains(buffer, "\"confirmation_items\":[\"switch/usb\"]");
+		"\"saved_items\":[\"gpio/GP5\",\"power/12v_out\"]");
+	assert_contains(buffer, "\"confirmation_items\":[\"gpio/GP5\"]");
 	assert_contains(buffer, "\"applied_items\":[]");
 	assert_contains(buffer, "\"snapshot\":{\"present\":true,\"version\":1}");
 
@@ -777,7 +765,7 @@ static void test_operation_encoders_and_error_details(void)
 
 	memset(&report, 0, sizeof(report));
 	report.confirmation_count = 1U;
-	report.confirmation_items[0] = usb;
+	report.confirmation_items[0] = gpio;
 	assert(linkr_debugger_config_http_map_service_result(
 		       LINKR_DEBUGGER_CONFIG_HTTP_ACTION_SAVE,
 		       LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED, &error));
@@ -786,7 +774,7 @@ static void test_operation_encoders_and_error_details(void)
 		       buffer, sizeof(buffer), &encoded_size) ==
 	       LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_OK);
 	assert_contains(buffer, "\"code\":\"confirmation_required\"");
-	assert_contains(buffer, "\"dangerous_items\":[\"switch/usb\"]");
+	assert_contains(buffer, "\"dangerous_items\":[\"gpio/GP5\"]");
 
 	assert(linkr_debugger_config_http_map_service_result(
 		       LINKR_DEBUGGER_CONFIG_HTTP_ACTION_SAVE,
@@ -801,9 +789,9 @@ static void test_operation_encoders_and_error_details(void)
 	memset(&report, 0, sizeof(report));
 	report.applied_count = 1U;
 	report.applied_items[0] = power;
-	report.failed_item = usb;
+	report.failed_item = gpio;
 	report.pending_count = 1U;
-	report.pending_items[0] = usb;
+	report.pending_items[0] = gpio;
 	assert(linkr_debugger_config_http_map_service_result(
 		       LINKR_DEBUGGER_CONFIG_HTTP_ACTION_SAVE,
 		       LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED, &error));
@@ -813,24 +801,23 @@ static void test_operation_encoders_and_error_details(void)
 	       LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_OK);
 	assert_contains(buffer, "\"code\":\"apply_failed\"");
 	assert_contains(buffer, "\"applied_items\":[\"power/12v_out\"]");
-	assert_contains(buffer, "\"failed_item\":\"switch/usb\"");
-	assert_contains(buffer, "\"pending_items\":[\"switch/usb\"]");
+	assert_contains(buffer, "\"failed_item\":\"gpio/GP5\"");
+	assert_contains(buffer, "\"pending_items\":[\"gpio/GP5\"]");
 }
 
 static void test_confirmation_error_places_dangerous_items_outside_error(void)
 {
-	const struct linkr_debugger_config_item_desc *usb =
+	const struct linkr_debugger_config_item_desc *gpio =
 		linkr_debugger_config_find_item(
-			LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-			LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID);
+			LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 5U);
 	struct linkr_debugger_config_operation_report report = {0};
 	struct linkr_debugger_config_http_error error;
 	char buffer[RESPONSE_STORAGE_SIZE];
 	size_t encoded_size;
 
-	assert(usb != NULL);
+	assert(gpio != NULL);
 	report.confirmation_count = 1U;
-	report.confirmation_items[0] = usb;
+	report.confirmation_items[0] = gpio;
 	assert(linkr_debugger_config_http_map_service_result(
 		       LINKR_DEBUGGER_CONFIG_HTTP_ACTION_SAVE,
 		       LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED, &error));
@@ -839,11 +826,11 @@ static void test_confirmation_error_places_dangerous_items_outside_error(void)
 		       buffer, sizeof(buffer), &encoded_size) ==
 	       LINKR_DEBUGGER_CONFIG_HTTP_ENCODE_OK);
 	assert_contains(buffer,
-		"\"message\":\"confirmation is required\"},\"dangerous_items\":[\"switch/usb\"]");
+		"\"message\":\"confirmation is required\"},\"dangerous_items\":[\"gpio/GP5\"]");
 	assert(strcmp(buffer,
 		"{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":false,\"command\":\"config\","
 		"\"action\":\"save\",\"error\":{\"code\":\"confirmation_required\","
-		"\"message\":\"confirmation is required\"},\"dangerous_items\":[\"switch/usb\"]}\n") == 0);
+		"\"message\":\"confirmation is required\"},\"dangerous_items\":[\"gpio/GP5\"]}\n") == 0);
 }
 
 int main(void)

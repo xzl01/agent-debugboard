@@ -76,8 +76,6 @@ static uint8_t default_value(const struct linkr_debugger_config_item_desc *item)
 	switch (item->item_id) {
 	case LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID:
 		return LINKR_DEBUGGER_CONFIG_SD_TARGET;
-	case LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID:
-		return LINKR_DEBUGGER_CONFIG_USB_TARGET;
 	case LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID:
 		return LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE;
 	default:
@@ -364,9 +362,9 @@ static void test_put_save_and_confirmation(void)
 	const char *safe_body =
 		"{\"items\":[\"power/12v_out\"],\"confirm\":false}";
 	const char *danger_body =
-		"{\"items\":[\"switch/usb\"],\"confirm\":false}";
+		"{\"items\":[\"gpio/GP5\"],\"confirm\":false}";
 	const char *confirmed_body =
-		"{\"items\":[\"switch/usb\"],\"confirm\":true}";
+		"{\"items\":[\"gpio/GP5\"],\"confirm\":true}";
 
 	reset_fixture();
 	call_final(HTTP_PUT, &config_route, safe_body, &response);
@@ -381,7 +379,7 @@ static void test_put_save_and_confirmation(void)
 	fake.save_result = LINKR_DEBUGGER_CONFIG_SERVICE_CONFIRMATION_REQUIRED;
 	fake.save_report.confirmation_count = 1U;
 	fake.save_report.confirmation_items[0] = linkr_debugger_config_find_item(
-		LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH, LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID);
+		LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 5U);
 	call_final(HTTP_PUT, &config_route, danger_body, &response);
 	assert_terminal_response(&response, HTTP_409_CONFLICT,
 				 "\"code\":\"confirmation_required\"");
@@ -389,7 +387,7 @@ static void test_put_save_and_confirmation(void)
 		char text[LINKR_DEBUGGER_CONFIG_HTTP_RESPONSE_CAP + 1U];
 
 		response_text(&response, text);
-		assert(strstr(text, "\"dangerous_items\":[\"switch/usb\"]") != NULL);
+		assert(strstr(text, "\"dangerous_items\":[\"gpio/GP5\"]") != NULL);
 	}
 	assert(fake.save_calls == 1U);
 	assert(!fake.last_save_confirmed);
@@ -468,9 +466,11 @@ static void test_put_error_mapping(void)
 		if (cases[i].result == LINKR_DEBUGGER_CONFIG_SERVICE_APPLY_FAILED) {
 			fake.save_report.applied_count = 1U;
 			fake.save_report.applied_items[0] = &linkr_debugger_config_items[0];
-			fake.save_report.failed_item = &linkr_debugger_config_items[4];
+			fake.save_report.failed_item = linkr_debugger_config_find_item(
+				LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
+				LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID);
 			fake.save_report.pending_count = 1U;
-			fake.save_report.pending_items[0] = &linkr_debugger_config_items[4];
+			fake.save_report.pending_items[0] = fake.save_report.failed_item;
 		}
 		assert(snprintf(code, sizeof(code), "\"code\":\"%s\"", cases[i].code) > 0);
 		call_final(HTTP_PUT, &config_route, body, &response);

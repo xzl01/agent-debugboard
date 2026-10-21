@@ -11,9 +11,9 @@
 
 static const char maximum_fragment[] =
 	",\"config\":{\"available\":false,\"reason\":\"unsupported_version\","
-	"\"saved_count\":16,\"pending_count\":16}";
+	"\"saved_count\":18,\"pending_count\":18}";
 
-_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 16U,
+_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 18U,
 	       "config item capacity changed");
 _Static_assert(sizeof(maximum_fragment) - 1U ==
 	       LINKR_DEBUGGER_CONFIG_SUMMARY_FRAGMENT_MAX,

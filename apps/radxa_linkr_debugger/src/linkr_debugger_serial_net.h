@@ -18,6 +18,17 @@
 #define LINKR_DEBUGGER_SERIAL_WS_MAX_CLIENTS 4U
 #define LINKR_DEBUGGER_SERIAL_NET_STACK_SIZE 2560U
 
+enum linkr_debugger_serial_terminal_responder_transport {
+	LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_CDC = 0,
+	LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_WEBSOCKET,
+};
+
+struct linkr_debugger_serial_terminal_responder {
+	enum linkr_debugger_serial_terminal_responder_transport transport;
+	int8_t slot;
+	bool valid;
+};
+
 struct linkr_debugger_serial_net_endpoint_counters {
 	uint64_t connected;
 	uint64_t disconnected;
@@ -48,6 +59,7 @@ struct linkr_debugger_serial_net_status {
 		ws[LINKR_DEBUGGER_SERIAL_WS_MAX_CLIENTS];
 	struct linkr_debugger_serial_net_endpoint_counters
 		tcp[LINKR_DEBUGGER_SERIAL_RAW_TCP_MAX_CLIENTS];
+	struct linkr_debugger_serial_terminal_responder terminal_responder;
 	uint16_t tcp_port;
 	uint8_t ws_attached;
 	uint8_t tcp_connected;
@@ -58,6 +70,8 @@ struct linkr_debugger_serial_net_status {
 int linkr_debugger_serial_net_init(void);
 int linkr_debugger_serial_net_status_snapshot(
 	struct linkr_debugger_serial_net_status *status);
+int linkr_debugger_serial_net_responder_sync(
+	const struct linkr_debugger_serial_status *status);
 
 /*
  * Each WebSocket slot has a fixed serial sink and TX source. The adapter is
@@ -75,6 +89,8 @@ int linkr_debugger_serial_net_ws_read(
 int linkr_debugger_serial_net_ws_consume(
 	uint8_t slot, struct linkr_debugger_serial_sink_pending *pending,
 	size_t accepted);
+int linkr_debugger_serial_net_ws_pending_validate(
+	uint8_t slot, struct linkr_debugger_serial_sink_pending *pending);
 int linkr_debugger_serial_net_ws_write(
 	uint8_t slot, const uint8_t *data, size_t length, uint64_t *event_id);
 int linkr_debugger_serial_net_ws_completion_poll(

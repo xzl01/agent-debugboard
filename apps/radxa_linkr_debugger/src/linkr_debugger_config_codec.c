@@ -39,7 +39,9 @@
 /* Explicit fixture for host-only codec tests; production entries come from DT. */
 #define LINKR_CONFIG_GPIO_ITEMS \
 	GPIO_ITEM(29),                 \
+	GPIO_ITEM(5),                  \
 	GPIO_ITEM(16),                 \
+	GPIO_ITEM(6),                  \
 	GPIO_ITEM(15),                 \
 	GPIO_ITEM(14),                 \
 	GPIO_ITEM(13),                 \
@@ -57,8 +59,8 @@ const struct linkr_debugger_config_item_desc linkr_debugger_config_items[] = {
 	POWER_ITEM(LINKR_DEBUGGER_CONFIG_POWER_5V_OUT_ID, "5v_out"),
 	POWER_ITEM(LINKR_DEBUGGER_CONFIG_POWER_VDD_5V_ID, "vdd_5v"),
 	POWER_ITEM(LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID, "20v_out"),
+	POWER_ITEM(LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID, "5v_usb_hub"),
 	SWITCH_ITEM(LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID, "sd"),
-	SWITCH_ITEM(LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID, "usb"),
 	SWITCH_ITEM(LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID, "tf_wp"),
 	LINKR_CONFIG_GPIO_ITEMS
 };
@@ -110,9 +112,6 @@ static bool switch_value_valid(uint8_t item_id, uint8_t value)
 	case LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID:
 		return value == LINKR_DEBUGGER_CONFIG_SD_TARGET ||
 		       value == LINKR_DEBUGGER_CONFIG_SD_USB_READER;
-	case LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID:
-		return value == LINKR_DEBUGGER_CONFIG_USB_PC ||
-		       value == LINKR_DEBUGGER_CONFIG_USB_TARGET;
 	case LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID:
 		return value == LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE ||
 		       value == LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED;
@@ -161,8 +160,6 @@ enum linkr_debugger_config_codec_result linkr_debugger_config_classify_entry(
 	*requires_confirmation =
 		(entry->domain == LINKR_DEBUGGER_CONFIG_DOMAIN_POWER &&
 		 entry->value == LINKR_DEBUGGER_CONFIG_POWER_ON) ||
-		(entry->domain == LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH &&
-		 entry->item_id == LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID) ||
 		(entry->domain == LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO &&
 		 (entry->value & LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT) != 0U);
 	return LINKR_DEBUGGER_CONFIG_CODEC_OK;

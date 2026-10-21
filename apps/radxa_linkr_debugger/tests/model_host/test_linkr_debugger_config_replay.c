@@ -1,4 +1,5 @@
 #include "../../src/linkr_debugger_config_replay.h"
+#include "../../src/linkr_debugger_power_dependency.h"
 
 #include <assert.h>
 #include <stdbool.h>
@@ -13,7 +14,7 @@
 #define TEST_ERR_REMOTE_IO (-121)
 
 static const uint8_t gpio_ids[] = {
-	29U, 16U, 15U, 14U, 13U, 12U, 9U, 8U, 7U,
+	29U, 5U, 16U, 6U, 15U, 14U, 13U, 12U, 9U, 8U, 7U,
 };
 
 struct fake_control {
@@ -24,6 +25,8 @@ struct fake_control {
 	size_t fail_at;
 	int failure_errno;
 	uint8_t vdd_value;
+	bool parent_enabled;
+	bool child_enabled;
 };
 
 static void append_entry(struct linkr_debugger_config_snapshot *snapshot,
@@ -50,11 +53,11 @@ static void build_full_ordered(struct linkr_debugger_config_snapshot *snapshot)
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		     LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
 		     LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED);
-	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		     LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
-		     LINKR_DEBUGGER_CONFIG_USB_TARGET);
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_VDD_5V_ID,
+		     LINKR_DEBUGGER_CONFIG_POWER_ON);
+	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+		     LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID,
 		     LINKR_DEBUGGER_CONFIG_POWER_ON);
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID,
@@ -117,9 +120,34 @@ static void reset_fake(struct fake_control *control)
 	control->vdd_value = 0xa5U;
 }
 
+static bool fake_dependency_enabled(void *context, bool child)
+{
+	struct fake_control *control = context;
+
+	return child ? control->child_enabled : control->parent_enabled;
+}
+
+static int fake_dependency_set(void *context, bool child, bool enabled)
+{
+	struct fake_control *control = context;
+
+	if (child) {
+		control->child_enabled = enabled;
+	} else {
+		control->parent_enabled = enabled;
+		control->vdd_value = enabled ? LINKR_DEBUGGER_CONFIG_POWER_ON :
+			LINKR_DEBUGGER_CONFIG_POWER_OFF;
+	}
+	return 0;
+}
+
 static int fake_setter(void *context, const struct linkr_debugger_config_entry *entry)
 {
 	struct fake_control *control = context;
+	static const struct linkr_debugger_power_dependency_ops dependency_ops = {
+		.is_enabled = fake_dependency_enabled,
+		.set_enabled = fake_dependency_set,
+	};
 	size_t call_index = control->call_count;
 	size_t item_index;
 
@@ -132,14 +160,19 @@ static int fake_setter(void *context, const struct linkr_debugger_config_entry *
 	item_index = catalog_index(entry);
 	control->applied[item_index] = true;
 	control->values[item_index] = entry->value;
-	if (entry->domain == LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH &&
-	    entry->item_id == LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID) {
-		control->vdd_value = entry->value == LINKR_DEBUGGER_CONFIG_USB_PC ?
-			LINKR_DEBUGGER_CONFIG_POWER_ON : LINKR_DEBUGGER_CONFIG_POWER_OFF;
-	}
 	if (entry->domain == LINKR_DEBUGGER_CONFIG_DOMAIN_POWER &&
 	    entry->item_id == LINKR_DEBUGGER_CONFIG_POWER_VDD_5V_ID) {
-		control->vdd_value = entry->value;
+		return linkr_debugger_power_dependency_apply(
+			LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT,
+			entry->value == LINKR_DEBUGGER_CONFIG_POWER_ON,
+			&dependency_ops, control);
+	}
+	if (entry->domain == LINKR_DEBUGGER_CONFIG_DOMAIN_POWER &&
+	    entry->item_id == LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID) {
+		return linkr_debugger_power_dependency_apply(
+			LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD,
+			entry->value == LINKR_DEBUGGER_CONFIG_POWER_ON,
+			&dependency_ops, control);
 	}
 	return 0;
 }
@@ -216,7 +249,7 @@ static void assert_current_fields_preserved(
 	}
 }
 
-static void test_orders_shuffled_16_entries(void)
+static void test_orders_shuffled_18_entries(void)
 {
 	struct linkr_debugger_config_snapshot expected;
 	struct linkr_debugger_config_snapshot shuffled;
@@ -322,7 +355,7 @@ static void test_order_rejects_malformed_without_partial_output(void)
 	assert_snapshots_equal(&ordered, &snapshot);
 }
 
-static void test_full_replay_replays_every_entry_and_usb_vdd_order(void)
+static void test_full_replay_replays_every_entry_and_explicit_vdd(void)
 {
 	struct linkr_debugger_config_snapshot expected;
 	struct linkr_debugger_config_snapshot shuffled;
@@ -369,7 +402,7 @@ static void test_full_replay_replays_every_entry_and_usb_vdd_order(void)
 	}
 }
 
-static void test_usb_without_explicit_vdd_has_no_synthetic_entry(void)
+static void test_switch_without_explicit_vdd_has_no_synthetic_entry(void)
 {
 	struct linkr_debugger_config_snapshot snapshot = {0};
 	struct linkr_debugger_config_snapshot ordered;
@@ -378,13 +411,13 @@ static void test_usb_without_explicit_vdd_has_no_synthetic_entry(void)
 	struct fake_control control;
 
 	append_entry(&snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		     LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
-		     LINKR_DEBUGGER_CONFIG_USB_TARGET);
+		     LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
+		     LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED);
 	assert(linkr_debugger_config_replay_order_snapshot(&snapshot, &ordered) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert(ordered.entry_count == 1U);
 	assert(ordered.entries[0].domain == LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH);
-	assert(ordered.entries[0].item_id == LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID);
+	assert(ordered.entries[0].item_id == LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID);
 
 	seed_status(&status);
 	seed_report(&report);
@@ -393,9 +426,45 @@ static void test_usb_without_explicit_vdd_has_no_synthetic_entry(void)
 		       &snapshot, fake_setter, &control, &status, &report) ==
 	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
 	assert(control.call_count == 1U);
-	assert(control.vdd_value == LINKR_DEBUGGER_CONFIG_POWER_OFF);
+	assert(control.vdd_value == 0xa5U);
 	assert(status.saved_count == 1U);
 	assert(status.applied_count == 1U);
+}
+
+static void test_child_only_replay_enables_parent(void)
+{
+	struct linkr_debugger_config_snapshot snapshot = {0};
+	struct linkr_debugger_config_service_status status;
+	struct linkr_debugger_config_operation_report report;
+	struct fake_control control;
+
+	append_entry(&snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+		     LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID,
+		     LINKR_DEBUGGER_CONFIG_POWER_ON);
+	seed_status(&status);
+	seed_report(&report);
+	reset_fake(&control);
+	assert(linkr_debugger_config_replay_execute(
+		       &snapshot, fake_setter, &control, &status, &report) ==
+	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
+	assert(control.parent_enabled);
+	assert(control.child_enabled);
+	assert(control.vdd_value == LINKR_DEBUGGER_CONFIG_POWER_ON);
+
+	memset(&snapshot, 0, sizeof(snapshot));
+	append_entry(&snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+		     LINKR_DEBUGGER_CONFIG_POWER_VDD_5V_ID,
+		     LINKR_DEBUGGER_CONFIG_POWER_OFF);
+	append_entry(&snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+		     LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID,
+		     LINKR_DEBUGGER_CONFIG_POWER_ON);
+	seed_status(&status);
+	seed_report(&report);
+	reset_fake(&control);
+	assert(linkr_debugger_config_replay_execute(
+		       &snapshot, fake_setter, &control, &status, &report) ==
+	       LINKR_DEBUGGER_CONFIG_SERVICE_OK);
+	assert(control.parent_enabled && control.child_enabled);
 }
 
 static void test_full_failure_at_every_position(void)
@@ -589,15 +658,16 @@ static void test_execute_rejects_null_and_malformed_inputs(void)
 
 int main(void)
 {
-	test_orders_shuffled_16_entries();
+	test_orders_shuffled_18_entries();
 	test_order_reorders_two_entry_snapshot();
 	test_order_rejects_malformed_without_partial_output();
-	test_full_replay_replays_every_entry_and_usb_vdd_order();
-	test_usb_without_explicit_vdd_has_no_synthetic_entry();
+	test_full_replay_replays_every_entry_and_explicit_vdd();
+	test_switch_without_explicit_vdd_has_no_synthetic_entry();
+	test_child_only_replay_enables_parent();
 	test_full_failure_at_every_position();
 	test_later_full_success_clears_prior_failure();
 	test_status_merge_preserves_non_saved_entries();
 	test_execute_rejects_null_and_malformed_inputs();
-	printf("linkr_debugger_config_replay: order=16 failures=16/16 passed\n");
+	printf("linkr_debugger_config_replay: order=18 failures=18/18 passed\n");
 	return 0;
 }

@@ -17,6 +17,7 @@
 struct linkr_debugger_rail_desc {
 	const char *name;
 	const char *signal;
+	const char *parent;
 	uint8_t pin;
 	bool controllable;
 	bool always_on;

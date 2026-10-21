@@ -326,8 +326,11 @@ struct linkr_debugger_ws_serial_signature {
 	uint64_t pause_dropped;
 	uint64_t tx_canceled;
 	uint64_t completion_overflow;
+	uint64_t responder_generation;
 	enum linkr_debugger_serial_state state;
 	uint8_t tx_used_slots;
+	/* -1 none, 0 CDC, 1..4 websocket slot + 1. */
+	int8_t responder_id;
 	bool dtr;
 	bool rts;
 	bool usb_configured;
@@ -370,9 +373,19 @@ static bool linkr_debugger_ws_sidecar_reset_slot(uint8_t slot)
 	return true;
 }
 
+static int8_t linkr_debugger_ws_serial_responder_id(
+	const struct linkr_debugger_serial_terminal_responder *responder)
+{
+	return !responder->valid ? -1 :
+		responder->transport ==
+			LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_CDC ? 0 :
+			(int8_t)(responder->slot + 1);
+}
+
 #ifndef LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST
 static void linkr_debugger_ws_serial_signature_get(
 	const struct linkr_debugger_serial_status *status,
+	const struct linkr_debugger_serial_terminal_responder *responder,
 	struct linkr_debugger_ws_serial_signature *signature)
 {
 	memset(signature, 0, sizeof(*signature));
@@ -384,8 +397,10 @@ static void linkr_debugger_ws_serial_signature_get(
 	signature->tx_canceled = status->tx_canceled;
 	signature->completion_overflow =
 		status->runtime_counters.completion_overflow;
+	signature->responder_generation = status->cdc_responder_generation;
 	signature->state = status->state;
 	signature->tx_used_slots = status->tx_used_slots;
+	signature->responder_id = linkr_debugger_ws_serial_responder_id(responder);
 	signature->dtr = status->dtr;
 	signature->rts = status->rts;
 	signature->usb_configured = status->usb_configured;
@@ -981,10 +996,10 @@ static struct linkr_debugger_ws_client linkr_debugger_ws_clients[LINKR_DEBUGGER_
 	Z_GENERIC_SECTION(.bss.pre_capture.ws_clients);
 BUILD_ASSERT(LINKR_DEBUGGER_WS_MAX_CLIENTS == LINKR_DEBUGGER_WS_SIDECAR_COUNT,
 	"every WS client slot must have exactly one sidecar");
-BUILD_ASSERT(sizeof(struct linkr_debugger_ws_client_sidecar) == 1088U,
+BUILD_ASSERT(sizeof(struct linkr_debugger_ws_client_sidecar) == 1096U,
 	"WS serial sidecar ARM layout changed");
-BUILD_ASSERT(sizeof(linkr_debugger_ws_client_sidecars) == 4352U,
-	"four WS serial sidecars must occupy exactly 4352 bytes");
+BUILD_ASSERT(sizeof(linkr_debugger_ws_client_sidecars) == 4384U,
+	"four WS serial sidecars must occupy exactly 4384 bytes");
 BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28704U);
 static struct linkr_debugger_ws_client_thread_arg linkr_debugger_ws_thread_args[LINKR_DEBUGGER_WS_MAX_CLIENTS];
 static K_THREAD_STACK_ARRAY_DEFINE(linkr_debugger_ws_stacks, LINKR_DEBUGGER_WS_MAX_CLIENTS,
@@ -1260,6 +1275,81 @@ static int linkr_debugger_ws_append_json_string(char *buf, size_t size, size_t *
 		value != NULL ? value : "", value != NULL ? strlen(value) : 0U);
 }
 
+static bool linkr_debugger_ws_is_terminal_responder(
+	const struct linkr_debugger_serial_terminal_responder *responder,
+	uint8_t slot)
+{
+	return responder->valid &&
+	       responder->transport ==
+		       LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_WEBSOCKET &&
+	       responder->slot == (int8_t)slot;
+}
+
+static struct linkr_debugger_serial_terminal_responder
+linkr_debugger_ws_effective_terminal_responder(
+	const struct linkr_debugger_serial_status *serial,
+	const struct linkr_debugger_serial_terminal_responder *network)
+{
+	if (serial->dtr) {
+		return (struct linkr_debugger_serial_terminal_responder){
+			.valid = true,
+			.transport = LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_CDC,
+			.slot = 0,
+		};
+	}
+	return *network;
+}
+
+static int linkr_debugger_ws_append_terminal_responder(
+	char *buf, size_t size, size_t *cursor,
+	const struct linkr_debugger_serial_terminal_responder *responder,
+	uint8_t slot)
+{
+	if (linkr_debugger_ws_append(buf, size, cursor, "\"responder\":") < 0) {
+		return -ENOMEM;
+	}
+	if (responder->valid) {
+		const char *transport =
+			responder->transport ==
+					LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_CDC ?
+				"cdc" : "websocket";
+
+		if (linkr_debugger_ws_append(
+			    buf, size, cursor,
+			    "{\"transport\":\"%s\",\"slot\":%d}", transport,
+			    (int)responder->slot) < 0) {
+			return -ENOMEM;
+		}
+	} else if (linkr_debugger_ws_append(buf, size, cursor, "null") < 0) {
+		return -ENOMEM;
+	}
+	return linkr_debugger_ws_append(
+		buf, size, cursor, ",\"terminal_responder\":%s",
+		linkr_debugger_ws_is_terminal_responder(responder, slot) ?
+			"true" : "false");
+}
+
+typedef int (*linkr_debugger_ws_serial_guard_step_t)(void *context);
+
+/* Production and host tests share this exact read-to-send ordering seam. */
+static int linkr_debugger_ws_serial_post_read_guard(
+	linkr_debugger_ws_serial_guard_step_t refresh,
+	linkr_debugger_ws_serial_guard_step_t validate, void *context)
+{
+	for (size_t pass = 0U; pass < 3U; ++pass) {
+		int ret = refresh(context);
+
+		if (ret < 0) {
+			return ret;
+		}
+		ret = validate(context);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+	return 0;
+}
+
 #ifndef LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST
 static const char *linkr_debugger_ws_serial_state_name(
 	enum linkr_debugger_serial_state state)
@@ -1293,7 +1383,8 @@ static const char *linkr_debugger_ws_serial_parity_name(
 
 static int linkr_debugger_ws_emit_serial_state(
 	struct linkr_debugger_ws_client *client,
-	const struct linkr_debugger_serial_status *status)
+	const struct linkr_debugger_serial_status *status,
+	const struct linkr_debugger_serial_terminal_responder *responder)
 {
 	struct linkr_debugger_ws_client_sidecar *sidecar =
 		linkr_debugger_ws_sidecar(client);
@@ -1327,15 +1418,26 @@ static int linkr_debugger_ws_emit_serial_state(
 	    linkr_debugger_ws_append(
 		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
 		    ",\"stop_bits\":%u,\"flow_control\":\"none\"},"
-		    "\"dtr\":%s,\"rts\":%s,\"usb_configured\":%s,"
+		    "\"dtr\":%s,\"rts\":%s,\"usb_configured\":%s,",
+		    (unsigned int)status->current_config.stop_bits,
+		    status->dtr ? "true" : "false",
+		    status->rts ? "true" : "false",
+		    status->usb_configured ? "true" : "false") < 0) {
+		return -ENOMEM;
+	}
+	if (linkr_debugger_ws_append_terminal_responder(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor, responder,
+		    client->slot) < 0) {
+		return -ENOMEM;
+	}
+	if (linkr_debugger_ws_append(
+		    buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
+		    ",\"responder_generation\":%llu,"
 		    "\"queue\":{\"used\":%u,\"capacity\":%u,"
 		    "\"active_event_id\":%llu,\"admission_frozen\":%s},"
 		    "\"counters\":{\"pause_dropped\":%llu,"
 		    "\"tx_canceled\":%llu,\"completion_overflow\":%llu}}",
-		    (unsigned int)status->current_config.stop_bits,
-		    status->dtr ? "true" : "false",
-		    status->rts ? "true" : "false",
-		    status->usb_configured ? "true" : "false",
+		    (unsigned long long)status->cdc_responder_generation,
 		    (unsigned int)status->tx_used_slots,
 		    (unsigned int)LINKR_DEBUGGER_SERIAL_TX_SLOT_COUNT,
 		    (unsigned long long)status->active_event_id,
@@ -1347,7 +1449,7 @@ static int linkr_debugger_ws_emit_serial_state(
 			    status->runtime_counters.completion_overflow) < 0) {
 		return -ENOMEM;
 	}
-	linkr_debugger_ws_serial_signature_get(status,
+	linkr_debugger_ws_serial_signature_get(status, responder,
 					       &sidecar->serial_signature);
 	sidecar->serial_state_valid = true;
 	return linkr_debugger_ws_send_json(client, buf);
@@ -1400,6 +1502,65 @@ static int linkr_debugger_ws_emit_serial_overrun(
 	return linkr_debugger_ws_send_json(client, buf);
 }
 
+static int linkr_debugger_ws_serial_refresh_state(
+	struct linkr_debugger_ws_client *client,
+	struct linkr_debugger_ws_client_sidecar *sidecar,
+	struct linkr_debugger_serial_status *serial_status,
+	struct linkr_debugger_serial_net_status *net_status)
+{
+	struct linkr_debugger_serial_terminal_responder responder;
+	struct linkr_debugger_ws_serial_signature signature;
+	int ret;
+
+	ret = linkr_debugger_serial_status_snapshot(serial_status);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = linkr_debugger_serial_net_responder_sync(serial_status);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = linkr_debugger_serial_net_status_snapshot(net_status);
+	if (ret < 0) {
+		return ret;
+	}
+	responder = linkr_debugger_ws_effective_terminal_responder(
+		serial_status, &net_status->terminal_responder);
+	linkr_debugger_ws_serial_signature_get(
+		serial_status, &responder, &signature);
+	if (!sidecar->serial_state_valid ||
+	    memcmp(&sidecar->serial_signature, &signature,
+		   sizeof(signature)) != 0) {
+		return linkr_debugger_ws_emit_serial_state(
+			client, serial_status, &responder);
+	}
+	return 0;
+}
+
+struct linkr_debugger_ws_serial_guard_context {
+	struct linkr_debugger_ws_client *client;
+	struct linkr_debugger_ws_client_sidecar *sidecar;
+	struct linkr_debugger_serial_status *serial_status;
+	struct linkr_debugger_serial_net_status *net_status;
+};
+
+static int linkr_debugger_ws_serial_guard_refresh(void *context)
+{
+	struct linkr_debugger_ws_serial_guard_context *guard = context;
+
+	return linkr_debugger_ws_serial_refresh_state(
+		guard->client, guard->sidecar, guard->serial_status,
+		guard->net_status);
+}
+
+static int linkr_debugger_ws_serial_guard_validate(void *context)
+{
+	struct linkr_debugger_ws_serial_guard_context *guard = context;
+
+	return linkr_debugger_serial_net_ws_pending_validate(
+		guard->client->slot, &guard->sidecar->serial_pending);
+}
+
 static int linkr_debugger_ws_serial_drain(
 	struct linkr_debugger_ws_client *client)
 {
@@ -1407,8 +1568,13 @@ static int linkr_debugger_ws_serial_drain(
 		linkr_debugger_ws_sidecar(client);
 	struct linkr_debugger_serial_net_status net_status;
 	struct linkr_debugger_serial_status serial_status;
-	struct linkr_debugger_ws_serial_signature signature;
 	struct linkr_debugger_serial_completion completion;
+	struct linkr_debugger_ws_serial_guard_context guard = {
+		.client = client,
+		.sidecar = sidecar,
+		.serial_status = &serial_status,
+		.net_status = &net_status,
+	};
 	const uint8_t *data;
 	size_t length;
 	int ret;
@@ -1421,25 +1587,16 @@ static int linkr_debugger_ws_serial_drain(
 			return ret;
 		}
 	}
-	ret = linkr_debugger_serial_status_snapshot(&serial_status);
+	ret = linkr_debugger_ws_serial_refresh_state(
+		client, sidecar, &serial_status, &net_status);
 	if (ret < 0) {
 		return linkr_debugger_ws_emit_error(
 			client, "serial", "unavailable", "J4 serial is unavailable");
 	}
-	linkr_debugger_ws_serial_signature_get(&serial_status, &signature);
-	if (!sidecar->serial_state_valid ||
-	    memcmp(&sidecar->serial_signature, &signature,
-		   sizeof(signature)) != 0) {
-		ret = linkr_debugger_ws_emit_serial_state(client, &serial_status);
-		if (ret < 0) {
-			return ret;
-		}
-	}
 	if (serial_status.state != LINKR_DEBUGGER_SERIAL_READY) {
 		return 0;
 	}
-	if (linkr_debugger_serial_net_status_snapshot(&net_status) == 0 &&
-	    net_status.ws[client->slot].inferred_rx_drops !=
+	if (net_status.ws[client->slot].inferred_rx_drops !=
 		    sidecar->serial_last_drops) {
 		ret = linkr_debugger_ws_emit_serial_overrun(
 			client,
@@ -1451,16 +1608,45 @@ static int linkr_debugger_ws_serial_drain(
 
 	for (size_t frame = 0U; frame < LINKR_DEBUGGER_WS_SERIAL_DRAIN_FRAMES;
 	     ++frame) {
-		ret = linkr_debugger_serial_net_ws_read(
-			client->slot, &sidecar->serial_pending,
-			LINKR_DEBUGGER_SERIAL_TX_MESSAGE_MAX, &data, &length);
-		if (ret == -EAGAIN) {
-			return 0;
+		bool pending_valid = false;
+
+		for (size_t attempt = 0U; attempt < 2U; ++attempt) {
+			ret = linkr_debugger_serial_net_ws_read(
+				client->slot, &sidecar->serial_pending,
+				LINKR_DEBUGGER_SERIAL_TX_MESSAGE_MAX, &data,
+				&length);
+			if (ret == -EAGAIN) {
+				return 0;
+			}
+			if (ret < 0) {
+				return ret;
+			}
+			if (length == 0U) {
+				return 0;
+			}
+
+			/* DTR/responder state is emitted before any bytes fetched by
+			 * this iteration. Promotion rearms one sink; epoch validation
+			 * discards an already-copied pre-promotion query.
+			 */
+			ret = linkr_debugger_ws_serial_post_read_guard(
+				linkr_debugger_ws_serial_guard_refresh,
+				linkr_debugger_ws_serial_guard_validate, &guard);
+			if (ret == -ESTALE) {
+				continue;
+			}
+			if (ret < 0) {
+				return ret;
+			}
+			if (serial_status.state != LINKR_DEBUGGER_SERIAL_READY) {
+				return 0;
+			}
+			pending_valid = true;
+			break;
 		}
-		if (ret < 0) {
-			return ret;
-		}
-		if (length == 0U) {
+		if (!pending_valid) {
+			k_event_post(&client->events,
+				     LINKR_DEBUGGER_WS_EVENT_SERIAL);
 			return 0;
 		}
 		ret = websocket_send_msg(
@@ -1785,11 +1971,9 @@ static int linkr_debugger_ws_emit_status_snapshot(struct linkr_debugger_ws_clien
 	if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE, &cursor,
 				 "\"switches\":{\"sd\":{\"route\":\"%s\","
 				 "\"routes\":[\"target\",\"usb-reader\"],\"requires_confirm\":false},"
-				 "\"usb\":{\"route\":\"%s\","
-				 "\"routes\":[\"pc\",\"target\"],\"requires_confirm\":true},"
 				 "\"tf_wp\":{\"route\":\"%s\","
 				 "\"routes\":[\"writable\",\"protected\"],\"requires_confirm\":false}",
-				 linkr_debugger_sd_route_name(), linkr_debugger_usb_route_name(),
+				 linkr_debugger_sd_route_name(),
 				 linkr_debugger_tf_wp_route_name()) < 0) {
 		return -ENOMEM;
 	}
@@ -2846,17 +3030,6 @@ static int linkr_debugger_ws_handle_control_message(struct linkr_debugger_ws_cli
 						"sd route must be target or usb-reader");
 			}
 			ret = linkr_debugger_sd_route_set(route);
-		} else if (strcmp(request->output, "usb") == 0) {
-			enum linkr_debugger_usb_route route;
-			if (strcmp(request->route, "pc") == 0) {
-				route = LINKR_DEBUGGER_USB_ROUTE_PC;
-			} else if (strcmp(request->route, "target") == 0) {
-				route = LINKR_DEBUGGER_USB_ROUTE_TARGET;
-			} else {
-				return linkr_debugger_ws_emit_error(client, "switch", "invalid_route",
-						"usb route must be pc or target");
-			}
-			ret = linkr_debugger_usb_route_set(route);
 		} else if (strcmp(request->output, "tf_wp") == 0) {
 			enum linkr_debugger_tf_wp_route route;
 			if (!linkr_debugger_parse_tf_wp_route(request->route, &route)) {
@@ -2866,7 +3039,7 @@ static int linkr_debugger_ws_handle_control_message(struct linkr_debugger_ws_cli
 			ret = linkr_debugger_tf_wp_route_set(route);
 		} else {
 			return linkr_debugger_ws_emit_error(client, "switch", "unknown_switch",
-					"switch target must be sd, usb, or tf_wp");
+					"switch target must be sd or tf_wp");
 		}
 
 		if (ret < 0) {
@@ -2976,6 +3149,7 @@ static int linkr_debugger_ws_handle_message(struct linkr_debugger_ws_client *cli
 						"stream mode cannot change during an active capture");
 		}
 		if (requested_mode == LINKR_DEBUGGER_WS_MODE_SERIAL_J4) {
+			struct linkr_debugger_serial_terminal_responder responder;
 			struct linkr_debugger_serial_net_status net_status;
 			struct linkr_debugger_serial_status serial_status;
 			bool attached = sidecar->stream_mode ==
@@ -2994,8 +3168,17 @@ static int linkr_debugger_ws_handle_message(struct linkr_debugger_ws_client *cli
 			sidecar->serial_state_valid = false;
 			memset(&sidecar->serial_pending, 0,
 			       sizeof(sidecar->serial_pending));
-			if (!attached &&
-			    linkr_debugger_serial_net_status_snapshot(&net_status) == 0) {
+			mode_ret = linkr_debugger_serial_net_status_snapshot(&net_status);
+			if (mode_ret < 0) {
+				if (!attached) {
+					(void)linkr_debugger_serial_net_ws_detach(client->slot);
+				}
+				sidecar->stream_mode = LINKR_DEBUGGER_WS_MODE_IDLE;
+				return linkr_debugger_ws_emit_error(
+					client, "subscribe", "serial_unavailable",
+					"J4 serial adapter is unavailable");
+			}
+			if (!attached) {
 				sidecar->serial_last_drops =
 					net_status.ws[client->slot].inferred_rx_drops;
 			}
@@ -3006,8 +3189,12 @@ static int linkr_debugger_ws_handle_message(struct linkr_debugger_ws_client *cli
 					&serial_status);
 			}
 			if (emit_ret == 0) {
+				responder = linkr_debugger_ws_effective_terminal_responder(
+					&serial_status,
+					&net_status.terminal_responder);
 				emit_ret = linkr_debugger_ws_emit_serial_state(
-					client, &serial_status);
+					client, &serial_status,
+					&responder);
 			}
 			if (emit_ret < 0 && !attached) {
 				(void)linkr_debugger_serial_net_ws_detach(client->slot);

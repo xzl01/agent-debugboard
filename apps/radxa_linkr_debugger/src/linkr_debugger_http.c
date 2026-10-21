@@ -253,15 +253,6 @@ static int linkr_debugger_http_control_switch(const char *name, const char *body
 		}
 		return -EINVAL;
 	}
-	if (strcmp(name, "usb") == 0) {
-		if (strcmp(req.route, "pc") == 0) {
-			return linkr_debugger_usb_route_set(LINKR_DEBUGGER_USB_ROUTE_PC);
-		}
-		if (strcmp(req.route, "target") == 0) {
-			return linkr_debugger_usb_route_set(LINKR_DEBUGGER_USB_ROUTE_TARGET);
-		}
-		return -EINVAL;
-	}
 	if (strcmp(name, "tf_wp") == 0) {
 		enum linkr_debugger_tf_wp_route route;
 
@@ -1128,11 +1119,7 @@ static int linkr_debugger_http_json_switches(struct linkr_debugger_http_env *env
 	    linkr_debugger_http_json_string(env, linkr_debugger_sd_route_name()) < 0 ||
 	    linkr_debugger_http_append(env,
 					",\"routes\":[\"target\",\"usb-reader\"],"
-					"\"requires_confirm\":false},\"usb\":{\"route\":") < 0 ||
-	    linkr_debugger_http_json_string(env, linkr_debugger_usb_route_name()) < 0 ||
-	    linkr_debugger_http_append(env,
-					",\"routes\":[\"pc\",\"target\"],"
-					"\"requires_confirm\":true},\"tf_wp\":{\"route\":") < 0 ||
+					"\"requires_confirm\":false},\"tf_wp\":{\"route\":") < 0 ||
 	    linkr_debugger_http_json_string(env, linkr_debugger_tf_wp_route_name()) < 0) {
 		return -ENOMEM;
 	}
@@ -1675,15 +1662,6 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 					    "\"requires_confirm\":false}\n") < 0) {
 				break;
 			}
-		} else if (strcmp(path + 1, "usb") == 0) {
-			if (linkr_debugger_http_json_begin(&env, "switch", true) < 0 ||
-			    linkr_debugger_http_append(&env, ",\"action\":\"get\",\"name\":\"usb\",\"route\":") < 0 ||
-			    linkr_debugger_http_json_string(&env, linkr_debugger_usb_route_name()) < 0 ||
-			    linkr_debugger_http_append(&env,
-					    ",\"routes\":[\"pc\",\"target\"],"
-					    "\"requires_confirm\":true}\n") < 0) {
-				break;
-			}
 		} else if (strcmp(path + 1, "tf_wp") == 0) {
 			if (linkr_debugger_http_json_begin(&env, "switch", true) < 0 ||
 			    linkr_debugger_http_append(&env, ",\"action\":\"get\",\"name\":\"tf_wp\",\"route\":") < 0 ||
@@ -1752,7 +1730,6 @@ static int linkr_debugger_http_handle_switch(struct http_client_ctx *client,
 		    linkr_debugger_http_append(&env, ",\"route\":") < 0 ||
 		    linkr_debugger_http_json_string(&env,
 			    strcmp(path + 1, "sd") == 0 ? linkr_debugger_sd_route_name() :
-			    strcmp(path + 1, "usb") == 0 ? linkr_debugger_usb_route_name() :
 			    linkr_debugger_tf_wp_route_name()) < 0 ||
 		    linkr_debugger_http_append(&env, "}\n") < 0) {
 			break;

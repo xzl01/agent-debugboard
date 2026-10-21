@@ -29,9 +29,9 @@ const struct linkr_debugger_gpio_layout_cell_desc linkr_debugger_gpio_layout_cel
 	CELL(0, 7, 3, 0, "GP28 / ADC2", "GPIO28_ADC2", "adc"),
 	CELL(0, 17, 3, 1, "GND", "GND", "ground"),
 	{ 0, 6, 4, 0, "GP29 / ADC3", "GPIO29_ADC3", "adc", true, false, 29 },
-	CELL(0, 16, 4, 1, "USB MUX", "GPIO5", "dedicated"),
+	GPIO_CELL(0, 16, 4, 1, "GP5", "GPIO5_CON", true, 5),
 	GPIO_CELL(0, 5, 5, 0, "GP16", "GPIO16", true, 16),
-	CELL(0, 15, 5, 1, "TF switch", "GP06_TF_SW", "dedicated"),
+	GPIO_CELL(0, 15, 5, 1, "GP6", "GPIO6_CON", true, 6),
 	GPIO_CELL(0, 4, 6, 0, "GP15", "GPIO15", true, 15),
 	CELL(0, 14, 6, 1, "GND", "GND", "ground"),
 	GPIO_CELL(0, 3, 7, 0, "GP14", "GPIO14", true, 14),
@@ -51,7 +51,9 @@ const size_t linkr_debugger_gpio_layout_cell_count =
 
 const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[] = {
 	{ 29, false, "J8_PIN6", "J8", "GP29 / ADC3", 4, 0 },
+	{ 5, true, "J8_PIN16", "J8", "GP5", 4, 1 },
 	{ 16, true, "J8_PIN5", "J8", "GP16", 5, 0 },
+	{ 6, true, "J8_PIN15", "J8", "GP6", 5, 1 },
 	{ 15, true, "J8_PIN4", "J8", "GP15", 6, 0 },
 	{ 14, true, "J8_PIN3", "J8", "GP14", 7, 0 },
 	{ 13, true, "J8_PIN2", "J8", "GP13", 8, 0 },
@@ -66,5 +68,5 @@ const size_t linkr_debugger_safe_gpio_count =
 
 _Static_assert(ARRAY_SIZE_LOCAL(linkr_debugger_gpio_layout_cells) == 24U,
 	       "host layout fixture must cover every contact");
-_Static_assert(ARRAY_SIZE_LOCAL(linkr_debugger_safe_gpios) == 9U,
+_Static_assert(ARRAY_SIZE_LOCAL(linkr_debugger_safe_gpios) == 11U,
 	       "host safe-GPIO fixture changed");

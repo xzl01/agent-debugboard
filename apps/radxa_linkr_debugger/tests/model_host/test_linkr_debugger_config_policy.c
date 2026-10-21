@@ -26,14 +26,16 @@ static const struct expected_item expected_catalog[] = {
 	  LINKR_DEBUGGER_CONFIG_POWER_VDD_5V_ID },
 	{ "power/20v_out", LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 	  LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID },
+	{ "power/5v_usb_hub", LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+	  LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID },
 	{ "switch/sd", LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 	  LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID },
-	{ "switch/usb", LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-	  LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID },
 	{ "switch/tf_wp", LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 	  LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID },
 	{ "gpio/GP29", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 29U },
+	{ "gpio/GP5", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 5U },
 	{ "gpio/GP16", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 16U },
+	{ "gpio/GP6", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 6U },
 	{ "gpio/GP15", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 15U },
 	{ "gpio/GP14", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 14U },
 	{ "gpio/GP13", LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 13U },
@@ -61,14 +63,12 @@ static const struct value_case value_cases[] = {
 	  LINKR_DEBUGGER_CONFIG_POWER_ON, true },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_POWER, LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID,
 	  LINKR_DEBUGGER_CONFIG_POWER_ON, true },
+	{ LINKR_DEBUGGER_CONFIG_DOMAIN_POWER, LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID,
+	  LINKR_DEBUGGER_CONFIG_POWER_ON, true },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH, LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID,
 	  LINKR_DEBUGGER_CONFIG_SD_TARGET, false },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH, LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID,
 	  LINKR_DEBUGGER_CONFIG_SD_USB_READER, false },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH, LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
-	  LINKR_DEBUGGER_CONFIG_USB_PC, true },
-	{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH, LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
-	  LINKR_DEBUGGER_CONFIG_USB_TARGET, true },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH, LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
 	  LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE, false },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH, LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
@@ -120,8 +120,6 @@ static uint8_t control_value_for(const struct linkr_debugger_config_item_desc *i
 		switch (item->item_id) {
 		case LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID:
 			return LINKR_DEBUGGER_CONFIG_SD_USB_READER;
-		case LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID:
-			return LINKR_DEBUGGER_CONFIG_USB_TARGET;
 		case LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID:
 			return LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED;
 		default:
@@ -237,7 +235,7 @@ static void assert_confirmation_tail_clear(
 	}
 }
 
-static void test_resolve_all_16_exact_ids_and_preserves_request_order(void)
+static void test_resolve_all_18_exact_ids_and_preserves_request_order(void)
 {
 	struct linkr_debugger_config_save_request request;
 	struct linkr_debugger_config_resolved_selection selection;
@@ -268,7 +266,7 @@ static void test_resolve_all_16_exact_ids_and_preserves_request_order(void)
 	memset(&request, 0, sizeof(request));
 	append_id(&request, "gpio/GP29");
 	append_id(&request, "power/5v_out");
-	append_id(&request, "switch/usb");
+	append_id(&request, "switch/tf_wp");
 	append_id(&request, "gpio/GP7");
 	append_id(&request, "switch/sd");
 	resolve_or_die(&request, &selection);
@@ -280,7 +278,7 @@ static void test_resolve_all_16_exact_ids_and_preserves_request_order(void)
 					       LINKR_DEBUGGER_CONFIG_POWER_5V_OUT_ID));
 	assert(selection.items[2] ==
 	       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-					       LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID));
+					       LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID));
 	assert(selection.items[3] ==
 	       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U));
 	assert(selection.items[4] ==
@@ -327,6 +325,10 @@ static void test_resolve_rejects_malformed_requests(void)
 	assert_resolve_error(&request, LINKR_DEBUGGER_CONFIG_SERVICE_UNKNOWN_ITEM);
 
 	memset(&request, 0, sizeof(request));
+	append_id(&request, "switch/usb");
+	assert_resolve_error(&request, LINKR_DEBUGGER_CONFIG_SERVICE_UNKNOWN_ITEM);
+
+	memset(&request, 0, sizeof(request));
 	append_id(&request, "12v_out");
 	assert_resolve_error(&request, LINKR_DEBUGGER_CONFIG_SERVICE_UNKNOWN_ITEM);
 
@@ -353,9 +355,9 @@ static void test_project_copies_selected_values_in_selection_order(void)
 	build_coherent_control(&control);
 	memset(&request, 0, sizeof(request));
 	append_id(&request, "gpio/GP15");
-	append_id(&request, "switch/usb");
+	append_id(&request, "switch/tf_wp");
 	append_id(&request, "power/12v_out");
-	append_id(&request, "gpio/GP8");
+	append_id(&request, "gpio/GP12");
 	resolve_or_die(&request, &selection);
 	seed_snapshot(&projected);
 	assert(linkr_debugger_config_policy_project_available_snapshot(
@@ -367,17 +369,17 @@ static void test_project_copies_selected_values_in_selection_order(void)
 	assert(projected.entries[0].value ==
 	       (LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT | LINKR_DEBUGGER_CONFIG_GPIO_LEVEL));
 	assert(projected.entries[1].domain == LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH);
-	assert(projected.entries[1].item_id == LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID);
-	assert(projected.entries[1].value == LINKR_DEBUGGER_CONFIG_USB_TARGET);
+	assert(projected.entries[1].item_id == LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID);
+	assert(projected.entries[1].value == LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED);
 	assert(projected.entries[2].domain == LINKR_DEBUGGER_CONFIG_DOMAIN_POWER);
 	assert(projected.entries[2].item_id == LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID);
 	assert(projected.entries[2].value == LINKR_DEBUGGER_CONFIG_POWER_OFF);
 	assert(projected.entries[3].domain == LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO);
-	assert(projected.entries[3].item_id == 8U);
+	assert(projected.entries[3].item_id == 12U);
 	assert(projected.entries[3].value == 0U);
 }
 
-static void test_project_full_16_items_copies_every_value_exactly(void)
+static void test_project_full_18_items_copies_every_value_exactly(void)
 {
 	struct linkr_debugger_control_snapshot control;
 	struct linkr_debugger_config_save_request request;
@@ -511,7 +513,7 @@ static void assert_canonical_order(const struct linkr_debugger_config_snapshot *
 	}
 }
 
-static void test_canonicalize_sorts_shuffled_16_entries_stably(void)
+static void test_canonicalize_sorts_shuffled_18_entries_stably(void)
 {
 	struct linkr_debugger_control_snapshot control;
 	struct linkr_debugger_config_save_request request;
@@ -661,8 +663,8 @@ static void test_confirmation_report_lists_multi_danger_in_canonical_order(void)
 		     LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID,
 		     LINKR_DEBUGGER_CONFIG_POWER_ON);
 	append_entry(&snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U, 0U);
-	append_entry(&snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		     LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID, LINKR_DEBUGGER_CONFIG_USB_PC);
+	append_entry(&snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 5U,
+		     LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT | LINKR_DEBUGGER_CONFIG_GPIO_LEVEL);
 	append_entry(&snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID,
 		     LINKR_DEBUGGER_CONFIG_POWER_ON);
@@ -681,8 +683,7 @@ static void test_confirmation_report_lists_multi_danger_in_canonical_order(void)
 	       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 					       LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID));
 	assert(report.confirmation_items[2] ==
-	       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-					       LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID));
+	       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 5U));
 	assert(report.confirmation_items[3] ==
 	       linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 12U));
 	for (size_t i = 1U; i < report.confirmation_count; i++) {
@@ -797,19 +798,19 @@ static void test_full_pipeline_resolve_project_canonicalize_confirm(void)
 
 int main(void)
 {
-	test_resolve_all_16_exact_ids_and_preserves_request_order();
+	test_resolve_all_18_exact_ids_and_preserves_request_order();
 	test_resolve_rejects_malformed_requests();
 	test_project_copies_selected_values_in_selection_order();
-	test_project_full_16_items_copies_every_value_exactly();
+	test_project_full_18_items_copies_every_value_exactly();
 	test_project_rejects_incoherent_control_snapshots();
 	test_project_rejects_unavailable_selected_items();
-	test_canonicalize_sorts_shuffled_16_entries_stably();
+	test_canonicalize_sorts_shuffled_18_entries_stably();
 	test_canonicalize_rejects_malformed_snapshots();
 	test_confirmation_report_classifies_every_domain_value();
 	test_confirmation_report_lists_multi_danger_in_canonical_order();
 	test_confirmation_report_handles_safe_snapshot_and_malformed_calls();
 	test_full_pipeline_resolve_project_canonicalize_confirm();
-	printf("linkr_debugger_config_policy: resolve=16 project=16 canonical=16 "
-	       "confirm=17/17 passed\n");
+	printf("linkr_debugger_config_policy: resolve=18 project=18 canonical=18 "
+	       "confirm=16/16 passed\n");
 	return 0;
 }

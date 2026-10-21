@@ -21,7 +21,9 @@
 #define LINKR_DEBUGGER_SERIAL_TX_SLOT_COUNT 8U
 #define LINKR_DEBUGGER_SERIAL_TX_MESSAGE_MAX 480U
 #define LINKR_DEBUGGER_SERIAL_STATIC_MAX (14U * 1024U)
-#define LINKR_DEBUGGER_SERIAL_BAUD_COUNT 9U
+#define LINKR_DEBUGGER_SERIAL_BAUD_MIN 4800U
+#define LINKR_DEBUGGER_SERIAL_BAUD_MAX 115200U
+#define LINKR_DEBUGGER_SERIAL_BAUD_PRESET_COUNT 5U
 
 enum linkr_debugger_serial_sink {
 	LINKR_DEBUGGER_SERIAL_SINK_CDC = 0,
@@ -171,8 +173,9 @@ struct linkr_debugger_serial_model {
 	bool rollback_pending;
 };
 
+/* Recommended UI choices; every baud in the inclusive product range is valid. */
 extern const uint32_t
-	linkr_debugger_serial_baud_whitelist[LINKR_DEBUGGER_SERIAL_BAUD_COUNT];
+	linkr_debugger_serial_baud_presets[LINKR_DEBUGGER_SERIAL_BAUD_PRESET_COUNT];
 
 bool linkr_debugger_serial_config_valid(
 	const struct linkr_debugger_serial_config *config);
@@ -191,6 +194,9 @@ int linkr_debugger_serial_rx_sink_attach(
 	struct linkr_debugger_serial_model *model,
 	enum linkr_debugger_serial_sink sink);
 int linkr_debugger_serial_rx_sink_detach(
+	struct linkr_debugger_serial_model *model,
+	enum linkr_debugger_serial_sink sink);
+int linkr_debugger_serial_rx_sink_rearm(
 	struct linkr_debugger_serial_model *model,
 	enum linkr_debugger_serial_sink sink);
 /* While PAUSED, writes are discarded into rx.paused_dropped; head does not move. */

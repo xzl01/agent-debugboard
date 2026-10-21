@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <zephyr/device.h>
 
@@ -52,6 +54,13 @@ struct fake_hal {
 	size_t uart_tx_length_at_configure;
 	unsigned int configure_count;
 	unsigned int configure_failures;
+	unsigned int config_get_failures;
+	unsigned int dtr_read_failures;
+	unsigned int rts_read_failures;
+	void (*configure_hook)(struct fake_hal *hal);
+	void (*config_get_hook)(struct fake_hal *hal);
+	void (*dtr_get_hook)(struct fake_hal *hal);
+	void (*rts_get_hook)(struct fake_hal *hal);
 	unsigned int callback_depth;
 	unsigned int max_callback_depth;
 	uint32_t dtr;
@@ -369,6 +378,16 @@ static int fake_config_get(void *context, const struct device *dev,
 	struct fake_hal *hal = context;
 
 	assert(dev == &hal->cdc.device);
+	if (hal->config_get_hook != NULL) {
+		void (*hook)(struct fake_hal *hal) = hal->config_get_hook;
+
+		hal->config_get_hook = NULL;
+		hook(hal);
+	}
+	if (hal->config_get_failures != 0U) {
+		hal->config_get_failures--;
+		return -EIO;
+	}
 	*config = hal->cdc_config;
 	return 0;
 }
@@ -381,6 +400,12 @@ static int fake_configure(void *context, const struct device *dev,
 	assert(dev == &hal->uart.device);
 	hal->uart_tx_length_at_configure = hal->uart.tx_length;
 	hal->configure_count++;
+	if (hal->configure_hook != NULL) {
+		void (*hook)(struct fake_hal *hal) = hal->configure_hook;
+
+		hal->configure_hook = NULL;
+		hook(hal);
+	}
 	if (hal->configure_failures != 0U) {
 		hal->configure_failures--;
 		return -EIO;
@@ -397,6 +422,30 @@ fake_line_control_get(void *context, const struct device *dev,
 	struct fake_hal *hal = context;
 
 	assert(dev == &hal->cdc.device);
+	if (control == LINKR_DEBUGGER_SERIAL_LINE_DTR &&
+	    hal->dtr_get_hook != NULL) {
+		void (*hook)(struct fake_hal *hal) = hal->dtr_get_hook;
+
+		hal->dtr_get_hook = NULL;
+		hook(hal);
+	}
+	if (control == LINKR_DEBUGGER_SERIAL_LINE_RTS &&
+	    hal->rts_get_hook != NULL) {
+		void (*hook)(struct fake_hal *hal) = hal->rts_get_hook;
+
+		hal->rts_get_hook = NULL;
+		hook(hal);
+	}
+	if (control == LINKR_DEBUGGER_SERIAL_LINE_DTR &&
+	    hal->dtr_read_failures != 0U) {
+		hal->dtr_read_failures--;
+		return -EIO;
+	}
+	if (control == LINKR_DEBUGGER_SERIAL_LINE_RTS &&
+	    hal->rts_read_failures != 0U) {
+		hal->rts_read_failures--;
+		return -EIO;
+	}
 	*value =
 	    control == LINKR_DEBUGGER_SERIAL_LINE_DTR ? hal->dtr : hal->rts;
 	return 0;
@@ -460,10 +509,121 @@ static void complete_uart_during_pause(void)
 	assert(status.admission_frozen);
 	assert(status.pause_waiting_for_tx);
 	assert(status.pause_wait_budget_ms > 0U &&
-	       status.pause_wait_budget_ms <= 650U);
+	       status.pause_wait_budget_ms <= 1250U);
 	pause_completion_hal->uart.wire_complete = true;
 	fake_invoke(pause_completion_hal, &pause_completion_hal->uart);
 	pause_completion_hal->uart.wire_complete = false;
+}
+
+static void configure_hook_low_high(struct fake_hal *hal)
+{
+	static const uint8_t blocked = 0x6aU;
+	struct linkr_debugger_serial_status status;
+
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr && status.cdc_promotion_pending);
+	fake_append_rx(&hal->cdc, &blocked, 1U);
+	fake_invoke(hal, &hal->cdc);
+}
+
+static void configure_hook_low_high_line_b(struct fake_hal *hal)
+{
+	configure_hook_low_high(hal);
+	hal->cdc_config.baud = 57600U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+}
+
+static void configure_hook_line_b_low(struct fake_hal *hal)
+{
+	hal->cdc_config.baud = 9600U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+}
+
+static void configure_hook_line_b_reset(struct fake_hal *hal)
+{
+	hal->cdc_config.baud = 9600U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	assert(linkr_debugger_serial_cdc_usb_event(
+		       &hal->cdc.device, LINKR_DEBUGGER_SERIAL_USB_RESET, false) ==
+	       0);
+	assert(linkr_debugger_serial_cdc_usb_event(
+		       &hal->cdc.device,
+		       LINKR_DEBUGGER_SERIAL_USB_CONFIGURATION, true) == 0);
+}
+
+static void configure_hook_low_only(struct fake_hal *hal)
+{
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+}
+
+static void configure_hook_same_high_rts(struct fake_hal *hal)
+{
+	hal->dtr = 1U;
+	hal->rts ^= 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+}
+
+static void configure_hook_high_line_b(struct fake_hal *hal)
+{
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	hal->cdc_config.baud = 57600U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+}
+
+static void configure_hook_invalid_line_b(struct fake_hal *hal)
+{
+	hal->cdc_config.baud = LINKR_DEBUGGER_SERIAL_BAUD_MIN - 1U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) ==
+	       -EINVAL);
+}
+
+static void notification_read_hook_process_not_up(struct fake_hal *hal)
+{
+	struct linkr_debugger_serial_status status;
+
+	(void)hal;
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr);
+	assert(status.cdc_phase != LINKR_DEBUGGER_SERIAL_CDC_UP);
+	assert(status.cdc_notifications_inflight != 0U);
+}
+
+static void line_read_hook_high_and_process(struct fake_hal *hal)
+{
+	struct linkr_debugger_serial_status status;
+
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_PROMOTING);
+	assert(!status.dtr && status.cdc_promotion_pending);
+	assert(status.cdc_notifications_inflight == 1U);
+}
+
+static void before_cdc_claim_high(void *context)
+{
+	struct fake_hal *hal = context;
+	struct linkr_debugger_serial_status status;
+
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_PROMOTING);
+	assert(!status.dtr && status.cdc_promotion_pending);
+	assert(status.pending_cdc_config_valid);
+	assert(status.pending_cdc_config.baud == 38400U);
 }
 
 static void drain_completions(void)
@@ -480,6 +640,782 @@ static void assert_status_state(enum linkr_debugger_serial_state state)
 
 	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
 	assert(status.state == state);
+}
+
+static void test_cdc_low_stages_config_until_safe_high(struct fake_hal *hal)
+{
+	static const uint8_t blocked_rx = 0x5aU;
+	struct linkr_debugger_serial_config web = config_115200_8n1;
+	struct linkr_debugger_serial_status before;
+	struct linkr_debugger_serial_status status;
+	uint64_t request_id;
+	uint64_t dropped_before;
+
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	assert(!before.dtr && before.current_config.baud == 115200U);
+	hal->dtr = 0U;
+	hal->rts = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_responder_generation ==
+	       before.cdc_responder_generation);
+	hal->cdc_config = config_115200_8n1;
+	hal->cdc_config.baud = 9600U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.current_config.baud == 115200U);
+	assert(status.generation == before.generation);
+	assert(status.config_counters.configure_count ==
+	       before.config_counters.configure_count);
+	assert(status.pending_cdc_config_valid);
+	assert(status.pending_cdc_config.baud == 9600U);
+	hal->rts = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.pending_cdc_config_valid);
+	assert(status.pending_cdc_config.baud == 9600U);
+	assert(status.cdc_responder_generation ==
+	       before.cdc_responder_generation);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.dtr && status.current_config.baud == 9600U);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr);
+
+	web.baud = 5200U;
+	assert(linkr_debugger_serial_config_cas(
+		       &web, status.generation, &request_id) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.current_config.baud == 5200U);
+	assert(!status.dtr);
+
+	hal->cdc_config.baud = 19200U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr && status.cdc_promotion_pending);
+	dropped_before = status.runtime_counters.cdc_rx_dropped;
+	fake_append_rx(&hal->cdc, &blocked_rx, 1U);
+	fake_invoke(hal, &hal->cdc);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.dtr && !status.cdc_promotion_pending);
+	assert(status.current_config.baud == 19200U);
+	assert(status.runtime_counters.cdc_rx_dropped == dropped_before + 1U);
+
+	/* HIGH before the worker claims staged A stamps it with this session. A
+	 * failed apply therefore belongs to this promotion and blocks it.
+	 */
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	hal->cdc_config.baud = 38400U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->configure_failures = 1U;
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	dropped_before = status.runtime_counters.cdc_rx_dropped;
+	fake_append_rx(&hal->cdc, &blocked_rx, 1U);
+	fake_invoke(hal, &hal->cdc);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr && !status.cdc_promotion_pending);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_CONFIG_FAILED);
+	assert(status.current_config.baud == 19200U);
+	assert(status.config_counters.apply_failed >= 1U);
+	assert(status.runtime_counters.cdc_rx_dropped == dropped_before + 1U);
+
+	/* A reset clears a staged low-DTR tuple so it cannot cross sessions. */
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	hal->cdc_config.baud = 57600U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	assert(linkr_debugger_serial_cdc_usb_event(
+		       &hal->cdc.device, LINKR_DEBUGGER_SERIAL_USB_RESET, false) ==
+	       0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.pending_cdc_config_valid);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.dtr && status.current_config.baud == 19200U);
+
+	/* While HIGH, subsequent CDC line coding keeps immediate apply semantics. */
+	hal->cdc_config.baud = 5200U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.dtr && status.current_config.baud == 5200U);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	web.baud = 115200U;
+	assert(linkr_debugger_serial_config_cas(
+		       &web, status.generation, &request_id) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr && status.current_config.baud == 115200U);
+}
+
+static void test_cdc_configure_edge_fence_and_mailbox_cancel(
+	struct fake_hal *hal)
+{
+	struct linkr_debugger_serial_config web = config_115200_8n1;
+	struct linkr_debugger_serial_status before;
+	struct linkr_debugger_serial_status status;
+	size_t uart_start;
+	uint64_t request_id;
+	uint64_t dropped_before;
+	unsigned int configure_count;
+
+	/* LOW->HIGH injected from inside configure invalidates this worker's
+	 * promotion fence. No intermediate snapshot may publish HIGH; the next
+	 * worker pass consumes detach/control and attaches correctly.
+	 */
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	hal->cdc_config.baud = 19200U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	dropped_before = before.runtime_counters.cdc_rx_dropped;
+	uart_start = hal->uart.tx_length;
+	configure_count = hal->configure_count;
+	hal->configure_hook = configure_hook_low_high;
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr && status.cdc_promotion_pending);
+	assert(status.current_config.baud == 19200U);
+	assert(status.generation == before.generation + 1U);
+	assert(status.runtime_counters.cdc_rx_dropped == dropped_before + 1U);
+	assert(hal->uart.tx_length == uart_start);
+	assert(hal->configure_count == configure_count + 1U);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.dtr && !status.cdc_promotion_pending);
+	assert(status.current_config.baud == 19200U);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+
+	/* A failure from an epoch invalidated by LOW->HIGH cannot poison the new
+	 * HIGH session. B applies successfully before DTR is published.
+	 */
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	hal->cdc_config.baud = 38400U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	hal->configure_failures = 1U;
+	hal->configure_hook = configure_hook_low_high_line_b;
+	configure_count = hal->configure_count;
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr && status.cdc_promotion_pending);
+	assert(status.current_config.baud == before.current_config.baud);
+	assert(status.pending_cdc_config_valid);
+	assert(status.pending_cdc_config.baud == 57600U);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.dtr && status.current_config.baud == 57600U);
+	assert(hal->configure_count == configure_count + 3U);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+
+	/* A same-HIGH RTS callback changes no epoch. The failed attempt blocks the
+	 * session immediately, and even a later valid B cannot reopen it.
+	 */
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	hal->cdc_config.baud = 38400U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	hal->configure_failures = 1U;
+	hal->configure_hook = configure_hook_same_high_rts;
+	configure_count = hal->configure_count;
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr && !status.cdc_promotion_pending);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_CONFIG_FAILED);
+	assert(status.cdc_responder_generation ==
+	       before.cdc_responder_generation + 1U);
+	hal->cdc_config.baud = 57600U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(status.current_config.baud == before.current_config.baud);
+	assert(hal->configure_count == configure_count + 2U);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+
+	/* A is already copied by the worker. B arrives during A's HAL call, then
+	 * LOW: B is an unsubmitted mailbox and must be canceled unconditionally.
+	 */
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	hal->cdc_config.baud = 38400U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	configure_count = hal->configure_count;
+	hal->configure_hook = configure_hook_line_b_low;
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr && !status.pending_cdc_config_valid);
+	assert(status.current_config.baud == 38400U);
+	assert(status.generation == before.generation + 1U);
+	assert(hal->configure_count == configure_count + 1U);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.current_config.baud == 38400U);
+	assert(hal->configure_count == configure_count + 1U);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.dtr && status.current_config.baud == 38400U);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+
+	/* RESET has the same cancellation rule; CONFIGURATION coalescing must not
+	 * resurrect B in the new USB session.
+	 */
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	hal->cdc_config.baud = 57600U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	configure_count = hal->configure_count;
+	hal->configure_failures = 1U;
+	hal->configure_hook = configure_hook_line_b_reset;
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr && !status.pending_cdc_config_valid);
+	assert(status.current_config.baud == before.current_config.baud);
+	assert(status.generation == before.generation);
+	assert(hal->configure_count == configure_count + 2U);
+	linkr_debugger_serial_process_events();
+	assert(hal->configure_count == configure_count + 2U);
+	hal->cdc_config.baud = 57600U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.dtr && status.current_config.baud == 57600U);
+	assert(status.generation == before.generation + 1U);
+	assert(hal->configure_count == configure_count + 3U);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+
+	/* LOW only cancels the CDC mailbox. An already accepted HTTP request
+	 * survives and applies after A.
+	 */
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	web.baud = 5200U;
+	assert(linkr_debugger_serial_config_cas(
+		       &web, before.generation, &request_id) == 0);
+	hal->cdc_config.baud = 38400U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	hal->configure_hook = configure_hook_low_only;
+	configure_count = hal->configure_count;
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr);
+	assert(status.current_config.baud == 38400U);
+	assert(status.generation == before.generation + 1U);
+	assert(status.last_config_request_id == request_id);
+	assert(status.last_config_done && status.last_config_result == -ESTALE);
+	assert(hal->configure_count == configure_count + 1U);
+	web.baud = 115200U;
+	assert(linkr_debugger_serial_config_cas(
+		       &web, status.generation, &request_id) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr && status.current_config.baud == 115200U);
+}
+
+static void test_cdc_before_claim_high_failure_attribution(
+	struct fake_hal *hal)
+{
+	struct linkr_debugger_serial_status before;
+	struct linkr_debugger_serial_status status;
+	unsigned int configure_count;
+
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	assert(before.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+	hal->cdc_config = before.current_config;
+	hal->cdc_config.baud = 38400U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	configure_count = hal->configure_count;
+	hal->configure_failures = 1U;
+	linkr_debugger_serial_test_set_before_cdc_claim_hook(
+		before_cdc_claim_high, hal);
+
+	/* process_events() has already sampled the old DOWN-session fence when
+	 * the hook commits HIGH and stamps A. The worker must claim that new-epoch
+	 * mailbox, and A's failure must block that exact promotion.
+	 */
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_CONFIG_FAILED);
+	assert(!status.dtr && !status.cdc_promotion_pending);
+	assert(!status.cdc_model_dtr && !status.cdc_sink_attached);
+	assert(!status.pending_cdc_config_valid);
+	assert(status.generation == before.generation);
+	assert(linkr_debugger_serial_config_equal(
+		       &status.current_config, &before.current_config));
+	assert(status.config_counters.apply_failed ==
+	       before.config_counters.apply_failed + 1U);
+	assert(hal->configure_count == configure_count + 2U);
+
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+}
+
+static void test_cdc_notification_windows_and_promoting_failures(
+	struct fake_hal *hal)
+{
+	struct linkr_debugger_serial_status before;
+	struct linkr_debugger_serial_status status;
+	unsigned int configure_count;
+
+	/* A line-coding read can span the HIGH notification. The outer read keeps
+	 * inflight nonzero, so the worker cannot publish UP before its tuple is
+	 * committed to the new session mailbox.
+	 */
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	assert(before.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+	hal->cdc_config = before.current_config;
+	hal->cdc_config.baud = 19200U;
+	hal->config_get_hook = line_read_hook_high_and_process;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_PROMOTING);
+	assert(status.cdc_notifications_inflight == 0U);
+	assert(status.cdc_notification_sequence ==
+	       before.cdc_notification_sequence + 2U);
+	assert(status.pending_cdc_config_valid &&
+	       status.pending_cdc_config.baud == 19200U);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_UP && status.dtr);
+	assert(status.current_config.baud == 19200U);
+	before = status;
+	configure_count = hal->configure_count;
+	hal->cdc_config.baud = LINKR_DEBUGGER_SERIAL_BAUD_MIN - 1U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) ==
+	       -EINVAL);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_UP && status.dtr);
+	assert(status.current_config.baud == 19200U);
+	assert(status.runtime_counters.invalid_line_coding ==
+	       before.runtime_counters.invalid_line_coding + 1U);
+	assert(hal->configure_count == configure_count);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+
+	/* With no staged tuple, DTR and line-coding HAL reads both permit a worker
+	 * checkpoint. Neither can publish UP while its notification is inflight;
+	 * the failed line sample then blocks the PROMOTING session.
+	 */
+	hal->dtr = 1U;
+	hal->dtr_get_hook = notification_read_hook_process_not_up;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_PROMOTING);
+	hal->config_get_failures = 1U;
+	hal->config_get_hook = notification_read_hook_process_not_up;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == -EIO);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_CONFIG_FAILED);
+	assert(!status.dtr && !status.cdc_model_dtr &&
+	       !status.cdc_sink_attached);
+	before = status;
+	hal->config_get_failures = 1U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == -EIO);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_CONFIG_FAILED);
+	assert(status.runtime_counters.invalid_line_coding ==
+	       before.runtime_counters.invalid_line_coding + 1U);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+
+	/* B is invalid while A is already inside configure(). B must block the
+	 * session even though A itself completes successfully.
+	 */
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	assert(before.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+	hal->cdc_config = before.current_config;
+	hal->cdc_config.baud = 38400U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	configure_count = hal->configure_count;
+	hal->configure_hook = configure_hook_invalid_line_b;
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.current_config.baud == 38400U);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_CONFIG_FAILED);
+	assert(!status.cdc_model_dtr && !status.cdc_sink_attached);
+	assert(hal->configure_count == configure_count + 1U);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+
+	/* DTR LOW is committed before RTS is read. A worker checkpoint in the RTS
+	 * read therefore sees the gate closed and cannot publish an old HIGH.
+	 */
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_PROMOTING);
+	hal->dtr = 0U;
+	hal->rts_get_hook = notification_read_hook_process_not_up;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+	assert(!status.dtr && !status.cdc_model_dtr &&
+	       !status.cdc_sink_attached);
+}
+
+static void test_cdc_http_arbitration_and_mailbox_coalesce(
+	struct fake_hal *hal)
+{
+	struct linkr_debugger_serial_config web;
+	struct linkr_debugger_serial_status before;
+	struct linkr_debugger_serial_status status;
+	uint64_t request_id;
+	unsigned int configure_count;
+
+	/* A request accepted in DOWN is decided by the phase at worker claim.
+	 * HIGH wins even when the HTTP tuple would otherwise be a no-change.
+	 */
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	assert(before.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+	web = before.current_config;
+	assert(linkr_debugger_serial_config_cas(
+		       &web, before.generation, &request_id) == 0);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_UP && status.dtr);
+	assert(status.last_config_done &&
+	       status.last_config_request_id == request_id);
+	assert(status.last_config_result == -EBUSY);
+	assert(status.config_counters.web_requests ==
+	       before.config_counters.web_requests);
+	assert(status.config_counters.no_change ==
+	       before.config_counters.no_change);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+
+	/* If HIGH and CDC B arrive inside HTTP A's HAL call, A may complete, but
+	 * B owns the promotion epoch and must apply before DTR is published.
+	 */
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	web = before.current_config;
+	web.baud = 38400U;
+	assert(linkr_debugger_serial_config_cas(
+		       &web, before.generation, &request_id) == 0);
+	configure_count = hal->configure_count;
+	hal->configure_hook = configure_hook_high_line_b;
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_PROMOTING);
+	assert(!status.dtr && status.cdc_promotion_pending);
+	assert(status.current_config.baud == 38400U);
+	assert(status.pending_cdc_config_valid);
+	assert(status.pending_cdc_config.baud == 57600U);
+	assert(status.last_config_done && status.last_config_result == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_UP && status.dtr);
+	assert(status.current_config.baud == 57600U);
+	assert(hal->configure_count == configure_count + 2U);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+
+	/* The unclaimed mailbox coalesces to the newest tuple in one epoch. */
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	hal->cdc_config.baud = 19200U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	hal->cdc_config.baud = 38400U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->cdc_config.baud = 5200U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.pending_cdc_config_valid);
+	assert(status.pending_cdc_config.baud == 5200U);
+	assert(status.runtime_counters.config_mailbox_busy ==
+	       before.runtime_counters.config_mailbox_busy + 2U);
+	configure_count = hal->configure_count;
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_UP && status.dtr);
+	assert(status.current_config.baud == 5200U);
+	assert(hal->configure_count == configure_count + 1U);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+}
+
+static void test_cdc_read_staging_and_set_dtr_fail_closed(struct fake_hal *hal)
+{
+	static const uint8_t blocked_rx = 0xa6U;
+	static const uint8_t stale_uart[] = {0xb6U, 0xb7U, 0xb8U};
+	struct linkr_debugger_serial_status before;
+	struct linkr_debugger_serial_status status;
+	size_t cdc_tx_length;
+	size_t cdc_tx_start = hal->cdc.tx_length;
+	size_t uart_tx_length;
+	uint64_t responder_generation;
+	uint64_t dropped_before;
+	unsigned int configure_count;
+
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	assert(before.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+	responder_generation = before.cdc_responder_generation;
+
+	/* Same LOW only updates RTS. It neither creates a boundary nor discards a
+	 * valid unbound staging tuple.
+	 */
+	hal->cdc_config.baud = 9600U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->rts ^= 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+	assert(status.pending_cdc_config_valid &&
+	       status.pending_cdc_config.baud == 9600U);
+	assert(status.cdc_responder_generation == responder_generation);
+
+	/* A successful LOW line-coding sample explicitly clears a prior staging
+	 * error and can promote normally.
+	 */
+	hal->cdc_config.baud = LINKR_DEBUGGER_SERIAL_BAUD_MIN - 1U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) ==
+	       -EINVAL);
+	hal->cdc_config.baud = 19200U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_UP && status.dtr);
+	assert(status.current_config.baud == 19200U);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+
+	/* Invalid and unreadable LOW line coding replace staging with an error.
+	 * HIGH therefore blocks without touching the UART. A same-HIGH callback
+	 * and later valid line coding cannot reopen that session.
+	 */
+	hal->cdc_config.baud = LINKR_DEBUGGER_SERIAL_BAUD_MIN - 1U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) ==
+	       -EINVAL);
+	configure_count = hal->configure_count;
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(!status.dtr && !status.cdc_promotion_pending);
+	hal->rts ^= 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	hal->cdc_config.baud = 19200U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(hal->configure_count == configure_count);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+
+	hal->config_get_failures = 1U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == -EIO);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+
+	/* A DTR read failure while recorded LOW blocks immediately. The next
+	 * successful same-LOW sample is a safe session boundary and recovers only
+	 * after the worker has reliably detached the model sink.
+	 */
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	hal->dtr_read_failures = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == -EIO);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED &&
+	       !status.dtr);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DTR_SAMPLE_UNKNOWN_WHILE_RECORDED_LOW);
+	uart_tx_length = hal->uart.tx_length;
+	dropped_before = status.runtime_counters.cdc_rx_dropped;
+	fake_append_rx(&hal->cdc, &blocked_rx, 1U);
+	fake_invoke(hal, &hal->cdc);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(hal->uart.tx_length == uart_tx_length);
+	assert(status.runtime_counters.cdc_rx_dropped == dropped_before + 1U);
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NONE);
+	assert(status.cdc_responder_generation ==
+	       before.cdc_responder_generation + 1U);
+	assert(!status.cdc_model_dtr && !status.cdc_sink_attached);
+
+	/* DTR is committed even when the following RTS read fails. RTS retains
+	 * its prior value and the promotion remains valid.
+	 */
+	hal->cdc_config.baud = 19200U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->dtr = 1U;
+	hal->rts ^= 1U;
+	hal->rts_read_failures = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == -EIO);
+	assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+	assert(before.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_PROMOTING);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_UP && status.dtr);
+	assert(status.current_config.baud == 19200U);
+	assert(status.rts == before.rts);
+
+	/* Read failure while UP closes the published gate before worker cleanup. */
+	hal->dtr_read_failures = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == -EIO);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED &&
+	       !status.dtr);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DTR_SAMPLE_UNKNOWN_WHILE_RECORDED_HIGH);
+	assert(!status.cdc_model_dtr && !status.cdc_sink_attached);
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DTR_SAMPLE_UNKNOWN_WHILE_RECORDED_HIGH);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+
+	/* Attach and detach failures are checked and keep the session closed.
+	 * Attach needs a real LOW boundary; detach failure retries on same LOW.
+	 */
+	linkr_debugger_serial_test_fail_next_set_dtr(true);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED &&
+	       !status.dtr);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_ATTACH_FAILED);
+	assert(!status.cdc_model_dtr && !status.cdc_sink_attached);
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_ATTACH_FAILED);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_UP);
+
+	cdc_tx_length = hal->cdc.tx_length;
+	fake_allow_fill(&hal->cdc, 1, 1);
+	fake_append_rx(&hal->uart, stale_uart, sizeof(stale_uart));
+	fake_invoke(hal, &hal->uart);
+	assert(hal->cdc.tx_length == cdc_tx_length + 1U);
+	cdc_tx_length = hal->cdc.tx_length;
+	linkr_debugger_serial_test_fail_next_set_dtr(false);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED &&
+	       !status.dtr);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DETACH_FAILED);
+	assert(status.cdc_model_dtr && status.cdc_sink_attached);
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NONE);
+	assert(!status.cdc_model_dtr && !status.cdc_sink_attached);
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	fake_allow_fill(&hal->cdc, 8, -1);
+	fake_invoke(hal, &hal->cdc);
+	assert(hal->cdc.tx_length == cdc_tx_length);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	hal->cdc.tx_length = cdc_tx_start;
 }
 
 static void test_uart_rx_fanout_and_cdc_pending(struct fake_hal *hal)
@@ -740,9 +1676,15 @@ test_config_retries_after_active_wire_completion(struct fake_hal *hal)
 	uint64_t first_id;
 	uint64_t second_id;
 	uint64_t rejected_id;
+	uint64_t base_generation;
 	unsigned int configure_count = hal->configure_count;
 	size_t i;
 
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	base_generation = status.generation;
 	fake_allow_fill(&hal->uart, 8, -1);
 	assert(linkr_debugger_serial_runtime_tx_enqueue(
 		   LINKR_DEBUGGER_SERIAL_TX_WS3, active, sizeof(active),
@@ -755,7 +1697,7 @@ test_config_retries_after_active_wire_completion(struct fake_hal *hal)
 		   sizeof(queued_second), &second_id) == 0);
 	assert(hal->uart.tx_length == start + sizeof(active));
 	hal->cdc_config = config_115200_8n1;
-	hal->cdc_config.baud = 230400U;
+	hal->cdc_config.baud = 57600U;
 	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
 	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
 	assert(status.admission_frozen);
@@ -771,14 +1713,16 @@ test_config_retries_after_active_wire_completion(struct fake_hal *hal)
 	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
 	assert(status.active_event_id == active_id);
 	assert(status.admission_frozen);
+	assert(status.pending_cdc_config_valid);
+	assert(status.pending_cdc_config.baud == 57600U);
 	assert(hal->uart.tx_length == start + sizeof(active));
 
 	complete_uart_wire(hal);
 	assert(hal->configure_count == configure_count + 1U);
 	assert(hal->uart_tx_length_at_configure == start + sizeof(active));
 	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
-	assert(status.current_config.baud == 230400U);
-	assert(status.generation == 2U);
+	assert(status.current_config.baud == 57600U);
+	assert(status.generation == base_generation + 1U);
 	assert(!status.admission_frozen);
 	assert(linkr_debugger_serial_completion_poll(&completion) == 0);
 	assert(completion.event_id == active_id);
@@ -807,6 +1751,8 @@ static void test_line_coding_control_and_config_cas(struct fake_hal *hal)
 	struct linkr_debugger_serial_status status;
 	uint64_t request_id;
 	uint64_t generation;
+	uint64_t base_generation;
+	uint64_t invalid_line_coding_before;
 	unsigned int configure_count = hal->configure_count;
 	unsigned int uart_rx_disables = hal->uart.rx_disable_count;
 	unsigned int uart_rx_enables = hal->uart.rx_enable_count;
@@ -815,17 +1761,20 @@ static void test_line_coding_control_and_config_cas(struct fake_hal *hal)
 	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
 	linkr_debugger_serial_process_events();
 	assert(hal->configure_count == configure_count);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	base_generation = status.generation;
 
 	hal->cdc_config = config_115200_8n1;
-	hal->cdc_config.baud = 921600U;
+	hal->cdc_config.baud = 5200U;
 	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
 	linkr_debugger_serial_process_events();
 	assert(hal->configure_count == configure_count + 1U);
 	assert(hal->uart.rx_disable_count == uart_rx_disables + 1U);
 	assert(hal->uart.rx_enable_count == uart_rx_enables + 1U);
-	assert(hal->configured.baud == 921600U);
+	assert(hal->configured.baud == 5200U);
 	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
-	assert(status.generation == 3U);
+	assert(status.generation == base_generation + 1U);
+	assert(status.current_config.baud == 5200U);
 	assert(status.dtr);
 	assert(!status.rts);
 	assert(linkr_debugger_serial_cdc_usb_event(
@@ -835,18 +1784,41 @@ static void test_line_coding_control_and_config_cas(struct fake_hal *hal)
 	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
 	assert(status.usb_configured);
 
-	hal->cdc_config.baud = 12345U;
+	/* PL011 remains the final authority: a failed apply rolls back the
+	 * accepted arbitrary CDC rate without advancing generation.
+	 */
+	configure_count = hal->configure_count;
+	uart_rx_disables = hal->uart.rx_disable_count;
+	uart_rx_enables = hal->uart.rx_enable_count;
+	hal->configure_failures = 1U;
+	hal->cdc_config.baud = 5201U;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(hal->configure_count == configure_count + 2U);
+	assert(hal->uart.rx_disable_count == uart_rx_disables + 1U);
+	assert(hal->uart.rx_enable_count == uart_rx_enables + 1U);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.state == LINKR_DEBUGGER_SERIAL_READY);
+	assert(!status.admission_frozen);
+	assert(status.generation == base_generation + 1U);
+	assert(status.current_config.baud == 5200U);
+	assert(hal->configured.baud == 5200U);
+
+	invalid_line_coding_before =
+		status.runtime_counters.invalid_line_coding;
+	hal->cdc_config.baud = LINKR_DEBUGGER_SERIAL_BAUD_MIN - 1U;
 	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) ==
 	       -EINVAL);
 	linkr_debugger_serial_process_events();
-	assert(hal->configure_count == configure_count + 1U);
+	assert(hal->configure_count == configure_count + 2U);
 	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
-	assert(status.runtime_counters.invalid_line_coding == 1U);
+	assert(status.runtime_counters.invalid_line_coding ==
+	       invalid_line_coding_before + 1U);
 
-	invalid.baud = 12345U;
+	invalid.baud = LINKR_DEBUGGER_SERIAL_BAUD_MAX + 1U;
 	assert(linkr_debugger_serial_config_cas(&invalid, status.generation,
 						&request_id) == -EINVAL);
-	next.baud = 460800U;
+	next.baud = 38400U;
 	assert(linkr_debugger_serial_config_cas(&next, 1U, &request_id) == 0);
 	linkr_debugger_serial_process_events();
 	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
@@ -958,7 +1930,7 @@ static void test_pause_timeout_errors_and_resume(struct fake_hal *hal)
 
 	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
 	worst = status.current_config;
-	worst.baud = 9600U;
+	worst.baud = LINKR_DEBUGGER_SERIAL_BAUD_MIN;
 	worst.data_bits = 8U;
 	worst.parity = LINKR_DEBUGGER_SERIAL_PARITY_EVEN;
 	worst.stop_bits = 2U;
@@ -966,8 +1938,15 @@ static void test_pause_timeout_errors_and_resume(struct fake_hal *hal)
 						&request_id) == 0);
 	linkr_debugger_serial_process_events();
 	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
-	assert(status.current_config.baud == 9600U);
-	assert(status.pause_wait_budget_ms == 650U);
+	assert(status.current_config.baud == LINKR_DEBUGGER_SERIAL_BAUD_MIN);
+	assert(status.pause_wait_budget_ms == 1250U);
+	worst.baud = 5200U;
+	assert(linkr_debugger_serial_config_cas(&worst, status.generation,
+						&request_id) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.current_config.baud == 5200U);
+	assert(status.pause_wait_budget_ms == 1158U);
 	canceled_before = status.tx_canceled;
 
 	fake_allow_fill(&hal->uart, 1, 1);
@@ -987,7 +1966,7 @@ static void test_pause_timeout_errors_and_resume(struct fake_hal *hal)
 	assert(status.active_event_id == active_id);
 	assert(status.tx_used_slots == 2U);
 	assert(status.tx_canceled == canceled_before);
-	assert(status.pause_wait_budget_ms == 650U);
+	assert(status.pause_wait_budget_ms == 1158U);
 	assert(status.runtime_counters.pause_wait_timeouts >= 1U);
 	assert(hal->uart.rx_enabled);
 	assert(hal->cdc.rx_enabled);
@@ -1065,6 +2044,12 @@ static void
 test_network_adapter_fanout_completion_and_raw_tcp(struct fake_hal *hal)
 {
 	static const uint8_t binary[] = {0x00U, 0xffU, 0x41U};
+	static const uint8_t state_marker[] = {0xd5U};
+	static const uint8_t promotion_query[] = {0xe1U, 0xe2U};
+	static const uint8_t before_read_query[] = {0xb1U};
+	static const uint8_t after_read_query[] = {0xb2U};
+	static const uint8_t missed_edge_query[] = {0xc1U, 0xc2U};
+	static const uint8_t post_missed_edge[] = {0xc3U};
 	static const uint8_t downlink[] = {1U, 2U, 3U, 4U, 5U};
 	static const uint8_t raw_uplink[] = {0x00U, 0xffU, 0x7eU, 0x0dU};
 	uint8_t fill[FAKE_BUFFER_CAPACITY];
@@ -1077,10 +2062,12 @@ test_network_adapter_fanout_completion_and_raw_tcp(struct fake_hal *hal)
 	const uint8_t *data;
 	size_t length;
 	size_t uart_start;
+	size_t cdc_tx_before_attach;
 	unsigned int recv_calls;
 	uint64_t ws0_event;
 	uint64_t ws1_event;
 	uint64_t rejected_event;
+	uint64_t generation_before_reset;
 
 	memset(fill, 0xa5, sizeof(fill));
 	assert(linkr_debugger_serial_net_init() == 0);
@@ -1089,21 +2076,111 @@ test_network_adapter_fanout_completion_and_raw_tcp(struct fake_hal *hal)
 	assert(linkr_debugger_serial_net_ws_attach(1U) == 0);
 	assert(linkr_debugger_serial_status_snapshot(&serial_status) == 0);
 	serial_net_observe_status(&serial_status);
+	assert(linkr_debugger_serial_net_status_snapshot(&net_status) == 0);
+	assert(net_status.terminal_responder.valid);
+	assert(net_status.terminal_responder.transport ==
+	       LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_WEBSOCKET);
+	assert(net_status.terminal_responder.slot == 0);
+	{
+		uint64_t responder_generation =
+			serial_status.cdc_responder_generation;
+		size_t cdc_tx_start = hal->cdc.tx_length;
+
+		/* HIGH and LOW both complete before one net observation. The final
+		 * descriptor is still WS0, but generation +2 forces a fresh WS0
+		 * boundary. WS1 remains an observer of the old query.
+		 */
+		hal->dtr = 1U;
+		assert(linkr_debugger_serial_cdc_control_line(
+			       &hal->cdc.device) == 0);
+		linkr_debugger_serial_process_events();
+		fake_allow_fill(&hal->cdc, 8, -1);
+		fake_append_rx(&hal->uart, missed_edge_query,
+			       sizeof(missed_edge_query));
+		fake_invoke(hal, &hal->uart);
+		assert(hal->cdc.tx_length ==
+		       cdc_tx_start + sizeof(missed_edge_query));
+		hal->dtr = 0U;
+		assert(linkr_debugger_serial_cdc_control_line(
+			       &hal->cdc.device) == 0);
+		linkr_debugger_serial_process_events();
+		assert(linkr_debugger_serial_status_snapshot(&serial_status) == 0);
+		assert(!serial_status.dtr);
+		assert(serial_status.cdc_responder_generation ==
+		       responder_generation + 2U);
+		assert(linkr_debugger_serial_net_responder_sync(&serial_status) == 0);
+		assert(linkr_debugger_serial_net_status_snapshot(&net_status) == 0);
+		assert(net_status.terminal_responder.slot == 0);
+		assert(linkr_debugger_serial_net_ws_read(
+			       0U, &ws0_pending, sizeof(missed_edge_query), &data,
+			       &length) == 0);
+		assert(length == 0U);
+		assert(linkr_debugger_serial_net_ws_read(
+			       1U, &ws1_pending, sizeof(missed_edge_query), &data,
+			       &length) == 0);
+		assert(length == sizeof(missed_edge_query));
+		assert(linkr_debugger_serial_net_ws_consume(
+			       1U, &ws1_pending, length) == 0);
+
+		fake_append_rx(&hal->uart, post_missed_edge,
+			       sizeof(post_missed_edge));
+		fake_invoke(hal, &hal->uart);
+		assert(linkr_debugger_serial_net_ws_read(
+			       0U, &ws0_pending, sizeof(post_missed_edge), &data,
+			       &length) == 0);
+		assert(length == sizeof(post_missed_edge));
+		assert(linkr_debugger_serial_net_ws_consume(
+			       0U, &ws0_pending, length) == 0);
+		assert(linkr_debugger_serial_net_ws_read(
+			       1U, &ws1_pending, sizeof(post_missed_edge), &data,
+			       &length) == 0);
+		assert(length == sizeof(post_missed_edge));
+		assert(linkr_debugger_serial_net_ws_consume(
+			       1U, &ws1_pending, length) == 0);
+	}
 	{
 		unsigned int wake0 = serial_wake_calls[0];
 		unsigned int wake1 = serial_wake_calls[1];
+		size_t cdc_tx_start;
 
+		fake_append_rx(&hal->uart, before_read_query,
+			       sizeof(before_read_query));
+		fake_invoke(hal, &hal->uart);
 		hal->dtr = 1U;
 		hal->rts = 1U;
 		assert(linkr_debugger_serial_cdc_control_line(
 			   &hal->cdc.device) == 0);
+		assert(linkr_debugger_serial_status_snapshot(&serial_status) == 0);
+		assert(!serial_status.dtr &&
+		       serial_status.cdc_promotion_pending);
 		linkr_debugger_serial_process_events();
-		assert(linkr_debugger_serial_status_snapshot(&serial_status) ==
-		       0);
+		assert(linkr_debugger_serial_status_snapshot(&serial_status) == 0);
+		assert(serial_status.dtr);
 		serial_net_observe_status(&serial_status);
 		assert(serial_wake_calls[0] == wake0 + 1U);
 		assert(serial_wake_calls[1] == wake1 + 1U);
+		assert(linkr_debugger_serial_net_status_snapshot(&net_status) == 0);
+		assert(net_status.terminal_responder.transport ==
+		       LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_CDC);
+		/* DTR changed after the initial state snapshot but before read:
+		 * the false/CDC state is observable before query bytes are fetched.
+		 */
+		assert(linkr_debugger_serial_net_ws_read(
+			       0U, &ws0_pending, sizeof(before_read_query), &data,
+			       &length) == 0);
+		assert(length == sizeof(before_read_query));
+		assert(linkr_debugger_serial_net_ws_consume(
+			       0U, &ws0_pending, length) == 0);
+		assert(linkr_debugger_serial_net_ws_read(
+			       1U, &ws1_pending, sizeof(before_read_query), &data,
+			       &length) == 0);
+		assert(length == sizeof(before_read_query));
+		assert(linkr_debugger_serial_net_ws_consume(
+			       1U, &ws1_pending, length) == 0);
+		cdc_tx_start = hal->cdc.tx_length;
+		wake0 = serial_wake_calls[0];
 		assert(serial_status.dtr && serial_status.rts);
+		assert(hal->cdc.tx_length == cdc_tx_start);
 
 		wake0 = serial_wake_calls[0];
 		assert(linkr_debugger_serial_cdc_usb_event(
@@ -1124,12 +2201,77 @@ test_network_adapter_fanout_completion_and_raw_tcp(struct fake_hal *hal)
 	/* Leave CDC detached so the large slow-client fixture below does not
 	 * consume its bounded fake TX buffer.
 	 */
+	fake_append_rx(&hal->uart, state_marker, sizeof(state_marker));
+	fake_invoke(hal, &hal->uart);
 	hal->dtr = 0U;
 	hal->rts = 0U;
+	assert(linkr_debugger_serial_status_snapshot(&serial_status) == 0);
+	generation_before_reset = serial_status.cdc_responder_generation;
 	assert(linkr_debugger_serial_cdc_usb_event(
 		   &hal->cdc.device, LINKR_DEBUGGER_SERIAL_USB_RESET, false) ==
 	       0);
+	assert(linkr_debugger_serial_status_snapshot(&serial_status) == 0);
+	assert(!serial_status.dtr);
+	assert(serial_status.cdc_responder_generation ==
+	       generation_before_reset + 1U);
+	serial_net_observe_status(&serial_status);
+	assert(linkr_debugger_serial_net_status_snapshot(&net_status) == 0);
+	assert(net_status.terminal_responder.transport ==
+	       LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_WEBSOCKET);
+	assert(net_status.terminal_responder.slot == 0);
+	/* Promotion establishes a fresh boundary for WS0, so it sees the false
+	 * responder state but not the old marker. WS1 remains an ordinary
+	 * observer and still receives it.
+	 */
+	assert(linkr_debugger_serial_net_ws_read(
+		   0U, &ws0_pending, sizeof(state_marker), &data, &length) == 0);
+	assert(length == 0U);
+	assert(linkr_debugger_serial_net_ws_read(
+		   1U, &ws1_pending, sizeof(state_marker), &data, &length) == 0);
+	assert(length == sizeof(state_marker) && data[0] == state_marker[0]);
+	assert(linkr_debugger_serial_net_ws_consume(1U, &ws1_pending, length) ==
+	       0);
 	linkr_debugger_serial_process_events();
+
+	/* DTR changes after the query was copied but before send. The immediate
+	 * status suppresses Web auto-response first; CDC's fresh attach skips the
+	 * pre-DTR query, while WS remains an ordinary RX observer.
+	 */
+	fake_append_rx(&hal->uart, after_read_query, sizeof(after_read_query));
+	fake_invoke(hal, &hal->uart);
+	assert(linkr_debugger_serial_net_ws_read(
+		   1U, &ws1_pending, sizeof(after_read_query), &data,
+		   &length) == 0);
+	assert(length == sizeof(after_read_query));
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	assert(linkr_debugger_serial_status_snapshot(&serial_status) == 0);
+	assert(!serial_status.dtr && serial_status.cdc_promotion_pending);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&serial_status) == 0);
+	assert(serial_status.dtr);
+	serial_net_observe_status(&serial_status);
+	assert(linkr_debugger_serial_net_status_snapshot(&net_status) == 0);
+	assert(net_status.terminal_responder.transport ==
+	       LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_CDC);
+	assert(linkr_debugger_serial_net_ws_pending_validate(
+		   1U, &ws1_pending) == 0);
+	assert(linkr_debugger_serial_net_ws_consume(
+		   1U, &ws1_pending, length) == 0);
+	assert(linkr_debugger_serial_net_ws_read(
+		   0U, &ws0_pending, sizeof(after_read_query), &data,
+		   &length) == 0);
+	assert(length == sizeof(after_read_query));
+	assert(linkr_debugger_serial_net_ws_consume(
+		   0U, &ws0_pending, length) == 0);
+	cdc_tx_before_attach = hal->cdc.tx_length;
+	linkr_debugger_serial_process_events();
+	assert(hal->cdc.tx_length == cdc_tx_before_attach);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&serial_status) == 0);
+	serial_net_observe_status(&serial_status);
 
 	/* Distinct source quotas and dispatcher queues prevent one WS client
 	 * from stealing another client's physical-wire completion.
@@ -1159,6 +2301,22 @@ test_network_adapter_fanout_completion_and_raw_tcp(struct fake_hal *hal)
 	assert(serial_wake_calls[0] >= 1U);
 	assert(serial_wake_calls[1] >= 1U);
 
+	/* WS0 handled this query while WS1 had already copied it. Promotion must
+	 * rearm only WS1, invalidate that copy, and expose no old query bytes.
+	 */
+	fake_append_rx(&hal->uart, promotion_query, sizeof(promotion_query));
+	fake_invoke(hal, &hal->uart);
+	assert(linkr_debugger_serial_net_ws_read(
+		   0U, &ws0_pending, sizeof(promotion_query), &data,
+		   &length) == 0);
+	assert(length == sizeof(promotion_query));
+	assert(linkr_debugger_serial_net_ws_consume(0U, &ws0_pending, length) ==
+	       0);
+	assert(linkr_debugger_serial_net_ws_read(
+		   1U, &ws1_pending, sizeof(promotion_query), &data,
+		   &length) == 0);
+	assert(length == sizeof(promotion_query) && ws1_pending.valid);
+
 	/* Disconnect invalidates completion ownership. Since the reviewed core
 	 * has no per-source cancel call, the old wire event may finish, but it
 	 * is counted stale and never acknowledged to the replacement session.
@@ -1166,7 +2324,19 @@ test_network_adapter_fanout_completion_and_raw_tcp(struct fake_hal *hal)
 	assert(linkr_debugger_serial_net_ws_write(0U, binary, sizeof(binary),
 						  &ws0_event) == 0);
 	assert(linkr_debugger_serial_net_ws_detach(0U) == 0);
+	assert(linkr_debugger_serial_net_status_snapshot(&net_status) == 0);
+	assert(net_status.terminal_responder.valid);
+	assert(net_status.terminal_responder.slot == 1);
+	assert(linkr_debugger_serial_net_ws_pending_validate(
+		   1U, &ws1_pending) == -ESTALE);
+	assert(!ws1_pending.valid);
+	assert(linkr_debugger_serial_net_ws_read(
+		   1U, &ws1_pending, sizeof(promotion_query), &data,
+		   &length) == 0);
+	assert(length == 0U);
 	assert(linkr_debugger_serial_net_ws_attach(0U) == 0);
+	assert(linkr_debugger_serial_net_status_snapshot(&net_status) == 0);
+	assert(net_status.terminal_responder.slot == 0);
 	complete_uart_wire(hal);
 	serial_net_dispatch_completions();
 	assert(linkr_debugger_serial_net_ws_completion_poll(0U, &completion) ==
@@ -1272,38 +2442,184 @@ test_network_adapter_fanout_completion_and_raw_tcp(struct fake_hal *hal)
 	assert(fake_socket_recv_calls == recv_calls);
 	assert(linkr_debugger_serial_runtime_resume() == 0);
 
-	serial_net_tcp_close(0U);
 	assert(linkr_debugger_serial_net_ws_detach(0U) == 0);
 	assert(linkr_debugger_serial_net_ws_detach(1U) == 0);
+	assert(linkr_debugger_serial_net_status_snapshot(&net_status) == 0);
+	assert(net_status.tcp_connected == 1U);
+	assert(!net_status.terminal_responder.valid);
+	serial_net_tcp_close(0U);
 }
 
 static void test_config_rollback_fault(struct fake_hal *hal)
 {
-	struct linkr_debugger_serial_config next = config_115200_8n1;
 	struct linkr_debugger_serial_status status;
 	static const uint8_t byte = 0xeeU;
-	uint64_t request_id;
 	uint64_t event_id;
-	uint64_t apply_failed;
-	uint64_t rollback_failed;
+	unsigned int configure_count;
 
+	/* Establish UP first: a model fault must revoke published DTR/gating in
+	 * the same worker pass, not wait for physical detach cleanup.
+	 */
+	assert(linkr_debugger_serial_cdc_usb_event(
+		       &hal->cdc.device, LINKR_DEBUGGER_SERIAL_USB_RESET, false) ==
+	       0);
+	linkr_debugger_serial_process_events();
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
 	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
-	apply_failed = status.config_counters.apply_failed;
-	rollback_failed = status.config_counters.rollback_failed;
-	next.baud = 230400U;
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_UP && status.dtr);
+	hal->cdc_config = status.current_config;
+	hal->cdc_config.baud = status.current_config.baud == 57600U ?
+		38400U : 57600U;
+	linkr_debugger_serial_test_saturate_config_failure_counters();
 	hal->configure_failures = 2U;
-	assert(linkr_debugger_serial_config_cas(&next, status.generation,
-						&request_id) == 0);
+	configure_count = hal->configure_count;
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
 	linkr_debugger_serial_process_events();
 	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
 	assert(status.state == LINKR_DEBUGGER_SERIAL_FAULTED);
-	assert(status.last_config_done);
-	assert(status.last_config_result == -EIO);
-	assert(status.config_counters.apply_failed == apply_failed + 1U);
-	assert(status.config_counters.rollback_failed == rollback_failed + 1U);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_FAULTED);
+	assert(!status.dtr && !status.cdc_promotion_pending);
+	assert(!status.cdc_model_dtr && !status.cdc_sink_attached);
+	assert(status.config_counters.apply_failed == UINT64_MAX);
+	assert(status.config_counters.rollback_failed == UINT64_MAX);
+	assert(hal->configure_count == configure_count + 2U);
 	assert(linkr_debugger_serial_runtime_tx_enqueue(
 		   LINKR_DEBUGGER_SERIAL_TX_WS0, &byte, 1U, &event_id) ==
 	       -EAGAIN);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED &&
+	       !status.dtr);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.state == LINKR_DEBUGGER_SERIAL_FAULTED);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(!status.dtr && !status.cdc_promotion_pending);
+}
+
+static void test_saturated_failure_attribution(struct fake_hal *hal)
+{
+	struct linkr_debugger_serial_status status;
+
+	assert(linkr_debugger_serial_cdc_usb_event(
+		       &hal->cdc.device, LINKR_DEBUGGER_SERIAL_USB_RESET, false) ==
+	       0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+	hal->cdc_config = status.current_config;
+	hal->cdc_config.baud = status.current_config.baud == 38400U ?
+		57600U : 38400U;
+	linkr_debugger_serial_test_saturate_config_failure_counters();
+	assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+	hal->configure_failures = 1U;
+	hal->dtr = 1U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.state == LINKR_DEBUGGER_SERIAL_READY);
+	assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+	assert(status.cdc_block_reason ==
+	       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_CONFIG_FAILED);
+	assert(!status.dtr && !status.cdc_promotion_pending);
+	assert(status.config_counters.apply_failed == UINT64_MAX);
+	assert(status.config_counters.rollback_succeeded == UINT64_MAX);
+	hal->dtr = 0U;
+	assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+	linkr_debugger_serial_process_events();
+}
+
+static void test_counter_exhaustion_is_permanent(struct fake_hal *hal)
+{
+	pid_t child;
+	int child_status;
+
+	child = fork();
+	assert(child >= 0);
+	if (child == 0) {
+		struct linkr_debugger_serial_status status;
+
+		assert(linkr_debugger_serial_cdc_usb_event(
+			       &hal->cdc.device,
+			       LINKR_DEBUGGER_SERIAL_USB_RESET, false) == 0);
+		linkr_debugger_serial_process_events();
+		assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+		assert(status.state == LINKR_DEBUGGER_SERIAL_READY);
+		assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_DOWN);
+
+		/* MAX-1 -> MAX is a valid, unique HIGH session. The next real
+		 * boundary cannot wrap and permanently fails closed.
+		 */
+		linkr_debugger_serial_test_set_session_epoch(UINT64_MAX - 1U);
+		hal->dtr = 1U;
+		assert(linkr_debugger_serial_cdc_control_line(
+			       &hal->cdc.device) == 0);
+		linkr_debugger_serial_process_events();
+		assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+		assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_UP);
+		hal->dtr = 0U;
+		assert(linkr_debugger_serial_cdc_control_line(
+			       &hal->cdc.device) == 0);
+		assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+		assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+		assert(status.cdc_block_reason ==
+		       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_EPOCH_EXHAUSTED);
+		assert(!status.dtr && !status.cdc_model_dtr &&
+		       !status.cdc_sink_attached);
+		assert(linkr_debugger_serial_cdc_usb_event(
+			       &hal->cdc.device,
+			       LINKR_DEBUGGER_SERIAL_USB_RESET, false) == 0);
+		assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+		assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+		assert(status.cdc_block_reason ==
+		       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_EPOCH_EXHAUSTED);
+		_exit(0);
+	}
+	assert(waitpid(child, &child_status, 0) == child);
+	assert(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+
+	child = fork();
+	assert(child >= 0);
+	if (child == 0) {
+		struct linkr_debugger_serial_status status;
+
+		assert(linkr_debugger_serial_cdc_usb_event(
+			       &hal->cdc.device,
+			       LINKR_DEBUGGER_SERIAL_USB_RESET, false) == 0);
+		linkr_debugger_serial_process_events();
+		linkr_debugger_serial_test_set_notification_sequence(
+			UINT64_MAX - 1U);
+		hal->dtr = 0U;
+		assert(linkr_debugger_serial_cdc_control_line(
+			       &hal->cdc.device) == 0);
+		assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+		assert(status.cdc_notification_sequence == UINT64_MAX);
+		assert(status.cdc_notifications_inflight == 0U);
+		assert(linkr_debugger_serial_cdc_line_coding(
+			       &hal->cdc.device) == -EOVERFLOW);
+		assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+		assert(status.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED);
+		assert(status.cdc_block_reason ==
+		       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NOTIFICATION_EXHAUSTED);
+		assert(!status.cdc_model_dtr && !status.cdc_sink_attached);
+		assert(linkr_debugger_serial_cdc_usb_event(
+			       &hal->cdc.device,
+			       LINKR_DEBUGGER_SERIAL_USB_RESET, false) == -EOVERFLOW);
+		assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+		assert(status.cdc_block_reason ==
+		       LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NOTIFICATION_EXHAUSTED);
+		_exit(0);
+	}
+	assert(waitpid(child, &child_status, 0) == child);
+	assert(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
 }
 
 int main(void)
@@ -1341,6 +2657,12 @@ int main(void)
 	assert(hal.uart.rx_enabled);
 	assert(hal.cdc.rx_enabled);
 
+	test_cdc_low_stages_config_until_safe_high(&hal);
+	test_cdc_before_claim_high_failure_attribution(&hal);
+	test_cdc_notification_windows_and_promoting_failures(&hal);
+	test_cdc_configure_edge_fence_and_mailbox_cancel(&hal);
+	test_cdc_http_arbitration_and_mailbox_coalesce(&hal);
+	test_cdc_read_staging_and_set_dtr_fail_closed(&hal);
 	test_uart_rx_fanout_and_cdc_pending(&hal);
 	test_dtr_detach_has_no_stale_replay(&hal);
 	test_cdc_detach_edges_survive_event_coalescing(&hal);
@@ -1352,6 +2674,8 @@ int main(void)
 	test_config_rollback_unfreezes_queued_tx(&hal);
 	test_network_adapter_fanout_completion_and_raw_tcp(&hal);
 	test_pause_timeout_errors_and_resume(&hal);
+	test_counter_exhaustion_is_permanent(&hal);
+	test_saturated_failure_attribution(&hal);
 	test_config_rollback_fault(&hal);
 	return 0;
 }

@@ -106,10 +106,10 @@ enum linkr_debugger_config_service_result linkr_debugger_config_replay_order_sna
 		     LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID, &ordered);
 	append_named(&indexed, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		     LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID, &ordered);
-	append_named(&indexed, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		     LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID, &ordered);
 	append_named(&indexed, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_VDD_5V_ID, &ordered);
+	append_named(&indexed, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+		     LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID, &ordered);
 	append_named(&indexed, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID, &ordered);
 	append_named(&indexed, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,

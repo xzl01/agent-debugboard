@@ -152,8 +152,8 @@ ASSERT((__bss_start & 0x7fff) == 0, "generic BSS alignment")
   wsSource = appendIfMissing(wsSource, "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28704U)", "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28704U);");
   wsSource = appendIfMissing(wsSource, "linkr_debugger_ws_client_sidecars[LINKR_DEBUGGER_WS_SIDECAR_COUNT]", `static struct linkr_debugger_ws_client_sidecar
   linkr_debugger_ws_client_sidecars[LINKR_DEBUGGER_WS_SIDECAR_COUNT];
-BUILD_ASSERT(sizeof(struct linkr_debugger_ws_client_sidecar) == 1088U);
-BUILD_ASSERT(sizeof(linkr_debugger_ws_client_sidecars) == 4352U);`);
+BUILD_ASSERT(sizeof(struct linkr_debugger_ws_client_sidecar) == 1096U);
+BUILD_ASSERT(sizeof(linkr_debugger_ws_client_sidecars) == 4384U);`);
   wsSource = appendIfMissing(wsSource, "static K_THREAD_STACK_DEFINE(linkr_debugger_adc_sampler_stack, 2048)", "static K_THREAD_STACK_DEFINE(linkr_debugger_adc_sampler_stack, 2048);");
   wsSource = appendIfMissing(wsSource, "memset(linkr_debugger_ws_clients, 0, sizeof(linkr_debugger_ws_clients))", `void memory_contract_ws_init(void)
 {
@@ -727,8 +727,8 @@ test("rejects every firmware memory optimization contract regression", async (t)
     ["WS pre-capture placement", WS_SOURCE, "Z_GENERIC_SECTION(.bss.pre_capture.ws_clients)", "__attribute__((section(\".bss.pre_capture.ws_clients\")))"],
     ["WS clients size", WS_SOURCE, "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28704U)", "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28703U)"],
     ["WS sidecar placement", WS_SOURCE, "linkr_debugger_ws_client_sidecars[LINKR_DEBUGGER_WS_SIDECAR_COUNT];", "linkr_debugger_ws_client_sidecars[LINKR_DEBUGGER_WS_SIDECAR_COUNT] Z_GENERIC_SECTION(.bss.pre_capture.ws_clients);"],
-    ["WS sidecar ARM slot size", WS_SOURCE, "sizeof(struct linkr_debugger_ws_client_sidecar) == 1088U", "sizeof(struct linkr_debugger_ws_client_sidecar) == 1089U"],
-    ["WS sidecar ARM array size", WS_SOURCE, "sizeof(linkr_debugger_ws_client_sidecars) == 4352U", "sizeof(linkr_debugger_ws_client_sidecars) == 4353U"],
+    ["WS sidecar ARM slot size", WS_SOURCE, "sizeof(struct linkr_debugger_ws_client_sidecar) == 1096U", "sizeof(struct linkr_debugger_ws_client_sidecar) == 1097U"],
+    ["WS sidecar ARM array size", WS_SOURCE, "sizeof(linkr_debugger_ws_client_sidecars) == 4384U", "sizeof(linkr_debugger_ws_client_sidecars) == 4385U"],
     ["WS sidecar zeroing", WS_SOURCE, "memset(linkr_debugger_ws_client_sidecars, 0,", "memset(linkr_debugger_ws_client_sidecars, 0xff,"],
     ["WS sidecar state excluded from pre-capture client", WS_SOURCE, "\tuint64_t sequence;\n\tint64_t session_created_ms;", "\tuint64_t sequence;\n\tenum linkr_debugger_ws_stream_mode stream_mode;\n\tint64_t session_created_ms;"],
     ["WS sidecar slot bounds assertion", WS_SOURCE, "__ASSERT_NO_MSG(client->slot < LINKR_DEBUGGER_WS_SIDECAR_COUNT);", "(void)client->slot;"],

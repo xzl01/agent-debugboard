@@ -60,6 +60,8 @@ struct serial_net_runtime {
 	struct serial_net_tcp_endpoint
 		tcp[LINKR_DEBUGGER_SERIAL_RAW_TCP_MAX_CLIENTS];
 	struct linkr_debugger_serial_status observed_status;
+	struct linkr_debugger_serial_terminal_responder terminal_responder;
+	uint64_t responder_generation;
 	int64_t listener_retry_at_ms;
 	int listen_fd;
 	bool observed_status_valid;
@@ -85,6 +87,110 @@ static void counter_add(uint64_t *counter, uint64_t amount)
 		*counter = UINT64_MAX;
 	} else {
 		*counter += amount;
+	}
+}
+
+static enum linkr_debugger_serial_sink ws_sink(uint8_t slot);
+
+static struct linkr_debugger_serial_terminal_responder
+serial_net_responder_select_locked(void)
+{
+	struct linkr_debugger_serial_terminal_responder next = { 0 };
+
+	if (serial_net.observed_status_valid && serial_net.observed_status.dtr) {
+		next.valid = true;
+		next.transport = LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_CDC;
+		next.slot = 0;
+	} else {
+		for (size_t i = 0U; i < ARRAY_SIZE(serial_net.ws); ++i) {
+			if (serial_net.ws[i].endpoint.attached) {
+				next.valid = true;
+				next.transport =
+					LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_WEBSOCKET;
+				next.slot = (int8_t)i;
+				break;
+			}
+		}
+	}
+	return next;
+}
+
+static bool serial_net_responder_recompute(void)
+{
+	for (size_t attempt = 0U; attempt < 3U; ++attempt) {
+		struct linkr_debugger_serial_terminal_responder current;
+		struct linkr_debugger_serial_terminal_responder next;
+		uint64_t current_generation;
+		uint64_t next_generation;
+		bool descriptor_changed;
+		bool force_ws_boundary;
+		bool promote_ws;
+
+		k_mutex_lock(&serial_net.lock, K_FOREVER);
+		current = serial_net.terminal_responder;
+		next = serial_net_responder_select_locked();
+		current_generation = serial_net.responder_generation;
+		next_generation =
+			serial_net.observed_status.cdc_responder_generation;
+		k_mutex_unlock(&serial_net.lock);
+		descriptor_changed = memcmp(&current, &next, sizeof(next)) != 0;
+		force_ws_boundary = next.valid &&
+			next.transport ==
+				LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_WEBSOCKET &&
+			next_generation != current_generation;
+		if (!descriptor_changed && !force_ws_boundary) {
+			if (next_generation != current_generation) {
+				k_mutex_lock(&serial_net.lock, K_FOREVER);
+				current = serial_net_responder_select_locked();
+				if (memcmp(&current, &next, sizeof(next)) == 0 &&
+				    serial_net.observed_status.cdc_responder_generation ==
+					    next_generation) {
+					serial_net.responder_generation =
+						next_generation;
+				}
+				k_mutex_unlock(&serial_net.lock);
+			}
+			return false;
+		}
+		promote_ws = next.valid &&
+			next.transport ==
+				LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_WEBSOCKET;
+		/* Never hold the network mutex while acquiring the serial core
+		 * spinlock. Promotion is published only after the fresh boundary.
+		 */
+		if (promote_ws && linkr_debugger_serial_runtime_sink_rearm(
+				  ws_sink((uint8_t)next.slot)) < 0) {
+			return false;
+		}
+
+		k_mutex_lock(&serial_net.lock, K_FOREVER);
+		current = serial_net_responder_select_locked();
+		if (memcmp(&current, &next, sizeof(next)) == 0 &&
+		    serial_net.observed_status.cdc_responder_generation ==
+			    next_generation) {
+			serial_net.terminal_responder = next;
+			serial_net.responder_generation = next_generation;
+			k_mutex_unlock(&serial_net.lock);
+			return true;
+		}
+		k_mutex_unlock(&serial_net.lock);
+	}
+	return false;
+}
+
+static void serial_net_wake_all_ws(void)
+{
+	bool wake[LINKR_DEBUGGER_SERIAL_WS_MAX_CLIENTS];
+
+	k_mutex_lock(&serial_net.lock, K_FOREVER);
+	for (size_t i = 0U; i < ARRAY_SIZE(serial_net.ws); ++i) {
+		wake[i] = serial_net.ws[i].endpoint.attached;
+	}
+	k_mutex_unlock(&serial_net.lock);
+	for (size_t i = 0U; i < ARRAY_SIZE(wake); ++i) {
+		if (wake[i]) {
+			linkr_debugger_ws_publish_serial((uint8_t)i);
+		}
 	}
 }
 
@@ -468,6 +574,7 @@ static void serial_net_observe_status(
 	const struct linkr_debugger_serial_status *status)
 {
 	bool wake[LINKR_DEBUGGER_SERIAL_WS_MAX_CLIENTS] = { false };
+	bool responder_changed;
 	bool changed;
 
 	k_mutex_lock(&serial_net.lock, K_FOREVER);
@@ -485,11 +592,34 @@ static void serial_net_observe_status(
 		}
 	}
 	k_mutex_unlock(&serial_net.lock);
+	responder_changed = serial_net_responder_recompute();
 	for (size_t i = 0U; i < ARRAY_SIZE(wake); ++i) {
 		if (wake[i]) {
 			linkr_debugger_ws_publish_serial((uint8_t)i);
 		}
 	}
+	if (responder_changed && !changed) {
+		serial_net_wake_all_ws();
+	}
+}
+
+int linkr_debugger_serial_net_responder_sync(
+	const struct linkr_debugger_serial_status *status)
+{
+	if (status == NULL) {
+		return -EINVAL;
+	}
+	if (atomic_get(&serial_net_init_state) != 2) {
+		return -ENODEV;
+	}
+	k_mutex_lock(&serial_net.lock, K_FOREVER);
+	serial_net.observed_status = *status;
+	serial_net.observed_status_valid = true;
+	k_mutex_unlock(&serial_net.lock);
+	if (serial_net_responder_recompute()) {
+		serial_net_wake_all_ws();
+	}
+	return 0;
 }
 
 /* One deterministic client-lane iteration used by the production thread and
@@ -655,6 +785,7 @@ int linkr_debugger_serial_net_status_snapshot(
 
 	k_mutex_lock(&serial_net.lock, K_FOREVER);
 	status->counters = serial_net.counters;
+	status->terminal_responder = serial_net.terminal_responder;
 	status->listening = serial_net.listening;
 	for (size_t i = 0U; i < ARRAY_SIZE(serial_net.ws); ++i) {
 		status->ws[i] = serial_net.ws[i].endpoint.counters;
@@ -710,8 +841,13 @@ int linkr_debugger_serial_net_ws_attach(uint8_t slot)
 	serial_net.ws[slot].endpoint.tx_event_valid = false;
 	serial_net.ws[slot].endpoint.rx_position = status.rx_head;
 	serial_net.ws[slot].completion_valid = false;
+	serial_net.observed_status = status;
+	serial_net.observed_status_valid = true;
 	counter_add(&serial_net.ws[slot].endpoint.counters.connected, 1U);
 	k_mutex_unlock(&serial_net.lock);
+	if (serial_net_responder_recompute()) {
+		serial_net_wake_all_ws();
+	}
 	return 0;
 }
 
@@ -742,6 +878,9 @@ int linkr_debugger_serial_net_ws_detach(uint8_t slot)
 	serial_net.ws[slot].completion_valid = false;
 	counter_add(&serial_net.ws[slot].endpoint.counters.disconnected, 1U);
 	k_mutex_unlock(&serial_net.lock);
+	if (serial_net_responder_recompute()) {
+		serial_net_wake_all_ws();
+	}
 	return 0;
 }
 
@@ -782,6 +921,25 @@ int linkr_debugger_serial_net_ws_consume(
 			    accepted);
 		k_mutex_unlock(&serial_net.lock);
 	}
+	return ret;
+}
+
+int linkr_debugger_serial_net_ws_pending_validate(
+	uint8_t slot, struct linkr_debugger_serial_sink_pending *pending)
+{
+	int ret;
+
+	if (slot >= LINKR_DEBUGGER_SERIAL_WS_MAX_CLIENTS || pending == NULL) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&serial_net.lock, K_FOREVER);
+	if (!serial_net.ws[slot].endpoint.attached) {
+		k_mutex_unlock(&serial_net.lock);
+		return -ENOENT;
+	}
+	ret = linkr_debugger_serial_runtime_sink_pending_validate(
+		ws_sink(slot), pending);
+	k_mutex_unlock(&serial_net.lock);
 	return ret;
 }
 

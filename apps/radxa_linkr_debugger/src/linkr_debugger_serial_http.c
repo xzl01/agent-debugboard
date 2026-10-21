@@ -302,6 +302,8 @@ static int encode_status(struct serial_http_buffer *buffer)
 {
 	struct linkr_debugger_serial_status serial;
 	struct linkr_debugger_serial_net_status net;
+	struct linkr_debugger_serial_terminal_responder responder;
+	char responder_json[64] = "null";
 	uint8_t cdc_sink;
 	int ret;
 
@@ -318,8 +320,32 @@ static int encode_status(struct serial_http_buffer *buffer)
 		return 0;
 	}
 	(void)linkr_debugger_serial_net_status_snapshot(&net);
+	responder = net.terminal_responder;
+	if (serial.dtr) {
+		responder = (struct linkr_debugger_serial_terminal_responder){
+			.valid = true,
+			.transport = LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_CDC,
+			.slot = 0,
+		};
+	}
 	cdc_sink = serial.dtr ? 1U : 0U;
+	if (responder.valid) {
+		const char *transport =
+			responder.transport ==
+					LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_CDC ?
+				"cdc" : "websocket";
+		int length = snprintk(responder_json, sizeof(responder_json),
+			"{\"transport\":\"%s\",\"slot\":%d}", transport,
+			(int)responder.slot);
 
+		if (length < 0 || (size_t)length >= sizeof(responder_json)) {
+			return -ENOMEM;
+		}
+	}
+
+	/* line_coding plus generation is the authoritative applied state;
+	 * config_request only describes the most recent Web request.
+	 */
 	if (buffer_append(buffer, "{\"schema\":") < 0 ||
 	    buffer_json_string(buffer, linkr_debugger_json_schema()) < 0 ||
 	    buffer_append(
@@ -338,17 +364,26 @@ static int encode_status(struct serial_http_buffer *buffer)
 		    buffer,
 		    ",\"stop_bits\":%u,\"flow_control\":\"none\"},"
 		    "\"generation\":%llu,\"dtr\":%s,\"rts\":%s,"
-		    "\"usb_configured\":%s,"
+		    "\"usb_configured\":%s,\"terminal_responder\":%s,"
+		    "\"responder_generation\":%llu,"
 		    "\"sink_count\":{\"total\":%u,\"cdc\":%u,"
 		    "\"ws\":%u,\"tcp\":%u},"
 		    "\"queue\":{\"used\":%u,\"capacity\":%u,"
 		    "\"active_event_id\":%llu,\"admission_frozen\":%s},"
 		    "\"config_request\":{\"id\":%llu,\"done\":%s,"
 		    "\"result\":%d},"
+		    "\"config_counters\":{\"cdc_requests\":%llu,"
+		    "\"web_requests\":%llu,\"invalid\":%llu,"
+		    "\"conflicts\":%llu,\"no_change\":%llu,"
+		    "\"configure_count\":%llu,\"apply_succeeded\":%llu,"
+		    "\"apply_failed\":%llu,\"rollback_succeeded\":%llu,"
+		    "\"rollback_failed\":%llu},"
 		    "\"counters\":{\"uart_rx_bytes\":%llu,"
 		    "\"uart_tx_bytes\":%llu,\"tx_accepted\":%llu,"
 		    "\"tx_completed\":%llu,\"tx_canceled\":%llu,"
 		    "\"completion_overflow\":%llu,"
+		    "\"invalid_line_coding\":%llu,"
+		    "\"config_mailbox_busy\":%llu,"
 		    "\"listener_failures\":%llu,\"accept_failures\":%llu,"
 		    "\"refused_clients\":%llu},"
 		    "\"drops\":{\"uart_pause\":%llu,\"cdc_rx\":%llu,"
@@ -361,6 +396,8 @@ static int encode_status(struct serial_http_buffer *buffer)
 		    serial.dtr ? "true" : "false",
 		    serial.rts ? "true" : "false",
 		    serial.usb_configured ? "true" : "false",
+		    responder_json,
+		    (unsigned long long)serial.cdc_responder_generation,
 		    (unsigned int)(cdc_sink + net.ws_attached + net.tcp_connected),
 		    (unsigned int)cdc_sink, (unsigned int)net.ws_attached,
 		    (unsigned int)net.tcp_connected,
@@ -371,12 +408,24 @@ static int encode_status(struct serial_http_buffer *buffer)
 		    (unsigned long long)serial.last_config_request_id,
 		    serial.last_config_done ? "true" : "false",
 		    serial.last_config_result,
+		    (unsigned long long)serial.config_counters.cdc_requests,
+		    (unsigned long long)serial.config_counters.web_requests,
+		    (unsigned long long)serial.config_counters.invalid,
+		    (unsigned long long)serial.config_counters.conflicts,
+		    (unsigned long long)serial.config_counters.no_change,
+		    (unsigned long long)serial.config_counters.configure_count,
+		    (unsigned long long)serial.config_counters.apply_succeeded,
+		    (unsigned long long)serial.config_counters.apply_failed,
+		    (unsigned long long)serial.config_counters.rollback_succeeded,
+		    (unsigned long long)serial.config_counters.rollback_failed,
 		    (unsigned long long)serial.runtime_counters.uart_rx_bytes,
 		    (unsigned long long)serial.tx_bytes_committed,
 		    (unsigned long long)serial.tx_accepted,
 		    (unsigned long long)serial.tx_completed,
 		    (unsigned long long)serial.tx_canceled,
 		    (unsigned long long)serial.runtime_counters.completion_overflow,
+		    (unsigned long long)serial.runtime_counters.invalid_line_coding,
+		    (unsigned long long)serial.runtime_counters.config_mailbox_busy,
 		    (unsigned long long)net.counters.listener_failures,
 		    (unsigned long long)net.counters.accept_failures,
 		    (unsigned long long)net.counters.refused_clients,
@@ -436,7 +485,8 @@ static int decode_config(const uint8_t *data, size_t length,
 	if (strcmp(request->flow_control, "none") != 0) {
 		return -EINVAL;
 	}
-	if (request->baud < 0 || request->baud > UINT32_MAX ||
+	if (request->baud < LINKR_DEBUGGER_SERIAL_BAUD_MIN ||
+	    request->baud > LINKR_DEBUGGER_SERIAL_BAUD_MAX ||
 	    request->data_bits < 5 || request->data_bits > 8 ||
 	    request->stop_bits < 1 || request->stop_bits > 2) {
 		return -EINVAL;

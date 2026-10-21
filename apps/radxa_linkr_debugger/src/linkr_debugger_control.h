@@ -24,11 +24,6 @@ enum linkr_debugger_sd_route {
 	LINKR_DEBUGGER_SD_ROUTE_USB_READER = 1,
 };
 
-enum linkr_debugger_usb_route {
-	LINKR_DEBUGGER_USB_ROUTE_PC = 0,
-	LINKR_DEBUGGER_USB_ROUTE_TARGET = 1,
-};
-
 struct linkr_debugger_current_sample {
 	bool rail_enabled;
 	bool raw_available;
@@ -115,10 +110,6 @@ int linkr_debugger_power_output_set(const struct linkr_debugger_rail_desc *rail,
 enum linkr_debugger_sd_route linkr_debugger_sd_route_get(void);
 const char *linkr_debugger_sd_route_name(void);
 int linkr_debugger_sd_route_set(enum linkr_debugger_sd_route route);
-
-enum linkr_debugger_usb_route linkr_debugger_usb_route_get(void);
-const char *linkr_debugger_usb_route_name(void);
-int linkr_debugger_usb_route_set(enum linkr_debugger_usb_route route);
 
 enum linkr_debugger_tf_wp_route linkr_debugger_tf_wp_route_get(void);
 const char *linkr_debugger_tf_wp_route_name(void);

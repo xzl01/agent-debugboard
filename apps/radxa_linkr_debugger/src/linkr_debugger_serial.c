@@ -26,14 +26,13 @@
 #define SERIAL_UART_RX_MAX_CHUNKS 8U
 #define SERIAL_DRAIN_MAX_CHUNKS 8U
 #define SERIAL_COMPLETION_DEPTH 16U
-#define SERIAL_PAUSE_MIN_BAUD 9600U
 #define SERIAL_PAUSE_MAX_BITS_PER_CHAR (1U + 8U + 1U + 2U)
 #define SERIAL_PAUSE_WIRE_GUARD_MS 50U
 #define SERIAL_PAUSE_MAX_WAIT_MS                                               \
 	(((LINKR_DEBUGGER_SERIAL_TX_MESSAGE_MAX *                              \
 	   SERIAL_PAUSE_MAX_BITS_PER_CHAR * 1000U) +                           \
-	  SERIAL_PAUSE_MIN_BAUD - 1U) /                                        \
-	     SERIAL_PAUSE_MIN_BAUD +                                           \
+	  LINKR_DEBUGGER_SERIAL_BAUD_MIN - 1U) /                               \
+	     LINKR_DEBUGGER_SERIAL_BAUD_MIN +                                  \
 	 SERIAL_PAUSE_WIRE_GUARD_MS)
 #define SERIAL_WATCHDOG_TIMEOUT_MS 5000U
 #define SERIAL_RUNTIME_ADDITIONAL_MAX (5U * 1024U)
@@ -43,6 +42,18 @@ struct serial_config_request {
 	uint64_t expected_generation;
 	uint64_t request_id;
 	bool valid;
+};
+
+struct serial_cdc_config_mailbox {
+	struct linkr_debugger_serial_config config;
+	uint64_t session_epoch;
+	bool valid;
+};
+
+struct serial_config_worker_result {
+	uint64_t session_epoch;
+	int result;
+	bool claimed;
 };
 
 struct serial_runtime {
@@ -61,19 +72,23 @@ struct serial_runtime {
 	struct linkr_debugger_serial_completion
 	    completions[SERIAL_COMPLETION_DEPTH];
 	struct serial_config_request web_request;
-	struct linkr_debugger_serial_config cdc_config;
+	struct serial_cdc_config_mailbox cdc_mailbox;
+	struct linkr_debugger_serial_config cdc_staged_config;
 	uint8_t cdc_pending[LINKR_DEBUGGER_SERIAL_TX_MESSAGE_MAX];
 	uint64_t cdc_pending_epoch;
+	uint64_t cdc_responder_generation;
+	uint64_t cdc_session_epoch;
+	uint64_t cdc_notification_sequence;
 	uint64_t wire_event_id;
 	uint64_t next_config_request_id;
 	uint64_t last_config_request_id;
 	size_t cdc_pending_length;
 	size_t cdc_pending_offset;
+	uint32_t cdc_notifications_inflight;
 	uint8_t completion_head;
 	uint8_t completion_count;
 	int last_config_result;
 	bool sink_registered[LINKR_DEBUGGER_SERIAL_SINK_COUNT];
-	bool cdc_config_valid;
 	bool wire_event_valid;
 	bool wire_fully_committed;
 	bool last_config_done;
@@ -82,19 +97,46 @@ struct serial_runtime {
 	bool pause_waiting_for_tx;
 	bool tx_probe_suppressed;
 	bool cdc_rx_backpressured;
-	bool cdc_gate_dtr;
+	bool cdc_physical_dtr;
 	bool cdc_detach_pending;
-	bool staged_control_valid;
-	bool staged_dtr;
-	bool staged_rts;
+	bool cdc_detach_recovery_pending;
+	bool cdc_unknown_low_epoch_pending;
+	bool cdc_staged_config_valid;
+	bool cdc_staging_error;
+	bool cdc_session_epoch_exhausted;
+	bool cdc_notification_exhausted;
 	bool staged_usb_valid;
 	bool staged_usb_configured;
 	bool rts;
 	bool usb_configured;
+	enum linkr_debugger_serial_cdc_phase cdc_phase;
+	enum linkr_debugger_serial_cdc_block_reason cdc_block_reason;
+#ifdef LINKR_DEBUGGER_SERIAL_HOST_TEST
+	unsigned int test_set_dtr_attach_failures;
+	unsigned int test_set_dtr_detach_failures;
+#endif
 };
+
+/*
+ * CDC invariants under serial.lock:
+ * DOWN: recorded physical LOW and published gate closed; a fresh LOW/reset
+ * boundary may still have one deferred model detach pending.
+ * PROMOTING: recorded HIGH, published DTR/gate closed, current epoch pending.
+ * UP: recorded HIGH, model CDC sink attached and ingress open.
+ * BLOCKED: published DTR/gate closed; block reason controls recovery.
+ * cdc_mailbox is either unclaimed and stamped with one session epoch, or
+ * invalid because the worker atomically claimed it into local storage.
+ * Every CDC notification increments sequence before any HAL read and keeps
+ * notifications_inflight nonzero until its complete state commit. Promotion
+ * requires an unchanged sequence and zero inflight notifications.
+ */
 
 static struct serial_runtime serial;
 static atomic_t serial_init_state = ATOMIC_INIT(0);
+#ifdef LINKR_DEBUGGER_SERIAL_HOST_TEST
+static void (*serial_test_before_cdc_claim_hook)(void *context);
+static void *serial_test_before_cdc_claim_context;
+#endif
 K_THREAD_STACK_DEFINE(serial_control_stack,
 		      LINKR_DEBUGGER_SERIAL_RUNTIME_STACK_SIZE);
 
@@ -109,13 +151,14 @@ BUILD_ASSERT(sizeof(struct serial_runtime) +
 		     sizeof(serial_init_state) <=
 		 LINKR_DEBUGGER_SERIAL_STATIC_MAX,
 	     "serial model, runtime, and stack exceed 14 KiB");
-BUILD_ASSERT(SERIAL_PAUSE_MAX_WAIT_MS <= 650U,
+BUILD_ASSERT(SERIAL_PAUSE_MAX_WAIT_MS <= 1250U,
 	     "serial pause wait exceeds its reviewed bound");
 BUILD_ASSERT(SERIAL_PAUSE_MAX_WAIT_MS < SERIAL_WATCHDOG_TIMEOUT_MS,
 	     "serial pause wait must remain below the watchdog timeout");
 
 static void serial_uart_callback(const struct device *dev, void *user_data);
 static void serial_cdc_callback(const struct device *dev, void *user_data);
+static void cdc_pending_clear_locked(bool stale);
 static bool serial_ready(void);
 
 static void serial_tx_probe_timer(struct k_timer *timer)
@@ -147,13 +190,131 @@ static void counter_add(uint64_t *counter, uint64_t amount)
 	}
 }
 
+static bool cdc_ingress_open_locked(void)
+{
+	return serial.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_UP;
+}
+
 static void serial_refresh_admission_locked(void)
 {
 	serial.admission_frozen =
-	    serial.pause_freeze || serial.cdc_config_valid ||
+	    serial.pause_freeze || serial.cdc_mailbox.valid ||
 	    serial.web_request.valid ||
 	    serial.model.state == LINKR_DEBUGGER_SERIAL_RECONFIG ||
 	    serial.model.state == LINKR_DEBUGGER_SERIAL_FAULTED;
+}
+
+static int serial_set_dtr_locked(bool asserted)
+{
+#ifdef LINKR_DEBUGGER_SERIAL_HOST_TEST
+	unsigned int *failures = asserted ?
+		&serial.test_set_dtr_attach_failures :
+		&serial.test_set_dtr_detach_failures;
+
+	if (*failures != 0U) {
+		(*failures)--;
+		return -EIO;
+	}
+#endif
+	return linkr_debugger_serial_set_dtr(&serial.model, asserted);
+}
+
+static bool cdc_block_reason_permanent(
+	enum linkr_debugger_serial_cdc_block_reason reason)
+{
+	return reason == LINKR_DEBUGGER_SERIAL_CDC_BLOCK_EPOCH_EXHAUSTED ||
+	       reason ==
+		LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NOTIFICATION_EXHAUSTED;
+}
+
+static int cdc_block_locked(
+	enum linkr_debugger_serial_cdc_block_reason reason)
+{
+	bool permanent;
+	int detach_ret = 0;
+
+	if (serial.cdc_session_epoch_exhausted) {
+		reason = LINKR_DEBUGGER_SERIAL_CDC_BLOCK_EPOCH_EXHAUSTED;
+	} else if (serial.cdc_notification_exhausted) {
+		reason =
+		    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NOTIFICATION_EXHAUSTED;
+	}
+	permanent = cdc_block_reason_permanent(reason);
+	if (permanent && serial.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED &&
+	    serial.cdc_block_reason == reason) {
+		return 0;
+	}
+
+	serial.cdc_phase = LINKR_DEBUGGER_SERIAL_CDC_BLOCKED;
+	serial.cdc_block_reason = reason;
+	serial.cdc_detach_pending = false;
+	serial.cdc_detach_recovery_pending = false;
+	if (reason !=
+		LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DTR_SAMPLE_UNKNOWN_WHILE_RECORDED_LOW &&
+	    reason != LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DETACH_FAILED) {
+		serial.cdc_unknown_low_epoch_pending = false;
+	}
+	serial.cdc_mailbox.valid = false;
+	serial.cdc_staged_config_valid = false;
+	cdc_pending_clear_locked(true);
+	if (reason != LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DETACH_FAILED) {
+		detach_ret = serial_set_dtr_locked(false);
+		if (detach_ret < 0 && !permanent) {
+			serial.cdc_block_reason =
+			    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DETACH_FAILED;
+		}
+	}
+	serial_refresh_admission_locked();
+	return detach_ret;
+}
+
+static int cdc_session_epoch_advance_locked(void)
+{
+	if (serial.cdc_session_epoch_exhausted ||
+	    serial.cdc_session_epoch == UINT64_MAX) {
+		if (serial.cdc_session_epoch_exhausted) {
+			return -EOVERFLOW;
+		}
+		serial.cdc_session_epoch_exhausted = true;
+		(void)cdc_block_locked(
+		    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_EPOCH_EXHAUSTED);
+		return -EOVERFLOW;
+	}
+	serial.cdc_session_epoch++;
+	return 0;
+}
+
+static int cdc_notification_begin(void)
+{
+	k_spinlock_key_t key;
+	int ret = 0;
+
+	key = k_spin_lock(&serial.lock);
+	if (serial.cdc_notification_exhausted) {
+		ret = -EOVERFLOW;
+	} else if (serial.cdc_notification_sequence == UINT64_MAX ||
+		   serial.cdc_notifications_inflight == UINT32_MAX) {
+		serial.cdc_notification_exhausted = true;
+		(void)cdc_block_locked(
+		    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NOTIFICATION_EXHAUSTED);
+		ret = -EOVERFLOW;
+	} else {
+		serial.cdc_notification_sequence++;
+		serial.cdc_notifications_inflight++;
+	}
+	k_spin_unlock(&serial.lock, key);
+	return ret;
+}
+
+static void cdc_notification_end_locked(void)
+{
+	if (serial.cdc_notifications_inflight == 0U) {
+		serial.cdc_notification_exhausted = true;
+		(void)cdc_block_locked(
+		    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NOTIFICATION_EXHAUSTED);
+		return;
+	}
+	serial.cdc_notifications_inflight--;
 }
 
 static uint32_t
@@ -165,7 +326,7 @@ serial_pause_wait_ms(const struct linkr_debugger_serial_config *config)
 	if (config->parity != LINKR_DEBUGGER_SERIAL_PARITY_NONE) {
 		bits_per_char++;
 	}
-	if (config->baud < SERIAL_PAUSE_MIN_BAUD) {
+	if (config->baud < LINKR_DEBUGGER_SERIAL_BAUD_MIN) {
 		return SERIAL_PAUSE_MAX_WAIT_MS;
 	}
 	wire_ms =
@@ -662,7 +823,7 @@ static void serial_uart_callback(const struct device *dev, void *user_data)
 					    (uint64_t)received);
 					enable_cdc_tx =
 					    enable_cdc_tx ||
-					    (serial.cdc_gate_dtr &&
+					    (cdc_ingress_open_locked() &&
 					     serial.model.dtr &&
 					     serial.model.state !=
 						 LINKR_DEBUGGER_SERIAL_PAUSED &&
@@ -779,7 +940,8 @@ static void serial_cdc_rx(void)
 	}
 
 	key = k_spin_lock(&serial.lock);
-	if (serial.model.state == LINKR_DEBUGGER_SERIAL_PAUSED ||
+	if (!cdc_ingress_open_locked() || !serial.model.dtr ||
+	    serial.model.state == LINKR_DEBUGGER_SERIAL_PAUSED ||
 	    serial.model.state == LINKR_DEBUGGER_SERIAL_FAULTED) {
 		k_spin_unlock(&serial.lock, key);
 		received = serial.ops->fifo_read(serial.hal_context, serial.cdc,
@@ -855,7 +1017,7 @@ static int serial_cdc_tx(size_t *budget)
 
 	key = k_spin_lock(&serial.lock);
 	sink = &serial.model.rx.sinks[LINKR_DEBUGGER_SERIAL_SINK_CDC];
-	if (!serial.cdc_gate_dtr || !serial.model.dtr || !sink->attached ||
+	if (!cdc_ingress_open_locked() || !serial.model.dtr || !sink->attached ||
 	    serial.model.state == LINKR_DEBUGGER_SERIAL_PAUSED ||
 	    serial.model.state == LINKR_DEBUGGER_SERIAL_FAULTED) {
 		cdc_pending_clear_locked(true);
@@ -945,7 +1107,7 @@ static void serial_cdc_callback(const struct device *dev, void *user_data)
 		    &serial.model.rx.sinks[LINKR_DEBUGGER_SERIAL_SINK_CDC];
 
 		disable_tx =
-		    tx_error || !serial.cdc_gate_dtr || !serial.model.dtr ||
+		    tx_error || !cdc_ingress_open_locked() || !serial.model.dtr ||
 		    !sink->attached ||
 		    serial.model.state == LINKR_DEBUGGER_SERIAL_PAUSED ||
 		    serial.model.state == LINKR_DEBUGGER_SERIAL_FAULTED ||
@@ -957,8 +1119,10 @@ static void serial_cdc_callback(const struct device *dev, void *user_data)
 	}
 }
 
-static void worker_apply_config(bool cdc_request)
+static struct serial_config_worker_result
+worker_apply_config(bool cdc_request)
 {
+	struct serial_config_worker_result result = { .result = -EAGAIN };
 	struct serial_config_request request;
 	struct linkr_debugger_serial_config pending;
 	struct linkr_debugger_serial_config rollback;
@@ -974,48 +1138,60 @@ static void worker_apply_config(bool cdc_request)
 
 	key = k_spin_lock(&serial.lock);
 	if (cdc_request) {
-		if (!serial.cdc_config_valid) {
+		if (!serial.cdc_mailbox.valid) {
 			k_spin_unlock(&serial.lock, key);
-			return;
+			return result;
 		}
-		memset(&request, 0, sizeof(request));
-		request.config = serial.cdc_config;
-	} else {
-		if (!serial.web_request.valid) {
-			k_spin_unlock(&serial.lock, key);
-			return;
-		}
+	} else if (!serial.web_request.valid) {
+		k_spin_unlock(&serial.lock, key);
+		return result;
+	} else if (serial.cdc_phase != LINKR_DEBUGGER_SERIAL_CDC_DOWN) {
+		result.claimed = true;
+		result.result = -EBUSY;
 		request = serial.web_request;
+		serial.web_request.valid = false;
+		serial.last_config_request_id = request.request_id;
+		serial.last_config_result = -EBUSY;
+		serial.last_config_done = true;
+		serial_refresh_admission_locked();
+		k_spin_unlock(&serial.lock, key);
+		return result;
 	}
 
+	/* Transient barriers leave the mailbox untouched and unclaimed. */
 	if (serial.pause_freeze ||
 	    serial.model.state == LINKR_DEBUGGER_SERIAL_PAUSED ||
+	    serial.model.state == LINKR_DEBUGGER_SERIAL_RECONFIG ||
 	    serial.model.tx.active_slot >= 0) {
 		k_spin_unlock(&serial.lock, key);
-		return;
+		return result;
 	}
+
+	memset(&request, 0, sizeof(request));
+	result.claimed = true;
 	if (cdc_request) {
-		request_ret = linkr_debugger_serial_config_request_cdc(
-		    &serial.model, &request.config, &decision);
+		request.config = serial.cdc_mailbox.config;
+		result.session_epoch = serial.cdc_mailbox.session_epoch;
+		serial.cdc_mailbox.valid = false;
+		if (result.session_epoch != serial.cdc_session_epoch ||
+		    (serial.cdc_phase != LINKR_DEBUGGER_SERIAL_CDC_PROMOTING &&
+		     serial.cdc_phase != LINKR_DEBUGGER_SERIAL_CDC_UP)) {
+			request_ret = -ESTALE;
+		} else {
+			request_ret = linkr_debugger_serial_config_request_cdc(
+				&serial.model, &request.config, &decision);
+		}
 	} else {
-		request_ret = linkr_debugger_serial_config_request_web(
-		    &serial.model, &request.config, request.expected_generation,
-		    &decision);
-	}
-	if (request_ret == -EBUSY &&
-	    serial.model.state == LINKR_DEBUGGER_SERIAL_RECONFIG) {
-		k_spin_unlock(&serial.lock, key);
-		return;
-	}
-	if (cdc_request) {
-		serial.cdc_config_valid = false;
-	} else {
+		request = serial.web_request;
 		serial.web_request.valid = false;
+		request_ret = linkr_debugger_serial_config_request_web(
+			&serial.model, &request.config,
+			request.expected_generation, &decision);
 		serial.last_config_request_id = request.request_id;
 		serial.last_config_result = request_ret;
 		serial.last_config_done =
-		    request_ret < 0 ||
-		    decision == LINKR_DEBUGGER_SERIAL_CONFIG_NO_CHANGE;
+			request_ret < 0 ||
+			decision == LINKR_DEBUGGER_SERIAL_CONFIG_NO_CHANGE;
 	}
 	if (request_ret == 0 &&
 	    decision == LINKR_DEBUGGER_SERIAL_CONFIG_APPLY) {
@@ -1026,7 +1202,8 @@ static void worker_apply_config(bool cdc_request)
 	serial_refresh_admission_locked();
 	k_spin_unlock(&serial.lock, key);
 	if (!apply) {
-		return;
+		result.result = request_ret;
+		return result;
 	}
 
 	/* Only this control-worker path is allowed to reconfigure PL011. */
@@ -1037,15 +1214,20 @@ static void worker_apply_config(bool cdc_request)
 	    serial.ops->configure(serial.hal_context, serial.uart, &pending);
 	key = k_spin_lock(&serial.lock);
 	(void)linkr_debugger_serial_config_apply_result(&serial.model,
-							apply_ret == 0);
+						apply_ret == 0);
 	k_spin_unlock(&serial.lock, key);
 	if (apply_ret != 0) {
 		rollback_ret = serial.ops->configure(serial.hal_context,
-						     serial.uart, &rollback);
+					     serial.uart, &rollback);
 		key = k_spin_lock(&serial.lock);
 		(void)linkr_debugger_serial_config_rollback_result(
 		    &serial.model, rollback_ret == 0);
 		faulted = rollback_ret != 0;
+		if (faulted &&
+		    serial.cdc_phase != LINKR_DEBUGGER_SERIAL_CDC_DOWN) {
+			(void)cdc_block_locked(
+			    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_FAULTED);
+		}
 		k_spin_unlock(&serial.lock, key);
 	}
 
@@ -1056,7 +1238,7 @@ static void worker_apply_config(bool cdc_request)
 		key = k_spin_lock(&serial.lock);
 		serial_refresh_admission_locked();
 		(void)linkr_debugger_serial_tx_cancel_all(&serial.model, false,
-							  &canceled);
+						  &canceled);
 		canceled_push_locked(&canceled);
 		serial.wire_event_valid = false;
 		serial.wire_fully_committed = false;
@@ -1064,29 +1246,54 @@ static void worker_apply_config(bool cdc_request)
 		k_spin_unlock(&serial.lock, key);
 	}
 
+	result.result = apply_ret != 0 ? apply_ret : rollback_ret;
 	key = k_spin_lock(&serial.lock);
 	serial_refresh_admission_locked();
 	if (!cdc_request) {
-		serial.last_config_result =
-		    apply_ret != 0 ? apply_ret : rollback_ret;
+		serial.last_config_result = result.result;
 		serial.last_config_done = true;
 	}
 	k_spin_unlock(&serial.lock, key);
 	if (!faulted) {
 		serial.ops->irq_rx_enable(serial.hal_context, serial.uart);
 	}
+	return result;
 }
+
+#ifdef LINKR_DEBUGGER_SERIAL_HOST_TEST
+static void serial_test_run_before_cdc_claim_hook(void)
+{
+	void (*hook)(void *context);
+	void *context;
+	k_spinlock_key_t key;
+
+	key = k_spin_lock(&serial.lock);
+	hook = serial_test_before_cdc_claim_hook;
+	context = serial_test_before_cdc_claim_context;
+	serial_test_before_cdc_claim_hook = NULL;
+	serial_test_before_cdc_claim_context = NULL;
+	k_spin_unlock(&serial.lock, key);
+	if (hook != NULL) {
+		hook(context);
+	}
+}
+#endif
 
 static void serial_process_events(void)
 {
-	bool control_valid;
+	struct serial_config_worker_result cdc_result;
+	struct serial_config_worker_result web_result;
 	bool detach_pending;
-	bool dtr = false;
+	bool detach_recovery_pending;
 	bool enable_cdc_tx = false;
 	bool disable_cdc_tx = false;
+	bool enable_cdc_rx = false;
 	bool resume_cdc_rx = false;
 	bool probe_uart_tx = false;
+	uint64_t promotion_epoch;
+	uint64_t promotion_notification_sequence;
 	k_spinlock_key_t key;
+	int dtr_ret;
 
 	if (!serial_ready()) {
 		return;
@@ -1095,44 +1302,98 @@ static void serial_process_events(void)
 
 	key = k_spin_lock(&serial.lock);
 	detach_pending = serial.cdc_detach_pending;
+	detach_recovery_pending = serial.cdc_detach_recovery_pending;
 	serial.cdc_detach_pending = false;
-	control_valid = serial.staged_control_valid;
+	serial.cdc_detach_recovery_pending = false;
+	disable_cdc_tx = serial.cdc_phase != LINKR_DEBUGGER_SERIAL_CDC_UP;
 	if (detach_pending) {
-		(void)linkr_debugger_serial_set_dtr(&serial.model, false);
-		cdc_pending_clear_locked(true);
-		serial.cdc_gate_dtr = false;
-		disable_cdc_tx = true;
-	}
-	if (control_valid) {
-		dtr = serial.staged_dtr;
-		serial.rts = serial.staged_rts;
-		serial.staged_control_valid = false;
-		(void)linkr_debugger_serial_set_dtr(&serial.model, dtr);
-		serial.cdc_gate_dtr = dtr;
-		if (!dtr) {
-			cdc_pending_clear_locked(true);
-			disable_cdc_tx = true;
-		} else {
-			enable_cdc_tx = true;
+		dtr_ret = serial_set_dtr_locked(false);
+		if (dtr_ret < 0) {
+			(void)cdc_block_locked(
+			    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DETACH_FAILED);
+		} else if (detach_recovery_pending &&
+			   !serial.cdc_physical_dtr &&
+			   !serial.cdc_session_epoch_exhausted &&
+			   !serial.cdc_notification_exhausted) {
+			serial.cdc_phase = LINKR_DEBUGGER_SERIAL_CDC_DOWN;
+			serial.cdc_block_reason =
+			    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NONE;
 		}
+		cdc_pending_clear_locked(true);
+		disable_cdc_tx = true;
 	}
 	if (serial.staged_usb_valid) {
 		serial.usb_configured = serial.staged_usb_configured;
 		serial.staged_usb_valid = false;
 	}
+	if (serial.model.state == LINKR_DEBUGGER_SERIAL_FAULTED &&
+	    serial.cdc_phase != LINKR_DEBUGGER_SERIAL_CDC_DOWN) {
+		(void)cdc_block_locked(
+		    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_FAULTED);
+		disable_cdc_tx = true;
+	}
+	promotion_epoch = serial.cdc_session_epoch;
+	promotion_notification_sequence = serial.cdc_notification_sequence;
 	k_spin_unlock(&serial.lock, key);
 
 	if (disable_cdc_tx) {
 		serial.ops->irq_tx_disable(serial.hal_context, serial.cdc);
 	}
-	if (enable_cdc_tx) {
-		serial.ops->irq_tx_enable(serial.hal_context, serial.cdc);
-	}
 
-	worker_apply_config(true);
-	worker_apply_config(false);
+#ifdef LINKR_DEBUGGER_SERIAL_HOST_TEST
+	/* This one-shot seam is deliberately after the old promotion fence was
+	 * sampled and before worker_apply_config() can claim the CDC mailbox.
+	 */
+	serial_test_run_before_cdc_claim_hook();
+#endif
+	cdc_result = worker_apply_config(true);
+	web_result = worker_apply_config(false);
+	ARG_UNUSED(web_result);
 
 	key = k_spin_lock(&serial.lock);
+	if (cdc_result.claimed && cdc_result.result < 0 &&
+	    cdc_result.session_epoch == serial.cdc_session_epoch &&
+	    serial.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_PROMOTING) {
+		(void)cdc_block_locked(
+		    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_CONFIG_FAILED);
+		disable_cdc_tx = true;
+	}
+	if (serial.model.state == LINKR_DEBUGGER_SERIAL_FAULTED &&
+	    serial.cdc_phase != LINKR_DEBUGGER_SERIAL_CDC_DOWN) {
+		(void)cdc_block_locked(
+		    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_FAULTED);
+		disable_cdc_tx = true;
+	}
+	if (serial.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_PROMOTING) {
+		bool promotion_fence_matches =
+			serial.cdc_session_epoch == promotion_epoch &&
+			serial.cdc_notification_sequence ==
+				promotion_notification_sequence &&
+			serial.cdc_notifications_inflight == 0U &&
+			serial.cdc_physical_dtr &&
+			!serial.cdc_detach_pending &&
+			!(serial.staged_usb_valid &&
+			  !serial.staged_usb_configured) &&
+			!serial.cdc_mailbox.valid &&
+			!serial.web_request.valid &&
+			serial.model.state == LINKR_DEBUGGER_SERIAL_READY &&
+			!serial.admission_frozen;
+
+		if (promotion_fence_matches) {
+			dtr_ret = serial_set_dtr_locked(true);
+			if (dtr_ret == 0) {
+				serial.cdc_phase = LINKR_DEBUGGER_SERIAL_CDC_UP;
+				serial.cdc_block_reason =
+				    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NONE;
+				enable_cdc_tx = true;
+				enable_cdc_rx = true;
+			} else {
+				(void)cdc_block_locked(
+				    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_ATTACH_FAILED);
+				disable_cdc_tx = true;
+			}
+		}
+	}
 	if (serial.cdc_rx_backpressured && cdc_can_accept_locked()) {
 		serial.cdc_rx_backpressured = false;
 		resume_cdc_rx = true;
@@ -1142,8 +1403,15 @@ static void serial_process_events(void)
 	    !serial.tx_probe_suppressed && serial.model.tx.used_slots != 0U &&
 	    (!serial.admission_frozen || serial.model.tx.active_slot >= 0);
 	k_spin_unlock(&serial.lock, key);
-	if (resume_cdc_rx) {
+
+	if (resume_cdc_rx || enable_cdc_rx) {
 		serial.ops->irq_rx_enable(serial.hal_context, serial.cdc);
+	}
+	if (disable_cdc_tx) {
+		serial.ops->irq_tx_disable(serial.hal_context, serial.cdc);
+	}
+	if (enable_cdc_tx) {
+		serial.ops->irq_tx_enable(serial.hal_context, serial.cdc);
 	}
 	if (probe_uart_tx) {
 		serial.ops->irq_tx_enable(serial.hal_context, serial.uart);
@@ -1168,6 +1436,55 @@ static void serial_control_thread_entry(void *p1, void *p2, void *p3)
 
 #ifdef LINKR_DEBUGGER_SERIAL_HOST_TEST
 void linkr_debugger_serial_process_events(void) { serial_process_events(); }
+
+void linkr_debugger_serial_test_fail_next_set_dtr(bool asserted)
+{
+	k_spinlock_key_t key = k_spin_lock(&serial.lock);
+	unsigned int *failures = asserted ?
+		&serial.test_set_dtr_attach_failures :
+		&serial.test_set_dtr_detach_failures;
+
+	(*failures)++;
+	k_spin_unlock(&serial.lock, key);
+}
+
+void linkr_debugger_serial_test_saturate_config_failure_counters(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&serial.lock);
+
+	serial.model.config_counters.apply_failed = UINT64_MAX;
+	serial.model.config_counters.rollback_succeeded = UINT64_MAX;
+	serial.model.config_counters.rollback_failed = UINT64_MAX;
+	k_spin_unlock(&serial.lock, key);
+}
+
+void linkr_debugger_serial_test_set_session_epoch(uint64_t epoch)
+{
+	k_spinlock_key_t key = k_spin_lock(&serial.lock);
+
+	serial.cdc_session_epoch = epoch;
+	serial.cdc_session_epoch_exhausted = false;
+	k_spin_unlock(&serial.lock, key);
+}
+
+void linkr_debugger_serial_test_set_notification_sequence(uint64_t sequence)
+{
+	k_spinlock_key_t key = k_spin_lock(&serial.lock);
+
+	serial.cdc_notification_sequence = sequence;
+	serial.cdc_notification_exhausted = false;
+	k_spin_unlock(&serial.lock, key);
+}
+
+void linkr_debugger_serial_test_set_before_cdc_claim_hook(
+	void (*hook)(void *context), void *context)
+{
+	k_spinlock_key_t key = k_spin_lock(&serial.lock);
+
+	serial_test_before_cdc_claim_hook = hook;
+	serial_test_before_cdc_claim_context = context;
+	k_spin_unlock(&serial.lock, key);
+}
 #endif
 
 int linkr_debugger_serial_init(
@@ -1340,6 +1657,27 @@ int linkr_debugger_serial_runtime_sink_detach(
 	return ret;
 }
 
+int linkr_debugger_serial_runtime_sink_rearm(
+	enum linkr_debugger_serial_sink sink)
+{
+	k_spinlock_key_t key;
+	int ret;
+
+	if (!serial_ready()) {
+		return -ENODEV;
+	}
+	if (sink <= LINKR_DEBUGGER_SERIAL_SINK_CDC ||
+	    sink >= LINKR_DEBUGGER_SERIAL_SINK_COUNT) {
+		return -EINVAL;
+	}
+	key = k_spin_lock(&serial.lock);
+	ret = serial.sink_registered[sink] ?
+		linkr_debugger_serial_rx_sink_rearm(&serial.model, sink) :
+		-ENOENT;
+	k_spin_unlock(&serial.lock, key);
+	return ret;
+}
+
 int linkr_debugger_serial_runtime_sink_read(
     enum linkr_debugger_serial_sink sink,
     struct linkr_debugger_serial_sink_pending *pending, size_t capacity,
@@ -1403,6 +1741,36 @@ int linkr_debugger_serial_runtime_sink_consume(
 		memset(pending, 0, sizeof(*pending));
 	}
 	return 0;
+}
+
+int linkr_debugger_serial_runtime_sink_pending_validate(
+	enum linkr_debugger_serial_sink sink,
+	struct linkr_debugger_serial_sink_pending *pending)
+{
+	struct linkr_debugger_serial_rx_sink_state *sink_state;
+	k_spinlock_key_t key;
+	int ret = 0;
+
+	if (!serial_ready()) {
+		return -ENODEV;
+	}
+	if (sink <= LINKR_DEBUGGER_SERIAL_SINK_CDC ||
+	    sink >= LINKR_DEBUGGER_SERIAL_SINK_COUNT || pending == NULL) {
+		return -EINVAL;
+	}
+	key = k_spin_lock(&serial.lock);
+	if (!serial.sink_registered[sink]) {
+		ret = -ENOENT;
+	} else {
+		sink_state = &serial.model.rx.sinks[sink];
+		if (pending->valid &&
+		    (pending->sink != sink || pending->epoch != sink_state->epoch)) {
+			memset(pending, 0, sizeof(*pending));
+			ret = -ESTALE;
+		}
+	}
+	k_spin_unlock(&serial.lock, key);
+	return ret;
 }
 
 int linkr_debugger_serial_runtime_tx_enqueue(
@@ -1503,9 +1871,13 @@ int linkr_debugger_serial_status_snapshot(
 	key = k_spin_lock(&serial.lock);
 	memset(status, 0, sizeof(*status));
 	status->current_config = serial.model.current;
+	status->pending_cdc_config = serial.cdc_staged_config_valid ?
+		serial.cdc_staged_config : serial.cdc_mailbox.config;
 	status->config_counters = serial.model.config_counters;
 	status->runtime_counters = serial.counters;
 	status->generation = serial.model.generation;
+	status->cdc_responder_generation = serial.cdc_responder_generation;
+	status->cdc_notification_sequence = serial.cdc_notification_sequence;
 	status->rx_head = serial.model.rx.head;
 	status->tx_bytes_committed = serial.model.tx.bytes_committed;
 	status->tx_accepted = serial.model.tx.accepted;
@@ -1516,16 +1888,27 @@ int linkr_debugger_serial_status_snapshot(
 	    serial.wire_event_valid ? serial.wire_event_id : 0U;
 	status->pause_wait_budget_ms =
 	    serial_pause_wait_ms(&serial.model.current);
+	status->cdc_notifications_inflight =
+		serial.cdc_notifications_inflight;
 	status->last_config_result = serial.last_config_result;
 	status->state = serial.model.state;
+	status->cdc_phase = serial.cdc_phase;
+	status->cdc_block_reason = serial.cdc_block_reason;
 	status->tx_used_slots = serial.model.tx.used_slots;
 	status->last_config_done = serial.last_config_done;
-	status->dtr = serial.model.dtr;
+	status->dtr = serial.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_UP;
 	status->rts = serial.rts;
 	status->usb_configured = serial.usb_configured;
 	status->admission_frozen = serial.admission_frozen;
 	status->pause_waiting_for_tx = serial.pause_waiting_for_tx;
 	status->cdc_rx_backpressured = serial.cdc_rx_backpressured;
+	status->pending_cdc_config_valid = serial.cdc_staged_config_valid ||
+					 serial.cdc_mailbox.valid;
+	status->cdc_promotion_pending =
+		serial.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_PROMOTING;
+	status->cdc_model_dtr = serial.model.dtr;
+	status->cdc_sink_attached =
+		serial.model.rx.sinks[LINKR_DEBUGGER_SERIAL_SINK_CDC].attached;
 	k_spin_unlock(&serial.lock, key);
 	return 0;
 }
@@ -1534,29 +1917,65 @@ int linkr_debugger_serial_cdc_line_coding(const struct device *dev)
 {
 	struct linkr_debugger_serial_config config;
 	k_spinlock_key_t key;
+	bool valid;
 	int ret;
 
 	if (!serial_ready() || dev != serial.cdc) {
 		return -ENODEV;
 	}
+	ret = cdc_notification_begin();
+	if (ret < 0) {
+		wake_control(SERIAL_CONTROL_EVENT_CONFIG);
+		return ret;
+	}
 	ret = serial.ops->config_get(serial.hal_context, dev, &config);
-	if (ret < 0 || !linkr_debugger_serial_config_valid(&config)) {
-		key = k_spin_lock(&serial.lock);
-		counter_add(&serial.counters.invalid_line_coding, 1U);
-		k_spin_unlock(&serial.lock, key);
-		return ret < 0 ? ret : -EINVAL;
-	}
-
+	valid = ret == 0 && linkr_debugger_serial_config_valid(&config);
 	key = k_spin_lock(&serial.lock);
-	if (serial.cdc_config_valid) {
-		counter_add(&serial.counters.config_mailbox_busy, 1U);
+	if (!valid) {
+		counter_add(&serial.counters.invalid_line_coding, 1U);
+		switch (serial.cdc_phase) {
+		case LINKR_DEBUGGER_SERIAL_CDC_DOWN:
+			serial.cdc_staged_config_valid = false;
+			serial.cdc_staging_error = true;
+			break;
+		case LINKR_DEBUGGER_SERIAL_CDC_PROMOTING:
+			(void)cdc_block_locked(
+			    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_CONFIG_FAILED);
+			break;
+		case LINKR_DEBUGGER_SERIAL_CDC_UP:
+		case LINKR_DEBUGGER_SERIAL_CDC_BLOCKED:
+		default:
+			break;
+		}
+	} else {
+		switch (serial.cdc_phase) {
+		case LINKR_DEBUGGER_SERIAL_CDC_DOWN:
+			serial.cdc_staged_config = config;
+			serial.cdc_staged_config_valid = true;
+			serial.cdc_staging_error = false;
+			break;
+		case LINKR_DEBUGGER_SERIAL_CDC_PROMOTING:
+		case LINKR_DEBUGGER_SERIAL_CDC_UP:
+			if (serial.cdc_mailbox.valid) {
+				counter_add(&serial.counters.config_mailbox_busy,
+					    1U);
+			}
+			serial.cdc_mailbox.config = config;
+			serial.cdc_mailbox.session_epoch =
+				serial.cdc_session_epoch;
+			serial.cdc_mailbox.valid = true;
+			serial_refresh_admission_locked();
+			break;
+		case LINKR_DEBUGGER_SERIAL_CDC_BLOCKED:
+		default:
+			/* A valid tuple never reopens a blocked session. */
+			break;
+		}
 	}
-	serial.cdc_config = config;
-	serial.cdc_config_valid = true;
-	serial_refresh_admission_locked();
+	cdc_notification_end_locked();
 	k_spin_unlock(&serial.lock, key);
 	wake_control(SERIAL_CONTROL_EVENT_CONFIG);
-	return 0;
+	return valid ? 0 : (ret < 0 ? ret : -EINVAL);
 }
 
 int linkr_debugger_serial_cdc_control_line(const struct device *dev)
@@ -1564,35 +1983,127 @@ int linkr_debugger_serial_cdc_control_line(const struct device *dev)
 	uint32_t dtr;
 	uint32_t rts;
 	k_spinlock_key_t key;
-	int ret;
+	bool keep_rx_draining = false;
+	bool dtr_high;
+	enum linkr_debugger_serial_cdc_phase previous_phase;
+	int dtr_ret;
+	int rts_ret;
 
 	if (!serial_ready() || dev != serial.cdc) {
 		return -ENODEV;
 	}
-	ret = serial.ops->line_control_get(
-	    serial.hal_context, dev, LINKR_DEBUGGER_SERIAL_LINE_DTR, &dtr);
-	if (ret < 0) {
-		return ret;
+	dtr_ret = cdc_notification_begin();
+	if (dtr_ret < 0) {
+		wake_control(SERIAL_CONTROL_EVENT_USB);
+		return dtr_ret;
 	}
-	ret = serial.ops->line_control_get(
-	    serial.hal_context, dev, LINKR_DEBUGGER_SERIAL_LINE_RTS, &rts);
-	if (ret < 0) {
-		return ret;
+	dtr_ret = serial.ops->line_control_get(
+		serial.hal_context, dev, LINKR_DEBUGGER_SERIAL_LINE_DTR, &dtr);
+	if (dtr_ret < 0) {
+		key = k_spin_lock(&serial.lock);
+		serial.cdc_unknown_low_epoch_pending =
+			!serial.cdc_physical_dtr;
+		(void)cdc_block_locked(
+			serial.cdc_physical_dtr ?
+				LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DTR_SAMPLE_UNKNOWN_WHILE_RECORDED_HIGH :
+				LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DTR_SAMPLE_UNKNOWN_WHILE_RECORDED_LOW);
+		cdc_notification_end_locked();
+		k_spin_unlock(&serial.lock, key);
+		serial.ops->irq_rx_enable(serial.hal_context, serial.cdc);
+		wake_control(SERIAL_CONTROL_EVENT_USB);
+		return dtr_ret;
 	}
+	dtr_high = dtr != 0U;
 
+	/* Commit DTR as soon as its sample is known. The notification remains
+	 * inflight while RTS is read, so the worker cannot promote this sample
+	 * before the complete control notification has committed.
+	 */
 	key = k_spin_lock(&serial.lock);
-	serial.staged_control_valid = true;
-	serial.staged_dtr = dtr != 0U;
-	serial.staged_rts = rts != 0U;
-	if (dtr == 0U) {
-		serial.cdc_detach_pending = true;
-		serial.cdc_gate_dtr = false;
-	} else if (!serial.cdc_detach_pending) {
-		serial.cdc_gate_dtr = true;
+	previous_phase = serial.cdc_phase;
+	if (!serial.cdc_session_epoch_exhausted &&
+	    !serial.cdc_notification_exhausted &&
+	    serial.cdc_physical_dtr != dtr_high) {
+		if (cdc_session_epoch_advance_locked() == 0) {
+			counter_add(&serial.cdc_responder_generation, 1U);
+			serial.cdc_physical_dtr = dtr_high;
+			serial.cdc_unknown_low_epoch_pending = false;
+			if (!dtr_high) {
+				serial.cdc_mailbox.valid = false;
+				serial.cdc_staged_config_valid = false;
+				serial.cdc_staging_error = false;
+				serial.cdc_detach_pending = true;
+				serial.cdc_detach_recovery_pending = false;
+				serial.cdc_phase = LINKR_DEBUGGER_SERIAL_CDC_DOWN;
+				serial.cdc_block_reason =
+				    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NONE;
+			} else if (previous_phase ==
+				   LINKR_DEBUGGER_SERIAL_CDC_DOWN) {
+				serial.cdc_phase =
+					LINKR_DEBUGGER_SERIAL_CDC_PROMOTING;
+				serial.cdc_block_reason =
+				    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NONE;
+				if (serial.model.state ==
+				    LINKR_DEBUGGER_SERIAL_FAULTED) {
+					(void)cdc_block_locked(
+					    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_FAULTED);
+				} else if (serial.cdc_staging_error) {
+					(void)cdc_block_locked(
+					    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_CONFIG_FAILED);
+				} else if (serial.cdc_staged_config_valid) {
+					serial.cdc_mailbox.config =
+						serial.cdc_staged_config;
+					serial.cdc_mailbox.session_epoch =
+						serial.cdc_session_epoch;
+					serial.cdc_mailbox.valid = true;
+					serial.cdc_staged_config_valid = false;
+				}
+			}
+			serial_refresh_admission_locked();
+		}
+	} else if (!dtr_high &&
+		   serial.cdc_phase == LINKR_DEBUGGER_SERIAL_CDC_BLOCKED &&
+		   !serial.cdc_session_epoch_exhausted &&
+		   !serial.cdc_notification_exhausted) {
+		if (serial.cdc_unknown_low_epoch_pending) {
+			if (cdc_session_epoch_advance_locked() == 0) {
+				counter_add(&serial.cdc_responder_generation, 1U);
+				serial.cdc_unknown_low_epoch_pending = false;
+				serial.cdc_mailbox.valid = false;
+				serial.cdc_staged_config_valid = false;
+				serial.cdc_staging_error = false;
+				serial.cdc_detach_pending = true;
+				serial.cdc_detach_recovery_pending = true;
+				serial.cdc_block_reason =
+				    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_LOW_DETACH_PENDING;
+				serial_refresh_admission_locked();
+			}
+		} else if (serial.cdc_block_reason ==
+			   LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DETACH_FAILED) {
+			serial.cdc_detach_pending = true;
+			serial.cdc_detach_recovery_pending = true;
+			serial.cdc_block_reason =
+			    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_LOW_DETACH_PENDING;
+		}
+	}
+	if (!dtr_high || serial.cdc_phase != LINKR_DEBUGGER_SERIAL_CDC_UP) {
+		keep_rx_draining = true;
 	}
 	k_spin_unlock(&serial.lock, key);
+
+	rts_ret = serial.ops->line_control_get(
+		serial.hal_context, dev, LINKR_DEBUGGER_SERIAL_LINE_RTS, &rts);
+	key = k_spin_lock(&serial.lock);
+	if (rts_ret == 0) {
+		serial.rts = rts != 0U;
+	}
+	cdc_notification_end_locked();
+	k_spin_unlock(&serial.lock, key);
+	if (keep_rx_draining) {
+		serial.ops->irq_rx_enable(serial.hal_context, serial.cdc);
+	}
 	wake_control(SERIAL_CONTROL_EVENT_USB);
-	return 0;
+	return rts_ret;
 }
 
 int linkr_debugger_serial_cdc_usb_event(
@@ -1600,6 +2111,7 @@ int linkr_debugger_serial_cdc_usb_event(
     bool configured)
 {
 	k_spinlock_key_t key;
+	bool keep_rx_draining = false;
 
 	if (!serial_ready() || dev != serial.cdc) {
 		return -ENODEV;
@@ -1608,19 +2120,38 @@ int linkr_debugger_serial_cdc_usb_event(
 	    event != LINKR_DEBUGGER_SERIAL_USB_CONFIGURATION) {
 		return -EINVAL;
 	}
+	if (cdc_notification_begin() < 0) {
+		wake_control(SERIAL_CONTROL_EVENT_USB);
+		return -EOVERFLOW;
+	}
 
 	key = k_spin_lock(&serial.lock);
 	serial.staged_usb_valid = true;
 	serial.staged_usb_configured =
 	    event == LINKR_DEBUGGER_SERIAL_USB_CONFIGURATION && configured;
 	if (event == LINKR_DEBUGGER_SERIAL_USB_RESET || !configured) {
-		serial.cdc_detach_pending = true;
-		serial.staged_control_valid = true;
-		serial.staged_dtr = false;
-		serial.staged_rts = false;
-		serial.cdc_gate_dtr = false;
+		if (!serial.cdc_notification_exhausted &&
+		    cdc_session_epoch_advance_locked() == 0) {
+			counter_add(&serial.cdc_responder_generation, 1U);
+			serial.cdc_physical_dtr = false;
+			serial.cdc_mailbox.valid = false;
+			serial.cdc_staged_config_valid = false;
+			serial.cdc_staging_error = false;
+			serial.cdc_unknown_low_epoch_pending = false;
+			serial.cdc_detach_pending = true;
+			serial.cdc_detach_recovery_pending = false;
+			serial.cdc_phase = LINKR_DEBUGGER_SERIAL_CDC_DOWN;
+			serial.cdc_block_reason =
+			    LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NONE;
+			serial_refresh_admission_locked();
+		}
+		keep_rx_draining = true;
 	}
+	cdc_notification_end_locked();
 	k_spin_unlock(&serial.lock, key);
+	if (keep_rx_draining) {
+		serial.ops->irq_rx_enable(serial.hal_context, serial.cdc);
+	}
 	wake_control(SERIAL_CONTROL_EVENT_USB);
 	return 0;
 }

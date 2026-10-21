@@ -39,11 +39,6 @@ static int switch_entry_set(const struct linkr_debugger_config_item_desc *item,
 			entry->value == LINKR_DEBUGGER_CONFIG_SD_TARGET ?
 				LINKR_DEBUGGER_SD_ROUTE_TARGET :
 				LINKR_DEBUGGER_SD_ROUTE_USB_READER);
-	case LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID:
-		return linkr_debugger_usb_route_set(
-			entry->value == LINKR_DEBUGGER_CONFIG_USB_PC ?
-				LINKR_DEBUGGER_USB_ROUTE_PC :
-				LINKR_DEBUGGER_USB_ROUTE_TARGET);
 	case LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID:
 		return linkr_debugger_tf_wp_route_set(
 			entry->value == LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE ?

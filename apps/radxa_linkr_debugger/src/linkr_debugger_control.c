@@ -8,6 +8,7 @@
 #include "linkr_debugger_control.h"
 #include "linkr_debugger_http.h"
 #include "linkr_debugger_monitoring.h"
+#include "linkr_debugger_power_dependency.h"
 
 #include <errno.h>
 #include <zephyr/device.h>
@@ -41,6 +42,7 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #define REGULATOR_5V_OUT_NODE DT_NODELABEL(reg_5v_out)
 #define REGULATOR_VDD_5V_NODE DT_NODELABEL(reg_vdd_5v)
 #define REGULATOR_20V_OUT_NODE DT_NODELABEL(reg_20v_out)
+#define REGULATOR_5V_USB_HUB_NODE DT_NODELABEL(reg_5v_usb_hub)
 #define CURRENT_5V_OUT_NODE DT_NODELABEL(ina226_5v)
 #define CURRENT_12V_OUT_NODE DT_NODELABEL(ina226_12v)
 #define CURRENT_20V_OUT_NODE DT_NODELABEL(ina226_20v)
@@ -52,7 +54,7 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #define LINKR_DEBUGGER_POWER_CAPTURE_PROTOCOL "host-stream-v1"
 #define LINKR_DEBUGGER_USB_MODE "ncm-http"
 #define LINKR_DEBUGGER_MCU_NAME "rp2350"
-#define LINKR_DEBUGGER_RESERVED_GPIOS "GP00-GP06 GP10-GP11 GP19 GP22-GP25 GP26-GP28"
+#define LINKR_DEBUGGER_RESERVED_GPIOS "GP00-GP04 GP10-GP11 GP19 GP22-GP25 GP26-GP28"
 
 #define LINKR_DEBUGGER_GPIO_DIR_INPUT 1
 #define LINKR_DEBUGGER_GPIO_DIR_OUTPUT 2
@@ -86,12 +88,14 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #if DT_NODE_HAS_STATUS(REGULATOR_12V_OUT_NODE, okay) && \
     DT_NODE_HAS_STATUS(REGULATOR_5V_OUT_NODE, okay) && \
     DT_NODE_HAS_STATUS(REGULATOR_VDD_5V_NODE, okay) && \
-    DT_NODE_HAS_STATUS(REGULATOR_20V_OUT_NODE, okay)
+    DT_NODE_HAS_STATUS(REGULATOR_20V_OUT_NODE, okay) && \
+    DT_NODE_HAS_STATUS(REGULATOR_5V_USB_HUB_NODE, okay)
 #define HAS_REGULATORS 1
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_12V_OUT_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_5V_OUT_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_VDD_5V_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_20V_OUT_NODE, okay));
+BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_5V_USB_HUB_NODE, okay));
 #else
 #define HAS_REGULATORS 0
 #endif
@@ -121,7 +125,6 @@ static const struct device *const gpio0 = DEVICE_DT_GET(GPIO0_NODE);
 static const struct device *const watchdog_dev = DEVICE_DT_GET_OR_NULL(WATCHDOG_NODE);
 static bool regulator_states[REGULATOR_STATE_CAPACITY];
 static enum linkr_debugger_sd_route linkr_debugger_sd_route = LINKR_DEBUGGER_SD_ROUTE_TARGET;
-static enum linkr_debugger_usb_route linkr_debugger_usb_route = LINKR_DEBUGGER_USB_ROUTE_TARGET;
 static enum linkr_debugger_tf_wp_route linkr_debugger_tf_wp_route = LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE;
 static uint8_t linkr_debugger_gpio_directions[SAFE_GPIO_STATE_CAPACITY];
 static bool linkr_debugger_gpio_output_levels[SAFE_GPIO_STATE_CAPACITY];
@@ -155,6 +158,7 @@ static const struct device *const regulators[] = {
 	DEVICE_DT_GET(REGULATOR_5V_OUT_NODE),
 	DEVICE_DT_GET(REGULATOR_VDD_5V_NODE),
 	DEVICE_DT_GET(REGULATOR_20V_OUT_NODE),
+	DEVICE_DT_GET(REGULATOR_5V_USB_HUB_NODE),
 };
 #else
 static const struct device *const regulators[] = {};
@@ -326,12 +330,6 @@ static int configure_sd_default(void)
 	return gpio_pin_configure(gpio0, 4, GPIO_OUTPUT_ACTIVE);
 }
 
-static int configure_usb_mux_default(void)
-{
-	linkr_debugger_usb_route = LINKR_DEBUGGER_USB_ROUTE_TARGET;
-	return gpio_pin_configure(gpio0, 5, GPIO_OUTPUT_ACTIVE);
-}
-
 static int configure_tf_wp_default(void)
 {
 	/* Writable = GPIO22 high: Q12 pulls GL3224 SD_WP low, which the reader
@@ -345,6 +343,32 @@ static void linkr_debugger_gpio_apply_safe_drive_strength(const struct linkr_deb
 	if (desc != NULL) {
 		gpio_set_drive_strength(desc->pin, GPIO_DRIVE_STRENGTH_4MA);
 	}
+}
+
+static int configure_safe_gpio_defaults(void)
+{
+	int ret;
+
+	if (linkr_debugger_safe_gpio_count > ARRAY_SIZE(linkr_debugger_gpio_directions)) {
+		return -ERANGE;
+	}
+
+	for (size_t i = 0; i < linkr_debugger_safe_gpio_count; i++) {
+		const struct linkr_debugger_safe_gpio_desc *desc =
+			&linkr_debugger_safe_gpios[i];
+
+		linkr_debugger_gpio_directions[i] = LINKR_DEBUGGER_GPIO_DIR_INPUT;
+		if (!desc->output_capable) {
+			continue;
+		}
+		ret = gpio_pin_configure(gpio0, desc->pin, GPIO_INPUT);
+		if (ret < 0) {
+			return ret;
+		}
+		linkr_debugger_gpio_apply_safe_drive_strength(desc);
+	}
+
+	return 0;
 }
 
 static int setup_adc_channels(void)
@@ -937,11 +961,6 @@ int linkr_debugger_control_init(void)
 		return ret;
 	}
 
-	ret = configure_usb_mux_default();
-	if (ret < 0) {
-		return ret;
-	}
-
 	ret = configure_tf_wp_default();
 	if (ret < 0) {
 		return ret;
@@ -957,15 +976,7 @@ int linkr_debugger_control_init(void)
 		return ret;
 	}
 
-	if (linkr_debugger_safe_gpio_count > ARRAY_SIZE(linkr_debugger_gpio_directions)) {
-		return -ERANGE;
-	}
-
-	for (size_t i = 0; i < linkr_debugger_safe_gpio_count; i++) {
-		linkr_debugger_gpio_directions[i] = LINKR_DEBUGGER_GPIO_DIR_INPUT;
-	}
-
-	return 0;
+	return configure_safe_gpio_defaults();
 }
 
 bool linkr_debugger_power_output_enabled(const struct linkr_debugger_rail_desc *rail)
@@ -987,9 +998,74 @@ bool linkr_debugger_power_output_enabled(const struct linkr_debugger_rail_desc *
 	return regulator_states[index];
 }
 
+static int linkr_debugger_power_set_one_locked(
+	const struct linkr_debugger_rail_desc *rail, bool enabled)
+{
+	const struct device *regulator = linkr_debugger_regulator_device(rail);
+	size_t index = regulator_index(rail);
+	int ret;
+
+	if (index >= linkr_debugger_rail_count ||
+	    index >= ARRAY_SIZE(regulator_states) || regulator == NULL ||
+	    !device_is_ready(regulator)) {
+		return -ENODEV;
+	}
+	if (regulator_states[index] == enabled) {
+		return 0;
+	}
+
+	ret = enabled ? regulator_enable(regulator) : regulator_disable(regulator);
+	regulator_states[index] = regulator_is_enabled(regulator);
+	if (ret < 0) {
+		return ret;
+	}
+	return regulator_states[index] == enabled ? 0 : -EIO;
+}
+
+struct linkr_debugger_power_dependency_context {
+	const struct linkr_debugger_rail_desc *parent;
+	const struct linkr_debugger_rail_desc *child;
+};
+
+static const struct linkr_debugger_rail_desc *linkr_debugger_power_child(
+	const struct linkr_debugger_rail_desc *parent)
+{
+	for (size_t i = 0U; i < linkr_debugger_rail_count; i++) {
+		if (linkr_debugger_rails[i].parent != NULL &&
+		    strcmp(linkr_debugger_rails[i].parent, parent->name) == 0) {
+			return &linkr_debugger_rails[i];
+		}
+	}
+	return NULL;
+}
+
+static bool linkr_debugger_power_dependency_is_enabled(void *context, bool child)
+{
+	struct linkr_debugger_power_dependency_context *dependency = context;
+
+	return linkr_debugger_power_output_enabled(
+		child ? dependency->child : dependency->parent);
+}
+
+static int linkr_debugger_power_dependency_set_enabled(void *context, bool child,
+						      bool enabled)
+{
+	struct linkr_debugger_power_dependency_context *dependency = context;
+
+	return linkr_debugger_power_set_one_locked(
+		child ? dependency->child : dependency->parent, enabled);
+}
+
 int linkr_debugger_power_output_set(const struct linkr_debugger_rail_desc *rail, bool enabled)
 {
-	const struct device *regulator;
+	const struct linkr_debugger_rail_desc *parent;
+	const struct linkr_debugger_rail_desc *child;
+	struct linkr_debugger_power_dependency_context dependency;
+	static const struct linkr_debugger_power_dependency_ops dependency_ops = {
+		.is_enabled = linkr_debugger_power_dependency_is_enabled,
+		.set_enabled = linkr_debugger_power_dependency_set_enabled,
+	};
+	enum linkr_debugger_power_dependency_target target;
 	int ret;
 
 	if (rail == NULL) {
@@ -1006,27 +1082,28 @@ int linkr_debugger_power_output_set(const struct linkr_debugger_rail_desc *rail,
 		return enabled ? 0 : -EPERM;
 	}
 
-	regulator = linkr_debugger_regulator_device(rail);
-	if (regulator == NULL || !device_is_ready(regulator)) {
+	parent = rail->parent != NULL ? linkr_debugger_find_rail(rail->parent) : rail;
+	child = rail->parent != NULL ? rail : linkr_debugger_power_child(rail);
+	if (rail->parent != NULL && parent == NULL) {
 		return -ENODEV;
 	}
+	dependency = (struct linkr_debugger_power_dependency_context){
+		.parent = parent,
+		.child = child,
+	};
+	target = rail->parent != NULL ? LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD :
+		child != NULL ? LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT :
+		LINKR_DEBUGGER_POWER_DEPENDENCY_INDEPENDENT;
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
-
-	if (linkr_debugger_power_output_enabled(rail) == enabled) {
-		k_mutex_unlock(&linkr_debugger_control_lock);
-		return 0;
+	if (target == LINKR_DEBUGGER_POWER_DEPENDENCY_INDEPENDENT) {
+		ret = linkr_debugger_power_set_one_locked(rail, enabled);
+	} else {
+		ret = linkr_debugger_power_dependency_apply(
+			target, enabled, &dependency_ops, &dependency);
 	}
-
-	ret = enabled ? regulator_enable(regulator) : regulator_disable(regulator);
-	if (ret < 0) {
-		k_mutex_unlock(&linkr_debugger_control_lock);
-		return ret;
-	}
-
-	set_regulator_state(rail, enabled);
 	k_mutex_unlock(&linkr_debugger_control_lock);
-	return 0;
+	return ret;
 }
 
 enum linkr_debugger_sd_route linkr_debugger_sd_route_get(void)
@@ -1041,20 +1118,6 @@ const char *linkr_debugger_sd_route_name(void)
 {
 	return linkr_debugger_sd_route_get() == LINKR_DEBUGGER_SD_ROUTE_USB_READER ?
 	       "usb-reader" : "target";
-}
-
-enum linkr_debugger_usb_route linkr_debugger_usb_route_get(void)
-{
-	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
-	enum linkr_debugger_usb_route route = linkr_debugger_usb_route;
-	k_mutex_unlock(&linkr_debugger_control_lock);
-	return route;
-}
-
-const char *linkr_debugger_usb_route_name(void)
-{
-	return linkr_debugger_usb_route_get() == LINKR_DEBUGGER_USB_ROUTE_TARGET ?
-	       "target" : "pc";
 }
 
 enum linkr_debugger_tf_wp_route linkr_debugger_tf_wp_route_get(void)
@@ -1089,47 +1152,6 @@ int linkr_debugger_sd_route_set(enum linkr_debugger_sd_route route)
 
 	k_msleep(10);
 	k_mutex_unlock(&linkr_debugger_control_lock);
-	return 0;
-}
-
-int linkr_debugger_usb_route_set(enum linkr_debugger_usb_route route)
-{
-	const struct linkr_debugger_rail_desc *vdd_rail = linkr_debugger_find_rail("vdd_5v");
-	bool vdd_enable = route == LINKR_DEBUGGER_USB_ROUTE_PC;
-	int ret;
-
-	if (!device_is_ready(gpio0)) {
-		return -ENODEV;
-	}
-
-	/* The VDD_5V hub domain must be live before the mux attaches it. */
-	if (vdd_enable) {
-		ret = linkr_debugger_power_output_set(vdd_rail, true);
-		if (ret < 0) {
-			return ret;
-		}
-	}
-
-	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
-	ret = gpio_pin_set(gpio0, 5, route == LINKR_DEBUGGER_USB_ROUTE_TARGET ? 1 : 0);
-	if (ret < 0) {
-		k_mutex_unlock(&linkr_debugger_control_lock);
-		return ret;
-	}
-
-	linkr_debugger_usb_route = route;
-
-	k_msleep(10);
-	k_mutex_unlock(&linkr_debugger_control_lock);
-
-	/* Detach the mux first, then cut the VDD_5V hub domain. */
-	if (!vdd_enable) {
-		ret = linkr_debugger_power_output_set(vdd_rail, false);
-		if (ret < 0) {
-			return ret;
-		}
-	}
-
 	return 0;
 }
 
@@ -1495,15 +1517,6 @@ int linkr_debugger_control_snapshot_get(struct linkr_debugger_control_snapshot *
 						LINKR_DEBUGGER_SD_ROUTE_USB_READER ?
 						LINKR_DEBUGGER_CONFIG_SD_USB_READER :
 						LINKR_DEBUGGER_CONFIG_SD_TARGET;
-				}
-				break;
-			case LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID:
-				if (device_is_ready(gpio0)) {
-					state->available = true;
-					state->value = linkr_debugger_usb_route ==
-						LINKR_DEBUGGER_USB_ROUTE_PC ?
-						LINKR_DEBUGGER_CONFIG_USB_PC :
-						LINKR_DEBUGGER_CONFIG_USB_TARGET;
 				}
 				break;
 			case LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID:

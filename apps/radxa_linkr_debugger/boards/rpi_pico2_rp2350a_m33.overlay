@@ -24,7 +24,8 @@
  *    after Q28 and before U10. J8 exposes ADC1..3 on GPIO27..29.
  *  - J4 is a 3-pin target UART (TX/RX/GND): UART1 TX=GPIO10, RX=GPIO11,
  *    exposed through the second USB CDC ACM (cdc_acm_uart1).
- *  - LED_BLUE=GPIO24, TF mux select=GPIO4, TF_WP=GPIO22, OTG enable=GPIO23,
+ *  - GPIO24 enables U38 / 5V_USB_HUB.
+ *  - LED_BLUE=GPIO25, TF mux select=GPIO4, TF_WP=GPIO22, OTG enable=GPIO23,
  *    CH224A PD config=GPIO19.
  */
 
@@ -143,9 +144,13 @@
 				pin-number = <16>;
 				row = <4>;
 				column = <1>;
-				display-label = "USB MUX";
-				signal = "GPIO5";
-				role = "dedicated";
+				display-label = "GP5";
+				signal = "GPIO5_CON";
+				role = "gpio";
+				gpio-pin = <5>;
+				control-alias = "J8_PIN16";
+				controllable;
+				output-capable;
 			};
 
 			contact-5 {
@@ -165,9 +170,13 @@
 				pin-number = <15>;
 				row = <5>;
 				column = <1>;
-				display-label = "TF switch";
-				signal = "GP06_TF_SW";
-				role = "dedicated";
+				display-label = "GP6";
+				signal = "GPIO6_CON";
+				role = "gpio";
+				gpio-pin = <6>;
+				control-alias = "J8_PIN15";
+				controllable;
+				output-capable;
 			};
 
 			contact-4 {
@@ -354,6 +363,15 @@
 		enable-gpios = <&gpio0 1 GPIO_ACTIVE_HIGH>;
 	};
 
+	reg_5v_usb_hub: regulator-5v-usb-hub {
+		compatible = "regulator-fixed";
+		regulator-name = "5v_usb_hub";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		enable-gpios = <&gpio0 24 GPIO_ACTIVE_HIGH>;
+		regulator-boot-off;
+	};
+
 	reg_20v_out: regulator-20v-out {
 		compatible = "regulator-fixed";
 		regulator-name = "20v_out";
@@ -517,7 +535,7 @@
 };
 
 &led0 {
-	gpios = <&gpio0 24 GPIO_ACTIVE_HIGH>;
+	gpios = <&gpio0 25 GPIO_ACTIVE_HIGH>;
 };
 
 &zephyr_udc0 {

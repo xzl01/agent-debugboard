@@ -983,7 +983,7 @@ static void test_aborted_upload_resets_state(void)
 	static const char blob[] =
 		"# linkr-task.v1\n"
 		"# task final\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/switch/usb\",\"body\":\"{\\\"route\\\":\\\"pc\\\"}\"}\n";
+		"{\"method\":\"PUT\",\"path\":\"/api/v1/switch/tf_wp\",\"body\":\"{\\\"route\\\":\\\"protected\\\"}\"}\n";
 	struct http_client_ctx client;
 	struct http_response_ctx response;
 
@@ -1007,8 +1007,8 @@ static void test_foreign_upload_terminal_does_not_reset_owner(void)
 	static const char blob[] =
 		"# linkr-task.v1\n"
 		"# task owner\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/switch/usb\","
-		"\"body\":\"{\\\"route\\\":\\\"pc\\\"}\"}\n";
+		"{\"method\":\"PUT\",\"path\":\"/api/v1/switch/tf_wp\","
+		"\"body\":\"{\\\"route\\\":\\\"protected\\\"}\"}\n";
 	const size_t split = 19U;
 	const enum http_transaction_status terminal_statuses[] = {
 		HTTP_SERVER_TRANSACTION_ABORTED,

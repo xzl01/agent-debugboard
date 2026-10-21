@@ -189,6 +189,7 @@ struct sensor_value { int32_t val1; int32_t val2; };
 struct linkr_debugger_rail_desc {
 	const char *name;
 	const char *signal;
+	const char *parent;
 	uint8_t pin;
 	bool controllable;
 };
@@ -259,10 +260,6 @@ struct linkr_debugger_watchdog_status {
 enum linkr_debugger_sd_route {
 	LINKR_DEBUGGER_SD_ROUTE_TARGET,
 	LINKR_DEBUGGER_SD_ROUTE_USB_READER,
-};
-enum linkr_debugger_usb_route {
-	LINKR_DEBUGGER_USB_ROUTE_PC,
-	LINKR_DEBUGGER_USB_ROUTE_TARGET,
 };
 enum linkr_debugger_tf_wp_route { LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE };
 
@@ -420,11 +417,27 @@ struct linkr_debugger_serial_runtime_counters {
 	uint64_t cdc_rx_dropped;
 	uint64_t cdc_tx_stale_dropped;
 	uint64_t completion_overflow;
+	uint64_t invalid_line_coding;
+	uint64_t config_mailbox_busy;
+};
+struct linkr_debugger_serial_config_counters {
+	uint64_t cdc_requests;
+	uint64_t web_requests;
+	uint64_t configure_count;
+	uint64_t no_change;
+	uint64_t invalid;
+	uint64_t conflicts;
+	uint64_t apply_succeeded;
+	uint64_t apply_failed;
+	uint64_t rollback_succeeded;
+	uint64_t rollback_failed;
 };
 struct linkr_debugger_serial_status {
 	struct linkr_debugger_serial_config current_config;
+	struct linkr_debugger_serial_config_counters config_counters;
 	struct linkr_debugger_serial_runtime_counters runtime_counters;
 	uint64_t generation;
+	uint64_t cdc_responder_generation;
 	uint64_t rx_head;
 	uint64_t tx_bytes_committed;
 	uint64_t tx_accepted;
@@ -442,6 +455,8 @@ struct linkr_debugger_serial_status {
 	bool admission_frozen;
 };
 #define LINKR_DEBUGGER_SERIAL_TX_SLOT_COUNT 8U
+#define LINKR_DEBUGGER_SERIAL_BAUD_MIN 4800U
+#define LINKR_DEBUGGER_SERIAL_BAUD_MAX 115200U
 #define LINKR_DEBUGGER_SERIAL_RAW_TCP_PORT 5555U
 #define LINKR_DEBUGGER_SERIAL_RAW_TCP_MAX_CLIENTS 2U
 #define LINKR_DEBUGGER_SERIAL_WS_MAX_CLIENTS 4U
@@ -455,9 +470,19 @@ struct linkr_debugger_serial_net_counters {
 	uint64_t refused_clients, completion_dispatches, completion_orphans;
 	uint64_t poll_failures;
 };
+enum linkr_debugger_serial_terminal_responder_transport {
+	LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_CDC,
+	LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_WEBSOCKET,
+};
+struct linkr_debugger_serial_terminal_responder {
+	enum linkr_debugger_serial_terminal_responder_transport transport;
+	int8_t slot;
+	bool valid;
+};
 struct linkr_debugger_serial_net_status {
 	struct linkr_debugger_serial_net_counters counters;
 	struct linkr_debugger_serial_net_endpoint_counters ws[4], tcp[2];
+	struct linkr_debugger_serial_terminal_responder terminal_responder;
 	uint16_t tcp_port;
 	uint8_t ws_attached, tcp_connected;
 	bool initialized, listening;
@@ -482,10 +507,10 @@ enum linkr_debugger_serial_http_route {
 #define LINKR_DEBUGGER_WS_RECV_BUFFER_SIZE 16U
 #define LINKR_DEBUGGER_REBOOT_DELAY_MS 100U
 
-#define HTTP_TEST_RAIL_COUNT 4U
+#define HTTP_TEST_RAIL_COUNT 5U
 #define HTTP_TEST_ADC_COUNT 8U
-#define HTTP_TEST_SAFE_GPIO_COUNT 9U
-#define HTTP_TEST_MAPPED_GPIO_COUNT 9U
+#define HTTP_TEST_SAFE_GPIO_COUNT 11U
+#define HTTP_TEST_MAPPED_GPIO_COUNT 11U
 #define HTTP_TEST_LAYOUT_CELL_COUNT 24U
 
 static const struct linkr_debugger_rail_desc linkr_debugger_rails[] = {
@@ -493,6 +518,8 @@ static const struct linkr_debugger_rail_desc linkr_debugger_rails[] = {
 	{ .name = "5v_out", .signal = "GP0_5V_EN", .pin = 0U, .controllable = true },
 	{ .name = "vdd_5v", .signal = "GP01_5V_WS_EN", .pin = 1U, .controllable = true },
 	{ .name = "20v_out", .signal = "GP03_20V_EN", .pin = 3U, .controllable = true },
+	{ .name = "5v_usb_hub", .signal = "GPIO24_USB_CRL", .pin = 24U,
+	  .parent = "vdd_5v", .controllable = true },
 };
 static const size_t linkr_debugger_rail_count = ARRAY_SIZE(linkr_debugger_rails);
 static struct linkr_debugger_current_desc linkr_debugger_currents[] = {
@@ -519,9 +546,15 @@ static const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[] = 
 	{ .pin = 29U, .output_capable = false, .note = "J8_PIN6",
 	  .layout_group = "J8", .layout_label = "GP29 / ADC3",
 	  .layout_row = 4U, .layout_column = 0U },
+	{ .pin = 5U, .output_capable = true, .note = "J8_PIN16",
+	  .layout_group = "J8", .layout_label = "GP5",
+	  .layout_row = 4U, .layout_column = 1U },
 	{ .pin = 16U, .output_capable = true, .note = "J8_PIN5",
 	  .layout_group = "J8", .layout_label = "GP16",
 	  .layout_row = 5U, .layout_column = 0U },
+	{ .pin = 6U, .output_capable = true, .note = "J8_PIN15",
+	  .layout_group = "J8", .layout_label = "GP6",
+	  .layout_row = 5U, .layout_column = 1U },
 	{ .pin = 15U, .output_capable = true, .note = "J8_PIN4",
 	  .layout_group = "J8", .layout_label = "GP15",
 	  .layout_row = 6U, .layout_column = 0U },
@@ -566,9 +599,9 @@ static const struct linkr_debugger_gpio_layout_cell_desc linkr_debugger_gpio_lay
 	HTTP_LAYOUT_CELL(0U, 7U, 3U, 0U, "GP28 / ADC2", "GPIO28_ADC2", "adc"),
 	HTTP_LAYOUT_CELL(0U, 17U, 3U, 1U, "GND", "GND", "ground"),
 	{ 0U, 6U, 4U, 0U, "GP29 / ADC3", "GPIO29_ADC3", "adc", true, false, 29U },
-	HTTP_LAYOUT_CELL(0U, 16U, 4U, 1U, "USB MUX", "GPIO5", "dedicated"),
+	HTTP_LAYOUT_GPIO(0U, 16U, 4U, 1U, "GP5", "GPIO5_CON", true, 5U),
 	HTTP_LAYOUT_GPIO(0U, 5U, 5U, 0U, "GP16", "GPIO16", true, 16U),
-	HTTP_LAYOUT_CELL(0U, 15U, 5U, 1U, "TF switch", "GP06_TF_SW", "dedicated"),
+	HTTP_LAYOUT_GPIO(0U, 15U, 5U, 1U, "GP6", "GPIO6_CON", true, 6U),
 	HTTP_LAYOUT_GPIO(0U, 4U, 6U, 0U, "GP15", "GPIO15", true, 15U),
 	HTTP_LAYOUT_CELL(0U, 14U, 6U, 1U, "GND", "GND", "ground"),
 	HTTP_LAYOUT_GPIO(0U, 3U, 7U, 0U, "GP14", "GPIO14", true, 14U),
@@ -593,21 +626,36 @@ static struct linkr_debugger_config_service_status http_test_config_status;
 
 static inline const struct linkr_debugger_rail_desc *linkr_debugger_find_rail(const char *name)
 {
-	ARG_UNUSED(name);
+	for (size_t i = 0U; i < linkr_debugger_rail_count; i++) {
+		if (strcmp(name, linkr_debugger_rails[i].name) == 0 ||
+		    strcmp(name, linkr_debugger_rails[i].signal) == 0) {
+			return &linkr_debugger_rails[i];
+		}
+	}
 	return NULL;
 }
 static inline bool linkr_debugger_parse_bool_arg(const char *arg, bool *value)
 {
-	ARG_UNUSED(arg);
-	ARG_UNUSED(value);
+	if (strcmp(arg, "on") == 0) {
+		*value = true;
+		return true;
+	}
+	if (strcmp(arg, "off") == 0) {
+		*value = false;
+		return true;
+	}
 	return false;
 }
 static inline int linkr_debugger_power_output_set(
 	const struct linkr_debugger_rail_desc *rail, bool enabled)
 {
-	ARG_UNUSED(rail);
-	ARG_UNUSED(enabled);
-	return -1;
+	size_t index = (size_t)(rail - linkr_debugger_rails);
+
+	if (index >= ARRAY_SIZE(http_test_power_states)) {
+		return -1;
+	}
+	http_test_power_states[index] = enabled;
+	return 0;
 }
 static inline bool linkr_debugger_power_output_enabled(
 	const struct linkr_debugger_rail_desc *rail)
@@ -617,11 +665,6 @@ static inline bool linkr_debugger_power_output_enabled(
 	return index < ARRAY_SIZE(http_test_power_states) && http_test_power_states[index];
 }
 static inline int linkr_debugger_sd_route_set(enum linkr_debugger_sd_route route)
-{
-	ARG_UNUSED(route);
-	return -1;
-}
-static inline int linkr_debugger_usb_route_set(enum linkr_debugger_usb_route route)
 {
 	ARG_UNUSED(route);
 	return -1;
@@ -710,7 +753,6 @@ static inline void linkr_debugger_watchdog_status_get(
 	*status = http_test_watchdog_status;
 }
 static inline const char *linkr_debugger_sd_route_name(void) { return "usb-reader"; }
-static inline const char *linkr_debugger_usb_route_name(void) { return "target"; }
 static inline const char *linkr_debugger_tf_wp_route_name(void) { return "protected"; }
 static inline void linkr_debugger_monitoring_snapshot_get(
 	struct linkr_debugger_monitoring_snapshot *snapshot)
@@ -788,7 +830,7 @@ static inline int linkr_debugger_current_read(
 }
 static inline const char *linkr_debugger_reserved_gpios(void)
 {
-	return "GP00-GP06 GP10-GP11 GP19 GP22-GP25 GP26-GP28";
+	return "GP00-GP04 GP10-GP11 GP19 GP22-GP25 GP26-GP28";
 }
 static inline const struct linkr_debugger_gpio_error *linkr_debugger_gpio_configure_error(
 	bool output, int error)
@@ -856,16 +898,9 @@ int linkr_debugger_serial_config_cas(
 static inline bool linkr_debugger_serial_config_valid(
 	const struct linkr_debugger_serial_config *config)
 {
-	static const uint32_t bauds[] = {
-		9600U, 19200U, 38400U, 57600U, 115200U,
-		230400U, 460800U, 921600U, 1500000U,
-	};
-	bool baud_valid = false;
-
-	for (size_t i = 0U; i < ARRAY_SIZE(bauds); i++) {
-		baud_valid = baud_valid || config->baud == bauds[i];
-	}
-	return baud_valid && config->data_bits >= 5U &&
+	return config->baud >= LINKR_DEBUGGER_SERIAL_BAUD_MIN &&
+		config->baud <= LINKR_DEBUGGER_SERIAL_BAUD_MAX &&
+		config->data_bits >= 5U &&
 		config->data_bits <= 8U && config->stop_bits >= 1U &&
 		config->stop_bits <= 2U &&
 		config->parity <= LINKR_DEBUGGER_SERIAL_PARITY_EVEN &&

@@ -1062,6 +1062,123 @@ static void test_serial_overrun_contract_is_delta_plus_lifetime_total(void)
 	assert(linkr_debugger_ws_serial_drop_delta(15U, 3U) == 3U);
 }
 
+static void test_serial_terminal_responder_projection(void)
+{
+	struct linkr_debugger_serial_terminal_responder responder = { 0 };
+	struct linkr_debugger_serial_terminal_responder effective;
+	struct linkr_debugger_serial_status serial = { 0 };
+	int8_t responder_id;
+	char buffer[160];
+	size_t cursor = 0U;
+
+	assert(!linkr_debugger_ws_is_terminal_responder(&responder, 0U));
+	assert(linkr_debugger_ws_append_terminal_responder(
+		       buffer, sizeof(buffer), &cursor, &responder, 0U) == 0);
+	assert(strcmp(buffer,
+	      "\"responder\":null,\"terminal_responder\":false") == 0);
+
+	responder.valid = true;
+	responder.transport =
+		LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_WEBSOCKET;
+	responder.slot = 0;
+	cursor = 0U;
+	assert(linkr_debugger_ws_is_terminal_responder(&responder, 0U));
+	assert(!linkr_debugger_ws_is_terminal_responder(&responder, 1U));
+	assert(linkr_debugger_ws_append_terminal_responder(
+		       buffer, sizeof(buffer), &cursor, &responder, 0U) == 0);
+	assert(strstr(buffer, "\"terminal_responder\":true") != NULL);
+	cursor = 0U;
+	assert(linkr_debugger_ws_append_terminal_responder(
+		       buffer, sizeof(buffer), &cursor, &responder, 1U) == 0);
+	assert(strcmp(
+		       buffer,
+		       "\"responder\":{\"transport\":\"websocket\",\"slot\":0},"
+		       "\"terminal_responder\":false") == 0);
+
+	responder.transport = LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_CDC;
+	responder.slot = 0;
+	cursor = 0U;
+	assert(!linkr_debugger_ws_is_terminal_responder(&responder, 0U));
+	assert(linkr_debugger_ws_append_terminal_responder(
+		       buffer, sizeof(buffer), &cursor, &responder, 0U) == 0);
+	assert(strcmp(buffer,
+	      "\"responder\":{\"transport\":\"cdc\",\"slot\":0},"
+	      "\"terminal_responder\":false") == 0);
+
+	/* Immediate DTR is authoritative even if the network projection still
+	 * contains the previous WS responder.
+	 */
+	responder.transport =
+		LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_WEBSOCKET;
+	responder.slot = 0;
+	serial.dtr = true;
+	effective = linkr_debugger_ws_effective_terminal_responder(
+		&serial, &responder);
+	assert(effective.valid);
+	assert(effective.transport ==
+	       LINKR_DEBUGGER_SERIAL_TERMINAL_RESPONDER_CDC);
+	assert(!linkr_debugger_ws_is_terminal_responder(&effective, 0U));
+	serial.dtr = false;
+	responder_id = linkr_debugger_ws_serial_responder_id(&responder);
+	serial.cdc_responder_generation = UINT64_MAX;
+	assert(responder_id == 1);
+	assert(serial.cdc_responder_generation == UINT64_MAX);
+}
+
+struct serial_guard_fixture {
+	char order[16];
+	size_t length;
+	unsigned int refresh_calls;
+	unsigned int validate_calls;
+	bool stale_on_first_validate;
+};
+
+static int serial_guard_refresh(void *context)
+{
+	struct serial_guard_fixture *fixture = context;
+
+	fixture->refresh_calls++;
+	fixture->order[fixture->length++] = 'S';
+	fixture->order[fixture->length] = '\0';
+	return 0;
+}
+
+static int serial_guard_validate(void *context)
+{
+	struct serial_guard_fixture *fixture = context;
+
+	fixture->validate_calls++;
+	fixture->order[fixture->length++] = 'V';
+	fixture->order[fixture->length] = '\0';
+	return fixture->stale_on_first_validate &&
+		       fixture->validate_calls == 1U ? -ESTALE : 0;
+}
+
+static void test_serial_post_read_guard_orders_state_before_binary(void)
+{
+	struct serial_guard_fixture fixture = {
+		.order = "IR",
+		.length = 2U,
+	};
+
+	/* I=initial snapshot, R=ws_read, S=state refresh/emit, V=epoch
+	 * validation, B=binary send. A DTR change injected at R therefore emits
+	 * its state before B.
+	 */
+	assert(linkr_debugger_ws_serial_post_read_guard(
+		       serial_guard_refresh, serial_guard_validate, &fixture) == 0);
+	fixture.order[fixture.length++] = 'B';
+	fixture.order[fixture.length] = '\0';
+	assert(strcmp(fixture.order, "IRSVSVSVB") == 0);
+
+	memset(&fixture, 0, sizeof(fixture));
+	fixture.stale_on_first_validate = true;
+	assert(linkr_debugger_ws_serial_post_read_guard(
+		       serial_guard_refresh, serial_guard_validate, &fixture) ==
+	       -ESTALE);
+	assert(strchr(fixture.order, 'B') == NULL);
+}
+
 static void test_ws_serial_sidecars_are_isolated_and_reset_on_slot_reuse(void)
 {
 	struct linkr_debugger_ws_client_sidecar *slot0;
@@ -1131,6 +1248,8 @@ int main(void)
 	test_ws_control_frames_preserve_fragmented_binary_message();
 	test_ws_control_close_and_malformed_frames();
 	test_serial_overrun_contract_is_delta_plus_lifetime_total();
+	test_serial_terminal_responder_projection();
+	test_serial_post_read_guard_orders_state_before_binary();
 	test_ws_serial_sidecars_are_isolated_and_reset_on_slot_reuse();
 	test_reboot_acknowledges_normal_reboot_then_pending();
 	test_reboot_reports_schedule_and_send_errors();

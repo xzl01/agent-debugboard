@@ -45,6 +45,13 @@ const struct linkr_debugger_rail_desc linkr_debugger_rails[] = {
 		.pin = 3,
 		.controllable = true,
 	},
+	{
+		.name = "5v_usb_hub",
+		.signal = "GPIO24_USB_CRL",
+		.parent = "vdd_5v",
+		.pin = 24,
+		.controllable = true,
+	},
 };
 
 const size_t linkr_debugger_rail_count = ARRAY_SIZE_LOCAL(linkr_debugger_rails);

@@ -21,9 +21,8 @@ BUILD_ASSERT(sizeof(struct linkr_debugger_serial_model) <=
 	     "serial model exceeds its static memory budget");
 
 const uint32_t
-	linkr_debugger_serial_baud_whitelist[LINKR_DEBUGGER_SERIAL_BAUD_COUNT] = {
+	linkr_debugger_serial_baud_presets[LINKR_DEBUGGER_SERIAL_BAUD_PRESET_COUNT] = {
 		9600U, 19200U, 38400U, 57600U, 115200U,
-		230400U, 460800U, 921600U, 1500000U,
 	};
 
 static bool sink_valid(enum linkr_debugger_serial_sink sink)
@@ -49,14 +48,8 @@ static void counter_add(uint64_t *counter, uint64_t amount)
 
 static bool baud_valid(uint32_t baud)
 {
-	size_t i;
-
-	for (i = 0U; i < LINKR_DEBUGGER_SERIAL_BAUD_COUNT; ++i) {
-		if (linkr_debugger_serial_baud_whitelist[i] == baud) {
-			return true;
-		}
-	}
-	return false;
+	return baud >= LINKR_DEBUGGER_SERIAL_BAUD_MIN &&
+	       baud <= LINKR_DEBUGGER_SERIAL_BAUD_MAX;
 }
 
 bool linkr_debugger_serial_config_valid(
@@ -178,6 +171,30 @@ int linkr_debugger_serial_rx_sink_detach(
 
 	state->cursor = model->rx.head;
 	state->attached = false;
+	state->epoch++;
+	return 0;
+}
+
+int linkr_debugger_serial_rx_sink_rearm(
+	struct linkr_debugger_serial_model *model,
+	enum linkr_debugger_serial_sink sink)
+{
+	struct linkr_debugger_serial_rx_sink_state *state;
+
+	if (model == NULL || !sink_valid(sink)) {
+		return -EINVAL;
+	}
+	state = &model->rx.sinks[sink];
+	if (!state->registered) {
+		return -ENOENT;
+	}
+	if (!state->attached) {
+		return -ENOTCONN;
+	}
+	if (state->epoch == UINT64_MAX) {
+		return -EOVERFLOW;
+	}
+	state->cursor = model->rx.head;
 	state->epoch++;
 	return 0;
 }

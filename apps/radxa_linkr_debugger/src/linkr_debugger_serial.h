@@ -32,6 +32,33 @@ enum linkr_debugger_serial_usb_event {
 	LINKR_DEBUGGER_SERIAL_USB_CONFIGURATION,
 };
 
+enum linkr_debugger_serial_cdc_phase {
+	LINKR_DEBUGGER_SERIAL_CDC_DOWN = 0,
+	LINKR_DEBUGGER_SERIAL_CDC_PROMOTING,
+	LINKR_DEBUGGER_SERIAL_CDC_UP,
+	LINKR_DEBUGGER_SERIAL_CDC_BLOCKED,
+};
+
+enum linkr_debugger_serial_cdc_block_reason {
+	LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NONE = 0,
+	LINKR_DEBUGGER_SERIAL_CDC_BLOCK_LOW_DETACH_PENDING,
+	LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DTR_SAMPLE_UNKNOWN_WHILE_RECORDED_LOW,
+	LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DTR_SAMPLE_UNKNOWN_WHILE_RECORDED_HIGH,
+	LINKR_DEBUGGER_SERIAL_CDC_BLOCK_CONFIG_FAILED,
+	LINKR_DEBUGGER_SERIAL_CDC_BLOCK_ATTACH_FAILED,
+	LINKR_DEBUGGER_SERIAL_CDC_BLOCK_DETACH_FAILED,
+	LINKR_DEBUGGER_SERIAL_CDC_BLOCK_FAULTED,
+	LINKR_DEBUGGER_SERIAL_CDC_BLOCK_EPOCH_EXHAUSTED,
+	LINKR_DEBUGGER_SERIAL_CDC_BLOCK_NOTIFICATION_EXHAUSTED,
+};
+
+/* cdc_phase is authoritative: published DTR is true only in CDC_UP, and a
+ * pending DTR promotion exists only in CDC_PROMOTING. cdc_block_reason defines
+ * recovery from CDC_BLOCKED: normally a real LOW/reset boundary, with safe
+ * same-LOW recovery for an unknown LOW sample or a failed detach. Exhaustion
+ * reasons are permanent.
+ */
+
 enum linkr_debugger_serial_completion_disposition {
 	LINKR_DEBUGGER_SERIAL_COMPLETED = 0,
 	LINKR_DEBUGGER_SERIAL_CANCELED,
@@ -117,9 +144,12 @@ struct linkr_debugger_serial_runtime_counters {
 
 struct linkr_debugger_serial_status {
 	struct linkr_debugger_serial_config current_config;
+	struct linkr_debugger_serial_config pending_cdc_config;
 	struct linkr_debugger_serial_config_counters config_counters;
 	struct linkr_debugger_serial_runtime_counters runtime_counters;
 	uint64_t generation;
+	uint64_t cdc_responder_generation;
+	uint64_t cdc_notification_sequence;
 	uint64_t rx_head;
 	uint64_t tx_bytes_committed;
 	uint64_t tx_accepted;
@@ -128,8 +158,11 @@ struct linkr_debugger_serial_status {
 	uint64_t last_config_request_id;
 	uint64_t active_event_id;
 	uint32_t pause_wait_budget_ms;
+	uint32_t cdc_notifications_inflight;
 	int last_config_result;
 	enum linkr_debugger_serial_state state;
+	enum linkr_debugger_serial_cdc_phase cdc_phase;
+	enum linkr_debugger_serial_cdc_block_reason cdc_block_reason;
 	uint8_t tx_used_slots;
 	bool last_config_done;
 	bool dtr;
@@ -138,6 +171,10 @@ struct linkr_debugger_serial_status {
 	bool admission_frozen;
 	bool pause_waiting_for_tx;
 	bool cdc_rx_backpressured;
+	bool pending_cdc_config_valid;
+	bool cdc_promotion_pending;
+	bool cdc_model_dtr;
+	bool cdc_sink_attached;
 };
 
 int linkr_debugger_serial_init(
@@ -150,13 +187,18 @@ int linkr_debugger_serial_runtime_sink_unregister(
 int linkr_debugger_serial_runtime_sink_attach(
     enum linkr_debugger_serial_sink sink);
 int linkr_debugger_serial_runtime_sink_detach(
-    enum linkr_debugger_serial_sink sink);
+	enum linkr_debugger_serial_sink sink);
+int linkr_debugger_serial_runtime_sink_rearm(
+	enum linkr_debugger_serial_sink sink);
 int linkr_debugger_serial_runtime_sink_read(
     enum linkr_debugger_serial_sink sink,
     struct linkr_debugger_serial_sink_pending *pending, size_t capacity,
     const uint8_t **data, size_t *length);
 int linkr_debugger_serial_runtime_sink_consume(
-    struct linkr_debugger_serial_sink_pending *pending, size_t accepted);
+	struct linkr_debugger_serial_sink_pending *pending, size_t accepted);
+int linkr_debugger_serial_runtime_sink_pending_validate(
+	enum linkr_debugger_serial_sink sink,
+	struct linkr_debugger_serial_sink_pending *pending);
 
 int linkr_debugger_serial_runtime_tx_enqueue(
     enum linkr_debugger_serial_tx_source source, const uint8_t *data,
@@ -176,8 +218,9 @@ int linkr_debugger_serial_status_snapshot(
     struct linkr_debugger_serial_status *status);
 
 /*
- * These USB-notification entry points only sample/stage state and wake worker.
- * Detach/reset edges are latched and processed before a coalesced DTR HIGH.
+ * These USB-notification entry points commit session boundaries under the
+ * runtime lock, stage physical work, and wake the worker. Detach/reset edges
+ * remain latched across event coalescing and are processed before promotion.
  */
 int linkr_debugger_serial_cdc_line_coding(const struct device *dev);
 int linkr_debugger_serial_cdc_control_line(const struct device *dev);
@@ -196,6 +239,12 @@ int linkr_debugger_serial_runtime_resume(void);
 #ifdef LINKR_DEBUGGER_SERIAL_HOST_TEST
 /* Deterministic host-only replacement for the stubbed control thread. */
 void linkr_debugger_serial_process_events(void);
+void linkr_debugger_serial_test_fail_next_set_dtr(bool asserted);
+void linkr_debugger_serial_test_saturate_config_failure_counters(void);
+void linkr_debugger_serial_test_set_session_epoch(uint64_t epoch);
+void linkr_debugger_serial_test_set_notification_sequence(uint64_t sequence);
+void linkr_debugger_serial_test_set_before_cdc_claim_hook(
+	void (*hook)(void *context), void *context);
 #endif
 
 #endif /* RADXA_LINKR_DEBUGGER_SERIAL_H_ */

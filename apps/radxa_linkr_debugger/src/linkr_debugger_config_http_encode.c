@@ -30,8 +30,6 @@ static const char *switch_json(uint8_t item_id, uint8_t value)
 	static const char *const values[LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID + 1U][2] = {
 		[LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID] =
 			{ "{\"route\":\"target\"}", "{\"route\":\"usb-reader\"}" },
-		[LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID] =
-			{ "{\"route\":\"pc\"}", "{\"route\":\"target\"}" },
 		[LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID] =
 			{ "{\"route\":\"writable\"}", "{\"route\":\"protected\"}" },
 	};

@@ -6,9 +6,11 @@
 
 #include <assert.h>
 #include <stdbool.h>
+#include <dirent.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../../src/linkr_debugger_config_codec.h"
@@ -21,7 +23,7 @@ static const uint8_t known_vector[] = {
 	0x01, 0x01, 0x01, 0x00,
 	0x01, 0x02, 0x00, 0x00,
 	0x02, 0x01, 0x01, 0x00,
-	0x02, 0x02, 0x01, 0x00,
+	0x02, 0x03, 0x01, 0x00,
 	0x03, 0x07, 0x02, 0x00,
 	0x03, 0x0c, 0x01, 0x00,
 };
@@ -44,6 +46,12 @@ static const uint8_t removed_gp18_vector[] = {
 	0x03, 0x12, 0x00, 0x00,
 };
 
+static const uint8_t removed_switch_usb_vector[] = {
+	0x4c, 0x52, 0x43, 0x46, 0x01, 0x04, 0x01, 0x00,
+	0x10, 0x00, 0x00, 0x00,
+	0x02, 0x02, 0x00, 0x00,
+};
+
 static const uint8_t v2_gp29_output_vector[] = {
 	0x4c, 0x52, 0x43, 0x46, 0x02, 0x04, 0x01, 0x01,
 	0x10, 0x00, 0x00, 0x00,
@@ -63,8 +71,8 @@ static const struct linkr_debugger_config_snapshot known_snapshot = {
 		  LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID,
 		  LINKR_DEBUGGER_CONFIG_SD_USB_READER },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		  LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
-		  LINKR_DEBUGGER_CONFIG_USB_TARGET },
+		  LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
+		  LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 7U,
 		  LINKR_DEBUGGER_CONFIG_GPIO_LEVEL },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 12U,
@@ -115,7 +123,7 @@ static void append_entry(struct linkr_debugger_config_snapshot *snapshot,
 static void build_max_snapshot(struct linkr_debugger_config_snapshot *snapshot)
 {
 	static const uint8_t gpio_pins[] = {
-		7U, 8U, 9U, 12U, 13U, 14U, 15U, 16U, 29U,
+		5U, 6U, 7U, 8U, 9U, 12U, 13U, 14U, 15U, 16U, 29U,
 	};
 
 	linkr_debugger_config_snapshot_clear(snapshot);
@@ -131,12 +139,12 @@ static void build_max_snapshot(struct linkr_debugger_config_snapshot *snapshot)
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID,
 		     LINKR_DEBUGGER_CONFIG_POWER_OFF);
+	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+		     LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID,
+		     LINKR_DEBUGGER_CONFIG_POWER_OFF);
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		     LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID,
 		     LINKR_DEBUGGER_CONFIG_SD_TARGET);
-	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		     LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
-		     LINKR_DEBUGGER_CONFIG_USB_PC);
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		     LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
 		     LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE);
@@ -162,14 +170,16 @@ static void test_constants_and_catalog(void)
 		  LINKR_DEBUGGER_CONFIG_POWER_VDD_5V_ID, "power/vdd_5v" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		  LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID, "power/20v_out" },
+		{ LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+		  LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID, "power/5v_usb_hub" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		  LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID, "switch/sd" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-		  LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID, "switch/usb" },
-		{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		  LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID, "switch/tf_wp" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 29U, "gpio/GP29" },
+		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 5U, "gpio/GP5" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 16U, "gpio/GP16" },
+		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 6U, "gpio/GP6" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 15U, "gpio/GP15" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 14U, "gpio/GP14" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 13U, "gpio/GP13" },
@@ -182,8 +192,8 @@ static void test_constants_and_catalog(void)
 	assert(LINKR_DEBUGGER_CONFIG_VERSION == 1U);
 	assert(LINKR_DEBUGGER_CONFIG_HEADER_SIZE == 12U);
 	assert(LINKR_DEBUGGER_CONFIG_ENTRY_SIZE == 4U);
-	assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 16U);
-	assert(LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE == 76U);
+	assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 18U);
+	assert(LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE == 84U);
 	assert(LINKR_DEBUGGER_CONFIG_SETTINGS_MAX_VAL_LEN == 256U);
 	assert(linkr_debugger_config_item_count == ARRAY_SIZE_LOCAL(expected));
 
@@ -202,6 +212,7 @@ static void test_constants_and_catalog(void)
 	assert(linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 10U) == NULL);
 	assert(linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 17U) == NULL);
 	assert(linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO, 18U) == NULL);
+	assert(linkr_debugger_config_find_item(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH, 2U) == NULL);
 	assert(linkr_debugger_config_find_item_by_name(NULL) == NULL);
 	assert(linkr_debugger_config_find_item_by_name("gpio/GP10") == NULL);
 }
@@ -234,6 +245,81 @@ static void test_production_dt_dispatch_expands_property_before_concatenation(vo
 	assert(strstr(source, "DT_CAT(") == NULL);
 }
 
+static bool source_suffix(const char *name, const char *suffix)
+{
+	size_t name_len = strlen(name);
+	size_t suffix_len = strlen(suffix);
+
+	return name_len >= suffix_len &&
+	       strcmp(name + name_len - suffix_len, suffix) == 0;
+}
+
+static void test_production_has_no_removed_usb_switch_or_direct_gpio5_drive(void)
+{
+	char directory[4096] = __FILE__;
+	char path[4096];
+	char *filename = strrchr(directory, '/');
+	size_t offset;
+	size_t checked = 0U;
+	struct dirent *entry;
+	DIR *dir;
+
+	assert(filename != NULL);
+	offset = (size_t)(filename - directory);
+	assert(snprintf(directory + offset, sizeof(directory) - offset,
+			"/../../src") > 0);
+	dir = opendir(directory);
+	assert(dir != NULL);
+	while ((entry = readdir(dir)) != NULL) {
+		char *source;
+		FILE *file;
+		size_t length;
+		long file_size;
+		int written;
+
+		if (!source_suffix(entry->d_name, ".c") &&
+		    !source_suffix(entry->d_name, ".h")) {
+			continue;
+		}
+		written = snprintf(path, sizeof(path), "%s/%s", directory,
+				   entry->d_name);
+		assert(written > 0 && (size_t)written < sizeof(path));
+		file = fopen(path, "rb");
+		assert(file != NULL);
+		assert(fseek(file, 0L, SEEK_END) == 0);
+		file_size = ftell(file);
+		assert(file_size >= 0L);
+		rewind(file);
+		source = malloc((size_t)file_size + 1U);
+		assert(source != NULL);
+		length = fread(source, 1U, (size_t)file_size, file);
+		assert(length == (size_t)file_size);
+		assert(fclose(file) == 0);
+		source[length] = '\0';
+		assert(strstr(source, "switch/usb") == NULL);
+		assert(strstr(source, "linkr_debugger_usb_route") == NULL);
+		assert(strstr(source, "\\\"usb\\\":{\\\"route") == NULL);
+		assert(strstr(source, "gpio_pin_configure(gpio0, 5") == NULL);
+		assert(strstr(source, "gpio_pin_set(gpio0, 5") == NULL);
+		if (strcmp(entry->d_name, "linkr_debugger_control.c") == 0) {
+			assert(strstr(source, "configure_safe_gpio_defaults") != NULL);
+			assert(strstr(source,
+				      "gpio_pin_configure(gpio0, desc->pin, GPIO_INPUT)") != NULL);
+			assert(strstr(source, "return configure_safe_gpio_defaults();") != NULL);
+			assert(strstr(source, "linkr_debugger_power_dependency_apply(") != NULL);
+			assert(strstr(source,
+				      "regulator_states[index] = regulator_is_enabled(regulator);") != NULL);
+		}
+		if (strcmp(entry->d_name, "linkr_debugger_ws.c") == 0) {
+			assert(strstr(source, "switch target must be sd or tf_wp") != NULL);
+		}
+		free(source);
+		checked++;
+	}
+	assert(closedir(dir) == 0);
+	assert(checked > 20U);
+}
+
 static void assert_classification(uint8_t domain, uint8_t item_id, uint8_t value,
 				  bool expected)
 {
@@ -248,7 +334,7 @@ static void assert_classification(uint8_t domain, uint8_t item_id, uint8_t value
 static void test_risk_classification(void)
 {
 	for (uint8_t id = LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID;
-	     id <= LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID; id++) {
+	     id <= LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID; id++) {
 		assert_classification(LINKR_DEBUGGER_CONFIG_DOMAIN_POWER, id,
 				      LINKR_DEBUGGER_CONFIG_POWER_OFF, false);
 		assert_classification(LINKR_DEBUGGER_CONFIG_DOMAIN_POWER, id,
@@ -261,12 +347,6 @@ static void test_risk_classification(void)
 	assert_classification(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 			      LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID,
 			      LINKR_DEBUGGER_CONFIG_SD_USB_READER, false);
-	assert_classification(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-			      LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
-			      LINKR_DEBUGGER_CONFIG_USB_PC, true);
-	assert_classification(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
-			      LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
-			      LINKR_DEBUGGER_CONFIG_USB_TARGET, true);
 	assert_classification(LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 			      LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
 			      LINKR_DEBUGGER_CONFIG_TF_WP_WRITABLE, false);
@@ -320,7 +400,7 @@ static void test_maximum_round_trip(void)
 	assert(linkr_debugger_config_encode(&source, encoded, sizeof(encoded), &encoded_len) ==
 	       LINKR_DEBUGGER_CONFIG_CODEC_OK);
 	assert(encoded_len == LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE);
-	assert(encoded[8] == 0x4cU);
+	assert(encoded[8] == 0x54U);
 	assert(encoded[9] == 0x00U);
 	for (size_t i = 0; i < source.entry_count; i++) {
 		const size_t offset = LINKR_DEBUGGER_CONFIG_HEADER_SIZE +
@@ -365,6 +445,13 @@ static void test_removed_gp17_gp18_snapshots_are_malformed(void)
 	assert_decode_result(removed_gp17_vector, sizeof(removed_gp17_vector),
 			     LINKR_DEBUGGER_CONFIG_CODEC_MALFORMED);
 	assert_decode_result(removed_gp18_vector, sizeof(removed_gp18_vector),
+			     LINKR_DEBUGGER_CONFIG_CODEC_MALFORMED);
+}
+
+static void test_removed_switch_usb_snapshot_is_malformed(void)
+{
+	assert_decode_result(removed_switch_usb_vector,
+			     sizeof(removed_switch_usb_vector),
 			     LINKR_DEBUGGER_CONFIG_CODEC_MALFORMED);
 }
 
@@ -529,7 +616,6 @@ static void test_switch_value_rejections(void)
 {
 	static const uint8_t switch_ids[] = {
 		LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID,
-		LINKR_DEBUGGER_CONFIG_SWITCH_USB_ID,
 		LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID,
 	};
 
@@ -611,11 +697,13 @@ int main(void)
 {
 	test_constants_and_catalog();
 	test_production_dt_dispatch_expands_property_before_concatenation();
+	test_production_has_no_removed_usb_switch_or_direct_gpio5_drive();
 	test_risk_classification();
 	test_known_vector();
 	test_maximum_round_trip();
 	test_gp29_output_snapshot_round_trip();
 	test_removed_gp17_gp18_snapshots_are_malformed();
+	test_removed_switch_usb_snapshot_is_malformed();
 	test_encode_rejections();
 	test_header_rejections();
 	test_entry_rejections();

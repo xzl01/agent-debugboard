@@ -125,6 +125,38 @@ static void test_rx_slow_sink_drops_independently(void)
 	assert(model.rx.sinks[LINKR_DEBUGGER_SERIAL_SINK_WS0].dropped == 0U);
 }
 
+static void test_rx_rearm_is_per_sink_fresh_boundary(void)
+{
+	static const uint8_t old_data[] = {0x10U, 0x11U};
+	static const uint8_t fresh_data[] = {0x20U};
+	struct linkr_debugger_serial_model model;
+	uint8_t output[4];
+	uint64_t old_epoch;
+	size_t length;
+
+	init_model(&model);
+	register_and_attach(&model, LINKR_DEBUGGER_SERIAL_SINK_WS0);
+	register_and_attach(&model, LINKR_DEBUGGER_SERIAL_SINK_WS1);
+	assert(linkr_debugger_serial_rx_write(
+		       &model, old_data, sizeof(old_data)) == 0);
+	old_epoch = model.rx.sinks[LINKR_DEBUGGER_SERIAL_SINK_WS1].epoch;
+	assert(linkr_debugger_serial_rx_sink_rearm(
+		       &model, LINKR_DEBUGGER_SERIAL_SINK_WS1) == 0);
+	assert(model.rx.sinks[LINKR_DEBUGGER_SERIAL_SINK_WS1].epoch ==
+	       old_epoch + 1U);
+	assert(linkr_debugger_serial_rx_write(
+		       &model, fresh_data, sizeof(fresh_data)) == 0);
+	assert(linkr_debugger_serial_rx_read(
+		       &model, LINKR_DEBUGGER_SERIAL_SINK_WS1, output,
+		       sizeof(output), &length) == 0);
+	assert(length == sizeof(fresh_data) && output[0] == fresh_data[0]);
+	assert(linkr_debugger_serial_rx_read(
+		       &model, LINKR_DEBUGGER_SERIAL_SINK_WS0, output,
+		       sizeof(output), &length) == 0);
+	assert(length == sizeof(old_data) + sizeof(fresh_data));
+	assert(memcmp(output, old_data, sizeof(old_data)) == 0);
+}
+
 static void test_rx_dtr_detach_epoch_and_no_replay(void)
 {
 	static const uint8_t before_attach[] = { 0x10U, 0x11U };
@@ -548,19 +580,40 @@ static void test_tx_fault_requires_driver_stop(void)
 	assert(model.tx.canceled == 2U && model.tx.completed == 0U);
 }
 
-static void test_config_whitelist(void)
+static void test_config_baud_range_and_presets(void)
 {
+	static const uint32_t accepted[] = {
+		LINKR_DEBUGGER_SERIAL_BAUD_MIN,
+		5200U,
+		LINKR_DEBUGGER_SERIAL_BAUD_MAX,
+	};
+	static const uint32_t rejected[] = {
+		0U,
+		LINKR_DEBUGGER_SERIAL_BAUD_MIN - 1U,
+		LINKR_DEBUGGER_SERIAL_BAUD_MAX + 1U,
+		UINT32_MAX,
+	};
 	struct linkr_debugger_serial_config config = config_115200_8n1;
 	struct linkr_debugger_serial_model model;
 	enum linkr_debugger_serial_config_decision decision;
 	size_t i;
 
-	for (i = 0U; i < LINKR_DEBUGGER_SERIAL_BAUD_COUNT; ++i) {
-		config.baud = linkr_debugger_serial_baud_whitelist[i];
+	_Static_assert(sizeof(linkr_debugger_serial_baud_presets) /
+			       sizeof(linkr_debugger_serial_baud_presets[0]) ==
+		       LINKR_DEBUGGER_SERIAL_BAUD_PRESET_COUNT,
+		       "serial preset count changed");
+	for (i = 0U; i < LINKR_DEBUGGER_SERIAL_BAUD_PRESET_COUNT; ++i) {
+		config.baud = linkr_debugger_serial_baud_presets[i];
 		assert(linkr_debugger_serial_config_valid(&config));
 	}
-	config.baud = 115201U;
-	assert(!linkr_debugger_serial_config_valid(&config));
+	for (i = 0U; i < sizeof(accepted) / sizeof(accepted[0]); ++i) {
+		config.baud = accepted[i];
+		assert(linkr_debugger_serial_config_valid(&config));
+	}
+	for (i = 0U; i < sizeof(rejected) / sizeof(rejected[0]); ++i) {
+		config.baud = rejected[i];
+		assert(!linkr_debugger_serial_config_valid(&config));
+	}
 	config = config_115200_8n1;
 	config.data_bits = 4U;
 	assert(!linkr_debugger_serial_config_valid(&config));
@@ -592,8 +645,8 @@ static void test_config_priority_cas_and_rollback(void)
 	struct linkr_debugger_serial_model model;
 	enum linkr_debugger_serial_config_decision decision;
 
-	cdc_config.baud = 921600U;
-	web_config.baud = 460800U;
+	cdc_config.baud = 57600U;
+	web_config.baud = 38400U;
 	init_model(&model);
 	assert(linkr_debugger_serial_rx_sink_register(
 		       &model, LINKR_DEBUGGER_SERIAL_SINK_CDC) == 0);
@@ -656,7 +709,7 @@ static void test_config_waits_for_physical_tx_completion(void)
 	uint64_t event_id;
 	size_t length;
 
-	next.baud = 921600U;
+	next.baud = 57600U;
 	init_model(&model);
 	assert(linkr_debugger_serial_tx_enqueue(
 		       &model, LINKR_DEBUGGER_SERIAL_TX_WS0, first,
@@ -712,7 +765,7 @@ static void test_config_fault_and_control_line_noop(void)
 	size_t length;
 	static const uint8_t byte = 0x5aU;
 
-	next.baud = 230400U;
+	next.baud = 57600U;
 	init_model(&model);
 	assert(linkr_debugger_serial_set_dtr(&model, false) == 0);
 	assert(model.config_counters.control_line_changes == 0U);
@@ -760,6 +813,7 @@ int main(void)
 	test_init_accepts_aliased_config();
 	test_rx_binary_fanout();
 	test_rx_slow_sink_drops_independently();
+	test_rx_rearm_is_per_sink_fresh_boundary();
 	test_rx_dtr_detach_epoch_and_no_replay();
 	test_rx_pause_boundary_and_paused_drop();
 	test_rx_overflow_is_recorded_before_detach();
@@ -769,7 +823,7 @@ int main(void)
 	test_tx_uint64_max_event_id();
 	test_tx_pause_preserves_only_active();
 	test_tx_fault_requires_driver_stop();
-	test_config_whitelist();
+	test_config_baud_range_and_presets();
 	test_config_priority_cas_and_rollback();
 	test_config_waits_for_physical_tx_completion();
 	test_config_fault_and_control_line_noop();

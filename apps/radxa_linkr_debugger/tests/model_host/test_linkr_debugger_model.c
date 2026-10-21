@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "linkr_debugger_control.h"
+#include "linkr_debugger_power_dependency.h"
 
 static void assert_str_eq(const char *actual, const char *expected)
 {
@@ -23,7 +24,7 @@ static void test_rail_table_matches_schematic(void)
 	const struct linkr_debugger_rail_desc *rail;
 	const struct linkr_debugger_rail_desc *vdd_rail;
 
-	assert(linkr_debugger_rail_count == 4);
+	assert(linkr_debugger_rail_count == 5);
 
 	rail = linkr_debugger_find_rail("12v_out");
 	assert(rail != NULL);
@@ -46,6 +47,14 @@ static void test_rail_table_matches_schematic(void)
 	assert(!rail->always_on);
 
 	assert(linkr_debugger_find_rail("5V_FIN") == NULL);
+
+	rail = linkr_debugger_find_rail("5v_usb_hub");
+	assert(rail != NULL);
+	assert(rail->pin == 24U);
+	assert(rail->controllable);
+	assert(!rail->always_on);
+	assert_str_eq(rail->signal, "GPIO24_USB_CRL");
+	assert_str_eq(rail->parent, "vdd_5v");
 }
 
 static void test_vdd_5v_state_contract_matches_board_revision(void)
@@ -148,6 +157,8 @@ static void test_adc_table(void)
 	assert(adc3->note == NULL);
 
 	assert(linkr_debugger_find_adc("5V_FIN") == NULL);
+	assert(linkr_debugger_find_adc("5v_usb_hub") == NULL);
+	assert(linkr_debugger_find_current("5v_usb_hub") == NULL);
 }
 
 static void test_adc_microvolt_conversion_fallback(void)
@@ -184,7 +195,7 @@ static void test_safe_gpio_allowlist(void)
 {
 	const struct linkr_debugger_safe_gpio_desc *gpio;
 	static const uint8_t expected_order[] = {
-		29, 16, 15, 14, 13, 12, 9, 8, 7,
+		29, 5, 16, 6, 15, 14, 13, 12, 9, 8, 7,
 	};
 	static const struct {
 		uint8_t pin;
@@ -198,6 +209,8 @@ static void test_safe_gpio_allowlist(void)
 		{ 14, "J8_PIN3", "J8", 7, 0 },
 		{ 15, "J8_PIN4", "J8", 6, 0 },
 		{ 16, "J8_PIN5", "J8", 5, 0 },
+		{ 5, "J8_PIN16", "J8", 4, 1 },
+		{ 6, "J8_PIN15", "J8", 5, 1 },
 		{ 29, "J8_PIN6", "J8", 4, 0 },
 		{ 9, "CON_USER", "J13", 0, 0 },
 		{ 8, "CON_REST", "J13", 0, 1 },
@@ -217,7 +230,7 @@ static void test_safe_gpio_allowlist(void)
 	assert(linkr_debugger_gpio_layout_groups[1].rows == 2U);
 	assert(linkr_debugger_gpio_layout_groups[1].columns == 2U);
 
-	assert(linkr_debugger_safe_gpio_count == 9);
+	assert(linkr_debugger_safe_gpio_count == 11);
 	for (size_t i = 0; i < linkr_debugger_safe_gpio_count; i++) {
 		assert(linkr_debugger_safe_gpios[i].pin == expected_order[i]);
 		assert(linkr_debugger_safe_gpios[i].output_capable ==
@@ -261,6 +274,22 @@ static void test_safe_gpio_allowlist(void)
 	assert(linkr_debugger_find_safe_gpio_by_pin(20) == NULL);
 	assert(linkr_debugger_find_safe_gpio_by_pin(21) == NULL);
 
+	gpio = linkr_debugger_find_safe_gpio_by_pin(5);
+	assert(gpio != NULL);
+	assert_str_eq(gpio->note, "J8_PIN16");
+	assert_str_eq(gpio->layout_label, "GP5");
+	assert(gpio->layout_row == 4);
+	assert(gpio->layout_column == 1);
+	assert(gpio->output_capable);
+
+	gpio = linkr_debugger_find_safe_gpio_by_pin(6);
+	assert(gpio != NULL);
+	assert_str_eq(gpio->note, "J8_PIN15");
+	assert_str_eq(gpio->layout_label, "GP6");
+	assert(gpio->layout_row == 5);
+	assert(gpio->layout_column == 1);
+	assert(gpio->output_capable);
+
 	gpio = linkr_debugger_find_safe_gpio_by_pin(15);
 	assert(gpio != NULL);
 	assert_str_eq(gpio->note, "J8_PIN4");
@@ -280,7 +309,6 @@ static void test_safe_gpio_allowlist(void)
 	assert(linkr_debugger_find_safe_gpio_by_pin(17) == NULL);
 	assert(linkr_debugger_find_safe_gpio_by_pin(18) == NULL);
 
-	assert(linkr_debugger_find_safe_gpio_by_pin(6) == NULL);
 	assert(linkr_debugger_find_safe_gpio_by_pin(22) == NULL);
 	assert(linkr_debugger_find_safe_gpio_by_pin(23) == NULL);
 	assert(linkr_debugger_find_safe_gpio_by_pin(24) == NULL);
@@ -297,6 +325,10 @@ static void test_safe_gpio_allowlist(void)
 	assert(gpio != NULL);
 	assert(gpio->pin == 29);
 	assert(linkr_debugger_find_safe_gpio_by_identifier("J8_PIN12") == NULL);
+	gpio = linkr_debugger_find_safe_gpio_by_identifier("J8_PIN16");
+	assert(gpio != NULL && gpio->pin == 5U);
+	gpio = linkr_debugger_find_safe_gpio_by_identifier("J8_PIN15");
+	assert(gpio != NULL && gpio->pin == 6U);
 
 	assert(linkr_debugger_find_safe_gpio_by_identifier("not-a-gpio") == NULL);
 }
@@ -305,6 +337,7 @@ static void test_full_gpio_layout_catalog(void)
 {
 	const struct linkr_debugger_gpio_layout_cell_desc *cell;
 	size_t controllable = 0U;
+	size_t output_capable = 0U;
 
 	assert_str_eq(linkr_debugger_gpio_layout_view, "component-top");
 	assert(linkr_debugger_gpio_layout_cell_count == 24U);
@@ -314,9 +347,14 @@ static void test_full_gpio_layout_catalog(void)
 			controllable++;
 			assert(cell->gpio_pin <= 29U);
 		}
+		if (cell->output_capable) {
+			output_capable++;
+		}
 		assert(!cell->output_capable || cell->controllable);
 	}
-	assert(controllable == 9U);
+	assert(controllable == 11U);
+	assert(output_capable == 10U);
+	assert(linkr_debugger_gpio_layout_cell_count - controllable == 13U);
 
 	cell = &linkr_debugger_gpio_layout_cells[0];
 	assert(cell->group_order == 0U);
@@ -335,6 +373,22 @@ static void test_full_gpio_layout_catalog(void)
 	assert(!cell->output_capable);
 	assert(cell->gpio_pin == 29U);
 
+	cell = &linkr_debugger_gpio_layout_cells[9];
+	assert(cell->pin_number == 16U);
+	assert_str_eq(cell->label, "GP5");
+	assert_str_eq(cell->signal, "GPIO5_CON");
+	assert_str_eq(cell->role, "gpio");
+	assert(cell->controllable && cell->output_capable);
+	assert(cell->gpio_pin == 5U);
+
+	cell = &linkr_debugger_gpio_layout_cells[11];
+	assert(cell->pin_number == 15U);
+	assert_str_eq(cell->label, "GP6");
+	assert_str_eq(cell->signal, "GPIO6_CON");
+	assert_str_eq(cell->role, "gpio");
+	assert(cell->controllable && cell->output_capable);
+	assert(cell->gpio_pin == 6U);
+
 	cell = &linkr_debugger_gpio_layout_cells[20];
 	assert(cell->group_order == 1U);
 	assert(cell->pin_number == 2U);
@@ -348,6 +402,140 @@ static void test_full_gpio_layout_catalog(void)
 	assert_str_eq(cell->signal, "GND");
 	assert_str_eq(cell->role, "ground");
 	assert(!cell->controllable);
+}
+
+struct power_dependency_fixture {
+	bool parent;
+	bool child;
+	int fail_call;
+	int calls;
+	struct {
+		bool child;
+		bool enabled;
+	} trace[4];
+};
+
+static bool dependency_enabled(void *context, bool child)
+{
+	struct power_dependency_fixture *fixture = context;
+
+	return child ? fixture->child : fixture->parent;
+}
+
+static int dependency_set(void *context, bool child, bool enabled)
+{
+	struct power_dependency_fixture *fixture = context;
+	int call = fixture->calls++;
+
+	fixture->trace[call].child = child;
+	fixture->trace[call].enabled = enabled;
+	if (call == fixture->fail_call) {
+		return -EIO;
+	}
+	if (child) {
+		fixture->child = enabled;
+	} else {
+		fixture->parent = enabled;
+	}
+	return 0;
+}
+
+static void test_power_dependency_order_and_rollback(void)
+{
+	static const struct linkr_debugger_power_dependency_ops ops = {
+		.is_enabled = dependency_enabled,
+		.set_enabled = dependency_set,
+	};
+	struct power_dependency_fixture fixture = { .fail_call = -1 };
+
+	assert(linkr_debugger_power_dependency_apply(
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD, true, &ops, &fixture) == 0);
+	assert(fixture.parent && fixture.child);
+	assert(fixture.calls == 2);
+	assert(!fixture.trace[0].child && fixture.trace[0].enabled);
+	assert(fixture.trace[1].child && fixture.trace[1].enabled);
+
+	fixture = (struct power_dependency_fixture){
+		.parent = true, .child = true, .fail_call = -1,
+	};
+	assert(linkr_debugger_power_dependency_apply(
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT, false, &ops, &fixture) == 0);
+	assert(!fixture.parent && !fixture.child);
+	assert(fixture.calls == 2);
+	assert(fixture.trace[0].child && !fixture.trace[0].enabled);
+	assert(!fixture.trace[1].child && !fixture.trace[1].enabled);
+
+	fixture = (struct power_dependency_fixture){
+		.parent = true, .child = true, .fail_call = -1,
+	};
+	assert(linkr_debugger_power_dependency_apply(
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD, false, &ops, &fixture) == 0);
+	assert(fixture.parent && !fixture.child);
+	assert(fixture.calls == 1);
+
+	fixture = (struct power_dependency_fixture){ .fail_call = 1 };
+	assert(linkr_debugger_power_dependency_apply(
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD, true, &ops, &fixture) == -EIO);
+	assert(!fixture.parent && !fixture.child);
+	assert(fixture.calls == 3);
+	assert(!fixture.trace[2].child && !fixture.trace[2].enabled);
+
+	fixture = (struct power_dependency_fixture){
+		.parent = true, .child = true, .fail_call = 1,
+	};
+	assert(linkr_debugger_power_dependency_apply(
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT, false, &ops, &fixture) == -EIO);
+	assert(fixture.parent && fixture.child);
+	assert(fixture.calls == 3);
+	assert(fixture.trace[2].child && fixture.trace[2].enabled);
+
+	fixture = (struct power_dependency_fixture){ .fail_call = 0 };
+	assert(linkr_debugger_power_dependency_apply(
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD, true, &ops, &fixture) == -EIO);
+	assert(!fixture.parent && !fixture.child);
+	assert(fixture.calls == 1);
+
+	fixture = (struct power_dependency_fixture){
+		.parent = true, .child = true, .fail_call = 0,
+	};
+	assert(linkr_debugger_power_dependency_apply(
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT, false, &ops, &fixture) == -EIO);
+	assert(fixture.parent && fixture.child);
+	assert(fixture.calls == 1);
+}
+
+static void test_usb_hub_regulator_dt_contract(void)
+{
+	char path[4096] = __FILE__;
+	char source[32768];
+	char *filename = strrchr(path, '/');
+	char *regulator;
+	char *regulator_end;
+	size_t length;
+	FILE *file;
+
+	assert(filename != NULL);
+	assert(snprintf(filename + 1, sizeof(path) - (size_t)(filename + 1 - path),
+			"../../boards/rpi_pico2_rp2350a_m33.overlay") > 0);
+	file = fopen(path, "rb");
+	assert(file != NULL);
+	length = fread(source, 1U, sizeof(source) - 1U, file);
+	assert(feof(file));
+	assert(fclose(file) == 0);
+	source[length] = '\0';
+	regulator = strstr(source, "reg_5v_usb_hub: regulator-5v-usb-hub");
+	assert(regulator != NULL);
+	regulator_end = strstr(regulator, "\n\t};");
+	assert(regulator_end != NULL);
+	*regulator_end = '\0';
+	assert(strstr(regulator, "regulator-name = \"5v_usb_hub\"") != NULL);
+	assert(strstr(regulator, "regulator-min-microvolt = <5000000>") != NULL);
+	assert(strstr(regulator, "regulator-max-microvolt = <5000000>") != NULL);
+	assert(strstr(regulator, "enable-gpios = <&gpio0 24 GPIO_ACTIVE_HIGH>") != NULL);
+	assert(strstr(regulator, "regulator-boot-off;") != NULL);
+	*regulator_end = '\n';
+	assert(strstr(source, "&led0 {\n\tgpios = <&gpio0 25 GPIO_ACTIVE_HIGH>;") != NULL);
+	assert(strstr(source, "&led0 {\n\tgpios = <&gpio0 24") == NULL);
 }
 
 static void test_gpio_name_formatter(void)
@@ -473,6 +661,8 @@ int main(void)
 	test_adc_microvolt_conversion_fallback();
 	test_safe_gpio_allowlist();
 	test_full_gpio_layout_catalog();
+	test_power_dependency_order_and_rollback();
+	test_usb_hub_regulator_dt_contract();
 	test_gpio_name_formatter();
 	test_bool_parser();
 	test_gpio_pin_parser();
