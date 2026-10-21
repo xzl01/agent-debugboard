@@ -16,6 +16,7 @@ use url::Url;
 use crate::mcp_serial::{BrokerClientError, SerialBrokerClient};
 
 const MCP_SCHEMA: &str = "radxa-linkr-debugger.mcp.v1";
+const MAX_SWITCH_IDENTIFIER_LEN: usize = 64;
 
 #[derive(Debug, Clone)]
 struct RuntimeError {
@@ -347,7 +348,7 @@ impl LinkrMcpServer {
 
     #[tool(
         name = "linkr_switch_route",
-        description = "Route SD, target USB or UART VIO. confirm must be true because a route change can disconnect or electrically mismatch the target."
+        description = "Set a firmware-advertised switch route by name. Use the switch names and route lists from linkr_board_status with detail=full; confirm must be true because a route change can disconnect or electrically mismatch the target."
     )]
     async fn switch_route(&self, Parameters(args): Parameters<SwitchRouteArgs>) -> CallToolResult {
         self.execute("linkr_switch_route", async {
@@ -357,22 +358,10 @@ impl LinkrMcpServer {
                     "confirm must be true before changing a target route",
                 ));
             }
-            if !args.name.accepts(&args.route) {
-                return Err(RuntimeError::new(
-                    "invalid_route",
-                    format!(
-                        "{} does not accept route {}",
-                        args.name.as_str(),
-                        args.route
-                    ),
-                ));
-            }
-            self.board_request(
-                &format!("switch/{}", args.name.as_str()),
-                Method::PUT,
-                Some(json!({"route": args.route})),
-            )
-            .await
+            let path = switch_path(&args.name)?;
+            validate_switch_identifier("route", &args.route)?;
+            self.board_request(&path, Method::PUT, Some(json!({"route": args.route})))
+                .await
         })
         .await
     }
@@ -746,6 +735,38 @@ fn summarize_board_status(status: &Value) -> Value {
     })
 }
 
+fn validate_switch_identifier(field: &str, value: &str) -> Result<(), RuntimeError> {
+    if value.is_empty() || value.chars().count() > MAX_SWITCH_IDENTIFIER_LEN {
+        let code = if field == "route" {
+            "invalid_route"
+        } else {
+            "invalid_switch_name"
+        };
+        return Err(RuntimeError::new(
+            code,
+            format!("switch {field} must be 1..={MAX_SWITCH_IDENTIFIER_LEN} characters"),
+        ));
+    }
+    Ok(())
+}
+
+fn switch_path(name: &str) -> Result<String, RuntimeError> {
+    validate_switch_identifier("name", name)?;
+    if matches!(name, "." | "..") {
+        return Err(RuntimeError::new(
+            "invalid_switch_name",
+            "switch name must not be a dot path segment",
+        ));
+    }
+
+    let mut url = Url::parse("http://localhost/").expect("static switch path base is valid");
+    url.path_segments_mut()
+        .map_err(|()| RuntimeError::new("invalid_switch_name", "cannot encode switch name"))?
+        .push("switch")
+        .push(name);
+    Ok(url.path().trim_start_matches('/').to_owned())
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 enum Detail {
@@ -804,34 +825,10 @@ struct PowerSetArgs {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-enum SwitchName {
-    Sd,
-    Usb,
-    Vin,
-}
-
-impl SwitchName {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Sd => "sd",
-            Self::Usb => "usb",
-            Self::Vin => "vin",
-        }
-    }
-
-    fn accepts(&self, route: &str) -> bool {
-        match self {
-            Self::Sd => matches!(route, "target" | "usb-reader"),
-            Self::Usb => matches!(route, "target" | "pc"),
-            Self::Vin => matches!(route, "1.8v" | "3.3v"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
 struct SwitchRouteArgs {
-    name: SwitchName,
+    #[schemars(length(min = 1, max = MAX_SWITCH_IDENTIFIER_LEN))]
+    name: String,
+    #[schemars(length(min = 1, max = MAX_SWITCH_IDENTIFIER_LEN))]
     route: String,
     confirm: bool,
 }
@@ -1029,10 +1026,34 @@ mod tests {
     }
 
     #[test]
-    fn switch_routes_are_constrained_by_switch_name() {
-        assert!(SwitchName::Sd.accepts("usb-reader"));
-        assert!(!SwitchName::Sd.accepts("pc"));
-        assert!(SwitchName::Vin.accepts("1.8v"));
+    fn switch_paths_encode_names_as_exactly_one_segment() {
+        assert_eq!(switch_path("tf_wp").unwrap(), "switch/tf_wp");
+        assert_eq!(switch_path("aux/name").unwrap(), "switch/aux%2Fname");
+        assert_eq!(switch_path("aux%2Fname").unwrap(), "switch/aux%252Fname");
+    }
+
+    #[test]
+    fn switch_identifiers_reject_empty_long_and_dot_segment_names() {
+        assert_eq!(switch_path("").unwrap_err().code, "invalid_switch_name");
+        assert_eq!(
+            switch_path(&"x".repeat(MAX_SWITCH_IDENTIFIER_LEN + 1))
+                .unwrap_err()
+                .code,
+            "invalid_switch_name"
+        );
+        for name in [".", ".."] {
+            assert_eq!(switch_path(name).unwrap_err().code, "invalid_switch_name");
+        }
+        assert_eq!(
+            validate_switch_identifier("route", "").unwrap_err().code,
+            "invalid_route"
+        );
+        assert_eq!(
+            validate_switch_identifier("route", &"x".repeat(MAX_SWITCH_IDENTIFIER_LEN + 1))
+                .unwrap_err()
+                .code,
+            "invalid_route"
+        );
     }
 
     #[test]

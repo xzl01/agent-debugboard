@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setGpio } from "@/lib/api";
-import { physicalLayoutFixture } from "@/lib/gpioPhysicalLayout.testFixtures";
+import { directGpioFixtureCases, physicalLayoutFixture } from "@/lib/gpioPhysicalLayout.testFixtures";
 import { GpioCard } from "./GpioCard";
 import { flush, mount, pinButton } from "./GpioCard.testUtils";
 import { advanceTimers, click, keyDown, pointerDown, pointerUp } from "./GpioPinoutSvg.testUtils";
@@ -55,14 +55,36 @@ describe("physical GPIO safety at the request boundary", () => {
     vi.stubGlobal("fetch", fetchMock);
     const view = mount(<GpioCard gpios={gpios} physicalLayout={layout} onSet={applyGpio} />);
     expect(view.host.querySelectorAll("[data-physical-cell]")).toHaveLength(24);
-    expect(view.host.querySelectorAll("[data-physical-inert]")).toHaveLength(15);
-    expect(view.host.querySelectorAll('[role="button"]')).toHaveLength(9);
+    expect(view.host.querySelectorAll("[data-physical-inert]")).toHaveLength(13);
+    expect(view.host.querySelectorAll('[role="button"]')).toHaveLength(11);
     for (const cell of view.host.querySelectorAll("[data-physical-inert]")) {
       click(cell); pointerDown(cell); pointerUp(cell); keyDown(cell, "Enter"); keyDown(cell, "1"); keyDown(cell, "i");
     }
     advanceTimers(1000);
     await flush();
     expect(fetchMock).not.toHaveBeenCalled();
+    view.close();
+  });
+
+  it.each(directGpioFixtureCases)("sends every $gpioName physical gesture only to its exact GPIO endpoint, never a switch API", async (entry) => {
+    const { layout, gpios } = physicalLayoutFixture();
+    const fetchMock = vi.fn().mockImplementation(async () => new Response("{}"));
+    vi.stubGlobal("fetch", fetchMock);
+    const view = mount(<GpioCard gpios={gpios} physicalLayout={layout} onSet={applyGpio} />);
+    const pin = view.host.querySelector(`[data-layout-group="J8"] [data-physical-cell="${entry.pinNumber}"] [role="button"]`)!;
+    pointerDown(pin); pointerUp(pin); advanceTimers(220); await flush();
+    pointerDown(pin); advanceTimers(600); pointerUp(pin); await flush();
+    pointerDown(pin); pointerUp(pin); advanceTimers(100); pointerDown(pin); pointerUp(pin); await flush();
+    for (const key of ["Enter", " ", "0", "1", "i"]) { keyDown(pin, key); await flush(); }
+    const requests = fetchMock.mock.calls.map(([url, init]) => ({ url, method: init.method, body: JSON.parse(init.body) }));
+    expect(requests).toHaveLength(8);
+    expect(requests.every((request) => request.url === `/api/v1/gpio/${entry.gpioName}` && request.method === "PUT")).toBe(true);
+    expect(requests.map((request) => request.body)).toEqual([
+      { direction: "output", value: 0 }, { direction: "output", value: 1 }, { direction: "input" },
+      { direction: "output", value: 0 }, { direction: "output", value: 0 }, { direction: "output", value: 0 },
+      { direction: "output", value: 1 }, { direction: "input" },
+    ]);
+    expect(requests.some((request) => request.url.includes("/switch/"))).toBe(false);
     view.close();
   });
 

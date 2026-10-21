@@ -12,23 +12,23 @@ describe("parseSwitches", () => {
     const parsed = parseSwitches({
       tf_wp: { route: "writable", routes: ["writable", "protected"], requires_confirm: false },
       sd: { route: "target", routes: ["target", "usb-reader"] },
-      vin: { route: "3.3v", routes: ["1.8v", "3.3v"], requires_confirm: true },
+      aux: { route: "lane-a", routes: ["lane-a", "lane-b"], requires_confirm: true },
     });
     assert.deepEqual(parsed, {
       tf_wp: { route: "writable", routes: ["writable", "protected"], requires_confirm: false },
       sd: { route: "target", routes: ["target", "usb-reader"], requires_confirm: undefined },
-      vin: { route: "3.3v", routes: ["1.8v", "3.3v"], requires_confirm: true },
+      aux: { route: "lane-a", routes: ["lane-a", "lane-b"], requires_confirm: true },
     });
   });
 
   it("parses legacy firmware JSON without routes arrays", () => {
     const parsed = parseSwitches({
       sd: { route: "usb-reader" },
-      usb: { route: "pc" },
+      aux: { route: "lane-a" },
     });
     assert.deepEqual(parsed, {
       sd: { route: "usb-reader", routes: undefined, requires_confirm: undefined },
-      usb: { route: "pc", routes: undefined, requires_confirm: undefined },
+      aux: { route: "lane-a", routes: undefined, requires_confirm: undefined },
     });
   });
 
@@ -51,10 +51,10 @@ describe("parseSwitches", () => {
   it("ignores non-object switch entries and non-string routes", () => {
     const parsed = parseSwitches({
       sd: "target",
-      usb: { route: 5, routes: ["pc", 7] },
+      aux: { route: 5, routes: ["lane-a", 7] },
     });
     assert.deepEqual(parsed, {
-      usb: { route: "", routes: ["pc"], requires_confirm: undefined },
+      aux: { route: "", routes: ["lane-a"], requires_confirm: undefined },
     });
   });
 

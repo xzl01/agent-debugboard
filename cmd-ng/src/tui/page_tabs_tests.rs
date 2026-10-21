@@ -115,7 +115,8 @@ fn keybar_keeps_complete_segments_at_supported_sizes() -> Result<()> {
 fn status_content_renders_one_row_per_switch_and_monitor_field() {
     let mut model = model();
     model.set_page(ActivePage::Status);
-    for (name, route) in [("sd", "usb-reader"), ("tf_wp", "writable"), ("usb", "pc")] {
+    // Synthetic catalog: arbitrary switch names remain supported.
+    for (name, route) in [("alpha", "left"), ("beta", "right"), ("gamma", "one")] {
         model.switches.insert(
             name.to_string(),
             TuiSwitchState {

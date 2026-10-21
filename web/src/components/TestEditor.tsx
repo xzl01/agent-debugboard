@@ -50,7 +50,7 @@ import {
   parseTestScript,
   serializeTestScript,
 } from "@/lib/testScript";
-import { POWER_SWITCH_RAILS, USER_POWER_RAILS } from "@/lib/power";
+import { usePowerRailCatalog } from "./PowerRailCatalog";
 import { downloadBlob } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 
@@ -63,6 +63,14 @@ function iconFor(type: StepType): LucideIcon {
   return ICON_MAP[stepTypeIcon(type)] ?? Zap;
 }
 
+function CatalogRailSelect({ value, options, onChange }: { value: string; options: readonly string[]; onChange: (value: string) => void }) {
+  const { t } = useI18n();
+  return <select className={inputCls} value={value} disabled={options.length === 0} onChange={(event) => onChange(event.target.value)}>
+    {!options.includes(value) && <option value={value} disabled>{value || "—"} · {t("power.notReported")}</option>}
+    {options.map((name) => <option key={name} value={name}>{name}</option>)}
+  </select>;
+}
+
 export function StepParams({
   step,
   onParamChange,
@@ -71,15 +79,14 @@ export function StepParams({
   onParamChange: (key: string, value: unknown) => void;
 }) {
   const { t } = useI18n();
+  const rails = usePowerRailCatalog();
   switch (step.type) {
     case "power_on":
     case "power_off": {
       const p = step.params as import("@/lib/testScript").PowerOnParams;
       return (
         <ParamRow label={t("test.param.rail")}>
-          <select className={inputCls} value={p.rail} onChange={(e) => onParamChange("rail", e.target.value)}>
-            {POWER_SWITCH_RAILS.map((r) => <option key={r} value={r}>{r}</option>)}
-          </select>
+          <CatalogRailSelect value={p.rail} options={rails.switchable} onChange={(value) => onParamChange("rail", value)} />
         </ParamRow>
       );
     }
@@ -149,9 +156,7 @@ export function StepParams({
       const p = step.params as import("@/lib/testScript").AdcReadParams;
       return (
         <ParamRow label={t("test.param.channel")}>
-          <select className={inputCls} value={p.channel} onChange={(e) => onParamChange("channel", e.target.value)}>
-            {USER_POWER_RAILS.map((r) => <option key={r} value={r}>{r}</option>)}
-          </select>
+          <CatalogRailSelect value={p.channel} options={rails.current} onChange={(value) => onParamChange("channel", value)} />
         </ParamRow>
       );
     }
@@ -199,9 +204,8 @@ export function StepParams({
         <>
           <ParamRow label={t("test.param.switch")}>
             <select className={inputCls} value={p.switch} onChange={(e) => onParamChange("switch", e.target.value)}>
-              <option value="sd">{t("test.opt.sd")}</option>
-              <option value="usb">{t("test.opt.usb")}</option>
-              <option value="tf_wp">TF_WP</option>
+              <option value="sd">{t("switch.name.sd")}</option>
+              <option value="tf_wp">{t("switch.name.tf_wp")}</option>
             </select>
           </ParamRow>
           <ParamRow label={t("test.param.route")}>
@@ -215,9 +219,7 @@ export function StepParams({
       return (
         <>
           <ParamRow label={t("test.param.rail")}>
-            <select className={inputCls} value={p.rail} onChange={(e) => onParamChange("rail", e.target.value)}>
-              {USER_POWER_RAILS.map((r) => <option key={r} value={r}>{r}</option>)}
-            </select>
+            <CatalogRailSelect value={p.rail} options={rails.current} onChange={(value) => onParamChange("rail", value)} />
           </ParamRow>
           <ParamRow label={t("test.param.trigger")}>
             <select className={inputCls} value={p.trigger} onChange={(e) => onParamChange("trigger", e.target.value)}>

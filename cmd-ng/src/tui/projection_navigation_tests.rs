@@ -10,6 +10,46 @@ fn x1_2_navigation_ends_at_maskrom_without_removed_fallback_pins() -> Result<()>
     let mut model = x1_2_model()?;
     for width in [80, 48, 47, 32] {
         model.width = width;
+        let items = super::controls::control_items(&model);
+        let power_count = model.power_names.len();
+        assert_eq!(power_count, 5);
+        assert_eq!(
+            &items[power_count..power_count + 3],
+            [
+                super::controls::ControlItem::Switch("sd".to_string()),
+                super::controls::ControlItem::Switch("tf_wp".to_string()),
+                super::controls::ControlItem::Reboot
+            ]
+        );
+        model.control_idx = power_count - 1;
+        assert_eq!(navigate(&model, Nav::Down), power_count);
+        model.control_idx = power_count;
+        assert_eq!(navigate(&model, Nav::Up), power_count - 1);
+        model.control_idx = power_count + 1;
+        assert_eq!(navigate(&model, Nav::Down), power_count + 2);
+        model.control_idx = power_count + 2;
+        assert_eq!(navigate(&model, Nav::Down), item_index(&model, "GP29")?);
+        model.control_idx = item_index(&model, "GP29")?;
+        assert_eq!(navigate(&model, Nav::Up), power_count + 2);
+        model.control_idx = item_index(&model, "GP29")?;
+        assert_eq!(
+            navigate(&model, Nav::Right),
+            item_index(&model, if width >= 48 { "GP5" } else { "GP29" })?
+        );
+        assert_eq!(
+            navigate(&model, Nav::Down),
+            item_index(&model, if width >= 48 { "GP16" } else { "GP5" })?
+        );
+        model.control_idx = item_index(&model, "GP5")?;
+        assert_eq!(
+            navigate(&model, Nav::Down),
+            item_index(&model, if width >= 48 { "GP6" } else { "GP16" })?
+        );
+        model.control_idx = item_index(&model, "GP6")?;
+        assert_eq!(
+            navigate(&model, Nav::Up),
+            item_index(&model, if width >= 48 { "GP5" } else { "GP16" })?
+        );
         model.control_idx = item_index(&model, "GP7")?;
         assert_eq!(navigate(&model, Nav::Down), model.control_idx);
         assert_eq!(navigate(&model, Nav::PageDown), model.control_idx);

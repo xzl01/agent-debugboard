@@ -125,7 +125,7 @@ fn controls_page_renders_one_row_per_object_without_separators() {
 }
 
 #[test]
-fn status_page_renders_switch_rows_without_controls_page_rows() {
+fn status_page_renders_switch_and_power_status_without_control_hits() {
     let mut model = dashboard_model();
     model.next_page();
     model.next_page();
@@ -136,7 +136,9 @@ fn status_page_renders_switch_rows_without_controls_page_rows() {
     assert!(rendered.contains("sd"));
     assert!(rendered.contains("target"));
     assert!(rendered.contains("ready"));
-    assert!(!rendered.contains("12v_out"));
+    assert!(rendered.contains("power 12v_out: off live=-"));
+    assert!(!rendered.contains("Reboot"));
+    assert!(!rendered.contains("GP10"));
     assert!(content.marks.is_empty());
 }
 

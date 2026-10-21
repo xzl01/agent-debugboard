@@ -137,6 +137,9 @@ fn voltage_strip_shows_all_descriptor_channels_without_expanding_current_scope()
         assert!(!row_text(&buffer, 2).contains("adc0"));
         assert_eq!(model.channel_ids.len(), 4);
         assert_eq!(model.history.len(), 4);
+        assert_eq!(model.power_names.len(), 5);
+        assert!(!model.latest.contains_key("5v_usb_hub"));
+        assert!(!model.channel_ids.iter().any(|name| name == "5v_usb_hub"));
         assert!(row_text(&buffer, 10).contains("Controls"));
         assert!(
             !row_text(&buffer, 23).trim().is_empty(),

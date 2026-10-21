@@ -1,7 +1,8 @@
 use super::actions::{resolve_activation, Activation, ControlCommand, ControlIntent};
 use super::controls::{control_items, ControlItem};
 use super::gpio_fixture::{
-    control_rect, draw, generic_edge_model, item_index, projection_model, GENERIC_EDGE_STATUS_JSON,
+    control_rect, draw, generic_edge_model, item_index, projection_model, x1_2_model,
+    GENERIC_EDGE_STATUS_JSON,
 };
 use super::gpio_gesture::GpioGestureInput;
 use super::gpio_io::{GpioAction, GpioJob};
@@ -10,6 +11,83 @@ use crate::ws_status::WsStatusSnapshot;
 use anyhow::{anyhow, Result};
 use crossterm::event::Event;
 use std::time::Instant;
+
+#[test]
+fn unmonitored_advertised_power_output_keeps_full_row_hits_and_confirmation() -> Result<()> {
+    let mut model = x1_2_model()?;
+    let target = ControlItem::Power("5v_usb_hub".to_string());
+    model.control_idx = control_items(&model)
+        .iter()
+        .position(|item| item == &target)
+        .unwrap();
+    for width in [120u16, 80, 47, 32] {
+        model.width = width as usize;
+        draw(&mut model, width, 32)?;
+        let (rect, _) = model
+            .hit_map
+            .controls
+            .iter()
+            .find(|(_, item)| **item == target)
+            .unwrap();
+        assert_eq!((rect.x, rect.width, rect.height), (0, width, 1));
+        for x in 0..width {
+            assert_eq!(model.hit_map.controls.at(x, rect.y), Some(&target));
+        }
+        assert_eq!(
+            resolve_activation(&model, &target, ControlIntent::Primary),
+            Activation::Confirm(super::confirm::ConfirmableCommand::SetPower {
+                output: "5v_usb_hub".to_string(),
+                next_state: true
+            })
+        );
+        assert!(model.gpio_pending.is_none());
+    }
+    Ok(())
+}
+
+#[test]
+fn x1_2_direct_gpio_right_cells_resolve_gpio_actions_without_switch_controls() -> Result<()> {
+    let mut model = x1_2_model()?;
+    for width in [80u16, 48, 47, 32] {
+        model.width = width as usize;
+        draw(&mut model, width, 32)?;
+        for pin in ["GP5", "GP6"] {
+            let rect = control_rect(&model, pin)?;
+            let item = model.hit_map.controls.at(rect.x, rect.y).unwrap();
+            assert_eq!(*item, ControlItem::Gpio(pin.to_string()));
+            assert_eq!(
+                resolve_activation(&model, item, ControlIntent::DriveHigh),
+                Activation::Immediate(ControlCommand::SetGpioOutput {
+                    name: pin.to_string(),
+                    value: true
+                })
+            );
+            assert_eq!(
+                resolve_activation(&model, item, ControlIntent::DriveLow),
+                Activation::Immediate(ControlCommand::SetGpioOutput {
+                    name: pin.to_string(),
+                    value: false
+                })
+            );
+            assert_eq!(
+                resolve_activation(&model, item, ControlIntent::SetInput),
+                Activation::Immediate(ControlCommand::SetGpioInput {
+                    name: pin.to_string()
+                })
+            );
+        }
+    }
+    assert_eq!(
+        model
+            .switches
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["sd", "tf_wp"]
+    );
+    assert!(model.gpio_pending.is_none());
+    Ok(())
+}
 
 #[test]
 fn edge_decoration_and_pending_do_not_change_half_or_full_row_hits() -> Result<()> {

@@ -113,6 +113,22 @@ describe("App-owned J4 automatic connection epochs", () => {
     expect(session.getState().phase).toBe("disconnected");
   });
 
+  it("keeps automatic-response observers connected without reconnecting or blocking manual TX", async () => {
+    await render({ available: true, uptimeMs: 10000 });
+    const socket = Socket.instances[0]; act(() => socket.open());
+    act(() => socket.onmessage?.({ data: JSON.stringify({ type: "serial_state", topic: "serial.j4", ...wireState, terminal_responder: false, dtr: true }) }));
+    for (let i = 0; i < 4; i++) await render({ available: true, uptimeMs: 12000 + i * 2000 });
+    expect(session.getState().phase).toBe("connected");
+    expect(session.getState().serial?.read_only).toBe(false);
+    expect(session.getState().serial?.terminal_responder).toBe(false);
+    expect(posts()).toHaveLength(1);
+    expect(socket.close).not.toHaveBeenCalled();
+    act(() => socket.onmessage?.({ data: JSON.stringify({ type: "serial_state", topic: "serial.j4", ...wireState, terminal_responder: true }) }));
+    expect(session.getState().serial?.read_only).toBe(false);
+    expect(session.getState().error).toBeNull();
+    expect(posts()).toHaveLength(1);
+  });
+
   it("reconnects once after a reboot epoch, clears old TX and deletes both independent sessions", async () => {
     await render({ available: true, uptimeMs: 10000 });
     const old = Socket.instances[0]; act(() => old.open());

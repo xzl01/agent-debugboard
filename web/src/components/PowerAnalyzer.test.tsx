@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CaptureConfig, PowerCapture } from "@/lib/types";
 import type { AutomationTaskControl } from "@/lib/automationTask";
 import { PowerAnalyzer } from "./PowerAnalyzer";
+import { PowerRailCatalogProvider } from "./PowerRailCatalog";
+import { x12PowerFixture } from "@/lib/power.testFixtures";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -100,9 +102,10 @@ function mount(state: CaptureState = "idle", captures: PowerCapture[] = [], opti
   const onArm = options.onArm ?? vi.fn(() => Promise.resolve());
   const onCancel = options.onCancel ?? vi.fn();
   const onClear = options.onClear ?? vi.fn();
+  const catalog = x12PowerFixture();
   const render = (nextState: CaptureState, nextCaptures: PowerCapture[]) => act(() => {
     root.render(
-      <PowerAnalyzer
+      <PowerRailCatalogProvider outputs={catalog.outputs} readings={catalog.readings}><PowerAnalyzer
         gpios={[]}
         state={nextState}
         progress={null}
@@ -114,7 +117,7 @@ function mount(state: CaptureState = "idle", captures: PowerCapture[] = [], opti
         onClear={onClear}
         taskControl={taskControl}
         showHeader={false}
-      />
+      /></PowerRailCatalogProvider>
     );
   });
   render(state, captures);
@@ -149,6 +152,15 @@ afterEach(() => {
 });
 
 describe("PowerAnalyzer task workflow", () => {
+  it("only offers instrumented current sources, not the fifth output without a sensor", () => {
+    const { host } = mount();
+    const source = [...host.querySelectorAll("select")].find((select) => [...select.options].some((option) => option.value === "vdd_5v"));
+    expect(source).toBeDefined();
+    expect([...source!.options].map((option) => option.value)).toEqual(x12PowerFixture().readings.filter((reading) => reading.kind === "current").map((reading) => reading.name));
+    expect(host.querySelector('option[value="5v_usb_hub"]')).toBeNull();
+    expect(source!.options).toHaveLength(4);
+  });
+
   it("offers no rates above 250 Hz and cannot arm a 500 Hz input", async () => {
     const onArm = vi.fn(() => Promise.resolve());
     const { host } = mount("idle", [], { onArm });

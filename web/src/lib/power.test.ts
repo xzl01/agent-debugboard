@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CurrentAdcReading } from "./types.ts";
-import { formatPowerMetric, measuredVoltage, readingMetric } from "./power.ts";
+import { formatPowerMetric, measuredVoltage, readingMetric, powerRailRows, powerRailCatalog, powerRailLabel } from "./power.ts";
+import { x12PowerFixture } from "./power.testFixtures.ts";
 
 const reading: CurrentAdcReading = {
   name: "5v_out",
@@ -13,6 +14,32 @@ const reading: CurrentAdcReading = {
   voltage_valid: true,
   voltage_uv: 4_875_000,
 };
+
+test("joins firmware output order with descriptor-only rails without inventing readings", () => {
+  const { outputs, readings } = x12PowerFixture();
+  const rows = powerRailRows(outputs, readings);
+  assert.equal(rows.length, 5);
+  assert.deepEqual(rows.map((row) => row.name), outputs.map((output) => output.name));
+  assert.equal(rows.filter((row) => row.reading).length, 4);
+  assert.equal(rows.at(-1)?.reading, undefined);
+  const measuredOnly = { ...reading, name: "external_monitor" };
+  assert.deepEqual(powerRailRows(outputs, [measuredOnly, ...readings]).map((row) => row.name), [...outputs.map((output) => output.name), "external_monitor"]);
+  assert.deepEqual(powerRailRows([outputs[0]!, outputs[0]!], [reading, reading]).map((row) => row.name), [outputs[0]!.name]);
+});
+
+test("separates switchable outputs from instrumented capture/current channels", () => {
+  const { outputs, readings } = x12PowerFixture();
+  const catalog = powerRailCatalog(outputs, readings);
+  assert.equal(catalog.switchable.length, 5);
+  assert.equal(catalog.current.length, 4);
+  assert.equal(catalog.measurements.length, 8);
+  assert.ok(catalog.switchable.includes("5v_usb_hub"));
+  assert.equal(catalog.current.includes("5v_usb_hub"), false);
+  assert.equal(catalog.measurements.includes("5v_usb_hub"), false);
+  assert.equal(powerRailLabel("5v_usb_hub"), "5V · usb hub");
+  assert.equal(powerRailLabel("5V_OUT"), "5V");
+  assert.equal(powerRailLabel("future_aux"), "future_aux");
+});
 
 test("voltage metrics use only valid measured bus voltage, never the nominal rail value", () => {
   assert.equal(measuredVoltage(reading), 4.875);

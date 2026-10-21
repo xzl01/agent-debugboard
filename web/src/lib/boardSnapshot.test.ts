@@ -5,6 +5,17 @@ import {
   mapBoardStatus,
   mergeBoardWsSnapshot,
 } from "./boardSnapshot.ts";
+import { x12ControlStatusFixture } from "./switches.testFixtures.ts";
+
+test("x1.2 HTTP/WS snapshots expose only sd/tf_wp and eleven safe GPIOs", () => {
+  const source = x12ControlStatusFixture();
+  for (const snapshot of [mapBoardStatus(source, []), mergeBoardWsSnapshot(EMPTY_BOARD_SNAPSHOT, source)]) {
+    assert.deepEqual(Object.keys(snapshot.switches), ["sd", "tf_wp"]);
+    assert.equal(snapshot.gpios.length, 11);
+    assert.equal(snapshot.switches.usb, undefined);
+    assert.equal(snapshot.gpios.some((gpio) => gpio.name === "GP17" || gpio.name === "GP18"), false);
+  }
+});
 
 test("EMPTY_BOARD_SNAPSHOT starts unavailable/unknown rather than inventing hardware state", () => {
   // Given the empty snapshot constant

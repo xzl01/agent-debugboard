@@ -128,7 +128,7 @@ describe("GpioPinoutSvg gpio variant concentric geometry", () => {
       "transparent"
     );
     const svgs = view.host.querySelectorAll("svg");
-    expect(svgs).toHaveLength(3);
+    expect(svgs).toHaveLength(2);
     for (const svg of svgs) {
       const [, , width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
       expect(34 * Number.parseFloat(svg.style.width) / width!).toBeGreaterThanOrEqual(44);

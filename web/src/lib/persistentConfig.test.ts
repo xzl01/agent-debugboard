@@ -10,6 +10,7 @@ import {
   parsePersistentConfigSummary,
   mergePersistentConfigSummary,
 } from "./persistentConfig";
+import { x12ControlStatusFixture } from "./switches.testFixtures";
 
 function getResponse(items: unknown): Record<string, unknown> {
   return {
@@ -36,6 +37,23 @@ describe("persistent configuration contracts", () => {
     expect(config.items.map((item) => item.kind)).toEqual(["power", "switch", "gpio"]);
     expect(groupPersistentConfigItems(config.items).power).toHaveLength(1);
     expect(config.items[0]?.risk).toBe("confirmation_required");
+  });
+
+  it("keeps the x1.2 saved-control catalog limited to sd/tf_wp and eleven safe GPIOs", () => {
+    const source = x12ControlStatusFixture();
+    const config = parsePersistentConfigGet(getResponse([
+      ...Object.entries(source.switches).map(([name, descriptor]) => ({
+        id: `switch/${name}`, kind: "switch", current: { route: descriptor.route }, saved: null,
+        selected: false, requires_confirm: descriptor.requires_confirm, apply_state: "not_saved",
+      })),
+      ...source.gpios.map((gpio) => ({ id: `gpio/${gpio.name}`, kind: "gpio", current: { direction: gpio.direction, value: gpio.value }, saved: null,
+        selected: false, requires_confirm: false, apply_state: "not_saved" })),
+    ]));
+    const groups = groupPersistentConfigItems(config.items);
+    expect(groups.switch.map((item) => item.id)).toEqual(["switch/sd", "switch/tf_wp"]);
+    expect(groups.gpio).toHaveLength(11);
+    expect(config.items.some((item) => item.id === "switch/usb")).toBe(false);
+    expect(groups.gpio.some((item) => item.id === "gpio/GP17" || item.id === "gpio/GP18")).toBe(false);
   });
 
   it("tolerates absent summaries and future fields or kinds", () => {

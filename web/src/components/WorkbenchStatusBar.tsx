@@ -1,18 +1,11 @@
 import { Activity, GitBranch, SquareTerminal, Zap } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import { switchRouteLabel } from "@/lib/switches";
+import { switchNameLabel, switchRouteLabel } from "@/lib/switches";
 import type { AutomationTaskOwner } from "@/lib/automationTask";
 import type { BoardSnapshot, PowerOutput } from "@/lib/types";
-import { powerOutputIsOn } from "@/lib/power";
+import { powerOutputIsOn, powerRailLabel } from "@/lib/power";
 import { cn } from "@/lib/utils";
 import type { SerialConnectionSummary } from "./SerialCard";
-
-const RAILS = [
-  { name: "5v_out", label: "5V" },
-  { name: "12v_out", label: "12V" },
-  { name: "20v_out", label: "20V" },
-  { name: "vdd_5v", label: "VDD_5V" },
-] as const;
 
 type RailState = "on" | "off" | "unknown";
 
@@ -39,11 +32,7 @@ export function WorkbenchStatusBar({
   readonly taskOwner: AutomationTaskOwner | null;
 }) {
   const { t } = useI18n();
-  const outputs = new Map(snapshot.powerOutputs.map((output) => [output.name, output]));
-  const route = (name: string) => {
-    const value = snapshot.switches[name]?.route;
-    return value ? switchRouteLabel(t, value) : "—";
-  };
+  const routes = Object.entries(snapshot.switches);
   const serialLabel = t(`statusBar.j4.${serialConnections.state}`);
 
   return (
@@ -64,15 +53,16 @@ export function WorkbenchStatusBar({
         <div className="flex shrink-0 items-center gap-1.5" title={t("statusBar.powerTitle")}>
           <Zap aria-hidden="true" className="h-2.5 w-2.5 sm:h-3 sm:w-3" />
           <div className="flex items-center gap-1.5 sm:gap-2.5">
-            {RAILS.map((rail) => {
-              const state = railState(outputs.get(rail.name));
+            {snapshot.powerOutputs.map((rail) => {
+              const state = railState(rail);
+              const label = powerRailLabel(rail.name).toUpperCase();
               const stateLabel = t(`statusBar.rail.${state}`);
               return (
                 <span
                   key={rail.name}
                   data-testid={`status-rail-${rail.name}`}
                   className="flex items-center gap-[3px]"
-                  title={`${rail.label} ${stateLabel}`}
+                  title={`${label} ${stateLabel}`}
                 >
                   <span
                     aria-hidden="true"
@@ -86,23 +76,28 @@ export function WorkbenchStatusBar({
                           : "bg-transparent ring-1 ring-inset ring-ink-dim/45",
                     )}
                   />
-                  <span>{rail.label} {stateLabel}</span>
+                  <span>{label} {stateLabel}</span>
                 </span>
               );
             })}
           </div>
         </div>
 
-        <div
+        {routes.length > 0 && <div
           className="flex min-w-0 shrink-0 items-center gap-1 border-l border-line/70 pl-2.5 sm:pl-3.5"
           title={t("statusBar.routingTitle")}
         >
           <GitBranch aria-hidden="true" className="h-2.5 w-2.5 shrink-0 sm:h-3 sm:w-3" />
-          <span>SD→{route("sd")}</span>
-          <span className="hidden sm:inline">· USB→{route("usb")}</span>
-          <span className="hidden sm:inline">· TF {route("tf_wp")}</span>
-          <span className="hidden sm:inline">· VIN {route("vin")}</span>
-        </div>
+          {routes.map(([name, descriptor], index) => {
+            const value = descriptor.route ? switchRouteLabel(t, descriptor.route) : "—";
+            return <span key={name} data-testid={`status-route-${name}`}
+              className={index > 0 ? "hidden sm:inline-flex" : "inline-flex"}
+              title={`${switchNameLabel(t, name)} → ${value}`}>
+              {index > 0 && <span aria-hidden="true" className="mr-1">·</span>}
+              {name.toUpperCase()}→{value}
+            </span>;
+          })}
+        </div>}
 
         <div className="hidden shrink-0 items-center gap-1 border-l border-line/70 pl-3.5 lg:flex" title={t("statusBar.j4Title")}>
           <SquareTerminal aria-hidden="true" className="h-3 w-3" />

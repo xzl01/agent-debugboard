@@ -5,7 +5,8 @@ import { Badge, Button, Toggle } from "./ui";
 import type { CaptureConfig, PowerCapture, PowerOutput } from "@/lib/types";
 import type { SerialAutomationHandle } from "@/lib/j4SerialSession";
 import type { J4SerialChannel as SerialChannelId } from "@/lib/j4SerialProtocol";
-import { nominalVoltage, powerRailLabel, USER_POWER_RAILS } from "@/lib/power";
+import { nominalVoltage, powerRailLabel } from "@/lib/power";
+import { usePowerRailCatalog } from "./PowerRailCatalog";
 import { useI18n } from "@/lib/i18n";
 import { buildPowerChartAxis, PowerChartYAxis } from "./PowerChartAxis";
 import { summarizePowerCapture } from "@/lib/powerCapture";
@@ -350,8 +351,11 @@ export function StartupPowerAnalysis({
   taskControl: AutomationTaskControl;
 }) {
   const { t } = useI18n();
+  const catalog = usePowerRailCatalog();
+  const availableRails = outputs.filter((output) => output.controllable && catalog.current.includes(output.name)).map((output) => output.name);
   const [phase, setPhase] = useState<Phase>("idle");
-  const [rail, setRail] = useState("5v_out");
+  const [railDraft, setRail] = useState("");
+  const rail = availableRails.includes(railDraft) ? railDraft : availableRails[0] ?? "";
   const serialChannel: SerialChannelId = "j4";
   const [offDelayMs, setOffDelayMs] = useState(3000);
   const [rateHz, setRateHz] = useState(50);
@@ -569,6 +573,7 @@ export function StartupPowerAnalysis({
   }, [captures]);
 
   const start = async () => {
+    if (!availableRails.includes(rail)) { setError(t("power.measurementUnavailable")); return; }
     const serial = serialRef.current;
     const output = outputs.find((item) => item.name === rail);
     if (!serial) {
@@ -1011,12 +1016,14 @@ export function StartupPowerAnalysis({
         </div>
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="text-[11px] text-ink-dim">{t("startup.rail")}
-          <select value={rail} onChange={(event) => setRail(event.target.value)} disabled={busy}
+          <select value={rail} onChange={(event) => setRail(event.target.value)} disabled={busy || availableRails.length === 0}
             className="mt-1 w-full rounded-lg border border-line bg-panel2 px-2 py-2 text-xs text-ink">
-            {USER_POWER_RAILS.filter((name) => outputs.some((item) => item.name === name && item.controllable)).map((name) =>
+            {!rail && <option value="">—</option>}
+            {availableRails.map((name) =>
               <option key={name} value={name}>{powerRailLabel(name)}</option>
             )}
-          </select>
+           </select>
+          {availableRails.length === 0 && <span className="mt-1 block">{t("power.measurementUnavailable")}</span>}
         </label>
         <label className="text-[11px] text-ink-dim">{t("startup.offDelay")}
           <input type="number" min="250" max="10000" step="250" value={offDelayMs} onChange={(event) => setOffDelayMs(Number(event.target.value))} disabled={busy}
@@ -1094,7 +1101,7 @@ export function StartupPowerAnalysis({
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {!busy ? (
-          <Button className="lg:hidden" variant="primary" disabled={blockedByOtherTask} onClick={() => void start()}><Play size={15} />{t("startup.start")}</Button>
+          <Button className="lg:hidden" variant="primary" disabled={blockedByOtherTask || availableRails.length === 0} onClick={() => void start()}><Play size={15} />{t("startup.start")}</Button>
         ) : phase === "finalizing" ? (
           <Button disabled><Square size={15} />{t("startup.phase.finalizing")}</Button>
         ) : (
@@ -1145,7 +1152,7 @@ export function StartupPowerAnalysis({
             </div>
             <p className="mt-1 text-[11px] text-ink-dim">{t("startup.latest.description")}</p>
           </div>
-          <Button className="hidden shrink-0 lg:inline-flex" variant="primary" disabled={blockedByOtherTask} onClick={() => void start()}>
+          <Button className="hidden shrink-0 lg:inline-flex" variant="primary" disabled={blockedByOtherTask || availableRails.length === 0} onClick={() => void start()}>
             <Play size={15} />{t("startup.start")}
           </Button>
         </section>
@@ -1157,7 +1164,7 @@ export function StartupPowerAnalysis({
             </span>
             <h4 className="mt-3 text-sm font-semibold text-ink">{t("startup.empty.title")}</h4>
             <p className="mx-auto mt-1 max-w-[56ch] text-[11px] leading-relaxed text-ink-dim">{t("startup.empty.description")}</p>
-            <Button className="mt-4 hidden lg:inline-flex" variant="primary" disabled={blockedByOtherTask} onClick={() => void start()}>
+            <Button className="mt-4 hidden lg:inline-flex" variant="primary" disabled={blockedByOtherTask || availableRails.length === 0} onClick={() => void start()}>
               <Play size={15} />{t("startup.start")}
             </Button>
           </div>

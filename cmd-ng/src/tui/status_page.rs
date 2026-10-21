@@ -1,3 +1,5 @@
+use super::control_rows::control_rows;
+use super::controls::ControlItem;
 use super::model::{TuiModel, TuiSwitchState};
 use super::text_width::{clip_display, display_width};
 use crate::monitoring::format_monitoring_summary;
@@ -94,6 +96,15 @@ pub(super) fn status_lines(model: &TuiModel, width: usize) -> Vec<Line<'static>>
     }
     for state in model.switches.values() {
         lines.push(switch_line(state, width));
+    }
+    for row in control_rows(model)
+        .into_iter()
+        .filter(|row| matches!(row.item, ControlItem::Power(_)))
+    {
+        lines.push(Line::from(clip_display(
+            &format!("power {}: {} live={}", row.name, row.state_route, row.live),
+            width,
+        )));
     }
     for pair in monitoring_pairs(model) {
         lines.push(Line::from(clip_display(&pair, width)));

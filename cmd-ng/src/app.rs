@@ -183,10 +183,6 @@ where
         return run_reboot(client, &cli.command_args, cli.json, stdout, stderr);
     }
 
-    if !cli.raw && is_switch_usb_route_command(&cli.command_args) {
-        return run_switch_usb(client, &cli.command_args, cli.json, stdout, stderr);
-    }
-
     if cli.command_args.first().map(String::as_str) == Some("task") {
         return crate::task_command::run(
             client,
@@ -949,15 +945,13 @@ fn switch_request(args: &[String]) -> Result<BoardRequest, String> {
         }
         "get" => {
             if args.len() != 3 {
-                return Err("usage: radxa-linkr-debuggerctl switch get sd|usb|tf_wp".to_string());
+                return Err("usage: radxa-linkr-debuggerctl switch get NAME".to_string());
             }
             Ok(get_request(format!("/api/v1/switch/{}", args[2])))
         }
         "route" => {
             if args.len() != 4 {
-                return Err(
-                    "usage: radxa-linkr-debuggerctl switch route sd|usb|tf_wp ROUTE".to_string(),
-                );
+                return Err("usage: radxa-linkr-debuggerctl switch route NAME ROUTE".to_string());
             }
             Ok(put_request(
                 format!("/api/v1/switch/{}", args[2]),
@@ -965,75 +959,6 @@ fn switch_request(args: &[String]) -> Result<BoardRequest, String> {
             ))
         }
         other => Err(format!("unsupported switch action {:?}", other)),
-    }
-}
-
-fn is_switch_usb_route_command(args: &[String]) -> bool {
-    let cleaned = strip_passthrough_flags(args);
-    cleaned.len() >= 4 && cleaned[0] == "switch" && cleaned[1] == "route" && cleaned[2] == "usb"
-}
-
-fn run_switch_usb<TClient>(
-    client: &TClient,
-    args: &[String],
-    json_output: bool,
-    stdout: &mut dyn Write,
-    stderr: &mut dyn Write,
-) -> Result<u8>
-where
-    TClient: BoardTransport,
-{
-    let has_confirm = args.iter().any(|a| a == "--confirm" || a == "-y");
-    if !has_confirm {
-        if json_output {
-            write_json_error(
-                stdout,
-                "switch",
-                "confirm_required",
-                "switch route usb requires --confirm. USB route switching is a dangerous operation that may affect target board connectivity.",
-            )?;
-        } else {
-            writeln!(
-                stderr,
-                "switch route usb: dangerous operation requires --confirm.\nusage: radxa-linkr-debuggerctl switch route usb pc|target --confirm"
-            )?;
-        }
-        return Ok(2);
-    }
-
-    let switch_args: Vec<String> = args
-        .iter()
-        .filter(|a| *a != "--confirm" && *a != "-y")
-        .cloned()
-        .collect();
-
-    let target_route = switch_args.get(3).map(String::as_str).unwrap_or("");
-    if switch_args.len() != 4 || !matches!(target_route, "pc" | "target") {
-        let message = "usage: radxa-linkr-debuggerctl switch route usb pc|target --confirm";
-        if json_output {
-            write_json_error(stdout, "switch", "usage", message)?;
-        } else {
-            writeln!(stderr, "{message}")?;
-        }
-        return Ok(2);
-    }
-    match request_from_args(&switch_args) {
-        Ok(request) => run_standard(
-            client,
-            command_name(&switch_args),
-            request,
-            json_output,
-            stdout,
-            stderr,
-        ),
-        Err(err) => {
-            if json_output {
-                write_json_error(stdout, "switch", "usage", &err)?;
-            } else {
-                writeln!(stderr, "{err}")?;
-            }
-            Ok(2)
-        }
     }
 }
 
@@ -1675,18 +1600,10 @@ mod tests {
     }
 
     #[test]
-    fn run_switch_usb_rejects_invalid_request_before_power_side_effect() {
+    fn run_switch_rejects_invalid_arity_before_any_io() {
         for args in [
-            vec!["cmd", "switch", "route", "usb", "invalid", "--confirm"],
-            vec![
-                "cmd",
-                "switch",
-                "route",
-                "usb",
-                "target",
-                "extra",
-                "--confirm",
-            ],
+            vec!["cmd", "switch", "route", "aux"],
+            vec!["cmd", "switch", "route", "aux", "right", "extra"],
         ] {
             let cli = Cli::parse_from(args);
             let client = FakeClient::default();
@@ -1701,10 +1618,10 @@ mod tests {
     }
 
     #[test]
-    fn run_switch_usb_sends_only_confirmed_switch_request() {
-        let cli = Cli::parse_from(["cmd", "switch", "route", "usb", "pc", "--confirm"]);
+    fn run_switch_sends_only_the_generic_switch_request() {
+        let cli = Cli::parse_from(["cmd", "switch", "route", "aux", "right"]);
         let client = FakeClient {
-            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"switch","action":"route","name":"usb","route":"pc"}"#.to_string(),
+            response: r#"{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"switch","action":"route","name":"aux","route":"right"}"#.to_string(),
             ..Default::default()
         };
         let tui = FakeTuiRunner::new(0);
@@ -1716,8 +1633,36 @@ mod tests {
         let requests = client.requests.borrow();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method, Method::PUT);
+        assert_eq!(requests[0].path, "/api/v1/switch/aux");
+        assert_eq!(requests[0].body.as_ref().unwrap()["route"], "right");
+    }
+
+    #[test]
+    fn removed_x1_2_usb_switch_surfaces_firmware_rejection_without_power_requests() {
+        let cli = Cli::parse_from(["cmd", "--json", "switch", "route", "usb", "pc"]);
+        let body = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"switch","error":{"code":"unknown_switch","message":"unknown switch"}}"#;
+        let client = FakeClient {
+            response: body.to_string(),
+            ..Default::default()
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            execute_with_io(
+                cli,
+                &client,
+                &FakeTuiRunner::new(0),
+                &mut stdout,
+                &mut stderr
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(String::from_utf8(stdout).unwrap().trim(), body);
+        assert!(stderr.is_empty());
+        let requests = client.requests.borrow();
+        assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].path, "/api/v1/switch/usb");
-        assert_eq!(requests[0].body.as_ref().unwrap()["route"], "pc");
     }
 
     #[test]

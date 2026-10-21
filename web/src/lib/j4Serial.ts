@@ -1,9 +1,29 @@
 import * as api from "./api";
 import {
-  J4_SERIAL_BUFFER_LIMIT, J4_SERIAL_FRAME_BYTES, J4_SERIAL_QUEUE_LIMIT,
-  J4_SERIAL_TOPIC, J4SerialError, parseJ4SerialState, record,
+  J4_SERIAL_BUFFER_LIMIT, J4_SERIAL_FRAME_BYTES, J4_SERIAL_QUEUE_LIMIT, J4_SERIAL_BAUD_MIN,
+  J4_SERIAL_TOPIC, J4SerialError, isJ4SerialBaudRate, parseJ4SerialState, record,
   type J4SerialConfig, type J4SerialState,
 } from "./j4SerialProtocol";
+
+export const J4_SERIAL_TX_MIN_TIMEOUT_MS = 5_000;
+export const J4_SERIAL_TX_SCHEDULING_GUARD_MS = 2_000;
+
+/** Bound the shared firmware queue, including seven competing maximum frames
+ * ahead of this WS's one in-flight frame. Reserve 2 s for service scheduling
+ * beyond wire time; missing/invalid config uses minimum baud and worst 8E2.
+ */
+export function j4SerialTxTimeoutMs(config?: J4SerialConfig | null): number {
+  let baud = J4_SERIAL_BAUD_MIN;
+  let bitsPerChar = 12;
+  if (config && isJ4SerialBaudRate(config.baud) && [5, 6, 7, 8].includes(config.data_bits)
+    && ["none", "even", "odd"].includes(config.parity) && (config.stop_bits === 1 || config.stop_bits === 2)) {
+    baud = config.baud;
+    bitsPerChar = 1 + config.data_bits + (config.parity !== "none" ? 1 : 0) + config.stop_bits;
+  }
+  const queuedBytes = J4_SERIAL_FRAME_BYTES * J4_SERIAL_QUEUE_LIMIT;
+  const wireMs = Math.ceil(queuedBytes * bitsPerChar * 1000 / baud);
+  return Math.max(J4_SERIAL_TX_MIN_TIMEOUT_MS, wireMs + J4_SERIAL_TX_SCHEDULING_GUARD_MS);
+}
 
 export type J4ConnectionPhase = "disconnected" | "connecting" | "connected" | "unavailable";
 export interface J4SerialSnapshot {
@@ -159,9 +179,19 @@ export class J4SerialClient {
       this.refreshPressure();
     } else if (frame.type === "error") {
       const error = record(frame.error);
+      const reason = new J4SerialError(String(frame.code ?? error.code ?? "serial_error"),
+        String(frame.message ?? error.message ?? "J4 serial error"));
+      if (frame.command !== "subscribe" && !["serial_unavailable", "unsupported_topic", "not_found"].includes(reason.code)) {
+        // A rejected write is local to this request, not an exclusive TX lock.
+        // Keep accepted event IDs and the RX socket; explicit new input remains
+        // allowed. Nothing from the rejected local queue is replayed.
+        this.rejectWrites(reason, (item) => item.eventId === undefined);
+        this.update({ error: this.errorInfo(reason) });
+        this.refreshPressure();
+        return;
+      }
       // Subscription failures cannot leave an apparently usable terminal.
-      this.fail(new J4SerialError(String(frame.code ?? error.code ?? "serial_error"),
-        String(frame.message ?? error.message ?? "J4 serial error")));
+      this.fail(reason);
     }
   }
 
@@ -179,12 +209,16 @@ export class J4SerialClient {
       if (this.pending.length > 0) this.update({ error: { code: "generation_changed", message: "UART settings changed while input was pending" } });
       this.rejectWrites(new J4SerialError("generation_changed"));
     }
-    if (serial.state !== "ready" || serial.read_only) {
+    if (serial.state !== "ready") {
       if (this.pending.some((item) => item.sent && item.eventId === undefined)) {
         this.fail(new J4SerialError("serial_not_ready", "J4 became read-only before write admission was confirmed"));
         return;
       }
       this.rejectWrites(new J4SerialError("read_only"));
+    } else if (serial.read_only) {
+      // Admission-freeze notifications may precede an in-flight write's acceptance or
+      // completion. Do not lose its event ID or close the observing RX socket.
+      this.rejectWrites(new J4SerialError("read_only"), (item) => !item.sent);
     }
     if (this.connectTimer) clearTimeout(this.connectTimer);
     this.connectTimer = null;
@@ -201,9 +235,23 @@ export class J4SerialClient {
     this.refreshPressure();
   }
 
+  private applyHttpState(data: Record<string, unknown>) {
+    const state = parseJ4SerialState(data);
+    const prior = this.snapshot.serial;
+    // GET has a global descriptor, not per-client WS authorization. Preserve
+    // a confirmed WS responder only if GET corroborates that same descriptor;
+    // otherwise leave automatic replies off until an explicit WS true arrives.
+    if (typeof data.terminal_responder !== "boolean" && !state.dtr && prior?.terminal_responder
+      && state.responder && prior.responder?.transport === state.responder.transport && prior.responder.slot === state.responder.slot) {
+      state.terminal_responder = true;
+    }
+    this.applyState(state);
+  }
+
   async configure(config: J4SerialConfig): Promise<void> {
     const serial = this.snapshot.serial;
     if (!serial || this.snapshot.configuring || this.snapshot.phase !== "connected") throw new J4SerialError("disconnected");
+    if (!isJ4SerialBaudRate(config.baud)) throw new J4SerialError("invalid_baud");
     if (this.pending.length > 0) throw new J4SerialError("backpressure");
     const epoch = this.epoch;
     this.configRequestId = -1;
@@ -223,8 +271,8 @@ export class J4SerialClient {
       this.update({ configuring: false, error });
       // A CDC line-coding/CAS conflict is not retried; refresh the actual tuple.
       try {
-        const current = parseJ4SerialState(await this.request({ signal: this.abort?.signal }));
-        if (epoch === this.epoch) this.applyState(current);
+        const current = await this.request({ signal: this.abort?.signal });
+        if (epoch === this.epoch) this.applyHttpState(current);
       } catch { /* Preserve the useful conflict instead of replacing it. */ }
       throw reason;
     }
@@ -240,7 +288,7 @@ export class J4SerialClient {
       this.configTimer = null;
       void this.request({ signal: this.abort?.signal }).then((data) => {
         if (epoch !== this.epoch) return;
-        this.applyState(parseJ4SerialState(data));
+        this.applyHttpState(data);
         this.pollConfiguration(epoch, attempt + 1);
       }).catch((reason) => {
         if (epoch === this.epoch) this.fail(reason);
@@ -305,18 +353,22 @@ export class J4SerialClient {
     // Firmware permits one in-flight write per WS. The other bounded slots
     // stay client-local until its physical-complete event releases admission.
     const ws = this.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN || this.pending.some((item) => item.sent)) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.pending.some((item) => item.sent)
+      || this.snapshot.serial?.state !== "ready" || this.snapshot.serial.read_only || this.snapshot.configuring) return;
     const pending = this.pending[0];
     if (!pending) return;
     if (ws.bufferedAmount + pending.bytes > J4_SERIAL_BUFFER_LIMIT) { this.watchPressure(); return; }
     pending.sent = true;
-    pending.timer = setTimeout(() => this.fail(new J4SerialError("tx_timeout")), 5_000);
+    pending.timer = setTimeout(() => this.fail(new J4SerialError("tx_timeout")), j4SerialTxTimeoutMs(this.snapshot.serial?.config));
     try { ws.send(pending.payload); } catch (reason) { this.fail(reason); }
   }
 
-  private rejectWrites(reason: Error) {
-    for (const pending of this.pending) { clearTimeout(pending.timer); pending.reject(reason); }
-    this.pending = [];
+  private rejectWrites(reason: Error, shouldReject: (pending: PendingWrite) => boolean = () => true) {
+    this.pending = this.pending.filter((pending) => {
+      if (!shouldReject(pending)) return true;
+      clearTimeout(pending.timer); pending.reject(reason);
+      return false;
+    });
   }
 
   private errorInfo(reason: unknown) {

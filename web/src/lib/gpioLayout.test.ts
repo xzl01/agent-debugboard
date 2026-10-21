@@ -36,7 +36,7 @@ function memberPins(result: ReturnType<typeof groupGpioLayout>): number[] {
   return pins;
 }
 
-test("groupGpioLayout preserves the x1.2 J8, J13 and fallback pins without mirroring", () => {
+test("groupGpioLayout preserves all eleven current x1.2 J8/J13 GPIOs without mirroring or obsolete fallback pins", () => {
   const snapshot = mapBoardStatus(x12GpioStatusFixture(), []);
   const result = groupGpioLayout(snapshot.gpios, snapshot.gpioLayoutGroups);
   assert.equal(result.groups.length, 2);
@@ -47,7 +47,7 @@ test("groupGpioLayout preserves the x1.2 J8, J13 and fallback pins without mirro
   assert.equal(j8.edge, "right");
   assert.equal(j13.edge, "right");
   assert.equal(j8.rowCount, 10);
-  assert.equal(j8.columnCount, 1, "do not invent the unreported right column");
+  assert.equal(j8.columnCount, 2, "the advertised direct GPIOs populate both columns");
   for (const [row, pin, note] of [
     [9, 12, "J8_PIN1"], [8, 13, "J8_PIN2"], [7, 14, "J8_PIN3"],
     [6, 15, "J8_PIN4"], [5, 16, "J8_PIN5"], [4, 29, "J8_PIN6"],
@@ -55,13 +55,16 @@ test("groupGpioLayout preserves the x1.2 J8, J13 and fallback pins without mirro
     assert.equal(j8.rows.get(row)?.[0]?.pin, pin);
     assert.equal(j8.rows.get(row)?.[0]?.note, note);
   }
-  for (let row = 0; row < 4; row++) assert.deepEqual(j8.rows.get(row), [null]);
+  for (let row = 0; row < 4; row++) assert.deepEqual(j8.rows.get(row), [null, null]);
+  assert.equal(j8.rows.get(4)?.[1]?.pin, 5);
+  assert.equal(j8.rows.get(5)?.[1]?.pin, 6);
   assert.equal(j13.rows.get(0)?.[0]?.pin, 9);
   assert.equal(j13.rows.get(0)?.[1]?.pin, 8);
   assert.equal(j13.rows.get(1)?.[0]?.pin, 7);
   assert.equal(j13.rows.get(1)?.[1], null, "J13 pin4 GND is not a GPIO control");
-  assert.ok(result.fallback?.generic);
-  assert.deepEqual(memberPins({ groups: [], fallback: result.fallback }), [17, 18]);
+  assert.equal(result.fallback, null);
+  assert.equal(snapshot.gpios.length, 11);
+  assert.equal(snapshot.gpios.some((gpio) => gpio.pin === 17 || gpio.pin === 18), false);
   assert.deepEqual(memberPins(result).sort((a, b) => a - b), snapshot.gpios.map((pin) => pin.pin).sort((a, b) => a - b));
 });
 

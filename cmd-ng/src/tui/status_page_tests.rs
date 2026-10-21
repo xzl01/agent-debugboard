@@ -64,3 +64,24 @@ fn status_header_pads_titles_to_column_widths() -> Result<()> {
     assert!(header[..actual_at].ends_with("  "), "header={header:?}");
     Ok(())
 }
+
+#[test]
+fn x1_2_status_contains_only_the_two_advertised_switch_rows() -> Result<()> {
+    let model = super::gpio_fixture::x1_2_model()?;
+    for width in [120, 80, 47, 32] {
+        let rows = status_lines(&model, width);
+        assert!(rows[0].to_string().starts_with("sd "));
+        assert!(rows[1].to_string().starts_with("tf_wp "));
+        assert!(!rows.iter().any(|row| row.to_string().starts_with("usb ")));
+        let power_rows = rows
+            .iter()
+            .map(ToString::to_string)
+            .filter(|row| row.starts_with("power "))
+            .collect::<Vec<_>>();
+        assert_eq!(power_rows.len(), 5);
+        assert!(power_rows
+            .iter()
+            .any(|row| row == "power 5v_usb_hub: off live=-"));
+    }
+    Ok(())
+}

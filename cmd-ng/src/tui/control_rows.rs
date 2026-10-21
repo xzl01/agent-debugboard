@@ -1,6 +1,6 @@
 use super::controls::{control_items, ControlItem};
 use super::model::{current_milliamp_estimate, TuiModel};
-use crate::adc::AdcReading;
+use crate::adc::{AdcKind, AdcReading};
 use ratatui::style::{Color, Modifier, Style};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +123,7 @@ fn power_row(model: &TuiModel, item: &ControlItem, output: &str) -> ControlRow {
     let live = model
         .latest
         .get(output)
+        .filter(|reading| reading.kind == AdcKind::Current)
         .map_or_else(|| "-".to_string(), live_current_text);
     let channel = model.channel_ids.iter().find(|id| id.as_str() == output);
     ControlRow {
@@ -144,12 +145,19 @@ fn power_row(model: &TuiModel, item: &ControlItem, output: &str) -> ControlRow {
 fn live_current_text(reading: &AdcReading) -> String {
     let voltage = reading
         .voltage_uv
+        .filter(|_| reading.voltage_valid != Some(false))
         .map(|uv| format!(" {:.3}V", uv as f64 / 1_000_000.0))
         .unwrap_or_default();
+    if reading.current_valid == Some(false) {
+        return format!("-{voltage}");
+    }
     if let Some(current_ua) = reading.current_ua {
         let prefix = if current_ua < 0 { "-" } else { "" };
         let abs = (current_ua as i64).abs();
         return format!("{prefix}{:.6}A{voltage}", abs as f64 / 1_000_000.0);
+    }
+    if reading.ma_est.is_none() && reading.sensor_value.is_none() {
+        return format!("-{voltage}");
     }
     format!(
         "{:>5.2}A{}",

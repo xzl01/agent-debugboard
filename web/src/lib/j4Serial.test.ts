@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { J4SerialClient } from "./j4Serial";
-import { J4_SERIAL_BUFFER_LIMIT, J4_SERIAL_FRAME_BYTES } from "./j4SerialProtocol";
+import { J4SerialClient, j4SerialTxTimeoutMs, J4_SERIAL_TX_MIN_TIMEOUT_MS, J4_SERIAL_TX_SCHEDULING_GUARD_MS } from "./j4Serial";
+import { J4_SERIAL_BUFFER_LIMIT, J4_SERIAL_FRAME_BYTES, J4_SERIAL_QUEUE_LIMIT, type J4SerialConfig } from "./j4SerialProtocol";
 
 const config = { baud: 115200, data_bits: 8, parity: "none", stop_bits: 1, flow_control: "none" } as const;
 const state = (extra = {}) => ({ generation: 1, state: "ready", line_coding: config, dtr: false, read_only: false, ...extra });
@@ -67,6 +67,97 @@ afterEach(async () => {
 });
 
 describe("J4 MCU live-session transport", () => {
+  it.each([
+    [{ ...config, baud: 4800, parity: "even", stop_bits: 2 }, 11600],
+    [{ ...config, baud: 5200 }, 9385],
+    [{ ...config, baud: 4800, data_bits: 5 }, 7600],
+    [{ ...config, baud: 4800, stop_bits: 2 }, 10800],
+    [config, 5000],
+  ] satisfies [J4SerialConfig, number][])("calculates a bounded shared-queue TX timeout for %j", (current, expected) => {
+    expect(j4SerialTxTimeoutMs(current)).toBe(expected);
+    expect(J4_SERIAL_TX_MIN_TIMEOUT_MS).toBe(5000);
+    expect(J4_SERIAL_TX_SCHEDULING_GUARD_MS).toBe(2000);
+  });
+
+  it("uses the conservative minimum-baud worst framing when current config is missing or invalid", () => {
+    for (const current of [undefined, null, { ...config, baud: 0 }, { ...config, data_bits: 9 }]) {
+      expect(j4SerialTxTimeoutMs(current as J4SerialConfig | null | undefined)).toBe(11600);
+    }
+  });
+
+  it.each([
+    { ...config, baud: 4800, parity: "even", stop_bits: 2 },
+    { ...config, baud: 5200 },
+  ] satisfies J4SerialConfig[])("allows seven competing firmware slots beyond 5 s using authoritative send-time config %j", async (current) => {
+    const { serial } = client(); const socket = await connected(serial);
+    // The connect GET reported 115200. The later MCU state is the send authority.
+    socket.frame({ type: "serial_state", ...state({ generation: 2, line_coding: current }) });
+    const write = serial.writeBytes(new Uint8Array(J4_SERIAL_FRAME_BYTES));
+    const outcome = write.then(() => "complete", (reason: unknown) => reason);
+    const bits = 1 + current.data_bits + (current.parity !== "none" ? 1 : 0) + current.stop_bits;
+    const competingMs = Math.ceil(J4_SERIAL_FRAME_BYTES * (J4_SERIAL_QUEUE_LIMIT - 1) * bits * 1000 / current.baud);
+    const ownWireMs = Math.ceil(J4_SERIAL_FRAME_BYTES * bits * 1000 / current.baud);
+    socket.frame({ type: "serial_write_accepted", topic: "serial.j4", event_id: 1, bytes: J4_SERIAL_FRAME_BYTES });
+    await vi.advanceTimersByTimeAsync(5001);
+    expect(serial.getSnapshot().phase).toBe("connected");
+    expect(serial.getSnapshot().pendingWrites).toBe(1);
+    expect(socket.sent).toHaveLength(2); // Subscription and exactly one TX frame.
+    await vi.advanceTimersByTimeAsync(competingMs - 5001 + ownWireMs);
+    expect(competingMs + ownWireMs).toBeLessThan(j4SerialTxTimeoutMs(current));
+    expect(socket.close).not.toHaveBeenCalled();
+    socket.frame({ type: "serial_write_complete", topic: "serial.j4", event_id: 1, disposition: "completed" });
+    expect(await outcome).toBe("complete");
+    expect(serial.getSnapshot().txBytes).toBe(J4_SERIAL_FRAME_BYTES);
+    expect(serial.getSnapshot().pendingWrites).toBe(0);
+    expect(serial.getSnapshot().phase).toBe("connected");
+  });
+
+  it.each([
+    [{ ...config, baud: 4800, parity: "even", stop_bits: 2 }, 11600],
+    [{ ...config, baud: 5200 }, 9385],
+    [config, 5000],
+  ] satisfies [J4SerialConfig, number][])("fails at the exact bounded TX deadline for %j without extending on acceptance", async (current, timeoutMs) => {
+    const { serial } = client(); const socket = await connected(serial);
+    socket.frame({ type: "serial_state", ...state({ generation: 2, line_coding: current }) });
+    const write = serial.writeBytes(new Uint8Array(J4_SERIAL_FRAME_BYTES));
+    const rejected = expect(write).rejects.toMatchObject({ code: "disconnected" });
+    await vi.advanceTimersByTimeAsync(timeoutMs - 100);
+    socket.frame({ type: "serial_write_accepted", topic: "serial.j4", event_id: 1, bytes: J4_SERIAL_FRAME_BYTES });
+    await vi.advanceTimersByTimeAsync(99);
+    expect(serial.getSnapshot().phase).toBe("connected");
+    expect(socket.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(serial.getSnapshot().phase).toBe("disconnected");
+    expect(serial.getSnapshot().error?.code).toBe("tx_timeout");
+    expect(socket.close).toHaveBeenCalledTimes(1);
+    expect(serial.getSnapshot().pendingWrites).toBe(0);
+    const sessionPosts = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(sessionPosts);
+  });
+
+  it("accepts an initial GET and serial_state with arbitrary 5200 baud", async () => {
+    const original = fetchMock.getMockImplementation()!;
+    const reported = state({ line_coding: { ...config, baud: 5200 } });
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/serial/j4") ? Promise.resolve(response(reported)) : original(url, init));
+    const { serial } = client();
+    await serial.connect();
+    expect(serial.getSnapshot().serial?.config.baud).toBe(5200);
+    const socket = Socket.instances.at(-1)!;
+    socket.open(); socket.frame({ type: "serial_state", ...reported });
+    expect(serial.getSnapshot().phase).toBe("connected");
+    expect(serial.getSnapshot().serial?.config.baud).toBe(5200);
+  });
+
+  it.each([4799, 115201, 5200.5, NaN, Infinity])("rejects configure baud %s before any PUT or config-state change", async (baud) => {
+    const { serial } = client(); await connected(serial);
+    await expect(serial.configure({ ...config, baud })).rejects.toMatchObject({ code: "invalid_baud" });
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+    expect(serial.getSnapshot().configuring).toBe(false);
+    expect(serial.getSnapshot().serial?.config.baud).toBe(115200);
+  });
+
   it("uses only board REST and a rewritten same-origin dedicated WS", async () => {
     const browserSerial = { getPorts: vi.fn(), requestPort: vi.fn() };
     Object.defineProperty(navigator, "serial", { configurable: true, value: browserSerial });
@@ -160,6 +251,109 @@ describe("J4 MCU live-session transport", () => {
     expect(a.onBytes.mock.calls[0][0]).toEqual(new Uint8Array([1]));
     expect(b.onBytes.mock.calls[0][0]).toEqual(new Uint8Array([2, 3]));
     expect(fetchMock.mock.calls.filter(([url, init]) => init?.method === "DELETE").map(([url]) => url)).toEqual(["/api/v1/live-sessions/10"]);
+  });
+
+  it("keeps a write rejection nonfatal without imposing any TX ownership or read-only lock", async () => {
+    const { serial, onBytes } = client(); const socket = await connected(serial);
+    const denied = expect(serial.writeBytes(new Uint8Array(J4_SERIAL_FRAME_BYTES * 3))).rejects.toMatchObject({ code: "write_rejected" });
+    expect(socket.sent).toHaveLength(2); // One in-flight chunk, two local chunks.
+    socket.frame({ type: "error", topic: "serial.j4", error: { code: "write_rejected", message: "not admitted" } });
+    await denied;
+    expect(serial.getSnapshot()).toMatchObject({ phase: "connected", serial: { read_only: false }, error: { code: "write_rejected" }, pendingWrites: 0 });
+    expect(socket.close).not.toHaveBeenCalled();
+    socket.bytes([27, 91, 54, 110, 65]);
+    expect(onBytes).toHaveBeenCalledWith(new Uint8Array([27, 91, 54, 110, 65]));
+    expect(serial.getSnapshot().rxBytes).toBe(5);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    // Explicit new input remains allowed; discarded old input is never replayed.
+    const write = serial.writeText("new"); complete(socket, 2, 3); await write;
+    expect(socket.sent).toHaveLength(3); // Nothing from the discarded queue.
+  });
+
+  it.each(["completed", "canceled"])("preserves accepted event completion %s while responder changes and manual writers remain enabled", async (disposition) => {
+    const { serial } = client(); const socket = await connected(serial);
+    const accepted = serial.writeText("accepted");
+    const acceptedResult = accepted.then(() => "complete", (error: { code: string }) => error.code);
+    let settled = false; void acceptedResult.then(() => { settled = true; });
+    socket.frame({ type: "serial_write_accepted", event_id: 44, bytes: 8 });
+    const localResult = expect(serial.writeText("local")).rejects.toMatchObject({ code: "write_rejected" });
+    socket.frame({ type: "error", code: "write_rejected", message: "queue rejected" });
+    await localResult;
+    expect(settled).toBe(false);
+    expect(serial.getSnapshot().pendingWrites).toBe(1);
+    socket.frame({ type: "serial_state", ...state({ terminal_responder: false, dtr: true, read_only: false }) });
+    expect(serial.getSnapshot().serial?.read_only).toBe(false);
+    expect(serial.getSnapshot().pendingWrites).toBe(1);
+    expect(socket.close).not.toHaveBeenCalled();
+    socket.frame({ type: "serial_write_complete", event_id: 44, disposition });
+    expect(await acceptedResult).toBe(disposition === "completed" ? "complete" : "tx_canceled");
+    expect(serial.getSnapshot().txBytes).toBe(disposition === "completed" ? 8 : 0);
+    expect(serial.getSnapshot().pendingWrites).toBe(0);
+    expect(serial.getSnapshot().phase).toBe("connected");
+    expect(socket.sent).toHaveLength(2);
+  });
+
+  it("does not cancel sent or local manual writes when DTR selects another automatic responder", async () => {
+    const { serial } = client(); const socket = await connected(serial);
+    const inFlight = serial.writeText("A");
+    const local = serial.writeText("B");
+    socket.frame({ type: "serial_state", ...state({ terminal_responder: { transport: "raw_tcp", slot: 2 }, dtr: true, read_only: false }) });
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(serial.getSnapshot().pendingWrites).toBe(2);
+    complete(socket, 20); await inFlight;
+    complete(socket, 21); await local;
+    expect(serial.getSnapshot().phase).toBe("connected");
+    expect(socket.sent).toHaveLength(3);
+  });
+
+  it("models two explicit Web writers with only one automatic terminal responder and no TX-owner acquisition", async () => {
+    const first = client(); const second = client();
+    const a = await connected(first.serial); const b = await connected(second.serial);
+    const reportResponder = (firstResponder: boolean, secondResponder: boolean) => {
+      a.frame({ type: "serial_state", ...state({ terminal_responder: firstResponder, read_only: false }) });
+      b.frame({ type: "serial_state", ...state({ terminal_responder: secondResponder, read_only: false }) });
+    };
+    reportResponder(true, false);
+    const firstManual = first.serial.writeText("A");
+    const secondManual = second.serial.writeText("B");
+    complete(a, 1); complete(b, 2); await Promise.all([firstManual, secondManual]);
+    a.bytes([65]); b.bytes([65]);
+    expect(second.onBytes).toHaveBeenCalledWith(new Uint8Array([65]));
+    expect(second.serial.getSnapshot().phase).toBe("connected");
+    expect(first.serial.getSnapshot().serial?.read_only).toBe(false);
+    expect(second.serial.getSnapshot().serial?.read_only).toBe(false);
+    expect(first.serial.getSnapshot().serial?.terminal_responder).toBe(true);
+    expect(second.serial.getSnapshot().serial?.terminal_responder).toBe(false);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2);
+    reportResponder(false, true);
+    const next = second.serial.writeText("C"); complete(b, 3); await next;
+    expect(second.serial.getSnapshot().error).toBeNull();
+    expect(a.close).not.toHaveBeenCalled(); expect(b.close).not.toHaveBeenCalled();
+  });
+
+  it("preserves confirmed per-client WS responder authorization across a corroborating global config GET", async () => {
+    const { serial } = client(); const socket = await connected(serial);
+    const responder = { transport: "websocket", slot: 0 };
+    socket.frame({ type: "serial_state", ...state({ terminal_responder: true, responder }) });
+    const original = fetchMock.getMockImplementation()!;
+    let result = state({ generation: 2, terminal_responder: responder,
+      line_coding: { ...config, baud: 5200 }, config_request: { id: 7, done: true, result: 0 } });
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => init?.method === "PUT"
+      ? Promise.resolve(response({ accepted: true, request_id: 7 }, 202))
+      : url.endsWith("/serial/j4") ? Promise.resolve(response(result)) : original(url, init));
+    await serial.configure({ ...config, baud: 5200 });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(serial.getSnapshot().serial).toMatchObject({ terminal_responder: true, responder, config: { baud: 5200 } });
+    expect(serial.getSnapshot().configuring).toBe(false);
+    // A different global responder must not authorize this page by inference.
+    result = state({ generation: 3, terminal_responder: { transport: "websocket", slot: 1 },
+      line_coding: { ...config, baud: 9600 }, config_request: { id: 7, done: true, result: 0 } });
+    await serial.configure({ ...config, baud: 9600 });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(serial.getSnapshot().serial).toMatchObject({ terminal_responder: false, read_only: false, responder: { transport: "websocket", slot: 1 } });
   });
 
   it("shows unavailable once with no session allocation or reconnect storm on old firmware", async () => {
@@ -260,18 +454,18 @@ describe("J4 MCU live-session transport", () => {
     const original = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => init?.method === "PUT"
       ? Promise.resolve(response({ ok: true, accepted: true, request_id: 5 }, 202)) : original(url, init));
-    await serial.configure({ ...config, baud: 921600 });
+    await serial.configure({ ...config, baud: 57600 });
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/serial/j4/config", expect.objectContaining({ method: "PUT",
-      body: JSON.stringify({ ...config, baud: 921600, expected_generation: 1 }) }));
+      body: JSON.stringify({ ...config, baud: 57600, expected_generation: 1 }) }));
     expect(serial.getSnapshot().configuring).toBe(true);
     await expect(serial.writeText("wait")).rejects.toMatchObject({ code: "read_only" });
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/serial/j4")
-      ? Promise.resolve(response(state({ generation: 2, line_coding: { ...config, baud: 921600 }, config_request: { id: 5, done: true, result: 0 } }))) : original(url, init));
-    socket.frame({ type: "serial_state", ...state({ generation: 2, line_coding: { ...config, baud: 921600 } }) });
+      ? Promise.resolve(response(state({ generation: 2, line_coding: { ...config, baud: 57600 }, config_request: { id: 5, done: true, result: 0 } }))) : original(url, init));
+    socket.frame({ type: "serial_state", ...state({ generation: 2, line_coding: { ...config, baud: 57600 } }) });
     expect(serial.getSnapshot().configuring).toBe(true);
     await vi.advanceTimersByTimeAsync(250);
     expect(serial.getSnapshot().configuring).toBe(false);
-    expect(serial.getSnapshot().serial?.config.baud).toBe(921600);
+    expect(serial.getSnapshot().serial?.config.baud).toBe(57600);
   });
 
   it("surfaces DTR/CAS conflicts and refreshes actual settings without retrying PUT", async () => {
@@ -279,11 +473,12 @@ describe("J4 MCU live-session transport", () => {
     const original = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => init?.method === "PUT"
       ? Promise.resolve(response({ ok: false, error: { code: "config_conflict", message: "DTR active" } }, 409))
-      : url.endsWith("/serial/j4") ? Promise.resolve(response(state({ dtr: true, generation: 2 }))) : original(url, init));
+      : url.endsWith("/serial/j4") ? Promise.resolve(response(state({ dtr: true, generation: 2, line_coding: { ...config, baud: 5200 } }))) : original(url, init));
     await expect(serial.configure({ ...config, baud: 9600 })).rejects.toMatchObject({ code: "config_conflict" });
     expect(serial.getSnapshot().error?.code).toBe("config_conflict");
     expect(serial.getSnapshot().serial?.dtr).toBe(true);
     expect(serial.getSnapshot().serial?.generation).toBe(2);
+    expect(serial.getSnapshot().serial?.config.baud).toBe(5200);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
   });
 

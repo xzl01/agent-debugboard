@@ -1,12 +1,18 @@
-import { act } from "react";
+import { act, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SerialAutomationHandle } from "./SerialCard";
-import { StartupPowerAnalysis } from "./StartupPowerAnalysis";
+import { StartupPowerAnalysis as StartupPowerAnalysisView } from "./StartupPowerAnalysis";
+import { PowerRailCatalogProvider } from "./PowerRailCatalog";
+import { x12PowerFixture } from "@/lib/power.testFixtures";
 import { PowerAnalysisWorkspace } from "./PowerAnalysisWorkspace";
 import { j4ReadySnapshot } from "@/lib/j4Serial.testFixtures";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+function StartupPowerAnalysis(props: ComponentProps<typeof StartupPowerAnalysisView>) {
+  return <PowerRailCatalogProvider outputs={props.outputs} readings={x12PowerFixture().readings}><StartupPowerAnalysisView {...props} /></PowerRailCatalogProvider>;
+}
 
 vi.mock("@/lib/i18n", () => ({
   useI18n: () => ({ t: (key: string) => key }),
@@ -17,6 +23,20 @@ describe("StartupPowerAnalysis workspace", () => {
     document.body.replaceChildren();
     localStorage.clear();
     vi.restoreAllMocks();
+  });
+
+  it("only power-cycles outputs with a current descriptor and never defaults to an uninstrumented output", () => {
+    const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
+    const fixture = x12PowerFixture();
+    const setPower = vi.fn(async () => {});
+    act(() => root.render(<StartupPowerAnalysis outputs={fixture.outputs} captures={[]} captureState="idle" serialRef={{ current: null }}
+      onSetPower={setPower} onReadPower={vi.fn(async () => ({ state: "on", currentUa: 0 }))} onArmCapture={vi.fn(async () => {})}
+      onStopCapture={vi.fn()} onCancelCapture={vi.fn()} taskControl={{ owner: null, acquire: () => true, release: vi.fn() }} />));
+    const source = host.querySelector("select")!;
+    expect([...source.options].map((option) => option.value)).toEqual(fixture.readings.filter((reading) => reading.kind === "current").map((reading) => reading.name));
+    expect(source.querySelector('option[value="5v_usb_hub"]')).toBeNull();
+    expect(setPower).not.toHaveBeenCalled();
+    act(() => root.unmount()); host.remove();
   });
 
   it("exposes live capture and startup analysis as explicit sibling modes", () => {

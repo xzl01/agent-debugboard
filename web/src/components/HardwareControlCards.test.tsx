@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdcReading, PowerOutput, SafeGpio, SwitchState } from "@/lib/types";
 import { GpioCard } from "./GpioCard";
 import { layoutForTestGpios } from "@/lib/gpioPhysicalLayout.testFixtures";
+import { x12SwitchesFixture } from "@/lib/switches.testFixtures";
+import { setSwitch } from "@/lib/api";
 import { PowerCard } from "./PowerCard";
 import { SwitchCard } from "./SwitchCard";
 
@@ -107,6 +109,7 @@ describe("hardware control cards", () => {
     document.body.replaceChildren();
     localStorage.clear();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("keeps quick power control compact while exposing live values and the full analysis route", () => {
@@ -139,22 +142,39 @@ describe("hardware control cards", () => {
 
   it("requires confirmation for risky routes and keeps all route writes locked when disabled", () => {
     const switches: SwitchState = {
-      usb: { route: "target", routes: ["pc", "target"], requires_confirm: true },
+      aux: { route: "lane-a", routes: ["lane-a", "lane-b"], requires_confirm: true },
     };
     const onSet = vi.fn();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const view = render(<SwitchCard switches={switches} onSet={onSet} />);
 
-    act(() => button(view.host, "pc").click());
+    act(() => button(view.host, "lane-b").click());
     expect(confirm).toHaveBeenCalledWith("switch.confirm");
     expect(onSet).not.toHaveBeenCalled();
 
     confirm.mockReturnValue(true);
-    act(() => button(view.host, "pc").click());
-    expect(onSet).toHaveBeenCalledWith("usb", "pc");
+    act(() => button(view.host, "lane-b").click());
+    expect(onSet).toHaveBeenCalledWith("aux", "lane-b");
 
     view.rerender(<SwitchCard switches={switches} onSet={onSet} disabled />);
     expect([...view.host.querySelectorAll<HTMLButtonElement>("button")].every((item) => item.disabled)).toBe(true);
+    view.close();
+  });
+
+  it("renders only the x1.2 advertised sd/tf_wp switches and sends no USB switch request", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}"));
+    vi.stubGlobal("fetch", fetchMock);
+    const switches = x12SwitchesFixture();
+    const view = render(<SwitchCard switches={switches} onSet={(name, route) => { void setSwitch(name, route); }} />);
+    expect(view.host.textContent).not.toContain("USB data");
+    const actions = [...view.host.querySelectorAll<HTMLButtonElement>("button")];
+    expect(actions).toHaveLength(4);
+    for (const action of actions) { act(() => action.click()); await flush(); }
+    expect(fetchMock.mock.calls).toHaveLength(4);
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/v1/switch/sd", "/api/v1/switch/sd", "/api/v1/switch/tf_wp", "/api/v1/switch/tf_wp",
+    ]);
+    expect(fetchMock.mock.calls.some(([path]) => String(path).endsWith("/switch/usb"))).toBe(false);
     view.close();
   });
 

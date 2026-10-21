@@ -472,33 +472,53 @@ generic metadata handling without claiming to describe x1.2.
 | J8 pin 4      | GP15      | GP15    | 6         | 0            |
 | J8 pin 5      | GP16      | GP16    | 5         | 0            |
 | J8 pin 6      | GP29      | ADC3    | 4         | 0            |
+| J8 pin 16     | GP5       | GP5     | 4         | 1            |
+| J8 pin 15     | GP6       | GP6     | 5         | 1            |
 | J13 pin 1     | GP9       | USER    | 0         | 0            |
 | J13 pin 2     | GP8       | RSET    | 0         | 1            |
 | J13 pin 3     | GP7       | MASKROM | 1         | 0            |
 | J13 pin 4     | — (GND)   | —       | —         | —            |
 
 The catalog advertises J8/right/order 0 and J13/right/order 1. The controls-only
-safe/status/config catalog contains exactly nine GPIOs: GP7/8/9/12/13/14/15/16/29.
+safe/status/config catalog contains exactly eleven GPIOs: GP5/6/7/8/9/12/13/14/15/16/29.
+GP5 and GP6 are output-capable direct GPIOs with normal GPIO commands/config
+IDs, not switch routes or dedicated-function controls.
 GP17 and GP18 are absent, not unmapped fallback controls. GP29 remains represented
 as ADC3/input-only, not omitted because ADC owns it. GND is not selectable.
 The complete 24-position physical layout is Web-only; the CLI/TUI neither
 fetches `/gpio/layout` nor maintains a physical pin map.
 
 Despite deliberately shuffled GPIO/catalog input, the projected cell order is
-`ADC3, GP16, GP15, GP14, GP13, GP12, USER, RSET, MASKROM`.
-At 80/48 columns, the six J8 entries occupy separate left-half rows, USER/RSET
-share one row in that left/right order, MASKROM occupies its own left-half
-row, and no fallback row exists (eight GPIO visual rows total). At 47/32
-columns all nine entries occupy separate full-width rows. The regression
+`ADC3, GP5, GP16, GP6, GP15, GP14, GP13, GP12, USER, RSET, MASKROM`.
+At 80/48 columns, J8 rows 4/5 pair ADC3/GP5 and GP16/GP6, respectively;
+the other four J8 entries occupy separate left-half rows. USER/RSET share
+one row in that left/right order, MASKROM occupies its own left-half row,
+and no fallback row exists (eight GPIO visual rows total). At 47/32
+columns all eleven entries occupy separate full-width rows. The regression
 checks that no advertised pin is lost and no removed pin gains a hit target,
 all cells retain GPIO-name selection/hit identity, and the RSET selection
 survives width changes and raw snapshot reordering. Generic fallback behavior
 is still exercised separately with synthetic arbitrary pin/group names.
 
-The corresponding config catalog has 16 items: four power outputs, three
-switches, and nine GPIOs. Its firmware-side serialized snapshot maximum is
-16 entries / 76 bytes; the host consumes JSON and does not encode that binary
-format or enforce a board-specific item limit. Old `gpio/GP17` / `gpio/GP18`
+The x1.2 switch catalog contains only `sd` and `tf_wp`; there is no `usb`
+switch or host-side USB route policy. Controls and Status render only these
+two advertised switches, while the generic switch command/model continues
+to accept arbitrary firmware-advertised names and routes. The five power
+rows, two switch rows, Reboot, and eight GPIO rows form 16 visual Controls
+rows in paired mode; switch removal never changes pin selection identity.
+
+The fifth advertised output, `5v_usb_hub`, has a status state and normal
+power/config controls but no ADC descriptor or current sample. Power rows
+come from `power_outputs`, independently of the ADC catalog. Missing,
+invalid, or voltage-only current data renders as `-`, never a fabricated
+zero current; measured zero is still numeric. The current scope remains
+four channels and telemetry/CSV remain the same eight descriptors. Hardware
+signal/pin metadata is test-fixture data, not a production host pin map.
+
+The corresponding config catalog has 18 items: five power outputs, two
+switches, and eleven GPIOs. Its firmware-side serialized snapshot maximum is
+18 entries / 84 bytes; the host consumes JSON and does not encode that binary
+format or enforce a board-specific item limit. Old `switch/usb`, `gpio/GP17` / `gpio/GP18`
 save requests receive the firmware's `unknown_item` error, which the CLI
 reports without remapping, silently dropping, or accepting those IDs.
 
@@ -546,7 +566,10 @@ Mouse Up, left Drag, Moved, Scroll, and middle/right-button events are inert.
 
 Header: `SWITCH  DESIRED  ACTUAL  STATE`. One row per switch: desired route,
 actual route, and derived state (`ready` / `pending` / `mismatch`, same
-derivation as the Controls page). Below the switch rows, one monitoring
+derivation as the Controls page). Below the switch rows, every advertised
+power output gets a read-only `power <name>: <on|off> live=<measurement>` row,
+reusing the Controls measurement/unknown semantics; these rows do not
+register hit targets or infer measurements from output state. Then one monitoring
 field per row as `key: value` pairs decomposed from
 `format_monitoring_summary` (temperature, memory/heap, runtime, cpu) --
 one pair per row, hard-clipped, never wrapped. When `model.err` is set, a

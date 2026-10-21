@@ -6,9 +6,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { LanguageProvider } from "@/lib/i18n";
 import type { BoardSnapshot } from "@/lib/types";
 import { WorkbenchStatusBar } from "./WorkbenchStatusBar";
+import { x12ControlStatusFixture } from "@/lib/switches.testFixtures";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
+const controls = x12ControlStatusFixture();
 const snapshot: BoardSnapshot = {
   powerOutputs: [
     { name: "5v_out", controllable: true, state: "on", value: 1 },
@@ -16,14 +18,9 @@ const snapshot: BoardSnapshot = {
     { name: "20v_out", controllable: true, state: "off", value: 0 },
     { name: "vdd_5v", controllable: true, state: "on", value: 1 },
   ],
-  switches: {
-    sd: { route: "target" },
-    usb: { route: "target" },
-    tf_wp: { route: "writable" },
-    vin: { route: "3.3v" },
-  },
-  gpios: [],
-  gpioLayoutGroups: [],
+  switches: controls.switches,
+  gpios: controls.gpios,
+  gpioLayoutGroups: controls.gpio_layout_groups,
   watchdog: {
     supported: true,
     automatic: true,
@@ -103,12 +100,26 @@ describe("WorkbenchStatusBar", () => {
     const view = render({ j4: true, taskOwner: "power" });
 
     expect(view.host.textContent).toContain("SD→SBC");
-    expect(view.host.textContent).toContain("USB→SBC");
-    expect(view.host.textContent).toContain("TF Writable");
-    expect(view.host.textContent).toContain("VIN 3.3V");
+    expect(view.host.textContent).toContain("TF_WP→Writable");
+    expect(view.host.textContent).not.toContain("USB→");
+    expect(view.host.textContent).not.toContain("VIN");
+    expect([...view.host.querySelectorAll('[data-testid^="status-route-"]')].map((item) => item.getAttribute("data-testid"))).toEqual(["status-route-sd", "status-route-tf_wp"]);
+    expect(snapshot.gpios).toHaveLength(11);
     expect(view.host.textContent).toContain("J4 connected");
     expect(view.host.textContent).toContain("power capture");
     view.close();
+  });
+
+  it("renders an arbitrary advertised aux route and never invents unreported entries", () => {
+    const view = render({ snapshot: { ...snapshot, switches: { aux: { route: "lane-b", routes: ["lane-a", "lane-b"], requires_confirm: true } } } });
+    expect(view.host.textContent).toContain("AUX→lane-b");
+    expect(view.host.querySelector('[data-testid="status-route-aux"]')?.getAttribute("title")).toBe("aux → lane-b");
+    expect(view.host.querySelector('[data-testid="status-route-sd"]')).toBeNull();
+    expect(view.host.querySelector('[data-testid="status-route-usb"]')).toBeNull();
+    view.close();
+    const empty = render({ snapshot: { ...snapshot, switches: {} } });
+    expect(empty.host.querySelector('[data-testid^="status-route-"]')).toBeNull();
+    empty.close();
   });
 
   it("marks an unreachable board as offline without changing the rail facts", () => {
@@ -146,6 +157,13 @@ describe("WorkbenchStatusBar", () => {
         .querySelector('[data-testid="status-rail-lamp-5v_out"]')
         ?.classList.contains("bg-transparent"),
     ).toBe(true);
+    view.close();
+  });
+
+  it("shows new advertised outputs without inventing unreported rail lamps", () => {
+    const view = render({ snapshot: { ...snapshot, powerOutputs: [{ name: "future_aux", controllable: true, state: "on", value: 1 }] } });
+    expect(view.host.querySelector('[data-testid="status-rail-future_aux"]')?.textContent).toContain("FUTURE_AUX on");
+    expect(view.host.querySelector('[data-testid="status-rail-5v_out"]')).toBeNull();
     view.close();
   });
 });

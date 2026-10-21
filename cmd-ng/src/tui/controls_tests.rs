@@ -106,7 +106,7 @@ fn control_rows_show_current_switch_routes() {
         },
     );
     snapshot.switches.insert(
-        "usb".to_string(),
+        "aux".to_string(),
         TuiStatusSwitchInfo {
             route: "target".to_string(),
             routes: vec!["pc".to_string(), "target".to_string()],
@@ -121,7 +121,7 @@ fn control_rows_show_current_switch_routes() {
         .any(|row| row.name == "sd" && row.state_route == "usb-reader"));
     assert!(rows
         .iter()
-        .any(|row| row.name == "usb" && row.state_route == "target"));
+        .any(|row| row.name == "aux" && row.state_route == "target"));
 }
 
 #[test]

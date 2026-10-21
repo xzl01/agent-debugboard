@@ -32,27 +32,28 @@ manual, current-threshold, GPIO-edge, and power-on triggers, keeps four captures
 for overlay comparison, and exports CSV or NDJSON. Captures use firmware device
 timestamps and a pre/post-trigger ring buffer instead of browser timing.
 
-The Power card consumes the four-descriptor ADC telemetry contract
+The Power card consumes firmware-enumerated outputs and the ADC descriptors
 documented in [docs/reference/adc-telemetry.md](../docs/reference/adc-telemetry.md):
 
-- One row per controllable current rail (`5v_out`, `12v_out`, `20v_out`),
-  each with a shared `MeasurementSparkline` (`mode="power"`) fed by the
-  60 Hz live subscription and keeping a 90-sample rolling window (about
-  1.5 seconds of history). Current and power share the same SVG history;
-  both auto-scale, the unit minimum is fixed per metric.
-- A monitor-only `adc3` (`GP29`) section rendered between the current
-  rows and the PowerAnalyzer, only when the firmware reports an `adc3`
-  reading. It reuses the shared `MeasurementSparkline` in
-  `mode="voltage"`, the same 90-sample window and the same
-  animation-frame cadence, but with a fixed 0..3,300,000 µV Y scale
-  (nominal 0..3.3 V).
-  The voltage channel has no `power_enabled`; clients must treat the
-  newest `value` as the canonical signed integer microvolt reading and
-  must not apply any host-side ADC calibration.
-- PowerAnalyzer remains a current-only triggered capture story:
-  2048 samples, three current channels, manual / current-threshold /
-  GPIO-edge / power-on triggers, four-overlay comparison, CSV/NDJSON
-  export.
+- Every output appears in firmware order, followed by any current-measurement
+  channels without an output. Rows do not depend on a client rail allowlist.
+  An output without a matching reading still has its actual state, control and
+  on-duration timer, with **Measurement unavailable** instead of fabricated
+  zero current, voltage, power or an empty chart. Five outputs can coexist with
+  only four current descriptors; a new output does not create a sensor.
+- The four reported INA226 channels keep the current/voltage/power overlay.
+  Shared sparklines retain 600 browser samples and preview 90 at the live
+  animation-frame cadence. ADC-pad voltage descriptors (currently four) remain
+  a separate monitor-only section, with canonical signed microvolt values and
+  no host-side calibration or GPIO control.
+- Workflow power-on/off choices come from controllable output descriptors.
+  Current-read, capture and startup-analysis choices require current readings;
+  an uninstrumented output cannot silently become a capture source. Historical
+  capture comparison uses the channels actually stored in each record. The
+  catalog is shared from the board snapshot through nested workflow inspectors.
+- Output dependencies and initial states belong to firmware. The Web never
+  automatically toggles a parent output when a child is clicked. Physical
+  connector power contacts remain inert in the GPIO diagram.
 
 Live telemetry stays at 60 Hz with one sample per WebSocket frame on the
 wire. The UI republishes only the newest readings once per animation
@@ -222,6 +223,28 @@ input visibly rather than growing an unbounded queue. TX counts only completed
 UART writes, not socket sends or admission acknowledgements. Enter line endings
 remain selectable (CR, CRLF, LF). No local echo is added.
 
+Explicit UART input remains multiwriter; there is no TX-owner acquisition.
+Only automatic terminal replies have one firmware-selected responder. HTTP
+`terminal_responder` is a global transport/slot descriptor or null; WS
+`terminal_responder` is a per-client boolean, with the descriptor in `responder`.
+Only explicit per-client true enables automatic replies. Descriptor-only or
+missing state never guesses the current Web tab's identity; DTR forces this
+Web terminal's automatic replies off. A configuration GET can retain a confirmed
+WS authorization only when it corroborates the same responder descriptor.
+
+The active responder uses normal xterm `onData`/`onBinary` for user input and
+automatic DSR/DA/CPR. Nonresponders set `disableStdin=true` so xterm suppresses
+generated replies internally, while its public `onKey` (emitted before that
+gate in the pinned xterm) sends explicit keys. A capture-phase paste listener
+sends explicit paste once, bypassing xterm's suppressed paste handler. These
+paths are mutually exclusive, so active keys/paste are not duplicated. RX and
+escape sequences are never filtered. The UI says **Auto-reply observer** and
+**Manual input allowed**, not read-only. Ctrl-C and automation remain explicit
+writes; actual UART pause/fault, admission freeze, configuration and automation
+locks still gate input. A rejected write does not impose an ownership lock or
+reconnect: unaccepted/local bytes are discarded, while accepted event IDs still
+await physical completion/cancellation. Rejected bytes are never replayed.
+
 **UART settings** shows the actual baud, 5–8 data bits, parity, stop bits,
 flow control, generation, and USB ACM DTR. Applying a tuple uses
 `PUT /api/v1/serial/j4/config` with `expected_generation`; admission is asynchronous,
@@ -230,7 +253,17 @@ state update has not completed it. USB ACM line-coding/CAS conflicts refresh the
 actual tuple without retrying the mutation. Suspended, faulted, read-only,
 applying-settings, and backpressure states disable manual TX.
 
-Reconnect is explicit: it creates a fresh session, deletes only the terminal's
+Baud uses a numeric input accepting every integer from 4800 through 115200;
+five common values are offered as recommended presets but do not constrain the
+input. The GET current tuple/generation remains authoritative because a CDC host
+SET_LINE_CODING transfer cannot surface a later application rejection. TX
+timeouts are derived from the active framing and bounded eight-slot queue plus
+a 2-second margin, so valid low-baud writes are not timed out by a fixed desktop
+deadline.
+
+Default connection attempts remain once per explicit board availability/restart
+epoch; manual Disconnect and failures stay quiet during that epoch. A manual
+reconnect creates a fresh session, deletes only the terminal's
 own old session, and never replays queued input. Configuration generations also
 invalidate pending TX and decoder state. Old firmware without the J4 endpoint
 shows **Unavailable** without opening a WS or repeatedly retrying. Receive drops

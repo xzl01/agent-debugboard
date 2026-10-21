@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Activity, ChartLine, Clock3, List, Power, Zap } from "lucide-react";
 import { Badge, Button, Card, Toggle } from "./ui";
 import type { AdcReading, PdStatus, PowerOutput } from "@/lib/types";
-import { isCurrentAdcReading, isVoltageAdcReading } from "@/lib/adc";
+import { isVoltageAdcReading } from "@/lib/adc";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { formatUptime } from "@/lib/utils";
@@ -11,7 +11,7 @@ import {
   powerRailLabel,
   readingMetric,
   measuredVoltage,
-  POWER_SWITCH_RAILS,
+  powerRailRows,
 } from "@/lib/power";
 import { MeasurementSparkline } from "./PowerSparkline";
 import { EMPTY_PD_STATUS } from "@/lib/pd";
@@ -55,9 +55,9 @@ export function PowerCard({
   const pdVoltageErrorId = useId();
   const [pdBusy, setPdBusy] = useState(false);
   const [pdError, setPdError] = useState<string | null>(null);
-  const railTimersRef = useRef(new Map<string, { startedAtMs: number; approximate: boolean }>());
+  const [railTimers, setRailTimers] = useState(new Map<string, { startedAtMs: number; approximate: boolean }>());
+  const railTimersRef = useRef(railTimers);
   const observedRailsRef = useRef(new Set<string>());
-  const currentReadings = readings.filter(isCurrentAdcReading);
   const fixedProfiles = pd.fixed_profiles;
   const ppsRanges = pd.pps_ranges;
   const ppsMinMv = ppsRanges.length > 0 ? Math.min(...ppsRanges.map((range) => range.min_voltage_mv)) : 0;
@@ -75,27 +75,29 @@ export function PowerCard({
       range.step_mv > 0 && (pdVoltageMv - range.min_voltage_mv) % range.step_mv === 0)
   );
   const voltageReadings = readings.filter(isVoltageAdcReading);
-  const rows = POWER_SWITCH_RAILS.map((name) => ({
-    name,
-    output: outputs.find((output) => output.name === name),
-    reading: currentReadings.find((reading) => reading.name === name),
-  })).filter(({ output, reading }) => output || reading);
+  const rows = powerRailRows(outputs, readings);
 
   useEffect(() => {
     const now = Date.now();
-    for (const name of POWER_SWITCH_RAILS) {
-      const output = outputs.find((item) => item.name === name);
-      if (!output) continue;
+    const timers = new Map(railTimersRef.current);
+    const reported = new Set(outputs.map((output) => output.name));
+    for (const name of observedRailsRef.current) {
+      if (!reported.has(name)) { observedRailsRef.current.delete(name); timers.delete(name); }
+    }
+    for (const output of outputs) {
+      const name = output.name;
       const firstObservation = !observedRailsRef.current.has(name);
       observedRailsRef.current.add(name);
       if (output.state === "on") {
-        if (!railTimersRef.current.has(name)) {
-          railTimersRef.current.set(name, { startedAtMs: now, approximate: firstObservation });
+        if (!timers.has(name)) {
+          timers.set(name, { startedAtMs: now, approximate: firstObservation });
         }
       } else {
-        railTimersRef.current.delete(name);
+        timers.delete(name);
       }
     }
+    railTimersRef.current = timers;
+    setRailTimers(timers);
     setClockMs(now);
   }, [outputs]);
 
@@ -251,10 +253,11 @@ export function PowerCard({
             const currentValue = reading ? readingMetric(reading, "current") : null;
             const voltageValue = reading ? measuredVoltage(reading) : null;
             const powerValue = reading ? readingMetric(reading, "power") : null;
-            const onTiming = on ? railTimersRef.current.get(name) : undefined;
+            const onTiming = on ? railTimers.get(name) : undefined;
             return (
-              <li
-                key={name}
+               <li
+                 key={name}
+                 data-power-rail={name}
                 className={cn(
                   "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1",
                   showTrends ? "py-3" : "py-2.5"
@@ -266,11 +269,12 @@ export function PowerCard({
                     {locked && <Badge tone="warn">{t("power.locked")}</Badge>}
                     {!output && <Badge tone="neutral">{t("power.monitorOnly")}</Badge>}
                   </div>
-                  <div className="text-xs text-ink-dim">
-                    {output?.signal ?? reading?.signal ?? `GP${output?.gp ?? "?"}`}
-                    {output?.value != null && !locked && (
+                  <div className="break-all text-xs text-ink-dim">
+                    {output?.signal ?? reading?.signal ?? name}
+                    {output && !locked && (
                       <span className="ml-2 text-ink-dim">
-                        {stale ? t("snapshot.lastPrefix") : ""}{on ? t("power.on") : t("power.off")} · {output.value}
+                        {stale ? t("snapshot.lastPrefix") : ""}{on ? t("power.on") : output.state === "off" ? t("power.off") : output.state || "—"}
+                        {output.value == null ? "" : ` · ${output.value}`}
                       </span>
                     )}
                   </div>
@@ -285,7 +289,7 @@ export function PowerCard({
                   )}
                 </div>
                 <div className="flex items-center gap-3">
-                  <div className="min-w-[82px] text-right">
+                  {reading && <div className="min-w-[82px] text-right" data-power-measurements="">
                     <div className="inline-flex items-center gap-1 font-mono text-sm font-medium text-brand">
                       <Activity size={13} />
                       {currentValue == null ? "—" : formatPowerMetric(currentValue, "current")}
@@ -298,16 +302,17 @@ export function PowerCard({
                       <Zap size={11} />
                       {powerValue == null ? "—" : formatPowerMetric(powerValue, "power")}
                     </div>
-                  </div>
+                  </div>}
                   {output && (
                     <Toggle
                       aria-label={t("power.railSwitch", { rail: powerRailLabel(name) })}
                       checked={on}
-                      disabled={disabled || locked}
+                      disabled={disabled || stale || locked || !["on", "off"].includes(output.state)}
                       onChange={(value) => onSet(output.name, value)}
                     />
                   )}
                 </div>
+                {!reading && <p data-measurement-unavailable="" className="col-span-2 text-[11px] leading-4 text-ink-dim">{t("power.measurementUnavailable")}</p>}
                 {reading && !reading.power_enabled && (
                   <div className="col-span-2 text-[11px] text-warn">{t("adc.disabled")}</div>
                 )}

@@ -3,7 +3,7 @@ use super::gpio_fixture::X1_2_STATUS_JSON;
 use super::model::TuiModel;
 use super::render::render_ui;
 use crate::client::DEFAULT_BASE_URL;
-use crate::ws_status::{TuiStatusPowerOutput, TuiStatusSwitchInfo, WsStatusSnapshot};
+use crate::ws_status::WsStatusSnapshot;
 use anyhow::{anyhow, Result};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -13,8 +13,7 @@ use std::time::{Duration, Instant};
 
 const WIDTH: u16 = 80;
 const HEIGHT: u16 = 24;
-const POWER_NAMES: [&str; 4] = ["12v_out", "5v_out", "20v_out", "vdd_5v"];
-const SWITCH_NAMES: [&str; 3] = ["sd", "tf_wp", "usb"];
+const SWITCH_NAMES: [&str; 2] = ["sd", "tf_wp"];
 const CONTROLS_SEGMENTS: [&str; 7] = [
     "q quit",
     "Tab/Shift+Tab page",
@@ -26,10 +25,14 @@ const CONTROLS_SEGMENTS: [&str; 7] = [
 ];
 
 fn object_names() -> Vec<String> {
-    let mut names: Vec<String> = POWER_NAMES.iter().map(|name| name.to_string()).collect();
+    let snapshot: WsStatusSnapshot = serde_json::from_str(X1_2_STATUS_JSON).unwrap();
+    let mut names: Vec<String> = snapshot
+        .power_outputs
+        .iter()
+        .map(|output| output.name.clone())
+        .collect();
     names.extend(SWITCH_NAMES.iter().map(|name| name.to_string()));
     names.push("Reboot".to_string());
-    let snapshot: WsStatusSnapshot = serde_json::from_str(X1_2_STATUS_JSON).unwrap();
     names.extend(
         snapshot
             .gpios
@@ -41,36 +44,18 @@ fn object_names() -> Vec<String> {
 
 fn fixture_model() -> TuiModel {
     let mut snapshot: WsStatusSnapshot = serde_json::from_str(X1_2_STATUS_JSON).unwrap();
-    for (index, name) in POWER_NAMES.iter().enumerate() {
-        snapshot.power_outputs.push(TuiStatusPowerOutput {
-            name: name.to_string(),
-            state: if index % 2 == 0 { "on" } else { "off" }.to_string(),
-            value: (index % 2 == 0) as i32,
-        });
-    }
-    let switch_routes: [(&str, &str, [&str; 2]); 3] = [
-        ("sd", "target", ["target", "usb-reader"]),
-        ("tf_wp", "writable", ["writable", "protected"]),
-        ("usb", "pc", ["pc", "target"]),
-    ];
-    for (name, route, routes) in switch_routes {
-        snapshot.switches.insert(
-            name.to_string(),
-            TuiStatusSwitchInfo {
-                route: route.to_string(),
-                routes: routes.iter().map(|route| route.to_string()).collect(),
-                requires_confirm: name == "usb",
-            },
-        );
+    for (index, output) in snapshot.power_outputs.iter_mut().enumerate() {
+        output.state = if index % 2 == 0 { "on" } else { "off" }.to_string();
+        output.value = (index % 2 == 0) as i32;
     }
     let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
     model.apply_status_snapshot(snapshot);
     if let Some(state) = model.switches.get_mut("sd") {
         state.desired_route = "usb-reader".to_string();
     }
-    if let Some(state) = model.switches.get_mut("usb") {
-        state.desired_route = "target".to_string();
-        state.pending_route = Some("target".to_string());
+    if let Some(state) = model.switches.get_mut("tf_wp") {
+        state.desired_route = "protected".to_string();
+        state.pending_route = Some("protected".to_string());
         state.pending_until = Some(Instant::now() + Duration::from_secs(2));
         state.route_intent_active = true;
     }
@@ -157,7 +142,7 @@ fn object_rows_are_dense_without_separator_rows() -> Result<()> {
     let names = object_names();
     let first =
         find_row(&buffer, "12v_out").ok_or_else(|| anyhow!("first power object row is missing"))?;
-    // Four power + three switch + Reboot + eight projected GPIO rows.
+    // Five power + two switch + Reboot + eight projected GPIO rows.
     for y in first..first + 16 {
         let row = row_text(&buffer, y);
         assert!(
@@ -182,8 +167,26 @@ fn visible_object_rows_meet_canonical_budgets() -> Result<()> {
             .count();
         assert_eq!(
             count, 16,
-            "nine GPIOs form eight visual rows at {width}x{height}"
+            "eleven GPIOs form eight visual rows at {width}x{height}"
         );
+        assert_eq!(control_items(&model).len(), 19);
+        assert_eq!(model.power_names.len(), 5);
+        assert!(find_row(&buffer, "5v_usb_hub").is_some());
+        assert_eq!(
+            model
+                .switches
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            SWITCH_NAMES
+        );
+        assert_eq!(model.gpio_names.len(), 11);
+        for pin in ["GP5", "GP6"] {
+            assert!(
+                find_row(&buffer, pin).is_some(),
+                "missing direct GPIO {pin}"
+            );
+        }
     }
     Ok(())
 }

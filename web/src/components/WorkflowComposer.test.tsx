@@ -120,6 +120,17 @@ describe("WorkflowComposer panel layout", () => {
       expect(host.textContent).toContain("test.opt.j4");
     }
   });
+  it("offers only the x1.2 SD and TF write-protect switches, never a USB routing option", () => {
+    const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
+    currentView = { host, close: () => act(() => { root.unmount(); host.remove(); }) };
+    const onParamChange = vi.fn();
+    act(() => root.render(<StepParams step={{ id: "route", type: "switch_route", params: defaultStepParams("switch_route") }} onParamChange={onParamChange} />));
+    const select = host.querySelector("select")!;
+    expect([...select.options].map((option) => option.value)).toEqual(["sd", "tf_wp"]);
+    expect(select.querySelector('option[value="usb"]')).toBeNull();
+    act(() => { select.value = "tf_wp"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(onParamChange).toHaveBeenCalledExactlyOnceWith("switch", "tf_wp");
+  });
   it("lets the Unit library and inspector be hidden independently without hiding the canvas", () => {
     const { host } = mountComposer();
     const layoutControls = host.querySelector<HTMLElement>('[aria-label="test.workflow.layoutControls"]');

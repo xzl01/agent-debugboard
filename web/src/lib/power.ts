@@ -1,12 +1,37 @@
-import type { CurrentAdcReading, PowerOutput } from "./types";
+import type { AdcReading, CurrentAdcReading, PowerOutput } from "./types";
 
 export type PowerMetric = "current" | "voltage" | "power";
 
 export const USER_POWER_RAILS = ["5v_out", "12v_out", "20v_out"] as const;
 
-// Power rails that clients may switch on/off. vdd_5v has INA226 telemetry too,
-// but USER_POWER_RAILS remains the three target-facing comparison/capture rails.
-export const POWER_SWITCH_RAILS = [...USER_POWER_RAILS, "vdd_5v"] as const;
+export interface PowerRailRow {
+  readonly name: string;
+  readonly output?: PowerOutput;
+  readonly reading?: CurrentAdcReading;
+}
+
+/** Outputs retain firmware order; measurement-only rails follow in ADC order. */
+export function powerRailRows(outputs: readonly PowerOutput[], readings: readonly AdcReading[]): PowerRailRow[] {
+  const rows = new Map<string, PowerRailRow>();
+  for (const output of outputs) {
+    if (!rows.has(output.name)) rows.set(output.name, { name: output.name, output });
+  }
+  for (const reading of readings) {
+    if (reading.kind !== "current") continue;
+    const row = rows.get(reading.name);
+    if (!row?.reading) rows.set(reading.name, { ...row, name: reading.name, reading });
+  }
+  return [...rows.values()];
+}
+
+export function powerRailCatalog(outputs: readonly PowerOutput[], readings: readonly AdcReading[]) {
+  const unique = (names: string[]) => [...new Set(names)];
+  return {
+    switchable: unique(outputs.filter((output) => output.controllable).map((output) => output.name)),
+    current: unique(readings.filter((reading) => reading.kind === "current").map((reading) => reading.name)),
+    measurements: unique(readings.map((reading) => reading.name)),
+  };
+}
 
 // Live status polling runs every 10 s; three missed power snapshots make control unsafe.
 export const POWER_STATE_STALE_MS = 30_000;
@@ -17,7 +42,9 @@ export function powerOutputIsOn(output?: PowerOutput): boolean {
 
 export function powerRailLabel(name: string): string {
   const voltage = nominalVoltage(name);
-  return voltage == null ? name : `${voltage}V`;
+  if (voltage == null) return name;
+  const suffix = name.replace(/^\d+(?:\.\d+)?v_?/iu, "");
+  return !suffix || suffix.toLowerCase() === "out" ? `${voltage}V` : `${voltage}V · ${suffix.replaceAll("_", " ")}`;
 }
 
 export function nominalVoltage(name: string): number | null {

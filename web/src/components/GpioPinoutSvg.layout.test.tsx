@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mapBoardStatus } from "@/lib/boardSnapshot";
-import { GPIO_FALLBACK_GROUP_ID } from "@/lib/gpioLayout";
 import { x12GpioStatusFixture } from "@/lib/gpioLayout.testFixtures";
 import {
   advanceTimers, click, contextMenu, gpio, gpioPin, laPin, pinCircle,
@@ -81,19 +80,19 @@ describe("GpioPinoutSvg firmware-driven layout groups", () => {
     view.close();
   });
 
-  it.each(["gpio", "logic-analyzer"] as const)("renders the real x1.2 metadata in three intact, unmirrored %s groups", (variant) => {
+  it.each(["gpio", "logic-analyzer"] as const)("renders current x1.2 metadata in two intact, unmirrored %s groups with eleven GPIOs", (variant) => {
     const snapshot = mapBoardStatus(x12GpioStatusFixture(), []);
     const view = renderSvg({ variant, gpios: snapshot.gpios, layoutGroups: snapshot.gpioLayoutGroups });
     const groups = Array.from(view.host.querySelectorAll("[data-layout-group]"));
-    expect(groups.map((group) => group.getAttribute("data-layout-group"))).toEqual(["J8", "J13", GPIO_FALLBACK_GROUP_ID]);
-    expect(groups.map((group) => group.getAttribute("data-layout-edge"))).toEqual(["right", "right", "generic"]);
-    expect(groups.map((group) => group.querySelectorAll('circle[r="17"]').length)).toEqual([6, 3, 2]);
+    expect(groups.map((group) => group.getAttribute("data-layout-group"))).toEqual(["J8", "J13"]);
+    expect(groups.map((group) => group.getAttribute("data-layout-edge"))).toEqual(["right", "right"]);
+    expect(groups.map((group) => group.querySelectorAll('circle[r="17"]').length)).toEqual([8, 3]);
 
     for (const [number, label, cx, cy] of [
       [12, "GP12", 21, 341], [13, "GP13", 21, 307], [14, "GP14", 21, 273],
       [15, "GP15", 21, 239], [16, "GP16", 21, 205], [29, "ADC3", 21, 171],
       [9, "USER", 21, 35], [8, "RSET", 57, 35], [7, "MASKROM", 21, 69],
-      [17, "GP17", 21, 35], [18, "GP18", 21, 69],
+      [5, "GP5", 57, 171], [6, "GP6", 57, 205],
     ] as const) {
       const pin = variant === "gpio" ? gpioPin(view.host, number) : laPin(view.host, label);
       const target = pinCircle(pin, "17");
@@ -108,13 +107,13 @@ describe("GpioPinoutSvg firmware-driven layout groups", () => {
       expect(34 * scale).toBeGreaterThanOrEqual(44);
     }
 
-    expect(groups[0]!.closest("svg")!.getAttribute("viewBox")).toBe("0 0 52 362");
+    expect(groups[0]!.closest("svg")!.getAttribute("viewBox")).toBe("0 0 88 362");
     for (const group of groups.slice(0, 2)) {
       expect(group.querySelector('[data-pinout-part="board-interior"]')?.getAttribute("d")).not.toMatch(/[zZ]/);
       expect(group.querySelector('[data-pinout-part="generic-frame"]')).toBeNull();
       expect(group.querySelector('[data-pinout-part="decoration"]')?.getAttribute("pointer-events")).toBe("none");
     }
-    expect(groups[2]!.querySelector('[data-pinout-part="contact"]')).toBeNull();
+    expect(view.host.innerHTML).not.toMatch(/GP17|GP18/u);
     expect(view.host.querySelectorAll('circle[r="17"]')).toHaveLength(snapshot.gpios.length);
     expect(view.host.querySelector("[transform]")).toBeNull();
     expect(view.host.textContent).not.toMatch(/GND|3\.3\s*V/);

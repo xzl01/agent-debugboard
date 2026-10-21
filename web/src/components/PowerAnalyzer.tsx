@@ -29,7 +29,6 @@ import {
   formatPowerMetric,
   nominalVoltage,
   powerRailLabel,
-  USER_POWER_RAILS,
   type PowerMetric,
 } from "@/lib/power";
 import {
@@ -53,6 +52,7 @@ import { useI18n } from "@/lib/i18n";
 import { MAX_ADC_TELEMETRY_RATE_HZ } from "@/lib/liveSubscribe";
 import type { AutomationTaskControl } from "@/lib/automationTask";
 import { buildPowerChartAxis, PowerChartYAxis } from "./PowerChartAxis";
+import { usePowerRailCatalog } from "./PowerRailCatalog";
 
 const COLORS = [
   "rgb(var(--c-brand))",
@@ -195,11 +195,13 @@ export function PowerAnalyzer({
   showHeader?: boolean;
 }) {
   const { t } = useI18n();
+  const catalog = usePowerRailCatalog();
   const [stage, setStage] = useState<AnalyzerStage>(captures.length > 0 ? "results" : "setup");
   const previousLatestCaptureIdRef = useRef(captures.at(-1)?.id);
   const [metric, setMetric] = useState<PowerMetric>("current");
   const [trigger, setTrigger] = useState<CaptureTrigger>("manual");
-  const [source, setSource] = useState<string>(USER_POWER_RAILS[0]);
+  const [sourceDraft, setSource] = useState("");
+  const source = catalog.current.includes(sourceDraft) ? sourceDraft : catalog.current[0] ?? "";
   const [gpio, setGpio] = useState("");
   const [edge, setEdge] = useState<CaptureConfig["edge"]>("either");
   const [thresholdMa, setThresholdMa] = useState(500);
@@ -207,7 +209,11 @@ export function PowerAnalyzer({
   const [preDurationSeconds, setPreDurationSeconds] = useState(1);
   const [stopMode, setStopMode] = useState<"timed" | "manual">("timed");
   const [timedDurationSeconds, setTimedDurationSeconds] = useState(10);
-  const [rail, setRail] = useState<string>(captures.at(-1)?.source ?? USER_POWER_RAILS[0]);
+  const resultRails = useMemo(() => [...new Set(captures.flatMap((capture) => [
+    ...Object.keys(capture.summaries ?? {}), ...capture.samples.flatMap((sample) => sample.readings.map((reading) => reading.name)),
+  ]))], [captures]);
+  const [railDraft, setRail] = useState<string>(captures.at(-1)?.source ?? "");
+  const rail = resultRails.includes(railDraft) ? railDraft : resultRails[0] ?? source;
   const [batteryCapacityMah, setBatteryCapacityMah] = useState(10_000);
   const [efficiencyPercent, setEfficiencyPercent] = useState(90);
   const [targetRuntimeHours, setTargetRuntimeHours] = useState(8);
@@ -367,6 +373,7 @@ export function PowerAnalyzer({
   };
   const arm = async () => {
     setCaptureError(null);
+    if (!catalog.current.length) { setCaptureError(t("power.measurementUnavailable")); return; }
     if (!taskControl.acquire("power")) {
       setCaptureError(t("analyzer.error.taskBusy"));
       return;
@@ -545,7 +552,8 @@ export function PowerAnalyzer({
                 disabled={disabled}
                 className={CONTROL_CLASS}
               >
-                {USER_POWER_RAILS.map((name) => <option key={name} value={name}>{powerRailLabel(name)}</option>)}
+                {!source && <option value="">—</option>}
+                {catalog.current.map((name) => <option key={name} value={name}>{powerRailLabel(name)}</option>)}
               </select>
             </label>
           )}
@@ -867,7 +875,7 @@ export function PowerAnalyzer({
             <Button
               variant="primary"
               onClick={() => void arm()}
-              disabled={disabled || (trigger === "gpio" && gpios.length === 0)}
+              disabled={disabled || !catalog.current.length || (trigger === "gpio" && gpios.length === 0)}
             >
               <Radio size={15} />{t("analyzer.arm")}
             </Button>
@@ -970,7 +978,7 @@ export function PowerAnalyzer({
                 className="min-h-8 rounded-lg border border-line bg-panel px-2 py-1.5 text-xs text-ink"
                 aria-label={t("analyzer.results.rail")}
               >
-                {USER_POWER_RAILS.map((name) => <option key={name} value={name}>{powerRailLabel(name)}</option>)}
+                {resultRails.map((name) => <option key={name} value={name}>{powerRailLabel(name)}</option>)}
               </select>
               <Button disabled={disabled || exporting} variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => void exportCapture(selectedCapture, "csv")}><Download size={13} />CSV</Button>
               <Button disabled={disabled || exporting} variant="ghost" className="min-h-8 px-2 py-1 text-xs" onClick={() => void exportCapture(selectedCapture, "ndjson")}><Download size={13} />NDJSON</Button>

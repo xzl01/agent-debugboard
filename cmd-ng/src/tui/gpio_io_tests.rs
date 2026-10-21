@@ -72,6 +72,33 @@ fn set_input_puts_direction_input() {
 }
 
 #[test]
+fn direct_gp5_gp6_use_gpio_put_for_output_and_input() {
+    for pin in ["GP5", "GP6"] {
+        for (action, body) in [
+            (GpioAction::DriveLow, r#"{"direction":"output","value":0}"#),
+            (GpioAction::DriveHigh, r#"{"direction":"output","value":1}"#),
+            (GpioAction::SetInput, r#"{"direction":"input"}"#),
+        ] {
+            let (url, requests) = mock_server(vec![Reply::Http(200, GPIO_OK)]);
+            let mut worker = GpioWorker::new();
+            assert!(worker.start(
+                url,
+                Duration::from_secs(1),
+                GpioJob {
+                    action,
+                    target: pin.to_string()
+                }
+            ));
+            assert!(poll_until(&mut worker).outcome.is_ok());
+            let request = requests.recv().unwrap();
+            assert!(request.starts_with(&format!("PUT /api/v1/gpio/{pin} HTTP/1.1")));
+            assert!(request.contains(body));
+            assert!(!request.contains("/api/v1/switch/"));
+        }
+    }
+}
+
+#[test]
 fn second_start_is_rejected_while_a_job_is_in_flight() {
     let (url, requests) = mock_server(vec![Reply::Slow(200, GPIO_OK)]);
     let mut worker = GpioWorker::new();

@@ -15,7 +15,7 @@ release 归档、skill 安装器和 Nix 包额外提供 `rdb` 链接；它指向
 - 输出：支持 `--json`，并校验 `radxa-linkr-debugger.v1` envelope
 - TUI：无参数启动，为高级用户提供终端交互入口
 - OTA（仅 RP2350）：`ota status` 查看状态，`ota upload PATH` 上传 MCUboot 格式应用 bin，`ota test` 请求测试启动，`ota confirm` 立即确认运行镜像；SHA256 仅校验完整性，无签名/认证/安全启动/防回滚；固件设计为在未确认镜像 watchdog 复位后请求 MCUboot 回滚，但该恢复路径的故障注入 HIL 尚未完成
-- VIN：`switch get vin` 和带确认保护的 route 控制（RP2350）
+- x1.2 switch：固件当前只广告 `sd` 与 `tf_wp`；CLI switch 命令保持目录驱动
 
 ## 构建与运行
 
@@ -35,8 +35,9 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 - TUI 的 Power 行完全使用最新固件状态中的 `power_outputs` 目录并保持固件顺序；host 不维护 rail 常量，新增/移除/重排输出都会随下一次状态刷新反映，`5V_FIN` 作为输入电源不会成为可控行
 - TUI GPIO 排列只使用固件返回的 `layoutGroup/layoutLabel/layoutRow/layoutColumn` 与可选顶层 `gpio_layout_groups:[{name,edge,order}]`，不会在 host 端硬编码连接器或 pin map，也不会按 `note` 隐藏任何 GPIO；包括 `CON_MAS` 在内的所有固件返回项都会显示。已描述组按 `order` 升序，未描述组按首次出现顺序置后；缺少组元数据时保持原通用顺序。仅 `edge=right` 的组名追加可丢弃的 `›`（例如 `J8›`、`J13›`），未知 edge 不装饰；顺序和装饰均不按连接器名字特判。宽度不足时先去掉 `›`，再去掉组名，优先保留状态、方向、电平和 pending/hold；装饰不改变命中矩形或选择身份。80/48 列下同一固件物理行最多显示两个独立半行 cell，47/32 列时每针单行，缺失引脚 metadata 时按固件快照顺序回退显示；CLI 原始 JSON 输出不经过此投影
 - TUI GPIO 操作是直发语义：`l`/`L` 驱动 LOW，`o`/`O` 驱动 HIGH，`i`/`I` 恢复输入；Enter、Space、`0`、`1` 对 GPIO 均为惰性。直接键解码只接受小写 `l`/`o`/`i` 且无任何修饰键，或大写 `L`/`O`/`I` 且修饰键恰好为 `Shift`；其它修饰键组合（Ctrl、Alt、Super、或小写配 Shift、大写无 Shift 等失配形式）返回 `None`，不会取消既有手势、也不会派发任何硬件请求。鼠标左键在 600ms 前释放后进入 220ms 双击等待窗，窗口到期且没有第二次按下时才驱动 LOW；按住到 600ms 一次性驱动 HIGH，同一引脚在等待窗到期前第二次按下/释放恢复输入且不会产生瞬态 LOW；中键、右键始终惰性。终端 `Resize` 是 TUI 强制重绘边界：Resize 到来时取消任何进行中的 GPIO 手势（包括初始左键 Down 与 AwaitSecond 状态），整体清空 `hit_map` 使旧几何失效并立即重绘，ready-event 排空也在 Resize 处停下，Resize 之后排队的鼠标事件按新几何处理、不会落在旧 cell 上。cell 始终显示最近一次权威快照的 `◌ IN LOW`、`◌ IN HIGH`、`○ OUT LOW`、`● OUT HIGH`（LOW 深灰、HIGH 红色加粗），不做乐观更新；在途动作在状态后缀后追加黄色加粗的 `[LOW…]`/`[HIGH…]`/`[INPUT…]` 标记，按住中的引脚追加 `[HOLD…]`（await-second 无标记；同一 cell 至多一个标记，在途动作标记优先），选中态下标记在白底选区中保持可见并加粗，宽度不足时先整体丢弃标记；当 cell 宽度足够时状态后缀完整，更窄的 cell 允许对后缀做整体 hard-clip，在途动作同时由状态行 `gpio <name>=…` 兜底；选中 GPIO cell 时 keybar 切换为 GPIO 专用键位（`l LOW`、`o HIGH`、`i INPUT`、`Mouse click/hold/2x`，47 列内完整放下这四段），其余键位按剩余宽度整段取舍；所有行按 `unicode-width` 显示列裁剪，CJK 字形不会被截半或折行；电源和固件广告的每个 switch 第一次操作都只打开红框确认，Controls 的 MODE 因而统一显示 `confirm`。TUI 把这套三秒确认门控无差别套到所有固件广告的 switch 上，不看固件 `requires_confirm`；策略本身不硬编码任何生产 switch 名称、路由或 pin。点击 switch 时其整行焦点会先更新并保留在确认框下，未被模态遮住的 cell 仍保留合成 `accent.select` 背景，且此时不会发送 PUT；硬件确认事件仅在严格早于 3 秒（`now < started + CONFIRM_TIMEOUT`）按下才执行一次。达到或超过 3 秒的确认按键按超时处理，发出该命令的 `timeout_message`，不依赖渲染/poll tick 是否已观察到超时；取消或超时均不发请求。固件 `requires_confirm` 数据仍供 Saved Config、API 与 CLI 使用；确认框是常态界面之外唯一带边框的区域
-- x1.2 的 safe/status/config 只含九个动态 GPIO：GP7/8/9/12/13/14/15/16/29，GP29 为 input-only；GP17/GP18 已移除，不生成 fallback 控件。代表性测试样例按固件 metadata 投影为 J8 的 ADC3、GP16、GP15、GP14、GP13、GP12，再到 J13 的 USER、RSET、MASKROM；80/48 列共八个 GPIO 可视行，47/32 列每针单行，无 fallback 行。完整 24 位置物理图仅供 Web，CLI/TUI 不请求 `/gpio/layout`，也不添加 host 物理 pin map。样例仅用于回归验证；坐标及选择/命中契约见 [DESIGN.md](DESIGN.md#x12-representative-fixture-test-data-only)
-- x1.2 config 目录共 16 项（四路电源、三个 switch、九个 GPIO），固件序列化快照上限为 16 entries / 76 bytes；host 不实现该二进制格式或板级数量限制。旧 `gpio/GP17` / `gpio/GP18` 保存请求由固件以 `unknown_item` 拒绝，CLI 如实报告，不重映射或静默丢弃。
+- x1.2 的 safe/status/config 包含十一个动态 GPIO：GP5/6/7/8/9/12/13/14/15/16/29；GP5/GP6 是可输出的直接 GPIO，使用普通 GPIO 命令与 config ID，不作为 switch 路由或专用功能控件；GP29 为 input-only，GP17/GP18 仍不存在。代表性样例按固件 metadata 投影为 J8 的 ADC3、GP5、GP16、GP6、GP15、GP14、GP13、GP12，再到 J13 的 USER、RSET、MASKROM；80/48 列的 J8 row4 配对 ADC3/GP5、row5 配对 GP16/GP6，共八个 GPIO 可视行，47/32 列每针单行，无 fallback 行。完整 24 位置物理图仅供 Web，CLI/TUI 不请求 `/gpio/layout`，也不添加 host 物理 pin map。样例仅用于回归验证；坐标及选择/命中契约见 [DESIGN.md](DESIGN.md#x12-representative-fixture-test-data-only)
+- x1.2 switch 目录仅有 `sd`、`tf_wp`，已移除 `switch/usb`；Controls/Status/Saved Config 只呈现固件广告的目录，通用 switch 命令与模型仍支持任意广告名称/路由，不增加 host 板级白名单。config 目录共 18 项（五路电源、两个 switch、十一个 GPIO），固件序列化快照上限为 18 entries / 84 bytes；host 不实现该二进制格式或板级数量限制。`power/5v_usb_hub`、`gpio/GP5` / `gpio/GP6` 为正常保存项；旧 `switch/usb`、`gpio/GP17` / `gpio/GP18` 保存请求由固件以 `unknown_item` 拒绝，CLI 如实报告，不重映射或静默丢弃。
+- `5v_usb_hub` 是固件广告的第五路电源输出，没有对应 ADC descriptor/电流采样。Controls 按 `power_outputs` 显示其真实 on/off 状态，缺测显示 `-` 而非 `0A`；Status 以现有只读文本行同样列出所有电源及未知测量，Saved Config 沿用电源确认流程。电流 scope 仍为四路 INA，遥测仍为八个 descriptor，CSV 不新增该输出的伪造测量列；host 不持有其硬件 pin map。
 - GPIO 鼠标手势以终端 cell 为容差单位：同一 cell 内的 Moved 或左键 Drag 报告保持手势有效；只有 pin、终端列或终端行变化而跨入另一 cell 才会取消。到达 600ms 的 Up 立即按原始 pin 派发 HIGH；await-second 到达 220ms 的第二次 Down 先派发原始 pin 的 LOW 并消费该次 Down，下一次新的 Down 才开始新手势。
 - TUI 对所有 switch 和静态 Reboot 行统一使用现有三秒确认门控；host 只调用固件已有 HTTP 端点，不改变两秒常规轮询周期、硬件默认值或固件行为
 - MASKROM/EDL 只作为固件目录提供的普通自动化任务出现；使用 `task list` 查看并通过 `task run builtin/...` 执行，TUI 不提供专用入口；host 不持有任何恢复配方
@@ -50,8 +51,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 - `raw` 模式在 HTTP 路径下不支持
 - `watchdog` 仍只暴露 `status`，不提供 host 侧 feed/控制
 - `reboot` 严格不接受额外参数，执行普通冷重启（normal cold restart），不会进入 ROM BOOTSEL；`bootloader` 是独立的 ROM BOOTSEL 操作，二者不可互换。TUI 的 Reboot 行也明确显示 `not ROM BOOTSEL`，取消或三秒确认超时不会发出请求
-- 板内 `vdd_5v`（VDD_5V）电源轨随 `switch usb` 路由联动：切 `pc` 开、切 `target` 关；路由不变时仍可手动 `power set vdd_5v`，下次路由切换会重新强制。开机默认路由 `target` 下保持关闭；关闭它会切断 CH347 1.8V VIN 的 VDD_1V8 子电源轨
-- VIN 切换需要 `--confirm`（TUI 中为 Space/Enter 确认），因为电压切换有副作用；RP2350 的 GPIO1 VDD_5V 和 GPIO6 VDD_1V8 由固件 Device Tree 建模为常开，可选 CH347 VIO 电平由固件标准 `regulator-gpio` 节点建模并通过 Zephyr regulator API 切换。执行 1.8V 切换前必须确认目标支持该电平、连接 VIO 物理测量设备，并明确接受硬件副作用；默认验证只读取或保持 3.3V
+- `vdd_5v` 作为固件广告的独立电源输出控制；host 不再保留已移除的 `switch/usb` 专用路由分支、联动规则或默认值。启动状态与 GPIO/电源硬件事实均由固件决定。
 - 安装统一桌面栈后，`-d` / `--desktop` 会启动单个 `linkr-tray` 后台守护并立即退出；Tray 与 Host 服务运行在同一进程，普通 CLI/TUI 启动也会自动确保它已运行。无图形桌面或 GTK 已加载但 AppIndicator 实现不可用时，同一二进制会以 `--headless` 模式常驻；之后恢复完整图形环境再运行 CLI 或 `-d`，headless 守护会优雅交接为单个图形 Tray 守护。Linux 的 `linkr-tray` 本身仍链接 GTK；完全未安装 GTK 的最小系统应直接运行 `linkr-host serve`。普通 CLI/TUI 在桌面组件缺失时会继续工作，只有显式 `-d` 会把启动失败作为错误。仅在明确不需要尝试任何后台 Host 时设置 `LINKR_SKIP_DESKTOP=1`。
 
 ## ADC CLI与记录格式

@@ -132,6 +132,82 @@ fn power_row_exposes_state_live_mode_and_description() -> Result<()> {
 }
 
 #[test]
+fn fifth_x1_2_power_output_keeps_state_without_an_adc_descriptor_or_sample() -> Result<()> {
+    let raw: serde_json::Value = serde_json::from_str(super::gpio_fixture::X1_2_STATUS_JSON)?;
+    let hub = raw["power_outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|output| output["name"] == "5v_usb_hub")
+        .unwrap();
+    assert_eq!(hub["signal"], "GPIO24_USB_CRL");
+    assert_eq!(hub["pin"], 24);
+    let mut snapshot: WsStatusSnapshot = serde_json::from_value(raw)?;
+    snapshot.adc_channels = serde_json::from_value(crate::adc::fixture::channels())?;
+    let mut model = super::gpio_fixture::x1_2_model()?;
+    for (state, value) in [("off", 0), ("on", 1)] {
+        let hub = snapshot
+            .power_outputs
+            .iter_mut()
+            .find(|output| output.name == "5v_usb_hub")
+            .unwrap();
+        hub.state = state.to_string();
+        hub.value = value;
+        model.apply_status_snapshot(snapshot.clone());
+        model.apply_adc_response(
+            crate::adc::transform_response(&crate::adc::fixture::http().to_string())
+                .map_err(anyhow::Error::msg)?
+                .readings,
+        );
+        let rows = control_rows(&model);
+        let hub = row_named(&rows, "5v_usb_hub")?;
+        assert_eq!(hub.state_route, state);
+        assert_eq!(hub.live, "-");
+        assert_eq!(hub.description, "-");
+        assert_eq!(model.power_names.len(), 5);
+        assert_eq!(model.channel_ids.len(), 4);
+        assert_eq!(model.voltage_channel_ids.len(), 4);
+        assert_eq!(model.latest.len(), 8);
+        assert!(!model.latest.contains_key("5v_usb_hub"));
+        assert!(!model.history.contains_key("5v_usb_hub"));
+    }
+    Ok(())
+}
+
+#[test]
+fn empty_invalid_or_voltage_only_power_readings_do_not_fabricate_zero_current() -> Result<()> {
+    let mut model = model_with_states();
+    for reading in [
+        AdcReading::default(),
+        AdcReading {
+            current_valid: Some(false),
+            current_ua: Some(0),
+            ..Default::default()
+        },
+        AdcReading {
+            kind: crate::adc::AdcKind::Voltage,
+            voltage_uv: Some(0),
+            ..Default::default()
+        },
+    ] {
+        model.latest.insert("12v_out".to_string(), reading);
+        assert_eq!(row_named(&control_rows(&model), "12v_out")?.live, "-");
+    }
+    model.latest.insert(
+        "12v_out".to_string(),
+        AdcReading {
+            current_ua: Some(0),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        row_named(&control_rows(&model), "12v_out")?.live,
+        "0.000000A"
+    );
+    Ok(())
+}
+
+#[test]
 fn switch_row_covers_state_tones_and_effective_confirm_mode() -> Result<()> {
     let mut model = model_with_states();
     let rows = control_rows(&model);

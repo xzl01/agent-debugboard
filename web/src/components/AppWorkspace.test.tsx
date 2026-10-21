@@ -5,7 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import type { AutomationTaskControl } from "@/lib/automationTask";
-import type { GpioPhysicalLayout } from "@/lib/types";
+import type { GpioPhysicalLayout, SafeGpio } from "@/lib/types";
+import { physicalLayoutFixture } from "@/lib/gpioPhysicalLayout.testFixtures";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -44,6 +45,7 @@ const boardMocks = vi.hoisted(() => ({
   powerStateStale: false,
   powerUpdatedAt: Date.now(),
   lastVerifiedAt: null as number | null,
+  physicalFixture: null as { layout: GpioPhysicalLayout; gpios: SafeGpio[] } | null,
   config: null as null | {
     readonly available: boolean;
     readonly reason: string;
@@ -101,14 +103,14 @@ vi.mock("@/hooks/useBoard", async () => {
     error: null,
     auto: true,
     live: true,
-    gpioPhysicalLayout: layoutForTestGpios([{ name: "GP10", pin: 10, note: "", value: 1, direction: "output" }]),
+    gpioPhysicalLayout: boardMocks.physicalFixture?.layout ?? layoutForTestGpios([{ name: "GP10", pin: 10, note: "", value: 1, direction: "output" }]),
     gpioLayoutError: null,
     gpioLayoutLoading: false,
     snapshot: {
       config: boardMocks.config ?? undefined,
       powerOutputs: boardMocks.powerOutputs,
       adc: [],
-      gpios: [{ name: "GP10", pin: 10, note: "", value: 1, direction: "output" }],
+      gpios: boardMocks.physicalFixture?.gpios ?? [{ name: "GP10", pin: 10, note: "", value: 1, direction: "output" }],
       gpioLayoutGroups: [{ name: "PORT", edge: "right", order: 0 }],
       switches: {},
     },
@@ -153,11 +155,13 @@ vi.mock("./SwitchCard", () => ({ SwitchCard: () => null }));
 vi.mock("./BootCard", () => ({ BootCard: () => null }));
 vi.mock("./NetworkCard", () => ({ NetworkCard: () => null }));
 vi.mock("./GpioCard", () => ({
-  GpioCard: ({ workspaceTabs, physicalLayout }: {
+  GpioCard: ({ workspaceTabs, physicalLayout, gpios }: {
     readonly workspaceTabs?: ReactNode;
     readonly physicalLayout?: GpioPhysicalLayout | null;
+    readonly gpios: readonly SafeGpio[];
   }) => (
-    <div data-testid="gpio-card" data-layout-groups={physicalLayout?.groups.map((group) => group.name).join(",")}>{workspaceTabs}</div>
+    <div data-testid="gpio-card" data-layout-groups={physicalLayout?.groups.map((group) => group.name).join(",")}
+      data-live-count={gpios.length} data-control-count={physicalLayout?.groups.flatMap((group) => group.cells).filter((cell) => cell.controllable).length}>{workspaceTabs}</div>
   ),
 }));
 vi.mock("./WatchdogCard", () => ({ WatchdogCard: () => <div data-testid="watchdog-card" /> }));
@@ -306,6 +310,7 @@ afterEach(() => {
   boardMocks.connected = true;
   boardMocks.powerStateStale = false;
   boardMocks.lastVerifiedAt = null;
+  boardMocks.physicalFixture = null;
   boardMocks.config = null;
   boardMocks.powerOutputs = [
     { name: "5v_out", controllable: true, state: "on", value: 1 },
@@ -702,6 +707,7 @@ describe("App workspace", () => {
   });
 
   it("places the sole physical GPIO card immediately before Watchdog in the IO drawer", () => {
+    boardMocks.physicalFixture = physicalLayoutFixture();
     const { host } = mountApp();
     click(byTestId(host, "open-hardware-controls"));
     const dialog = document.body.querySelector<HTMLDialogElement>('dialog[aria-labelledby="hardware-controls-title"]');
@@ -710,7 +716,9 @@ describe("App workspace", () => {
     click(byTestId<HTMLButtonElement>(dialog, "hardware-section-tab-io"));
 
     expect(dialog.querySelector('[data-testid="gpio-card"]')).not.toBeNull();
-    expect(dialog.querySelector('[data-testid="gpio-card"]')?.getAttribute("data-layout-groups")).toBe("TEST");
+    expect(dialog.querySelector('[data-testid="gpio-card"]')?.getAttribute("data-layout-groups")).toBe(boardMocks.physicalFixture.layout.groups.map((group) => group.name).join(","));
+    expect(dialog.querySelector('[data-testid="gpio-card"]')?.getAttribute("data-live-count")).toBe("11");
+    expect(dialog.querySelector('[data-testid="gpio-card"]')?.getAttribute("data-control-count")).toBe("11");
     expect(dialog.querySelector('[data-testid="watchdog-card"]')).not.toBeNull();
     expect(dialog.querySelector('[data-testid="gpio-controls-anchor"]')).not.toBeNull();
     const controls = byTestId(dialog, "gpio-controls-anchor");

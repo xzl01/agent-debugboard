@@ -148,17 +148,17 @@ fn config_save_parser_preserves_item_order_and_explicit_confirmation() {
 
 #[test]
 fn config_commands_preserve_confirmation_busy_and_partial_failure_details() {
-    let confirmation = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"confirmation_required","message":"confirmation is required"},"dangerous_items":["switch/usb"]}"#;
+    let confirmation = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"confirmation_required","message":"confirmation is required"},"dangerous_items":["switch/aux"]}"#;
     let busy = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"clear","error":{"code":"busy","message":"blocked"},"activity":"capture"}"#;
     let partial = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"apply_failed","message":"failed"},"applied_items":["power/12v_out"],"failed_item":"switch/sd","pending_items":["switch/sd"]}"#;
 
     let (code, stdout, stderr, request) =
-        run_command(&["config", "save", "switch/usb"], true, 409, confirmation);
+        run_command(&["config", "save", "switch/aux"], true, 409, confirmation);
     assert_eq!(code, 1);
     assert!(stderr.is_empty());
     assert_eq!(stdout.trim(), confirmation);
     assert!(
-        request.contains(r#"{"confirm":false,"items":["switch/usb"]}"#),
+        request.contains(r#"{"confirm":false,"items":["switch/aux"]}"#),
         "{request}"
     );
 
@@ -230,21 +230,40 @@ fn config_json_preserves_valid_raw_firmware_bytes() {
 }
 
 #[test]
-fn x1_2_config_catalog_has_sixteen_items_and_only_nine_gpio_controls() {
+fn x1_2_config_catalog_has_eighteen_items_five_power_two_switches_and_eleven_gpio_controls() {
     // Firmware-owned catalog fixture, not a client-side hardware allowlist.
     let mut items = Vec::new();
-    for name in ["5v_out", "12v_out", "20v_out", "vdd_5v"] {
+    for name in ["5v_out", "12v_out", "20v_out", "vdd_5v", "5v_usb_hub"] {
         items.push(serde_json::json!({"id":format!("power/{name}"),"kind":"power","current":{"state":"off"},"saved":null,"selected":false,"requires_confirm":true,"apply_state":"not_saved"}));
     }
-    for (name, route) in [("sd", "target"), ("tf_wp", "writable"), ("usb", "target")] {
+    for (name, route) in [("sd", "target"), ("tf_wp", "writable")] {
         items.push(serde_json::json!({"id":format!("switch/{name}"),"kind":"switch","current":{"route":route},"saved":null,"selected":false,"requires_confirm":true,"apply_state":"not_saved"}));
     }
-    for pin in [7, 8, 9, 12, 13, 14, 15, 16, 29] {
+    for pin in [5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 29] {
         items.push(serde_json::json!({"id":format!("gpio/GP{pin}"),"kind":"gpio","current":{"direction":"input","value":0},"saved":null,"selected":false,"requires_confirm":false,"apply_state":"not_saved"}));
     }
     let body = serde_json::json!({"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get","backend":{"available":true,"reason":"ready"},"snapshot":{"present":false,"version":null},"pending":0,"items":items}).to_string();
     let response = PersistentConfigResponse::from_raw(body.clone()).unwrap();
-    assert_eq!(response.envelope.items.len(), 16);
+    assert_eq!(response.envelope.items.len(), 18);
+    assert_eq!(
+        response
+            .envelope
+            .items
+            .iter()
+            .filter(|item| item.kind == ConfigItemKind::Power)
+            .count(),
+        5
+    );
+    assert_eq!(
+        response
+            .envelope
+            .items
+            .iter()
+            .filter(|item| item.kind == ConfigItemKind::Switch)
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["switch/sd", "switch/tf_wp"]
+    );
     let gpio_ids = response
         .envelope
         .items
@@ -255,6 +274,8 @@ fn x1_2_config_catalog_has_sixteen_items_and_only_nine_gpio_controls() {
     assert_eq!(
         gpio_ids,
         [
+            "gpio/GP5",
+            "gpio/GP6",
             "gpio/GP7",
             "gpio/GP8",
             "gpio/GP9",
@@ -272,12 +293,30 @@ fn x1_2_config_catalog_has_sixteen_items_and_only_nine_gpio_controls() {
     assert!(stderr.is_empty());
     assert!(request.starts_with("GET /api/v1/config HTTP/1.1"));
     assert!(!stdout.contains("gpio/GP17") && !stdout.contains("gpio/GP18"));
+    assert!(!stdout.contains("switch/usb"));
 }
 
 #[test]
-fn removed_x1_2_gpio_config_ids_surface_firmware_unknown_item_without_remapping() {
+fn removed_x1_2_config_ids_surface_firmware_unknown_item_without_remapping() {
+    // Direct GPIOs and the newly advertised power output use normal config
+    // IDs, not unknown items or switch aliases.
+    for id in ["gpio/GP5", "gpio/GP6", "power/5v_usb_hub"] {
+        let body = serde_json::json!({"schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"save","saved_items":[id],"confirmation_items":[],"applied_items":[id],"snapshot":{"present":true,"version":1},"pending":0}).to_string();
+        let (code, stdout, stderr, request) =
+            run_command(&["config", "save", id], true, 200, &body);
+        assert_eq!(code, 0);
+        assert_eq!(stdout.trim(), body);
+        assert!(stderr.is_empty());
+        assert!(request.starts_with("PUT /api/v1/config HTTP/1.1"));
+        assert!(request.contains(&format!(r#""items":["{id}"]"#)));
+    }
     let body = r#"{"schema":"radxa-linkr-debugger.v1","ok":false,"command":"config","action":"save","error":{"code":"unknown_item","message":"unknown config item"}}"#;
-    for id in ["gpio/GP17", "gpio/GP18"] {
+    for id in [
+        "switch/usb",
+        "gpio/GP17",
+        "gpio/GP18",
+        "power/not_advertised",
+    ] {
         for json in [false, true] {
             let (code, stdout, stderr, request) =
                 run_command(&["config", "save", id], json, 400, body);

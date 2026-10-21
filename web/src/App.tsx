@@ -25,6 +25,7 @@ import { useBoard } from "@/hooks/useBoard";
 import { usePersistentConfig } from "@/hooks/usePersistentConfig";
 import { StatusBar } from "./components/StatusBar";
 import { PowerCard } from "./components/PowerCard";
+import { PowerRailCatalogProvider } from "./components/PowerRailCatalog";
 import { SwitchCard } from "./components/SwitchCard";
 import { GpioCard } from "./components/GpioCard";
 import { WatchdogCard } from "./components/WatchdogCard";
@@ -413,6 +414,7 @@ export default function App() {
   );
 
   return (
+    <PowerRailCatalogProvider outputs={board.snapshot.powerOutputs} readings={board.snapshot.adc}>
     <div className="min-h-full bg-bg text-ink">
       <StatusBar
         snapshot={board.snapshot}
@@ -702,5 +704,6 @@ export default function App() {
         taskOwner={automationOwner}
       />
     </div>
+    </PowerRailCatalogProvider>
   );
 }

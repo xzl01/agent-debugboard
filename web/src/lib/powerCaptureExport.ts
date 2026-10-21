@@ -1,4 +1,4 @@
-import { nominalVoltage, USER_POWER_RAILS } from "./power.ts";
+import { nominalVoltage } from "./power.ts";
 import { estimatePowerCaptureBytes, iteratePowerCaptureChunks } from "./powerCaptureStore.ts";
 import type { CaptureSample, PowerCapture } from "./types";
 
@@ -109,17 +109,17 @@ function exportRow(
   };
 }
 
-function csvHeader(options?: PowerCaptureExportOptions): string {
+function csvHeader(rails: readonly string[], options?: PowerCaptureExportOptions): string {
   return [
     "capture_id", "trigger", "source", "edge", "threshold_ua", "rate_hz",
     "pre_samples", "post_samples", "offset", "triggered", "device_t_mono_us", "relative_us",
     ...(options?.extraColumns ?? []),
-    ...USER_POWER_RAILS.flatMap((railName) => [
+    ...rails.flatMap((railName) => [
       `${railName}_current_ua`,
       `${railName}_power_w`,
     ]),
     "sample_sequence",
-    ...USER_POWER_RAILS.flatMap((railName) => [
+    ...rails.flatMap((railName) => [
       `${railName}_signal`,
       `${railName}_sensor_channel`,
       `${railName}_unit`,
@@ -138,6 +138,7 @@ function serializeSamples(
   format: PowerCaptureExportFormat,
   triggerTime: number,
   options?: PowerCaptureExportOptions,
+  rails: readonly string[] = [],
 ): string {
   if (format === "ndjson") {
     return samples.map((sample) => JSON.stringify(exportRow(capture, sample, triggerTime, options))).join("\n") +
@@ -161,20 +162,20 @@ function serializeSamples(
       row.device_t_mono_us,
       row.relative_us,
       ...(options?.extraColumns ?? []).map((column) => row[column as keyof typeof row]),
-      ...USER_POWER_RAILS.flatMap((railName) => [
-        values.get(railName)?.current_ua ?? 0,
-        values.get(railName)?.power_w ?? 0,
+      ...rails.flatMap((railName) => [
+        values.get(railName)?.current_ua,
+        values.get(railName)?.power_w,
       ]),
       row.sample_sequence,
-      ...USER_POWER_RAILS.flatMap((railName) => [
+      ...rails.flatMap((railName) => [
         values.get(railName)?.signal ?? "",
         values.get(railName)?.sensor_channel ?? "",
         values.get(railName)?.unit ?? "",
-        values.get(railName)?.power_enabled ?? false,
+        values.get(railName)?.power_enabled,
         values.get(railName)?.raw ?? null,
-        values.get(railName)?.mv ?? 0,
-        values.get(railName)?.reported_current_ua ?? 0,
-        values.get(railName)?.nominal_voltage_v ?? 0,
+        values.get(railName)?.mv,
+        values.get(railName)?.reported_current_ua,
+        values.get(railName)?.nominal_voltage_v,
       ]),
     ].map(csvField).join(",");
   }).join("\n") + (samples.length > 0 ? "\n" : "");
@@ -198,9 +199,22 @@ export async function streamPowerCaptureExport(
   };
 
   try {
-    if (format === "csv") await write(csvHeader(options));
+    const channels = new Set<string>();
+    const collectChannels = (samples: CaptureSample[]) => {
+      for (const sample of samples) for (const reading of sample.readings) channels.add(reading.name);
+    };
+    if (format === "csv") {
+      if (capture.trigger !== "gpio" && capture.source) channels.add(capture.source);
+      Object.keys(capture.summaries ?? {}).forEach((name) => channels.add(name));
+      collectChannels(capture.samples);
+      // Preview samples may omit archived/future channels. A bounded metadata
+      // pass fixes the header before streaming rows; never buffer the full run.
+      if (capture.archiveId) await iteratePowerCaptureChunks(capture.archiveId, collectChannels);
+      await write(csvHeader([...channels], options));
+    }
+    const rails = [...channels];
     const writeSamples = async (samples: CaptureSample[]) => {
-      await write(serializeSamples(capture, samples, format, triggerTime, options));
+      await write(serializeSamples(capture, samples, format, triggerTime, options, rails));
       writtenSamples += samples.length;
       onProgress?.({ writtenSamples, totalSamples, writtenBytes });
     };

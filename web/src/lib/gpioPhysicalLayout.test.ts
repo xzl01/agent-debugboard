@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseGpioPhysicalLayout, validateGpioPhysicalJoin } from "./gpioPhysicalLayout";
-import { layoutEnvelope, physicalLayoutFixture } from "./gpioPhysicalLayout.testFixtures";
+import { directGpioFixtureCases, layoutEnvelope, physicalLayoutFixture } from "./gpioPhysicalLayout.testFixtures";
 import { getGpioLayout } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -11,8 +11,21 @@ describe("physical GPIO layout boundary", () => {
     const parsed = parseGpioPhysicalLayout(layoutEnvelope(layout));
     expect(parsed.groups.map((group) => group.name)).toEqual(["J8", "J13"]);
     expect(parsed.groups.flatMap((group) => group.cells)).toHaveLength(24);
+    expect(parsed.groups.flatMap((group) => group.cells).filter((cell) => cell.controllable)).toHaveLength(11);
+    expect(parsed.groups.flatMap((group) => group.cells).filter((cell) => !cell.controllable)).toHaveLength(13);
     expect(() => validateGpioPhysicalJoin(parsed, gpios)).not.toThrow();
     expect(parsed.groups[0].cells[0]).toMatchObject({ pinNumber: 10, row: 0, column: 0 });
+  });
+
+  it.each(directGpioFixtureCases)("retains direct $gpioName capability/net metadata and joins by name", (entry) => {
+    const { layout, gpios } = physicalLayoutFixture();
+    const parsed = parseGpioPhysicalLayout(layoutEnvelope(layout));
+    expect(parsed.groups[0].cells.find((cell) => cell.pinNumber === entry.pinNumber)).toMatchObject({
+      label: entry.gpioName, signal: entry.signal, role: "gpio", gpioName: entry.gpioName, controllable: true, outputCapable: true,
+    });
+    expect(() => validateGpioPhysicalJoin(parsed, gpios)).not.toThrow();
+    expect(() => validateGpioPhysicalJoin(parsed, gpios.filter((gpio) => gpio.name !== entry.gpioName))).toThrow(/unmatched controllable/);
+    expect(() => validateGpioPhysicalJoin(parsed, [...gpios, { ...gpios[0], name: "GP17" }])).toThrow(/unmatched live/);
   });
 
   it.each([

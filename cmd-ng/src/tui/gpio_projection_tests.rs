@@ -110,7 +110,9 @@ fn x1_2_projection_keeps_every_pin_in_physical_order_and_preserves_identity() ->
     let mut model = x1_2_model()?;
     let expected = [
         ("GP29", "J8", "ADC3"),
+        ("GP5", "J8", "GP5"),
         ("GP16", "J8", "GP16"),
+        ("GP6", "J8", "GP6"),
         ("GP15", "J8", "GP15"),
         ("GP14", "J8", "GP14"),
         ("GP13", "J8", "GP13"),
@@ -137,6 +139,12 @@ fn x1_2_projection_keeps_every_pin_in_physical_order_and_preserves_identity() ->
         assert_eq!(layout.group.as_deref(), Some("J13"));
         assert_eq!((layout.row, layout.column), (Some(row), Some(column)));
     }
+    for (pin, row) in [("GP5", 4), ("GP6", 5)] {
+        let layout = &model.gpio_layouts[pin];
+        assert_eq!(layout.group.as_deref(), Some("J8"));
+        assert_eq!(layout.label.as_deref(), Some(pin));
+        assert_eq!((layout.row, layout.column), (Some(row), Some(1)));
+    }
     for pin in ["GP17", "GP18"] {
         assert!(!model.gpio_names.iter().any(|name| name == pin));
         assert!(!model.gpio_layouts.contains_key(pin));
@@ -154,9 +162,9 @@ fn x1_2_projection_keeps_every_pin_in_physical_order_and_preserves_identity() ->
             .collect();
         assert_eq!(
             actual, expected,
-            "all nine safe GPIOs must survive at {width}"
+            "all eleven safe GPIOs must survive at {width}"
         );
-        assert_eq!(rows.len(), if width >= 48 { 8 } else { 9 });
+        assert_eq!(rows.len(), if width >= 48 { 8 } else { 11 });
         for cell in &cells {
             assert_eq!(cell.item_index, item_index(&model, &cell.name)?);
             assert!(cell.right_edge);
@@ -173,6 +181,17 @@ fn x1_2_projection_keeps_every_pin_in_physical_order_and_preserves_identity() ->
         }
         for pin in ["GP17", "GP18"] {
             assert!(control_rect(&model, pin).is_err());
+        }
+        for (left, right) in [("GP29", "GP5"), ("GP16", "GP6")] {
+            let left = control_rect(&model, left)?;
+            let right = control_rect(&model, right)?;
+            if width >= 48 {
+                assert_eq!(left.y, right.y);
+                assert_eq!((left.x, right.x), (0, width / 2));
+            } else {
+                assert_eq!(left.y + 1, right.y);
+                assert_eq!((left.x, right.x), (0, 0));
+            }
         }
         let user = control_rect(&model, "GP9")?;
         let reset = control_rect(&model, "GP8")?;

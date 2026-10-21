@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { physicalLayoutFixture } from "@/lib/gpioPhysicalLayout.testFixtures";
+import { directGpioFixtureCases, physicalLayoutFixture } from "@/lib/gpioPhysicalLayout.testFixtures";
 import { physicalPinPurpose, placePhysicalAssembly, GpioPhysicalPinoutSvg } from "./GpioPhysicalPinoutSvg";
 import type { GpioPhysicalCell } from "@/lib/types";
 import { GpioCard } from "./GpioCard";
@@ -43,13 +43,13 @@ describe("physical assembly: J13 left, J8 right, solder pins down", () => {
     }
   });
 
-  it("renders exactly 24 positions, 9 physical controls and 15 inert sockets without rotated glyphs", () => {
+  it("renders exactly 24 positions, 11 physical controls and 13 inert sockets without rotated glyphs", () => {
     const { layout, gpios } = physicalLayoutFixture();
     const view = mount(<GpioPhysicalPinoutSvg layout={layout} gpios={gpios} />);
     expect(view.host.querySelectorAll("[data-physical-cell]")).toHaveLength(24);
-    expect(view.host.querySelectorAll('[role="button"]')).toHaveLength(9);
-    expect(view.host.querySelectorAll("[data-physical-inert]")).toHaveLength(15);
-    expect(view.host.querySelectorAll('circle[fill="transparent"]')).toHaveLength(9);
+    expect(view.host.querySelectorAll('[role="button"]')).toHaveLength(11);
+    expect(view.host.querySelectorAll("[data-physical-inert]")).toHaveLength(13);
+    expect(view.host.querySelectorAll('circle[fill="transparent"]')).toHaveLength(11);
     expect(view.host.querySelector('[transform]')).toBeNull();
     expect(view.host.querySelector('svg[role="group"]')?.getAttribute("data-physical-assembly")).toBe("pins-down");
     expect(view.host.textContent).toContain("Solder pins facing down");
@@ -84,12 +84,29 @@ describe("physical assembly: J13 left, J8 right, solder pins down", () => {
     view.close();
   });
 
-  it("keeps only the nine small circular controls interactive, with independent 44px targets", () => {
+  it("preserves advertised USB D+/D− and hub contacts as inert physical signals, not switches", () => {
+    const { layout, gpios } = physicalLayoutFixture();
+    const action = vi.fn();
+    const view = mount(<GpioPhysicalPinoutSvg layout={layout} gpios={gpios} onGpioAction={action} />);
+    const contacts = view.host.querySelectorAll('[data-physical-role="usb"]');
+    expect(contacts).toHaveLength(4);
+    for (const contact of contacts) {
+      expect(contact.hasAttribute("data-physical-inert")).toBe(true);
+      expect(contact.querySelector('[role="button"], [tabindex], circle[fill="transparent"]')).toBeNull();
+      click(contact); keyDown(contact, "Enter"); keyDown(contact, "1");
+    }
+    expect(action).not.toHaveBeenCalled();
+    view.close();
+  });
+
+  it("keeps all eleven small circular controls interactive, with independent 44px targets", () => {
     const { layout, gpios } = physicalLayoutFixture();
     const onSet = vi.fn();
     const view = mount(<GpioCard gpios={gpios} physicalLayout={layout} onSet={onSet} />);
     const controls = view.host.querySelectorAll('[role="button"]');
-    expect(controls).toHaveLength(9);
+    expect(controls).toHaveLength(11);
+    expect([...controls].filter((pin) => pin.getAttribute("aria-keyshortcuts") === "Enter Space 0 1 I")).toHaveLength(10);
+    expect([...controls].filter((pin) => pin.getAttribute("aria-keyshortcuts") === "I")).toHaveLength(1);
     for (const pin of controls) {
       expect(pin.querySelector('circle[r="11.5"]')).not.toBeNull();
       expect(pin.querySelector('circle[r="14"]')).not.toBeNull();
@@ -103,6 +120,22 @@ describe("physical assembly: J13 left, J8 right, solder pins down", () => {
     }
     expect(onSet).not.toHaveBeenCalled();
     expect(view.host.querySelector("svg[data-gpio-control-group]")).toBeNull();
+    view.close();
+  });
+
+  it.each(directGpioFixtureCases)("renders $gpioName as a normal GPIO circle, never a dedicated route contact", (entry) => {
+    const { layout, gpios } = physicalLayoutFixture();
+    const view = mount(<GpioCard gpios={gpios} physicalLayout={layout} onSet={vi.fn()} />);
+    const cell = view.host.querySelector(`[data-layout-group="J8"] [data-physical-cell="${entry.pinNumber}"]`)!;
+    const pin = cell.querySelector('[role="button"]')!;
+    expect(pin.querySelector("text")?.textContent).toBe(entry.gpioName);
+    expect(pin.getAttribute("aria-label")).toContain(entry.signal);
+    expect(pin.getAttribute("aria-label")).not.toContain("Owned by route controls");
+    expect(pin.getAttribute("aria-keyshortcuts")).toBe("Enter Space 0 1 I");
+    expect(pin.querySelector('circle[fill="transparent"]')?.getAttribute("r")).toBe("22");
+    expect(cell.querySelector('[data-physical-inert], [data-physical-role="dedicated"]')).toBeNull();
+    expect(view.host.querySelector('[data-physical-role="dedicated"]')).toBeNull();
+    expect(view.host.textContent).not.toMatch(/USB MUX|TF SW/u);
     view.close();
   });
 
@@ -136,10 +169,10 @@ describe("physical assembly: J13 left, J8 right, solder pins down", () => {
     expect(physicalPinPurpose(cell)).toBe(expected);
   });
 
-  it("puts dedicated purposes inside inert circles and identifies raw signals only as net names", () => {
+  it("supports generic future dedicated contacts without treating current GPIO nets as routes", () => {
     const cells = [
-      { label: "USB MUX", signal: "GPIO5", role: "dedicated" },
-      { label: "TF SW", signal: "GP06_TF_SW", role: "dedicated" },
+      { label: "USB MUX", signal: "NET_USB_ROUTE", role: "dedicated" },
+      { label: "TF SW", signal: "NET_TF_ROUTE", role: "dedicated" },
       { label: "ADC1", signal: "TEST_ADC1", role: "adc" },
       { label: "SDA", signal: "TEST_SDA", role: "i2c" },
     ].map((cell, row) => ({ ...cell, row, column: 0, pinNumber: row + 1, controllable: false, outputCapable: false }));
@@ -155,8 +188,8 @@ describe("physical assembly: J13 left, J8 right, solder pins down", () => {
       expect(pin.querySelector("text")?.textContent).not.toMatch(/GP[56]/);
       expect(pin.querySelector('circle[r="14"]')?.getAttribute("stroke")).toContain("--c-brand");
     }
-    expect(view.host.querySelector('[data-physical-cell="1"] [data-physical-inert]')?.getAttribute("aria-label")).toContain("Net name: GPIO5");
-    expect(view.host.querySelector('[data-physical-cell="2"] [data-physical-inert]')?.getAttribute("aria-label")).toContain("Net name: GP06_TF_SW");
+    expect(view.host.querySelector('[data-physical-cell="1"] [data-physical-inert]')?.getAttribute("aria-label")).toContain("Net name: NET_USB_ROUTE");
+    expect(view.host.querySelector('[data-physical-cell="2"] [data-physical-inert]')?.getAttribute("aria-label")).toContain("Net name: NET_TF_ROUTE");
     expect(view.host.querySelector('[role="button"], [tabindex], circle[fill="transparent"]')).toBeNull();
     expect(view.host.querySelectorAll("[data-physical-number]")).toHaveLength(4);
     for (const pin of view.host.querySelectorAll("[data-physical-inert]")) { click(pin); keyDown(pin, "Enter"); keyDown(pin, "1"); }

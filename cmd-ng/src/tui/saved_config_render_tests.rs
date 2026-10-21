@@ -75,6 +75,102 @@ fn visible_items_register_full_width_typed_hits_after_scroll() -> Result<()> {
 }
 
 #[test]
+fn x1_2_saved_config_shows_and_saves_all_eleven_advertised_gpio_ids() -> Result<()> {
+    let mut snapshot: crate::ws_status::WsStatusSnapshot =
+        serde_json::from_str(super::gpio_fixture::X1_2_STATUS_JSON)?;
+    snapshot.config = Some(PersistentConfigStatus {
+        available: true,
+        reason: "ready".to_string(),
+        saved_count: 0,
+        pending_count: 0,
+    });
+    let mut items: Vec<_> = snapshot
+        .power_outputs
+        .iter()
+        .map(|power| {
+            serde_json::json!({
+                "id":format!("power/{}", power.name),"kind":"power","current":{"state":power.state},
+                "saved":null,"selected":false,"requires_confirm":true,"apply_state":"not_saved"
+            })
+        })
+        .collect();
+    items.extend(snapshot.switches.iter().map(|(name, info)| {
+        serde_json::json!({
+            "id":format!("switch/{name}"),"kind":"switch","current":{"route":info.route},
+            "saved":null,"selected":false,"requires_confirm":true,"apply_state":"not_saved"
+        })
+    }));
+    items.extend(snapshot.gpios.iter().map(|gpio| {
+        serde_json::json!({
+            "id":format!("gpio/{}", gpio.name), "kind":"gpio",
+            "current":{"direction":gpio.direction,"value":gpio.value},
+            "saved":null,"selected":true,"requires_confirm":false,"apply_state":"not_saved"
+        })
+    }));
+    let response = PersistentConfigResponse::from_raw(serde_json::json!({
+        "schema":"radxa-linkr-debugger.v1","ok":true,"command":"config","action":"get",
+        "backend":{"available":true,"reason":"ready"},"snapshot":{"present":false,"version":null},
+        "pending":0,"items":items
+    }).to_string())?;
+    response.validate(&ConfigAction::Get, None)?;
+    let mut model = loaded_model()?;
+    model.apply_status_snapshot(snapshot);
+    model
+        .saved_config
+        .apply_authoritative(response)
+        .map_err(anyhow::Error::msg)?;
+    for width in [120, 80, 47, 32] {
+        let text = draw(&mut model, width, 32)?;
+        let ids = model
+            .hit_map
+            .saved_config_rows
+            .iter()
+            .map(|(_, target)| target.0.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 18);
+        assert!(ids.contains(&"power/5v_usb_hub"));
+        assert!(ids.contains(&"switch/sd") && ids.contains(&"switch/tf_wp"));
+        assert!(!ids.contains(&"switch/usb"));
+        assert!(ids.contains(&"gpio/GP5") && ids.contains(&"gpio/GP6"));
+        assert!(!ids.contains(&"gpio/GP17") && !ids.contains(&"gpio/GP18"));
+        assert!(text.contains("gpio/GP5") && text.contains("gpio/GP6"));
+        for (rect, _) in model.hit_map.saved_config_rows.iter() {
+            assert_eq!((rect.x, rect.width), (0, width));
+        }
+    }
+    let Some(super::config_state::ConfigRequest::Save { items, confirm }) =
+        model.saved_config.request_save()
+    else {
+        panic!("all advertised safe GPIOs must be selected for save");
+    };
+    assert!(!confirm);
+    assert_eq!(items.len(), 11);
+    assert!(items.iter().any(|id| id.as_str() == "gpio/GP5"));
+    assert!(items.iter().any(|id| id.as_str() == "gpio/GP6"));
+    model.saved_config.focus();
+    model.saved_config.cursor = model
+        .saved_config
+        .items
+        .iter()
+        .position(|item| item.id.as_str() == "power/5v_usb_hub")
+        .unwrap();
+    model.saved_config.toggle_current();
+    assert!(
+        model.saved_config.request_save().is_none(),
+        "new power output uses the existing danger confirmation"
+    );
+    let Some(super::config_state::ConfigRequest::Save { items, confirm }) =
+        model.saved_config.confirm()
+    else {
+        panic!("power output save confirmation missing");
+    };
+    assert!(confirm);
+    assert_eq!(items.len(), 12);
+    assert!(items.iter().any(|id| id.as_str() == "power/5v_usb_hub"));
+    Ok(())
+}
+
+#[test]
 fn non_item_saved_config_states_never_register_row_hits() -> Result<()> {
     let mut unsupported = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
     unsupported.set_page(ActivePage::SavedConfig);

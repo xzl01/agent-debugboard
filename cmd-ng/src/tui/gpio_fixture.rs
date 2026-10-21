@@ -39,10 +39,23 @@ pub(super) const GENERIC_EDGE_STATUS_JSON: &str = r#"{
   ]
 }"#;
 
-// x1.2 controls-only catalog: nine advertised GPIOs, all physically mapped.
+// x1.2 controls-only catalog: eleven advertised GPIOs, all physically mapped.
+// Only sd/tf_wp are advertised switches; usb is no longer a switch.
+// Direct GP5/GP6 occupy the right cells of J8 rows 4/5 and support output.
 // GP17/GP18 are absent from safe/status/config. GP29 is input-only; J13 pin 4
 // is GND, not a GPIO cell. Shuffle GPIOs and list J13 metadata first.
 pub(super) const X1_2_STATUS_JSON: &str = r#"{
+  "power_outputs":[
+    {"name":"12v_out","state":"off","value":0},
+    {"name":"5v_out","state":"off","value":0},
+    {"name":"20v_out","state":"off","value":0},
+    {"name":"vdd_5v","state":"off","value":0},
+    {"name":"5v_usb_hub","signal":"GPIO24_USB_CRL","pin":24,"state":"off","value":0}
+  ],
+  "switches":{
+    "sd":{"route":"target","routes":["target","usb-reader"],"requires_confirm":false},
+    "tf_wp":{"route":"writable","routes":["writable","protected"],"requires_confirm":false}
+  },
   "gpio_layout_groups":[
     {"name":"J13","edge":"right","order":1},
     {"name":"J8","edge":"right","order":0}
@@ -52,15 +65,19 @@ pub(super) const X1_2_STATUS_JSON: &str = r#"{
     {"name":"GP12","pin":12,"value":1,"direction":"output","note":"J8_PIN1","layoutGroup":"J8","layoutLabel":"GP12","layoutRow":9,"layoutColumn":0},
     {"name":"GP9","pin":9,"value":1,"direction":"input","note":"CON_USER","layoutGroup":"J13","layoutLabel":"USER","layoutRow":0,"layoutColumn":0},
     {"name":"GP13","pin":13,"value":0,"direction":"input","note":"J8_PIN2","layoutGroup":"J8","layoutLabel":"GP13","layoutRow":8,"layoutColumn":0},
+    {"name":"GP6","pin":6,"value":0,"direction":"input","note":"J8_PIN15","layoutGroup":"J8","layoutLabel":"GP6","layoutRow":5,"layoutColumn":1},
     {"name":"GP7","pin":7,"value":0,"direction":"input","note":"CON_MAS","layoutGroup":"J13","layoutLabel":"MASKROM","layoutRow":1,"layoutColumn":0},
     {"name":"GP14","pin":14,"value":0,"direction":"input","note":"J8_PIN3","layoutGroup":"J8","layoutLabel":"GP14","layoutRow":7,"layoutColumn":0},
     {"name":"GP15","pin":15,"value":0,"direction":"input","note":"J8_PIN4","layoutGroup":"J8","layoutLabel":"GP15","layoutRow":6,"layoutColumn":0},
     {"name":"GP16","pin":16,"value":0,"direction":"input","note":"J8_PIN5","layoutGroup":"J8","layoutLabel":"GP16","layoutRow":5,"layoutColumn":0},
+    {"name":"GP5","pin":5,"value":0,"direction":"input","note":"J8_PIN16","layoutGroup":"J8","layoutLabel":"GP5","layoutRow":4,"layoutColumn":1},
     {"name":"GP29","pin":29,"value":0,"direction":"input","note":"ADC3","layoutGroup":"J8","layoutLabel":"ADC3","layoutRow":4,"layoutColumn":0}
   ]
 }"#;
 
 pub(super) fn current_power_outputs() -> Vec<TuiStatusPowerOutput> {
+    // Synthetic four-current-rail catalog used by generic tests. The real
+    // x1.2 status fixture also advertises a fifth, unmonitored power output.
     ["12v_out", "5v_out", "20v_out", "vdd_5v"]
         .into_iter()
         .map(|name| TuiStatusPowerOutput {

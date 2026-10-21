@@ -174,6 +174,18 @@ Composite patterns outside `ui.tsx` that are part of the language:
   border-line/50 bg-panel2/35`), technical values in `font-mono`, token-only
   grid/trace colors, and a localized meaningful `aria-label`. The four current
   channels preserve their current/voltage/power overlay and independent scales.
+  Power rows enumerate every output in firmware order, then current descriptors
+  without an output. Missing instrumentation is a plain, neutral `text-[11px]`
+  full-row note, not three zero-valued metrics or a fabricated sparkline. State,
+  control and timers remain available independently of ADC coverage. Timers use
+  reported names and reset on off/removal, with ≥ for first-observed on state.
+  No parent/child toggle or client boot default is imposed.
+  `PowerRailCatalogProvider` shares current output/ADC descriptors with power
+  analysis and nested workflow inspectors. Power actions offer controllable
+  outputs; capture/current-read choices require current descriptors; startup
+  requires both. Missing draft names remain visibly unavailable instead of
+  being silently retargeted to another rail. Historical comparison sources come
+  from recorded descriptors rather than the current board's rail list.
   The monitor-only voltage section follows descriptor order below the current
   rows: `grid grid-cols-1 gap-3 sm:grid-cols-2` gives four reported channels a
   desktop 2×2 layout and a mobile single column. Each inset card uses
@@ -213,14 +225,20 @@ Composite patterns outside `ui.tsx` that are part of the language:
   appear. Icon controls use 40px targets and localized labels/titles; the
   screen-reader-enabled terminal retains keyboard focus, font controls,
   ResizeObserver fit, theme updates, and fullscreen fit on mobile/desktop.
+- J4 baud is a custom numeric field constrained to the firmware range
+  4800..115200. Five recommended presets are convenience choices, not a
+  whitelist. The page confirms Apply through authoritative GET/WS generation
+  state; CDC SET_LINE_CODING cannot report a later application rejection.
+  Write deadlines derive from active framing and the bounded eight-slot queue,
+  with a 2-second scheduling margin.
 - J4 owns a separate MCU live-session WS, never the ADC connection. Binary RX
   goes straight to xterm's streaming byte decoder. Binary TX is <=480 bytes per
   message with <=8 outstanding and one MCU in-flight message; browser-buffer pressure is visible and never
   silently queues an unlimited paste. UART-complete events, not accepted/socket
   sends, advance TX. Read-only, suspended, faulted, and configuring states stop
   input. The App attempts the shared session once after board availability,
-  and once per explicit availability/reboot epoch (uptime decrease or restart
-  recovery). A failed/unavailable/closed connection or manual Disconnect stays
+  and once per explicit availability/restart recovery epoch; uptime rollback
+  alone is never an epoch signal. A failed/unavailable/closed connection or manual Disconnect stays
   quiet through later status ticks; there are no retry timers. Manual Connect
   remains available. Every new connection uses a fresh independent session,
   deletes only its own old one and never replays old TX. StrictMode's effect
@@ -228,6 +246,25 @@ Composite patterns outside `ui.tsx` that are part of the language:
   serial firmware is a calm Unavailable state. Drops are warn-toned, errors inline, and
   current settings remain the authority after a conflict. A per-instance 1 MiB
   raw RX tail supports byte-exact download; it is not a persistent Host archive.
+- Explicit UART TX is multiwriter. Only automatic terminal replies select one
+  responder: HTTP `terminal_responder` is a global descriptor/null, while WS
+  `terminal_responder` is per-client boolean plus a `responder` descriptor.
+  Explicit true authorizes this page's automatic replies; descriptors never
+  infer the page's slot. DTR defensively disables Web automatic replies, not
+  manual TX. The toolbar names the automatic responder and shows **Auto-reply
+  observer** / **Manual input allowed** for nonresponders, not read-only.
+- Nonresponders set xterm `disableStdin=true` to suppress DSR/DA/CPR inside its
+  CoreService. Explicit keyboard input uses public `onKey` (before suppression
+  in the pinned xterm); capture-phase paste sends once without reaching xterm's
+  default handler. Active responders use only `onData`/`onBinary`, so keys and
+  paste cannot double-send. Input mode synchronizes in the session subscription
+  before the next RX frame. No escape-sequence filtering, owner acquisition or
+  ownership-induced full-input lock is used. Actual UART/queue/configuration/
+  automation safety gates, Ctrl-C, and generation renderer boundaries remain.
+- Ordinary write rejection remains nonfatal: reject unaccepted/local bytes,
+  retain accepted event IDs, keep RX connected and permit explicit new input.
+  Never replay rejected bytes or reconnect merely because another terminal is
+  selected for automatic replies. Default/manual connection policy is unchanged.
 - The App-owned J4 session is shared by the terminal renderer, startup analysis,
   and automation through `useJ4Serial`/`J4SerialSession`, not terminal DOM state.
   Unmounting the renderer does not close an automation connection. The workflow
@@ -236,7 +273,7 @@ Composite patterns outside `ui.tsx` that are part of the language:
   preflight reads this backend's actual MCU state and refuses read-only,
   suspended, configuring, faulted, disconnected, or pending-write states before
   hardware operations. Automation ownership disables manual xterm input.
-- Blocking confirmations elsewhere (Boot, OTA test boot, VIN change, switch
+- Blocking confirmations elsewhere (Boot, OTA test boot, switch
   `requires_confirm`, task runs) currently use `window.confirm` with an
   interpolated message naming the target and consequence. Task-run
   confirmation binds to the already-resolved request snapshot (task ID,
@@ -250,6 +287,11 @@ Composite patterns outside `ui.tsx` that are part of the language:
   20 V is shown directly, including while capability discovery is pending;
   an older GET cannot replace a newer status voltage. Mounting/rendering never
   applies PD settings or saves persistent configuration.
+- Routing controls and footer chips enumerate firmware-advertised switch
+  entries, with raw-name fallback for future descriptors. The x1.2 catalog has
+  `sd` and `tf_wp`; neither the status bar nor workflow options invent a USB
+  routing switch. J8 USB D+/D− signals remain inert physical contacts, not
+  routing controls. Synthetic `aux` tests retain generic route confirmation.
 
 ## 5. Interaction states
 
@@ -368,8 +410,8 @@ and interaction behavior only; implementation lands with the card itself.
   either theme; `aria-checked` exposes the same state without relying on color. Rows group under domain headers styled like stat labels
   (`text-[11px] uppercase tracking-wide text-ink-dim`).
 - Risk badge: `Badge` tone `warn` when `requires_confirm` is true and the
-  value is non-energizing (e.g. USB route), tone `danger` when the value
-  energizes hardware (power on, VIN 1.8V, GPIO output). The badge always
+  value is non-energizing (e.g. a routing change), tone `danger` when the value
+  energizes hardware (power on or GPIO output). The badge always
   carries an icon (`ShieldAlert`) plus text; color is never the only signal.
 - Apply-state badge mapping: `not_saved` -> `neutral`, `applied` -> `ok`,
   `pending` -> `warn`, `failed` -> `danger`, each with a short text label.
@@ -408,13 +450,13 @@ and interaction behavior only; implementation lands with the card itself.
 
 The IO drawer has one GPIO surface: the complete physical connector diagram
 inside `GpioCard.tsx`, directly above Watchdog on desktop and mobile. There is
-no separate nine-item control list, Safe GPIO heading, or GPIO title/subtitle.
-The nine safe physical circles themselves carry the original gestures and live
+no separate control list, Safe GPIO heading, or GPIO title/subtitle.
+The eleven safe physical circles themselves carry the original gestures and live
 level/direction. There are no static pin-key tables, duplicate connector lists,
 visible level legend or long gesture paragraphs between the circles and
 Watchdog. Complete instructions remain linked through aria-describedby as
 sr-only text; only the quiet orientation line and mobile scroll tooltip remain
-visible in the diagram card. All fifteen other physical
+visible in the diagram card. All thirteen other physical
 contacts remain inert, without button roles, tab stops or event handlers.
 
 The sole physical geometry authority is GET
@@ -436,8 +478,8 @@ All glyphs remain upright: no SVG/CSS rotate transform is applied to text.
 Signal purpose sits **inside** the double-ring circles: ADC0–ADC3, SDA/SCL,
 USB D+/D− or hub purpose, power/GND, or a generic safe GPIO name. These are
 formatted from firmware label/role metadata, not MCU-number mappings. Small
-physical pin numbers sit outside the circle. Dedicated route contacts have
-brand-tinted double rings, their purpose inside (`USB MUX`, `TF SW`), and a
+physical pin numbers sit outside the circle. Generic future dedicated contacts
+may have brand-tinted double rings, their firmware-provided purpose inside, and a
 tooltip/accessible name explaining that route controls own them. Raw signals
 for these contacts are explicitly labeled **net name**, never interpreted as
 MCU GPIO numbers or converted into gpioName. Full identity, signal and role
@@ -469,7 +511,7 @@ with no guessed host-side layout. A live board without the endpoint may keep
 showing that error until its firmware is updated and it reconnects.
 
 The current firmware reports full J8 2×10 and J13 2×2 matrices: 24 positions,
-nine interactive physical circles and fifteen inert sockets. GP17/GP18 are
+eleven interactive physical circles and thirteen inert sockets. GP17/GP18 are
 absent. Every gesture is joined to the live GPIO by the exact gpioName and
 guarded again at GpioCard's request boundary; physical numbers and raw net
 names never become request identifiers. Inert cells have purpose/identity,
@@ -542,7 +584,7 @@ the direction boundary at any scale:
   hold arc, focus and pending rings. Its transparent hit circle is explicitly
   `r = 22`, preserving a 44px target without making the visible control
   larger. Physical columns are 46px apart, so targets never overlap or invade
-  another control. The nine physical targets have keyboard access
+  another control. The eleven physical targets have keyboard access
   and each control includes its connector/pin number in the accessible name.
   `GpioPin`'s legacy default `r = 17` remains unchanged for the independent
   dynamic pinout/logic-analyzer consumers.
