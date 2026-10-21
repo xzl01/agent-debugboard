@@ -160,8 +160,7 @@ GPIO 操作不需要确认，也不会乐观更新显示；TUI 会先显示在�
 `POST /api/v1/reboot` 相同的 250 ms 路径请求正常冷重启。动作本身绝不请求
 ROM BOOTSEL；如果复位期间一直按住物理按键，则由 ROM 单独决定进入 BOOTSEL。
 未被已保存 v1 配置快照恢复的电源轨回到各自的
-boot-off 默认状态，`vdd_5v` 跟随 USB 路由默认值；板子恢复后必须重新设置并
-验证电源轨与 PD。
+boot-off 默认状态；`vdd_5v` 是独立电源项。板子恢复后必须重新设置并验证电源轨与 PD。
 
 TUI 不提供 ROM BOOTSEL 行或直接按键；需要恢复路径时，使用独立的 CLI
 `bootloader` 命令或 Web **Enter BOOTSEL** 卡片。ROM BOOTSEL 只能刷写合成完整

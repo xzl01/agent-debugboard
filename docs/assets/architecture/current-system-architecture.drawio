@@ -71,13 +71,13 @@
         <mxCell id="64" value="Sigrok TCP server&#xa;0.0.0.0:5556&#xa;native sigrok / PulseView access" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="15">
           <mxGeometry x="980" y="80" width="300" height="140" as="geometry" />
         </mxCell>
-        <mxCell id="65" value="Shared J4 serial core&#xa;RP2350 UART1 · GP10 / GP11&#xa;4096-byte RX ring&#xa;independent RX sinks · bounded TX&#xa;one firmware owner for all J4 transports" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=2;fontSize=14;" vertex="1" parent="15">
+        <mxCell id="65" value="Shared J4 serial core&#xa;RP2350 UART1 · GP10 / GP11&#xa;4800..115200 baud&#xa;4096-byte RX ring&#xa;independent RX sinks · bounded TX&#xa;one automatic responder · multiwriter explicit TX" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=2;fontSize=14;" vertex="1" parent="15">
           <mxGeometry x="420" y="410" width="470" height="180" as="geometry" />
         </mxCell>
         <mxCell id="66" value="Logic / Power Capture&#xa;firmware capture engine&#xa;Sigrok server backend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="15">
           <mxGeometry x="980" y="410" width="300" height="180" as="geometry" />
         </mxCell>
-        <mxCell id="17" value="Board I/O Plane&#xa;power rails + recovery lines&#xa;SD / USB / VIN muxes&#xa;safe GPIO + ADC telemetry" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" vertex="1" parent="14">
+        <mxCell id="17" value="Board I/O Plane&#xa;five power outputs (parent/child) + recovery lines&#xa;SD route + TF write protect&#xa;11 safe GPIO + ADC telemetry" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" vertex="1" parent="14">
           <mxGeometry x="60" y="780" width="300" height="105" as="geometry" />
         </mxCell>
         <mxCell id="16" value="CH347F&#xa;JTAG / SWD only&#xa;NOT the J4 UART path" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="14">
@@ -87,7 +87,7 @@
         <mxCell id="18" value="Target Board Under Test" style="swimlane;startSize=30;rounded=1;whiteSpace=wrap;html=1;container=1;pointerEvents=0;fillColor=#f5fff5;strokeColor=#82b366;fontStyle=1;fontSize=15;align=left;spacingLeft=16;" vertex="1" parent="1">
           <mxGeometry x="900" y="1380" width="1380" height="190" as="geometry" />
         </mxCell>
-        <mxCell id="21" value="Power / Boot / Storage Routing&#xa;rails, reset, recovery, SD / USB mux" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" vertex="1" parent="18">
+        <mxCell id="21" value="Power / Boot / Storage Controls&#xa;rails, reset, recovery, SD route / TF WP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" vertex="1" parent="18">
           <mxGeometry x="60" y="60" width="300" height="90" as="geometry" />
         </mxCell>
         <mxCell id="19" value="J4 Console / Bootloader / Shell&#xa;connected to RP2350 UART1&#xa;shared console stream — not CH347F" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="18">

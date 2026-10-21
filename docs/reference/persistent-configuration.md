@@ -20,7 +20,7 @@ The persistent-configuration feature is in scope:
 
 - One explicit snapshot of selected power, switch, and safe-GPIO values
   stored on the board under `linkr/config/snapshot`.
-- A four-endpoint HTTP API on the same composite USB NCM interface that
+- A three-endpoint HTTP API on the same composite USB NCM interface that
   already carries `/api/v1/status` and `/api/v1/power`.
 - A compact status summary carried inside the existing WebSocket
   `snapshot/status` message.
@@ -106,11 +106,13 @@ only accepted restore padding. The header also carries the magic `LRCF`,
 the entry size, the entry count, and the total encoded size. Each entry is
 four bytes: domain, item id, value, and a padding byte. The maximum encoded
 size is 84 bytes for the 12-byte header and 18 entries of 4 bytes each.
-The catalog is exactly 18 items: 4 power outputs, 3 switches, and 11 safe
-GPIOs (`gpio/GP7` through `gpio/GP18` except `gpio/GP10` and `gpio/GP11`,
-plus `gpio/GP29`). `GP20` is PIO I2C SCL and `GP21` is SDA on the J8
-external connector; neither is part of the GPIO catalog. There is exactly one
-wire definition, so no version dispatch exists anywhere in the service.
+The catalog is exactly 18 items: 5 power outputs, 2 switches, and 11 safe GPIOs
+(`gpio/GP5`, `gpio/GP6`, `gpio/GP7` through `gpio/GP9`,
+`gpio/GP12` through `gpio/GP16`, plus `gpio/GP29`). The fifth power output is
+`power/5v_usb_hub`, the `vdd_5v` child branch. `GP20` is PIO I2C SCL and
+`GP21` is SDA on the J8 external connector; neither is part of the GPIO catalog.
+There is exactly one wire definition, so no version dispatch exists anywhere in
+the service.
 
 The codec rejects non-conforming headers as follows:
 
@@ -148,17 +150,27 @@ firmware does not auto-format, auto-erase, or auto-delete the snapshot.
 
 The catalog is owned by the firmware. The 18 items are exactly:
 
-- Power: `power/12v_out`, `power/5v_out`, `power/vdd_5v`, `power/20v_out`.
-- Switch: `switch/sd` (target | usb-reader), `switch/usb` (pc | target),
-  `switch/tf_wp` (writable | protected).
-- GPIO: `gpio/GP7` through `gpio/GP18` except `gpio/GP10`/`gpio/GP11`, plus
-  `gpio/GP29`. `GP20` (SCL) / `GP21` (SDA) form the external J8 I2C bus,
-  not GPIO items.
+- Power: `power/12v_out`, `power/5v_out`, `power/vdd_5v`, `power/20v_out`,
+  `power/5v_usb_hub`.
+- Switch: `switch/sd` (target | usb-reader), `switch/tf_wp` (writable |
+  protected). There is no `switch/usb` item.
+- GPIO: `gpio/GP5`, `gpio/GP6`, `gpio/GP7` through `gpio/GP9`, `gpio/GP12`
+  through `gpio/GP16`, plus input-only `gpio/GP29`. `GP20` (SCL) / `GP21` (SDA)
+  form the external J8 I2C bus, not GPIO items.
+
+`power/5v_usb_hub` is a normal saved power item with its own `on`/`off` value.
+It is not a measurement item and has no ADC descriptor. Its catalog position
+does not make it independent of `vdd_5v`: the setter and boot replay enforce the
+parent-child behavior described below.
+
+Old `switch/usb`, `gpio/GP17`, and `gpio/GP18` IDs are not aliases. New Save
+requests using them return `unknown_item`; a stored v1 record containing any of
+those removed IDs is malformed and is rejected as `invalid_snapshot`.
 
 The firmware classifies each saved entry as safe or dangerous through
 `linkr_debugger_config_classify_entry`:
 
-- Dangerous: any power `on` value; `switch/usb` (both routes); any GPIO
+- Dangerous: any power `on` value; any GPIO
   output value (the GPIO entry's value byte has the output bit set).
 - Safe: power `off`; `switch/sd`; `switch/tf_wp`; any GPIO input value.
 
@@ -175,15 +187,18 @@ boot.
 
 ## Boot Restore
 
-Boot restores defaults first. Power outputs are off, `switch sd` is
-`target`, `switch usb` is `target`, `switch tf_wp` is `writable`,
+Boot restores defaults first. Power outputs are off (including the
+`vdd_5v`-child `5v_usb_hub`), `switch sd` is
+`target`, `switch tf_wp` is `writable`,
 and the allowlisted GPIOs are in input mode. The
 persistent-configuration service then loads the snapshot from
 `linkr/config/snapshot`. A corrupt, unsupported, missing, or
 backend-unavailable snapshot does not block startup; the boot path reports
-the reason and continues with the defaults. Every structurally valid v1 snapshot replays every saved entry, including dangerous values, on every normal boot through the shared nine-stage order; `pending` stays zero after
-a successful boot replay, `current` matches the saved value, and
-`apply_state` is `applied` for every replayed row.
+the reason and continues with the defaults. Every structurally valid v1
+snapshot replays every saved entry, including dangerous values, on every normal
+boot through the shared nine-stage order; `pending` stays zero after a
+successful boot replay, `current` matches the saved value, and `apply_state` is
+`applied` for every replayed row.
 
 Save and boot share the same replay engine and the same nine-stage order,
 enforced by `linkr_debugger_config_replay_order_snapshot`:
@@ -191,16 +206,18 @@ enforced by `linkr_debugger_config_replay_order_snapshot`:
 1. Safe GPIO inputs (GPIOs in input mode).
 2. `switch sd`.
 3. `switch tf_wp`.
-4. `switch usb`.
-5. `power vdd_5v`.
+4. `power vdd_5v` (the parent rail).
+5. `power 5v_usb_hub` (the child branch).
 6. `power 12v_out`.
 7. `power 5v_out`.
 8. `power 20v_out`.
 9. Saved GPIO outputs (GPIOs in output mode).
 
-A USB route change is applied before any explicit `vdd_5v` override so the
-coupled rail matches the route; omitting `vdd_5v` from the snapshot
-preserves the route-driven side effect.
+The parent is replayed before the child. Enabling `5v_usb_hub` also enables
+`vdd_5v` when needed; disabling `5v_usb_hub` leaves `vdd_5v` unchanged;
+disabling `vdd_5v` disables `5v_usb_hub` first; enabling `vdd_5v` alone does not
+enable `5v_usb_hub`. `vdd_5v` is independent of every switch route; no route
+operation implicitly changes it.
 
 The service mutex is held for the entire save or boot sequence. It acquires the
 capture owner and then the flash owner once before persisting and replaying, then releases flash and capture
@@ -290,6 +307,9 @@ The HTTP status mapping for each error code is:
 
 ### Examples
 
+The dangerous examples below assume GP5 is currently configured as an output;
+an input-mode GP5 value is safe and does not require confirmation.
+
 <!-- persistent-config-example: curl-config-get -->
 ```sh
 curl -fsS http://172.29.203.1/api/v1/config
@@ -302,12 +322,12 @@ curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["switch/s
 
 <!-- persistent-config-example: curl-config-save-dangerous -->
 ```sh
-curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["switch/usb"],"confirm":true}' http://172.29.203.1/api/v1/config
+curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["gpio/GP5"],"confirm":true}' http://172.29.203.1/api/v1/config
 ```
 
 <!-- persistent-config-example: curl-config-save-dangerous-unconfirmed -->
 ```sh
-curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["switch/usb"],"confirm":false}' http://172.29.203.1/api/v1/config
+curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["gpio/GP5"],"confirm":false}' http://172.29.203.1/api/v1/config
 ```
 
 <!-- persistent-config-example: curl-config-clear -->
@@ -336,7 +356,7 @@ malformed; Rust TUI clears support, focus, and confirmation when
 `snapshot.config` is `None`.
 
 The catalog, `snapshot.version`, the `items` array, the `dangerous_items`
-list, and the per-row `apply_state` only appear on the four dedicated HTTP
+list, and the per-row `apply_state` only appear on the three dedicated HTTP
 endpoints above. They are not carried on the status WebSocket.
 
 ## Rust CLI
@@ -387,7 +407,7 @@ radxa-linkr-debuggerctl config save switch/sd
 
 <!-- persistent-config-example: cli-config-save-dangerous -->
 ```sh
-radxa-linkr-debuggerctl config save --confirm switch/usb
+radxa-linkr-debuggerctl config save --confirm gpio/GP5
 ```
 
 <!-- persistent-config-example: cli-config-clear -->
@@ -632,6 +652,10 @@ See the
 [dated v1-save persistent-configuration HIL report](../testing/results/2026-08-05-persistent-config-v1-save-hil.md).
 The historical 2026-07-30 real-hardware HIL passed all six runner flows; see
 the [historical six-flow report](../testing/results/2026-07-30-persistent-config-hil.md).
+The final 2026-10-21 x1.2 image additionally exercised the 18-entry / 84-byte
+catalog, the fifth `power/5v_usb_hub` item, parent-child power behavior, and a
+child-only snapshot across reboot. See the
+[2026-10-21 x1.2 HIL report](../testing/results/2026-10-21-x1.2-adc-pinout-j4-hil.md).
 The board-level procedure remains defined by
 [docs/testing/hil-functional-test-spec.md](../testing/hil-functional-test-spec.md)
 and validated:
@@ -647,6 +671,10 @@ and validated:
 - v1 dangerous Save plus two consecutive cold reboots: every saved entry
   is replayed on each boot, and the saved snapshot is preserved across
   recovery paths.
+- The 18-entry catalog serializes at most 84 bytes; `power/5v_usb_hub` is a
+  normal item and omitting it does not enable the hub.
+- Replaying a child-only `power/5v_usb_hub=on` snapshot brings up `vdd_5v`
+  first, so a post-reboot GET reports both rails on.
 
 This dated board evidence is separate from the local suites above. Future local
 tests remain distinct from real-hardware HIL and cannot replace a board run when
@@ -664,8 +692,8 @@ Firmware implementation:
   service mutex, capture/flash owner acquisition and reverse release, save
   (persist plus replay), boot restore, and clear entry points.
 - [apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c):
-  nine-stage replay order shared by Save and boot restore, and
-  stop-first-failure replay.
+  nine-stage replay order shared by Save and boot restore, parent-before-child
+  power ordering, and stop-first-failure replay.
 - [apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c):
   catalog, magic `LRCF`, version `1`, entry format, encode and decode
   validation, dangerous classification.

@@ -30,9 +30,10 @@
 6. OTA 路径相关改动必须验证上传、测试启动、手动确认基本流程
 7. 新增功能补对应 functional test（可行时）
 
-持久化配置可能在 HTTP/CDC/WS control transport ready 之前重放并打开 `5v_out`
-或 `vdd_5v`。这不改变 HIL 操作顺序：transport ready 后的**第一条 host hardware
-mutation**仍必须显式确认/设置 `5v_out=on`，第二条 mutation 请求 fixed PD 20 V，
+持久化配置可能在 HTTP/CDC/WS control transport ready 之前重放并打开 `5v_out`、
+`vdd_5v` 或 `5v_usb_hub`。这不改变 HIL 操作顺序：transport ready 后的
+**第一条 host hardware mutation** 仍必须显式确认/设置 `5v_out=on`，第二条
+mutation 请求 fixed PD 20 V，
 随后用 INA226 验证 5 V rail 后才能继续其它硬件操作。报告必须区分“启动重放已为
 on”和“host 首次 mutation 再次确认 on”。
 
@@ -348,9 +349,65 @@ Terminal**，必须验证：
 5. `GET /api/v1/serial/j4` 的 state、line coding、generation、DTR/RTS、USB configured、
    sink count、queue/counters 可解析。用当前 generation 执行一次 PUT CAS 并确认新
    generation；旧 generation 返回 conflict，非法 tuple 不窄化/不排队。
-6. 用 SINGLE/FAST8/WIDE11 中拥有 GP10/GP11 的模式执行一次采集：J4 必须先报告 PAUSED，
+6. baud范围是4800..115200的连续整数，不是preset白名单。在同一CDC fd上依次验证
+   115200→custom 5200→4800→115200，每次以GET current/generation为权威；
+   115201的HTTP请求必须400且current不变。DTR持有配置所有权时，HTTP CAS可先accepted
+   后异步完成`result=-16`，tuple/generation保持不变；释放DTR后custom 5200必须可应用。
+   Web UART settings必须提供custom numeric input及五个推荐preset。CDC SET本身无法报告
+   application rejection，不能作为最终权威。230400、921600、1500000同样必须被拒绝；
+   这些 high-rate 只作为上限诊断，不得记为产品 pass；若使用单独标注的 non-product
+   diagnostic build 观察高 rate，也必须与产品验收分开记录。
+7. 在4800 baud、8E2下发送480个zero byte；write timeout必须按八槽队列wire time加2秒
+   margin推导。物理complete后再启动拥有GP10的SINGLE采集；LA pause最大等待1250ms。
+8. 对侧 UART 可被独占时，临时停止 getty，将两端设为 raw 8N1，并只在支持的4800、
+   custom 5200、115200逐档执行确定性伪随机payload的双向bit compare。记录每档每方向
+   bytes、missing bytes、bit errors与有限样本BER；任何中途重启、人工串口操作或整组
+   USB断开均使该轮无效，必须从完整矩阵开头重跑。最终镜像中4800/5200各方向
+   65536 bits、115200各方向1048576 bits，支持档聚合为2,359,296 tested bits
+   （131072+131072+2097152），零观测错误。结束后恢复两端115200、原tty设置和getty，
+   并确认干净shell输出。BER=0只能表述为该有限样本零观测错误，不能代替模拟信号完整性
+   认证。high-rate 诊断必须单独记录、不得并入支持档 BER：230400 的0x55 peer读数主要
+   为0xB5/0x95且有明显framing error；921600/1500000无法稳定sync；早期一次1500000
+   零错误样本不可复现，后续1500000记录560 bit errors。未做oscilloscope bit-width测量。
+9. 用 SINGLE/FAST8/WIDE11 中拥有 GP10/GP11 的模式执行一次采集：J4 必须先报告 PAUSED，
    capture 中 payload 明确被拒绝但 WS/TCP session 不被注销；STOP/terminal cleanup 后
    UART mux 与 fresh sink epoch 恢复，同一终端无需刷新即可继续。
+10. 无 host CDC 默认值回归：刷写/正常重启后不连接任何 CDC host，等 `usb_configured`
+    为 true 后至少 4 秒，`GET /api/v1/serial/j4` 必须仍为 `115200`、`dtr=false`、
+    sink 数为 0。旧镜像在此场景变成 `9600` 的行为必须判失败。
+11. CDC line coding 低态与 promotion：DTR=false 时用 HTTP/WS 请求 `5200` 必须立即成功
+    并更新 current/generation；随后真实 ACM4 以 `115200` 打开，GET 必须先显示 active
+    `115200`，之后才发布 `dtr=true`，在目标上执行 `uname -s` 必须干净返回；关闭 ACM4
+    后至少 3 秒 GET 仍须为 `115200`。再执行一次 TCP SINGLE 100 kHz / 2 s 采集，J4
+    必须保持 `115200`。
+12. CDC 内部四态 DOWN/PROMOTING/UP/BLOCKED、USB default line coding 仅 stage、
+    LOW→HIGH 先应用 staged tuple 再 publish DTR/ingress、失败 BLOCKED、notification
+    sequence/inflight promotion fence、session epoch + mailbox attempt 身份，以及
+    deferred USB notification（callback 只 stage/commit 并唤醒 worker，不在通知上下文
+    做 HAL attach/promotion/configure）必须由 host-model 覆盖。外部 API 不得公开
+    phase 或 block reason；HTTP/WS 在 CDC 非 DOWN 时返回冲突而不是排队 stage。
+
+##### 自动终端 responder 矩阵
+
+显式 J4 输入仍是 multiwriter；不得把未选中自动回复的 client 描述为 read-only
+或 TX owner。终端 query 只由固件选中的唯一 responder 回答：CDC DTR 有效时选
+CDC，否则选编号最小的已连接 WebSocket。其它 Web 页面仍必须能发送键盘、IME、
+粘贴和 Ctrl-C，ANSI 不得被过滤。使用受控目标 tty 和可控的
+DSR/DA/CPR 查询执行以下矩阵，并同时记录每个 client 的
+`terminal_responder`/`responder` 状态：
+
+| 连接组合 | 预期自动 responder | 必须观测到的自动回复 |
+| --- | --- | --- |
+| 一个 Web，无 CDC DTR | 该 Web slot | 恰好一条 `ESC[2;1R` |
+| 两个 Web，无 CDC DTR | 编号最小的 Web slot | 恰好一条 `ESC[2;1R` |
+| Web + CDC DTR | CDC | 仅 CDC 的 `ESC[24;80R`，Web 不回复 |
+| 被动 Web 手动按 `x` | 另一个 client 或 none | 目标收到 `0x78`，且不产生自动 query 回复 |
+
+每次 generation 或 sink epoch 变化后，xterm parser 必须重建；responder
+promotion 则必须保留同一套 xterm modes，在自动回复关闭状态下排空 promotion
+前的输出，并用 zero-byte parser fence 确认旧写入完成后才启用自动回复。旧的
+半截或已排队 query 不得在新状态被回复。该矩阵是有限功能证据，不是对所有终端
+escape 序列或多 client 竞态的穷举证明。
 
 测试必须针对板载 port 80 production bundle。port 5173 只是 Vite 开发预览，可额外做
 UI 回归，但不能代替 embedded Web 与真实 MCU WS 路径。所有轮询使用有界重试。
@@ -686,8 +743,14 @@ firmware/HTTP host-model 测试与 offline shell fixture 覆盖。ROM BOOTSEL
 
 #### 危险项 pending 与固件确认
 
-危险项必须精确选择非启动默认值 `switch/usb=pc`，而不是给电源轨上电
-或驱动输出 GPIO。host/client 不得自行推断危险性或跳过确认。
+当前x1.2目录必须恰好18项、v1最大84字节：五路power
+（含`power/5v_usb_hub`）、`sd`/`tf_wp`两个switch、
+GP5/6/7/8/9/12/13/14/15/16/29十一个GPIO。旧`switch/usb`、GP17、GP18请求返回
+`unknown_item`；包含旧ID的snapshot必须按malformed拒绝，不能迁移或别名化。
+
+危险项使用已确认无外接负载的 GP5 output HIGH（测试后恢复 input），或由本轮
+夹具明确授权的 power-on 值。x1.2 没有 `switch/usb`。host/client 不得自行推断
+危险性或跳过确认。
 危险提示与拦截只发生在 Save 请求时；写入存储的快照已经获得授权，启动时
 全量重放，不存在第二次确认门。
 
@@ -709,10 +772,10 @@ firmware/HTTP host-model 测试与 offline shell fixture 覆盖。ROM BOOTSEL
 
 - 未确认的危险 Save 必须返回 HTTP 409、`error.code=confirmation_required`
   并携带 `dangerous_items`，host 不得跳过确认。
-- 一次确认的危险 Save（非启动默认值 `switch/usb=pc`）后，`GET /api/v1/config`
+- 一次确认的危险 Save（例如已授权的 `gpio/GP5` output HIGH）后，`GET /api/v1/config`
   必须返回 `snapshot.version == 1`、`snapshot.present == true` 且数值
-  `pending == 0`；`switch/usb` 行的 `current`、`saved`、`pc` 必须完全
-  一致，`requires_confirm == true`、`apply_state == applied`、
+  `pending == 0`；该行的 `current` 与 `saved` 必须完全一致，
+  `requires_confirm == true`、`apply_state == applied`、
   `selected == true`。
 - 连续两次重启之后再次 GET：上述 v1 字段、值和 `pending == 0` 必须保持
   一致，`apply_state` 仍为 `applied`。v1 自动重放在两次普通启动之间
@@ -759,9 +822,10 @@ HTTP/CDC 两条路径在 BOOTSEL 切换后都能恢复。
 #### 最终安全清理
 
 Todo 16 实机 HIL 在结束前必须由 HTTP 与普通端点逐项断言最终状态：没有 snapshot，
-`switch/usb=target`、`switch/sd=target`、`switch/tf_wp=writable`，
+`switch/sd=target`、`switch/tf_wp=writable`，
 所有测试过的 GPIO 都为 input，所有测试过的 power output 都为
-off。还必须解除 NCM DHCP 占用、恢复开始前记录的默认路由/DNS，并释放 terminal、
+off，包括 `vdd_5v` 和其子轨 `5v_usb_hub`；若保留了预置快照，必须另外记录
+snapshot 中的五项电源值以及重启后的实际 replay 结果。还必须解除 NCM DHCP 占用、恢复开始前记录的默认路由/DNS，并释放 terminal、
 刷写工具和 CDC device 句柄。清理步骤缺失任意一项即视为本次 HIL `[blocked]`，
 不可被记录为 pass。
 
@@ -959,27 +1023,52 @@ timeout 5s radxa-linkr-debuggerctl --json power set 12v_out off
 timeout 5s radxa-linkr-debuggerctl --json power set 5v_out on
 timeout 5s radxa-linkr-debuggerctl --json power set 5v_out off
 
-# vdd_5v 是普通可控电源轨：出现在列表中，可 get/set；默认路由 target 下开机为 off。
+# vdd_5v 是普通可控父轨：出现在列表中，可 get/set。
 timeout 5s radxa-linkr-debuggerctl --json power list > /tmp/linkr-power-list.json
 grep -q '"name":"vdd_5v"' /tmp/linkr-power-list.json
+grep -q '"name":"5v_usb_hub"' /tmp/linkr-power-list.json
 timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v
 timeout 5s radxa-linkr-debuggerctl --json power set vdd_5v on
 timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v
 timeout 5s radxa-linkr-debuggerctl --json power set vdd_5v off
 
-# vdd_5v 随 switch usb 路由联动：切 pc 强制开，切 target 强制关（覆盖手动状态）。
-timeout 5s radxa-linkr-debuggerctl --json switch route usb pc --confirm
-timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v   # 期望 on
-timeout 5s radxa-linkr-debuggerctl --json power set vdd_5v off   # 路由不变时允许手动
-timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v   # 期望 off
-timeout 5s radxa-linkr-debuggerctl --json switch route usb target --confirm
-timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v   # 期望 off（联动强制）
+# 5v_usb_hub 是 vdd_5v 的子轨，启动关闭，且没有独立 INA226/ADC descriptor。
+timeout 5s radxa-linkr-debuggerctl --json power get 5v_usb_hub
+timeout 5s radxa-linkr-debuggerctl --json power set 5v_usb_hub on
+timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v
+timeout 5s radxa-linkr-debuggerctl --json power get 5v_usb_hub
+timeout 5s radxa-linkr-debuggerctl --json power set 5v_usb_hub off
+timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v
 
-# 注意：vdd_5v 是 USB hub 的辅助 5 V 域；关闭会使 hub 及其下游设备断电。
+# x1.2 已删除 switch/usb；GET 必须 404，且不得改变独立的 vdd_5v。
+timeout 5s curl -sS -o /tmp/linkr-switch-usb.json -w '%{http_code}\n' \
+  http://172.29.203.1/api/v1/switch/usb | grep -qx 404
+
+# 注意：vdd_5v 是 USB hub 的辅助 5 V 父轨；关闭会使 hub 及其下游设备断电。
 
 timeout 5s radxa-linkr-debuggerctl --json power set 20v_out on
 timeout 5s radxa-linkr-debuggerctl --json power set 20v_out off
 ```
+
+父轨/子轨 setter 必须验证以下顺序，并以每次 GET 的固件状态为准：
+
+1. `5v_usb_hub=on` 时若 `vdd_5v` 原为 off，固件必须先打开 `vdd_5v`，随后
+   `5v_usb_hub` 和 `vdd_5v` 都读回 on。
+2. `5v_usb_hub=off` 只关闭子轨，`vdd_5v` 保持原状态。
+3. `vdd_5v=off` 必须先把 `5v_usb_hub` 关闭，再关闭父轨；两项都读回 off。
+4. 仅 `vdd_5v=on` 不得隐式打开 `5v_usb_hub`。
+5. 只保存 `power/5v_usb_hub` 的 v1 child-only snapshot 后重启，重放必须按
+   parent-before-child 顺序把 `vdd_5v` 和 `5v_usb_hub` 都恢复为 on；
+   `GET /api/v1/config` 的 `pending` 必须为 0。
+6. `/api/v1/adc/read` 必须仍为八路；不得出现 hub descriptor，`vdd_5v` 读数是
+   包含 hub 支路的父轨总量。
+7. Hub 物理供电必须用下游 USB 枚举证明，不得只记录 GPIO/API 状态：hub 关闭时
+   有界轮询 `lsusb` 不得出现 `067b:2731`；打开后有界等待出现
+   `067b:2731 Prolific Technology, Inc. USB SD Card Reader`；关闭后设备消失；
+   再次打开必须重现同一设备。不得挂载、读写该读卡器。该证据证明 U38 /
+   `5V_USB_HUB` 实际提供下游 VBUS。
+8. 结束前 GP5/GP6 必须为 input，`switch/sd=target`、`switch/tf_wp=writable`，
+   `5v_usb_hub=off` 且 `vdd_5v=on`。
 
 ### 4. ADC 电流与 pad 电压监测
 
@@ -1074,7 +1163,9 @@ timeout 5s radxa-linkr-debuggerctl --json adc read adc3
 验证：
 
 - 返回恰好八个 descriptor，顺序固定为 `5v_out`、`12v_out`、`20v_out`、
-  `vdd_5v`、`adc0`、`adc1`、`adc2`、`adc3`。
+  `vdd_5v`、`adc0`、`adc1`、`adc2`、`adc3`。第五路电源输出
+  `5v_usb_hub` 没有 INA226/ADC descriptor；不得为它伪造电流或电压通道，
+  `vdd_5v` 读数是包含 hub 支路的父轨总量。
 - 前四个是 INA226 电流通道，后四个是 ADC pad 电压通道；四个电压通道都没有
   `power_enabled`。`adc0` 带固件提供的 `PD input divider; ADC pad voltage` note，
   但公开值仍是 ADC0 pad 电压，不能乘 `115/15` 还原源侧电压。
@@ -1392,10 +1483,6 @@ timeout 5s radxa-linkr-debuggerctl --json switch get sd
 timeout 5s radxa-linkr-debuggerctl --json switch route sd target
 timeout 5s radxa-linkr-debuggerctl --json switch get sd
 
-timeout 5s radxa-linkr-debuggerctl --json switch get usb
-timeout 5s radxa-linkr-debuggerctl --json switch route usb target --confirm
-timeout 5s radxa-linkr-debuggerctl --json switch get usb
-
 timeout 5s radxa-linkr-debuggerctl --json switch get tf_wp
 timeout 5s radxa-linkr-debuggerctl --json switch route tf_wp protected
 timeout 5s radxa-linkr-debuggerctl --json switch get tf_wp
@@ -1407,14 +1494,21 @@ timeout 5s radxa-linkr-debuggerctl --json switch get tf_wp
 
 - `set` 后等待硬件稳定再 `get`
 - 优先顺序验证，避免并行反向测试干扰
+- x1.2只广告`sd`和`tf_wp`。GET `/api/v1/switch/usb`必须返回404，status、config、
+  WS snapshot都不得出现`switch/usb`。
+- `switch/sd`与`switch/tf_wp`分别切到另一合法值再恢复原值；切换前后回读GP5、
+  GP6和`vdd_5v`，必须无副作用。
 - `tf_wp` 启动默认必须是 `writable`（switch 关闭，GPIO22 驱动 Q12 将 GL3224 SD_WP 拉低）；`protected` 时 onboard USB 读卡器应表现为只读；GL3224 在插卡时采样 SD_WP，WP 变更需重新插卡或将 `switch sd` 切走再切回后生效
 
-### 6. x1.2 已移除 VIN 路由
+### 6. x1.2 已移除 VIN 与 USB 路由
 
 x1.2 没有可切换的 VIN/VIO 1.8V/3.3V 电路，HTTP、CLI、CDC 和持久化目录
 均不再提供 VIN 控制。不得执行旧版 `switch vin` / CDC `vin` 步骤，也不再
 把 VIN 回读或恢复 3.3V 作为 HIL 清理条件；其它电源、路由、GPIO 和主机网络
 清理要求不变。硬件事实见 [x1.2 BSP](../reference/hardware-x1.2.md)。
+
+x1.2 同样没有 `switch/usb`；旧 ID 不能作为 alias。`/switch/usb` 返回404，旧
+config ID使请求返回`unknown_item`，旧snapshot包含它时视为malformed。
 
 ### 7. safe GPIO
 
@@ -1424,20 +1518,32 @@ timeout 5s radxa-linkr-debuggerctl --json gpio set GP13 1
 timeout 5s radxa-linkr-debuggerctl --json gpio input GP13
 timeout 5s radxa-linkr-debuggerctl --json gpio set GP13 0
 timeout 5s radxa-linkr-debuggerctl --json gpio input GP13
+
+for pin in GP5 GP6; do
+  timeout 5s radxa-linkr-debuggerctl --json gpio input "$pin"
+  timeout 5s radxa-linkr-debuggerctl --json gpio set "$pin" 1
+  timeout 5s radxa-linkr-debuggerctl --json gpio set "$pin" 0
+  timeout 5s radxa-linkr-debuggerctl --json gpio input "$pin"
+done
 ```
 
 同时验证以下板级与metadata合同：
 
-- safe-GPIO允许列表为`GP7`-`GP9`、`GP12`-`GP16`和仅输入`GP29`，共九项；
-  GP17/GP18不得出现在safe/control列表或J8/J13映射中。
+- safe-GPIO允许列表为可输出`GP5`、`GP6`、`GP7`-`GP9`、`GP12`-`GP16`和仅输入
+  `GP29`，共11项、其中10项可输出；GP17/GP18不得出现。
+- GP5=`GPIO5_CON`/J8 pin16、GP6=`GPIO6_CON`/J8 pin15，均为普通RP2354直连
+  GPIO，默认input且无pull，不得描述为USBMUX或TF switch。API和embedded Web
+  都要执行input→HIGH→LOW→input并逐步回读。
+- 完整物理目录为24个cell：11个safe control和13个inert；GP29保持input-only。
 - 元件面俯视时J8左列从顶到下为pin 10→1，右列为pin 20→11；已确认控制/监测
   子集为pin1..10依次`GP12/GP13/GP14/GP15/GP16/GP29(ADC3)/GP28(ADC2)/
   GP27(ADC1)/GP20(SCL)/GP21(SDA)`。ADC0/GP26不是J8端子；该子集不是完整pinout。
 - J13顶排为pin2 GP9/USER、pin3 GP8/RSET；底排为pin1 GP7/MASKROM、pin4 GND。
   pin4不是3.3 V，也不得出现在GPIO点击目标中。
 - `gpio_layout_groups`必须把J8/J13都标为`edge=right`，order分别为0/1；对应
-  safe-GPIO metadata为J8：GP29 `(row=4,col=0)`、GP16 `(5,0)`、GP15 `(6,0)`、
-  GP14 `(7,0)`、GP13 `(8,0)`、GP12 `(9,0)`；J13：GP9 `(0,0)`、GP8 `(0,1)`、
+  safe-GPIO metadata为J8：GP29 `(row=4,col=0)`、GP5 `(4,1)`、GP16 `(5,0)`、
+  GP6 `(5,1)`、GP15 `(6,0)`、GP14 `(7,0)`、GP13 `(8,0)`、GP12 `(9,0)`；
+  J13：GP9 `(0,0)`、GP8 `(0,1)`、
   GP7 `(1,0)`。这些row/column不得因right edge而镜像。
 
 ### 8. watchdog 状态
@@ -1467,8 +1573,9 @@ paused error and TCP input is backpressured. After STOP or terminal cleanup the
 firmware restores `GPIO_FUNC_UART_AUX` on GP10/GP11, resumes fresh sink epochs,
 and J4 works again without reboot. Verify CDC, WS, and raw TCP before and after
 capture; do not treat expected mid-capture silence as a bridge failure. The
-active worst-case 480-byte write at 9600 baud through the pause timeout is a
-host-model result unless separately reproduced on board.
+active worst-case is a 480-byte 8E2 write at 4800 baud. The pause wait is capped
+at 1250ms; current board evidence observed physical completion at 1.213s before
+capture, while timeout/cancel branches remain host-model covered.
 
 On x1.2, GP20 is the PIO I2C SCL and GP21 is SDA. The LA samples GP20 as a
 read-only tap without reconfiguring the pin. Never drive GP20 or hold it low
@@ -2113,12 +2220,13 @@ reboot 通过都不能替代第 9、10 节的 ROM BOOTSEL 证据，反之亦然�
 
 #### 每次启动后的电源前置状态
 
-冷启动后 `5v_out`、`12v_out`、`20v_out` 全部回到 Device Tree 的
-`regulator-boot-off`，`vdd_5v` 跟随 `switch usb` 启动路由。如果存在持久化
+冷启动后 `5v_out`、`12v_out`、`20v_out`、`vdd_5v`、`5v_usb_hub` 全部回到
+各自 Device Tree 的未使能启动状态。如果存在持久化
 v1 配置快照，启动重放可能在 control transport ready 前再次打开其中保存的
-`5v_out` 或 `vdd_5v`。必须记录这个 replay 结果，但不能把重放后的 `on` 当作
-Device Tree boot-off 证据，也不能因此跳过 host 前置动作。只有专门验证无 snapshot
-boot default 的用例才要求先清除 snapshot；普通功能 HIL 可保留并明确记录 replay。
+`5v_out`、`vdd_5v` 或 `5v_usb_hub`。必须记录这个 replay 结果，但不能把重放后的
+`on` 当作 Device Tree boot-off 证据，也不能因此跳过 host 前置动作。只有专门验证
+无 snapshot boot default 的用例才要求先清除 snapshot；普通功能 HIL 可保留并明确
+记录 replay。
 
 每次上电或启动（包括初次烧录后的启动）、reboot、ROM BOOTSEL 返回或
 watchdog 复位后，HIL 都必须先重新建立测试前置电源并验证，再继续任何依赖
@@ -2778,13 +2886,21 @@ x1.2 不执行已删除的 VIN 路由用例。OTA 上传/测试/确认流程属�
 
 ## Final Post-Fix HIL Evidence
 
-The current combined ADC, connector-layout, J4 serial, raw-TCP 5555, embedded
-Web terminal, persistent-startup and post-capture evidence is recorded in
+The current combined ADC, connector-layout, five-output power catalog, J4 serial,
+automatic-responder matrix, raw-TCP 5555, embedded Web terminal,
+persistent-startup and post-capture evidence is recorded in
 [2026-10-21 x1.2 ADC/pinout/J4 HIL](results/2026-10-21-x1.2-adc-pinout-j4-hil.md).
 Its PASS scope is digital/functional and explicitly excludes the unperformed
 ADC0 physical source unplug/replug monitor, stuck-line electrical injection,
 analog 50 ns/tr/VOL/Ioff certification, and the active worst-case
-480-byte-at-9600 pause-timeout board case.
+480-byte-at-4800 8E2 timeout/cancel branch beyond the observed 1.213s physical
+completion. It also does not certify hub current, because `5v_usb_hub` has no
+INA226/ADC channel. The J4 product baud ceiling is 115200; the report's
+230400/921600/1500000 captures are high-rate failure diagnostics and never
+product PASS rows. The report also records the final CDC line-coding
+staging/promotion behavior: DTR=false defaults remain staged, HTTP/WS low-state
+changes are immediate, and LOW→HIGH publishes DTR/ingress only after staged work
+completes or rolls back.
 
 The current bounded pre-trigger and UART sample-0 decoder results are recorded in
 `docs/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md`, including

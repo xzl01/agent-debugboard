@@ -124,12 +124,12 @@ export const HIL_HEADINGS = Object.freeze([
 export const REQUIRED_EXAMPLES = Object.freeze({
   "curl-config-get": { kind: "curl", method: "GET", path: "/api/v1/config" },
   "curl-config-save-safe": { kind: "curl", method: "PUT", path: "/api/v1/config", body: { items: ["switch/sd"], confirm: false } },
-  "curl-config-save-dangerous": { kind: "curl", method: "PUT", path: "/api/v1/config", body: { items: ["switch/usb"], confirm: true } },
-  "curl-config-save-dangerous-unconfirmed": { kind: "curl", method: "PUT", path: "/api/v1/config", body: { items: ["switch/usb"], confirm: false } },
+  "curl-config-save-dangerous": { kind: "curl", method: "PUT", path: "/api/v1/config", body: { items: ["power/5v_out"], confirm: true }, bodyAlternatives: [{ items: ["gpio/GP5"], confirm: true }] },
+  "curl-config-save-dangerous-unconfirmed": { kind: "curl", method: "PUT", path: "/api/v1/config", body: { items: ["power/5v_out"], confirm: false }, bodyAlternatives: [{ items: ["gpio/GP5"], confirm: false }] },
   "curl-config-clear": { kind: "curl", method: "DELETE", path: "/api/v1/config" },
   "cli-config-show": { kind: "cli", command: "config show" },
   "cli-config-save-safe": { kind: "cli", command: "config save switch/sd" },
-  "cli-config-save-dangerous": { kind: "cli", command: "config save --confirm switch/usb" },
+  "cli-config-save-dangerous": { kind: "cli", command: "config save --confirm power/5v_out", commandAlternatives: ["config save --confirm gpio/GP5"] },
   "cli-config-clear": { kind: "cli", command: "config clear" },
 });
 

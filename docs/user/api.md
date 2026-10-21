@@ -41,6 +41,12 @@ The encoded status body must remain strictly smaller than the dedicated
 6656-byte firmware buffer. This is a protocol size gate for additions to the
 status snapshot, not permission for clients to assume a fixed response length.
 
+`power_outputs` is firmware-advertised and dynamic. On x1.2 it contains the
+five controllable entries `12v_out`, `5v_out`, `20v_out`, `vdd_5v`, and
+`5v_usb_hub`. `5v_usb_hub` is the `vdd_5v` child branch, has no INA226/ADC
+descriptor, and does not add a status field outside the existing power-output
+shape.
+
 ## J4 Target Serial
 
 The product exposes one logical target serial port, `j4`. It is the dedicated
@@ -52,8 +58,21 @@ and two raw-TCP sinks. A slow sink loses only its own oldest bytes.
 
 Returns availability, runtime state, current line coding, configuration
 generation, DTR/RTS and USB-configuration state, attached sink counts, queue
-state, transport counters, and per-sink drop counters. `state` is `ready`,
+state, transport counters, per-sink drop counters, and `config_request` /
+`config_counters` diagnostics. The latter distinguishes CDC/Web requests,
+invalid/conflict/no-change outcomes, configure/apply results, and rollback
+results. `state` is `ready`,
 `reconfig`, `paused`, `faulted`, or `unavailable`.
+
+The same response reports the global automatic terminal responder as
+`terminal_responder`, an object such as
+`{"transport":"cdc","slot":0}` or `{"transport":"websocket","slot":2}`, or
+`null` when none is selected. CDC wins while DTR is asserted; otherwise the
+lowest-numbered attached WebSocket is selected. Raw TCP is never selected.
+
+`dtr` is the published CDC/gate state, true only after promotion completes; it
+is not the raw physical DTR sample. The response does not expose an internal CDC
+phase or block-reason field.
 
 ```sh
 curl -fsS http://172.29.203.1/api/v1/serial/j4
@@ -61,7 +80,7 @@ curl -fsS http://172.29.203.1/api/v1/serial/j4
 
 ### `PUT /api/v1/serial/j4/config`
 
-Queues an asynchronous compare-and-swap line-coding update. Read the current
+Admits an asynchronous compare-and-swap line-coding update. Read the current
 `generation`, then send the complete tuple and that generation:
 
 ```sh
@@ -71,10 +90,30 @@ curl -fsS -X PUT -H 'Content-Type: application/json' \
 ```
 
 Success is HTTP 202 with `accepted:true` and `request_id`. A stale generation
-or an in-progress transition returns HTTP 409. Supported baud rates are 9600,
-19200, 38400, 57600, 115200, 230400, 460800, 921600, and 1500000; data bits are
-5–8, parity is `none`/`odd`/`even`, stop bits are 1 or 2, and flow control is
-currently `none` only. Poll `GET /api/v1/serial/j4` for the asynchronous result.
+or an in-progress transition returns HTTP 409. Baud accepts every integer from
+4800 through 115200 inclusive. The five recommended presets are 9600, 19200,
+38400, 57600, and 115200; custom values such as 5200 are valid. Requests above
+115200, including 115201, return HTTP 400 and leave the current tuple unchanged.
+Data bits are 5–8, parity is `none`/`odd`/`even`, stop bits are
+1 or 2, and flow control is currently `none` only.
+
+Rates above 115200 are not product-supported. The 230400/921600/1500000
+samples in the HIL record are diagnostics that motivated the cap, not accepted
+client configurations.
+
+Application is asynchronous. Poll `GET /api/v1/serial/j4`; its current tuple,
+generation, completion result and diagnostics are authoritative. A USB CDC host
+SET_LINE_CODING transfer cannot report a later application-level rejection to
+the host, so CDC tools must also read this status rather than assuming their SET
+was applied.
+
+While CDC DTR is false, a USB default line-coding notification only stages a
+candidate tuple and does not change active line coding or generation. An HTTP/WS
+PUT in that low state applies immediately. When the CDC session owns the port
+(DTR high/promoting), HTTP/WS PUT returns conflict instead of being staged. On
+LOW→HIGH the board applies any staged USB tuple, then publishes `dtr=true` and
+opens ingress; a failed apply/attach/detach keeps the path blocked until a
+successful LOW/reset.
 
 ### Streaming transports
 
@@ -82,6 +121,12 @@ currently `none` only. Poll `GET /api/v1/serial/j4` for the asynchronous result.
   with `{"type":"subscribe","topic":"serial.j4"}`. MCU-to-browser bytes are
   binary WebSocket messages. Each browser-to-MCU binary message is one atomic
   serial write and may contain at most 480 bytes.
+- Explicit J4 input is multiwriter. Only automatic terminal replies use the one
+  selected responder. The WS `serial_state` frame carries a per-client
+  `terminal_responder` boolean plus a `responder` descriptor; only an explicit
+  `true` authorizes that page to answer terminal queries. Other Web clients still
+  send keyboard, IME, paste, and Ctrl-C input; they are observers for automatic
+  replies, not read-only. ANSI sequences are not filtered.
 - Raw TCP listens on `0.0.0.0:5555`, with at most two clients. It is a binary
   stream with no banner, echo, CR/LF conversion, Telnet/IAC negotiation, SSH,
   or noVNC semantics. For example: `nc 172.29.203.1 5555`.
@@ -101,7 +146,14 @@ curl http://172.29.203.1/api/v1/power/12v_out             # read one
 curl -X PUT http://172.29.203.1/api/v1/power/12v_out -d '{"state":"on"}'  # set
 ```
 
-`{name}` is `12v_out`, `5v_out`, `20v_out`, or `vdd_5v`. Body: `{"state": "on"}` or `{"state": "off"}`.
+`{name}` is `12v_out`, `5v_out`, `20v_out`, `vdd_5v`, or `5v_usb_hub`. Body: `{"state": "on"}` or `{"state": "off"}`.
+
+`5v_usb_hub` is the switched child of `vdd_5v` on GPIO24 and boots off. Its
+setter is parent-aware: enabling the hub enables `vdd_5v` first when needed;
+disabling the hub leaves `vdd_5v` unchanged; disabling `vdd_5v` disables the hub
+first; enabling `vdd_5v` alone does not enable the hub. `5v_usb_hub` appears in
+status, `/api/v1/power`, and the persistent-config catalog, but it has no
+INA226/ADC channel.
 
 ## ADC (Current And Voltage Monitor)
 
@@ -112,7 +164,10 @@ curl http://172.29.203.1/api/v1/adc/read?channel=5v_out      # single channel
 
 The endpoint returns eight readings in fixed order: the four INA226 current
 channels `5v_out`, `12v_out`, `20v_out`, and `vdd_5v`, followed by the four
-monitor-only pad-voltage channels `adc0`, `adc1`, `adc2`, and `adc3`. Each INA226
+monitor-only pad-voltage channels `adc0`, `adc1`, `adc2`, and `adc3`. The fifth
+power output `5v_usb_hub` has no INA226 and no ADC descriptor; `vdd_5v` is the
+parent total including the hub branch, so clients must not synthesize a hub
+current reading. Each INA226
 reading carries `name`, `signal`, `power_enabled`, `raw`, `mv`, `current_ua`,
 `voltage_valid`, `voltage_uv`, `sensor_value`, and `unit`. Each ADC reading
 carries `name`, `signal`, `raw`, `mv`, `sensor_channel`, `unit`, and
@@ -127,14 +182,13 @@ not a divider-reconstructed source voltage, so clients must not multiply it by
 curl http://172.29.203.1/api/v1/switch                       # list all
 curl http://172.29.203.1/api/v1/switch/sd                    # read one
 curl -X PUT http://172.29.203.1/api/v1/switch/sd -d '{"route":"usb-reader"}'
-curl -X PUT http://172.29.203.1/api/v1/switch/vin -d '{"route":"1.8v"}'
+curl -X PUT http://172.29.203.1/api/v1/switch/tf_wp -d '{"route":"protected"}'
 ```
 
-`{name}` is `sd`, `usb`, or `vin`. Valid routes: `sd` → `target`/`usb-reader`; `usb` → `pc`/`target`; `vin` → `1.8v`/`3.3v`.
-
-For the `usb` switch, J12's upper port connects to the target and its lower
-port holds the USB device. The `pc`/`target` route selects which host controls
-that device.
+`{name}` is `sd` or `tf_wp`. Valid routes: `sd` → `target`/`usb-reader`;
+`tf_wp` → `writable`/`protected`. x1.2 has no `switch/usb`; GET or PUT on
+`/api/v1/switch/usb` returns HTTP 404. `vdd_5v` is an independent power output
+from switch routing, and `5v_usb_hub` is its power child.
 
 ## GPIO
 
@@ -164,13 +218,15 @@ hint, and `order` defines connector order independently of GPIO array order.
 For mapped pins, `layoutLabel`, `layoutRow`, and `layoutColumn` describe the
 component-side top view, with `row=0` at the top and `column=0` on the left.
 The confirmed coordinates are J8 GP12 `(9,0)`, GP13 `(8,0)`, GP14 `(7,0)`,
-GP15 `(6,0)`, GP16 `(5,0)`, GP29/ADC3 `(4,0)`; and J13 GP9 `(0,0)`, GP8
-`(0,1)`, GP7 `(1,0)`. GP17 and GP18 are not part of the current safe/control
-GPIO catalog and must not be fabricated as generic or connector controls.
+GP15 `(6,0)`, GP16 `(5,0)`, GP29/ADC3 `(4,0)`, GP5 `(4,1)`, GP6 `(5,1)`;
+and J13 GP9 `(0,0)`, GP8 `(0,1)`, GP7 `(1,0)`. GP5/GP6 are ordinary direct
+RP2354 GPIOs, default input/no-pulls, not switch controls. GP17 and GP18 are
+absent.
 Clients must keep any future firmware-described group and treat an unknown `edge`
 value as no edge-alignment hint rather than dropping its GPIOs. These GPIO
-arrays are the current nine-entry firmware safe-GPIO allowlist, not a complete connector pinout or
-a mating-face diagram.
+arrays are the current 11-entry firmware safe-GPIO allowlist, not a complete
+connector pinout or a mating-face diagram. Ten entries are output-capable;
+GP29 is input-only.
 
 ## Reboot
 
@@ -186,10 +242,10 @@ instead of the ROM USB boot path.
 curl -X POST http://172.29.203.1/api/v1/reboot
 ```
 
-Each of `5v_out`, `12v_out`, and `20v_out` returns to its
-`regulator-boot-off` default unless a saved v1 configuration snapshot restores
-that rail; `vdd_5v` follows the USB route default. Re-apply rail and PD setup
-after the board returns.
+Each of `5v_out`, `12v_out`, `20v_out`, `vdd_5v`, and `5v_usb_hub` returns to
+its inactive boot state unless a saved v1 configuration snapshot restores that
+rail. `vdd_5v` is the parent and `5v_usb_hub` is its child, which also boots off.
+Re-apply rail and PD setup after the board returns.
 
 The supported mutation method is `POST`. `GET`, `PUT`, and `DELETE` return
 HTTP 405 with `error.code=method_not_allowed` and do not schedule a reset.
@@ -547,6 +603,11 @@ matching `serial_write_complete` only after UART physical-wire completion (or
 with `disposition:"canceled"` if the runtime cancels it). A queue-full,
 paused, reconfiguring, faulted, or oversized write receives an explicit JSON
 error and is not acknowledged as accepted.
+
+`serial_state` identifies the automatic terminal responder. Its
+`terminal_responder` field is a boolean for the receiving slot and `responder`
+is the selected global descriptor. Only that slot answers automatic DSR/DA/CPR
+queries; other slots remain explicit-input observers, not read-only clients.
 
 **Unsubscribe**:
 ```json

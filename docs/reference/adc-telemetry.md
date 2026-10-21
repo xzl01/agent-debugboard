@@ -27,7 +27,7 @@ on both `GET /api/v1/adc/read` and live WebSocket telemetry:
 | `5v_out`  | `current` | `A`           | `uA`                | INA226, signal `INA226_5V`  | controllable 5 V output rail |
 | `12v_out` | `current` | `A`           | `uA`                | INA226, signal `INA226_12V` | controllable 12 V output rail |
 | `20v_out` | `current` | `A`           | `uA`                | INA226, signal `INA226_20V` | controllable 20 V output rail |
-| `vdd_5v`  | `current` | `A`           | `uA`                | INA226, signal `INA226_VDD_5V` | controllable auxiliary 5 V rail |
+| `vdd_5v`  | `current` | `A`           | `uA`                | INA226, signal `INA226_VDD_5V` | parent auxiliary 5 V rail; total includes `5v_usb_hub` |
 | `adc0`    | `voltage` | `V`           | `uV`                | ADC0 / `GP26`, signal `GPIO26_ADC0` | `PD input divider; ADC pad voltage` |
 | `adc1`    | `voltage` | `V`           | `uV`                | ADC1 / `GP27`, signal `GPIO27_ADC1` | ADC pad voltage |
 | `adc2`    | `voltage` | `V`           | `uV`                | ADC2 / `GP28`, signal `GPIO28_ADC2` | ADC pad voltage |
@@ -42,6 +42,13 @@ the PD input divider, while its reported scalar remains the voltage at the ADC
 pad. Clients must not multiply it by the board divider ratio. The remaining ADC
 channels are identified by their firmware `signal` metadata; clients must not
 embed connector-layout mappings in the telemetry model.
+
+The x1.2 power-output catalog contains five entries, but the telemetry contract
+remains exactly eight descriptors. `5v_usb_hub` has no INA226 and no ADC
+channel, so no synthetic hub current or voltage descriptor is added. The
+`vdd_5v` INA226 reports the parent-rail total, including current drawn by the
+hub branch; it is not a separate hub measurement. Hosts must not infer
+`5v_usb_hub` current by subtracting a value that does not exist.
 
 Descriptor order is part of the wire contract: it is also the order of
 `readings[]` and `channels[]`, and the current descriptors are the base
@@ -337,7 +344,9 @@ telemetry. It keeps:
   `20v_out`, `vdd_5v`), with shared `MeasurementSparkline` showing
   current, measured bus voltage, and power from the 60 Hz live
   subscription with a 90-sample window (about 1.5 seconds of history).
-  The traces share the sample history but auto-scale independently.
+  The traces share the sample history but auto-scale independently. The fifth
+  power output, `5v_usb_hub`, has no current descriptor and therefore no
+  measurement row; its state is shown by the ordinary power/output UI.
 - Monitor-only sections for ADC0 through ADC3 between the current rows and the
   PowerAnalyzer, rendered from the firmware descriptors. Each ADC uses a fixed
   `0..3,300,000 uV` scale (nominal `0..3.3 V`). ADC0 may display the firmware

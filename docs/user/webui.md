@@ -39,13 +39,15 @@ captive portal prompt without becoming the host's Internet gateway:
 
 The main dashboard provides cards for:
 
-- **Power controls** — turn `12v_out`, `5v_out`, `20v_out` on/off.
-- **ADC monitoring** — live current readings for each power rail.
-- **Switch routes** — TF/SD routing between `target` and `usb-reader`; the J12
-  lower-port USB device can be switched between the PC (`pc`) and the target
-  connected to J12's upper port (`target`).
-- **GPIO** — safe controls `GP7`-`GP9` and `GP12`-`GP16`, plus input-only
-  `GP29`/ADC3.
+- **Power controls** — turn `12v_out`, `5v_out`, `20v_out`, `vdd_5v`, and
+  `5v_usb_hub` on/off. The hub is a child of `vdd_5v`: enabling it also enables
+  the parent; enabling the parent alone does not enable the hub.
+- **ADC monitoring** — live current readings for the four INA226 rails; the hub
+  branch has no separate measurement.
+- **Switch routes** — TF/SD routing between `target` and `usb-reader`, plus
+  `tf_wp` write protection. x1.2 has no USB route control.
+- **GPIO** — safe controls `GP5`-`GP9` and `GP12`-`GP16`, plus input-only
+  `GP29`/ADC3. GP5/GP6 are ordinary J8 GPIOs, not switches.
 
 Within the **Configuration > Saved** tab, the **Saved configuration** card is
 always visible. Its saved rows and actions appear below the header; power and
@@ -160,9 +162,10 @@ key `linkr/task/tasks`; there is no migration or read alias for it.
 `POST /api/v1/reboot`. The board restarts 250 ms after the response and the
 page reconnects; this action never enters ROM BOOTSEL and never produces an
 `RPI-RP2` device. Holding the physical BOOTSEL button across that reset is a
-separate ROM behavior. A rail not restored by a saved v1 configuration
-snapshot returns to its boot-off default, and `vdd_5v` follows the USB route
-default. Re-apply rail and PD setup after the board returns.
+separate ROM behavior. Any rail not restored by a saved v1 configuration
+snapshot returns to its inactive boot default; `vdd_5v` is the parent power item
+and `5v_usb_hub` is its child and also boots off. Re-apply rail and PD setup
+after the board returns.
 
 **Enter BOOTSEL** is a separate action through `POST /api/v1/bootloader`; it is
 not a restart alias. It is the only Web UI action that should make the board
@@ -191,8 +194,33 @@ Each browser binary frame is one atomic J4 write and is limited to 480 bytes.
 The page distinguishes `serial_write_accepted` from the later
 `serial_write_complete`; an accepted write is not yet proof of UART wire
 completion. `serial_state` reports line coding, generation, DTR/RTS, USB state,
-queue state, and pause/fault transitions. Overrun messages carry both the new
-drop delta and the cumulative total for this browser sink.
+queue state, pause/fault transitions, and the automatic terminal responder.
+Explicit input remains multiwriter. Only one client answers automatic terminal
+queries: CDC while DTR is asserted, otherwise the lowest-numbered attached
+WebSocket. Other pages show **Auto-reply observer** and **Manual input allowed**
+and still send explicit keyboard, IME, paste, and Ctrl-C input; they are not
+read-only, and incoming escape sequences are never filtered. Overrun messages
+carry both the new drop delta and the cumulative total for this browser sink.
+A responder change preserves the same xterm modes: pre-promotion output is
+drained behind a parser fence before automatic replies are enabled, and a
+generation change rebuilds the renderer before subsequent bytes. A passive
+page's stale partial query is not answered later.
+
+UART settings accept a custom numeric baud from 4800 through 115200 and also
+offer five recommended presets. Rates above 115200 are rejected; earlier
+high-rate samples are diagnostic only. After Apply, the page treats
+`GET /api/v1/serial/j4` current settings and generation as authority; this is
+also required after CDC SET_LINE_CODING because USB cannot return a later
+application-level rejection. Low-baud write deadlines are derived from the
+bounded eight-slot queue plus a 2-second margin.
+
+The `dtr` shown by the page is the published CDC/gate state, not an internal
+promotion phase. While DTR is false, a USB default line coding is staged only
+and does not overwrite the active tuple or generation; an HTTP/WS Apply in that
+low state takes effect immediately. When the terminal asserts DTR, the board
+first applies any staged USB settings and only then publishes `dtr=true` and
+opens ingress. A failed apply/attach/detach leaves the CDC path blocked until a
+successful LOW/reset. The API does not expose a phase or block-reason field.
 
 The terminal remains connected while J4 is temporarily paused for a logic
 analyzer capture on GP10/GP11. Input is rejected explicitly during the pause;

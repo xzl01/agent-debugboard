@@ -128,7 +128,7 @@ the only supported adapter.
 | `linkr_board_status` | Read a compact firmware/power/route summary; pass `detail: "full"` for GPIO and complete diagnostics |
 | `linkr_adc_read` | Read the firmware eight-channel ADC/current catalog |
 | `linkr_power_set` | Set `5v_out`, `12v_out` or `20v_out`; requires `confirm: true` |
-| `linkr_switch_route` | Set x1.2 SD or USB routing; requires `confirm: true` |
+| `linkr_switch_route` | Set a firmware-advertised `name` to an advertised `route`; requires `confirm: true` |
 | `linkr_serial_connect` | **Legacy non-J4:** subscribe to host-broker UART0/UART1 at a selected baud rate |
 | `linkr_serial_status` | Read connection, baud, subscriber and write-owner state without opening the UART |
 | `linkr_serial_read` | Return bounded text after a cursor |
@@ -142,6 +142,11 @@ the only supported adapter.
 The `linkr_serial_*` rows document code that still ships; they are not a
 recommended operator route to J4 and do not proxy MCU `serial.j4`. Do not infer
 that those tools migrated to the firmware serial runtime.
+
+`linkr_switch_route` has no board-specific switch-name or route whitelist. Read
+the descriptors returned by `linkr_board_status` with `detail: "full"` and pass
+their strings through; the firmware remains authoritative for unknown names and
+routes. Current x1.2 firmware advertises `sd` and `tf_wp`.
 
 Every result uses the `radxa-linkr-debugger.mcp.v1` envelope. Successful board
 results preserve the firmware `radxa-linkr-debugger.v1` payload inside

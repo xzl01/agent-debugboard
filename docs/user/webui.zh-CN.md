@@ -38,12 +38,14 @@ http://172.29.203.1/
 
 主仪表盘提供以下卡片：
 
-- **电源控制** — 开关 `12v_out`、`5v_out`、`20v_out`。
-- **ADC 监测** — 各电源轨的实时电流读数。
-- **Switch 路由** — TF/SD 在 `target` 和 `usb-reader` 之间切换；J12 下层插入的
-  USB 设备可在主机（`pc`）和 J12 上层所接目标板（`target`）之间切换。
-- **GPIO** — safe/control GPIO `GP7`-`GP9`、`GP12`-`GP16`，以及仅输入的
-  `GP29`/ADC3。
+- **电源控制** — 开关 `12v_out`、`5v_out`、`20v_out`、`vdd_5v` 和
+  `5v_usb_hub`。hub 是 `vdd_5v` 的子轨：打开 hub 会同时打开父轨，仅打开父轨
+  不会打开 hub。
+- **ADC 监测** — 四路 INA226 电源轨的实时电流读数；hub 支路没有独立测量。
+- **Switch 路由** — TF/SD 在 `target` 和 `usb-reader` 之间切换，并提供 `tf_wp`
+  写保护。x1.2 没有 USB route 控件。
+- **GPIO** — safe/control GPIO `GP5`-`GP9`、`GP12`-`GP16`，以及仅输入的
+  `GP29`/ADC3。GP5/GP6 是普通 J8 GPIO，不是 switch。
 
 在 **Configuration > Saved** 标签页内，**已保存配置**卡片始终可见。配置行和操作
 显示在标题栏下方；电源和 Switch 分组默认展开，GPIO 分组默认折叠。分组折叠只改变
@@ -133,9 +135,9 @@ entry 已被遮蔽；执行该 ID 时选择 built-in。清空 stored task 会删
 **Restart**（正常重启）通过 `POST /api/v1/reboot` 请求正常冷重启。板子在响应
 后 250 ms 重启，页面随后重连；该动作绝不请求 ROM BOOTSEL，也不会出现
 `RPI-RP2` 设备。如果复位期间一直按住物理 BOOTSEL 按键，则由 ROM 单独决定
-进入 BOOTSEL。未被已保存 v1 配置快照恢复的电源轨回到各自的 boot-off 默认
-状态，`vdd_5v` 跟随 USB 路由默认值；板子恢复后必须重新设置并验证电源轨与
-PD。
+进入 BOOTSEL。未被已保存 v1 配置快照恢复的电源轨回到各自未使能的启动默认
+状态；`vdd_5v` 是父级电源项，`5v_usb_hub` 是它的子轨且同样启动关闭。板子恢复
+后必须重新设置并验证电源轨与 PD。
 
 **Enter BOOTSEL** 通过 `POST /api/v1/bootloader` 执行，是独立动作，不是
 Restart 的别名。它是 Web UI 中唯一应让板子枚举为 `RPI-RP2` 的动作。ROM
@@ -159,7 +161,26 @@ USB-NCM 地址：
 每个浏览器 binary frame 是一条原子 J4 写，最大 480 字节。页面区分
 `serial_write_accepted` 与之后的 `serial_write_complete`；accepted 不代表 UART
 最后一个 stop bit 已上 wire。`serial_state` 上报 line coding、generation、
-DTR/RTS、USB、队列和 pause/fault 状态；overrun 同时包含本次 drop 增量和累计值。
+DTR/RTS、USB、队列、pause/fault 状态，以及自动终端 responder。显式输入仍是
+multiwriter。只有一个 client 回复自动终端查询：DTR 有效时为 CDC，否则为编号
+最小的已连接 WebSocket。其它页面显示 **Auto-reply observer** 和
+**Manual input allowed**，仍可发送显式键盘、IME、粘贴和 Ctrl-C 输入，不是只读；
+下行 escape 序列也不会被过滤。overrun 同时包含本次 drop 增量和累计值。
+responder 切换保持同一套 xterm modes：promotion 前的输出先经过 parser fence
+排空，之后才启用自动回复；generation 变化会在后续字节前重建 renderer。被动页面
+的旧半截查询不会在之后被回复。
+
+UART settings 接受 4800 到 115200 的 custom 整数 baud，并提供五个推荐 preset。
+高于 115200 的 rate 会被拒绝；早期 high-rate 样本只是诊断证据。Apply 后以
+`GET /api/v1/serial/j4` 的 current settings 与 generation 为权威；CDC
+SET_LINE_CODING 无法返回稍后的 application-level rejection，因此也必须 GET
+确认。低 baud 写 timeout 按有界八槽队列推导，并增加 2 秒余量。
+
+页面显示的 `dtr` 是已发布的 CDC/gate 状态，不是内部 promotion phase。DTR=false
+时，USB default line coding 只会 stage，不会覆盖 active tuple 或 generation；
+此低态下的 HTTP/WS Apply 立即生效。终端 assert DTR 时，板子先应用 staged USB
+settings，之后才 publish `dtr=true` 并开放 ingress。apply/attach/detach 失败会
+保持 CDC blocked，直到成功的 LOW/reset。API 不公开 phase 或 block-reason 字段。
 
 逻辑分析仪占用 GP10/GP11 时，终端连接保持存在，J4 进入 PAUSED 并明确拒绝输入；
 采集 cleanup 恢复 UART1 和 fresh sink epoch 后，同一终端无需刷新即可继续。手动

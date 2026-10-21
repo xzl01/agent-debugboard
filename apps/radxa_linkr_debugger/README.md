@@ -188,8 +188,9 @@ A normal restart and ROM BOOTSEL are separate firmware paths:
   Only the combined `radxa-linkr-debugger-rp2350.uf2` may be flashed there.
 
 A rail not restored by a saved v1 configuration snapshot returns to its
-`regulator-boot-off` default on a cold restart; `vdd_5v` follows the
-`switch usb` boot route. Re-apply rail and PD state after the board returns.
+`regulator-boot-off` default on a cold restart. `vdd_5v` is an independent
+output and does not follow any switch route. Re-apply rail and PD state after
+the board returns.
 
 The physical BOOTSEL button is polled by a firmware thread. While firmware is
 running, holding it for 3 seconds and releasing it requests a normal cold
@@ -249,7 +250,8 @@ record through the bounded v1 codec, and reports its state through the
 config service. The snapshot header is exactly 12 bytes; byte 4 version 1 is
 the only accepted version and byte 7 zero is the only accepted restore
 padding. The maximum encoded snapshot is 84 bytes (12-byte header plus 18
-four-byte entries). The codec returns `unsupported_version` for any version byte other
+four-byte entries). The catalog is exactly 18 items: 5 power outputs, 2
+switches, and 11 GPIO entries. The codec returns `unsupported_version` for any version byte other
 than 1; a v1 header with a nonzero byte 7 is rejected as `invalid_snapshot`.
 A version byte other than 1 is never replayed, migrated, or auto-cleared. The config service
 runs after `linkr_debugger_control_init()` succeeds and before HTTP init,
@@ -289,12 +291,12 @@ The save `snapshot.version` is `1` for every successful new Save (safe or
 confirmed-dangerous). Successful
 `clear` adds `noop`, `snapshot`, and numeric `pending`.
 
-Dangerous classification is firmware-owned and applies to `power=on`, every
-USB route value, and any GPIO entry with the output direction
-bit set. A Save that includes any dangerous ID without `confirm:true`
-is rejected with `confirmation_required` and lists the offending IDs in
-`dangerous_items`. `confirmation_items` belongs to a successful save
-response. A partial save stops at the first failed item and reports the
+Dangerous classification is firmware-owned and applies to `power=on` and any
+GPIO entry with the output direction bit set. A Save that includes any
+dangerous ID without `confirm:true` is rejected with `confirmation_required`
+and lists the offending IDs in `dangerous_items`. `confirmation_items`
+belongs to a successful save response. A partial save stops at the first
+failed item and reports the
 applied set and the still-pending set. Stable error codes: `invalid_json`,
 `empty_selection`, `unknown_item`, `duplicate_item`, `confirmation_required`,
 `item_unavailable`, `no_snapshot`, `busy`, `body_too_large`,
@@ -319,14 +321,13 @@ later Save or `config clear` replaces the snapshot. Ordinary control
 setters are volatile; only an explicit `config save` writes the snapshot,
 and there is no auto-persist path on top of normal control operations.
 
-Save and boot restore share this exact nine-stage replay order so coupled final state
-is preserved:
+Save and boot restore share this exact nine-stage replay order:
 
 1. saved GPIO inputs (direction `input`)
 2. `switch sd`
 3. `switch tf_wp`
-4. `switch usb`
-5. `power vdd_5v`
+4. `power vdd_5v`
+5. `power 5v_usb_hub`
 6. `power 12v_out`
 7. `power 5v_out`
 8. `power 20v_out`
@@ -337,10 +338,9 @@ as applied, and keeps the failed plus remaining entries pending. There is
 no rollback, no re-attempt, and no partial hardware write after the stop;
 retrying means repeating the confirmed Save, which re-captures live values
 and replays them through the same order. A failed Save still persists the
-snapshot, so the next boot replays it again. A USB route change is applied
-before any explicit `vdd_5v` override so the coupled rail matches the
-route; omitting `vdd_5v` from the snapshot preserves the route-driven side
-effect.
+snapshot, so the next boot replays it again. `vdd_5v` is independent; no
+route operation implicitly changes it. `5v_usb_hub` is a child of `vdd_5v`
+and is replayed after its parent.
 
 ### CDC ACM Commands
 
@@ -421,7 +421,7 @@ already supports:
 - `DELETE /api/v1/config` and CDC `config clear` delete the stored
   snapshot but never change live hardware.
 
-A stored v1 snapshot, including power-on, USB routes, and GPIO
+A stored v1 snapshot, including power-on, switch routes, and GPIO
 `output` entries, is replayed in full on every normal boot once it survives
 the recovery path intact. A new Save after recovery writes a fresh v1
 header; a stored blob whose version byte is not 1 is never replayed,
@@ -602,7 +602,7 @@ radxa-linkr-debuggerctl adc read -v 5v_out
 radxa-linkr-debuggerctl power set 12v_out on
 radxa-linkr-debuggerctl power set 20v_out on
 radxa-linkr-debuggerctl switch route sd usb-reader
-radxa-linkr-debuggerctl switch get usb
+radxa-linkr-debuggerctl switch get tf_wp
 radxa-linkr-debuggerctl watchdog status
 ```
 
@@ -618,7 +618,7 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- adc read -v 5v_out
 cargo run --manifest-path cmd-ng/Cargo.toml -- power set 12v_out on
 cargo run --manifest-path cmd-ng/Cargo.toml -- power set 20v_out on
 cargo run --manifest-path cmd-ng/Cargo.toml -- switch route sd usb-reader
-cargo run --manifest-path cmd-ng/Cargo.toml -- switch get usb
+cargo run --manifest-path cmd-ng/Cargo.toml -- switch get tf_wp
 cargo run --manifest-path cmd-ng/Cargo.toml -- watchdog status
 ```
 
@@ -668,38 +668,36 @@ Current schematic mapping (x1.2 / RP2354A):
 
 - `12v_out`: `GP02_12V_EN` (GPIO 2)
 - `5v_out`: `GP0_5V_EN` (GPIO 0)
-- `vdd_5v`: `GP01_5V_WS_EN` (GPIO 1, follows USB mux route)
+- `vdd_5v`: `GP01_5V_WS_EN` (GPIO 1, independent output)
+- `5v_usb_hub`: `GPIO24_USB_CRL` (GPIO 24, child of `vdd_5v`, boot-off, no INA226 monitor)
 - `20v_out`: `GP03_20V_EN` (GPIO 3)
 - TF/SD route switch: `GP06_TF_SW` (GPIO 4)
-- USB hub mux switch: `GP03_USB3_HUB` (GPIO 5)
 - TF write-protect: `TF_WP` (GPIO 22, `switch tf_wp`; defaults to `writable` at boot)
-- Test point: `TP15` (GPIO 24)
-- Status LED: `LED_BLUE` (GPIO 25)
+- Status LED: `LED_BLUE` (GPIO 25, active-high)
 
-G3 GPIO25 operates as a watchdog heartbeat LED, active-low, blinking at roughly
+GPIO25 operates as a watchdog heartbeat LED, active-high, blinking at roughly
 1 Hz. The cycle advances only after a successful hardware watchdog feed. Skipped
 or failed feeds reset it to the inactive state while firmware owns the GPIO. This
 behavior is driven through Device Tree chosen properties and the existing watchdog
 supervisor, not through a Zephyr `CONFIG_LED` or built-in heartbeat driver.
 
 - GPIO aliases: `CON_MAS` (GP7), `CON_REST` (GP8), `CON_USER` (GP9)
-- Safe GPIO: `GP7`-`GP9`, `GP12`-`GP18`
+- Safe GPIO: `GP5`-`GP9`, `GP12`-`GP16`, plus input-only `GP29`
 - J4 UART1: TX `GP10`, RX `GP11`; LA temporarily owns captured pins
 - CH224A PD strap: `GP19`, high-impedance input without pulls
 - J8 PIO I2C: SCL `GP20`, SDA `GP21`; LA samples GP20 read-only
 - ADC3 / GPIO: `GP29` (ADC3, input-only while ADC3-owned; see
   [GP29 ADC3 ownership](#gp29-adc3-ownership))
-- Current monitors: four INA226 devices for `5v_out`, `12v_out`, `20v_out`, `vdd_5v`
+- Current monitors: four INA226 devices for `5v_out`, `12v_out`, `20v_out`, `vdd_5v`; `5v_usb_hub` has no INA226 monitor.
 
-GPIO1 VDD_5V is coupled to the USB mux route (`pc` on, `target` off) and boots
-off under the default `target` route. x1.2 has no VDD_1V8 child rail or
-selectable CH347 VIO regulator.
+GPIO1 VDD_5V is an independent power output controlled as `vdd_5v` across the
+raw API, host CLI/TUI, and Web UI. It boots off and is not coupled to any
+switch route. x1.2 has no VDD_1V8 child rail or selectable CH347 VIO regulator.
 
-GPIO1 VDD_5V is exposed as the `vdd_5v` power output across the raw API, host
-CLI/TUI, and Web UI. It powers the USB hub domain and follows the `switch usb`
-route (`pc` on, `target` off); manual `power set` is honored between route
-changes and re-imposed on the next route change. Turning it off cuts the USB
-hub domain.
+GPIO24 controls `5v_usb_hub`, a child rail of `vdd_5v`. It boots off and has no
+INA226 monitor. Enabling `5v_usb_hub` enables `vdd_5v` first when needed;
+disabling `vdd_5v` also disables `5v_usb_hub`; enabling `vdd_5v` alone does not
+enable `5v_usb_hub`.
 
 x1.2 INA226 current monitors use 10 mOhm shunts. The Rust CLI and `curl` both report the
 firmware's raw current-monitor chain directly; no host-side ADC calibration

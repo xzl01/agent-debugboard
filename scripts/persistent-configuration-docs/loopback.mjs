@@ -13,30 +13,33 @@ function expectedRequest(id) {
   return {
     "curl-config-get": { method: "GET", path: "/api/v1/config", body: null },
     "curl-config-save-safe": { method: "PUT", path: "/api/v1/config", body: { items: ["switch/sd"], confirm: false } },
-    "curl-config-save-dangerous": { method: "PUT", path: "/api/v1/config", body: { items: ["switch/usb"], confirm: true } },
-    "curl-config-save-dangerous-unconfirmed": { method: "PUT", path: "/api/v1/config", body: { items: ["switch/usb"], confirm: false } },
+    "curl-config-save-dangerous": { method: "PUT", path: "/api/v1/config", body: { items: ["power/5v_out"], confirm: true } },
+    "curl-config-save-dangerous-unconfirmed": { method: "PUT", path: "/api/v1/config", body: { items: ["power/5v_out"], confirm: false } },
     "curl-config-clear": { method: "DELETE", path: "/api/v1/config", body: null },
     "cli-config-show": { method: "GET", path: "/api/v1/config", body: null },
     "cli-config-save-safe": { method: "PUT", path: "/api/v1/config", body: { items: ["switch/sd"], confirm: false } },
-    "cli-config-save-dangerous": { method: "PUT", path: "/api/v1/config", body: { items: ["switch/usb"], confirm: true } },
+    "cli-config-save-dangerous": { method: "PUT", path: "/api/v1/config", body: { items: ["power/5v_out"], confirm: true } },
     "cli-config-clear": { method: "DELETE", path: "/api/v1/config", body: null },
   }[id];
 }
 
 const UNCONFIRMED_DANGEROUS_SAVE = Object.freeze({
   schema: "radxa-linkr-debugger.v1", ok: false, command: "config", action: "save",
-  error: { code: "confirmation_required", message: "confirmation is required" }, dangerous_items: ["switch/usb"],
+  error: { code: "confirmation_required", message: "confirmation is required" }, dangerous_items: ["power/5v_out"],
 });
 
 function responseFor(request) {
   if (request.method === "PUT" && request.path === "/api/v1/config" &&
-      JSON.stringify(request.body) === JSON.stringify({ items: ["switch/usb"], confirm: false })) {
+      JSON.stringify(request.body) === JSON.stringify({ items: ["power/5v_out"], confirm: false })) {
     return { status: 409, payload: UNCONFIRMED_DANGEROUS_SAVE };
   }
   const base = { schema: "radxa-linkr-debugger.v1", ok: true, command: "config" };
   if (request.method === "GET") return { status: 200, payload: {
     ...base, action: "get", backend: { available: true, reason: "ready" }, snapshot: { present: true, version: 1 }, pending: 0,
-    items: [{ id: "switch/sd", kind: "switch", current: { route: "target" }, saved: null, selected: false, requires_confirm: false, apply_state: "not_saved" }],
+    items: [
+      { id: "switch/sd", kind: "switch", current: { route: "target" }, saved: null, selected: false, requires_confirm: false, apply_state: "not_saved" },
+      { id: "power/5v_out", kind: "power", current: { state: "on" }, saved: null, selected: false, requires_confirm: true, apply_state: "not_saved" },
+    ],
   } };
   if (request.method === "PUT") return { status: 200, payload: {
     ...base, action: "save", saved_items: request.body.items, confirmation_items: [], applied_items: request.body.items, snapshot: { present: true, version: 1 }, pending: 0,

@@ -22,14 +22,17 @@ RP2350A 构建目标。G2 / RP2040 已停止支持：
 | Web UI | 仪表盘 http://172.29.203.1/ |
 | 逻辑分析仪 | PIO2+DMA，100 kHz–125 MHz，WebSocket/raw-TCP Sigrok，[共用 packed arena 与当前 WIDE11 捕获](docs/reference/logic-analyzer.md) |
 | 功率分析仪 | 触发式采集，环形缓冲，CSV/NDJSON 导出 |
-| 电源输出 | `12v_out`、`5v_out`、`20v_out`、`vdd_5v` |
+| 电源输出 | `12v_out`、`5v_out`、`20v_out`、`vdd_5v`、`5v_usb_hub` |
 | ADC 监测 | `5v_out`、`12v_out`、`20v_out`、`vdd_5v` 电流读数及 GP29/ADC3 电压遥测；详见 [docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md) |
-| 路由切换 | 固件上报的 TF/SD、USB hub mux、TF 写保护（`writable`/`protected`） |
-| GPIO | `GP7`–`GP9`、`GP12`–`GP18`；`GP29` 仍保留在目录中，但在 `adc3` 拥有时仅可输入（见 [GP29 ownership](docs/reference/adc-telemetry.md#gp29-ownership)） |
+| 路由切换 | 固件上报的 TF/SD 路由与 TF 写保护（`writable`/`protected`） |
+| GPIO | `GP5`–`GP9`、`GP12`–`GP16`；`GP29` 仍保留在目录中，但在 `adc3` 拥有时仅可输入（见 [GP29 ownership](docs/reference/adc-telemetry.md#gp29-ownership)） |
 | OTA 更新 | MCUboot 无签名 OTA |
 | 看门狗 | 自主恢复至 BOOTSEL |
 | 持久化配置 | [一份由固件持有的显式快照](docs/reference/persistent-configuration.md)；安全值在启动时恢复，危险值需要确认，清除快照不会改变实时硬件 |
 | 强制门户 | DHCP option 114/HTTP 自动打开 Web UI |
+
+`vdd_5v` 是独立电源输出，不与 switch 路由耦合。`5v_usb_hub` 是 `vdd_5v` 的子轨，
+由 GPIO24 控制，没有 INA226 监测通道。
 
 WIDE11 使用 144184 B 硬件切片和 43008 B WS 遥测环，共享 161144 B 总后备分配。历史严格 10/10 连续流工作点为：FAST8 静态 2.600 MHz、GP16 活动输入 WS 1.200 MHz / TCP 1.375 MHz；WIDE11 静态 WS 1.050 MHz / TCP 1.175 MHz、GP16 活动输入 WS 850 kHz / TCP 950 kHz。这些是传输工作点，不是 125 MHz 连续流声明，也不代表 x1.2 重新验收。
 

@@ -11,6 +11,10 @@ There is exactly one logical target serial port: `j4`.
 - Physical UART: RP2350 UART1, TX GP10 and RX GP11.
 - Default line coding: 115200, 8 data bits, no parity, 1 stop bit, no flow
   control.
+- Baud accepts every integer from 4800 through 115200. The five recommended
+  presets are 9600, 19200, 38400, 57600, and 115200; presets are UI
+  convenience, not a whitelist. Requests above 115200 are rejected. Earlier
+  230400/921600/1500000 samples were diagnostics, not product support.
 - Shared receive storage: one 4096-byte UART RX ring.
 - Receive sinks: one USB CDC ACM4 sink, four fixed WebSocket sinks, and two
   fixed raw-TCP sinks.
@@ -57,6 +61,11 @@ the matching `serial_write_complete` only to the source slot, with disposition
 `completed` or `canceled`. A disconnected slot cannot receive an old session's
 completion.
 
+Host write deadlines are derived from the active line coding and the bounded
+eight-slot TX queue, plus a fixed 2-second scheduling margin. This avoids a
+fixed timeout that would falsely fail legal low-baud writes while remaining
+bounded.
+
 `serial_state` reports runtime state, line coding, generation, DTR/RTS, USB
 configuration, queue state, and key cancellation/drop counters.
 `serial_overrun.dropped_bytes` is the increment since the prior notice;
@@ -95,6 +104,63 @@ controls CDC receive attachment; line-coding notifications use the same
 configuration state machine as HTTP. The control shell is a different CDC ACM
 interface and must not be mistaken for J4.
 
+## Automatic Terminal Replies
+
+Explicit UART input remains multiwriter. Every complete WebSocket binary message
+and every raw-TCP receive is admitted as one atomic TX request into the same
+bounded queue; there is no per-client TX-owner acquisition, and a client that is
+not selected for automatic replies is not read-only. Its keyboard, IME
+composition, paste, Ctrl-C, and automation input still go to J4. ANSI and other
+escape sequences from the target are never filtered.
+
+Only automatic terminal replies have a single firmware-selected responder:
+
+- CDC is the responder whenever its DTR line is asserted.
+- Otherwise exactly one attached WebSocket slot is selected deterministically:
+  the lowest-numbered attached slot.
+- If neither is available, there is no automatic responder.
+- Raw TCP is never selected for automatic replies.
+
+`GET /api/v1/serial/j4` reports the global responder as
+`terminal_responder`, an object such as
+`{"transport":"cdc","slot":0}` or `{"transport":"websocket","slot":2}`, or
+`null` when none is selected. A WebSocket `serial_state` frame instead reports
+`terminal_responder` as a boolean for that slot and carries the selected
+descriptor in `responder`; only an explicit `true` authorizes that page to
+answer terminal queries. A descriptor never identifies the receiving browser by
+itself, and DTR forces these Web automatic replies off without disabling manual
+input.
+
+Non-selected Web clients suppress xterm's internal DSR/DA/CPR generation. Their
+explicit keyboard input, IME composition, and paste still send exactly once
+through the manual path. The terminal UI therefore labels them **Auto-reply
+observer** and **Manual input allowed**, not read-only.
+
+State and data epoch boundaries prevent stale terminal state across responder
+and line-coding changes. Generation values are monotonic within a connection,
+and older connection/render epochs are discarded rather than re-applied
+(ABA-safe). A generation change invalidates pending TX and rebuilds the xterm
+renderer before subsequent RX. Responder promotion preserves the same xterm
+modes: pre-promotion output is drained under automatic suppression, new RX stays
+queued, and a zero-byte parser fence completes only after the old writes;
+automatic replies are enabled only after that fence. Demotion merges any
+unfinished promotion queue back into passive RX. A passive terminal's partial or
+queued query is never replayed into an automatic reply, and rejected writes are
+never replayed.
+
+The finite 2026-10-21 board matrix used a controlled target tty:
+
+| Attached clients | Automatic responder | Observed automatic replies |
+| --- | --- | --- |
+| one Web, no CDC DTR | that Web slot | exactly one `ESC[2;1R` |
+| two Web, no CDC DTR | lowest Web slot | exactly one `ESC[2;1R` |
+| Web + CDC DTR | CDC | only CDC `ESC[24;80R`; no Web reply |
+| passive Web manual `x` | other client or none | target received `0x78` |
+
+These rows are bounded functional evidence for terminal query handling, not a
+claim that every possible terminal escape sequence or multi-client race was
+exhaustively tested.
+
 ## Configuration API
 
 `GET /api/v1/serial/j4` returns availability, runtime state, current line
@@ -121,6 +187,45 @@ generation or busy transition returns HTTP 409. The body accumulator remains
 poisoned after an assembly failure until transaction COMPLETE/ABORT, preventing
 a legal trailing fragment from becoming a second request.
 
+The GET current tuple and generation are authoritative for both HTTP and CDC.
+USB SET_LINE_CODING completes at the USB control-transfer layer and cannot
+report a later application rejection; clients must read GET status and its
+configuration counters. Web exposes a custom numeric baud input in addition to
+the five recommended presets.
+
+### CDC line-coding staging and promotion
+
+Firmware internally tracks four CDC line-control states: `DOWN` (physical DTR
+low, published gate closed), `PROMOTING` (physical DTR high, staged work
+pending), `UP` (DTR and ingress published), and `BLOCKED` (published gate closed
+until a recovery boundary). These are internal implementation semantics. The
+external `/api/v1/serial/j4` response does not expose a phase or block-reason
+field; `dtr` is the published CDC/gate state, not the raw physical sample.
+
+- While DTR is false, a USB default `SET_LINE_CODING` notification only stages a
+  candidate tuple. It does not change active line coding or the generation.
+- An HTTP/WS `PUT /api/v1/serial/j4/config` in that low state applies
+  immediately through the normal worker path and advances the generation. It is
+  not held behind a future DTR assertion.
+- LOW→HIGH enters `PROMOTING`. Firmware first applies any staged USB tuple and
+  observes completion or rollback; only then does it publish DTR and open CDC
+  ingress. A failed apply, attach, or detach enters `BLOCKED` and keeps
+  DTR/ingress closed until a successful LOW/reset boundary. The specific
+  unknown-LOW and detach-failure reasons have safe same-LOW recovery.
+- A request while the CDC session owns the port (non-`DOWN`) is rejected as
+  busy/conflict; it is not staged into the USB path.
+- Every USB notification increments a sequence before the HAL read and remains
+  inflight until its complete state commit. Promotion requires an unchanged
+  sequence and zero inflight notifications, so a HAL read window cannot promote
+  a stale DTR sample.
+- Staged/mailbox work carries a session epoch, and the worker validates that
+  identity before applying. A stale attempt cannot cross a LOW/reset or a new
+  session.
+- Deferred USB notification handling is a production prerequisite: the
+  notification callbacks only stage/commit state and wake the control worker.
+  They never perform physical attach, promotion, or HAL configuration in
+  notification context.
+
 ## PAUSED, capture ownership, and recovery
 
 GP10/GP11 are shared with PIO2 logic-analyzer modes. Before capture takes an
@@ -137,10 +242,10 @@ reject new WS payloads explicitly.
 
 STOP or terminal capture cleanup returns GP10/GP11 to UART1, reattaches fresh
 sink epochs, and resumes queued admission. Verify J4 before and after every
-capture that owns either pin. The active worst case of one 480-byte frame at
-9600 baud through the pause timeout is host-model tested; current board evidence
-covers capture while J4 is idle or carrying normal traffic, not that worst-case
-wire-duration timeout.
+capture that owns either pin. The maximum pause wait is 1250 ms, covering one
+480-byte 8E2 frame at the minimum 4800 baud (about 1.2 seconds) plus margin.
+Current board evidence completed that low-baud event at 1.213 seconds before a
+GP10 SINGLE capture and then restored 115200 baud.
 
 ## Retired host path
 
@@ -156,7 +261,10 @@ the J4 product transport. Port 5173 is a Vite preview only; there is no
 
 The current x1.2 board evidence is recorded in
 [2026-10-21 x1.2 ADC/pinout/J4 HIL](../testing/results/2026-10-21-x1.2-adc-pinout-j4-hil.md).
-It covers the embedded xterm.js terminal, CDC + WS + two TCP sinks including a
-slow sink, accepted/complete ownership, raw TCP 5555, and J4 recovery after a
-GP10 logic-analyzer capture. Read the report limitations before treating it as
-electrical or worst-case timing certification.
+It covers the embedded xterm.js terminal, the finite responder matrix above,
+CDC + WS + two TCP sinks including a slow sink, accepted/complete ownership, raw
+TCP 5555, and J4 recovery after a GP10 logic-analyzer capture. Its supported-rate
+BER covers only 4800/5200/115200; rates above 115200 are rejected and the
+high-rate samples are diagnostic, not product PASS rows. Read the report
+limitations before treating it as electrical or worst-case timing
+certification.

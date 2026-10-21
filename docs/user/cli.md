@@ -121,31 +121,28 @@ available through `pd status`, `pd fixed MV`, and `pd pps MV` (board limit 20 V)
 
 ## Switch Routes
 
-Two mux switches control physical signal routing on x1.2:
+x1.2 exposes two firmware switch controls:
 
 | Switch | Routes between | Values |
 |--------|---------------|--------|
 | `sd` | TF/SD card path | `target`, `usb-reader` |
-| `usb` | J12 lower-port USB device routed to PC or target | `pc`, `target` |
+| `tf_wp` | TF write protection | `writable`, `protected` |
 
 ```sh
 radxa-linkr-debuggerctl switch list
 radxa-linkr-debuggerctl switch get sd
 radxa-linkr-debuggerctl switch route sd usb-reader
-radxa-linkr-debuggerctl switch route usb target --confirm
-radxa-linkr-debuggerctl switch route usb pc --confirm
+radxa-linkr-debuggerctl switch route tf_wp protected
 ```
 
-USB route changes require `--confirm` because they have visible side effects.
-x1.2 has no VIN/VIO route; old `switch vin` examples do not apply.
-
-For `switch usb`, J12's upper port connects to the target and the lower port
-holds the USB device being switched. Route `pc` connects that device to the PC
-at J15; route `target` connects it to the target through J12's upper port.
+x1.2 has no USB or VIN/VIO route. `/switch/usb` returns HTTP 404; `vdd_5v` is
+an independent power output.
 
 ## GPIO
 
-Safe GPIOs accept three name formats: `GP13` (canonical), `13` (raw pin), or `CON_MAS` (board note). The CLI shows both `GPxx` and the note.
+The eleven safe GPIOs include ordinary direct GP5/GP6 controls and input-only
+GP29. Identifiers accept `GP13` (canonical), `13` (raw pin), or `CON_MAS`
+(board note). The CLI shows both `GPxx` and the note.
 
 ```sh
 radxa-linkr-debuggerctl gpio list
@@ -200,8 +197,8 @@ envelope with `command: "reboot"`, waits 250 ms, and performs a normal cold
 restart. The reboot action itself never requests ROM BOOTSEL and never
 enumerates as an `RPI` mass-storage device; holding the physical BOOTSEL button
 across that reset is a separate ROM behavior. A rail not restored by a saved v1
-configuration snapshot returns to its boot-off default; `vdd_5v` follows the
-USB route default. Re-apply rail and PD setup after the board returns.
+configuration snapshot returns to its boot-off default. Re-apply rail and PD
+setup after the board returns.
 
 `bootloader` sends `POST /api/v1/bootloader` and is the only CLI command that
 requests the ROM USB boot path. Use only the combined

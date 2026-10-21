@@ -203,8 +203,8 @@ Select the **System / Reboot** row and press Enter or Space to request a normal
 cold restart through the same 250 ms path as `POST /api/v1/reboot`. The action
 never requests ROM BOOTSEL; holding the physical button across that reset is a
 separate ROM behavior. A rail not restored by a saved v1
-configuration snapshot returns to its boot-off default, and `vdd_5v` follows
-the USB route default; re-apply rail and PD setup after the board returns.
+configuration snapshot returns to its boot-off default; `vdd_5v` is an
+independent power item. Re-apply rail and PD setup after the board returns.
 
 The TUI does not expose a ROM BOOTSEL row or direct key. Use the separate CLI
 `bootloader` command or Web **Enter BOOTSEL** card when that recovery path is

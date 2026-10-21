@@ -88,6 +88,7 @@ test("persistent-configuration documentation contract", async (suite) => {
 
   await suite.test("accepts the complete plan-exact fixture", async () => {
     assert.ok(!fixtureDocuments()["docs/testing/hil-functional-test-spec.md"].includes("switch/vin"));
+    assert.ok(!Object.values(fixtureDocuments()).some((document) => document.includes("switch/usb")));
     await withFixture(async (root) => {
       const result = await checkPersistentConfigurationDocs(root);
       assert.equal(result.ok, true, formatFailures(result.failures));

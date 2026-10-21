@@ -97,8 +97,9 @@ function checkSurfaceMap(surface, text, section, failures) {
 function checkExample(example, spec, failures) {
   if (spec.kind === "cli") {
     const command = normalizeShell(example.command);
-    if (!/(?:^|\s)radxa-linkr-debuggerctl(?:\s|$)/.test(command) || !command.includes(spec.command)) {
-      addFailure(failures, "example-contract", example.surface, `${example.id} must run radxa-linkr-debuggerctl ${spec.command}`);
+    const accepted = [spec.command, ...(spec.commandAlternatives ?? [])];
+    if (!/(?:^|\s)radxa-linkr-debuggerctl(?:\s|$)/.test(command) || !accepted.some((candidate) => command.includes(candidate))) {
+      addFailure(failures, "example-contract", example.surface, `${example.id} must run radxa-linkr-debuggerctl ${accepted.join(" or ")}`);
     }
     return;
   }
@@ -107,10 +108,11 @@ function checkExample(example, spec, failures) {
   if (!/\bcurl\b/.test(request.normalized) || request.url !== expectedUrl || request.method !== spec.method) {
     addFailure(failures, "example-contract", example.surface, `${example.id} must be ${spec.method} ${expectedUrl}`);
   }
-  if (spec.body !== undefined && (!request.hasData || !sameJson(request.body, spec.body))) {
-    addFailure(failures, "example-contract", example.surface, `${example.id} must send ${JSON.stringify(spec.body)}`);
+  const acceptedBodies = [spec.body, ...(spec.bodyAlternatives ?? [])].filter((body) => body !== undefined);
+  if (acceptedBodies.length > 0 && !acceptedBodies.some((body) => request.hasData && sameJson(request.body, body))) {
+    addFailure(failures, "example-contract", example.surface, `${example.id} must send ${acceptedBodies.map((body) => JSON.stringify(body)).join(" or ")}`);
   }
-  if (spec.body === undefined && request.hasData) addFailure(failures, "example-contract", example.surface, `${example.id} must not send a request body`);
+  if (acceptedBodies.length === 0 && request.hasData) addFailure(failures, "example-contract", example.surface, `${example.id} must not send a request body`);
 }
 
 export async function checkPersistentConfigurationDocs(rootPath) {

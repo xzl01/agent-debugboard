@@ -44,6 +44,10 @@ curl http://172.29.203.1/api/v1/status
 编码后的 status body 必须严格小于固件专用的 6656 字节缓冲区。新增状态字段时
 必须通过这一协议大小门槛；客户端不能因此假定响应具有固定长度。
 
+`power_outputs` 由固件动态公布。x1.2 上包含五路可控输出：`12v_out`、`5v_out`、
+`20v_out`、`vdd_5v` 和 `5v_usb_hub`。`5v_usb_hub` 是 `vdd_5v` 的子轨，没有
+INA226/ADC descriptor，也不会在既有 power-output 形状之外新增状态字段。
+
 ## J4 目标串口
 
 产品只公开一个逻辑目标串口 `j4`，即 GP10/GP11 上的专用 RP2350 UART1 路径。
@@ -54,8 +58,18 @@ USB CDC ACM4、四个 WebSocket sink 和两个 raw-TCP sink；慢 sink 只丢自
 ### `GET /api/v1/serial/j4`
 
 返回 available、运行状态、当前 line coding、配置 generation、DTR/RTS、USB
-configured、sink 数、队列状态、传输计数和各 sink drop 计数。`state` 为
+configured、sink 数、队列状态、传输计数、各 sink drop 计数，以及
+`config_request` / `config_counters` 诊断。后者区分 CDC/Web request、
+invalid/conflict/no-change、configure/apply 结果和 rollback 结果。`state` 为
 `ready`、`reconfig`、`paused`、`faulted` 或 `unavailable`。
+
+同一响应以 `terminal_responder` 报告全局自动终端 responder：对象如
+`{"transport":"cdc","slot":0}` 或 `{"transport":"websocket","slot":2}`；
+没有选中时为 `null`。DTR 有效时 CDC 优先，否则选择编号最小的已连接
+WebSocket；raw TCP 永远不会被选中。
+
+`dtr` 是已发布的 CDC/gate 状态，只有 promotion 完成后才为 true；它不是原始物理
+DTR 采样。响应不公开内部 CDC phase 或 block reason 字段。
 
 ```sh
 curl -fsS http://172.29.203.1/api/v1/serial/j4
@@ -63,7 +77,7 @@ curl -fsS http://172.29.203.1/api/v1/serial/j4
 
 ### `PUT /api/v1/serial/j4/config`
 
-异步排队一次 line-coding compare-and-swap。先读取当前 `generation`，再提交完整
+提交一次异步 line-coding compare-and-swap。先读取当前 `generation`，再提交完整
 tuple 和该 generation：
 
 ```sh
@@ -73,15 +87,36 @@ curl -fsS -X PUT -H 'Content-Type: application/json' \
 ```
 
 成功返回 HTTP 202、`accepted:true` 和 `request_id`；generation 过期或转换进行中
-返回 HTTP 409。baud 白名单为 9600、19200、38400、57600、115200、230400、
-460800、921600、1500000；data bits 为 5–8，parity 为 `none`/`odd`/`even`，
-stop bits 为 1 或 2，flow control 当前仅支持 `none`。通过 GET 轮询异步结果。
+返回 HTTP 409。baud 接受 4800 到 115200 的任意整数；五个推荐 preset 为
+9600、19200、38400、57600、115200，5200 等 custom 值同样有效。超过 115200
+的请求（包括 115201）返回 HTTP 400，当前 tuple 保持不变。data bits 为 5–8，
+parity 为 `none`/`odd`/`even`，
+stop bits 为 1 或 2，flow control 当前仅支持 `none`。
+
+高于 115200 的 rate 不是产品支持范围。HIL 记录中的 230400/921600/1500000
+样本是促成收紧上限的诊断证据，不是可接受的 client 配置。
+
+应用是异步的，必须轮询 `GET /api/v1/serial/j4`；其中 current tuple、generation、
+完成结果和诊断计数才是权威。USB CDC host 的 SET_LINE_CODING transfer 无法把稍后
+发生的 application-level rejection 返回给 host，因此 CDC 工具也必须读取该状态，
+不能假定 SET 已应用。
+
+CDC DTR=false 时，USB default line-coding notification 只 stage 候选 tuple，不改变
+active line coding 或 generation。此低态下的 HTTP/WS PUT 会立即应用；CDC session
+已拥有端口（DTR high/promoting）时，HTTP/WS PUT 返回冲突而不是被 stage。LOW→HIGH
+时板子先应用 staged USB tuple，之后才 publish `dtr=true` 并开放 ingress；apply/
+attach/detach 失败会保持 blocked，直到成功的 LOW/reset。
 
 ### 流式传输
 
 - 内嵌 Web 终端创建普通 live session，再订阅
   `{"type":"subscribe","topic":"serial.j4"}`。下行是 binary WS；每个上行
   binary message 是一条原子串口写，最大 480 字节。
+- 显式 J4 输入是 multiwriter。只有自动终端回复使用唯一的 responder。WS
+  `serial_state` 帧带有逐 client 的 `terminal_responder` 布尔值和 `responder`
+  descriptor；只有显式 `true` 才授权该页面回复终端查询。其它 Web client 仍可
+  发送键盘、IME、粘贴和 Ctrl-C 输入，它们是自动回复的 observer，不是只读。
+  ANSI 序列不会被过滤。
 - raw TCP 监听 `0.0.0.0:5555`，最多两个客户端。它是纯二进制流，没有 banner、
   echo、CR/LF 转换、Telnet/IAC、SSH 或 noVNC 语义，例如
   `nc 172.29.203.1 5555`。
@@ -99,7 +134,13 @@ stop bits 为 1 或 2，flow control 当前仅支持 `none`。通过 GET 轮询�
 
 ### `GET /api/v1/power/{name}`
 
-获取单个电源输出状态。`{name}` 为 `12v_out`、`5v_out`、`20v_out` 或 `vdd_5v`。
+获取单个电源输出状态。`{name}` 为 `12v_out`、`5v_out`、`20v_out`、`vdd_5v`
+或 `5v_usb_hub`。
+
+`5v_usb_hub` 是 GPIO24 上 `vdd_5v` 的开关子轨，启动时关闭。其 setter 具有
+父子语义：打开 hub 时按需先打开 `vdd_5v`；关闭 hub 不改变 `vdd_5v`；关闭
+`vdd_5v` 会先关闭 hub；仅打开 `vdd_5v` 不会打开 hub。`5v_usb_hub` 出现在
+status、`/api/v1/power` 和持久化配置目录中，但没有 INA226/ADC 通道。
 
 ### `PUT /api/v1/power/{name}`
 
@@ -129,7 +170,9 @@ curl http://172.29.203.1/api/v1/adc/read?channel=5v_out
 
 响应按固定顺序包含八路：先是 `5v_out`、`12v_out`、`20v_out`、`vdd_5v`
 四路 INA226 电流通道，再是 `adc0`、`adc1`、`adc2`、`adc3` 四路仅监测pad电压
-通道。INA226 reading 携带 `name`、`signal`、`power_enabled`、`raw`、`mv`、
+通道。第五路电源输出 `5v_usb_hub` 没有 INA226，也没有 ADC descriptor；
+`vdd_5v` 是包含 hub 支路的父轨总量，客户端不得伪造 hub 电流读数。INA226
+reading 携带 `name`、`signal`、`power_enabled`、`raw`、`mv`、
 `current_ua`、`voltage_valid`、`voltage_uv`、`sensor_value`、`unit`。ADC reading
 携带 `name`、`signal`、`raw`、`mv`、`sensor_channel`、`unit`、`sensor_value`；
 `adc0` 还携带固件note `PD input divider; ADC pad voltage`。其数值是ADC0 pad
@@ -143,7 +186,7 @@ curl http://172.29.203.1/api/v1/adc/read?channel=5v_out
 
 ### `GET /api/v1/switch/{name}`
 
-获取单个 switch 路由。`{name}` 为 `sd`、`usb` 或 `vin`。
+获取单个 switch 路由。`{name}` 为 `sd` 或 `tf_wp`。
 
 ### `PUT /api/v1/switch/{name}`
 
@@ -151,16 +194,15 @@ curl http://172.29.203.1/api/v1/adc/read?channel=5v_out
 
 ```sh
 curl -X PUT http://172.29.203.1/api/v1/switch/sd -d '{"route":"usb-reader"}'
-curl -X PUT http://172.29.203.1/api/v1/switch/vin -d '{"route":"1.8v"}'
+curl -X PUT http://172.29.203.1/api/v1/switch/tf_wp -d '{"route":"protected"}'
 ```
 
 有效路由：
 - `sd`：`target`、`usb-reader`
-- `usb`：`pc`、`target`
-- `vin`：`1.8v`、`3.3v`
+- `tf_wp`：`writable`、`protected`
 
-`usb` switch 对应 J12：上层连接目标板，下层插入 USB 设备；`pc` / `target`
-用于选择由主机还是目标板控制该设备。
+x1.2 没有 `switch/usb`；GET/PUT `/api/v1/switch/usb` 返回 HTTP 404。
+`vdd_5v` 与 switch 路由无关，`5v_usb_hub` 是它的电源子轨。
 
 ## GPIO
 
@@ -200,11 +242,12 @@ curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"input"}'
 独立于 GPIO 数组顺序定义连接器顺序。对于已映射引脚，`layoutLabel`、
 `layoutRow`、`layoutColumn` 描述元件面俯视坐标，顶部为 `row=0`、左列为
 `column=0`。已确认坐标为：J8 GP12 `(9,0)`、GP13 `(8,0)`、GP14 `(7,0)`、
-GP15 `(6,0)`、GP16 `(5,0)`、GP29/ADC3 `(4,0)`；J13 GP9 `(0,0)`、
-GP8 `(0,1)`、GP7 `(1,0)`。GP17、GP18 不属于当前 safe/control GPIO 目录，客户端
-不得把它们虚构成通用或连接器控件。未来固件若描述未知 group，客户端仍不得丢弃；
-遇到未知 `edge` 时应按“无板边对齐提示”通用显示。这里的九项 GPIO 数组只是固件
-safe-GPIO 允许列表，不是连接器完整 pinout，也不是配合面视图。
+GP15 `(6,0)`、GP16 `(5,0)`、GP29/ADC3 `(4,0)`、GP5 `(4,1)`、GP6 `(5,1)`；
+J13 GP9 `(0,0)`、GP8 `(0,1)`、GP7 `(1,0)`。GP5/GP6 是普通 RP2354 直连
+GPIO，默认 input、无 pull，不是 switch 控件；GP17/GP18 不存在。未来固件若描述
+未知 group，客户端仍不得丢弃；遇到未知 `edge` 时应按“无板边对齐提示”通用
+显示。这里的 11 项 safe-GPIO 允许列表不是完整 pinout；其中 10 项可输出，
+GP29 仅输入。
 
 ## 重启
 
@@ -218,9 +261,10 @@ safe-GPIO 允许列表，不是连接器完整 pinout，也不是配合面视图
 curl -X POST http://172.29.203.1/api/v1/reboot
 ```
 
-`5v_out`、`12v_out`、`20v_out` 中的每一条都回到自己的
-`regulator-boot-off` 默认状态，除非已保存的 v1 配置快照恢复了该电源轨；
-`vdd_5v` 跟随 USB 路由默认值。板子恢复后必须重新设置并验证电源轨与 PD。
+`5v_out`、`12v_out`、`20v_out`、`vdd_5v`、`5v_usb_hub` 中的每一条都回到
+自己的未使能启动状态，除非已保存的 v1 配置快照恢复了该电源轨；`vdd_5v` 是父轨，
+`5v_usb_hub` 是它的子轨且同样启动关闭。板子恢复后必须重新设置并验证电源轨与
+PD。
 
 受支持的变更方法是 `POST`。`GET`、`PUT`、`DELETE` 返回 HTTP 405，
 `error.code` 为 `method_not_allowed`，且不会调度复位。重启已处于 pending 时
@@ -559,6 +603,10 @@ Arm 捕获。
 匹配的 `serial_write_complete`；runtime 取消时 disposition 为 `canceled`。队列满、
 paused、reconfig、faulted 或超过 480 字节都会得到明确 JSON error，不会被误报为
 accepted。
+
+`serial_state` 同时标识自动终端 responder：`terminal_responder` 是接收 slot 的
+布尔值，`responder` 是全局选中 descriptor。只有该 slot 回复自动 DSR/DA/CPR
+查询；其它 slot 是可显式输入的 observer，不是只读 client。
 
 **取消订阅**：
 ```json

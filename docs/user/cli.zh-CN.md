@@ -120,30 +120,27 @@ ADC0..ADC3 pad 电压。主机 CLI 直接展示固件值，不做主机侧校准
 
 ## Switch 路由
 
-x1.2 有两个物理信号路由切换器：
+x1.2 暴露两个固件 switch 控件：
 
 | Switch | 切换内容 | 可选值 |
 |--------|---------|--------|
 | `sd` | TF/SD 卡路径 | `target`、`usb-reader` |
-| `usb` | J12 下层 USB 设备在主机与目标板之间切换 | `pc`、`target` |
+| `tf_wp` | TF 写保护 | `writable`、`protected` |
 
 ```sh
 radxa-linkr-debuggerctl switch list
 radxa-linkr-debuggerctl switch get sd
 radxa-linkr-debuggerctl switch route sd usb-reader
-radxa-linkr-debuggerctl switch route usb target --confirm
-radxa-linkr-debuggerctl switch route usb pc --confirm
+radxa-linkr-debuggerctl switch route tf_wp protected
 ```
 
-USB 路由变更需要 `--confirm`，因为它有可见硬件副作用。x1.2 没有 VIN/VIO
-路由，旧 `switch vin` 示例不适用。
-
-对于 `switch usb`，J12 上层连接目标板，下层插入待切换 USB 设备。`pc` 路由把
-该设备连接到 J15 所接主机；`target` 路由把该设备连接到 J12 上层所接目标板。
+x1.2 没有 USB 或 VIN/VIO 路由。`/switch/usb` 返回 HTTP 404；`vdd_5v` 是独立
+power output。
 
 ## GPIO
 
-安全 GPIO 支持三种命名：`GP13`（标准）、`13`（原始引脚号）、`CON_MAS`（板级 note）。CLI 同时显示 `GPxx` 和 note。
+11 个 safe GPIO 包含普通直连 GP5/GP6 和仅输入 GP29。命名支持 `GP13`（标准）、
+`13`（原始引脚号）、`CON_MAS`（板级 note）。CLI 同时显示 `GPxx` 和 note。
 
 ```sh
 radxa-linkr-debuggerctl gpio list
@@ -193,8 +190,7 @@ radxa-linkr-debuggerctl bootloader
 `command: "reboot"`，等待 250 ms 后执行正常冷重启。reboot 动作本身绝不请求
 ROM BOOTSEL，也不会枚举为 `RPI` 大容量存储设备；如果复位期间一直按住物理
 BOOTSEL 按键，则由 ROM 单独决定进入 BOOTSEL。未被已保存 v1 配置快照恢复的
-电源轨回到各自的 boot-off 默认状态；`vdd_5v` 跟随 USB 路由默认值。板子恢复
-后必须重新设置并验证电源轨与 PD。
+电源轨回到各自的 boot-off 默认状态。板子恢复后必须重新设置并验证电源轨与 PD。
 
 `bootloader` 发送 `POST /api/v1/bootloader`，是唯一请求 ROM USB boot 路径的
 CLI 命令。ROM BOOTSEL 只能使用合成完整 `radxa-linkr-debugger-rp2350.uf2`；

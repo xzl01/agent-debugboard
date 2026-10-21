@@ -71,13 +71,25 @@ TUI 轮询频率 60 Hz，但物理 mux 需要稳定时间。切换路由后等 1
 
 **症状：** `switch route` 后 `switch get` 还是旧路由。
 
-1. 检查状态输出中的 `desired` 和 `actual` 字段。
-2. USB 和 VIN 路由需要 `--confirm`：
+1. 枚举固件上报的 switch 目录：
    ```sh
-   radxa-linkr-debuggerctl switch route usb target --confirm
+   radxa-linkr-debuggerctl switch list
    ```
-3. 等几秒再查。硬件 mux 需要稳定时间。
-4. 不要快速连续执行相反方向的路由命令。
+2. 修改前先读取目标 switch：
+   ```sh
+   radxa-linkr-debuggerctl switch get sd
+   ```
+3. 只对目录中存在的 switch 和 route 值执行切换：
+   ```sh
+   radxa-linkr-debuggerctl switch route sd usb-reader
+   radxa-linkr-debuggerctl switch route tf_wp protected
+   ```
+4. 等几秒再查。硬件 mux 需要稳定时间。
+5. 不要快速连续执行相反方向的路由命令。
+
+x1.2 没有 `switch/usb` 条目。`GET /api/v1/switch/usb` 返回 HTTP 404；
+不要重试这个不存在的端点。请用 `GET /api/v1/switch` 或
+`radxa-linkr-debuggerctl switch list` 读取当前目录。
 
 ## ADC 读数为零
 

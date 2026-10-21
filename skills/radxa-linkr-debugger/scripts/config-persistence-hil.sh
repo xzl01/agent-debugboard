@@ -18,9 +18,12 @@ OTA_IMAGE="$CANONICAL_OTA"
 CONFIRM_SAVE=0
 CLEANUP_REQUIRED=0
 CAPTURE_ACTIVE=0
-SAFE_RESTORE_REQUIRED=0
+SAFE_SD_CHANGED=0
+SAFE_TF_WP_CHANGED=0
 SAFE_SD_ID=""
 SAFE_TF_WP_ID=""
+POWER_RESTORE_REQUIRED=0
+POWER_RESTORE_ID=""
 REQUEST_NUMBER=0
 OTA_UPLOAD_PID=""
 OTA_UPLOAD_BODY=""
@@ -49,7 +52,7 @@ Usage: config-persistence-hil.sh [options] FLOW
 
 Flows:
   safe-reboot       Save a firmware-enumerated safe value, verify across two reboots, clear.
-  dangerous-auto-restore Confirm and save USB pc route, then prove automatic restore across two reboots.
+  dangerous-auto-restore Confirm and save power/5v_out=on, then prove automatic restore across two reboots.
   capture-busy      Hold a supplied capture and require config save to return busy.
   ota-preserve      Preserve a safe snapshot through a canonical MCUboot OTA test boot.
   bootsel-preserve  Preserve a safe snapshot through HTTP BOOTSEL combined-UF2 recovery.
@@ -73,6 +76,10 @@ The runner never owns a rail, GPIO, or route catalog. Execute mode discovers
 configuration item IDs from GET /api/v1/config. Dry-run never invokes curl,
 serial, sleep, BOOTSEL discovery, mounting, copying, flashing, or hardware.
 Safe selection preserves the firmware response order and uses its first safe item.
+Dangerous selection requires the firmware-advertised power/5v_out item and
+sets it on as the first host mutation; after each reboot the runner repeats
+power/5v_out=on before any other mutation so the mandatory 5 V preflight
+ordering remains intact.
 USAGE
 }
 
@@ -413,9 +420,9 @@ def power_success_shape():
             request = json.loads(payload)
         except json.JSONDecodeError as error:
             raise SystemExit("power set request is invalid") from error
-        if not isinstance(request, dict) or request.get("state") != "off":
+        if not isinstance(request, dict) or request.get("state") not in {"on", "off"}:
             raise SystemExit("power set request is invalid")
-        power_output_shape(value.get("power_output"), expected_name=name, expected_state="off")
+        power_output_shape(value.get("power_output"), expected_name=name, expected_state=request["state"])
 
 def gpio_row_shape(row, *, list_response):
     if not isinstance(row, dict) or not isinstance(row.get("name"), str) or not row["name"]:
@@ -569,18 +576,18 @@ if mode == "safe":
         and item.get("requires_confirm") is False
     ]
 elif mode == "dangerous":
-    matching = [item for item in items if isinstance(item, dict) and item.get("id") == "switch/usb"]
+    matching = [item for item in items if isinstance(item, dict) and item.get("id") == "power/5v_out"]
     if len(matching) != 1:
-        raise SystemExit("expected exactly one switch/usb item")
+        raise SystemExit("expected exactly one power/5v_out item")
     item = matching[0]
     current = item.get("current")
     if (
-        item.get("kind") != "switch"
-        or item.get("requires_confirm") is not True
+        item.get("kind") != "power"
+        or item.get("requires_confirm") is not False
         or not isinstance(current, dict)
-        or current.get("route") != "target"
+        or current.get("state") != "off"
     ):
-        raise SystemExit("switch/usb target item is malformed")
+        raise SystemExit("power/5v_out off item is malformed")
     candidates = [item]
 else:
     raise SystemExit("unknown selection mode")
@@ -756,9 +763,9 @@ if document.get("pending") != 0:
 items = document.get("items")
 if not isinstance(items, list):
     raise SystemExit("config items is missing")
-matching = [item for item in items if isinstance(item, dict) and item.get("id") == "switch/usb"]
+matching = [item for item in items if isinstance(item, dict) and item.get("id") == "power/5v_out"]
 if len(matching) != 1:
-    raise SystemExit("dangerous switch/usb item is missing")
+    raise SystemExit("dangerous power/5v_out item is missing")
 item = matching[0]
 current = item.get("current")
 saved = item.get("saved")
@@ -767,11 +774,11 @@ if (
     or item.get("requires_confirm") is not True
     or item.get("apply_state") != "applied"
     or not isinstance(current, dict)
-    or current.get("route") != "pc"
+    or current.get("state") != "on"
     or not isinstance(saved, dict)
-    or saved.get("route") != "pc"
+    or saved.get("state") != "on"
 ):
-    raise SystemExit("dangerous switch/usb auto-restore state is invalid")
+    raise SystemExit("dangerous power/5v_out auto-restore state is invalid")
 PY
 }
 
@@ -796,6 +803,93 @@ with open(path, encoding="utf-8") as source:
     value = json.load(source)
 if value.get("name") != name or value.get("route") != route:
     raise SystemExit("switch route does not match the expected safe state")
+PY
+}
+
+switch_current_route_differs() {
+  item_id="$1"
+  expected_route="$2"
+  python3 - "$HTTP_BODY" "$item_id" "$expected_route" <<'PY'
+import json
+import sys
+
+path, item_id, expected_route = sys.argv[1:]
+with open(path, encoding="utf-8") as source:
+    document = json.load(source)
+items = document.get("items")
+if not isinstance(items, list):
+    raise SystemExit(2)
+matching = [item for item in items if isinstance(item, dict) and item.get("id") == item_id]
+if len(matching) != 1:
+    raise SystemExit(2)
+current = matching[0].get("current")
+if not isinstance(current, dict) or not isinstance(current.get("route"), str):
+    raise SystemExit(2)
+raise SystemExit(0 if current["route"] != expected_route else 1)
+PY
+}
+
+power_set() {
+  item_id="$1"
+  state="$2"
+  case "$item_id" in
+    power/*) ;;
+    *) fail "power item ID is not firmware-shaped: $item_id" ;;
+  esac
+  output_name=${item_id#power/}
+  payload=$(printf '{"state":"%s"}' "$state")
+  http_request PUT "/power/$output_name" "$payload" 200 ok power set \
+    "set firmware power output $item_id=$state"
+}
+
+assert_power_item_state() {
+  item_id="$1"
+  snapshot_present="$2"
+  current_state="$3"
+  saved_state="$4"
+  requires_confirm="$5"
+  apply_state="$6"
+  python3 - "$HTTP_BODY" "$item_id" "$snapshot_present" "$current_state" \
+    "$saved_state" "$requires_confirm" "$apply_state" <<'PY'
+import json
+import sys
+
+(
+    path,
+    item_id,
+    snapshot_present,
+    current_state,
+    saved_state,
+    requires_confirm,
+    apply_state,
+) = sys.argv[1:]
+with open(path, encoding="utf-8") as source:
+    document = json.load(source)
+snapshot = document.get("snapshot")
+if not isinstance(snapshot, dict) or snapshot.get("present") is not (snapshot_present == "true"):
+    raise SystemExit("power item snapshot state does not match the expected phase")
+if snapshot_present == "true" and snapshot.get("version") != 1:
+    raise SystemExit("power item snapshot version is not v1")
+items = document.get("items")
+if not isinstance(items, list):
+    raise SystemExit("config items is missing")
+matching = [item for item in items if isinstance(item, dict) and item.get("id") == item_id]
+if len(matching) != 1:
+    raise SystemExit(f"required power item is missing: {item_id}")
+item = matching[0]
+current = item.get("current")
+if not isinstance(current, dict) or current.get("state") != current_state:
+    raise SystemExit(f"live power state does not match for {item_id}")
+if item.get("requires_confirm") is not (requires_confirm == "true"):
+    raise SystemExit(f"requires_confirm does not match for {item_id}")
+if item.get("apply_state") != apply_state:
+    raise SystemExit(f"apply_state does not match for {item_id}")
+saved = item.get("saved")
+if saved_state == "-":
+    if saved is not None or item.get("selected") is not False:
+        raise SystemExit(f"cleared power item was retained for {item_id}")
+elif not isinstance(saved, dict) or saved.get("state") != saved_state or item.get("selected") is not True:
+    raise SystemExit(f"saved power state does not match for {item_id}")
 PY
 }
 
@@ -1181,19 +1275,20 @@ cleanup() {
   if ! unmount_bootsel_partition; then
     result=1
   fi
-  if [ "$SAFE_RESTORE_REQUIRED" -eq 1 ] && [ "$MODE" = "execute" ] && [ -n "$TMPDIR_RUN" ] && \
-    [ -n "$SAFE_SD_ID" ] && [ -n "$SAFE_TF_WP_ID" ]; then
-    safe_restore_ok=1
-    if ! cleanup_switch_route "${SAFE_SD_ID#switch/}" target; then
-      safe_restore_ok=0
-      result=1
+  if [ "$MODE" = "execute" ] && [ -n "$TMPDIR_RUN" ]; then
+    if [ "$SAFE_SD_CHANGED" -eq 1 ] && [ -n "$SAFE_SD_ID" ]; then
+      if cleanup_switch_route "${SAFE_SD_ID#switch/}" target; then
+        SAFE_SD_CHANGED=0
+      else
+        result=1
+      fi
     fi
-    if ! cleanup_switch_route "${SAFE_TF_WP_ID#switch/}" writable; then
-      safe_restore_ok=0
-      result=1
-    fi
-    if [ "$safe_restore_ok" -eq 1 ]; then
-      SAFE_RESTORE_REQUIRED=0
+    if [ "$SAFE_TF_WP_CHANGED" -eq 1 ] && [ -n "$SAFE_TF_WP_ID" ]; then
+      if cleanup_switch_route "${SAFE_TF_WP_ID#switch/}" writable; then
+        SAFE_TF_WP_CHANGED=0
+      else
+        result=1
+      fi
     fi
   fi
   if [ "$CLEANUP_REQUIRED" -eq 1 ] && [ "$MODE" = "execute" ] && [ -n "$TMPDIR_RUN" ]; then
@@ -1201,6 +1296,18 @@ cleanup() {
       evidence "DELETE /config" "$status" "$code" "cleanup restored an absent test snapshot"
     else
       evidence "DELETE /config" "cleanup_failed" "cleanup_failed" "cleanup failure requires operator action"
+      result=1
+    fi
+  fi
+  if [ "$POWER_RESTORE_REQUIRED" -eq 1 ] && [ "$MODE" = "execute" ] && \
+    [ -n "$TMPDIR_RUN" ] && [ -n "$POWER_RESTORE_ID" ]; then
+    if cleanup_power_state "$POWER_RESTORE_ID" off; then
+      evidence "PUT /power/${POWER_RESTORE_ID#power/}" "$status" "$code" \
+        "restore the changed firmware power output to off"
+      POWER_RESTORE_REQUIRED=0
+    else
+      evidence "PUT /power/${POWER_RESTORE_ID#power/}" "cleanup_failed" "cleanup_failed" \
+        "power cleanup failure requires operator action"
       result=1
     fi
   fi
@@ -1232,6 +1339,25 @@ cleanup_switch_route() {
   [ "$status" = 200 ] && [ "$code" = ok ]
 }
 
+cleanup_power_state() {
+  item_id="$1"
+  state="$2"
+  case "$item_id" in
+    power/*) ;;
+    *) return 1 ;;
+  esac
+  output_name=${item_id#power/}
+  payload=$(printf '{"state":"%s"}' "$state")
+  REQUEST_NUMBER=$((REQUEST_NUMBER + 1))
+  body="$TMPDIR_RUN/cleanup.$REQUEST_NUMBER.json"
+  status=$("$CURL_BIN" --silent --show-error --connect-timeout "$CURL_CONNECT_TIMEOUT" \
+    --max-time "$CLEANUP_MAX_TIME" --output "$body" --write-out '%{http_code}' \
+    --request PUT --header 'Content-Type: application/json' --data "$payload" \
+    "$(api_url "/power/$output_name")") || return 1
+  code=$(response_code "$body" "$status" power set - - PUT "/power/$output_name" "$payload" -) || return 1
+  [ "$status" = 200 ] && [ "$code" = ok ]
+}
+
 trap cleanup EXIT HUP INT TERM
 
 safe_reboot() {
@@ -1257,8 +1383,9 @@ safe_reboot() {
   config_get
   discover_safe_reboot_items
   CLEANUP_REQUIRED=1
-  SAFE_RESTORE_REQUIRED=1
+  SAFE_SD_CHANGED=1
   switch_route "${SAFE_SD_ID#switch/}" usb-reader
+  SAFE_TF_WP_CHANGED=1
   switch_route "${SAFE_TF_WP_ID#switch/}" protected
   config_get
   assert_safe_reboot_state false usb-reader protected false not_saved || \
@@ -1277,31 +1404,42 @@ safe_reboot() {
   assert_safe_reboot_state false usb-reader protected false not_saved || \
     fail "clear altered live safe routes"
   switch_route "${SAFE_SD_ID#switch/}" target
+  SAFE_SD_CHANGED=0
   switch_route "${SAFE_TF_WP_ID#switch/}" writable
+  SAFE_TF_WP_CHANGED=0
   config_get
   assert_safe_reboot_state false target writable false not_saved || \
     fail "safe-reboot did not restore final defaults"
-  SAFE_RESTORE_REQUIRED=0
 }
 
 dangerous_auto_restore() {
   if [ "$MODE" = "dry-run" ]; then
-    plan "GET /config" "discover the confirmation-required switch route target"
-    plan "PUT /switch/usb" "set USB route to pc before dangerous save"
+    plan "GET /config" "discover the firmware-advertised power/5v_out item with no snapshot"
+    plan "PUT /power/5v_out" "set 5v_out=on as the first host mutation"
+    plan "GET /config" "assert power/5v_out is on and requires confirmation"
     plan "PUT /config" "assert confirmation_required before dangerous save"
     plan "PUT /config" "requires --confirm-dangerous-save"
     plan "external reboot command" "reboot after confirmed dangerous save"
     plan "sleep 5" "wait for planned reboot"
-    plan "GET /config" "assert dangerous item automatically restores after first reboot"
+    plan "PUT /power/5v_out" "repeat 5v_out=on as the first host mutation after reboot"
+    plan "GET /config" "assert power/5v_out automatically restores after first reboot"
     plan "external reboot command" "repeat reboot after confirmed dangerous save"
     plan "sleep 5" "wait for planned reboot"
-    plan "GET /config" "assert dangerous item automatically restores after second reboot"
+    plan "PUT /power/5v_out" "repeat 5v_out=on as the first host mutation after reboot"
+    plan "GET /config" "assert power/5v_out automatically restores after second reboot"
     plan "DELETE /config" "clear test snapshot without changing hardware"
+    plan "PUT /power/5v_out" "restore the changed power output to off"
+    plan "GET /config" "assert absent snapshot and off power state"
     return
   fi
   config_get
-  dangerous_id=$(select_config_item dangerous) || fail "missing or malformed dangerous USB target item"
-  switch_route "${dangerous_id#switch/}" pc
+  dangerous_id=$(select_config_item dangerous) || fail "missing or malformed dangerous power/5v_out item"
+  POWER_RESTORE_ID=$dangerous_id
+  POWER_RESTORE_REQUIRED=1
+  power_set "$dangerous_id" on
+  config_get
+  assert_power_item_state "$dangerous_id" false on - true not_saved || \
+    fail "power/5v_out was not on and confirmation-required before dangerous save"
   payload=$(printf '{"items":["%s"],"confirm":false}' "$dangerous_id")
   CLEANUP_REQUIRED=1
   http_request PUT /config "$payload" 409 confirmation_required config save \
@@ -1309,14 +1447,22 @@ dangerous_auto_restore() {
   CLEANUP_REQUIRED=0
   save_item "$dangerous_id" true
   reboot_board
+  power_set "$dangerous_id" on
   config_get
   assert_dangerous_auto_restore_state || \
     fail "dangerous item was not automatically restored after first reboot"
   reboot_board
+  power_set "$dangerous_id" on
   config_get
   assert_dangerous_auto_restore_state || \
     fail "dangerous item was not automatically restored after second reboot"
   clear_snapshot
+  power_set "$dangerous_id" off
+  POWER_RESTORE_REQUIRED=0
+  config_get
+  assert_snapshot_absent || fail "dangerous auto-restore did not clear the snapshot"
+  assert_power_item_state "$dangerous_id" false off - false not_saved || \
+    fail "dangerous auto-restore did not restore the changed power output"
 }
 
 capture_busy() {
@@ -1463,7 +1609,6 @@ items = document.get("items")
 if not isinstance(items, list):
     raise SystemExit("config items is missing")
 expected_routes = {
-    "switch/usb": "target",
     "switch/sd": "target",
     "switch/tf_wp": "writable",
 }
@@ -1550,14 +1695,14 @@ PY
 final_cleanup() {
   if [ "$MODE" = "dry-run" ]; then
     plan "DELETE /config" "clear any remaining saved snapshot"
-    plan "PUT /switch/usb" "restore USB target route"
-    plan "PUT /switch/sd" "restore SD target route"
-    plan "PUT /switch/tf_wp" "restore TF-WP writable route"
+    plan "GET /config" "discover actual live switch routes"
+    plan "PUT /switch/sd" "restore SD target route only if changed"
+    plan "PUT /switch/tf_wp" "restore TF-WP writable route only if changed"
     plan "GET /power" "enumerate firmware power outputs"
-    plan "PUT /power/<firmware-name>" "set each controllable on output to off"
+    plan "PUT /power/<firmware-name>" "restore only outputs that are on"
     plan "GET /power" "prove every controllable output is off"
     plan "GET /gpio" "enumerate firmware GPIO directions"
-    plan "PUT /gpio/<firmware-name>" "set each output-direction GPIO to input"
+    plan "PUT /gpio/<firmware-name>" "restore only output-direction GPIOs to input"
     plan "GET /gpio" "prove every GPIO direction is input"
     plan "GET /config" "assert absent snapshot and final safe switch routes"
     plan "CDC config show" "confirm CDC sees no saved snapshot"
@@ -1565,9 +1710,13 @@ final_cleanup() {
   fi
   CLEANUP_REQUIRED=1
   clear_snapshot
-  switch_route usb target
-  switch_route sd target
-  switch_route tf_wp writable
+  config_get
+  if switch_current_route_differs "$SAFE_SD_ID" target; then
+    switch_route "${SAFE_SD_ID#switch/}" target
+  fi
+  if switch_current_route_differs "$SAFE_TF_WP_ID" writable; then
+    switch_route "${SAFE_TF_WP_ID#switch/}" writable
+  fi
   enumerated_power_cleanup
   enumerated_gpio_cleanup
   config_get

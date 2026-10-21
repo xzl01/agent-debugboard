@@ -20,14 +20,23 @@ Schematics are under `docs/hardware/`.
 
 ## Power Rails
 
-All enables are active-high through a P-FET stage.
+All enables are active-high through a P-FET or load-switch stage.
 
-| Rail | GPIO | Net |
-| --- | --- | --- |
-| `5v_out` | GPIO0 | `GP0_5V_EN` (U16) |
-| `vdd_5v` (aux 5 V) | GPIO1 | `GP01_5V_WS_EN` (U18) |
-| `12v_out` | GPIO2 | `GP02_12V_EN` (U5) |
-| `20v_out` | GPIO3 | `GP03_20V_EN` (U10) |
+| Rail | GPIO | Net | Notes |
+| --- | --- | --- | --- |
+| `5v_out` | GPIO0 | `GP0_5V_EN` (U16) | independent target rail; `regulator-boot-off` |
+| `vdd_5v` (aux 5 V) | GPIO1 | `GP01_5V_WS_EN` (U18) | parent auxiliary rail; no boot-on property |
+| `12v_out` | GPIO2 | `GP02_12V_EN` (U5) | independent target rail; `regulator-boot-off` |
+| `20v_out` | GPIO3 | `GP03_20V_EN` (U10) | independent target rail; `regulator-boot-off` |
+| `5v_usb_hub` | GPIO24 | `GPIO24_USB_CRL` (U38) | child of `vdd_5v`; `regulator-boot-off` |
+
+`5v_usb_hub` is the switched USB-hub 5 V branch. Firmware now exposes it as a
+fifth controllable power output alongside the three target rails and
+`vdd_5v`. Its setter is parent-aware: enabling it enables `vdd_5v` first when
+needed; disabling it leaves `vdd_5v` unchanged; disabling `vdd_5v` disables
+`5v_usb_hub` first; enabling `vdd_5v` alone does not enable the hub branch.
+The firmware rail model owns that parent relationship; Device Tree owns each
+regulator's boot-off state.
 
 The x1.1 `reg_vio` / `reg_1v8_vio` regulators and the VIN 1.8 V/3.3 V route do
 not exist on x1.2; board 3.3 V is generated from USB5V by U14. The firmware
@@ -48,6 +57,11 @@ device (there is no on-board ADC current path).
 
 The overlay uses `rshunt-micro-ohms = <10000>` and
 `current-lsb-microamps = <250>` for all four devices.
+
+`5v_usb_hub` has no INA226 and no dedicated ADC channel. The `vdd_5v` INA226
+reports the parent-rail total, which includes the hub branch; it is not a
+separate hub-current measurement. The ADC telemetry contract therefore remains
+eight descriptors even though the power-output catalog has five entries.
 
 ## I2C Transport (PIO)
 
@@ -233,7 +247,12 @@ Device Tree-selected input pin.
 ## J4 Target UART
 
 J4 is a 3-pin (TX/RX/GND) target UART on **UART1** (TX=GPIO10, RX=GPIO11,
-default `115200`). Production does **not** use Zephyr's generic UART bridge.
+default `115200`). The runtime accepts every integer baud in the inclusive range
+4800 through 115200; the five recommended UI presets are 9600, 19200, 38400,
+57600, and 115200. Higher rates such as 230400, 921600, and 1500000 are rejected
+and are not product paths; earlier high-rate samples are diagnostic evidence
+only.
+Production does **not** use Zephyr's generic UART bridge.
 The repo-local `linkr_debugger_serial` runtime owns the physical UART, line
 coding, bounded TX queue, completion events, and the shared 4096-byte RX ring.
 It fans RX independently to the J4 CDC ACM interface, four WebSocket sinks, and
@@ -252,9 +271,32 @@ two raw-TCP sinks; raw TCP listens on `0.0.0.0:5555`.
   the same serial runtime used by HTTP/WS/TCP. The final x1.2 HIL enumerated the
   control shell as ACM3 and J4 as ACM4, but host tty numbering is not a stable
   API.
+- CDC line control is an internal four-state machine (DOWN/PROMOTING/UP/BLOCKED).
+  A USB default line-coding notification while DTR is false only stages a
+  candidate tuple; it does not change active line coding or generation. HTTP/WS
+  config in that low state applies immediately. LOW→HIGH applies any staged
+  tuple and only then publishes DTR/ingress; a failed apply/attach/detach stays
+  blocked until a successful LOW/reset. Notification sequence/inflight and
+  session-epoch/mailbox identity fence promotion. Production requires deferred
+  USB notifications: callbacks stage state and wake the control worker rather
+  than performing HAL work in notification context. The external API does not
+  expose the internal phase or block reason.
 - The embedded xterm.js terminal subscribes to live-session topic `serial.j4`.
   The current product J4 path never uses the still-shipped legacy host
   `uart0`/`uart1` broker or browser Web Serial.
+- Explicit J4 input remains multiwriter and message-atomic; there is no TX-owner
+  acquisition and non-responding clients are not read-only. Exactly one client
+  is selected as the automatic terminal responder: CDC while DTR is asserted,
+  otherwise the lowest-numbered attached WebSocket slot. That client alone
+  answers terminal DSR/DA/CPR queries. Other Web clients still send explicit
+  keyboard, IME, and paste input, escape sequences are not filtered, and a
+  rejected write does not lock out later input.
+- State and data epoch boundaries, a renderer rebuild on generation changes, and
+  a responder-promotion queue with a zero-byte parser fence prevent a passive
+  terminal's stale partial or queued query from being answered after promotion.
+  The promotion path keeps the same xterm modes. See
+  [`serial-broker.md`](serial-broker.md) for the wire fields and the finite
+  responder matrix evidence.
 
 ## Header GPIO And Board Controls
 
@@ -267,6 +309,7 @@ two raw-TCP sinks; raw TCP listens on `0.0.0.0:5555`.
   | J8 pin | Signal | Ownership |
   | --- | --- | --- |
   | 10 | GP21 | PIO I2C SDA; not safe GPIO |
+  | 20 | `5V_USB_HUB` | switched `5v_usb_hub` child-rail output; not a GPIO/ADC |
   | 9 | GP20 | PIO I2C SCL; not safe GPIO |
   | 8 | GP27 / ADC1 | header ADC; not rail sensing |
   | 7 | GP28 / ADC2 | header ADC; not rail sensing |
@@ -276,19 +319,27 @@ two raw-TCP sinks; raw TCP listens on `0.0.0.0:5555`.
   | 3 | GP14 | safe GPIO |
   | 2 | GP13 | safe GPIO |
   | 1 | GP12 | safe GPIO |
+  | 16 | GP5 / `GPIO5_CON` | direct safe GPIO; default input, no pulls |
+  | 15 | GP6 / `GPIO6_CON` | direct safe GPIO; default input, no pulls |
 
   ADC0/GP26 has no J8 terminal in this confirmed mapping. This table is a
-  confirmed control/monitoring subset, not a complete J8 pinout; pins 11-20 are
-  not inferred here.
+  confirmed subset, not a complete J8 pinout; unlisted pins 11-19 are not
+  inferred here.
 - J13 is 2x2 in the same view: top-left pin 2 is GP9/USER, top-right pin 3 is
   GP8/RSET, bottom-left pin 1 is GP7/MASKROM, and bottom-right pin 4 is **GND**,
   not 3.3 V.
-- The safe-GPIO allowlist is `GP7`-`GP9`, `GP12`-`GP16`, and input-only
-  `GP29`. GP17 and GP18 are absent from the current safe/control catalog; empty
-  physical positions are not GPIO controls. `GP10`/`GP11`
+- The safe-GPIO allowlist is output-capable `GP5`, `GP6`, `GP7`-`GP9`,
+  `GP12`-`GP16`, and input-only `GP29`. GP17 and GP18 are absent. Across the 24
+  J8/J13 physical cells, 11 are controls and 13 are inert; 10 controls are
+  output-capable. `GP10`/`GP11`
   belong to J4 UART and `GP19` is the CH224A PD strap, so they are reserved.
-- `LED_BLUE` = GPIO24, `GP06_TF_SW` = GPIO4 (TF/SD mux), `TF_WP` = GPIO22,
-  `OTG_USB_EN` = GPIO23, `RP2354_PD_CFG1` = GPIO19.
+- The x1.2 switch catalog contains only `sd` and `tf_wp`. `switch/sd` uses
+  GPIO4 / `GP06_TF_SW`; `switch/tf_wp` uses GPIO22 / `TF_WP`. There is no
+  `switch/usb`; `/api/v1/switch/usb` returns 404. `vdd_5v` is independent of
+  switch routing, and `5v_usb_hub` is its power child.
+- `LED_BLUE` = GPIO25 (active-high status LED), `5v_usb_hub` enable =
+  `GPIO24_USB_CRL` = GPIO24, `GP06_TF_SW` = GPIO4 (TF/SD mux), `TF_WP` =
+  GPIO22, `OTG_USB_EN` = GPIO23, `RP2354_PD_CFG1` = GPIO19.
 
 ### BOOTSEL Button And Restart
 
@@ -315,8 +366,10 @@ A normal software restart (`reboot` / `POST /api/v1/reboot`) is a cold restart
 that never calls the ROM USB boot entry. An explicit ROM BOOTSEL request
 (`bootloader` / `POST /api/v1/bootloader`) calls `reset_usb_boot()` and is not
 an alias for reboot. A rail not restored by a saved v1 configuration snapshot
-returns to its `regulator-boot-off` default on every cold restart; `vdd_5v`
-follows the `switch usb` boot route.
+returns to its inactive Device Tree boot state on every cold restart;
+`5v_usb_hub` also boots off and remains off unless its own snapshot entry or an
+explicit setter enables it. `vdd_5v` is the parent output, not a route side
+effect, and enabling it does not implicitly enable the hub branch.
 
 ## Validation Status
 
@@ -331,8 +384,10 @@ register `0x4127`, and line levels in that specific setup; those observed levels
 do not identify a pull-up source or prove cross-domain safety. CH224A
 (`0x22/0x23`) I2C, any 400 kHz enablement with explicit external pull-ups and
 the required rise-time/VOL/reverse-current evidence, rail current calibration,
-rail/LED polarity, INA226 telemetry while WIDE11 captures the GP20/SCL tap, and
-the new reboot and physical BOOTSEL button paths remain HIL items. Current J4
-CDC/WS/raw-TCP fan-out and post-capture restoration evidence is in
+rail/LED polarity, INA226 telemetry while WIDE11 captures the GP20/SCL tap,
+and the physical BOOTSEL button path remain HIL items. Current J4
+CDC/WS/raw-TCP fan-out, the 4800..115200 product ceiling and high-rate
+diagnostics, CDC line-coding staging/promotion, the fifth hub power output, the
+J4 automatic-responder matrix, and post-capture restoration evidence are in
 [the 2026-10-21 x1.2 report](../testing/results/2026-10-21-x1.2-adc-pinout-j4-hil.md);
 its stated limitations remain authoritative.

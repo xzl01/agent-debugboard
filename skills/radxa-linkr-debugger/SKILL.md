@@ -231,6 +231,11 @@ curl --fail-with-body -sS -X PUT -H 'Content-Type: application/json' \
   "$BOARD_URL/api/v1/power/5v_out"
 ```
 
+On current x1.2 firmware, `5v_usb_hub` is also advertised. It is a child rail of
+`vdd_5v`: enabling it can enable `vdd_5v` first, disabling `vdd_5v` also disables
+the child, and enabling `vdd_5v` alone does not enable the child. It boots off.
+Inspect both parent and child state after a user-approved change.
+
 Do not use a fixed rail list as a target contract. Firmware may advertise a
 different catalog, state, or confirmation requirement.
 
@@ -241,7 +246,6 @@ Read the switch catalog and the selected switch before changing a route:
 ```sh
 curl -fsS "$BOARD_URL/api/v1/switch"
 curl -fsS "$BOARD_URL/api/v1/switch/sd"
-curl -fsS "$BOARD_URL/api/v1/switch/usb"
 curl -fsS "$BOARD_URL/api/v1/switch/tf_wp"
 ```
 
@@ -254,13 +258,14 @@ curl --fail-with-body -sS -X PUT -H 'Content-Type: application/json' \
   "$BOARD_URL/api/v1/switch/sd"
 
 curl --fail-with-body -sS -X PUT -H 'Content-Type: application/json' \
-  --data '{"route":"target"}' \
-  "$BOARD_URL/api/v1/switch/usb"
+  --data '{"route":"protected"}' \
+  "$BOARD_URL/api/v1/switch/tf_wp"
 ```
 
-Changing `switch usb` can affect the `vdd_5v` USB-hub domain. The firmware
-owns this relationship and its boot state; inspect current status after a
-user-approved route change rather than forcing a host-side default.
+Current x1.2 firmware advertises the `sd` and `tf_wp` switches. `vdd_5v` is an
+independent power output and does not follow switch-route changes. The firmware
+owns the catalog, accepted routes, and boot state; inspect current status after
+a user-approved route change rather than forcing a host-side default.
 
 `switch tf_wp` affects write protection as interpreted by the reader. A route
 change can require card reattachment before the reader observes it.
@@ -328,7 +333,9 @@ curl -fsS "$BOARD_URL/api/v1/adc/read?channel=adc3"
 ```
 
 Treat firmware values and channel metadata as authoritative. `adc3` reports
-GP29 voltage; it is not a controllable current output.
+GP29 voltage; it is not a controllable current output. `5v_usb_hub` has no
+INA226 channel, so do not substitute another rail's reading for it or report a
+fabricated measurement.
 
 Use the [Power Analyzer guide](../../docs/user/power-analyzer.md) for recorded
 current workflows. Use the [Logic Analyzer guide](../../docs/user/logic-analyzer.md)
@@ -518,8 +525,8 @@ Firmware restarts 250 ms after the response and returns to normal operation.
 The reboot action itself never requests ROM BOOTSEL and never enumerates as
 `RPI-RP2`; holding the physical BOOTSEL button across that reset is a separate
 ROM behavior. A rail not restored by a saved v1 configuration snapshot returns
-to its boot-off default; `vdd_5v` follows the USB route default. Re-establish
-and verify any rail or PD setup after the board returns.
+to its boot-off default; `vdd_5v` is independent and returns to its boot-off
+default. Re-establish and verify any rail or PD setup after the board returns.
 
 The physical BOOTSEL button has its own semantics:
 

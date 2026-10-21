@@ -8,7 +8,7 @@ at PIO rates. Not intended for sustained streaming at high sample rates.
 The logic analyzer is available in the Web UI under the **Terminal workspace**,
 alongside the serial terminal.
 
-## Safe GPIO Pins
+## Capture GPIO Pins
 
 Only the following pins are available for logic analyzer capture:
 
@@ -17,7 +17,7 @@ Only the following pins are available for logic analyzer capture:
 | GP7–GP9 | J13 recovery controls (`CON_MAS`, `CON_REST`, `CON_USER`) |
 | GP10–GP11 | J4 target UART; capture temporarily takes ownership from UART |
 | GP12–GP16 | J8 pins 1–5 |
-| GP17–GP18 | No confirmed J8/J13 mapping; select by firmware GPIO name only |
+| GP17–GP18 | Capture-only lanes with no safe/control or J8/J13 mapping |
 | GP19 | PD CFG1 strap; capture-only internal signal, never drive it |
 | GP20 | J8 pin 9, PIO I2C SCL; read-only tap, never drive or pull it low |
 | GP29 | J8 pin 6, ADC3-owned and input-only |
@@ -31,7 +31,7 @@ drawing before attaching probes.
 
 | Parameter | Range | Notes |
 | --- | --- | --- |
-| Channels | 1–16 | Selected from the safe pin allowlist above |
+| Channels | 1–16 | Selected from the capture allowlist above |
 | Sample rate | 100,000–125,000,000 Hz | Actual rate may differ due to PIO clock divider quantization |
 | post_samples | 1–512 | Samples captured after the trigger |
 | pre_samples | 0–512 | Requires edge trigger + rate ≤25 MHz; total (pre+post) capped at 512 |

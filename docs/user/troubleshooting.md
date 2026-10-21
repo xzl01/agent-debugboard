@@ -80,13 +80,25 @@ try the route command again.
 
 **Symptom:** `switch get` still shows the old route after `switch route`.
 
-1. Check the `desired` vs `actual` fields in the status output.
-2. For USB and VIN routes, make sure you passed `--confirm`:
+1. Enumerate the firmware-advertised switch catalog:
    ```sh
-   radxa-linkr-debuggerctl switch route usb target --confirm
+   radxa-linkr-debuggerctl switch list
    ```
-3. Wait a few seconds and check again. Hardware muxes need settling time.
-4. Don't run opposing route commands in rapid succession on the same switch.
+2. Read the selected switch before changing it:
+   ```sh
+   radxa-linkr-debuggerctl switch get sd
+   ```
+3. Route only an advertised switch and route value:
+   ```sh
+   radxa-linkr-debuggerctl switch route sd usb-reader
+   radxa-linkr-debuggerctl switch route tf_wp protected
+   ```
+4. Wait a few seconds and check again. Hardware muxes need settling time.
+5. Don't run opposing route commands in rapid succession on the same switch.
+
+x1.2 has no `switch/usb` item. `GET /api/v1/switch/usb` returns HTTP 404;
+do not retry that non-existent endpoint. Read `GET /api/v1/switch` or
+`radxa-linkr-debuggerctl switch list` for the current catalog instead.
 
 ## ADC reads zero
 
