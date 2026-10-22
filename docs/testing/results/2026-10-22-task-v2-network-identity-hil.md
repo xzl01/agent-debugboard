@@ -13,7 +13,7 @@ electrical behavior and effective/backfeed reporting remain pending; see
 | --- | --- |
 | Board | Radxa Linkr Debugger, USB path `1-1.4.2`, host `eth1` |
 | Firmware | combined `radxa-linkr-debugger-rp2350.uf2` |
-| UF2 SHA-256 | `ef572f8455848b80994080b2cd16224f5afe5c5e1894318e1bf8169f240841bf` |
+| UF2 SHA-256 | `2778344b3f7d38150d273f3b5ed0c1f463b6820f1e2077401a5c12ab1dd0372d` |
 | Flash | 837364 / 847832 B used, 10468 B free |
 | RAM | 499248 / 532480 B used, 33232 B free |
 | Settings NVS | 128 KiB, `0x1b0000..0x1d0000`, 32 sectors (full erase used; pre-release 320 KiB layouts are not migrated) |
@@ -32,6 +32,9 @@ swap. It was rechecked for network GET, unchanged PUT preserving
 source/full-IR digests, storage accounting, clear, CDC `task clear`, the `ip`
 subcommand guard, and Web asset delivery. The logic-analyzer UI itself is
 covered by the Web DOM test suite and does not change capture/transport code.
+A headless Chromium CDP check against the live board confirmed the physical J8/J13
+selector, the sampling-left/pins-right order, left-click trigger, right-click
+capture selection, and trigger clearing when its pin is deselected.
 
 ## Preflight
 
