@@ -13,8 +13,8 @@ electrical behavior and effective/backfeed reporting remain pending; see
 | --- | --- |
 | Board | Radxa Linkr Debugger, USB path `1-1.4.2`, host `eth1` |
 | Firmware | combined `radxa-linkr-debugger-rp2350.uf2` |
-| UF2 SHA-256 | `762f76ddb1e620e602fe8382ed072cee1b739a89aee5badab252e01c00217cfe` |
-| Flash | 837948 / 847832 B used, 9884 B free |
+| UF2 SHA-256 | `ef572f8455848b80994080b2cd16224f5afe5c5e1894318e1bf8169f240841bf` |
+| Flash | 837364 / 847832 B used, 10468 B free |
 | RAM | 499248 / 532480 B used, 33232 B free |
 | Settings NVS | 128 KiB, `0x1b0000..0x1d0000`, 32 sectors (full erase used; pre-release 320 KiB layouts are not migrated) |
 | Boot | normal application boot after ROM BOOTSEL flash |
@@ -26,10 +26,12 @@ The full Task matrix below was run on an earlier build
 (`6af7158650ca79dc4587ac2f9789c32640e7c5f397975c30177073069be064f4`). The
 final artifact additionally contains the Web network-validation fixes, the
 firmware unchanged-identity origin guard, the low-stack shell clear path, and
-the task storage usage/gate. It was rechecked for network GET, unchanged PUT
-preserving `origin:"derived"`, invalid-network rejection, Task A upsert with
-exact source/full-IR digests, storage accounting, clear, CDC `task clear`, and
-the `ip` subcommand guard.
+the task storage usage/gate and the logic-analyzer physical pin selector/order
+swap. It was rechecked for network GET, unchanged PUT preserving
+`origin:"derived"`, invalid-network rejection, Task A upsert with exact
+source/full-IR digests, storage accounting, clear, CDC `task clear`, the `ip`
+subcommand guard, and Web asset delivery. The logic-analyzer UI itself is
+covered by the Web DOM test suite and does not change capture/transport code.
 
 ## Preflight
 
