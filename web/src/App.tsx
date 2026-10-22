@@ -555,7 +555,7 @@ export default function App() {
                 >
                   <LogicAnalyzerCard
                     boardGpios={board.snapshot?.gpios}
-                    gpioLayoutGroups={board.snapshot?.gpioLayoutGroups}
+                    physicalLayout={board.gpioPhysicalLayout}
                     onActivityChange={setLogicAnalyzerActive}
                   />
                 </div>

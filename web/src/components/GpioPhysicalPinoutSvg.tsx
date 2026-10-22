@@ -2,6 +2,7 @@ import { useId } from "react";
 import type { GpioPhysicalCell, GpioPhysicalLayout, SafeGpio } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
 import { GpioPin, type GpioAction } from "./GpioPin";
+import { GpioSelectionPin, logicPinState } from "./GpioSelectionPin";
 
 /** Final display pose: contacts down, headers side by side, reverse metadata
  * order (J13 left / J8 right on this board). Source columns become display
@@ -74,15 +75,44 @@ export interface GpioPhysicalPinoutSvgProps {
   readonly instructionsId?: string;
   readonly disabled?: boolean;
   readonly onGpioAction?: (gpioName: string, action: GpioAction) => void;
+  /**
+   * Logic-analyzer selection mode. When `selectionPins` is set, only those
+   * pins render selection controls and every other contact is read-only
+   * context; live GPIO control gestures are not bound at all.
+   */
+  readonly selectionPins?: readonly number[];
+  readonly selectedPins?: readonly number[];
+  readonly disabledPins?: readonly number[];
+  readonly triggerPin?: number | null;
+  readonly triggerActive?: boolean;
+  readonly onTogglePin?: (pin: number) => void;
+  readonly onSetTriggerPin?: (pin: number | null) => void;
 }
 
 /** The physical circles are the only GPIO controls. Inert pins bind no events. */
-export function GpioPhysicalPinoutSvg({ layout, gpios, pendingPin = null, instructionsId, disabled = false, onGpioAction }: GpioPhysicalPinoutSvgProps) {
+export function GpioPhysicalPinoutSvg({
+  layout,
+  gpios,
+  pendingPin = null,
+  instructionsId,
+  disabled = false,
+  onGpioAction,
+  selectionPins,
+  selectedPins,
+  disabledPins,
+  triggerPin = null,
+  triggerActive = false,
+  onTogglePin,
+  onSetTriggerPin,
+}: GpioPhysicalPinoutSvgProps) {
   const { t } = useI18n();
   const roleLabel = useRoleLabel();
   const id = useId();
   const assembly = placePhysicalAssembly(layout);
   const liveByName = new Map(gpios.map((gpio) => [gpio.name, gpio]));
+  const selectionMode = selectionPins != null;
+  const selectionPinSet = new Set(selectionPins ?? []);
+  const selectionDisabledSet = new Set(disabledPins ?? []);
   const pitchX = 46;
   const pitchY = 66;
   const padding = 10;
@@ -134,10 +164,32 @@ export function GpioPhysicalPinoutSvg({ layout, gpios, pendingPin = null, instru
                 const dedicated = cell.role === "dedicated";
                 const identity = t("pinout.cell", { group: group.name, pin: cell.pinNumber, label: purpose,
                   signal: dedicated ? t("pinout.netName", { name: cell.signal }) : cell.signal, role: roleLabel(cell) });
+                const selectionPin =
+                  selectionMode && gpio && (selectionPinSet.has(gpio.pin) || selectionDisabledSet.has(gpio.pin))
+                    ? gpio.pin
+                    : null;
+                const selectionState = selectionPin == null ? null : logicPinState(selectionPin, {
+                  selectedPins: selectedPins ?? [],
+                  disabledPins: disabledPins ?? [],
+                  triggerPin,
+                  triggerActive,
+                });
                 return (
                   <g key={cell.pinNumber} data-physical-cell={cell.pinNumber} data-row={cell.row} data-column={cell.column}
                     data-display-row={displayRow} data-display-column={displayColumn} data-controllable={Boolean(gpio)}>
-                    {gpio ? <GpioPin
+                    {selectionPin != null && selectionState != null ? (
+                      <GpioSelectionPin
+                        pin={selectionPin} cx={cx} cy={cy} label={label}
+                        state={selectionState}
+                        ariaLabel={t("logicAnalyzer.pinAria", {
+                          name: `GP${selectionPin}`,
+                          group: group.name,
+                          pin: cell.pinNumber,
+                          state: t(`logicAnalyzer.pinout.legend.${selectionState}`),
+                        })}
+                        instructionsId={instructionsId} locked={disabled}
+                        onTogglePin={onTogglePin ?? (() => {})} onSetTriggerPin={onSetTriggerPin ?? (() => {})} />
+                    ) : gpio && !selectionMode ? <GpioPin
                       cell={{ ...gpio, layoutGroup: group.name, layoutLabel: purpose, layoutRow: cell.row, layoutColumn: cell.column }}
                       cx={cx} cy={cy} pendingPin={pendingPin} instructionsId={instructionsId} disabled={disabled}
                       outputCapable={cell.outputCapable} hitTargetRadius={22} label={label} t={t}

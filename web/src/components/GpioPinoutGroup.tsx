@@ -35,14 +35,14 @@ export const FILL_TRIGGER = "rgb(var(--c-warn) / 0.14)";
 export const STROKE_SELECTED = "rgb(var(--c-brand) / 0.75)";
 export const STROKE_TRIGGER = "rgb(var(--c-warn) / 0.8)";
 export const STROKE_DEFAULT = "rgb(var(--c-line))";
-const LABEL_DEFAULT = "rgb(var(--c-ink))";
-const LABEL_SELECTED = "rgb(var(--c-brand))";
-const LABEL_TRIGGER = "rgb(var(--c-warn))";
-const LABEL_DIM = "rgb(var(--c-ink-dim))";
+export const LABEL_DEFAULT = "rgb(var(--c-ink))";
+export const LABEL_SELECTED = "rgb(var(--c-brand))";
+export const LABEL_TRIGGER = "rgb(var(--c-warn))";
+export const LABEL_DIM = "rgb(var(--c-ink-dim))";
 const HEADER_TEXT = "rgb(var(--c-ink))";
 const CONNECTOR_OUTLINE = "rgb(var(--c-line))";
-const FILL_DISABLED = "rgb(var(--c-panel2))";
-const STROKE_DISABLED = "rgb(var(--c-ink-dim) / 0.45)";
+export const FILL_DISABLED = "rgb(var(--c-panel2))";
+export const STROKE_DISABLED = "rgb(var(--c-ink-dim) / 0.45)";
 
 interface PlacedCell {
   cell: GpioLayoutCell;

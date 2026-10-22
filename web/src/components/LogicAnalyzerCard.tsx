@@ -11,7 +11,6 @@ import {
   Binary,
   Download,
   Loader2,
-  MousePointerClick,
   Radio,
   Square,
   Trash2,
@@ -19,7 +18,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Badge, Button, Card, Toggle, WorkspaceModeHeader, WorkspaceModeTab } from "./ui";
-import { GpioPinoutSvg } from "./GpioPinoutSvg";
+import { LogicAnalyzerPinSelector } from "./LogicAnalyzerPinSelector";
 import { useSigrokScope } from "@/hooks/useSigrokScope";
 import type {
   LogicAnalyzerCapture,
@@ -27,7 +26,7 @@ import type {
   LogicAnalyzerState,
   LogicAnalyzerTriggerType,
   SafeGpio,
-  GpioLayoutGroupMetadata,
+  GpioPhysicalLayout,
 } from "@/lib/types";
 import {
   AVAILABLE_PINS,
@@ -36,7 +35,6 @@ import {
   LOGIC_ANALYZER_MAX_PRE_TRIGGER_SAMPLE_RATE_HZ,
   LOGIC_ANALYZER_MAX_PRE_TRIGGER_TOTAL_SAMPLES,
   LOGIC_ANALYZER_MIN_PRE_TRIGGER_SAMPLE_RATE_HZ,
-  LOGIC_ANALYZER_SIGROK_DISABLED_PINS,
   SAMPLE_RATES,
   assembleBoundedSigrokCapture,
   buildSigrokCaptureRequest,
@@ -368,12 +366,12 @@ function decoderSignalPins(
 // allow: SIZE_OK — one logic-analyzer state machine owns capture, stream, decode, and cleanup.
 export function LogicAnalyzerCard({
   boardGpios,
-  gpioLayoutGroups,
+  physicalLayout,
   workspaceTabs,
   onActivityChange,
 }: {
   boardGpios?: SafeGpio[];
-  gpioLayoutGroups?: readonly GpioLayoutGroupMetadata[];
+  physicalLayout?: GpioPhysicalLayout | null;
   workspaceTabs?: ReactNode;
   onActivityChange?: (active: boolean) => void;
 }) {
@@ -939,6 +937,46 @@ export function LogicAnalyzerCard({
     setWorkspaceMode("capture");
   }, []);
 
+  // The trigger is stored as an index into the normalized, sorted pin list,
+  // so these handlers resolve pin identity instead of trusting raw indices.
+  const handleTogglePin = useCallback(
+    (pin: number) => {
+      if (controlsDisabled) return;
+      updateConfig((current) => {
+        const triggerPinNumber = current.selectedPins[current.triggerPin] ?? null;
+        const selectedPins = current.selectedPins.includes(pin)
+          ? current.selectedPins.filter((selectedPin) => selectedPin !== pin)
+          : [...current.selectedPins, pin].sort((left, right) => left - right);
+        const triggerPin =
+          triggerPinNumber == null ? 0 : Math.max(0, selectedPins.indexOf(triggerPinNumber));
+        return { ...current, selectedPins, triggerPin };
+      });
+    },
+    [controlsDisabled, updateConfig]
+  );
+
+  const handleSetTriggerPin = useCallback(
+    (pin: number | null) => {
+      if (controlsDisabled) return;
+      if (pin == null) {
+        updateConfig((current) => ({ ...current, triggerType: "none" }));
+        return;
+      }
+      updateConfig((current) => {
+        const selectedPins = current.selectedPins.includes(pin)
+          ? [...current.selectedPins]
+          : [...current.selectedPins, pin].sort((left, right) => left - right);
+        return {
+          ...current,
+          selectedPins,
+          triggerPin: selectedPins.indexOf(pin),
+          triggerType: current.triggerType === "none" ? "either" : current.triggerType,
+        };
+      });
+    },
+    [controlsDisabled, updateConfig]
+  );
+
   const waveformData = useMemo(() => {
     if (!capture || capture.sampleCount === 0) return [];
 
@@ -1321,109 +1359,9 @@ export function LogicAnalyzerCard({
         id={workspaceMode === "capture" ? "logic-analyzer-panel-capture" : "logic-analyzer-panel-decode"}
         role="tabpanel"
         aria-labelledby={workspaceMode === "capture" ? "logic-analyzer-mode-capture" : "logic-analyzer-mode-decode"}
-        className={`grid items-start gap-3 ${workspaceMode === "capture" ? "lg:grid-cols-[300px_minmax(0,1fr)]" : "grid-cols-1"}`}
+        className={`grid items-start gap-3 ${workspaceMode === "capture" ? "lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]" : "grid-cols-1"}`}
       >
-        {workspaceMode === "capture" && (
-        <section className="min-w-0 rounded-xl border border-line/60 bg-panel2/35 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-xs font-semibold text-ink">{t("logicAnalyzer.selectPins")}</div>
-            <Badge tone={config.selectedPins.length > 0 ? "brand" : "neutral"}>
-              {config.selectedPins.length}/{boardGpios?.length ?? AVAILABLE_PINS.length}
-            </Badge>
-          </div>
-          <div className="mt-2 grid grid-cols-2 overflow-hidden rounded-lg border border-line/50 bg-panel/70 text-[10px] leading-4 text-ink-dim">
-            <span className="inline-flex min-w-0 items-center gap-1.5 px-2.5 py-2">
-              <MousePointerClick size={13} className="shrink-0 text-warn" />
-              {t("logicAnalyzer.leftClickAction")}
-            </span>
-            <span className="inline-flex min-w-0 items-center gap-1.5 border-l border-line/50 px-2.5 py-2">
-              <MousePointerClick size={13} className="shrink-0 text-brand" />
-              {t("logicAnalyzer.rightClickAction")}
-            </span>
-          </div>
-          {boardGpios && boardGpios.length > 0 ? (
-            <div className="mt-3">
-              <GpioPinoutSvg
-                gpios={boardGpios}
-                layoutGroups={gpioLayoutGroups}
-                selectedPins={config.selectedPins}
-                disabledPins={LOGIC_ANALYZER_SIGROK_DISABLED_PINS}
-                triggerPin={
-                  config.triggerType !== "none" && config.selectedPins.length > 0
-                    ? config.selectedPins[config.triggerPin] ?? null
-                    : null
-                }
-                triggerActive={config.triggerType !== "none"}
-                onTogglePin={(pin) => {
-                  if (controlsDisabled) return;
-                  updateConfig((current) => {
-                    const has = current.selectedPins.includes(pin);
-                    if (has) {
-                      const nextSelected = current.selectedPins.filter((p) => p !== pin);
-                      const triggerPin = nextSelected.length === 0
-                        ? 0
-                        : Math.min(current.triggerPin, nextSelected.length - 1);
-                      return { ...current, selectedPins: nextSelected, triggerPin };
-                    }
-                    return { ...current, selectedPins: [...current.selectedPins, pin] };
-                  });
-                }}
-                onSetTriggerPin={(pin) => {
-                  if (controlsDisabled) return;
-                  if (pin == null) {
-                    updateConfig((current) => ({ ...current, triggerType: "none" }));
-                    return;
-                  }
-                  updateConfig((current) => {
-                    const selectedPins = current.selectedPins.includes(pin)
-                      ? current.selectedPins
-                      : [...current.selectedPins, pin];
-                    return {
-                      ...current,
-                      selectedPins,
-                      triggerPin: selectedPins.indexOf(pin),
-                      triggerType: current.triggerType === "none" ? "either" : current.triggerType,
-                    };
-                  });
-                }}
-              />
-              <div className="mt-2 text-[10px] text-ink-dim">
-                {t("logicAnalyzer.sigrokPinsHint")}
-              </div>
-            </div>
-          ) : (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {AVAILABLE_PINS.map((pin) => (
-                <label
-                  key={pin.pin}
-                  className={`inline-flex cursor-pointer items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] transition-colors ${
-                    config.selectedPins.includes(pin.pin)
-                      ? "border-brand bg-brand/10 text-brand"
-                      : "border-line bg-panel text-ink-dim hover:border-brand/40"
-                  } ${controlsDisabled ? "cursor-not-allowed opacity-50" : ""}`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={config.selectedPins.includes(pin.pin)}
-                    onChange={(event) => {
-                      if (event.target.checked) {
-                        updateConfig((current) => ({ ...current, selectedPins: [...current.selectedPins, pin.pin] }));
-                        return;
-                      }
-                      updateConfig((current) => ({ ...current, selectedPins: current.selectedPins.filter((selectedPin) => selectedPin !== pin.pin) }));
-                    }}
-                    disabled={controlsDisabled}
-                    className="sr-only"
-                  />
-                  <span className="font-mono">{pin.name}</span>
-                </label>
-              ))}
-            </div>
-          )}
-        </section>
-        )}
-
-        <section className="min-w-0 rounded-xl border border-line/60 bg-panel2/20 p-3">
+        <section data-testid="logic-analyzer-sampling-settings" className="min-w-0 rounded-xl border border-line/60 bg-panel2/20 p-3">
           {workspaceMode === "capture" && (
           <>
           <div className="grid grid-cols-2 gap-x-3 gap-y-2">
@@ -1784,6 +1722,31 @@ export function LogicAnalyzerCard({
             </div>
           )}
         </section>
+
+        {workspaceMode === "capture" && (
+        <section data-testid="logic-analyzer-pin-select" className="min-w-0 rounded-xl border border-line/60 bg-panel2/35 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs font-semibold text-ink">{t("logicAnalyzer.selectPins")}</div>
+            <Badge tone={config.selectedPins.length > 0 ? "brand" : "neutral"}>
+              {config.selectedPins.length}/{AVAILABLE_PINS.length}
+            </Badge>
+          </div>
+          <LogicAnalyzerPinSelector
+            physicalLayout={physicalLayout ?? null}
+            boardGpios={boardGpios ?? []}
+            selectedPins={config.selectedPins}
+            triggerPin={
+              config.triggerType !== "none" && config.selectedPins.length > 0
+                ? config.selectedPins[config.triggerPin] ?? null
+                : null
+            }
+            triggerActive={config.triggerType !== "none"}
+            disabled={controlsDisabled}
+            onTogglePin={handleTogglePin}
+            onSetTriggerPin={handleSetTriggerPin}
+          />
+        </section>
+        )}
       </div>
 
       {workspaceMode === "capture" && (

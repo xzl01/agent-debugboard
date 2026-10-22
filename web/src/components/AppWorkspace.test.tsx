@@ -234,13 +234,13 @@ vi.mock("./PowerAnalysisWorkspace", () => ({
 
 type LogicAnalyzerMockProps = {
   readonly boardGpios?: readonly { readonly name: string }[];
-  readonly gpioLayoutGroups?: readonly { readonly name: string }[];
+  readonly physicalLayout?: GpioPhysicalLayout | null;
   readonly workspaceTabs?: ReactNode;
 };
 
 vi.mock("./LogicAnalyzerCard", () => ({
-  LogicAnalyzerCard: ({ boardGpios, gpioLayoutGroups, workspaceTabs }: LogicAnalyzerMockProps) => (
-    <div data-testid="logic-analyzer" data-layout-groups={gpioLayoutGroups?.map((group) => group.name).join(",")}>
+  LogicAnalyzerCard: ({ boardGpios, physicalLayout, workspaceTabs }: LogicAnalyzerMockProps) => (
+    <div data-testid="logic-analyzer" data-layout-groups={physicalLayout?.groups.map((group) => group.name).join(",")}>
       {workspaceTabs}
       {boardGpios?.map((gpio) => gpio.name).join(",")}
     </div>
@@ -502,7 +502,7 @@ describe("App workspace", () => {
     expect(terminalPanel.hidden).toBe(false);
     expect(logicPanel.hidden).toBe(true);
     expect(byTestId(host, "logic-analyzer").textContent).toBe("GP10");
-    expect(byTestId(host, "logic-analyzer").getAttribute("data-layout-groups")).toBe("PORT");
+    expect(byTestId(host, "logic-analyzer").getAttribute("data-layout-groups")).toBe("TEST");
   });
 
   it("switches to the Logic Analyzer panel when its tab is clicked", () => {
