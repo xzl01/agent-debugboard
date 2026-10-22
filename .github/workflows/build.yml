@@ -348,7 +348,7 @@ jobs:
       - name: Install ShellCheck
         run: |
           sudo apt-get update
-          sudo apt-get install -y libudev-dev shellcheck
+          sudo apt-get install -y libudev-dev shellcheck zopfli
 
       - name: Check shell scripts
         run: |
@@ -450,6 +450,12 @@ jobs:
 
       - name: Install MCUboot image tool dependencies
         run: python3 -m pip install -r bootloader/mcuboot/scripts/requirements.txt
+
+      - name: Install embedded resource compressor
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zopfli
+          command -v zopfli
 
       - name: Build RP2350 firmware
         run: |

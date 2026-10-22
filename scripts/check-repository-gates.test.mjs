@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 import { POLICY_FILES, checkRepositoryGateContents } from "./check-repository-gates.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -24,6 +26,7 @@ const RPM_SPEC = "packaging/redhat/radxa-linkr-debugger.spec";
 const PKGBUILD = "packaging/archlinux/PKGBUILD";
 const VERSION_BUMP_WORKFLOW = ".github/workflows/version-bump.yml";
 const APP_CMAKE = "apps/radxa_linkr_debugger/CMakeLists.txt";
+const ROM_SECTIONS = "apps/radxa_linkr_debugger/sections-rom.ld";
 const RAM_SECTIONS = "apps/radxa_linkr_debugger/sections-ram.ld";
 const CAPTURE_ARENA_HEADER = "apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.h";
 const CAPTURE_ARENA_SOURCE = "apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.c";
@@ -37,6 +40,7 @@ const LOGIC_ANALYZER_DOC = "docs/reference/logic-analyzer.md";
 const DOCS_INDEX = "docs/README.md";
 const MEMORY_POLICY_FILES = Object.freeze([
   APP_CMAKE,
+  ROM_SECTIONS,
   RAM_SECTIONS,
   CAPTURE_ARENA_HEADER,
   CAPTURE_ARENA_SOURCE,
@@ -107,7 +111,7 @@ async function optimizedMemoryContents() {
     ["CONFIG_NET_BUF_RX_COUNT", "64"],
     ["CONFIG_NET_BUF_TX_COUNT", "64"],
     ["CONFIG_HEAP_MEM_POOL_SIZE", "49152"],
-    ["CONFIG_NET_SOCKETS_SERVICE_STACK_SIZE", "2400"],
+    ["CONFIG_NET_SOCKETS_SERVICE_STACK_SIZE", "4096"],
     ["CONFIG_NET_IPV6", "n"],
     ["CONFIG_I2C", "y"],
     ["CONFIG_SPI", "n"],
@@ -130,6 +134,7 @@ ASSERT(SIZEOF(.bss.pre_capture) == 0xDA40, "pre-capture size")
 ASSERT(__data_region_end <= 0x20010000, "pre-capture start")
 ASSERT(__bss_start == 0x20010000, "generic BSS start")
 ASSERT((__bss_start & 0x7fff) == 0, "generic BSS alignment")
+ASSERT(_image_ram_size <= 0x7A000, "RAM image exceeds 499712 B: _image_ram_size must stay <= 0x7A000, reserving 32768 B of 532480 B")
 `);
   let sigrokSource = contents.get(SIGROK_SOURCE);
   sigrokSource = appendIfMissing(sigrokSource, "Z_GENERIC_SECTION(.bss.pre_capture.sigrok_runtime)", `static struct linkr_debugger_sigrok_linkr_runtime linkr_debugger_sigrok_linkr_runtime
@@ -215,6 +220,121 @@ async function runSourceGate(workflow, requested, inherited) {
 
 test("accepts the complete repository gate contract", async () => {
   assert.deepEqual(checkRepositoryGateContents(await repositoryContents()), { ok: true, failures: [] });
+});
+
+test("Zopfli build contract compresses all embedded assets outside web-dist without file2hex gzip", async () => {
+  const contents = await repositoryContents();
+  const cmake = contents.get(APP_CMAKE);
+  assert.match(cmake, /find_program\(ZOPFLI_EXECUTABLE NAMES zopfli REQUIRED\)/);
+  assert.doesNotMatch(cmake, /--gzip\b/);
+  assert.match(cmake, /set\(linkr_debugger_web_gen_dir \$\{ZEPHYR_BINARY_DIR\}\/include\/generated\)/);
+  assert.match(cmake, /set\(gzip_file "\$\{linkr_debugger_web_gen_dir\}\/\$\{output_name\}\.gz"\)/);
+  assert.match(cmake, /COMMAND \$\{Python3_EXECUTABLE\} "\$\{linkr_debugger_zopfli_script\}"\s+--zopfli "\$\{ZOPFLI_EXECUTABLE\}"\s+--input "\$\{source_file\}" --output "\$\{gzip_file\}"/);
+  assert.match(cmake, /DEPENDS "\$\{source_file\}" "\$\{linkr_debugger_zopfli_script\}"\s+"\$\{ZOPFLI_EXECUTABLE\}"/);
+  assert.match(cmake, /generate_inc_file_for_target\(app "\$\{gzip_file\}" "\$\{gzip_file\}\.inc"\)/);
+  const resources = [...cmake.matchAll(/linkr_debugger_embed_web_resource\(\s*(\S+)\s+(\S+)\s*\)/g)]
+    .map(([, source, output]) => [source, output]);
+  assert.deepEqual(resources, [
+    ["index.html", "linkr_debugger_web_index.html"],
+    ["linkr-mark.svg", "linkr_debugger_web_linkr_mark.svg"],
+    ["linkr-logo.svg", "linkr_debugger_web_linkr_logo.svg"],
+    ["robots.txt", "linkr_debugger_web_robots.txt"],
+    ["assets/app.css", "linkr_debugger_web_app.css"],
+    ["assets/app.js", "linkr_debugger_web_app.js"],
+    ["assets/decoder/logic-decoder.js", "linkr_debugger_web_logic_decoder.js"],
+    ["assets/decoder/logic-decoder_bg.wasm", "linkr_debugger_web_logic_decoder_bg.wasm"],
+  ]);
+  for (const file of ["shell.nix", "flake.nix"]) assert.match(contents.get(file), /^\s+pkgs\.zopfli\s*$/m);
+  const firmware = workflowJob(contents.get(BUILD_WORKFLOW), "firmware");
+  assert.match(firmware, /sudo apt-get install -y zopfli\s+command -v zopfli/);
+  assert.ok(firmware.indexOf("sudo apt-get install -y zopfli") < firmware.indexOf("west build"));
+  assert.match(workflowJob(contents.get(BUILD_WORKFLOW), "scripts"), /sudo apt-get install[^\n]*\bzopfli\b/);
+});
+
+function runZopfli(source, output, zopfli = "zopfli") {
+  return spawnSync("python3", [
+    path.join(ROOT, "apps/radxa_linkr_debugger/scripts/zopfli_compress.py"),
+    "--zopfli", zopfli, "--input", source, "--output", output,
+  ], { encoding: "utf8" });
+}
+
+test("Zopfli Python CLI preserves exact bytes and zero mtime with reproducible gzip hashes", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "linkr-zopfli-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dist = path.join(root, "web-dist");
+  await mkdir(dist);
+  const generated = path.join(root, "build", "generated");
+  for (const [name, data] of [
+    ["asset with spaces.wasm", Buffer.from([...Array(256).keys(), ...Buffer.from("Linkr UI ".repeat(80))])],
+    ["empty.txt", Buffer.alloc(0)],
+  ]) {
+    const source = path.join(dist, name);
+    const output = path.join(generated, `${name}.gz`);
+    await writeFile(source, data);
+    let result = runZopfli(source, output);
+    assert.equal(result.status, 0, result.stderr);
+    const first = await readFile(output);
+    assert.deepEqual(gunzipSync(first), data);
+    assert.deepEqual(first.subarray(0, 8), Buffer.from([31, 139, 8, 0, 0, 0, 0, 0]));
+    await utimes(source, 1700000000, 1700000000);
+    result = runZopfli(source, output);
+    assert.equal(result.status, 0, result.stderr);
+    const second = await readFile(output);
+    assert.equal(createHash("sha256").update(first).digest("hex"), createHash("sha256").update(second).digest("hex"));
+    assert.deepEqual(await readFile(source), data);
+  }
+  assert.deepEqual((await readdir(dist)).sort(), ["asset with spaces.wasm", "empty.txt"]);
+  assert.deepEqual((await readdir(generated)).sort(), ["asset with spaces.wasm.gz", "empty.txt.gz"]);
+});
+
+test("Zopfli Python CLI rejects invalid or non-reproducible output atomically", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "linkr-zopfli-failure-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = path.join(root, "source.txt");
+  const output = path.join(root, "output.gz");
+  await writeFile(source, "original source");
+  const cases = [
+    ["mtime", /mtime=0/],
+    ["mismatch", /does not match/],
+    ["unstable", /not reproducible/],
+    ["truncated", /failed/],
+    ["failure", /non-zero exit status 7/],
+  ];
+  for (const [mode, expected] of cases) {
+    await t.test(mode, async () => {
+      const executable = path.join(root, `zopfli-${mode}`);
+      await writeFile(executable, `#!/usr/bin/env python3
+import gzip, pathlib, sys
+assert sys.argv[1:3] == ["--i15", "-c"]
+source = pathlib.Path(sys.argv[3]).read_bytes()
+mode = ${JSON.stringify(mode)}
+if mode == "failure":
+    sys.stdout.buffer.write(b"partial gzip")
+    sys.exit(7)
+data = bytearray(gzip.compress(b"wrong" if mode == "mismatch" else source, mtime=0))
+if mode == "mtime":
+    data[4] = 1
+if mode == "unstable":
+    counter = pathlib.Path(__file__ + ".calls")
+    data[9] = 3 if counter.exists() else 255
+    counter.write_text("called")
+if mode == "truncated":
+    data = data[:10]
+sys.stdout.buffer.write(data)
+`);
+      await chmod(executable, 0o755);
+      await writeFile(output, "previous verified output");
+      const result = runZopfli(source, output, executable);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, expected);
+      assert.equal(await readFile(output, "utf8"), "previous verified output");
+      assert.equal((await readdir(root)).some((name) => name.endsWith(".tmp")), false);
+    });
+  }
+  const result = runZopfli(source, source);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /must not overwrite the source/);
+  assert.equal(await readFile(source, "utf8"), "original source");
 });
 
 test("Given an inherited or immutable source SHA, when the source gate runs, then it emits the effective SHA", async (t) => {
@@ -685,6 +805,8 @@ test("rejects every firmware memory optimization contract regression", async (t)
   const baseline = await optimizedMemoryContents();
   const cases = [
     ["RAM linker registration", APP_CMAKE, "zephyr_linker_sources(RAM_SECTIONS SORT_KEY 0 sections-ram.ld)", "zephyr_linker_sources(SECTIONS sections-ram.ld)"],
+    ["flash image budget", ROM_SECTIONS, "ASSERT(_flash_used <= 0xCCFD8", "ASSERT(_flash_used <= 0xCCFD9"],
+    ["RAM image budget", RAM_SECTIONS, "ASSERT(_image_ram_size <= 0x7A000", "ASSERT(_image_ram_size <= 0x7A001"],
     ["pre-capture NOBITS section", RAM_SECTIONS, "SECTION_PROLOGUE(.bss.pre_capture, (NOLOAD),)", "SECTION_PROLOGUE(.bss.pre_capture, (),)"],
     ["Sigrok pre-capture linker section", RAM_SECTIONS, ".bss.pre_capture.sigrok_runtime", ".bss.pre_capture.other"],
     ["WS pre-capture linker section", RAM_SECTIONS, ".bss.pre_capture.ws_clients", ".bss.pre_capture.other"],
@@ -701,7 +823,7 @@ test("rejects every firmware memory optimization contract regression", async (t)
     ["RX net buffer", PRJ_CONFIG, "CONFIG_NET_BUF_RX_COUNT=64", "CONFIG_NET_BUF_RX_COUNT=63"],
     ["TX net buffer", PRJ_CONFIG, "CONFIG_NET_BUF_TX_COUNT=64", "CONFIG_NET_BUF_TX_COUNT=63"],
     ["heap size", PRJ_CONFIG, "CONFIG_HEAP_MEM_POOL_SIZE=49152", "CONFIG_HEAP_MEM_POOL_SIZE=49151"],
-    ["socket-service stack", PRJ_CONFIG, "CONFIG_NET_SOCKETS_SERVICE_STACK_SIZE=2400", "CONFIG_NET_SOCKETS_SERVICE_STACK_SIZE=2399"],
+    ["socket-service stack", PRJ_CONFIG, "CONFIG_NET_SOCKETS_SERVICE_STACK_SIZE=4096", "CONFIG_NET_SOCKETS_SERVICE_STACK_SIZE=4095"],
     ["IPv6 disablement", PRJ_CONFIG, "CONFIG_NET_IPV6=n", "CONFIG_NET_IPV6=y"],
     ["I2C enablement", PRJ_CONFIG, "CONFIG_I2C=y", "CONFIG_I2C=n"],
     ["SPI disablement", PRJ_CONFIG, "CONFIG_SPI=n", "CONFIG_SPI=y"],

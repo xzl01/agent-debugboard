@@ -53,6 +53,7 @@ pkgs.mkShell {
     pkgs.ninja
     pkgs.dtc
     pkgs.gperf
+    pkgs.zopfli
     pkgs.pkg-config
     pkgs.udev
     pythonWithZephyr

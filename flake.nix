@@ -52,6 +52,7 @@
             pkgs.rustfmt
             pkgs.cargo-release
             pkgs.nixpkgs-fmt
+            pkgs.zopfli
             pkgs.pandoc
             pkgs.scdoc
           ];

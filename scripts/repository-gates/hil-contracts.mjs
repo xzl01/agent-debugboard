@@ -17,11 +17,11 @@ function captivePortalDhcpContract(spec, prjConfig) {
   const firmwarePolicy = /^CONFIG_NET_DHCPV4_SERVER_OPTION_ROUTER=n$/m.test(prjConfig)
     && /^CONFIG_NET_DHCPV4_SERVER_OPTION_DNS_ADDRESS=""$/m.test(prjConfig)
     && /^CONFIG_NET_DHCPV4_SERVER_OPTION_CAPTIVE_PORTAL=y$/m.test(prjConfig)
-    && /^CONFIG_NET_DHCPV4_SERVER_OPTION_CAPTIVE_PORTAL_URI="http:\/\/172\.29\.203\.1\/captive-portal\/api"$/m.test(prjConfig);
+    && /^CONFIG_NET_DHCPV4_SERVER_OPTION_CAPTIVE_PORTAL_URI=""$/m.test(prjConfig);
   const dhcpSpec = spec.includes("DHCP DORA 的客户端 PRL 必须请求 DHCP option 114")
-    && /DHCPACK 必须包含 DHCP option\s+114，URI 必须为/.test(spec)
-    && /DHCPACK 不得通告 DHCP\s+option 3（router）或 DHCP\s+option 6（DNS）/.test(spec);
-  const noBoardDns = !/\bdig\s+@172\.29\.203\.1(?:\s|$)/m.test(spec)
+    && /DHCPACK 必须包含 DHCP option\s+114；URI 必须由当前 DHCP server 地址和 `\/generate_204` 路径在运行时生成/.test(spec)
+    && /DHCPACK 不得通告 DHCP[ \t]+option 3（router）或 DHCP[ \t]+option 6[ \t]*\n?[ \t]*（DNS）/.test(spec);
+  const noBoardDns = !spec.includes("172.29.")
     && !/DHCPACK[^\n]*必须包含[^\n]*(?:DHCP option 3|DHCP option 6)/.test(spec)
     && !spec.includes("captured by the board DNS");
   const externalNetworkChecks = spec.includes("**多宿主路由回归检查**")

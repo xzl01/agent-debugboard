@@ -15,6 +15,7 @@ export const POLICY_FILES = Object.freeze([
   "apps/radxa_linkr_debugger/CMakeLists.txt",
   "apps/radxa_linkr_debugger/prj.conf",
   "apps/radxa_linkr_debugger/sections-ram.ld",
+  "apps/radxa_linkr_debugger/sections-rom.ld",
   "apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.c",
   "apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.h",
   "apps/radxa_linkr_debugger/src/linkr_debugger_control.c",
@@ -101,6 +102,7 @@ function hasOnlyConfigValue(source, key, value) {
 
 function firmwareMemoryCaptureContract({
   appCmake,
+  sectionsRom,
   sectionsRam,
   captureArenaHeader,
   captureArenaSource,
@@ -120,7 +122,7 @@ function firmwareMemoryCaptureContract({
     ["CONFIG_NET_BUF_RX_COUNT", "64"],
     ["CONFIG_NET_BUF_TX_COUNT", "64"],
     ["CONFIG_HEAP_MEM_POOL_SIZE", "49152"],
-    ["CONFIG_NET_SOCKETS_SERVICE_STACK_SIZE", "2400"],
+    ["CONFIG_NET_SOCKETS_SERVICE_STACK_SIZE", "4096"],
     ["CONFIG_NET_IPV6", "n"],
     ["CONFIG_I2C", "y"],
     ["CONFIG_SPI", "n"],
@@ -139,6 +141,8 @@ function firmwareMemoryCaptureContract({
     && /ASSERT\(\s*__data_region_end\s*<=\s*0x20010000/.test(sectionsRam)
     && /ASSERT\(\s*__bss_start\s*==\s*0x20010000/.test(sectionsRam)
     && /ASSERT\(\s*\(\s*__bss_start\s*&\s*0x7fff\s*\)\s*==\s*0/.test(sectionsRam);
+  const imageBudget = /ASSERT\(\s*_flash_used\s*<=\s*0xCCFD8\s*,\s*"[^"]*8192\s+B\s+of\s+847832\s+B[^"]*"\s*\)/.test(sectionsRom)
+    && /ASSERT\(\s*_image_ram_size\s*<=\s*0x7A000\s*,\s*"[^"]*32768\s+B\s+of\s+532480\s+B[^"]*"\s*\)/.test(sectionsRam);
   const sigrok = /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_RING_BUFFER_BYTES\s+32768U\b/.test(sigrokHeader)
     && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_STREAM_QDEPTH_LIMIT\s+32U\b/.test(sigrokHeader)
     && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_WS_DATA_SLOT_COUNT\s+4U\b/.test(sigrokHeader)
@@ -172,7 +176,7 @@ function firmwareMemoryCaptureContract({
     && /K_THREAD_STACK_DEFINE\(\s*la_stream_ring_thread_stack\s*,\s*LINKR_DEBUGGER_LA_STREAM_THREAD_STACK_SIZE\s*\)/.test(logicAnalyzerSource)
     && /K_THREAD_STACK_DEFINE\(\s*la_stream_ring_consumer_thread_stack\s*,\s*LINKR_DEBUGGER_LA_STREAM_THREAD_STACK_SIZE\s*\)/.test(logicAnalyzerSource)
     && /K_THREAD_STACK_DEFINE\(\s*linkr_debugger_watchdog_supervisor_stack\s*,\s*1024\s*\)/.test(controlSource);
-  return captureArena && linker && sigrok && ws && stacks
+  return captureArena && linker && imageBudget && sigrok && ws && stacks
     && configValues.every(([key, value]) => hasOnlyConfigValue(prjConfig, key, value))
     && /Local\s+unit tests and CI gates are not HIL/.test(docsIndex);
 }
@@ -286,6 +290,7 @@ export function checkRepositoryGateContents(contents) {
   const buildEn = contents.get("docs/developer/build.md") ?? "";
   const buildZh = contents.get("docs/developer/build.zh-CN.md") ?? "";
   const appCmake = contents.get("apps/radxa_linkr_debugger/CMakeLists.txt") ?? "";
+  const sectionsRom = contents.get("apps/radxa_linkr_debugger/sections-rom.ld") ?? "";
   const sectionsRam = contents.get("apps/radxa_linkr_debugger/sections-ram.ld") ?? "";
   const captureArenaHeader = contents.get("apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.h") ?? "";
   const captureArenaSource = contents.get("apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.c") ?? "";
@@ -437,11 +442,11 @@ export function checkRepositoryGateContents(contents) {
     fail(failures, "G17", "docs/testing/scripts/web-ota-hil.sh", "negative full-body OTA uploads must use UPLOAD_TIMEOUT while status and OTA control requests use SHORT_TIMEOUT");
   }
   if (!firmwareMemoryCaptureContract({
-    appCmake, sectionsRam, captureArenaHeader, captureArenaSource, controlSource,
+    appCmake, sectionsRom, sectionsRam, captureArenaHeader, captureArenaSource, controlSource,
     logicAnalyzerSource, logicAnalyzerDoc, sigrokHeader, sigrokSource, wsHeader,
     wsSource, prjConfig, docsIndex,
   })) {
-    fail(failures, "G18", "apps/radxa_linkr_debugger/{CMakeLists.txt,sections-ram.ld,prj.conf,src/*} + docs/{README.md,reference/logic-analyzer.md}", "firmware memory and capture layout must retain approved capacities, pre-capture NOBITS initialization, stack targets, disabled features, and non-HIL documentation");
+    fail(failures, "G18", "apps/radxa_linkr_debugger/{CMakeLists.txt,sections-rom.ld,sections-ram.ld,prj.conf,src/*} + docs/{README.md,reference/logic-analyzer.md}", "firmware memory and capture layout must retain approved flash/RAM image reserve budgets, capacities, pre-capture NOBITS initialization, stack targets, disabled features, and non-HIL documentation");
   }
   if (!nativePackageReleaseContract({ release, nightly, nativePackages, nixPackage, desktopEntry, desktopIcon, debianControl, debianRules, rpmSpec, pkgbuild })) {
     fail(failures, "G19", "debian/ + nix/ + packaging/{redhat,archlinux}/ + .github/workflows/{native-packages,release,nightly}.yml", "Debian/RPM/Arch must emit separate CLI and safe complete-firmware packages without Web/Host/tray payloads; Nix must install the shared launcher; release workflows must publish all six native package families");

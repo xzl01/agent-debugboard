@@ -47,6 +47,7 @@ __pycache__/
 .omo/
 .mimocode/
 .playwright-mcp/
+.slim/deepwork/
 
 # Local review and document-rendering scratch output
 /tmp/
