@@ -13,9 +13,10 @@ electrical behavior and effective/backfeed reporting remain pending; see
 | --- | --- |
 | Board | Radxa Linkr Debugger, USB path `1-1.4.2`, host `eth1` |
 | Firmware | combined `radxa-linkr-debugger-rp2350.uf2` |
-| UF2 SHA-256 | `2778344b3f7d38150d273f3b5ed0c1f463b6820f1e2077401a5c12ab1dd0372d` |
-| Flash | 837364 / 847832 B used, 10468 B free |
+| UF2 SHA-256 | `c43134cfd95bc592685df9b2a6a4a71302f784e74df00292a48876cb323ffd60` |
+| Flash | 837352 / 847832 B used, 10480 B free |
 | RAM | 499248 / 532480 B used, 33232 B free |
+| Build source | code commit `4cccff0`; image built at docs commit `984462d` (docs-only; git-describe build id is part of the image) |
 | Settings NVS | 128 KiB, `0x1b0000..0x1d0000`, 32 sectors (full erase used; pre-release 320 KiB layouts are not migrated) |
 | Boot | normal application boot after ROM BOOTSEL flash |
 
