@@ -6,8 +6,8 @@
 use crate::adc;
 use crate::cli::Cli;
 use crate::client::{
-    reboot_request, resolve_base_url, BoardBinaryUpload, BoardClient, BoardRequest, BoardTransport,
-    DEFAULT_BASE_URL,
+    default_base_url, reboot_request, resolve_base_url, BoardBinaryUpload, BoardClient,
+    BoardRequest, BoardTransport,
 };
 use crate::json_contract::{parse_envelope, render_failure, EnvelopeError, JsonError, JSON_SCHEMA};
 use crate::tui;
@@ -544,7 +544,7 @@ fn base_url_from_cli(cli: &Cli) -> String {
     if let Some(port) = cli.port.as_deref() {
         return resolve_base_url(port);
     }
-    DEFAULT_BASE_URL.to_string()
+    default_base_url()
 }
 
 fn has_arg(args: &[String], value: &str) -> bool {
@@ -1158,8 +1158,12 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
         "  radxa-linkr-debuggerctl config save power/12v_out"
     )?;
     writeln!(writer, "  radxa-linkr-debuggerctl config clear")?;
-    writeln!(writer, "  radxa-linkr-debuggerctl ip subnet")?;
-    writeln!(writer, "  radxa-linkr-debuggerctl ip subnet 204")?;
+    writeln!(
+        writer,
+        "  radxa-linkr-debuggerctl ip show  # net is an alias"
+    )?;
+    writeln!(writer, "  radxa-linkr-debuggerctl ip mac 02:11:22:33:44:55")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl ip network 10.0.0.0/30")?;
     writeln!(
         writer,
         "  radxa-linkr-debuggerctl adc record /tmp/adc.ndjson 1000 --rate-hz 250"
@@ -1205,6 +1209,7 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client_url::DEFAULT_BASE_URL;
     use clap::Parser;
     use serde_json::Value;
     use std::cell::RefCell;
@@ -1213,7 +1218,6 @@ mod tests {
     #[derive(Default)]
     struct FakeClient {
         requests: RefCell<Vec<BoardRequest>>,
-        raw_json_requests: RefCell<Vec<crate::client::BoardRawJsonRequest>>,
         uploads: RefCell<Vec<FakeUpload>>,
         response: String,
         upload_response: String,
@@ -1234,14 +1238,6 @@ mod tests {
     impl BoardTransport for FakeClient {
         fn send_text(&self, request: BoardRequest) -> Result<String> {
             self.requests.borrow_mut().push(request);
-            if let Some(err) = &self.err {
-                return Err(anyhow::anyhow!(err.clone()));
-            }
-            Ok(self.response.clone())
-        }
-
-        fn send_raw_json(&self, request: crate::client::BoardRawJsonRequest) -> Result<String> {
-            self.raw_json_requests.borrow_mut().push(request);
             if let Some(err) = &self.err {
                 return Err(anyhow::anyhow!(err.clone()));
             }
@@ -2110,7 +2106,7 @@ mod tests {
         let stdout = String::from_utf8(stdout).unwrap();
         let stderr = String::from_utf8(stderr).unwrap();
         assert!(stdout.is_empty());
-        assert!(stderr.contains("ip subnet"));
+        assert!(stderr.contains("ip network 10.0.0.0/30"));
         assert!(stderr.contains("adc record --rate-hz HZ: 1..=250 Hz (default: 250 Hz)"));
         assert!(stderr.contains("Normal cold restart; does not enter ROM BOOTSEL"));
         assert!(stderr.contains("Enter ROM BOOTSEL; separate from normal reboot"));

@@ -1,7 +1,7 @@
 use crate::task_catalog_tests::firmware_catalog_output;
 use crate::task_command::{TaskCommandIo, TaskRunner};
 use crate::task_test_support::{
-    blob, list_output, record, run_task, FakeReply, FakeTransport, RecordingSleeper,
+    blob, list_reply, record, run_task, FakeReply, FakeTransport, RecordingSleeper,
 };
 use anyhow::Result;
 use reqwest::Method;
@@ -20,7 +20,7 @@ fn built_in_id_does_not_fall_back_to_shadowed_stored_task_when_catalog_fails() -
     let transport = FakeTransport::new(
         vec![
             FakeReply::Failure("catalog unavailable".to_string()),
-            FakeReply::Output(list_output(task_id, &stored_blob)),
+            list_reply(task_id, &stored_blob),
             FakeReply::Output("{}".to_string()),
         ],
         Rc::clone(&events),
@@ -50,7 +50,7 @@ fn built_in_id_missing_from_available_catalog_does_not_run_stored_task() -> Resu
     let transport = FakeTransport::new(
         vec![
             FakeReply::Output(firmware_catalog_output("builtin/firmware-owned", 1)),
-            FakeReply::Output(list_output(task_id, &stored_blob)),
+            list_reply(task_id, &stored_blob),
             FakeReply::Output("{}".to_string()),
         ],
         Rc::clone(&events),
@@ -84,7 +84,7 @@ fn task_list_hides_rogue_reserved_stored_task_when_catalog_is_available() -> Res
     let events = Rc::new(RefCell::new(Vec::new()));
     let transport = FakeTransport::new(
         vec![
-            FakeReply::Output(list_output("builtin/rogue", "")),
+            list_reply("builtin/rogue", ""),
             FakeReply::Output(firmware_catalog_output("builtin/firmware-owned", 1)),
         ],
         Rc::clone(&events),
@@ -117,7 +117,7 @@ fn task_list_hides_rogue_reserved_stored_task_when_catalog_is_unavailable() -> R
     let events = Rc::new(RefCell::new(Vec::new()));
     let transport = FakeTransport::new(
         vec![
-            FakeReply::Output(list_output("builtin/rogue", "")),
+            list_reply("builtin/rogue", ""),
             FakeReply::Failure("catalog unavailable".to_string()),
         ],
         Rc::clone(&events),
@@ -156,7 +156,7 @@ fn catalog_record_precedes_a_same_id_stored_task() -> Result<()> {
         vec![
             FakeReply::Output(firmware_catalog_output(task_id, 1)),
             FakeReply::Output("{}".to_string()),
-            FakeReply::Output(list_output(task_id, &stored_blob)),
+            list_reply(task_id, &stored_blob),
         ],
         Rc::clone(&events),
     );

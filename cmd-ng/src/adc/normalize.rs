@@ -76,6 +76,8 @@ fn transform_reading(mut reading: AdcReading) -> Result<AdcReading, String> {
                 reading.voltage_uv = None;
                 return Ok(reading);
             }
+            // Firmware supplies the canonical voltage for the role. raw/mv are
+            // pad diagnostics, not a fallback or a host-side scaling input.
             let voltage_uv = match (
                 reading.voltage_uv,
                 reading.value,

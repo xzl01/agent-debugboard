@@ -4,12 +4,15 @@
 // Copyright (c) Jiali Chen <chenjiali@radxa.com>
 
 use crate::client_url::join_request_path;
-pub use crate::client_url::{resolve_base_url, DEFAULT_BASE_URL};
+#[cfg(test)]
+pub use crate::client_url::DEFAULT_BASE_URL;
+pub use crate::client_url::{default_base_url, resolve_base_url};
 use crate::persistent_config::{
     ConfigAction, ConfigItemId, ConfigSaveRequest, PersistentConfigResponse,
 };
 use anyhow::{Context, Result};
 use reqwest::blocking::{Body, Client};
+use reqwest::header::CONTENT_TYPE;
 use reqwest::{Method, StatusCode, Url};
 use serde_json::Value;
 use std::fmt;
@@ -51,8 +54,10 @@ impl std::error::Error for BoardHttpError {}
 
 pub trait BoardTransport {
     fn send_text(&self, request: BoardRequest) -> Result<String>;
-    fn send_raw_json(&self, request: BoardRawJsonRequest) -> Result<String>;
     fn upload_binary(&self, request: BoardBinaryUpload) -> Result<String>;
+    fn send_bytes(&self, _request: BoardBytesRequest) -> Result<BoardBytesResponse> {
+        anyhow::bail!("byte-oriented requests are not supported by this transport")
+    }
     fn base_url(&self) -> &str;
 
     fn send_reboot(&self) -> Result<Option<String>> {
@@ -91,11 +96,20 @@ pub struct BoardRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct BoardRawJsonRequest {
+pub struct BoardBytesRequest {
     pub method: Method,
     pub path: String,
     pub query: Vec<(String, String)>,
-    pub body: String,
+    pub accept: &'static str,
+    pub content_type: Option<&'static str>,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BoardBytesResponse {
+    pub status: StatusCode,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -189,18 +203,6 @@ impl BoardTransport for BoardClient {
         Self::response_text(self.send_request(request)?)
     }
 
-    fn send_raw_json(&self, request: BoardRawJsonRequest) -> Result<String> {
-        let url = self.request_url(&request.path, &request.query)?;
-        let response = self
-            .http
-            .request(request.method, url)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-            .body(request.body)
-            .send()?;
-        Self::response_text(response)
-    }
-
     fn upload_binary(&self, request: BoardBinaryUpload) -> Result<String> {
         let url = self.request_url(&request.path, &[])?;
         let response = self
@@ -214,6 +216,33 @@ impl BoardTransport for BoardClient {
             .timeout(ota_upload_timeout(self.timeout))
             .send()?;
         Self::response_body(response)
+    }
+
+    fn send_bytes(&self, request: BoardBytesRequest) -> Result<BoardBytesResponse> {
+        let url = self.request_url(&request.path, &request.query)?;
+        let mut builder = self
+            .http
+            .request(request.method, url)
+            .header("Accept", request.accept);
+        if let Some(content_type) = request.content_type {
+            builder = builder.header("Content-Type", content_type);
+        }
+        if !request.body.is_empty() {
+            builder = builder.body(request.body);
+        }
+        let response = builder.send()?;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = response.bytes().context("read response body")?.to_vec();
+        Ok(BoardBytesResponse {
+            status,
+            content_type,
+            body,
+        })
     }
 
     fn base_url(&self) -> &str {

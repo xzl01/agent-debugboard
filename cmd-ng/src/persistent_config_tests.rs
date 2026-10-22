@@ -409,9 +409,6 @@ impl BoardTransport for NoIoClient {
     fn send_text(&self, _: BoardRequest) -> Result<String> {
         panic!("unexpected I/O")
     }
-    fn send_raw_json(&self, _: crate::client::BoardRawJsonRequest) -> Result<String> {
-        panic!("unexpected I/O")
-    }
     fn upload_binary(&self, _: BoardBinaryUpload) -> Result<String> {
         panic!("unexpected I/O")
     }

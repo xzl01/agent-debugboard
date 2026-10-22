@@ -1,5 +1,6 @@
 use crate::client::{BoardRequest, BoardTransport};
 use crate::json_contract::JSON_SCHEMA;
+use crate::task_api::TaskApi;
 use crate::task_blob::{TaskBlob, TaskError, TaskList};
 use crate::task_catalog::FirmwareTaskCatalog;
 use crate::task_envelope::{catalog_json, merged_task_catalog, BUILTIN_TASK_ID_PREFIX};
@@ -55,24 +56,21 @@ impl<'a> TaskRunner<'a> {
             }
             TaskCommand::List => self.run_list(&mut io),
             TaskCommand::Store(args) => TaskStore::new(self.client).run_store(&args, &mut io),
+            TaskCommand::Delete { task_id } => {
+                TaskStore::new(self.client).run_delete(&task_id, &mut io)
+            }
+            TaskCommand::Import { path } => TaskStore::new(self.client).run_import(&path, &mut io),
+            TaskCommand::Export { path } => TaskStore::new(self.client).run_export(&path, &mut io),
+            TaskCommand::Source { task_id, path } => {
+                TaskStore::new(self.client).run_source_export(&task_id, &path, &mut io)
+            }
             TaskCommand::Run { task_id } => self.run_saved(&task_id, &mut io),
             TaskCommand::Clear => TaskStore::new(self.client).run_clear(&mut io),
         }
     }
 
     fn fetch_list(&self) -> Result<TaskList, TaskError> {
-        let output = self
-            .client
-            .send_text(BoardRequest {
-                method: Method::GET,
-                path: "/api/v1/tasks".to_string(),
-                query: Vec::new(),
-                body: None,
-            })
-            .map_err(|error| TaskError::Retrieval {
-                message: error.to_string(),
-            })?;
-        TaskList::from_raw(output)
+        TaskApi::new(self.client).metadata()
     }
 
     fn fetch_catalog(&self) -> Result<FirmwareTaskCatalog, TaskError> {
@@ -114,12 +112,26 @@ impl<'a> TaskRunner<'a> {
                 };
                 writeln!(
                     io.stdout,
-                    "{:<32} {:<40} requests={} source={}{}",
+                    "{:<32} {:<40} requests={} source={} lossless-source={}{}",
                     task.id,
                     task.name,
                     task.request_count,
                     task.source.name(),
+                    task.lossless_source,
                     collision,
+                )?;
+            }
+            if let Some(storage) = &list.storage {
+                writeln!(
+                    io.stdout,
+                    "storage nvs_total={} nvs_used={} nvs_free={} task_bytes={} reserve={} measured={} save_allowed={}",
+                    storage.total_bytes,
+                    storage.used_bytes,
+                    storage.free_bytes,
+                    storage.task_bytes,
+                    storage.reserve_bytes,
+                    storage.measured,
+                    storage.save_allowed,
                 )?;
             }
             if let Some(error) = catalog_error {
@@ -189,8 +201,8 @@ impl<'a> TaskRunner<'a> {
             }
             .into());
         }
-        let list = self.fetch_list()?;
-        let blob = TaskBlob::parse(&list.blob)?;
+        let snapshot = TaskApi::new(self.client).snapshot()?;
+        let blob = TaskBlob::parse(&snapshot.ir)?;
         let task = blob.task(task_id)?;
         executor.execute(&task.records, None)
     }

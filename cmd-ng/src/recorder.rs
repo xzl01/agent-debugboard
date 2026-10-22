@@ -450,7 +450,10 @@ mod tests {
                 assert_eq!(record["sequence"], index + 1);
                 assert_eq!(record["readings"][0]["current_ua"], index * 100);
                 assert_eq!(record["readings"].as_array().unwrap().len(), 8);
-                assert_eq!(record["readings"][4]["voltage_uv"], 2_608_696);
+                assert_eq!(record["readings"][4]["voltage_uv"], 20_000_002);
+                assert_eq!(record["readings"][4]["role"], "pd_input");
+                assert_eq!(record["readings"][5]["role"], "native");
+                assert_eq!(record["readings"][5]["voltage_uv"], 1_100_000);
             }
         }
     }
@@ -635,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn ndjson_and_csv_retain_all_eight_channels_with_raw_pad_voltage() {
+    fn ndjson_and_csv_retain_all_eight_channels_with_canonical_source_and_native_voltages() {
         let path = temp_file_path("adc3");
         let mut writer = BufWriter::new(File::create(&path).unwrap());
         let batch: WsTelemetryBatch = serde_json::from_value(crate::adc::fixture::batch()).unwrap();
@@ -650,8 +653,10 @@ mod tests {
 
         assert_eq!(record["readings"].as_array().unwrap().len(), 8);
         assert_eq!(record["readings"][4]["name"], "adc0");
-        assert_eq!(record["readings"][4]["voltage_uv"], 2_608_696);
-        assert_eq!(record["readings"][4]["note"], "pad voltage");
+        assert_eq!(record["readings"][4]["voltage_uv"], 20_000_002);
+        assert_eq!(record["readings"][4]["role"], "pd_input");
+        assert_eq!(record["readings"][4]["note"], "source voltage");
+        assert_eq!(record["readings"][5]["role"], "native");
         assert_eq!(record["readings"][7]["voltage_uv"], 0);
 
         let csv_path = temp_file_path("adc3-csv");
@@ -671,7 +676,7 @@ mod tests {
         assert_eq!(csv.lines().next(), Some("sequence,t_mono_ns,t_unix_ns,device_t_mono_us,5v_out_power_enabled,5v_out_current_ua,5v_out_voltage_uv,12v_out_power_enabled,12v_out_current_ua,12v_out_voltage_uv,20v_out_power_enabled,20v_out_current_ua,20v_out_voltage_uv,vdd_5v_power_enabled,vdd_5v_current_ua,vdd_5v_voltage_uv,adc0_voltage_uv,adc1_voltage_uv,adc2_voltage_uv,adc3_voltage_uv"));
         assert_eq!(
             csv.lines().nth(1),
-            Some("14,0,1,4321,true,100,5000000,true,200,,true,300,20000000,true,400,5100000,2608696,1100000,2200000,0")
+            Some("14,0,1,4321,true,100,5000000,true,200,,true,300,20000000,true,400,5100000,20000002,1100000,2200000,0")
         );
         assert!(csv.contains("adc3_voltage_uv"));
     }
@@ -718,7 +723,7 @@ mod tests {
             .filter(|reading| reading.kind == AdcKind::Voltage)
             .map(|reading| reading.name.clone())
             .collect::<Vec<_>>();
-        let path = temp_file_path("csv-pad-order");
+        let path = temp_file_path("csv-voltage-order");
         let mut writer = BufWriter::new(File::create(&path).unwrap());
         write_csv_header(&mut writer, &channels).unwrap();
         write_telemetry_csv_row(&mut writer, &message, Duration::ZERO, 1, &channels).unwrap();
@@ -745,7 +750,7 @@ mod tests {
                 "adc1_voltage_uv"
             ]
         );
-        assert_eq!(&rows[1][16..], ["2200000", "0", "2608696", "1100000"]);
+        assert_eq!(&rows[1][16..], ["2200000", "0", "20000002", "1100000"]);
         assert_eq!(&rows[2][16..], ["", "0", "", "1100000"]);
     }
 
@@ -786,7 +791,7 @@ mod tests {
             .lines()
             .nth(1)
             .unwrap()
-            .ends_with(",2608696,1100000,2200000,0"));
+            .ends_with(",20000002,1100000,2200000,0"));
     }
 
     #[test]

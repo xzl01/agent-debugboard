@@ -2,13 +2,17 @@ use crate::task_error::TaskError;
 use crate::task_store::StoreArgs;
 
 pub(crate) const TASK_USAGE: &str =
-    "usage: radxa-linkr-debuggerctl task list|store FILE [TASK-ID]|run TASK-ID --confirm|clear";
+    "usage: radxa-linkr-debuggerctl task list|store FILE [TASK-ID]|delete TASK-ID|clear|import FILE|export FILE|source TASK-ID FILE|run TASK-ID --confirm";
 
 #[derive(Debug)]
 pub(crate) enum TaskCommand {
     Help,
     List,
     Store(StoreArgs),
+    Delete { task_id: String },
+    Import { path: String },
+    Export { path: String },
+    Source { task_id: String, path: String },
     Run { task_id: String },
     Clear,
 }
@@ -33,6 +37,19 @@ pub(crate) fn parse(args: &[String]) -> Result<TaskCommand, TaskError> {
             path: (*path).to_string(),
             task_id: Some((*task_id).to_string()),
         })),
+        ["task", "delete", task_id] => Ok(TaskCommand::Delete {
+            task_id: (*task_id).to_string(),
+        }),
+        ["task", "import", path] => Ok(TaskCommand::Import {
+            path: (*path).to_string(),
+        }),
+        ["task", "export", path] => Ok(TaskCommand::Export {
+            path: (*path).to_string(),
+        }),
+        ["task", "source", task_id, path] => Ok(TaskCommand::Source {
+            task_id: (*task_id).to_string(),
+            path: (*path).to_string(),
+        }),
         ["task", "run", task_id, "--confirm"] | ["task", "run", "--confirm", task_id] => {
             Ok(TaskCommand::Run {
                 task_id: (*task_id).to_string(),
@@ -76,6 +93,23 @@ mod tests {
         assert!(matches!(
             parse(&args(&["task", "store", "task.ndjson"])),
             Ok(TaskCommand::Store(_))
+        ));
+        assert!(matches!(
+            parse(&args(&["task", "delete", "saved"])),
+            Ok(TaskCommand::Delete { task_id }) if task_id == "saved"
+        ));
+        assert!(matches!(
+            parse(&args(&["task", "import", "tasks.ir"])),
+            Ok(TaskCommand::Import { path }) if path == "tasks.ir"
+        ));
+        assert!(matches!(
+            parse(&args(&["task", "export", "tasks.ir"])),
+            Ok(TaskCommand::Export { path }) if path == "tasks.ir"
+        ));
+        assert!(matches!(
+            parse(&args(&["task", "source", "saved", "saved.linkr-test"])),
+            Ok(TaskCommand::Source { task_id, path })
+                if task_id == "saved" && path == "saved.linkr-test"
         ));
         assert!(parse(&args(&[
             "task",

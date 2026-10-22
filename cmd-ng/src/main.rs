@@ -18,6 +18,7 @@ mod persistent_config_render;
 mod persistent_config_validate;
 mod persistent_config_value;
 mod recorder;
+mod task_api;
 mod task_blob;
 mod task_catalog;
 mod task_command;
@@ -61,6 +62,8 @@ mod task_stored_execution_tests;
 mod task_test_support;
 #[cfg(test)]
 mod task_transport_tests;
+#[cfg(test)]
+mod task_v2_tests;
 
 use clap::Parser;
 use std::ffi::OsString;

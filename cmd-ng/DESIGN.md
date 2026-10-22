@@ -78,6 +78,25 @@ Grounded in `cmd-ng/src/tui/board_io.rs` and `cmd-ng/src/client.rs`:
 | Config save      | PUT    | `/api/v1/config`            | `{"items":[...],"confirm":bool}`              |
 | Config clear     | DELETE | `/api/v1/config`            | -                                             |
 
+The CLI task surface is separate from the TUI host controls:
+
+```text
+task list
+task store FILE [TASK-ID]
+task delete TASK-ID
+task clear
+task import FILE
+task export FILE
+task source TASK-ID FILE
+task run TASK-ID --confirm
+```
+
+`task store` writes one-task IR without a source payload, so the board task is
+IR-only. Board-backed lossless source comes from the Web/API source-bearing
+upsert. Task writes use only `POST /api/v1/tasks/mutations` with revision/catalog
+CAS; there is no task blob upload or per-ID write/delete route. `task run` keeps
+`wait_ms` client-side.
+
 ### 3.2 Polling and tick (frozen)
 
 Grounded in `cmd-ng/src/tui.rs`:
@@ -637,9 +656,11 @@ invalidation still use the existing frame layout and projection.
   has no effect on electrical units or numeric conversion.
 - The common eight-descriptor catalog is ordered `5v_out, 12v_out, 20v_out,
   vdd_5v, adc0, adc1, adc2, adc3`. Only the last four enter this strip.
-  ADC0 is a raw pad measurement: `2608696 uV` displays as `2.608696V` when
-  space permits, never as an inferred 20 V input. No divider or pin-map
-  calculation exists in the client.
+  ADC0 has `role=pd_input`: its canonical value is source-side DC20V
+  (`20000002 uV` displays as `20.000002V` when space permits), while `pad_mv`
+  remains a diagnostic. ADC1-3 have `role=native` and display pad voltage. No
+  divider or pin-map calculation exists in the client; ADC0's uncalibrated
+  accuracy is approximately 2%.
 - Use up to six fractional volt digits. Drop optional signal/details first,
   then `V` before reducing decimal precision; the name never yields to those
   decorations or the value. Unknown data is `--`, never a synthetic zero.

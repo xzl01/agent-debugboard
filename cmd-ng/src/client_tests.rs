@@ -1,6 +1,6 @@
 use crate::client::{
-    ota_upload_timeout, BoardBinaryUpload, BoardClient, BoardHttpError, BoardRawJsonRequest,
-    BoardRequest, BoardTransport,
+    ota_upload_timeout, BoardBinaryUpload, BoardClient, BoardHttpError, BoardRequest,
+    BoardTransport,
 };
 use anyhow::Context;
 use reqwest::{Method, StatusCode};
@@ -58,31 +58,20 @@ fn non_success_responses_retain_status_and_raw_body() {
     let body =
         " \n{\"ok\":false,\"error\":{\"code\":\"rejected\",\"message\":\"Request rejected\"}}\n ";
     for status in [StatusCode::BAD_REQUEST, StatusCode::INTERNAL_SERVER_ERROR] {
-        for raw_json in [false, true] {
-            let (client, server) = mock_http_response(status, body);
-            let response = if raw_json {
-                client.send_raw_json(BoardRawJsonRequest {
-                    method: Method::PUT,
-                    path: "/api/v1/net".to_string(),
-                    query: vec![],
-                    body: r#"{"subnet":204}"#.to_string(),
-                })
-            } else {
-                client.send_text(BoardRequest {
-                    method: Method::GET,
-                    path: "/api/v1/net".to_string(),
-                    query: vec![],
-                    body: None,
-                })
-            };
-            let error = response.unwrap_err();
-            assert_eq!(error.to_string(), format!("HTTP {status}: {}", body.trim()));
-            let error = Err::<(), _>(error).context("request failed").unwrap_err();
-            let error = error.downcast_ref::<BoardHttpError>().unwrap();
-            assert_eq!(error.status, status);
-            assert_eq!(error.body, body);
-            server.join().unwrap();
-        }
+        let (client, server) = mock_http_response(status, body);
+        let response = client.send_text(BoardRequest {
+            method: Method::GET,
+            path: "/api/v1/net".to_string(),
+            query: vec![],
+            body: None,
+        });
+        let error = response.unwrap_err();
+        assert_eq!(error.to_string(), format!("HTTP {status}: {}", body.trim()));
+        let error = Err::<(), _>(error).context("request failed").unwrap_err();
+        let error = error.downcast_ref::<BoardHttpError>().unwrap();
+        assert_eq!(error.status, status);
+        assert_eq!(error.body, body);
+        server.join().unwrap();
     }
 }
 

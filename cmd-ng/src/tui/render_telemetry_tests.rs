@@ -120,16 +120,16 @@ fn voltage_strip_shows_all_descriptor_channels_without_expanding_current_scope()
             assert_eq!(strip.matches(name).count(), 1, "{width}: {strip}");
         }
         if width >= 80 {
-            assert!(strip.contains("adc0=2.608696V"), "{strip}");
+            assert!(strip.contains("adc0=20.000002V"), "{strip}");
             assert!(strip.contains("adc3=0.000000V"), "{strip}");
         }
         if width == 47 {
-            for value in ["adc0=2.6087", "adc1=1.1000", "adc2=2.2000", "adc3=0.0000"] {
+            for value in ["adc0=20.000", "adc1=1.1000", "adc2=2.2000", "adc3=0.0000"] {
                 assert!(strip.contains(value), "{strip}");
             }
         }
         if width == 32 {
-            assert!(strip.starts_with("adc0=2.6"), "{strip}");
+            assert!(strip.starts_with("adc0=20V"), "{strip}");
         }
         for signal in ["GPIO26_ADC0", "GPIO27_ADC1", "GPIO28_ADC2", "GPIO29_ADC3"] {
             assert_eq!(strip.contains(signal), width == 120, "{width}: {strip}");
@@ -178,10 +178,10 @@ fn voltage_strip_names_and_gutters_keep_deterministic_column_boundaries() -> Res
 #[test]
 fn voltage_strip_keeps_two_decimals_when_name_and_column_budget_allow_it() -> Result<()> {
     let mut model = model_with_eight_adc_channels()?;
-    // Four four-column names, '=', x.xx and three gutters need 39 columns.
+    // Four four-column names, '=', xx.xx/x.xx and three gutters need 40 columns.
     // At 32 the 8/7/7/7 content columns cannot fit that many characters.
-    let line = voltage_strip_line(&model, 39).to_string();
-    for value in ["adc0=2.61", "adc1=1.10", "adc2=2.20", "adc3=0.00"] {
+    let line = voltage_strip_line(&model, 40).to_string();
+    for value in ["adc0=20.00", "adc1=1.10", "adc2=2.20", "adc3=0.00"] {
         assert!(line.contains(value), "{line}");
     }
     // Shorter, arbitrary firmware identities leave room for >=2 decimals
@@ -203,7 +203,7 @@ fn voltage_strip_keeps_two_decimals_when_name_and_column_budget_allow_it() -> Re
     }
     model.voltage_channel_ids = ["z", "x", "u", "w"].map(str::to_string).to_vec();
     let line = voltage_strip_line(&model, 32).to_string();
-    for value in ["z=2.6087", "x=1.100", "u=2.200", "w=0.000"] {
+    for value in ["z=20.000", "x=1.100", "u=2.200", "w=0.000"] {
         assert!(line.contains(value), "{line}");
     }
     assert!(!line.contains("GPIO"));

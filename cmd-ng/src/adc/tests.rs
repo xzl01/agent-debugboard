@@ -1,7 +1,7 @@
-use super::{transform_response, AdcKind, AdcResponse};
+use super::{transform_response, AdcKind, AdcResponse, AdcRole};
 
 #[test]
-fn all_eight_http_channels_keep_pad_microvolts_and_generic_metadata() {
+fn all_eight_http_channels_keep_canonical_microvolts_roles_and_generic_metadata() {
     let raw = super::fixture::http().to_string();
     let response = transform_response(&raw).unwrap();
     assert_eq!(
@@ -14,20 +14,28 @@ fn all_eight_http_channels_keep_pad_microvolts_and_generic_metadata() {
     );
     for (reading, value) in response.readings[4..]
         .iter()
-        .zip([2_608_696, 1_100_000, 2_200_000, 0])
+        .zip([20_000_002, 1_100_000, 2_200_000, 0])
     {
         assert_eq!(reading.kind, AdcKind::Voltage);
         assert_eq!(reading.voltage_uv, Some(value));
         assert_eq!(reading.current_ua, None);
         assert_eq!(reading.power_enabled, None);
     }
-    assert_eq!(response.readings[4].note, "pad voltage");
+    assert_eq!(response.readings[4].role, Some(AdcRole::PdInput));
+    assert_eq!(response.readings[4].mv, Some(2608));
+    assert_eq!(response.readings[4].raw, Some(3237));
+    assert!(response.readings[5..]
+        .iter()
+        .all(|reading| reading.role == Some(AdcRole::Native)));
+    assert_eq!(response.readings[4].note, "source voltage");
     assert!(super::write_text(&raw, false)
         .unwrap()
-        .contains("adc0=2.608696V pad voltage"));
-    assert!(!super::write_text(&raw, false).unwrap().contains("adc0=20"));
+        .contains("adc0=20.000002V source voltage"));
     let mut rich = super::fixture::http();
-    for (index, value) in [2_608_696, 1_100_000, 2_200_000, 0].into_iter().enumerate() {
+    for (index, value) in [20_000_002, 1_100_000, 2_200_000, 0]
+        .into_iter()
+        .enumerate()
+    {
         let reading = &mut rich["readings"][index + 4];
         reading.as_object_mut().unwrap().remove("value");
         reading["unit"] = serde_json::json!("V");
@@ -36,18 +44,86 @@ fn all_eight_http_channels_keep_pad_microvolts_and_generic_metadata() {
         reading["label"] = serde_json::json!(format!("采样{index}"));
     }
     let rich = transform_response(&rich.to_string()).unwrap();
-    assert_eq!(rich.readings[4].voltage_uv, Some(2_608_696));
+    assert_eq!(rich.readings[4].voltage_uv, Some(20_000_002));
+    assert_eq!(rich.readings[4].mv, Some(2608));
     assert_eq!(rich.readings[7].voltage_uv, Some(0));
     assert_eq!(rich.readings[4].label, "采样0");
 }
 
 #[test]
-fn missing_and_invalid_pad_values_stay_unknown_not_zero() {
+fn json_and_verbose_output_distinguish_source_voltage_from_pad_diagnostics() {
+    let raw = super::fixture::http().to_string();
+    let json: serde_json::Value =
+        serde_json::from_str(&super::write_json(&raw, "adc").unwrap()).unwrap();
+    let adc0 = &json["readings"][4];
+    assert_eq!(adc0["role"], "pd_input");
+    assert_eq!(adc0["voltage_uv"], 20_000_002);
+    assert_eq!(adc0["raw"], 3237);
+    assert_eq!(adc0["mv"], 2608);
+    assert_eq!(json["readings"][5]["role"], "native");
+
+    let text = super::write_text(&raw, true).unwrap();
+    let adc0 = text.lines().find(|line| line.starts_with("adc0 ")).unwrap();
+    for field in [
+        "role=pd_input",
+        "source_voltage=20.000002V",
+        "source_voltage_uv=20000002",
+        "raw=3237",
+        "pad_mv=2608",
+    ] {
+        assert!(adc0.contains(field), "{adc0}");
+    }
+    assert!(text.contains("adc1 signal=GPIO27_ADC1 role=native voltage=1.100000V"));
+}
+
+#[test]
+fn optional_roles_never_infer_or_rescale_voltage_from_channel_names() {
+    for role in [None, Some(AdcRole::Native), Some(AdcRole::PdInput)] {
+        let mut wire = super::fixture::http();
+        for reading in wire["readings"].as_array_mut().unwrap() {
+            reading.as_object_mut().unwrap().remove("role");
+        }
+        if let Some(role) = role {
+            wire["readings"][4]["role"] = serde_json::to_value(role).unwrap();
+        }
+        let raw = wire.to_string();
+        let readings = transform_response(&raw).unwrap().readings;
+        let readings = super::transform_readings(readings).unwrap();
+        assert_eq!(readings[4].role, role);
+        assert_eq!(readings[4].voltage_uv, Some(20_000_002));
+        assert_eq!(readings[4].mv, Some(2608));
+        assert!(readings[5..].iter().all(|reading| reading.role.is_none()));
+        let output: serde_json::Value =
+            serde_json::from_str(&super::write_json(&raw, "adc").unwrap()).unwrap();
+        assert_eq!(output["readings"][4].get("role").is_some(), role.is_some());
+    }
+}
+
+#[test]
+fn rejects_unknown_roles_in_http_and_compact_readings() {
+    for role in [
+        serde_json::json!("pad"),
+        serde_json::json!(""),
+        serde_json::json!(1),
+    ] {
+        let raw = serde_json::json!({
+            "name":"adc0", "kind":"voltage", "unit":"uV", "role":role, "value":20_000_002
+        });
+        assert!(serde_json::from_value::<super::AdcReading>(raw.clone()).is_err());
+        assert!(serde_json::from_value::<super::AdcCompactReading>(raw).is_err());
+    }
+}
+
+#[test]
+fn missing_and_invalid_canonical_values_stay_unknown_even_with_pad_diagnostics() {
     for extra in [
         serde_json::json!({}),
         serde_json::json!({"voltage_valid":false,"value":123}),
     ] {
-        let mut reading = serde_json::json!({"name":"arbitrary","kind":"voltage","unit":"uV"});
+        let mut reading = serde_json::json!({
+            "name":"arbitrary", "kind":"voltage", "role":"pd_input", "unit":"uV",
+            "raw":3237, "mv":2608
+        });
         reading
             .as_object_mut()
             .unwrap()
@@ -56,6 +132,8 @@ fn missing_and_invalid_pad_values_stay_unknown_not_zero() {
             super::transform_readings(vec![serde_json::from_value(reading).unwrap()]).unwrap();
         assert_eq!(readings[0].voltage_uv, None);
         assert_eq!(readings[0].value, None);
+        assert_eq!(readings[0].mv, Some(2608));
+        assert_eq!(readings[0].raw, Some(3237));
     }
 }
 

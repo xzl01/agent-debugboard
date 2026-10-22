@@ -1,6 +1,6 @@
 use crate::json_contract::{parse_envelope, EnvelopeError};
 
-use super::{transform_response, AdcKind};
+use super::{transform_response, AdcKind, AdcRole};
 
 pub fn write_json(output: &str, command: &str) -> Result<String, EnvelopeError> {
     let envelope = parse_envelope(output, true)?;
@@ -32,6 +32,9 @@ pub fn write_text(output: &str, verbose: bool) -> Result<String, String> {
             if !reading.signal.is_empty() {
                 parts.push(format!("signal={}", reading.signal));
             }
+            if let Some(role) = reading.role {
+                parts.push(format!("role={}", role.as_str()));
+            }
             if !reading.label.is_empty() {
                 parts.push(format!("label={}", reading.label));
             }
@@ -52,18 +55,28 @@ pub fn write_text(output: &str, verbose: bool) -> Result<String, String> {
                 parts.push(format!("current_ua={current_ua}"));
             }
             if let Some(voltage_uv) = reading.voltage_uv {
+                let field = if reading.role == Some(AdcRole::PdInput) {
+                    "source_voltage"
+                } else {
+                    "voltage"
+                };
                 parts.push(format!(
-                    "voltage={}",
+                    "{field}={}",
                     voltage_text_from_microvolts(voltage_uv)
                 ));
-                parts.push(format!("voltage_uv={voltage_uv}"));
+                parts.push(format!("{field}_uv={voltage_uv}"));
             }
             match reading.raw {
                 Some(raw) => parts.push(format!("raw={raw}")),
                 None => parts.push("raw=null".to_string()),
             }
             if let Some(mv) = reading.mv {
-                parts.push(format!("mv={mv}"));
+                let field = if reading.kind == AdcKind::Voltage {
+                    "pad_mv"
+                } else {
+                    "mv"
+                };
+                parts.push(format!("{field}={mv}"));
             }
             if let Some(ma_est) = reading.ma_est {
                 parts.push(format!("ma_est={ma_est}"));

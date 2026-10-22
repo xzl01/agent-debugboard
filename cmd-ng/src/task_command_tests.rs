@@ -1,7 +1,7 @@
 use crate::task_catalog_tests::firmware_catalog_output;
 use crate::task_command::{TaskCommandIo, TaskRunner};
 use crate::task_test_support::{
-    blob, list_output, record, FakeReply, FakeTransport, RecordingSleeper,
+    blob, list_reply, record, FakeReply, FakeTransport, RecordingSleeper,
 };
 use anyhow::Result;
 use reqwest::Method;
@@ -15,7 +15,7 @@ fn task_list_merges_built_ins_into_the_client_catalog() -> Result<()> {
     let events = Rc::new(RefCell::new(Vec::new()));
     let transport = FakeTransport::new(
         vec![
-            FakeReply::Output(list_output("", "")),
+            list_reply("", ""),
             FakeReply::Output(firmware_catalog_output("builtin/firmware-owned", 1)),
         ],
         Rc::clone(&events),
@@ -39,7 +39,8 @@ fn task_list_merges_built_ins_into_the_client_catalog() -> Result<()> {
     assert_eq!(output["tasks"][0]["id"], "builtin/firmware-owned");
     assert_eq!(output["tasks"][0]["source"], "builtin");
     assert_eq!(output["catalog_available"], true);
-    assert_eq!(transport.requests.borrow().len(), 2);
+    assert_eq!(transport.requests.borrow().len(), 1);
+    assert_eq!(transport.byte_requests.borrow().len(), 1);
     Ok(())
 }
 
@@ -54,7 +55,7 @@ fn task_list_marks_a_stored_collision_as_shadowed() -> Result<()> {
     );
     let transport = FakeTransport::new(
         vec![
-            FakeReply::Output(list_output(task_id, &stored_blob)),
+            list_reply(task_id, &stored_blob),
             FakeReply::Output(firmware_catalog_output(task_id, 1)),
         ],
         Rc::clone(&events),
@@ -96,7 +97,7 @@ fn task_list_keeps_stored_tasks_when_catalog_retrieval_fails() -> Result<()> {
     );
     let transport = FakeTransport::new(
         vec![
-            FakeReply::Output(list_output("demo", &stored_blob)),
+            list_reply("demo", &stored_blob),
             FakeReply::Failure("catalog unavailable".to_string()),
         ],
         Rc::clone(&events),
@@ -116,9 +117,12 @@ fn task_list_keeps_stored_tasks_when_catalog_retrieval_fails() -> Result<()> {
     let output: Value = serde_json::from_slice(&stdout)?;
     assert_eq!(output["tasks"][0]["id"], "demo");
     assert_eq!(output["tasks"][0]["source"], "stored");
+    assert_eq!(output["tasks"][0]["lossless_source"], "absent");
+    assert_eq!(output["revision"], "9007199254740993");
     assert_eq!(output["catalog_available"], false);
     assert_eq!(output["catalog_error"]["code"], "catalog_unavailable");
-    assert_eq!(transport.requests.borrow().len(), 2);
+    assert_eq!(transport.requests.borrow().len(), 1);
+    assert_eq!(transport.byte_requests.borrow().len(), 1);
     Ok(())
 }
 
@@ -152,15 +156,21 @@ fn task_store_recovery_is_not_a_generic_task_command() -> Result<()> {
 }
 
 #[test]
-fn task_clear_uses_delete_on_the_task_endpoint() -> Result<()> {
+fn task_clear_uses_v2_mutation_after_fresh_metadata() -> Result<()> {
     let events = Rc::new(RefCell::new(Vec::new()));
     let transport = FakeTransport::new(
-        vec![FakeReply::Output(
+        vec![
+            list_reply("", ""),
+            FakeReply::Output(
             json!({
                 "schema": "radxa-linkr-debugger.v1",
                 "ok": true,
-                "command": "task",
+                "command": "tasks",
                 "action": "clear",
+                "task_store_id": "12345678-1234-4567-890a-123456789abc",
+                "revision": "9007199254740994",
+                "catalog_fingerprint": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                "task": null,
             })
             .to_string(),
         )],
@@ -176,10 +186,15 @@ fn task_clear_uses_delete_on_the_task_endpoint() -> Result<()> {
     )?;
 
     assert_eq!(code, 0);
-    let requests = transport.requests.borrow();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].method, Method::DELETE);
+    let requests = transport.byte_requests.borrow();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, Method::GET);
     assert_eq!(requests[0].path, "/api/v1/tasks");
+    assert_eq!(requests[1].method, Method::POST);
+    assert_eq!(requests[1].path, "/api/v1/tasks/mutations");
+    let parsed: Value = serde_json::from_slice(&requests[1].body)?;
+    assert_eq!(parsed["action"], "clear");
+    assert_eq!(parsed["expected_revision"], "9007199254740993");
     Ok(())
 }
 
@@ -193,7 +208,7 @@ fn task_run_human_error_names_failed_record_and_path() -> Result<()> {
     let transport = FakeTransport::new(
         vec![
             FakeReply::Output(firmware_catalog_output("builtin/catalog-only", 1)),
-            FakeReply::Output(list_output("demo", &saved_blob)),
+            list_reply("demo", &saved_blob),
             FakeReply::Failure("HTTP 409 Conflict: busy".to_string()),
         ],
         Rc::clone(&events),

@@ -1,9 +1,11 @@
-use crate::client::{BoardBinaryUpload, BoardRawJsonRequest, BoardRequest, BoardTransport};
+use crate::client::{
+    BoardBinaryUpload, BoardBytesRequest, BoardBytesResponse, BoardRequest, BoardTransport,
+};
 use crate::task_catalog_tests::firmware_catalog_output;
 use crate::task_command::{TaskCommandIo, TaskRunner};
 use crate::task_execution::TaskCancellation;
 use crate::task_test_support::{
-    blob, list_output, record, FakeReply, FakeTransport, RecordingSleeper,
+    blob, list_reply, record, FakeReply, FakeTransport, RecordingSleeper,
 };
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -35,12 +37,12 @@ impl BoardTransport for CancellingTransport {
         result
     }
 
-    fn send_raw_json(&self, request: BoardRawJsonRequest) -> Result<String> {
-        self.inner.send_raw_json(request)
-    }
-
     fn upload_binary(&self, request: BoardBinaryUpload) -> Result<String> {
         self.inner.upload_binary(request)
+    }
+
+    fn send_bytes(&self, request: BoardBytesRequest) -> Result<BoardBytesResponse> {
+        self.inner.send_bytes(request)
     }
 
     fn base_url(&self) -> &str {
@@ -149,13 +151,13 @@ fn stored_task_cancellation_never_infers_cleanup() -> Result<()> {
         inner: FakeTransport::new(
             vec![
                 FakeReply::Output(firmware_catalog_output("builtin/catalog-only", 1)),
-                FakeReply::Output(list_output("demo", &stored_blob)),
+                list_reply("demo", &stored_blob),
                 FakeReply::Output("{}".to_string()),
             ],
             Rc::clone(&events),
         ),
         cancelled: Rc::clone(&cancelled),
-        cancel_after: 3,
+        cancel_after: 2,
     };
     let sleeper = RecordingSleeper { events };
     let cancellation = FlagCancellation { cancelled };
@@ -174,6 +176,6 @@ fn stored_task_cancellation_never_infers_cleanup() -> Result<()> {
     assert_eq!(output["error"]["code"], "cancelled");
     assert_eq!(output["error"]["requests_completed"], 1);
     assert!(output.get("cleanup").is_none());
-    assert_eq!(transport.inner.requests.borrow().len(), 3);
+    assert_eq!(transport.inner.requests.borrow().len(), 2);
     Ok(())
 }

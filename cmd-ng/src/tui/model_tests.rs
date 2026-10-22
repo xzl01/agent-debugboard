@@ -149,7 +149,7 @@ fn voltage_reading_is_retained_without_power_or_current_history() {
 }
 
 #[test]
-fn adc_catalog_and_latest_keep_four_currents_and_all_four_pad_voltages() {
+fn adc_catalog_and_latest_keep_four_currents_and_all_four_canonical_voltages() {
     let mut model = TuiModel::new(DEFAULT_BASE_URL.to_string(), Duration::from_secs(2));
     model.apply_status_snapshot(
         serde_json::from_value(serde_json::json!({"adc_channels":crate::adc::fixture::channels()}))
@@ -167,7 +167,14 @@ fn adc_catalog_and_latest_keep_four_currents_and_all_four_pad_voltages() {
     assert_eq!(model.voltage_channel_ids, ["adc0", "adc1", "adc2", "adc3"]);
     assert_eq!(model.latest.len(), 8);
     assert_eq!(model.history.len(), 4);
-    assert_eq!(model.latest["adc0"].voltage_uv, Some(2_608_696));
+    assert_eq!(model.latest["adc0"].voltage_uv, Some(20_000_002));
+    assert_eq!(
+        model.latest["adc0"].role,
+        Some(crate::adc::AdcRole::PdInput)
+    );
+    assert_eq!(model.latest["adc0"].mv, Some(2608));
+    assert_eq!(model.latest["adc1"].role, Some(crate::adc::AdcRole::Native));
+    assert_eq!(model.latest["adc1"].voltage_uv, Some(1_100_000));
     assert_eq!(model.latest["adc3"].voltage_uv, Some(0));
     for name in &model.voltage_channel_ids {
         assert!(!model.history.contains_key(name));

@@ -1,10 +1,13 @@
 use crate::client::{BoardClient, BoardRequest, BoardTransport};
-use crate::task_blob::{TaskBlob, TASK_MARKER_VERSION};
+use crate::task_api::{
+    base64_encode, sha256_hex, TASK_MUTATION_CONTENT_TYPE, TASK_MUTATION_MAX_BYTES,
+};
+use crate::task_blob::{task_ir_section, TaskBlob, TASK_MARKER_VERSION};
 use crate::task_command::{TaskCommandIo, TaskRunner};
 use crate::task_test_support::RecordingSleeper;
 use anyhow::{anyhow, Result};
 use reqwest::Method;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -75,8 +78,8 @@ fn exact_boundary_blob() -> Result<String> {
         "body": "{\"state\":\"off\"}",
     });
     let mut blob = format!("{TASK_MARKER_VERSION}\n# task exact-boundary\n{record}\n");
-    while blob.len() < 4096 {
-        let remaining = 4096 - blob.len();
+    while blob.len() < 4000 {
+        let remaining = 4000 - blob.len();
         if remaining == 1 {
             blob.push('\n');
         } else {
@@ -125,21 +128,61 @@ fn board_transport_send_text_preserves_generic_control_request() -> Result<()> {
 }
 
 #[test]
-fn task_store_sends_exact_4096_byte_blob_without_json_string_framing() -> Result<()> {
-    // Given: a valid Task blob at the inclusive firmware byte limit.
+fn task_store_sends_v2_ir_only_upsert_with_exact_4000_byte_ir() -> Result<()> {
+    // Given: a valid standalone Task IR at the inclusive firmware byte limit.
     let blob = exact_boundary_blob()?;
-    assert_eq!(blob.len(), 4096);
+    assert_eq!(blob.len(), 4000);
     let file = TestFile::create(&blob)?;
+    let section = task_ir_section(&blob, "exact-boundary")?;
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let address = listener.local_addr()?;
     let server = std::thread::spawn(move || -> Result<Vec<u8>> {
         let (mut stream, _) = listener.accept()?;
-        let request = read_http_request(&mut stream)?;
+        let metadata_request = read_http_request(&mut stream)?;
+        assert!(metadata_request.starts_with(b"GET /api/v1/tasks HTTP/1.1"));
+        let empty_digest = sha256_hex(b"");
         let response = json!({
             "schema": "radxa-linkr-debugger.v1",
             "ok": true,
-            "command": "task",
-            "action": "store",
+            "command": "tasks",
+            "action": "list",
+            "task_store_id": "12345678-1234-4567-890a-123456789abc",
+            "revision": "9007199254740993",
+            "catalog_fingerprint": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            "full_ir_bytes": 0,
+            "full_ir_digest": empty_digest,
+            "tasks": [],
+        })
+        .to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response.len(),
+            response
+        )?;
+        drop(stream);
+
+        let (mut stream, _) = listener.accept()?;
+        let request = read_http_request(&mut stream)?;
+        let task_digest = sha256_hex(section.as_bytes());
+        let response = json!({
+            "schema": "radxa-linkr-debugger.v1",
+            "ok": true,
+            "command": "tasks",
+            "action": "upsert",
+            "task_store_id": "12345678-1234-4567-890a-123456789abc",
+            "revision": "9007199254740994",
+            "catalog_fingerprint": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            "task": {
+                "slot": 0,
+                "id": "exact-boundary",
+                "request_count": 1,
+                "source_state": "absent",
+                "source_bytes": 0,
+                "source_digest": null,
+                "ir_bytes": section.len(),
+                "task_ir_digest": task_digest,
+            },
         })
         .to_string();
         write!(
@@ -156,7 +199,7 @@ fn task_store_sends_exact_4096_byte_blob_without_json_string_framing() -> Result
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
 
-    // When: the real Task store command uploads the decoded file.
+    // When: the real Task store command fetches metadata and atomically upserts the IR-only task.
     let code = TaskRunner::new(&client, &sleeper).run(
         &[
             "task".to_string(),
@@ -174,12 +217,21 @@ fn task_store_sends_exact_4096_byte_blob_without_json_string_framing() -> Result
         .ok_or_else(|| anyhow!("missing HTTP header terminator"))?
         + 4;
 
-    // Then: the wire body is exactly the original 4096 UTF-8 bytes.
+    // Then: the JSON body carries the task ID and exact original IR bytes
+    // in the bounded canonical base64 field.
     assert_eq!(code, 0);
     assert!(stderr.is_empty());
-    assert_eq!(&request[header_end..], blob.as_bytes());
-    assert!(String::from_utf8_lossy(&request[..header_end])
-        .to_ascii_lowercase()
-        .contains("content-type: application/json"));
+    let body = &request[header_end..];
+    let parsed: Value = serde_json::from_slice(body)?;
+    assert_eq!(parsed["schema"], "radxa-linkr-debugger.v1");
+    assert_eq!(parsed["action"], "upsert");
+    assert_eq!(parsed["expected_revision"], "9007199254740993");
+    assert_eq!(parsed["id"], "exact-boundary");
+    assert!(parsed.get("source_base64").is_none());
+    assert_eq!(parsed["ir_base64"], base64_encode(blob.as_bytes()));
+    assert_eq!(blob.len(), 4000);
+    assert!(body.len() <= TASK_MUTATION_MAX_BYTES);
+    let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+    assert!(headers.contains(&format!("content-type: {TASK_MUTATION_CONTENT_TYPE}")));
     Ok(())
 }

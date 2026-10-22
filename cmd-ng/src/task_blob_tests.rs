@@ -157,7 +157,7 @@ fn task_blob_parser_rejects_wait_and_blob_size_above_firmware_limits() -> Result
         "{TASK_MARKER_VERSION}\n# task demo\n{}\n",
         request("PUT", "/api/v1/power/12v_out", 60_001)
     );
-    let oversized = format!("{TASK_MARKER_VERSION}\n# task demo\n# {}", "x".repeat(4096));
+    let oversized = format!("{TASK_MARKER_VERSION}\n# task demo\n# {}", "x".repeat(4000));
 
     assert!(TaskBlob::parse(&invalid_wait).is_err());
     assert!(TaskBlob::parse(&oversized).is_err());
@@ -182,32 +182,24 @@ fn task_blob_parser_rejects_comment_before_version_and_repeated_version_marker()
 }
 
 #[test]
-fn task_blob_parser_preserves_empty_lines_and_comments_after_exact_version() -> Result<()> {
+fn task_blob_parser_requires_the_exact_marker_at_byte_zero() {
     let blob = format!(
         "\n\r\n{TASK_MARKER_VERSION}\n# padding\n# task demo\n{}\n",
         request("PUT", "/api/v1/power/12v_out", 0)
     );
 
-    TaskBlob::parse(&blob)?;
-    Ok(())
+    assert!(TaskBlob::parse(&blob).is_err());
 }
 
 #[test]
 fn task_list_accepts_empty_blob_but_requires_frozen_envelope() -> Result<()> {
-    let valid = json!({
-        "schema": "radxa-linkr-debugger.v1",
-        "ok": true,
-        "command": "task",
-        "action": "list",
-        "tasks": [],
-        "blob": "",
-    })
-    .to_string();
+    let valid = crate::task_test_support::list_output("", "");
     let wrong_action = valid.replace("\"list\"", "\"store\"");
 
     let list = TaskList::from_raw(valid)?;
     assert!(list.tasks.is_empty());
-    assert!(TaskBlob::parse(&list.blob).is_ok());
+    assert_eq!(list.revision_text, "9007199254740993");
+    assert_eq!(list.full_ir_bytes, 0);
     let error = TaskList::from_raw(wrong_action)
         .err()
         .ok_or_else(|| anyhow!("wrong task action unexpectedly accepted"))?;

@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use crate::adc::{
-    transform_readings, validate_compact_kind_unit, AdcCompactReading, AdcKind, AdcReading,
+    transform_readings, validate_compact_kind_unit, AdcCompactReading, AdcKind, AdcReading, AdcRole,
 };
 use crate::json_contract::{JsonError, JSON_SCHEMA};
 use crate::ws_status::WsStatusSnapshot;
@@ -121,6 +121,8 @@ pub struct WsCommandRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsTelemetryBatchChannel {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<AdcRole>,
     #[serde(default)]
     pub signal: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -382,6 +384,7 @@ pub fn expand_telemetry_batch(batch: WsTelemetryBatch) -> Result<Vec<WsTelemetry
                 };
                 AdcCompactReading {
                     name: channel.name.clone(),
+                    role: channel.role,
                     signal: channel.signal.clone(),
                     note: channel.note.clone(),
                     label: channel.label.clone(),
@@ -441,7 +444,7 @@ mod tests {
         expand_telemetry_batch, subscribe_batch_request, subscribe_request, WsClient,
         WsCommandRequest, WsEnvelope, WsMessage, WsStatusSnapshot, WsTelemetryBatch,
     };
-    use crate::adc::AdcKind;
+    use crate::adc::{AdcKind, AdcRole};
     use crate::json_contract::JSON_SCHEMA;
     use crate::monitoring::{
         BoardMonitoring, MonitoringAvailability, MonitoringCpu, MonitoringHeap, MonitoringMemory,
@@ -734,14 +737,18 @@ mod tests {
         assert_eq!(message.readings[2].voltage_uv, Some(20_000_000));
         for (reading, uv) in message.readings[4..]
             .iter()
-            .zip([2_608_696, 1_100_000, 2_200_000, 0])
+            .zip([20_000_002, 1_100_000, 2_200_000, 0])
         {
             assert_eq!(reading.kind, AdcKind::Voltage);
             assert_eq!(reading.voltage_uv, Some(uv));
             assert_eq!(reading.current_ua, None);
             assert_eq!(reading.power_enabled, None);
         }
-        assert_eq!(message.readings[4].note, "pad voltage");
+        assert_eq!(message.readings[4].role, Some(AdcRole::PdInput));
+        assert!(message.readings[5..]
+            .iter()
+            .all(|reading| reading.role == Some(AdcRole::Native)));
+        assert_eq!(message.readings[4].note, "source voltage");
     }
 
     #[test]
@@ -814,14 +821,55 @@ mod tests {
     }
 
     #[test]
-    fn single_telemetry_normalizes_all_eight_channels_without_scaling_pad_voltage() {
+    fn single_telemetry_keeps_source_and_native_voltages_without_host_scaling() {
         let raw = crate::adc::fixture::http();
         let wire = serde_json::json!({"type":"telemetry","topic":"adc","schema":JSON_SCHEMA,"readings":raw["readings"]});
         let message: super::WsTelemetryMessage = serde_json::from_value(wire).unwrap();
         assert_eq!(message.readings.len(), 8);
-        assert_eq!(message.readings[4].voltage_uv, Some(2_608_696));
-        assert_eq!(message.readings[4].note, "pad voltage");
+        assert_eq!(message.readings[4].voltage_uv, Some(20_000_002));
+        assert_eq!(message.readings[4].role, Some(AdcRole::PdInput));
+        assert_eq!(message.readings[4].note, "source voltage");
+        assert_eq!(message.readings[5].role, Some(AdcRole::Native));
+        assert_eq!(message.readings[5].voltage_uv, Some(1_100_000));
         assert_eq!(message.readings[7].voltage_uv, Some(0));
+    }
+
+    #[test]
+    fn single_and_batch_telemetry_accept_missing_roles_without_inferring_them() {
+        let mut batch = crate::adc::fixture::batch();
+        let mut single = crate::adc::fixture::http();
+        for channels in [&mut batch["channels"], &mut single["readings"]] {
+            for channel in channels.as_array_mut().unwrap() {
+                channel.as_object_mut().unwrap().remove("role");
+            }
+        }
+        let message: super::WsTelemetryMessage = serde_json::from_value(serde_json::json!({
+            "type":"telemetry", "topic":"adc", "schema":JSON_SCHEMA, "readings":single["readings"]
+        }))
+        .unwrap();
+        let expanded = expand_telemetry_batch(serde_json::from_value(batch).unwrap())
+            .unwrap()
+            .remove(0);
+        for message in [message, expanded] {
+            assert!(message
+                .readings
+                .iter()
+                .all(|reading| reading.role.is_none()));
+            assert_eq!(message.readings[4].voltage_uv, Some(20_000_002));
+        }
+    }
+
+    #[test]
+    fn single_and_batch_telemetry_reject_unknown_roles() {
+        let mut batch = crate::adc::fixture::batch();
+        batch["channels"][4]["role"] = serde_json::json!("pad");
+        assert!(serde_json::from_value::<WsTelemetryBatch>(batch).is_err());
+        let mut single = crate::adc::fixture::http();
+        single["readings"][4]["role"] = serde_json::json!("pad");
+        assert!(serde_json::from_value::<super::WsTelemetryMessage>(serde_json::json!({
+            "type":"telemetry", "topic":"adc", "schema":JSON_SCHEMA, "readings":single["readings"]
+        }))
+        .is_err());
     }
 
     #[test]

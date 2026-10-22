@@ -10,12 +10,76 @@ use reqwest::Method;
 use serde_json::Value;
 use std::io::Write;
 
-const USAGE: &str = "usage: radxa-linkr-debuggerctl ip subnet [<1-254>]";
+const USAGE: &str =
+    "usage: radxa-linkr-debuggerctl ip [show | mac <aa:bb:cc:dd:ee:ff> | network <RFC1918 /30 base>] (net is an alias)";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NetCommand {
     Show,
-    Set(u8),
+    SetMac(String),
+    SetNetwork(String),
+}
+
+fn parse_mac(value: &str) -> Result<String, String> {
+    let parts: Vec<&str> = value.split(':').collect();
+    if parts.len() != 6 {
+        return Err(USAGE.to_string());
+    }
+    let mut bytes = [0u8; 6];
+    for (index, part) in parts.iter().enumerate() {
+        if part.len() != 2 {
+            return Err(USAGE.to_string());
+        }
+        bytes[index] = u8::from_str_radix(part, 16).map_err(|_| USAGE.to_string())?;
+    }
+    if bytes[0] & 0x03 != 0x02 {
+        return Err(USAGE.to_string());
+    }
+    Ok(format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
+    ))
+}
+
+fn parse_ipv4(value: &str) -> Option<u32> {
+    let parts: Vec<&str> = value.split('.').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let mut address = 0u32;
+    for part in parts {
+        if part.is_empty() || part.len() > 3 || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let octet = part.parse::<u32>().ok()?;
+        if octet > 255 {
+            return None;
+        }
+        address = (address << 8) | octet;
+    }
+    Some(address)
+}
+
+fn is_private_slash30(address: u32) -> bool {
+    address & 0x03 == 0
+        && ((address & 0xff00_0000) == 0x0a00_0000
+            || (address & 0xfff0_0000) == 0xac10_0000
+            || (address & 0xffff_0000) == 0xc0a8_0000)
+}
+
+fn parse_network(value: &str) -> Result<String, String> {
+    let base = value.strip_suffix("/30").unwrap_or(value);
+    let address = parse_ipv4(base).ok_or_else(|| USAGE.to_string())?;
+    if !is_private_slash30(address) {
+        return Err(USAGE.to_string());
+    }
+    Ok(format!(
+        "{}.{}.{}.{}",
+        (address >> 24) & 0xff,
+        (address >> 16) & 0xff,
+        (address >> 8) & 0xff,
+        address & 0xff
+    ))
 }
 
 pub(crate) fn parse(args: &[String]) -> Result<NetCommand, String> {
@@ -30,26 +94,22 @@ pub(crate) fn parse(args: &[String]) -> Result<NetCommand, String> {
         Some("ip") | Some("net") => {}
         _ => return Err(USAGE.to_string()),
     }
-    if cleaned.get(1).map(|arg| arg.as_str()) != Some("subnet") {
-        return Err(USAGE.to_string());
-    }
 
-    match cleaned.len() {
-        2 => Ok(NetCommand::Show),
-        3 => {
-            let subnet = cleaned[2].parse::<u8>().map_err(|_| USAGE.to_string())?;
-            if !(1..=254).contains(&subnet) {
-                return Err(USAGE.to_string());
-            }
-            Ok(NetCommand::Set(subnet))
-        }
+    match (cleaned.len(), cleaned.get(1).map(|arg| arg.as_str())) {
+        (1, _) | (2, Some("show")) => Ok(NetCommand::Show),
+        (3, Some("mac")) => Ok(NetCommand::SetMac(parse_mac(cleaned[2])?)),
+        (3, Some("network")) => Ok(NetCommand::SetNetwork(parse_network(cleaned[2])?)),
         _ => Err(USAGE.to_string()),
     }
 }
 
 struct NetStatus {
-    subnet: u8,
+    mac: String,
+    origin: String,
+    network: String,
     ip: String,
+    dhcp_base: String,
+    url: String,
 }
 
 fn parse_status(raw: &str, expected_action: &str) -> Result<NetStatus> {
@@ -70,20 +130,45 @@ fn parse_status(raw: &str, expected_action: &str) -> Result<NetStatus> {
         bail!("unexpected net action");
     }
 
-    let subnet = value
-        .get("subnet")
-        .and_then(Value::as_u64)
-        .filter(|subnet| (1..=254).contains(subnet))
-        .ok_or_else(|| anyhow::anyhow!("invalid subnet in net response"))? as u8;
+    let mac = value
+        .get("mac")
+        .and_then(Value::as_str)
+        .filter(|mac| parse_mac(mac).is_ok())
+        .ok_or_else(|| anyhow::anyhow!("invalid mac in net response"))?
+        .to_ascii_lowercase();
+    let origin = value
+        .get("origin")
+        .and_then(Value::as_str)
+        .filter(|origin| matches!(*origin, "derived" | "manual"))
+        .ok_or_else(|| anyhow::anyhow!("invalid origin in net response"))?;
+    let network = value
+        .get("network")
+        .and_then(Value::as_str)
+        .filter(|network| parse_network(network).is_ok())
+        .ok_or_else(|| anyhow::anyhow!("invalid network in net response"))?;
     let ip = value
         .get("ip")
         .and_then(Value::as_str)
-        .filter(|ip| !ip.is_empty())
+        .filter(|ip| parse_ipv4(ip).is_some())
         .ok_or_else(|| anyhow::anyhow!("invalid ip in net response"))?;
+    let dhcp_base = value
+        .get("dhcp_base")
+        .and_then(Value::as_str)
+        .filter(|ip| parse_ipv4(ip).is_some())
+        .ok_or_else(|| anyhow::anyhow!("invalid dhcp_base in net response"))?;
+    let url = value
+        .get("url")
+        .and_then(Value::as_str)
+        .filter(|url| url.starts_with("http://") && url.ends_with('/'))
+        .ok_or_else(|| anyhow::anyhow!("invalid url in net response"))?;
 
     Ok(NetStatus {
-        subnet,
+        mac,
+        origin: origin.to_string(),
+        network: network.to_string(),
         ip: ip.to_string(),
+        dhcp_base: dhcp_base.to_string(),
+        url: url.to_string(),
     })
 }
 
@@ -112,12 +197,21 @@ where
             },
             "get",
         ),
-        NetCommand::Set(subnet) => (
+        NetCommand::SetMac(mac) => (
             BoardRequest {
                 method: Method::PUT,
                 path: "/api/v1/net".to_string(),
                 query: vec![],
-                body: Some(serde_json::json!({ "subnet": subnet })),
+                body: Some(serde_json::json!({ "mac": mac })),
+            },
+            "set",
+        ),
+        NetCommand::SetNetwork(network) => (
+            BoardRequest {
+                method: Method::PUT,
+                path: "/api/v1/net".to_string(),
+                query: vec![],
+                body: Some(serde_json::json!({ "network": network })),
             },
             "set",
         ),
@@ -153,8 +247,8 @@ where
     if !json_output {
         writeln!(
             stdout,
-            "subnet={} ip={} url=http://{}/",
-            status.subnet, status.ip, status.ip
+            "mac={} origin={} network={}/30 ip={} dhcp_base={} url={}",
+            status.mac, status.origin, status.network, status.ip, status.dhcp_base, status.url
         )?;
     }
 
@@ -229,8 +323,7 @@ fn write_transport_error(
 mod tests {
     use super::{parse, run, NetCommand, USAGE};
     use crate::client::{
-        BoardBinaryUpload, BoardClient, BoardHttpError, BoardRawJsonRequest, BoardRequest,
-        BoardTransport,
+        BoardBinaryUpload, BoardClient, BoardHttpError, BoardRequest, BoardTransport,
     };
     use crate::client_tests::mock_http_response;
     use anyhow::Result;
@@ -259,33 +352,36 @@ mod tests {
             Ok(self.response.clone())
         }
 
-        fn send_raw_json(&self, _request: BoardRawJsonRequest) -> Result<String> {
-            unreachable!()
-        }
-
         fn upload_binary(&self, _request: BoardBinaryUpload) -> Result<String> {
             unreachable!()
         }
 
         fn base_url(&self) -> &str {
-            "http://172.29.203.1"
+            "http://10.0.0.1"
         }
     }
 
-    fn envelope(action: &str, subnet: u8, ip: &str) -> String {
+    const MAC: &str = "02:11:22:33:44:55";
+
+    fn envelope(action: &str, network: &str, ip: &str, dhcp_base: &str) -> String {
         format!(
-            "{{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":true,\"command\":\"net\",\"action\":\"{action}\",\"subnet\":{subnet},\"ip\":\"{ip}\",\"reconnect_required\":{}}}\n",
+            "{{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":true,\"command\":\"net\",\"action\":\"{action}\",\"mac\":\"{MAC}\",\"origin\":\"{}\",\"network\":\"{network}\",\"prefix\":30,\"ip\":\"{ip}\",\"dhcp_base\":\"{dhcp_base}\",\"url\":\"http://{ip}/\",\"reconnect_required\":{}}}\n",
+            if action == "set" { "manual" } else { "derived" },
             action == "set"
         )
     }
 
     fn http_failure_cases() -> [(StatusCode, &'static str, &'static str); 2] {
         [
-            (StatusCode::BAD_REQUEST, "invalid_subnet", "Subnet rejected"),
+            (
+                StatusCode::BAD_REQUEST,
+                "invalid_identity",
+                "Identity rejected",
+            ),
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "settings_write_failed",
-                "Could not save subnet",
+                "set_failed",
+                "Could not save identity",
             ),
         ]
     }
@@ -297,53 +393,59 @@ mod tests {
     }
 
     #[test]
-    fn parses_show_and_set_for_ip_and_net_aliases() {
-        assert_eq!(parse(&args(&["ip", "subnet"])).unwrap(), NetCommand::Show);
+    fn parses_show_and_identity_updates_for_ip_and_net_aliases() {
+        assert_eq!(parse(&args(&["ip"])).unwrap(), NetCommand::Show);
+        assert_eq!(parse(&args(&["ip", "show"])).unwrap(), NetCommand::Show);
         assert_eq!(
-            parse(&args(&["ip", "subnet", "204"])).unwrap(),
-            NetCommand::Set(204)
+            parse(&args(&["ip", "mac", "02:AA:BB:CC:DD:EE"])).unwrap(),
+            NetCommand::SetMac("02:aa:bb:cc:dd:ee".to_string())
         );
-        assert_eq!(parse(&args(&["net", "subnet"])).unwrap(), NetCommand::Show);
         assert_eq!(
-            parse(&args(&["net", "subnet", "1"])).unwrap(),
-            NetCommand::Set(1)
+            parse(&args(&["net", "network", "10.0.0.4/30"])).unwrap(),
+            NetCommand::SetNetwork("10.0.0.4".to_string())
+        );
+        assert_eq!(
+            parse(&args(&["net", "network", "172.16.1.0"])).unwrap(),
+            NetCommand::SetNetwork("172.16.1.0".to_string())
         );
     }
 
     #[test]
-    fn rejects_out_of_range_and_malformed_subnets() {
-        for value in ["0", "255", "abc", "1.5", "-1"] {
-            assert_eq!(parse(&args(&["ip", "subnet", value])).unwrap_err(), USAGE);
+    fn rejects_invalid_identities_and_legacy_subnet_grammar() {
+        for value in [
+            "00:11:22:33:44:55",
+            "02:11:22:33:44",
+            "02:11:22:33:44:gg",
+            "02:11:22:33:44:55:66",
+        ] {
+            assert_eq!(parse(&args(&["ip", "mac", value])).unwrap_err(), USAGE);
         }
-        assert_eq!(parse(&args(&["ip"])).unwrap_err(), USAGE);
+        for value in ["10.0.0.1", "10.0.0.0/24", "8.8.8.0/30", "10.0.0.256/30"] {
+            assert_eq!(parse(&args(&["ip", "network", value])).unwrap_err(), USAGE);
+        }
+        assert_eq!(parse(&args(&["ip", "subnet"])).unwrap_err(), USAGE);
+        assert_eq!(parse(&args(&["ip", "network"])).unwrap_err(), USAGE);
         assert_eq!(
-            parse(&args(&["ip", "subnet", "1", "2"])).unwrap_err(),
+            parse(&args(&["ip", "network", "10.0.0.0", "extra"])).unwrap_err(),
             USAGE
         );
     }
 
     #[test]
-    fn show_requests_net_and_prints_state() {
+    fn show_requests_net_and_prints_identity() {
         let client = FakeTransport {
-            response: envelope("get", 203, "172.29.203.1"),
+            response: envelope("get", "10.0.0.0", "10.0.0.1", "10.0.0.2"),
             ..Default::default()
         };
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
 
-        let code = run(
-            &client,
-            &args(&["ip", "subnet"]),
-            false,
-            &mut stdout,
-            &mut stderr,
-        )
-        .unwrap();
+        let code = run(&client, &args(&["ip"]), false, &mut stdout, &mut stderr).unwrap();
 
         assert_eq!(code, 0);
         assert_eq!(
             String::from_utf8(stdout).unwrap().trim(),
-            "subnet=203 ip=172.29.203.1 url=http://172.29.203.1/"
+            "mac=02:11:22:33:44:55 origin=derived network=10.0.0.0/30 ip=10.0.0.1 dhcp_base=10.0.0.2 url=http://10.0.0.1/"
         );
         assert!(stderr.is_empty());
         let requests = client.requests.borrow();
@@ -353,9 +455,9 @@ mod tests {
     }
 
     #[test]
-    fn set_puts_subnet_and_prints_new_state() {
+    fn set_puts_only_the_requested_identity_field() {
         let client = FakeTransport {
-            response: envelope("set", 204, "172.29.204.1"),
+            response: envelope("set", "10.0.0.4", "10.0.0.5", "10.0.0.6"),
             ..Default::default()
         };
         let mut stdout = Vec::new();
@@ -363,7 +465,7 @@ mod tests {
 
         let code = run(
             &client,
-            &args(&["ip", "subnet", "204"]),
+            &args(&["ip", "network", "10.0.0.4/30"]),
             false,
             &mut stdout,
             &mut stderr,
@@ -371,19 +473,44 @@ mod tests {
         .unwrap();
 
         assert_eq!(code, 0);
-        assert_eq!(
-            String::from_utf8(stdout).unwrap().trim(),
-            "subnet=204 ip=172.29.204.1 url=http://172.29.204.1/"
-        );
+        assert!(String::from_utf8(stdout)
+            .unwrap()
+            .contains("network=10.0.0.4/30 ip=10.0.0.5"));
         let requests = client.requests.borrow();
         assert_eq!(requests[0].method, Method::PUT);
         assert_eq!(requests[0].path, "/api/v1/net");
-        assert_eq!(requests[0].body, Some(json!({ "subnet": 204 })));
+        assert_eq!(requests[0].body, Some(json!({ "network": "10.0.0.4" })));
+    }
+
+    #[test]
+    fn set_mac_puts_only_mac() {
+        let client = FakeTransport {
+            response: envelope("set", "10.0.0.0", "10.0.0.1", "10.0.0.2"),
+            ..Default::default()
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = run(
+            &client,
+            &args(&["ip", "mac", "02:aa:bb:cc:dd:ee"]),
+            false,
+            &mut stdout,
+            &mut stderr,
+        )
+        .unwrap();
+
+        assert_eq!(code, 0);
+        let requests = client.requests.borrow();
+        assert_eq!(
+            requests[0].body,
+            Some(json!({ "mac": "02:aa:bb:cc:dd:ee" }))
+        );
     }
 
     #[test]
     fn json_mode_preserves_the_firmware_envelope() {
-        let raw = envelope("get", 203, "172.29.203.1");
+        let raw = envelope("get", "10.0.0.0", "10.0.0.1", "10.0.0.2");
         let client = FakeTransport {
             response: raw.clone(),
             ..Default::default()
@@ -393,7 +520,7 @@ mod tests {
 
         let code = run(
             &client,
-            &args(&["ip", "subnet", "--json"]),
+            &args(&["ip", "--json"]),
             true,
             &mut stdout,
             &mut stderr,
@@ -415,7 +542,7 @@ mod tests {
 
             let exit_code = run(
                 &client,
-                &args(&["ip", "subnet", "204", "--json"]),
+                &args(&["ip", "network", "10.0.0.4", "--json"]),
                 true,
                 &mut stdout,
                 &mut stderr,
@@ -427,7 +554,7 @@ mod tests {
             assert!(stderr.is_empty());
             let request = server.join().unwrap();
             assert!(request.starts_with("PUT /api/v1/net HTTP/1.1\r\n"));
-            assert!(request.ends_with(r#"{"subnet":204}"#));
+            assert!(request.ends_with(r#"{"network":"10.0.0.4"}"#));
         }
     }
 
@@ -438,14 +565,7 @@ mod tests {
             let mut stdout = Vec::new();
             let mut stderr = Vec::new();
 
-            let exit_code = run(
-                &client,
-                &args(&["ip", "subnet"]),
-                false,
-                &mut stdout,
-                &mut stderr,
-            )
-            .unwrap();
+            let exit_code = run(&client, &args(&["ip"]), false, &mut stdout, &mut stderr).unwrap();
 
             assert_eq!(exit_code, 1);
             assert!(stdout.is_empty());
@@ -470,7 +590,7 @@ mod tests {
 
                 let exit_code = run(
                     &client,
-                    &args(&["ip", "subnet"]),
+                    &args(&["ip"]),
                     json_output,
                     &mut stdout,
                     &mut stderr,
@@ -506,7 +626,7 @@ mod tests {
 
             let exit_code = run(
                 &client,
-                &args(&["ip", "subnet"]),
+                &args(&["ip"]),
                 json_output,
                 &mut stdout,
                 &mut stderr,
@@ -537,14 +657,7 @@ mod tests {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
 
-        let code = run(
-            &client,
-            &args(&["ip", "subnet"]),
-            false,
-            &mut stdout,
-            &mut stderr,
-        )
-        .unwrap();
+        let code = run(&client, &args(&["ip"]), false, &mut stdout, &mut stderr).unwrap();
 
         assert_eq!(code, 1);
         assert!(String::from_utf8(stderr).unwrap().contains("dial failed"));
@@ -558,7 +671,7 @@ mod tests {
 
         let code = run(
             &client,
-            &args(&["ip", "subnet", "255"]),
+            &args(&["ip", "mac", "00:11:22:33:44:55"]),
             true,
             &mut stdout,
             &mut stderr,
@@ -575,7 +688,7 @@ mod tests {
     #[test]
     fn response_with_wrong_action_is_rejected() {
         let client = FakeTransport {
-            response: envelope("get", 203, "172.29.203.1"),
+            response: envelope("get", "10.0.0.0", "10.0.0.1", "10.0.0.2"),
             ..Default::default()
         };
         let mut stdout = Vec::new();
@@ -583,7 +696,7 @@ mod tests {
 
         let code = run(
             &client,
-            &args(&["ip", "subnet", "204"]),
+            &args(&["ip", "network", "10.0.0.4"]),
             false,
             &mut stdout,
             &mut stderr,
@@ -597,12 +710,26 @@ mod tests {
     }
 
     #[test]
+    fn response_with_invalid_identity_is_rejected() {
+        let client = FakeTransport {
+            response: "{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":true,\"command\":\"net\",\"action\":\"get\",\"mac\":\"00:11:22:33:44:55\",\"origin\":\"derived\",\"network\":\"10.0.0.0\",\"ip\":\"10.0.0.1\",\"dhcp_base\":\"10.0.0.2\",\"url\":\"http://10.0.0.1/\"}\n".to_string(),
+            ..Default::default()
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = run(&client, &args(&["ip"]), false, &mut stdout, &mut stderr).unwrap();
+        assert_eq!(code, 1);
+        assert!(String::from_utf8(stderr).unwrap().contains("invalid mac"));
+    }
+
+    #[test]
     fn usage_writer_emits_text() {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let code = run(
             &FakeTransport::default(),
-            &args(&["ip"]),
+            &args(&["ip", "network", "10.0.0.1"]),
             false,
             &mut stdout,
             &mut stderr,

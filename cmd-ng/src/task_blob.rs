@@ -8,10 +8,10 @@ pub(crate) use crate::task_error::TaskError;
 
 pub(crate) const TASK_MARKER_VERSION: &str = "# linkr-task.v1";
 const TASK_MARKER_TASK: &str = "# task ";
-const MAX_BLOB_SIZE: usize = 4096;
+pub(crate) const MAX_BLOB_SIZE: usize = 4000;
 const MAX_TASKS: usize = 4;
 const MAX_REQUESTS: usize = 32;
-const MAX_TASK_ID_LEN: usize = 31;
+const MAX_TASK_ID_LEN: usize = 63;
 const MAX_REQUEST_LINE: usize = 256;
 const MAX_METHOD_LEN: usize = 8;
 const MAX_PATH_LEN: usize = 96;
@@ -31,6 +31,8 @@ pub(crate) struct TaskRecord {
 pub(crate) struct SavedTask {
     pub(crate) id: String,
     pub(crate) records: Vec<TaskRecord>,
+    section_start: usize,
+    digest_end: usize,
 }
 
 #[derive(Debug, Default)]
@@ -56,33 +58,43 @@ impl TaskBlob {
         if text.len() > MAX_BLOB_SIZE {
             return invalid_blob(format!("blob exceeds {MAX_BLOB_SIZE} bytes"));
         }
+        let header = format!("{TASK_MARKER_VERSION}\n");
+        if !text.starts_with(&header) {
+            return invalid_blob("blob must start with the exact linkr-task.v1 marker");
+        }
+        if !text.ends_with('\n') {
+            return invalid_blob("blob must end with LF");
+        }
+        if text
+            .bytes()
+            .any(|byte| (byte < 0x20 && byte != b'\n') || byte == 0x7f)
+        {
+            return invalid_blob("blob contains a forbidden control byte");
+        }
 
         let mut tasks = Vec::new();
         let mut task_ids = HashSet::with_capacity(MAX_TASKS);
         let mut current: Option<SavedTask> = None;
-        let mut version_seen = false;
-        for raw_line in text.lines() {
-            let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        let mut offset = header.len();
+        while offset < text.len() {
+            let line_start = offset;
+            let relative_end = text.as_bytes()[line_start..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .ok_or_else(|| invalid_blob_error("blob must end with LF"))?;
+            let line_end = line_start + relative_end;
+            let line = &text[line_start..line_end];
+            offset = line_end + 1;
             if line.len() > MAX_REQUEST_LINE {
                 return invalid_blob(format!("line exceeds {MAX_REQUEST_LINE} bytes"));
             }
             if line.is_empty() {
                 continue;
             }
-            if !version_seen {
-                if line != TASK_MARKER_VERSION {
-                    return invalid_blob("first non-empty line must be linkr-task.v1 marker");
-                }
-                version_seen = true;
-                continue;
-            }
             if line == TASK_MARKER_VERSION {
                 return invalid_blob("duplicate linkr-task.v1 marker");
             }
             if let Some(task_id) = line.strip_prefix(TASK_MARKER_TASK) {
-                if !version_seen {
-                    return invalid_blob("task marker precedes linkr-task.v1 marker");
-                }
                 validate_task_id(task_id)?;
                 if !task_ids.insert(task_id) {
                     return invalid_blob(format!("duplicate stored task id {task_id:?}"));
@@ -93,6 +105,8 @@ impl TaskBlob {
                 current = Some(SavedTask {
                     id: task_id.to_string(),
                     records: Vec::new(),
+                    section_start: line_start,
+                    digest_end: offset,
                 });
                 continue;
             }
@@ -106,11 +120,12 @@ impl TaskBlob {
                 return invalid_blob(format!("task exceeds {MAX_REQUESTS} requests"));
             }
             task.records.push(parse_record(line)?);
+            task.digest_end = offset;
         }
         if let Some(task) = current {
             push_task(&mut tasks, task)?;
         }
-        if !version_seen || tasks.is_empty() {
+        if tasks.is_empty() {
             return invalid_blob("missing linkr-task.v1 task data");
         }
         Ok(Self { tasks })
@@ -127,6 +142,18 @@ impl TaskBlob {
                 task_id: task_id.to_string(),
             })
     }
+
+    pub(crate) fn tasks(&self) -> &[SavedTask] {
+        &self.tasks
+    }
+}
+
+pub(crate) fn task_ir_section(text: &str, task_id: &str) -> Result<String, TaskError> {
+    let blob = TaskBlob::parse(text)?;
+    let task = blob.task(task_id)?;
+    let mut section = format!("{TASK_MARKER_VERSION}\n");
+    section.push_str(&text[task.section_start..task.digest_end]);
+    Ok(section)
 }
 
 fn parse_record(line: &str) -> Result<TaskRecord, TaskError> {
@@ -194,10 +221,10 @@ fn json_depth_exceeds(value: &Value, maximum: usize) -> bool {
     false
 }
 
-fn validate_task_id(task_id: &str) -> Result<(), TaskError> {
+pub(crate) fn validate_task_id(task_id: &str) -> Result<(), TaskError> {
     let invalid_character = task_id
         .bytes()
-        .any(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | b'#'));
+        .any(|byte| byte <= 0x20 || byte == 0x7f || byte == b'#');
     if task_id.is_empty() || task_id.len() > MAX_TASK_ID_LEN || invalid_character {
         return invalid_blob(format!(
             "task id must be 1..{MAX_TASK_ID_LEN} bytes without whitespace or #"
