@@ -943,10 +943,17 @@ export function LogicAnalyzerCard({
     (pin: number) => {
       if (controlsDisabled) return;
       updateConfig((current) => {
-        const triggerPinNumber = current.selectedPins[current.triggerPin] ?? null;
-        const selectedPins = current.selectedPins.includes(pin)
+        const triggerActive = current.triggerType !== "none";
+        const triggerPinNumber = triggerActive ? current.selectedPins[current.triggerPin] ?? null : null;
+        const removing = current.selectedPins.includes(pin);
+        const selectedPins = removing
           ? current.selectedPins.filter((selectedPin) => selectedPin !== pin)
           : [...current.selectedPins, pin].sort((left, right) => left - right);
+        // Dropping the trigger pin, or the last selected pin, invalidates the
+        // trigger entirely; it never silently moves to another pin.
+        if (removing && (selectedPins.length === 0 || pin === triggerPinNumber)) {
+          return { ...current, selectedPins, triggerPin: 0, triggerType: "none" };
+        }
         const triggerPin =
           triggerPinNumber == null ? 0 : Math.max(0, selectedPins.indexOf(triggerPinNumber));
         return { ...current, selectedPins, triggerPin };

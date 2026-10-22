@@ -182,6 +182,63 @@ describe("LogicAnalyzerCard physical pin selection", () => {
     view.close();
   });
 
+  it("clears the trigger when right click removes its pin instead of leaving a dangling trigger", () => {
+    const view = renderCard();
+    const triggerSelect = Array.from(view.host.querySelectorAll("label")).find((label) => {
+      const text = label.textContent?.trim() ?? "";
+      return text.startsWith("Trigger") && !text.startsWith("Trigger pin");
+    })?.querySelector("select");
+
+    click(pin(view.host, 13));
+    expect(stateOf(pin(view.host, 13))).toBe("trigger");
+    expect(triggerSelect?.value).toBe("either");
+    expect(view.host.textContent).toContain("1/11");
+
+    // Right click on the trigger pin only removes it from the capture
+    // selection; the trigger must die with it, never move to another pin.
+    contextMenu(pin(view.host, 13));
+    expect(stateOf(pin(view.host, 13))).toBe("unselected");
+    expect(triggerSelect?.value).toBe("none");
+    expect(view.host.textContent).toContain("0/11");
+    expect(view.host.querySelector('[data-logic-pin-state="trigger"]')).toBeNull();
+
+    keyDown(pin(view.host, 13), "c");
+    expect(view.host.textContent).toContain("1/11");
+    expect(triggerSelect?.value).toBe("none");
+    view.close();
+  });
+
+  it("keeps the trigger on its own pin across sorting and non-trigger removals", () => {
+    const view = renderCard();
+    const triggerSelect = Array.from(view.host.querySelectorAll("label")).find((label) => {
+      const text = label.textContent?.trim() ?? "";
+      return text.startsWith("Trigger") && !text.startsWith("Trigger pin");
+    })?.querySelector("select");
+
+    // GP12 is added behind GP13 but sorts before it: the trigger index must
+    // follow the pin identity, not the pre-sort position.
+    click(pin(view.host, 12));
+    expect(stateOf(pin(view.host, 12))).toBe("trigger");
+    expect(stateOf(pin(view.host, 13))).toBe("selected");
+    expect(triggerSelect?.value).toBe("either");
+    expect(view.host.textContent).toContain("2/11");
+
+    // Removing a non-trigger pin only affects capture selection.
+    contextMenu(pin(view.host, 13));
+    expect(stateOf(pin(view.host, 12))).toBe("trigger");
+    expect(stateOf(pin(view.host, 13))).toBe("unselected");
+    expect(triggerSelect?.value).toBe("either");
+    expect(view.host.textContent).toContain("1/11");
+
+    // Removing the last pin clears the trigger too.
+    contextMenu(pin(view.host, 12));
+    expect(stateOf(pin(view.host, 12))).toBe("unselected");
+    expect(triggerSelect?.value).toBe("none");
+    expect(view.host.textContent).toContain("0/11");
+    expect(view.host.querySelector('[data-logic-pin-state="trigger"]')).toBeNull();
+    view.close();
+  });
+
   it("keeps capture pins without a physical contact selectable below the diagram", () => {
     const view = renderCard();
     for (const number of [10, 11, 17, 18, 19, 20]) {
