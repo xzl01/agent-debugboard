@@ -43,7 +43,7 @@ USB-C 线一头插板子，一头插 PC。板子会枚举为复合 USB 设备—
 等几秒让网络接口起来，然后检查：
 
 ```sh
-radxa-linkr-debuggerctl doctor
+radxa-linkr-debuggerctl --url "$BOARD_URL" doctor
 ```
 
 应该看到所有检查通过。如果 `doctor` 报连接问题，参考[安装 CLI](install.zh-CN.md) 或[调试板概览](board-overview.zh-CN.md)。
@@ -53,7 +53,7 @@ radxa-linkr-debuggerctl doctor
 不带参数运行：
 
 ```sh
-radxa-linkr-debuggerctl
+radxa-linkr-debuggerctl --url "$BOARD_URL"
 ```
 
 交互式终端界面默认打开 Controls 页。无边框表格中每个电源、switch 或 GPIO 对象
@@ -66,19 +66,17 @@ Saved Config、Status 三页间切换。第一次按 Space 只会打开红色边
 
 ## 4. 打开 Web UI
 
-浏览器打开：
-
-```
-http://172.29.203.1/
-```
-
-大多数系统会自动弹出板子的 captive portal 提示。如果没有，手动导航即可。
+主机 NCM 地址是板卡私有 `/30` 中的 `.2`，板卡是 `.1`。用
+`ip -brief addr show`（Linux）读取主机地址，打开
+`http://<主机地址减一>/`；也可以从 CDC shell 的 `ip` 命令读取 URL。
+例如主机为 `10.20.30.2/30` 时打开 `http://10.20.30.1/`。大多数系统会自动弹出板子的
+captive portal 提示；如果没有，手动导航到 `ip` 输出的 URL。
 
 仪表盘有电源控制、ADC 读数、switch 路由和 GPIO。试试看：在 Power Controls
 卡片点 `5v_out` 的开关，然后看 ADC 卡片的电流读数变化。切到 **Terminal**
 工作区可以找到逻辑分析仪和自动连接的 xterm.js J4 控制台。内嵌终端使用 MCU
 `serial.j4` WebSocket，不打开主机串口，也不弹浏览器 chooser。raw client 也可使用
-`nc 172.29.203.1 5555`。
+`nc <板卡 IP> 5555`。
 
 更多：[Web UI 指南](webui.zh-CN.md)
 
@@ -86,23 +84,23 @@ http://172.29.203.1/
 
 ```sh
 # 查看板子状态
-radxa-linkr-debuggerctl status
+radxa-linkr-debuggerctl --url "$BOARD_URL" status
 # → 显示电源状态、switch 路由、GPIO 值、uptime
 
 # 给目标板上电
-radxa-linkr-debuggerctl power set 5v_out on
+radxa-linkr-debuggerctl --url "$BOARD_URL" power set 5v_out on
 # → "5v_out: on"
 
 # 读电流
-radxa-linkr-debuggerctl adc read
+radxa-linkr-debuggerctl --url "$BOARD_URL" adc read
 # → "5v_out=0.123000A  12v_out=0.000000A  20v_out=0.000000A"
 
 # SD 卡路由到主机读取
-radxa-linkr-debuggerctl switch route sd usb-reader
+radxa-linkr-debuggerctl --url "$BOARD_URL" switch route sd usb-reader
 # → SD 卡现在作为 USB 存储出现在 PC 上
 
 # 驱动 GPIO 高电平
-radxa-linkr-debuggerctl gpio set GP13 1
+radxa-linkr-debuggerctl --url "$BOARD_URL" gpio set GP13 1
 # → "GP13: 1 (output)"
 ```
 

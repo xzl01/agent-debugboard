@@ -42,10 +42,17 @@ Full install guide: [Install CLI](install.md)
 Plug the USB-C cable into the board and your PC. The board enumerates as a
 composite USB device — no driver install needed on Linux or macOS.
 
-Wait a few seconds for the network interface to come up, then check:
+Wait a few seconds for the network interface to come up. The host NCM address is
+`.2` of the board `/30`; set the board URL before running the examples:
 
 ```sh
-radxa-linkr-debuggerctl doctor
+BOARD_URL=http://<board-ip>   # host NCM address minus one
+```
+
+Then check:
+
+```sh
+radxa-linkr-debuggerctl --url "$BOARD_URL" doctor
 ```
 
 You should see all checks pass. If `doctor` reports connection issues, see
@@ -56,7 +63,7 @@ You should see all checks pass. If `doctor` reports connection issues, see
 Run without arguments:
 
 ```sh
-radxa-linkr-debuggerctl
+radxa-linkr-debuggerctl --url "$BOARD_URL"
 ```
 
 The interactive terminal UI opens on the Controls page. Its borderless table
@@ -71,14 +78,12 @@ More: [TUI Guide](tui.md)
 
 ## 4. Open the Web UI
 
-Open a browser and go to:
-
-```
-http://172.29.203.1/
-```
-
-On most systems the board's captive portal detection will prompt the browser
-to open automatically. If not, navigate manually.
+The host NCM address is `.2` of the board's private `/30`; the board is `.1`.
+Read the host address with `ip -brief addr show` (Linux) and open the board at
+`http://<host-address-minus-1>/`, or read the URL from the CDC shell `ip`
+command. For example, a host `10.20.30.2/30` uses `http://10.20.30.1/`. On most systems
+the board's captive-portal detection will prompt the browser to open
+automatically. If not, navigate to the URL printed by `ip` manually.
 
 The dashboard shows power controls, ADC readings, switch routes, and GPIO.
 Try it: click the `5v_out` toggle in the Power Controls card, then watch the
@@ -86,7 +91,7 @@ ADC card update with the current reading. Switch to the **Terminal** workspace
 to find the logic analyzer and the auto-connected xterm.js J4 console. The
 embedded terminal uses the MCU `serial.j4` WebSocket; it does not open a host
 serial device or display a browser chooser. Raw clients can alternatively use
-`nc 172.29.203.1 5555`.
+`nc <board-ip> 5555`.
 
 More: [Web UI Guide](webui.md)
 
@@ -94,23 +99,23 @@ More: [Web UI Guide](webui.md)
 
 ```sh
 # Board status
-radxa-linkr-debuggerctl status
+radxa-linkr-debuggerctl --url "$BOARD_URL" status
 # → shows power states, switch routes, GPIO values, uptime
 
 # Power on the target
-radxa-linkr-debuggerctl power set 5v_out on
+radxa-linkr-debuggerctl --url "$BOARD_URL" power set 5v_out on
 # → "5v_out: on"
 
 # Read current draw
-radxa-linkr-debuggerctl adc read
+radxa-linkr-debuggerctl --url "$BOARD_URL" adc read
 # → "5v_out=0.123000A  12v_out=0.000000A  20v_out=0.000000A"
 
 # Route SD card to host for reading
-radxa-linkr-debuggerctl switch route sd usb-reader
+radxa-linkr-debuggerctl --url "$BOARD_URL" switch route sd usb-reader
 # → SD card now appears as USB storage on your PC
 
 # Drive a GPIO high
-radxa-linkr-debuggerctl gpio set GP13 1
+radxa-linkr-debuggerctl --url "$BOARD_URL" gpio set GP13 1
 # → "GP13: 1 (output)"
 ```
 

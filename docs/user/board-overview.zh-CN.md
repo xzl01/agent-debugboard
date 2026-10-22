@@ -29,7 +29,7 @@ Radxa Linkr Debugger 是一块 USB 控制的硬件桥接板，用于自动化 br
 ### Host USB
 
 单根 USB-C 连接到 J15 所接 PC。板子枚举为复合设备：
-- **USB NCM** — 网络接口，控制面地址 `http://172.29.203.1`
+- **USB NCM** — 网络接口；控制面地址为 `ip` 命令输出的板卡 URL
 - **USB CDC ACM** — console 串口 fallback，用于 Zephyr shell 和 BOOTSEL 恢复
 - **USB CDC ACM（J4）** — MCU J4 serial runtime 的一个 sink/source；最终 x1.2
   HIL 中枚举为 ACM4，但主机 tty 编号不稳定
@@ -45,7 +45,7 @@ J4 由 RP2354A runtime 拥有，绝不经过 CH347。
 
 ### 电源输出
 
-固件公布五路可控电源输出：
+固件公布六路可控电源输出：
 
 | 输出 | 电压 | 典型用途 |
 |------|------|---------|
@@ -54,16 +54,21 @@ J4 由 RP2354A runtime 拥有，绝不经过 CH347。
 | `20v_out` | 20V | USB-PD 级目标 |
 | `vdd_5v` | 5V | USB hub 的内部辅助 5 V 父轨 |
 | `5v_usb_hub` | 5V | USB hub 的开关子轨 |
+| `5v_otg` | 5V | J3 双向 VBUS 开关，`vdd_5v` 子轨 |
 
 `vdd_5v` 是 USB hub 的内部辅助 5 V 父轨。`5v_usb_hub` 是 GPIO24 上的开关子轨，
 启动时关闭。打开 hub 子轨时按需先打开 `vdd_5v`；关闭 hub 子轨不改变父轨；关闭
-`vdd_5v` 会先关闭 hub 子轨；仅打开 `vdd_5v` 不会打开 hub 子轨。x1.2 没有 USB
-route switch，也没有 `/switch/usb` 端点。
+`vdd_5v` 会先关闭 hub 子轨；仅打开 `vdd_5v` 不会打开 hub 子轨。`5v_otg` 是
+GPIO23/Q10 控制的外部 J3 VBUS，也是 `vdd_5v` 子轨；外部 VBUS 可经 Q10 体二极管
+回灌父轨。x1.2 没有 USB route switch，也没有 `/switch/usb` 端点。
 
 四颗 INA226 监测 `5v_out`、`12v_out`、`20v_out` 和 `vdd_5v`，可通过
-`adc read` 读取。`5v_usb_hub` 没有 INA226，也没有 ADC descriptor，因此
-`vdd_5v` 读数是包含 hub 支路的父轨总量。ADC0 到 ADC3 是四路独立的纯监测 pad
-电压输入，不是电源轨电流传感器；ADC3 为 GP29，在 safe GPIO 目录中仅允许输入。
+`adc read` 读取。`5v_usb_hub` 与 `5v_otg` 没有 INA226，也没有 ADC descriptor，
+因此 `vdd_5v` 读数是包含 hub 支路的父轨总量；released 的 `5v_otg` 不是测得 0 V。ADC0 是 PD 输入源侧 DC20V 通道
+（`role="pd_input"`，由 Device Tree 分压还原）；`raw`/`mv` 仍是 pad 诊断值。
+ADC1-3 是 native pad 电压输入（`role="native"`），不是电源轨电流传感器；
+ADC3 为 GP29，在 safe GPIO 目录中仅允许输入。主机不做 `115/15` 换算。ADC0
+未校准精度约为 2%。
 
 ### TF/SD 卡槽
 

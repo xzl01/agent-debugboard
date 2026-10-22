@@ -6,11 +6,10 @@ the firmware remember selected power, switch, and safe-GPIO values across
 boots, restore them on startup, and save plus apply them in one operation
 through the HTTP, WebSocket, CDC ACM, and embedded Web surfaces.
 
-The default device URL is `http://172.29.203.1`. Each board can persist its own
-USB-NCM subnet octet, so a second board can use a different
-`http://172.29.<subnet>.1` address on the same host; see
-[`network.md`](network.md) for the address plan and the HTTP, shell, and CLI
-surfaces. The feature is owned by the firmware: the host CLI/TUI, Web UI, and
+Each board derives and persists a unique USB-NCM MAC and private `/30` on first
+boot. The board is `.1` of the host NCM `/30`; the CDC shell `ip` command also
+prints the URL. See [`network.md`](network.md) for the identity model and the
+HTTP, shell, and CLI surfaces. The feature is owned by the firmware: the host CLI/TUI, Web UI, and
 CDC ACM shell only render and forward state. They do not derive confirmation
 policy, hold profiles, or keep their own copy of saved values.
 
@@ -105,11 +104,11 @@ bytes; byte 4 version 1 is the only accepted version and byte 7 zero is the
 only accepted restore padding. The header also carries the magic `LRCF`,
 the entry size, the entry count, and the total encoded size. Each entry is
 four bytes: domain, item id, value, and a padding byte. The maximum encoded
-size is 84 bytes for the 12-byte header and 18 entries of 4 bytes each.
-The catalog is exactly 18 items: 5 power outputs, 2 switches, and 11 safe GPIOs
+size is 88 bytes for the 12-byte header and 19 entries of 4 bytes each.
+The catalog is exactly 19 items: 6 power outputs, 2 switches, and 11 safe GPIOs
 (`gpio/GP5`, `gpio/GP6`, `gpio/GP7` through `gpio/GP9`,
-`gpio/GP12` through `gpio/GP16`, plus `gpio/GP29`). The fifth power output is
-`power/5v_usb_hub`, the `vdd_5v` child branch. `GP20` is PIO I2C SCL and
+`gpio/GP12` through `gpio/GP16`, plus `gpio/GP29`). The `5v_usb_hub` and
+`5v_otg` items are `vdd_5v` child branches. `GP20` is PIO I2C SCL and
 `GP21` is SDA on the J8 external connector; neither is part of the GPIO catalog.
 There is exactly one wire definition, so no version dispatch exists anywhere in
 the service.
@@ -148,20 +147,22 @@ firmware does not auto-format, auto-erase, or auto-delete the snapshot.
 
 ## Firmware-Owned Catalog And Risk
 
-The catalog is owned by the firmware. The 18 items are exactly:
+The catalog is owned by the firmware. The 19 items are exactly:
 
 - Power: `power/12v_out`, `power/5v_out`, `power/vdd_5v`, `power/20v_out`,
-  `power/5v_usb_hub`.
+  `power/5v_usb_hub`, `power/5v_otg`.
 - Switch: `switch/sd` (target | usb-reader), `switch/tf_wp` (writable |
   protected). There is no `switch/usb` item.
 - GPIO: `gpio/GP5`, `gpio/GP6`, `gpio/GP7` through `gpio/GP9`, `gpio/GP12`
   through `gpio/GP16`, plus input-only `gpio/GP29`. `GP20` (SCL) / `GP21` (SDA)
   form the external J8 I2C bus, not GPIO items.
 
-`power/5v_usb_hub` is a normal saved power item with its own `on`/`off` value.
-It is not a measurement item and has no ADC descriptor. Its catalog position
-does not make it independent of `vdd_5v`: the setter and boot replay enforce the
-parent-child behavior described below.
+`power/5v_usb_hub` and `power/5v_otg` are normal saved power items with their
+own `on`/`off` values. Neither is a measurement item or has an ADC descriptor.
+Their catalog position does not make them independent of `vdd_5v`: the setter
+and boot replay enforce the parent-child behavior described below. An explicit
+`vdd_5v=off` also clears `5v_otg`'s desired state, while ordinary child rails
+retain theirs.
 
 Old `switch/usb`, `gpio/GP17`, and `gpio/GP18` IDs are not aliases. New Save
 requests using them return `unknown_item`; a stored v1 record containing any of
@@ -247,8 +248,9 @@ the CLI/TUI, the Web UI, or the CDC shell.
 The HTTP API uses the same JSON envelope as the rest of the board:
 `schema`, `ok`, `command`, and either command-specific fields or
 `error.code` plus `error.message`. The command is always `config`. Every
-response includes `Cache-Control: no-store`. The default device URL is
-`http://172.29.203.1`.
+response includes `Cache-Control: no-store`. Use the board `.1` URL printed by
+the CDC shell `ip` as the base address; the curl examples below use
+`http://<board-ip>` as a placeholder.
 
 The three endpoints are:
 
@@ -312,27 +314,27 @@ an input-mode GP5 value is safe and does not require confirmation.
 
 <!-- persistent-config-example: curl-config-get -->
 ```sh
-curl -fsS http://172.29.203.1/api/v1/config
+curl -fsS http://<board-ip>/api/v1/config
 ```
 
 <!-- persistent-config-example: curl-config-save-safe -->
 ```sh
-curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["switch/sd"],"confirm":false}' http://172.29.203.1/api/v1/config
+curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["switch/sd"],"confirm":false}' http://<board-ip>/api/v1/config
 ```
 
 <!-- persistent-config-example: curl-config-save-dangerous -->
 ```sh
-curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["gpio/GP5"],"confirm":true}' http://172.29.203.1/api/v1/config
+curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["gpio/GP5"],"confirm":true}' http://<board-ip>/api/v1/config
 ```
 
 <!-- persistent-config-example: curl-config-save-dangerous-unconfirmed -->
 ```sh
-curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["gpio/GP5"],"confirm":false}' http://172.29.203.1/api/v1/config
+curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["gpio/GP5"],"confirm":false}' http://<board-ip>/api/v1/config
 ```
 
 <!-- persistent-config-example: curl-config-clear -->
 ```sh
-curl -fsS -X DELETE http://172.29.203.1/api/v1/config
+curl -fsS -X DELETE http://<board-ip>/api/v1/config
 ```
 
 ## Status And WebSocket Summary
@@ -381,7 +383,7 @@ verbatim, and lets the firmware validate the snapshot. The `--json` flag
 passes the raw firmware JSON through unchanged; without `--json`, the
 renderer prints a human-readable summary based on the envelope.
 
-The default base URL is `http://172.29.203.1`. The CLI sends
+The base URL is the board `.1` address of the host NCM `/30` (passed with `--url`). The CLI sends
 `Content-Type: application/json` and `Accept: application/json`. Before
 rendering it strictly binds the expected `action`, schema, command, and the
 action-specific required fields. It also rejects a response when its HTTP
@@ -671,8 +673,8 @@ and validated:
 - v1 dangerous Save plus two consecutive cold reboots: every saved entry
   is replayed on each boot, and the saved snapshot is preserved across
   recovery paths.
-- The 18-entry catalog serializes at most 84 bytes; `power/5v_usb_hub` is a
-  normal item and omitting it does not enable the hub.
+- For that 2026-10-21 image, the 18-entry catalog serialized at most 84 bytes;
+  `power/5v_usb_hub` was a normal item and omitting it did not enable the hub.
 - Replaying a child-only `power/5v_usb_hub=on` snapshot brings up `vdd_5v`
   first, so a post-reboot GET reports both rails on.
 
@@ -742,7 +744,7 @@ Host CLI and TUI implementation:
   `--confirm` handling.
 - [cmd-ng/src/client.rs](../../cmd-ng/src/client.rs):
   HTTP client for `GET`, `PUT /api/v1/config`,
-  `DELETE /api/v1/config`, default base URL, and envelope validation.
+  `DELETE /api/v1/config`, base-URL override, and envelope validation.
 - [cmd-ng/src/tui/config_io.rs](../../cmd-ng/src/tui/config_io.rs): TUI mutation
   plus authoritative refresh.
 

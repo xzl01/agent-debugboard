@@ -88,8 +88,8 @@ equivalent fallback is:
 ```sh
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"state":"on"}' \
-  http://172.29.203.1/api/v1/power/5v_out
-curl -fsS http://172.29.203.1/api/v1/power
+  http://<board-ip>/api/v1/power/5v_out
+curl -fsS http://<board-ip>/api/v1/power
 ```
 
 Start OpenOCD with the CH347F interface from your OpenOCD installation and the

@@ -23,7 +23,7 @@ radxa-linkr-debuggerctl power list
 For a hard reset with serial monitoring:
 ```sh
 # Start recording serial output
-# (open the embedded Web Terminal, or run: nc 172.29.203.1 5555)
+# (open the embedded Web Terminal, or run: nc <board-ip> 5555)
 
 radxa-linkr-debuggerctl power set 5v_out off
 sleep 2
@@ -72,7 +72,7 @@ The NDJSON file contains timestamped current readings for the full boot cycle.
 
 Via the Web UI:
 
-1. Open http://172.29.203.1/ and go to the **Terminal** workspace.
+1. Open http://<board-ip>/ and go to the **Terminal** workspace.
 2. Select pins (e.g. GP13, GP15) and set the sample rate.
 3. Choose a trigger mode (none, rising, falling, either).
 4. Click **Arm**, then trigger the event you want to capture.
@@ -82,11 +82,11 @@ Via the API:
 
 ```sh
 # Arm capture on GP13, 1 MHz, 256 samples, rising edge trigger
-curl -X POST http://172.29.203.1/api/v1/logic-analyzer \
+curl -X POST http://<board-ip>/api/v1/logic-analyzer \
   -d '{"selected_pins":[13],"sample_rate_hz":1000000,"post_samples":256,"trigger":"rising","trigger_pin":13}'
 
 # Wait for capture, then retrieve
-curl http://172.29.203.1/api/v1/logic-analyzer/capture
+curl http://<board-ip>/api/v1/logic-analyzer/capture
 ```
 
 ## Update firmware via OTA
@@ -131,7 +131,7 @@ dashboard power controls. Or use the firmware raw-TCP path in parallel:
 
 ```sh
 # Terminal 1: binary J4 console (replace with the board's current NCM address)
-nc 172.29.203.1 5555
+nc <board-ip> 5555
 
 # Terminal 2: power control
 radxa-linkr-debuggerctl power set 5v_out off

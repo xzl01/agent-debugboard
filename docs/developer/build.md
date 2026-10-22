@@ -9,7 +9,8 @@ reference for the Radxa Linkr Debugger firmware.
 
 The repo provides a `shell.nix` with the Zephyr SDK, cmake, ninja, dtc, gperf,
 pkg-config, udev, Python with Zephyr packages, Node.js 22, Cargo, rustc, clippy,
-rustfmt, clang, lld, wasm-bindgen-cli, the pinned CH347-enabled OpenOCD
+rustfmt, clang, lld, wasm-bindgen-cli, Zopfli 1.0.3, the pinned CH347-enabled
+OpenOCD
 (`openocd-latest`), picotool, and udisks2. The Zephyr SDK install path is
 exported by the shell hook, so interactive builds pick up `gdb`, `objdump`,
 and the rest of the SDK toolchain automatically.
@@ -64,6 +65,26 @@ nix-shell --run "cd web && npm run build"
 
 The west workspace (`west init` / `west update`) is a one-time prerequisite;
 `make workspace` refreshes it to the pinned manifest.
+
+## Embedded Web Compression And Resource Gates
+
+The firmware Web bundle is embedded as **standard gzip** produced by
+**Zopfli 1.0.3**. CMake locates a real `zopfli` executable and runs
+`apps/radxa_linkr_debugger/scripts/zopfli_compress.py` with `--i15`; the script
+verifies that the stream is gzip with no optional headers and `mtime=0`,
+decompresses it back to the exact source bytes, and checks reproducibility.
+`generate_inc_file_for_target` only hex-encodes the already verified gzip
+bytes; it must not compress again with a different codec. Do not add Brotli or
+another content encoding to this embedded path.
+
+The canonical link keeps hard resource gates: at least **8 KiB Flash** and
+**32 KiB RAM** must remain free. The ROM/RAM linker assertions enforce
+`_flash_used <= 0xCCFD8` (8192 bytes free of 847832) and
+`_image_ram_size <= 0x7A000` (32768 bytes free of 532480). A build that
+exceeds either gate fails instead of silently consuming the reserve.
+`zopfli` must be available in the build shell and CI; a clean firmware build
+requires Node.js 22, npm, the Rust `wasm32-unknown-unknown` target,
+`wasm-bindgen-cli 0.2.121`, and Zopfli 1.0.3.
 
 ## Nix Package Boundary
 

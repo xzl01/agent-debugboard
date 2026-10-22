@@ -12,11 +12,13 @@ Schematics are under `docs/hardware/`.
   **2 MB internal flash**.
 - The build keeps the `rpi_pico2/rp2350a/m33/mcuboot` board and the 4 MB
   sysbuild partition layout. All used regions fit below 2 MB: MCUboot at
-  `0x0..0x10000`, slot0 `0x10000..0xE0000`, slot1 `0xE0000..0x1B0000`, and
-  NVS storage starting at `0x1B0000` (8 sectors, 32 KB). The 4 MB layout only
-  over-declares the storage partition; it does not move used data past 2 MB.
-  Moving to `partitions_2M_sysbuild.dtsi` would require a repo-local MCUboot
-  board because the upstream board DTS hardcodes the 4 MB include.
+  `0x0..0x10000`, slot0 `0x10000..0xE0000`, slot1 `0xE0000..0x1B0000`,
+  and one repo-owned Settings NVS partition at `0x1B0000..0x1D0000`
+  (32 sectors, 128 KiB) for the config snapshot and task-v2 keys. The 4 MB
+  layout only over-declares the storage partition; it does
+  not move used data past 2 MB. Moving to `partitions_2M_sysbuild.dtsi` would
+  require a repo-local MCUboot board because the upstream board DTS hardcodes
+  the 4 MB include.
 
 ## Power Rails
 
@@ -29,14 +31,21 @@ All enables are active-high through a P-FET or load-switch stage.
 | `12v_out` | GPIO2 | `GP02_12V_EN` (U5) | independent target rail; `regulator-boot-off` |
 | `20v_out` | GPIO3 | `GP03_20V_EN` (U10) | independent target rail; `regulator-boot-off` |
 | `5v_usb_hub` | GPIO24 | `GPIO24_USB_CRL` (U38) | child of `vdd_5v`; `regulator-boot-off` |
+| `5v_otg` | GPIO23 | `OTG_USB_EN` (Q10) | child of `vdd_5v`; bidirectional J3 VBUS; `regulator-boot-off` |
 
-`5v_usb_hub` is the switched USB-hub 5 V branch. Firmware now exposes it as a
-fifth controllable power output alongside the three target rails and
-`vdd_5v`. Its setter is parent-aware: enabling it enables `vdd_5v` first when
+`5v_usb_hub` is the switched USB-hub 5 V branch. Firmware exposes it as a
+controllable power output alongside the three target rails and `vdd_5v`. Its setter is parent-aware: enabling it enables `vdd_5v` first when
 needed; disabling it leaves `vdd_5v` unchanged; disabling `vdd_5v` disables
 `5v_usb_hub` first; enabling `vdd_5v` alone does not enable the hub branch.
 The firmware rail model owns that parent relationship; Device Tree owns each
 regulator's boot-off state.
+
+`5v_otg` is the Q10 AO3401A switch for the externally accessible J3
+`5V_OTG` VBUS. It is sourced by `vdd_5v`; enabling it enables the parent first,
+and an explicit parent off clears the port's desired state. EN low only releases
+the switch, so external VBUS can backfeed `vdd_5v` through Q10's body diode even
+while the port is released. There is no INA226 or ADC channel for `5v_otg`;
+firmware must not report a measured 0 V when it is merely released.
 
 The x1.1 `reg_vio` / `reg_1v8_vio` regulators and the VIN 1.8 V/3.3 V route do
 not exist on x1.2; board 3.3 V is generated from USB5V by U14. The firmware
@@ -150,10 +159,12 @@ Device Tree-selected input pin.
 - CH224A VHV (PD VBUS) and INA226 VS (VCC_3V3) are separate power domains.
   ADC0 observes the `DC20V` source after Q28 and before U10 through R46/R47
   (100 kΩ upper, 15 kΩ lower; 115 kΩ full path). This source-side divider is
-  not a direct VHV measurement. A private standard `voltage-divider` sensor
-  owns these Device Tree facts and is used only under the CH224A driver lock;
-  the RP2350 ADC driver's `adc_context` serializes it with other ADC channels.
-  It is not added as a public telemetry descriptor.
+  not a direct VHV measurement. The Device Tree `voltage-divider` node owns
+  these facts, and the public `adc0` descriptor reports the canonical
+  source-side value reconstructed by firmware in 64-bit arithmetic. Its `raw`
+  and `mv` remain pad diagnostics. The RP2350 ADC driver's `adc_context`
+  serializes ADC0 with other ADC channels. No host applies `115/15`.
+  ADC0's uncalibrated accuracy is approximately 2%.
 - Every real CH224A I2C read or write is preceded by a fresh source-voltage
   sample, including each probe address/attempt, each I2C retry, every one of the
   48 capability bytes, and both PPS writes. From unknown/absent state, three
@@ -240,9 +251,9 @@ Device Tree-selected input pin.
   samples GP20 only as a read-only tap; it must not reconfigure those pins as
   SIO/PIO2. GP21 is SDA. INA226 telemetry while WIDE11 is running is still a
   HIL item.
-- The DHCP captive-portal URI remains the compile-time
-  `http://172.29.203.1/...`; for a non-default subnet open
-  `http://172.29.<subnet>.1/` directly.
+- The DHCP captive-portal URI is generated at runtime from the current DHCP
+  server address and `/generate_204`; open the board `.1` address of the host
+  NCM `/30` (or the URL printed by the CDC shell `ip` command).
 
 ## J4 Target UART
 
@@ -367,8 +378,8 @@ that never calls the ROM USB boot entry. An explicit ROM BOOTSEL request
 (`bootloader` / `POST /api/v1/bootloader`) calls `reset_usb_boot()` and is not
 an alias for reboot. A rail not restored by a saved v1 configuration snapshot
 returns to its inactive Device Tree boot state on every cold restart;
-`5v_usb_hub` also boots off and remains off unless its own snapshot entry or an
-explicit setter enables it. `vdd_5v` is the parent output, not a route side
+`5v_usb_hub` and `5v_otg` also boot off and remain off unless their own
+snapshot entry or an explicit setter enables them. `vdd_5v` is the parent output, not a route side
 effect, and enabling it does not implicitly enable the hub branch.
 
 ## Validation Status
@@ -390,4 +401,6 @@ CDC/WS/raw-TCP fan-out, the 4800..115200 product ceiling and high-rate
 diagnostics, CDC line-coding staging/promotion, the fifth hub power output, the
 J4 automatic-responder matrix, and post-capture restoration evidence are in
 [the 2026-10-21 x1.2 report](../testing/results/2026-10-21-x1.2-adc-pinout-j4-hil.md);
-its stated limitations remain authoritative.
+its stated limitations remain authoritative. The Pass 1 task-v2 partition and
+ADC0 source-side canonical contract are implemented; their final HIL is pending
+in the [2026-10-22 Pass 1 draft](../testing/results/2026-10-22-pass1-task-v2-adc0.md).

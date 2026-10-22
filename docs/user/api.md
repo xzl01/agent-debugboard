@@ -2,7 +2,11 @@
 
 # HTTP API Reference
 
-Base URL: `http://172.29.203.1` (USB NCM interface, port 80)
+Base URL: the board `.1` address of the host NCM `/30` (the CDC shell `ip` command prints it); examples use `$BOARD_URL` (USB NCM interface, port 80). The board derives and persists a unique private `/30` on first boot; see [Network Identity](../reference/network.md).
+
+```sh
+export BOARD_URL=http://<board-ip>
+```
 
 All JSON responses include `"schema": "radxa-linkr-debugger.v1"` and `Cache-Control: no-store`.
 
@@ -29,10 +33,35 @@ Failure (`error` is present only when `ok` is `false`):
 }
 ```
 
+## Network Identity
+
+### `GET /api/v1/net`
+
+Returns the persisted MAC address, origin (`derived` or `manual`), private `/30`
+network, board address, DHCP base address, and board URL.
+
+```sh
+curl -fsS "$BOARD_URL/api/v1/net"
+```
+
+### `PUT /api/v1/net`
+
+Updates `mac`, `network`, or both. Omitted fields keep their current value.
+`mac` must be a locally administered unicast address; `network` must be a
+private `/30` base, optionally with a `/30` suffix. Manual values are persisted
+in the same atomic identity blob and take precedence over derivation.
+
+```sh
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  -d '{"network":"10.20.30.0"}' "$BOARD_URL/api/v1/net"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  -d '{"mac":"02:11:22:33:44:55"}' "$BOARD_URL/api/v1/net"
+```
+
 ## Status
 
 ```sh
-curl http://172.29.203.1/api/v1/status
+curl $BOARD_URL/api/v1/status
 ```
 
 Returns everything in one shot: `project`, `build` (including `profile` and `image_version`), `mcu`, `usb`, `power_inputs`, `power_outputs`, `switches`, `adc_channels`, `watchdog`, `board_monitoring`, `gpio_layout_groups`, and `gpios`.
@@ -42,10 +71,10 @@ The encoded status body must remain strictly smaller than the dedicated
 status snapshot, not permission for clients to assume a fixed response length.
 
 `power_outputs` is firmware-advertised and dynamic. On x1.2 it contains the
-five controllable entries `12v_out`, `5v_out`, `20v_out`, `vdd_5v`, and
-`5v_usb_hub`. `5v_usb_hub` is the `vdd_5v` child branch, has no INA226/ADC
-descriptor, and does not add a status field outside the existing power-output
-shape.
+six controllable entries `12v_out`, `5v_out`, `20v_out`, `vdd_5v`, `5v_usb_hub`,
+and `5v_otg`. `5v_usb_hub` and `5v_otg` are `vdd_5v` child branches, have no
+INA226/ADC descriptor, and do not add a status field outside the existing
+power-output shape.
 
 ## J4 Target Serial
 
@@ -75,7 +104,7 @@ is not the raw physical DTR sample. The response does not expose an internal CDC
 phase or block-reason field.
 
 ```sh
-curl -fsS http://172.29.203.1/api/v1/serial/j4
+curl -fsS $BOARD_URL/api/v1/serial/j4
 ```
 
 ### `PUT /api/v1/serial/j4/config`
@@ -86,7 +115,7 @@ Admits an asynchronous compare-and-swap line-coding update. Read the current
 ```sh
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"baud":115200,"data_bits":8,"parity":"none","stop_bits":1,"flow_control":"none","expected_generation":1}' \
-  http://172.29.203.1/api/v1/serial/j4/config
+  $BOARD_URL/api/v1/serial/j4/config
 ```
 
 Success is HTTP 202 with `accepted:true` and `request_id`. A stale generation
@@ -129,7 +158,7 @@ successful LOW/reset.
   replies, not read-only. ANSI sequences are not filtered.
 - Raw TCP listens on `0.0.0.0:5555`, with at most two clients. It is a binary
   stream with no banner, echo, CR/LF conversion, Telnet/IAC negotiation, SSH,
-  or noVNC semantics. For example: `nc 172.29.203.1 5555`.
+  or noVNC semantics. For example: `nc <board-ip> 5555`.
 - USB CDC ACM4 is the direct USB fallback for the same logical J4 stream. USB
   tty numbering is host-dependent; identify the interface rather than assuming
   a `/dev/ttyACM*` number.
@@ -141,12 +170,18 @@ UI is served by the board on port 80.
 ## Power
 
 ```sh
-curl http://172.29.203.1/api/v1/power                    # list all
-curl http://172.29.203.1/api/v1/power/12v_out             # read one
-curl -X PUT http://172.29.203.1/api/v1/power/12v_out -d '{"state":"on"}'  # set
+curl $BOARD_URL/api/v1/power                    # list all
+curl $BOARD_URL/api/v1/power/12v_out             # read one
+curl -X PUT $BOARD_URL/api/v1/power/12v_out -d '{"state":"on"}'  # set
 ```
 
-`{name}` is `12v_out`, `5v_out`, `20v_out`, `vdd_5v`, or `5v_usb_hub`. Body: `{"state": "on"}` or `{"state": "off"}`.
+`{name}` is `12v_out`, `5v_out`, `20v_out`, `vdd_5v`, `5v_usb_hub`, or `5v_otg`. Body: `{"state": "on"}` or `{"state": "off"}`.
+
+`5v_otg` is the bidirectional J3 VBUS switch (`OTG_USB_EN`, GPIO23) and a child
+of `vdd_5v`. Its current `state`/`value` reflect the requested/desired enable;
+actual conduction requires `vdd_5v`, and the port can be externally backfed
+through Q10. The current API does not yet expose `effective` or `backfeed`;
+do not treat a requested-on port as a measured 5 V output.
 
 `5v_usb_hub` is the switched child of `vdd_5v` on GPIO24 and boots off. Its
 setter is parent-aware: enabling the hub enables `vdd_5v` first when needed;
@@ -158,31 +193,36 @@ INA226/ADC channel.
 ## ADC (Current And Voltage Monitor)
 
 ```sh
-curl http://172.29.203.1/api/v1/adc/read                    # all channels
-curl http://172.29.203.1/api/v1/adc/read?channel=5v_out      # single channel
+curl $BOARD_URL/api/v1/adc/read                    # all channels
+curl $BOARD_URL/api/v1/adc/read?channel=5v_out      # single channel
 ```
 
 The endpoint returns eight readings in fixed order: the four INA226 current
-channels `5v_out`, `12v_out`, `20v_out`, and `vdd_5v`, followed by the four
-monitor-only pad-voltage channels `adc0`, `adc1`, `adc2`, and `adc3`. The fifth
-power output `5v_usb_hub` has no INA226 and no ADC descriptor; `vdd_5v` is the
-parent total including the hub branch, so clients must not synthesize a hub
-current reading. Each INA226
+channels `5v_out`, `12v_out`, `20v_out`, and `vdd_5v`, followed by
+`adc0`, `adc1`, `adc2`, and `adc3`. The other power outputs `5v_usb_hub` and
+`5v_otg` have no INA226 and no ADC descriptor; `vdd_5v` is the parent total
+including the hub branch, so clients must not synthesize a hub or OTG current
+reading. Each INA226
 reading carries `name`, `signal`, `power_enabled`, `raw`, `mv`, `current_ua`,
-`voltage_valid`, `voltage_uv`, `sensor_value`, and `unit`. Each ADC reading
-carries `name`, `signal`, `raw`, `mv`, `sensor_channel`, `unit`, and
-`sensor_value`; `adc0` also carries the firmware note
-`PD input divider; ADC pad voltage`. Its scalar is the direct ADC0 pad voltage,
-not a divider-reconstructed source voltage, so clients must not multiply it by
-`115/15`.
+`voltage_valid`, `voltage_uv`, `sensor_value`, and `unit`.
+
+ADC readings carry `name`, `signal`, `role`, `raw`, `mv`, `sensor_channel`,
+`unit`, and `sensor_value`. `adc0` has `role:"pd_input"` and a canonical
+`sensor_value` reconstructed by Device Tree from the R46/R47 divider as
+source-side DC20V (`115/15` scaling, done in firmware with 64-bit arithmetic).
+Its `raw` and `mv` remain pad-side diagnostics. `adc1` through `adc3` have
+`role:"native"` and their canonical value is the pad voltage. Clients must not
+apply `115/15` themselves or use `raw`/`mv` as a rescaled source measurement.
+ADC0 accuracy is uncalibrated and approximately 2%; do not claim better
+precision without per-board calibration.
 
 ## Switch Routes
 
 ```sh
-curl http://172.29.203.1/api/v1/switch                       # list all
-curl http://172.29.203.1/api/v1/switch/sd                    # read one
-curl -X PUT http://172.29.203.1/api/v1/switch/sd -d '{"route":"usb-reader"}'
-curl -X PUT http://172.29.203.1/api/v1/switch/tf_wp -d '{"route":"protected"}'
+curl $BOARD_URL/api/v1/switch                       # list all
+curl $BOARD_URL/api/v1/switch/sd                    # read one
+curl -X PUT $BOARD_URL/api/v1/switch/sd -d '{"route":"usb-reader"}'
+curl -X PUT $BOARD_URL/api/v1/switch/tf_wp -d '{"route":"protected"}'
 ```
 
 `{name}` is `sd` or `tf_wp`. Valid routes: `sd` → `target`/`usb-reader`;
@@ -195,10 +235,10 @@ from switch routing, and `5v_usb_hub` is its power child.
 `{identifier}` accepts `GPxx`, raw pin number, or board note (e.g. `CON_MAS`).
 
 ```sh
-curl http://172.29.203.1/api/v1/gpio                         # list all
-curl http://172.29.203.1/api/v1/gpio/GP13                    # read one
-curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"output","value":1}'
-curl -X PUT http://172.29.203.1/api/v1/gpio/GP13 -d '{"direction":"input"}'
+curl $BOARD_URL/api/v1/gpio                         # list all
+curl $BOARD_URL/api/v1/gpio/GP13                    # read one
+curl -X PUT $BOARD_URL/api/v1/gpio/GP13 -d '{"direction":"output","value":1}'
+curl -X PUT $BOARD_URL/api/v1/gpio/GP13 -d '{"direction":"input"}'
 ```
 
 `GET /api/v1/status`, the `GET /api/v1/gpio` list response, and WebSocket
@@ -239,10 +279,10 @@ physical BOOTSEL hold across the reset, the next boot returns to normal firmware
 instead of the ROM USB boot path.
 
 ```sh
-curl -X POST http://172.29.203.1/api/v1/reboot
+curl -X POST $BOARD_URL/api/v1/reboot
 ```
 
-Each of `5v_out`, `12v_out`, `20v_out`, `vdd_5v`, and `5v_usb_hub` returns to
+Each of `5v_out`, `12v_out`, `20v_out`, `vdd_5v`, `5v_usb_hub`, and `5v_otg` returns to
 its inactive boot state unless a saved v1 configuration snapshot restores that
 rail. `vdd_5v` is the parent and `5v_usb_hub` is its child, which also boots off.
 Re-apply rail and PD setup after the board returns.
@@ -260,215 +300,223 @@ Enter ROM BOOTSEL mode. This is not a normal restart and is not an alias for
 `POST /api/v1/reboot`. The MCU resets 250 ms after the response.
 
 ```sh
-curl -X POST http://172.29.203.1/api/v1/bootloader
+curl -X POST $BOARD_URL/api/v1/bootloader
 ```
 
 Flash only the combined `radxa-linkr-debugger-rp2350.uf2` (MCUboot plus
 application). Never use the application-only `zephyr.uf2` for ROM BOOTSEL; it
 does not include MCUboot and can leave the board unable to start normally.
 
-## Tasks (firmware catalog and saved request sequences)
+## Tasks (firmware catalog and task-v2 storage)
 
-The firmware API stores generic task blobs in flash; it does not execute,
-replay, or auto-seed tasks. The firmware also owns the immutable built-in task
-catalog at `GET /api/v1/tasks/catalog`; the CLI and Web UI consume that
-catalog strictly and dispatch every selected task through the existing
-public power, GPIO, and switch APIs. Hosts hold no recovery recipes of their
-own. The current catalog exposes the six MASKROM/EDL entries; stored entries
-remain on a separate path and never appear in `GET /api/v1/tasks/catalog`.
+The firmware owns two separate task sources. The immutable built-in catalog at
+`GET /api/v1/tasks/catalog` contains the MASKROM/EDL recipes and is never
+stored in the four task slots. The task-v2 store holds up to four operator
+tasks as canonical `linkr-test.v1` source plus `linkr-task.v1` deployment IR.
+Firmware validates and stores tasks; it does not execute, replay, or seed them
+at boot. The CLI and Web UI fetch the IR and dispatch each request as an
+ordinary power, GPIO, or switch operation.
 
-### `GET /api/v1/tasks/catalog`
+### Built-in catalog
 
-Returns the firmware-owned immutable built-in catalog. Hosts validate the
-response envelope (`schema`, `ok`, `command: "task"`, `action: "catalog"`,
-`version: 1`) and reject unknown fields. Each catalog entry declares its id,
-display name, the list of `PUT` records to dispatch against the allowlisted
-`/api/v1/power`, `/api/v1/gpio`, and `/api/v1/switch` paths, and a
-mandatory cleanup sequence. Hosts dispatch catalog entries through the same
-generic task runner used for stored tasks.
+`GET /api/v1/tasks/catalog` returns the firmware-owned immutable catalog. The
+current catalog exposes six MASKROM/EDL entries, one per mode and
+`5v_out`/`12v_out`/`20v_out`. Catalog entries have no slot, store revision, or
+source file and do not consume task-v2 slots. A host must fail closed for a
+requested `builtin/...` ID when the catalog is unavailable; it must never fall
+back to a stored task with the same ID.
 
-```sh
-curl -fsS http://172.29.203.1/api/v1/tasks/catalog
-```
+### Task-v2 storage model
 
-### Frozen Limits
+- One Settings NVS partition: **128 KiB**, `0x1B0000..0x1D0000`, holding the
+  config snapshot and all task-v2 manifest/IR/source keys. It remains below the
+  2 MiB internal flash boundary. The size is deliberately bounded so the first
+  NVS format and later garbage collection stay inside the 5 s watchdog window.
+  Pre-release 320 KiB development layouts are not migrated; use a full-chip
+  erase/reflash when moving such a board to this layout.
+- Four task slots. Exact canonical source is at most **4000 bytes** per
+  board-backed task; full-set IR and one-task IR sections are also at most
+  **4000 bytes**. A mutation body is at most **12288 bytes**.
+- Task IDs are 1..63 UTF-8 bytes and cannot contain whitespace, control bytes,
+  DEL, or `#`. IDs are opaque identifiers; clients must not derive hardware
+  behavior from their text.
+- Each slot has two source banks and two full-set IR banks. The manifest holds
+  the active banks, `task_store_id` UUID, uint64 revision, catalog fingerprint,
+  full-IR digest, and per-slot source/IR digests.
+- A mutation writes inactive banks, reads them back, verifies the digests, then
+  commits the manifest. The manifest write is the only linearization point, so
+  a power loss leaves the previous manifest active. Revision never wraps.
+- `task_store_id` is created with the first manifest and is stable across
+  clear and normal reboot; only factory erase changes it.
+- The store is task-v2 only. It does not read or migrate the removed
+  `linkr/task/tasks` Settings blob. Legacy task blob writes and per-ID delete
+  routes are not part of this contract and are not aliased.
 
-| Limit | Value |
-|---|---|
-| Tasks per blob | 4 |
-| Requests per task | 32 |
-| Blob bytes | 4096 |
-| Task id bytes | 31 |
-| Task name bytes | 63 |
-| Request line bytes | 256 |
-| Path bytes | 96 |
-| Body bytes | 192 |
-| `wait_ms` range | 0 through 60000 |
-
-### Storage Layout
-
-Tasks are persisted in `Settings+NVS` under the key
-`linkr/task/tasks`, and the blob always starts with the literal
-`# linkr-task.v1`. Each task follows a `# task <id>` marker and one or more
-NDJSON request records. A typical record is:
-
-```json
-{"method":"PUT","path":"/api/v1/power/12v_out","body":"{\"state\":\"off\"}","wait_ms":1000}
-```
-
-A second record in the same task would appear on its own NDJSON line:
-
-```json
-{"method":"PUT","path":"/api/v1/gpio/CON_MAS","body":"{\"direction\":\"input\"}","wait_ms":0}
-```
-
-The full file looks like:
-
-```text
-# linkr-task.v1
-# task power-cycle
-{"method":"PUT","path":"/api/v1/gpio/GP13","body":"{\"direction\":\"input\"}","wait_ms":0}
-{"method":"PUT","path":"/api/v1/power/12v_out","body":"{\"state\":\"off\"}","wait_ms":1000}
-```
-
-Every record must use `method:"PUT"`, a JSON-string `body`, and a `path`
-under one of `/api/v1/power/`, `/api/v1/gpio/`, or `/api/v1/switch/`.
-`wait_ms` defaults to 0 when omitted and must be an integer from 0 through
-60000. The blob, the marker text, the path allowlist, and the bounds above
-are validated at parse time; an invalid record returns `invalid_blob`. Bytes
-under `0x20` other than tab/LF/CR are rejected before storage so the GET
-JSON encoder always reproduces the stored blob exactly.
-
-Task IDs are nonempty UTF-8 strings of at most 31 bytes. Space, tab, CR,
-LF, `#`, the reserved ID `catalog`, and the exact IDs `.` and `..` are
-invalid; `PUT` rejects a blob containing them with HTTP 400 `invalid_blob`.
-Other IDs containing dots, such as `.hidden` or `...`, remain valid.
-
-Old development data (anything written under the previous task-store marker
-or settings key) is intentionally invalidated by the new marker
-`# linkr-task.v1` and the new key `linkr/task/tasks`. There is no migration
-path and no read alias; a board that still holds old data simply shows the
-empty task contract after upgrade.
+Exact source bytes are authoritative. A board task with `source_state:
+"present"` can be reopened losslessly from the board. An IR-only task, an
+imported task whose IR changed, and a built-in have no lossless workflow
+source. The Web UI may additionally keep source larger than 4000 bytes in its
+local workflow library and deploy only the IR; that source is not on the board
+and is not available to a fresh browser.
 
 ### `GET /api/v1/tasks`
 
-Returns the task state and the exact stored blob. An empty board returns
-`tasks: []` and `blob: ""` with HTTP 200; the response is the same envelope
-that every other endpoint uses:
+Returns metadata only. It does not return the stored blob. The response has
+`schema`, `ok`, `command:"tasks"`, `action:"list"`, `task_store_id` as UUID
+text, `revision` as a decimal string, `catalog_fingerprint` as 64 lowercase
+hex characters, a `storage` object, `full_ir_bytes`, `full_ir_digest`, and a
+`tasks` array:
 
 ```json
 {
   "schema": "radxa-linkr-debugger.v1",
   "ok": true,
-  "command": "task",
+  "command": "tasks",
   "action": "list",
-  "backend": { "available": true },
-  "task_count": 1,
+  "task_store_id": "12345678-1234-4678-9abc-123456789abc",
+  "revision": "7",
+  "catalog_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "storage": {
+    "total_bytes": 131072,
+    "used_bytes": 5532,
+    "free_bytes": 125540,
+    "task_bytes": 680,
+    "reserve_bytes": 8192,
+    "measured": true,
+    "save_allowed": true
+  },
+  "full_ir_bytes": 320,
+  "full_ir_digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "tasks": [
-    { "id": "power-cycle", "name": "power-cycle", "request_count": 3 }
-  ],
-  "blob": "# linkr-task.v1\n# task power-cycle\n{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/CON_MAS\",\"body\":\"{\\\"direction\\\":\\\"input\\\"}\",\"wait_ms\":0}\n{\"method\":\"PUT\",\"path\":\"/api/v1/power/12v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\",\"wait_ms\":1000}\n{\"method\":\"PUT\",\"path\":\"/api/v1/power/12v_out\",\"body\":\"{\\\"state\\\":\\\"on\\\"}\",\"wait_ms\":0}\n"
+    {
+      "slot": 0,
+      "id": "power-cycle",
+      "request_count": 3,
+      "source_state": "present",
+      "source_bytes": 180,
+      "source_digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "ir_bytes": 240,
+      "task_ir_digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
 }
 ```
 
-Stable fields: `schema`, `ok`, `command:"task"`, `action:"list"`, `backend`
-({`available`}), `task_count` (numeric), `tasks[]` (`id`, `name`,
-`request_count`), `blob` (string, exact bytes). `name` defaults to `id`
-when the stored task did not set one. The response capacity is derived
-from `2 * 4096` plus bounded envelope/summary overhead; a request that
-exceeds the capacity returns `response_too_large` instead of a truncated
-body. The GET handler does not acquire the capture or flash arbiter.
+`storage` is measured from the shared Settings NVS. `used_bytes + free_bytes ==
+total_bytes`; `used_bytes` includes NVS metadata and the garbage-collection
+reserve, while `task_bytes` is the logical manifest/source/IR payload. When
+`measured` is false, firmware could not read NVS statistics and `save_allowed`
+is advisory. A healthy task save/import additionally requires
+`free_bytes >= reserve_bytes + required_new_bytes`; otherwise it returns HTTP
+507 `storage_full` before writing. `delete` and `clear` remain allowed so they
+can free space.
 
-### `PUT /api/v1/tasks`
+`tasks[]` contains only occupied slots. A present source has nonzero
+`source_bytes` and a SHA-256 `source_digest`. An IR-only task reports
+`source_state:"absent"`, `source_bytes:0`, and `source_digest:null`. Do not
+fabricate a source digest for a built-in or IR-only task. `task_ir_digest` is
+the SHA-256 of a standalone blob made from exact ASCII
+`# linkr-task.v1\n` plus the task's exact section bytes in the active full IR,
+from `# task <id>\n` through that task's final request LF.
 
-Replaces the stored blob. The body is the full `linkr-task.v1` text. A JSON
-string literal is also accepted (`"..."`), in which case the server unescapes
-standard escapes before validation. The endpoint requires the shared
-mutation helper, so a concurrent capture or OTA session returns
-`busy` (HTTP 409) without writing. A blob larger than 4096 bytes returns
-`body_too_large` (HTTP 413). On success the response is:
+### `GET /api/v1/tasks/ir`
 
-```json
-{
-  "schema": "radxa-linkr-debugger.v1",
-  "ok": true,
-  "command": "task",
-  "action": "store",
-  "stored": true
-}
-```
+Returns the exact active full-set `linkr-task.v1` bytes with content type
+`application/vnd.radxa.linkr-task-ir.v1`. The response body length and SHA-256
+must match `full_ir_bytes` and `full_ir_digest` from `GET /api/v1/tasks`.
+An empty store returns an empty body. The raw response is owned until the HTTP
+transaction completes.
 
-### `DELETE /api/v1/tasks`
+### `GET /api/v1/tasks/slots/{0..3}/source`
 
-Clears the stored blob; live hardware is unchanged. Acquires the shared
-mutation helper first and returns `busy` (HTTP 409) when capture or OTA
-is in flight. Successful response:
+Returns the exact canonical source bytes for that occupied slot with content
+type `application/vnd.radxa.linkr-test.v1+ndjson`. The body SHA-256 must match
+`source_digest`. A slot with no lossless source returns HTTP 404
+`task_source_absent`; a slot that is not present returns the same error.
 
-```json
-{
-  "schema": "radxa-linkr-debugger.v1",
-  "ok": true,
-  "command": "task",
-  "action": "clear",
-  "cleared": true
-}
-```
+Clients should read the metadata, fetch the raw bytes, verify the advertised
+digest, and retry the metadata read once if the revision/digest changed.
 
-### `DELETE /api/v1/tasks/{id}`
+### `POST /api/v1/tasks/mutations`
 
-Deletes only the named stored task, preserving all other task sections
-byte-for-byte and leaving live hardware unchanged. Deleting the last task
-removes the backing key. Encode the ID as one UTF-8 percent-encoded URL
-path component (for example `café` becomes `caf%C3%A9`, `/` becomes `%2F`,
-and a literal `%` becomes `%25`). Decoding occurs once; decoded NUL (`%00`)
-is rejected rather than truncating the ID. The exact decoded IDs `.` and
-`..` are invalid, including `%2E` and `%2E%2E` spellings.
+All task-v2 writes use one JSON mutation endpoint. The request must carry
+`Content-Type: application/json`. The body is a UTF-8 JSON object with the
+string fields `schema` (`radxa-linkr-debugger.v1`), `action`
+(`upsert`/`delete`/`clear`/`import`), `expected_revision`, and
+`catalog_fingerprint`, plus the action-scoped optional fields `id`,
+`source_base64`, and `ir_base64`. Field order is stable.
 
-| HTTP status | Result |
-| --- | --- |
-| 200 | Task deleted; response shown below |
-| 400 | Missing or invalid ID, invalid percent decoding, or decoded NUL; no task is deleted |
-| 404 | `not_found`: no stored task matches the valid ID |
-| 409 | `busy`: capture or OTA owns the shared mutation resource; no task is deleted |
+`source_base64` and `ir_base64` are strict canonical RFC 4648 base64 strings
+(standard alphabet, exact zero-pad-bit padding, no JSON escapes or
+whitespace) carrying the exact source/IR bytes; firmware rejects any other
+encoding. The whole body is at most **12288 bytes**, which holds both
+4000-byte payloads (5336 base64 characters each) plus the fixed envelope
+keys.
 
-```json
-{
-  "schema": "radxa-linkr-debugger.v1",
-  "ok": true,
-  "command": "task",
-  "action": "delete",
-  "id": "power-cycle",
-  "deleted": true
-}
-```
+- **Upsert** requires a valid ID and a standalone one-task `linkr-task.v1` IR
+  whose task ID matches. Source is optional. Omitting source makes that slot
+  IR-only and clears any previous source link; it does not preserve old source
+  bytes. The Web client includes source only when it is at most 4000 bytes.
+  Firmware validates source UTF-8, length, and control-byte policy; it validates
+  IR syntax and matching ID. Firmware computes and stores both digests; it does
+  not compile workflows.
+- **Delete** requires the ID only and removes that slot.
+- **Clear** has no payload and removes all slots. It does not change
+  `task_store_id`.
+- **Full-IR import** has only full-set IR and replaces all slots. A source link
+  is retained only when the same task ID still exists with an unchanged task-IR
+  digest; changed or removed tasks lose their source. An empty import is
+  invalid; use clear.
 
-### Method Handling
+Every mutation checks `expected_revision` and `expected_catalog_fingerprint`
+under the store/flash-owner mutex. A conflict returns HTTP 409 and writes
+nothing. Inactive source/IR banks are written and read-back verified before the
+manifest commit.
 
-GET, PUT, and DELETE are the only supported methods; any other verb on
-`/api/v1/tasks` returns `method_not_allowed` (HTTP 405). The endpoint never
-replays stored requests; the firmware contract is store-only. Execution is the
-client's job.
+Successful mutations return the standard envelope with `action` set to
+`upsert`, `delete`, `clear`, or `import`, plus the new `task_store_id`,
+decimal-string `revision`, `catalog_fingerprint`, `storage`, and a `task` object
+for the affected slot (or `null` for clear/delete). The task object uses the
+same fields as a `tasks[]` entry.
 
-`/api/v1/tasks/{id}` accepts DELETE only; other methods return HTTP 405.
+Stable error statuses:
 
-### Client-Side Run And Limits
+- `400`: `invalid_mutation`, `invalid_task`, `body_too_large`
+- `404`: `task_source_absent`
+- `409`: `revision_conflict`, `catalog_conflict`, `busy`
+- `507`: `storage_full` (NVS write failure or all four task slots occupied)
+- `500`: `readback_failed`, `storage_error`
 
-The CLI and the Web UI fetch the blob via `GET /api/v1/tasks`, select one
-task by id, and dispatch each record in order through the public HTTP API.
-Each successful request is followed by a client-side `wait_ms` sleep when
-the record carries one; `wait_ms` is task metadata only and is **not**
-forwarded to the power, GPIO, or switch endpoints. The first failure stops
-the run. Records past the failure are never dispatched, and the wire `body`
-sent to the board never includes `wait_ms`.
+A manifest or data-key readback failure marks the task backend unavailable; it
+is not auto-repaired, and `clear` is rejected in that state. Recover with a
+full-chip erase/reflash; this unpublished layout has no on-device repair path.
 
-The CLI and the page report the failure on their own human/JSON surface,
-not on the shared HTTP envelope. The CLI JSON failure uses
-`error.record_index` (1-based) and `error.path` (snake_case under the
-`error` object) and exits nonzero on the `task` action. The CLI's
-non-JSON failure writes `task record <n> path "<path>" failed: <message>`
-to stderr. The Web page surfaces an internal result that carries
-`failedIndex` (1-based) and `failedPath` (camelCase) plus the resolver
-error string.
+`revision_conflict` and `catalog_conflict` include the current revision and
+catalog fingerprint in the error response.
+
+### Task write surface
+
+Task writes use only `POST /api/v1/tasks/mutations`. There is no task blob
+upload route and no per-ID write/delete route; unsupported methods return HTTP
+405. The only task-clearing operation is mutation action `clear`. The only
+per-task removal is action `delete`. Read routes accept GET only, and the
+mutation route accepts POST only.
+
+### Client-side run
+
+The CLI and Web UI read metadata plus `/api/v1/tasks/ir`, select one task by
+ID, and dispatch each record in order through the public HTTP API. Every record
+is a `PUT` under `/api/v1/power/`, `/api/v1/gpio/`, or `/api/v1/switch/`.
+`wait_ms` is applied client-side after a successful request and is never sent
+to the board. The first failure stops the run; records after the failure are
+never dispatched. A built-in uses the catalog's own cleanup sequence; a stored
+task has no inferred cleanup.
+
+The CLI `task store` command compiles a workflow source or accepts one-task IR
+but sends no source payload, so it creates an IR-only board task. Use the Web
+workflow editor/API source-bearing upsert when board-backed lossless source is
+required. `GET /tasks/slots/{slot}/source` and CLI `task source` fail with
+`task_source_absent` for IR-only tasks.
 
 ## Watchdog
 
@@ -507,7 +555,7 @@ Required headers:
 FIRMWARE=path/to/firmware.bin
 SIZE=$(stat -c%s "$FIRMWARE" 2>/dev/null || stat -f%z "$FIRMWARE")
 SHA256=$(sha256sum "$FIRMWARE" 2>/dev/null | cut -d' ' -f1 || shasum -a 256 "$FIRMWARE" | cut -d' ' -f1)
-curl -X POST http://172.29.203.1/api/v1/ota/upload \
+curl -X POST $BOARD_URL/api/v1/ota/upload \
   -H "Content-Type: application/octet-stream" \
   -H "X-Linkr-Ota-Size: $SIZE" \
   -H "X-Linkr-Ota-Sha256: $SHA256" \
@@ -529,10 +577,10 @@ Confirm running image immediately.
 Create a WebSocket session. Returns `ws_url` for the assigned slot.
 
 ```sh
-curl -X POST http://172.29.203.1/api/v1/live-sessions
+curl -X POST $BOARD_URL/api/v1/live-sessions
 ```
 
-Response: `session_id`, `ws_url` (`ws://172.29.203.1/api/v1/ws/<slot>`), `connected`.
+Response: `session_id`, `ws_url` (`ws://<board-ip>/api/v1/ws/<slot>`), `connected`.
 
 ### `GET /api/v1/live-sessions/{id}`
 
@@ -577,7 +625,7 @@ Release capture resources.
 
 ## WebSocket Protocol
 
-Connect to `ws://172.29.203.1/api/v1/ws/{0|1|2|3}` (slot URL from live-sessions).
+Connect to `ws://<board-ip>/api/v1/ws/{0|1|2|3}` (slot URL from live-sessions).
 
 Up to 4 concurrent clients.
 

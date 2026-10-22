@@ -162,13 +162,13 @@ open-drain-only sequence. Ordinary address NAK (`-EIO`) never triggers bus
 clear, and the generic Zephyr I2C shell remains disabled. Recovery itself is
 ADC-gated both before its SCL pulses and before the following probe retry.
 
-The voltage-divider instance is private to the CH224A lock and is not itself a
-public telemetry descriptor. The separate public `adc0` descriptor reads the
-same ADC pad through the raw ADC driver and reports pad voltage, not the
-divider's reconstructed source-side voltage. The ADC driver's `adc_context`
-serializes ADC0 with the other channels. Any future source-side value must be a
-distinct firmware-derived field scaled from Device Tree, never a host-side
-`115/15` conversion of public `adc0`.
+The voltage-divider instance remains private to the CH224A lock and is not a
+separate public telemetry descriptor. The public `adc0` descriptor uses the same
+Device Tree divider facts to report canonical source-side DC20V voltage; its
+`raw` and `mv` remain ADC-pad diagnostics. ADC1-3 report native pad voltage.
+The ADC driver's `adc_context` serializes ADC0 with the other channels. No host
+may apply `115/15` or another divider ratio to any public ADC field. ADC0's
+uncalibrated accuracy is approximately 2%.
 
 | Rail | Device | 7-bit address | Shunt |
 | --- | --- | --- | --- |
@@ -178,12 +178,12 @@ distinct firmware-derived field scaled from Device Tree, never a host-side
 | `vdd_5v` | U12 | `0x45` | 10 mOhm |
 
 J8 exposes ADC1/GP27, ADC2/GP28, and ADC3/GP29; ADC0/GP26 is not a J8 terminal.
-ADC1/ADC2 are not rail-sense inputs. ADC0 through ADC3 are monitor-only pad
-voltage channels with no power state; ADC3 (`GP29`) remains owned by `adc3` and
-input-only. The firmware reports four INA226 current descriptors followed by
-these four ADC descriptors, and the host presents them without a host-side
-calibration table, zero-point correction, or divider conversion. See the
-[ADC telemetry contract](../reference/adc-telemetry.md).
+ADC1/ADC2 are not rail-sense inputs. ADC0 is the PD-input source-side channel;
+ADC1-3 are native pad-voltage channels. None has a power state; ADC3 (`GP29`)
+remains owned by `adc3` and input-only. The firmware reports four INA226 current
+descriptors followed by these four ADC descriptors, and the host presents them
+without a host-side calibration table, zero-point correction, or divider
+conversion. See the [ADC telemetry contract](../reference/adc-telemetry.md).
 
 ## Schematic reference
 

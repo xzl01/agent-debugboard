@@ -242,15 +242,15 @@ and GP19 remains the non-drivable PD CFG1 strap.
 
 ```sh
 # Scan for the board
-sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 --scan
+sigrok-cli -d rigol-ds:conn=tcp-raw/<board-ip>/80 --scan
 
 # Digital capture with hardware pre-trigger
-sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
+sigrok-cli -d rigol-ds:conn=tcp-raw/<board-ip>/80 \
   --config timebase='20 us' --config triggersource=D0 \
   --config triggerslope=f --frames 1 --channels D0 -o capture.sr
 
 # Analog GP29 channel
-sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
+sigrok-cli -d rigol-ds:conn=tcp-raw/<board-ip>/80 \
   --config timebase='1 ms' --frames 1 --channels CH1 -o analog.sr
 ```
 
@@ -363,16 +363,16 @@ stream data.
 
 ## Quick Start
 
-1. Open Web UI at `http://172.29.203.1/`
+1. Open Web UI at `http://<board-ip>/`
 2. Select the **Logic Analyzer** tab in the Terminal workspace
 3. Configure pins, sample rate, and trigger mode
 4. Click **Arm capture**
 5. View the waveform, or export as CSV / PulseView `.sr`
 6. For live monitoring, click **Stream** (1–25 MHz)
 7. For Rigol SCPI compatibility, connect with the `rigol-ds` driver via
-   `tcp-raw/172.29.203.1/80`
+   `tcp-raw/<board-ip>/80`
 8. For native Sigrok/BeagleLogic raw TCP, connect to
-   `beaglelogic:conn=tcp-raw/172.29.203.1/5556`
+   `beaglelogic:conn=tcp-raw/<board-ip>/5556`
 9. Keep raw TCP 5555 reserved for the J4 UART console
 
 ## Further Reading

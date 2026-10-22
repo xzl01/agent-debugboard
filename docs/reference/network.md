@@ -1,155 +1,155 @@
-# Network Addressing
+# Network Identity
 
-Each Radxa Linkr Debugger exposes one USB-NCM Ethernet interface. The firmware
-derives the interface IPv4 address and the DHCP server pool from one persisted
-subnet octet so that several debugger boards can be attached to the same host
-without sharing an address.
+Each Radxa Linkr Debugger exposes one USB-NCM Ethernet interface. The board
+persists a single identity: a locally administered unicast MAC address and one
+private IPv4 `/30` network. Both are derived once from the RP2350 chip ID, so
+several debugger boards can share one host without reusing the same address.
 
 ## Address Plan
 
 | Item | Value |
 | --- | --- |
-| Device address | `172.29.<subnet>.1` |
-| DHCP server base address | `172.29.<subnet>.10` |
+| Board address | `network + 1` |
+| Host DHCP address | `network + 2` |
 | DHCP pool size | 1 address (`CONFIG_NET_DHCPV4_SERVER_ADDR_COUNT=1`) |
-| Valid subnet octet | `1` through `254` |
-| Default subnet octet | `203` |
-| Persistent settings key | `linkr/net/subnet` |
+| Prefix | `/30` |
+| First-boot candidate pool | `10.0.0.0/8` split into 2^22 `/30` networks |
+| MAC | 46 derived bits, locally administered, unicast (`02:...`) |
+| Persistent settings key | `linkr/net/identity` |
 
-The octet is stored as one byte under `linkr/net/subnet`. The default `203`
-produces the established `172.29.203.1` device address. A missing, malformed, or
-out-of-range stored value falls back to `203`.
+The persisted blob is 12 bytes: version, origin (`derived` or `manual`), the
+six MAC bytes, and the four network bytes in big-endian order. It is written as
+one Settings value so a failed or interrupted save cannot leave a mixed
+MAC/network pair.
 
-Changing the subnet persists the new value and applies it immediately: the
-firmware stops the running DHCPv4 server, removes the old manual IPv4 address,
-adds `172.29.<subnet>.1`, and restarts the DHCPv4 server with
-`172.29.<subnet>.10` as its base. A failure is retried with the existing
-network-start backoff. This is a single-host USB-NCM link, so firmware disables
-DHCP ICMP address probing (`CONFIG_NET_DHCPV4_SERVER_ICMP_PROBE_TIMEOUT=0`);
-there is no competing L2 client, and disabling probes avoids the upstream
-DHCP/ICMP lock interaction during an explicit reconfiguration. The DHCP server
-restart does **not** force the host DHCP
-client to discard its old lease. A host connected through the old address must
-disconnect and reconnect the USB-NCM interface, or explicitly release and renew
-its DHCP lease, before using the new address.
+## First Boot And Persistence
 
-Firmware reserves two unicast IPv4 slots on the NCM interface. During a live
-change the first slot may remain referenced by the HTTP connection that issued
-the request while the second slot installs the new manual address; the old slot
-is released when that connection closes.
+`hwinfo_get_device_id()` returns the RP2350 OTP chip ID when
+`CONFIG_HWINFO_RPI_PICO_CHIP_ID=y`. The firmware rejects missing, all-zero, and
+all-one IDs. It derives:
 
-For example, with NetworkManager or `dhclient` on Linux (replace `<ncm-iface>`
-with the interface name):
+- a MAC with the I/G bit clear and the U/L bit set, so the address is unicast
+  and locally administered;
+- a `/30` candidate in `10.0.0.0/8` from a 22-bit hash index.
 
-```sh
-nmcli device disconnect <ncm-iface>
-nmcli device connect <ncm-iface>
+Both are persisted immediately on first boot. Later boots load the stored blob
+and never rederive over it. A manually set MAC or network is authoritative,
+persists in the same blob, and reports `origin=manual`. If a stored blob cannot
+be read or decoded, firmware uses a volatile derived identity for that boot but
+does not overwrite the stored value; the next boot retries the read.
 
-# Or, when dhclient manages the interface:
-sudo dhclient -r <ncm-iface>
-sudo dhclient <ncm-iface>
-```
+Derivation is deterministic and public, not a security identity. A fleet-wide
+zero-collision guarantee ultimately needs persisted allocation or manual
+conflict resolution; the hash makes accidental reuse unlikely, not impossible.
 
-Because the old address is removed before the HTTP reply is sent, a PUT or CLI
-set over the old NCM address can lose its response even though the value was
-persisted. Treat a transport error after such a set as "possibly applied" and
-verify at the new address. The CDC ACM shell is the reliable way to change the
-subnet because that link is independent of the NCM address.
+## Applying An Identity
 
-### Multiple Boards On One Host
+The firmware applies the MAC while the NCM interface is stopped. The boot path
+sets the MAC before bringing the interface up
+(`CONFIG_ETH_NET_IF_NO_AUTO_START=y`). A live MAC change stops the DHCP server,
+takes the interface down, updates the link address, then brings it back up.
 
-The default `203` collides with an existing board on the same host. Set the new
-board's subnet through the CDC ACM shell before the host configures its NCM
-interface, or keep the host DHCP client off the new interface until then:
+A network change also stops DHCP, removes the old manual IPv4 address, adds
+`network + 1`, and restarts DHCP with `network + 2` as its base. The old address
+may remain referenced by the HTTP connection that issued the request until that
+connection closes; firmware reserves two unicast IPv4 slots for this case.
+
+The change does **not** force the host DHCP client to discard its old lease.
+Reconnect the USB-NCM interface or renew its lease before using the new
+address. Because the old address can disappear before the HTTP reply is sent, a
+transport error after a `PUT` means "possibly applied"; verify at the new
+address. The CDC ACM shell is the reliable path when the NCM address changes.
+
+## Multiple Boards On One Host
+
+No manual address step is required on first boot: each board derives its own
+MAC and `/30`. To override an identity, use the shell before the host configures
+the NCM interface:
 
 ```text
-ip subnet 204
+ip
+ip network 10.20.30.0/30
+ip mac 02:11:22:33:44:55
 ```
 
-The NCM local and remote MAC addresses are currently identical on every board.
-If the host's network manager refuses two interfaces with the same MAC, bring
-the second NCM interface up manually or keep only one NCM interface active at a
-time.
+`ip`/`net` is the command alias pair. `ip` prints the current identity:
+
+```text
+mac=02:11:22:33:44:55 origin=derived network=10.20.30.0/30 ip=10.20.30.1 dhcp_base=10.20.30.2 url=http://10.20.30.1/
+```
+
+The USB NCM host-side `iMACAddress` string remains the value compiled into the
+Zephyr class descriptor (`remote-mac-address`); the current Zephyr API does not
+allow replacing that string descriptor at runtime. The board's own Ethernet
+address is unique, but if a host network manager refuses two NCM interfaces
+with the same host-side iMACAddress, keep only one interface active or apply a
+host-side MAC override. This is a Zephyr USB-class limitation, not a persisted
+board identity setting.
 
 ## HTTP
 
-The firmware exposes the setting at `/api/v1/net`.
+The firmware exposes the identity at `/api/v1/net`. Use the address printed by
+`ip` as `$BOARD_URL`.
 
 ```sh
-curl -fsS http://172.29.203.1/api/v1/net
+curl -fsS "$BOARD_URL/api/v1/net"
 curl -fsS -X PUT -H 'Content-Type: application/json' \
-  -d '{"subnet":204}' http://172.29.203.1/api/v1/net
+  -d '{"network":"10.20.30.0"}' "$BOARD_URL/api/v1/net"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  -d '{"mac":"02:11:22:33:44:55"}' "$BOARD_URL/api/v1/net"
 ```
 
 `GET` response:
 
 ```json
-{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"net","action":"get","subnet":203,"ip":"172.29.203.1","reconnect_required":false}
+{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"net","action":"get","mac":"02:11:22:33:44:55","origin":"derived","network":"10.20.30.0","prefix":30,"ip":"10.20.30.1","dhcp_base":"10.20.30.2","url":"http://10.20.30.1/","reconnect_required":false}
 ```
 
-`PUT` accepts only a JSON object with an integer `subnet` in `1..254`. It
-returns `200` with the new `subnet` and `ip`, `400` for a missing, malformed, or
-out-of-range body, and `500` when the live apply fails after the value was
-persisted. A successful change explicitly reports that the host link must be
-renewed; it does not claim that the host moved to the new subnet seamlessly:
+`PUT` accepts a JSON object containing `mac`, `network`, or both. Omitted fields
+keep their current value. `mac` must be a locally administered unicast address;
+`network` must be a private `/30` base (an optional `/30` suffix is accepted).
+The endpoint returns `200` with the resulting identity, `400` for a missing,
+malformed, or out-of-range body, and `500` when persistence or the live apply
+fails:
 
 ```json
-{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"net","action":"set","subnet":204,"ip":"172.29.204.1","reconnect_required":true,"message":"Reconnect the USB NCM interface or renew its DHCP lease"}
+{"schema":"radxa-linkr-debugger.v1","ok":true,"command":"net","action":"set","mac":"02:11:22:33:44:55","origin":"manual","network":"10.20.30.0","prefix":30,"ip":"10.20.30.1","dhcp_base":"10.20.30.2","url":"http://10.20.30.1/","reconnect_required":true,"message":"Reconnect the USB NCM interface or renew its DHCP lease"}
 ```
-
-## CDC ACM Shell
-
-The shell command group is `ip`; `net` is registered as an alias with the same
-behavior.
-
-```text
-ip subnet
-ip subnet 204
-```
-
-`ip subnet` prints the current octet, the device address, and the board URL:
-
-```text
-subnet=203 ip=172.29.203.1 url=http://172.29.203.1/
-```
-
-`ip subnet <1-254>` validates the octet, persists it through the same firmware
-path as the HTTP endpoint, applies it live, and prints the resulting state. The
-alias `net subnet ...` is equivalent.
 
 ## Rust CLI
 
-The host CLI calls the firmware HTTP endpoint.
+The host CLI calls the same endpoint.
+
+The host NCM address is `network + 2`; pass the board URL (`network + 1`) with
+`--url` or set `LINKR_BOARD_URL` to it. The CDC shell `ip` command prints it when
+the host address is unknown.
 
 ```sh
-radxa-linkr-debuggerctl ip subnet
-radxa-linkr-debuggerctl ip subnet 204
-radxa-linkr-debuggerctl --json ip subnet
+radxa-linkr-debuggerctl --url http://10.20.30.1 ip
+radxa-linkr-debuggerctl --url http://10.20.30.1 ip network 10.20.30.0/30
+radxa-linkr-debuggerctl --url http://10.20.30.1 ip mac 02:11:22:33:44:55
+radxa-linkr-debuggerctl --url http://10.20.30.1 --json ip
 ```
 
-The `net subnet ...` spelling is accepted as an alias. Plain output is:
+`net` is accepted as an alias for `ip`. Plain output is:
 
 ```text
-subnet=203 ip=172.29.203.1 url=http://172.29.203.1/
+mac=02:11:22:33:44:55 origin=derived network=10.20.30.0/30 ip=10.20.30.1 dhcp_base=10.20.30.2 url=http://10.20.30.1/
 ```
 
-`--json` prints the firmware envelope unchanged. Invalid octets are rejected
-locally before any request is sent. After changing the subnet, point the CLI at
-the new address for later commands. First disconnect/reconnect the USB-NCM
-interface or renew its DHCP lease as described above:
+`--json` prints the firmware envelope unchanged. Invalid MACs and non-private
+or unaligned `/30` values are rejected locally before any request is sent. After
+changing the network, point later commands at the new address:
 
 ```sh
-radxa-linkr-debuggerctl --url http://172.29.204.1 ip subnet
+radxa-linkr-debuggerctl --url http://10.20.30.1 ip
 ```
 
-## Captive-Portal URI Limitation
+## DHCP Captive Portal
 
-`CONFIG_NET_DHCPV4_SERVER_OPTION_CAPTIVE_PORTAL_URI` is compiled into Zephyr at
-build time. This repository does not patch Zephyr, so the DHCP captive-portal
-URI remains the default `http://172.29.203.1/captive-portal/api` even when the
-subnet is changed. The captive-portal redirect/body and the boot-time default
-network configuration also remain compiled around `172.29.203.1`.
-
-For any subnet other than `203`, open the board manually at
-`http://172.29.<subnet>.1/` instead of relying on the advertised captive-portal
-URI. The REST API and the Web UI work at that address.
+The DHCPv4 server advertises option 114. The override URI is empty, so Zephyr
+builds the URI from the current DHCP server address and the `/generate_204`
+path at runtime. Firmware serves that path with the same capport JSON as
+`/captive-portal/api`, and redirects other non-API paths to the board URL. This
+keeps captive-portal discovery correct on the derived `/30` without a
+compile-time address.

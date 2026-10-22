@@ -17,7 +17,9 @@ describe changing, constructing, validating, or publishing Linkr itself.
 The board exposes its control API through USB NCM at:
 
 ```sh
-BOARD_URL="${BOARD_URL:-http://172.29.203.1}"
+# The board is .1 of the host NCM /30; read it from the CDC shell `ip`
+# command or set it explicitly.
+: "${BOARD_URL:?set BOARD_URL to http://<board-ip> (host NCM /30 address minus one)}"
 ```
 
 It also exposes an embedded dashboard at `$BOARD_URL/` and a USB CDC ACM shell.
@@ -332,10 +334,15 @@ curl -fsS "$BOARD_URL/api/v1/adc/read?channel=5v_out"
 curl -fsS "$BOARD_URL/api/v1/adc/read?channel=adc3"
 ```
 
-Treat firmware values and channel metadata as authoritative. `adc3` reports
-GP29 voltage; it is not a controllable current output. `5v_usb_hub` has no
-INA226 channel, so do not substitute another rail's reading for it or report a
-fabricated measurement.
+Treat firmware values and channel metadata as authoritative. `adc0` has
+`role:"pd_input"`; its canonical value is source-side DC20V reconstructed from
+the Device Tree divider, while `raw`/`mv` remain pad diagnostics. ADC1-3 have
+`role:"native"` and report pad voltage. Never multiply `raw`/`mv` by `115/15`
+or apply a host calibration table. ADC0 accuracy is uncalibrated and about 2%.
+`adc3` reports GP29 pad voltage; it is not a controllable current output.
+`5v_usb_hub` has no INA226 channel, so do not substitute another rail's reading
+for it or report a fabricated measurement. See the
+[ADC telemetry contract](../../docs/reference/adc-telemetry.md).
 
 Use the [Power Analyzer guide](../../docs/user/power-analyzer.md) for recorded
 current workflows. Use the [Logic Analyzer guide](../../docs/user/logic-analyzer.md)
@@ -416,50 +423,52 @@ Use the canonical contract for snapshot semantics. The snapshot lives under
 `config clear` removes the snapshot only.
 
 ## Firmware Tasks
-
 Firmware owns two task sources:
 
-- An immutable built-in catalog at `GET /api/v1/tasks/catalog`.
-- Explicitly stored task blobs at `GET`, `PUT`, and `DELETE /api/v1/tasks`.
+- an immutable built-in catalog at `GET /api/v1/tasks/catalog`;
+- a four-slot task-v2 store described by `GET /api/v1/tasks` and read as exact
+  IR from `GET /api/v1/tasks/ir`.
 
 Read both sources before selecting a task:
-
 ```sh
 curl -fsS "$BOARD_URL/api/v1/tasks/catalog"
 curl -fsS "$BOARD_URL/api/v1/tasks"
+curl -fsS "$BOARD_URL/api/v1/tasks/ir" -o /tmp/linkr-tasks.ir
 radxa-linkr-debuggerctl task list
 ```
-
 Built-ins and stored tasks remain separate. A catalog failure must fail closed
 for a requested built-in; never fall back to a stored task with the same ID.
 Stored tasks are inert until an operator explicitly runs one. Firmware does not
 run, replay, or seed task sequences at boot.
 
-Use the CLI to store, run, or clear an explicit task sequence:
-
+Use the CLI to list, store, import/export, delete, clear, or run tasks:
 ```sh
+radxa-linkr-debuggerctl task list
 radxa-linkr-debuggerctl task store my-task.ndjson my-task-id
+radxa-linkr-debuggerctl task import all-tasks.ndjson
+radxa-linkr-debuggerctl task export all-tasks.ndjson
+radxa-linkr-debuggerctl task source my-task-id my-task.source.ndjson
+radxa-linkr-debuggerctl task delete my-task-id
+radxa-linkr-debuggerctl task clear
 radxa-linkr-debuggerctl task run builtin/maskrom/12v_out --confirm
 radxa-linkr-debuggerctl task run my-task-id --confirm
-radxa-linkr-debuggerctl task clear
 ```
+`task store` writes the compiled one-task IR without a source payload, so the
+board task is IR-only. Use the Web workflow editor when board-backed lossless
+source is required. `task source` fails with `task_source_absent` for IR-only
+tasks. Task IR import/export and workflow import/export are different
+operations; do not treat IR as editable workflow source.
+
+Task writes use only the binary `POST /api/v1/tasks/mutations` with expected
+revision/catalog. There is no task blob upload or per-ID write/delete route.
+The canonical wire, source/IR limits, and conflict/error rules are in the
+[HTTP API](../../docs/user/api.md#tasks-firmware-catalog-and-task-v2-storage).
 
 `task run` dispatches ordinary control requests in order. `wait_ms` is client
 timing metadata and is not sent to the board. A failed built-in stops its main
 sequence and attempts only catalog-declared cleanup. Inspect both diagnostics,
 then inspect and restore the selected rail through ordinary APIs. Do not invent
 cleanup or replay a failed task.
-
-With CDC ACM only, use the intentionally limited task surface:
-
-```text
-linkr-debugger:~$ task show
-linkr-debugger:~$ task clear
-```
-
-There are no CDC task boot, default, run, or replay commands. The complete task
-wire contract is in the [HTTP API](../../docs/user/api.md) and
-[CLI guide](../../docs/user/cli.md).
 
 ## OTA Firmware Update
 

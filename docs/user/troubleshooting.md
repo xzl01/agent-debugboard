@@ -11,18 +11,19 @@ Common problems and how to fix them.
 1. Check the USB cable. Data cables only — charge-only cables won't work.
 2. Verify the board shows up as a network interface:
    - Linux: `ip link show` — look for a new `enp*` or `usb*` interface
-   - macOS: `ifconfig` — look for `en*` with `172.29.203.x`
+   - macOS: `ifconfig` — look for a new `en*` interface
    - Windows: check Network Connections for a new RNDIS/NCM adapter
-3. Ping the board: `ping 172.29.203.1`
-4. If ping works but the CLI fails, try specifying the URL explicitly:
+3. Read the host NCM address with `ip -brief addr show`; the board is the same `/30` host address minus one
+4. Ping the printed board IP. If ping works but the CLI fails, try specifying
+   the URL explicitly:
    ```sh
-   radxa-linkr-debuggerctl --url http://172.29.203.1 doctor
+   radxa-linkr-debuggerctl --url "http://<board-ip>" doctor
    ```
 5. If nothing works, try a different USB port or cable.
 
 ## Web UI doesn't open
 
-**Symptom:** Browser shows "can't reach this site" at `http://172.29.203.1/`.
+**Symptom:** Browser shows "can't reach this site" at the board `.1` address of the host NCM `/30`.
 
 1. Verify CLI connectivity first: `radxa-linkr-debuggerctl doctor`
 2. If doctor passes but the browser can't connect, check if another network
@@ -34,7 +35,7 @@ Common problems and how to fix them.
 
 ## Local Vite repeatedly returns 502 on macOS
 
-**Symptom:** `curl http://172.29.203.1/api/v1/status` returns 200, but
+**Symptom:** `curl "http://<board-ip>/api/v1/status"` returns 200, but
 `http://127.0.0.1:5173/api/v1/status` returns `502 Bad Gateway`; the Vite log
 contains `EHOSTUNREACH` from a Node.js socket.
 

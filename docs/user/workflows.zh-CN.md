@@ -22,7 +22,7 @@ radxa-linkr-debuggerctl power list
 
 配合串口监控做硬重启：
 ```sh
-# （打开板载 Web Terminal，或运行：nc 172.29.203.1 5555）
+# （打开板载 Web Terminal，或运行：nc <board-ip> 5555）
 
 radxa-linkr-debuggerctl power set 5v_out off
 sleep 2
@@ -69,7 +69,7 @@ NDJSON 文件包含整个启动过程的带时间戳电流读数。
 
 通过 Web UI：
 
-1. 打开 http://172.29.203.1/，进入 **Terminal** 工作区。
+1. 打开 http://<board-ip>/，进入 **Terminal** 工作区。
 2. 选引脚（如 GP13、GP15）和采样率。
 3. 选触发模式（none、rising、falling、either）。
 4. 点 **Arm**，然后触发要捕获的事件。
@@ -79,11 +79,11 @@ NDJSON 文件包含整个启动过程的带时间戳电流读数。
 
 ```sh
 # Arm：GP13、1 MHz、256 样本、上升沿触发
-curl -X POST http://172.29.203.1/api/v1/logic-analyzer \
+curl -X POST http://<board-ip>/api/v1/logic-analyzer \
   -d '{"selected_pins":[13],"sample_rate_hz":1000000,"post_samples":256,"trigger":"rising","trigger_pin":13}'
 
 # 等捕获完成后获取数据
-curl http://172.29.203.1/api/v1/logic-analyzer/capture
+curl http://<board-ip>/api/v1/logic-analyzer/capture
 ```
 
 ## 通过 OTA 更新固件
@@ -128,7 +128,7 @@ picotool load -v -x radxa-linkr-debugger-rp2350.uf2
 
 ```sh
 # 终端 1：binary J4 console（按板卡当前 NCM 地址替换）
-nc 172.29.203.1 5555
+nc <board-ip> 5555
 
 # 终端 2：控制电源
 radxa-linkr-debuggerctl power set 5v_out off

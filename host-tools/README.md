@@ -28,9 +28,10 @@ npm --prefix web run build
 cargo run --manifest-path host-tools/Cargo.toml -- serve
 ```
 
-Open <http://127.0.0.1:8787/>. The Rust process talks directly to the debugger
-at `http://172.29.203.1`; the Node/Ruby USB-NCM forwarding workaround is
-not used.
+Open <http://127.0.0.1:8787/>. The Rust process talks directly to the debugger;
+pass `--board-url http://<board-ip>` when using the derived network identity
+(the board is `.1` of the host NCM `/30`). The Node/Ruby USB-NCM forwarding
+workaround is not used.
 
 Useful commands:
 

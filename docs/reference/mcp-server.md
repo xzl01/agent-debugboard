@@ -111,7 +111,7 @@ Environment overrides:
 | `LINKR_MCP_API_BASE` | `http://127.0.0.1:8787/api/v1` | Device-gateway REST base |
 | `LINKR_MCP_SERIAL_URL` | `ws://127.0.0.1:8787/serial` | Legacy non-J4 Serial Broker endpoint |
 | `LINKR_WEB_ROOT` | auto-discovered `web/dist` | Built Web UI served by an auto-started Host |
-| `LINKR_BOARD_URL` | `http://172.29.203.1` | Debugger USB-NCM HTTP/WebSocket service |
+| `LINKR_BOARD_URL` | `http://172.29.203.1` (legacy fallback) | Debugger USB-NCM HTTP/WebSocket service; set to the board `.1` address of its `/30` |
 
 The command-line `--no-autostart` switch disables only Host process management;
 it does not make MCP initialization depend on Host readiness. Automatic startup

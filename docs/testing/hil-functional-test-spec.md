@@ -45,6 +45,11 @@ on”和“host 首次 mutation 再次确认 on”。
 west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
 ```
 
+完整 build 必须通过硬资源门禁：至少保留 **8 KiB Flash** 和 **32 KiB RAM**
+（`_flash_used <= 0xCCFD8`，`_image_ram_size <= 0x7A000`）。固件内嵌 Web 资源使用
+**Zopfli 1.0.3 标准 gzip**，`mtime=0`、无 optional header，并且必须可复现；不得
+改用 Brotli 或让 `file2hex` 再次压缩。缺少 `zopfli` 的 build 视为失败。
+
 ### 烧录
 
 RP2350 初次安装或恢复必须使用由 MCUboot 和应用 `zephyr.signed.hex` 合并得到的
@@ -86,6 +91,20 @@ dd if=build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 \
 HIL 记录必须注明使用 `picotool` 还是同步复制，以及是否出现
 `lost async page write`。
 
+## 板卡 URL
+
+本规范用 `$BOARD_URL`，来自固件持久化的唯一网络身份，不要硬编码旧地址：
+
+```sh
+# 主机 NCM 是板卡 /30 的 .2，板卡是 .1。
+: "${BOARD_URL:?set BOARD_URL to http://<board-ip> (host NCM /30 address minus one)}"
+BOARD_IP="${BOARD_URL#http://}"
+BOARD_IP="${BOARD_IP%%/*}"
+export BOARD_IP
+echo "$BOARD_URL"
+export LINKR_BOARD_URL="$BOARD_URL"
+```
+
 ## 标准 HIL 验证 checklist
 
 默认优先使用 release 发布的 `radxa-linkr-debuggerctl` CLI 执行以下主机侧验收命令。
@@ -121,9 +140,9 @@ timeout 5s radxa-linkr-debuggerctl --json status
 ### 2. HTTP API 连通性
 
 ```sh
-timeout 5s curl -fsS http://172.29.203.1/api/v1/status
-timeout 5s curl -fsS http://172.29.203.1/api/v1/watchdog
-timeout 5s curl -fsS http://172.29.203.1/api/v1/switch
+timeout 5s curl -fsS $BOARD_URL/api/v1/status
+timeout 5s curl -fsS $BOARD_URL/api/v1/watchdog
+timeout 5s curl -fsS $BOARD_URL/api/v1/switch
 timeout 5s radxa-linkr-debuggerctl --json power list
 timeout 5s radxa-linkr-debuggerctl --json switch list
 ```
@@ -133,7 +152,7 @@ timeout 5s radxa-linkr-debuggerctl --json switch list
 验证 HTTP `/api/v1/status` 返回的 `board_monitoring.memory` 字段形状和 Phase 2 加性对象：
 
 ```sh
-timeout 5s curl -fsS http://172.29.203.1/api/v1/status | python3 -c "
+timeout 5s curl -fsS $BOARD_URL/api/v1/status | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 mem = data.get('board_monitoring', {}).get('memory')
@@ -194,7 +213,7 @@ print('Phase 2 memory schema check passed')
 验证 HTTP 响应 JSON 长度低于专用 6656 字节 status buffer（协议限制检查）：
 
 ```sh
-LEN=$(timeout 5s curl -fsS http://172.29.203.1/api/v1/status | wc -c)
+LEN=$(timeout 5s curl -fsS $BOARD_URL/api/v1/status | wc -c)
 echo "status response size: $LEN bytes"
 [ "$LEN" -lt 6656 ] || { echo "status response must be below 6656 bytes"; exit 1; }
 ```
@@ -202,8 +221,8 @@ echo "status response size: $LEN bytes"
 验证 WebSocket `snapshot/status` 的 initial snapshot 只用于形状校验，后续 event-driven subsequent snapshots 由状态变化触发：
 
 ```sh
-timeout 5s node <<'NODE'
-const base = 'http://172.29.203.1';
+BOARD_URL="$BOARD_URL" timeout 5s node <<'NODE'
+const base = process.env.BOARD_URL;
 const httpMemory = await fetch(`${base}/api/v1/status`)
   .then((r) => {
     if (!r.ok) throw new Error(`status fetch failed: HTTP ${r.status}`);
@@ -302,7 +321,7 @@ print('Rust CLI Phase 2 memory display check passed')
 
 ```sh
 for i in 1 2 3; do
-timeout 5s curl -fsS http://172.29.203.1/api/v1/status | python3 -c "
+timeout 5s curl -fsS $BOARD_URL/api/v1/status | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 mem = d.get('board_monitoring', {}).get('memory', {})
@@ -320,12 +339,12 @@ Web UI mock 场景验证无 `memory` 字段时分别回退到 heap 摘要和 hea
 验证固件内嵌 Web UI：
 
 ```sh
-timeout 5s curl --compressed -fsS http://172.29.203.1/ | grep -q 'Radxa Linkr Debugger'
-timeout 5s curl --compressed -fsS http://172.29.203.1/assets/app.css >/dev/null
-timeout 5s curl --compressed -fsS http://172.29.203.1/assets/app.js >/dev/null
+timeout 5s curl --compressed -fsS $BOARD_URL/ | grep -q 'Radxa Linkr Debugger'
+timeout 5s curl --compressed -fsS $BOARD_URL/assets/app.css >/dev/null
+timeout 5s curl --compressed -fsS $BOARD_URL/assets/app.js >/dev/null
 ```
 
-再用 Edge/Chromium 打开 `http://172.29.203.1/`，确认页面识别正确 MCU、状态轮询
+再用 Edge/Chromium 打开 `$BOARD_URL/`，确认页面识别正确 MCU、状态轮询
 没有失败请求，并切换到实时模式验证 `/api/v1/ws/<slot>` 持续收帧。
 
 #### J4 xterm.js terminal
@@ -535,48 +554,61 @@ fi
 ```
 
 DHCP DORA 的客户端 PRL 必须请求 DHCP option 114。DHCPACK 必须包含 DHCP option
-114，URI 必须为 `http://172.29.203.1/captive-portal/api`。DHCPACK 不得通告 DHCP
-option 3（router）或 DHCP option 6（DNS）。把 `/tmp/linkr-dhcp-ack.txt` 留作 HIL
+114；URI 必须由当前 DHCP server 地址和 `/generate_204` 路径在运行时生成，不得
+硬编码固定板卡地址。DHCPACK 不得通告 DHCP option 3（router）或 DHCP option 6
+（DNS）。把 `/tmp/linkr-dhcp-ack.txt` 留作 HIL
 记录。上述命令会恢复原 NetworkManager 所有权；不要同时运行两个 DHCP client。
 
-板子不提供 DNS 服务，也不提供 wildcard A/AAAA 响应；不要把 `172.29.203.1` 当作
+板子不提供 DNS 服务，也不提供 wildcard A/AAAA 响应；不要把板卡地址当作
 DNS resolver 进行直接查询。继续使用下方多宿主检查验证主机原有的外部 DNS 和默认
 路由在 NCM DHCP 后仍可用。
 
 验证 HTTP port 80 `/captive-portal/api` 返回 `Content-Type: application/captive+json` 和 HTTP 200：
 
 ```sh
-timeout 5s curl -fsS -D - -o /dev/null http://172.29.203.1:80/captive-portal/api
+timeout 5s curl -fsS -D - -o /dev/null $BOARD_URL:80/captive-portal/api
 ```
 
 期望 HTTP 200，`Content-Type` 包含 `application/captive+json`。
 
 验证 HTTP port 80 读取 JSON 内容，断言 `user-portal-url` 和 `venue-info-url`
-精确等于 `http://172.29.203.1/`：
+精确等于当前板卡 URL 加斜杠：
 
 ```sh
-timeout 5s curl -fsS http://172.29.203.1:80/captive-portal/api | python3 -c "
+timeout 5s curl -fsS "$BOARD_URL:80/captive-portal/api" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 assert d.get('captive') == True
-expected_url = 'http://172.29.203.1/'
+expected_url = '$BOARD_URL/'
 assert d.get('user-portal-url') == expected_url, f'user-portal-url={d.get(\"user-portal-url\")} != {expected_url}'
 assert d.get('venue-info-url') == expected_url, f'venue-info-url={d.get(\"venue-info-url\")} != {expected_url}'
 print('CAPPORT JSON OK')
 "
 ```
 
-根路径由已注册的静态资源直接提供 Web UI（前述 Web UI 检查应返回 HTTP 200）。
-验证未命中静态资源的传统检测路径返回 HTTP 302，且 `Location` 精确为
-`http://172.29.203.1/`：
+`/generate_204` 是 DHCP option 114 自动 URI 使用的路径，必须返回同样的 capport JSON：
 
 ```sh
-for path in '/generate_204' '/hotspot-detect.html' '/connecttest.txt'; do
-  HEADERS=$(timeout 5s curl -sS -D - -o /dev/null "http://172.29.203.1:80${path}")
+timeout 5s curl -fsS "$BOARD_URL:80/generate_204" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d.get('captive') == True
+assert d.get('user-portal-url') == '$BOARD_URL/'
+print('GENERATE_204 JSON OK')
+"
+```
+
+根路径由已注册的静态资源直接提供 Web UI（前述 Web UI 检查应返回 HTTP 200）。
+验证未命中静态资源的传统检测路径（`/hotspot-detect.html`、`/connecttest.txt`）返回 HTTP 302，且 `Location` 精确为
+`$BOARD_URL/`：
+
+```sh
+for path in '/hotspot-detect.html' '/connecttest.txt'; do
+  HEADERS=$(timeout 5s curl -sS -D - -o /dev/null "$BOARD_URL:80${path}")
   STATUS=$(printf '%s\n' "$HEADERS" | awk 'NR == 1 {print $2}')
   LOCATION=$(printf '%s\n' "$HEADERS" | awk 'BEGIN {IGNORECASE=1} /^Location:/ {gsub("\\r", "", $2); print $2}')
   [ "$STATUS" = "302" ] || { echo "path ${path}: expected 302, got ${STATUS}"; exit 1; }
-  [ "$LOCATION" = "http://172.29.203.1/" ] || {
+  [ "$LOCATION" = "$BOARD_URL/" ] || {
     echo "path ${path}: unexpected Location ${LOCATION}"
     exit 1
   }
@@ -593,7 +625,7 @@ done
 ```sh
 for path in /captive-portal/api /api/v1/status /api/v1/adc/read; do
   STATUS=$(timeout 5s curl -sS -o /dev/null -w '%{http_code}' \
-    -X POST "http://172.29.203.1:80${path}")
+    -X POST "$BOARD_URL:80${path}")
   [ "$STATUS" = "405" ] || {
     echo "POST ${path}: expected 405, got ${STATUS}"
     exit 1
@@ -625,7 +657,7 @@ echo "After NCM connect: default gw=$CURR_DEFAULT_GW dns=$CURR_DNS"
   exit 1
 }
 EXTERNAL_ADDR=$(timeout 5s getent ahostsv4 example.com | awk 'NR == 1 {print $1}')
-[ -n "$EXTERNAL_ADDR" ] && [ "$EXTERNAL_ADDR" != "172.29.203.1" ] || {
+[ -n "$EXTERNAL_ADDR" ] && [ "$EXTERNAL_ADDR" != "$BOARD_IP" ] || {
   echo "External DNS resolution is unavailable or intercepted by the host environment"
   exit 1
 }
@@ -634,7 +666,7 @@ echo "Existing Internet route and DNS remain usable"
 
 **多宿主路由说明**：若 host 同时有其他网络接口且默认路由指向其他适配器，
 操作系统可能不会向 NCM 接口发起强制门户检测请求，自动打开不保证发生。
-此时用户可直接打开 `http://172.29.203.1/` 或使用 `curl`、CLI/TUI。
+此时用户可直接打开 `$BOARD_URL/` 或使用 `curl`、CLI/TUI。
 
 ### 2d. 持久化配置
 
@@ -728,10 +760,10 @@ Todo 16 实机 HIL 的 safe-reboot 路径必须选用安全值
 实参必须替换为本次已识别的设备或受控 helper：
 
 ```text
-sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh --execute --url http://172.29.203.1 --serial <identified-cdc-device> --reboot-command <identified-reboot-command> --capture-start <logic-or-sigrok-capture-start-command> --capture-stop <logic-or-sigrok-capture-stop-command> --combined-uf2 build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 --ota-image build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-ota.bin --confirm-dangerous-save all
+sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh --execute --url $BOARD_URL --serial <identified-cdc-device> --reboot-command <identified-reboot-command> --capture-start <logic-or-sigrok-capture-start-command> --capture-stop <logic-or-sigrok-capture-stop-command> --combined-uf2 build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 --ota-image build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-ota.bin --confirm-dangerous-save all
 ```
 
-其核心 `config-persistence-hil.sh --execute --url http://172.29.203.1 all`
+其核心 `config-persistence-hil.sh --execute --url $BOARD_URL all`
 形状不免除这些显式参数。该 `all` 流程包含 `safe-reboot`、
 `dangerous-auto-restore`、`capture-busy`、`ota-preserve`、`bootsel-preserve`
 和 `cdc-fallback` 六个真实 runner flow。Save 是唯一的持久化变更操作：
@@ -1010,9 +1042,46 @@ MASKROM/EDL 来自固件拥有的不可变目录 `GET /api/v1/tasks/catalog`，h
   把对应 MASKROM/EDL 行记为 pass；缺少兼容目标或 rail 接线必须标记
   `[blocked]`。
 
-HIL 前后逐字节保存并恢复 `/api/v1/tasks` blob，记录全部 Power/GPIO/Switch 基线；
-结束时把 `CON_MAS` 恢复 input，其余硬件状态恢复基线。证据写入
-`docs/testing/results/<YYYY-MM-DD>-builtin-automation-tasks-hil.md`。
+#### Task-v2 持久化与 workflow source
+
+Task-v2 验收必须在真实板卡上覆盖以下内容，不能只测 metadata：
+
+- 构建/分区：config snapshot 与 task-v2 共用一个 Settings NVS 分区
+  `0x1B0000..0x1D0000`（128 KiB，32 sectors），低于 2 MiB；构建保留至少
+  8 KiB Flash / 32 KiB RAM 的硬门禁通过。
+- `GET /api/v1/tasks` 和成功 mutation 必须带 `storage`：`used_bytes + free_bytes == total_bytes`，`total_bytes` 为当前 Settings NVS 总字节，`reserve_bytes` 为 8192，健康空板 `measured=true` 且 `save_allowed=true`。upsert 后 `task_bytes` 必须增加，clear 后回到 manifest 基线。
+- Web TaskCard 必须显示 NVS 已用/可用和 task 数据量；当 `measured=true` 且 `save_allowed=false` 时，Store current workflow 和 Import task IR 必须禁用并显示门禁提示。固件仍在 mutation 前以 `free_bytes >= reserve_bytes + required_new_bytes` 复核，不足返回 HTTP 507 `storage_full` 且零写入；delete/clear 不受门禁限制。低空间拒绝由 host 单测强制 free=0 覆盖；正常 HIL 不要求填满 NVS。
+- 通过 Web 或 source-bearing API upsert Task A 和 Task B，确认 revision 单调递增、
+  两个 slot 的 metadata/source digest/task-IR digest 与 `/tasks/ir` 的 full-IR digest
+  一致。保存后同时导出 task IR 和 board source，重新计算 SHA-256，必须逐字节匹配。
+- 普通冷重启后 A/B、store UUID、revision 和 source/IR digests 保持；任务仍为 inert，
+  直到显式 `task run`。combined-UF2 ROM BOOTSEL 恢复后重复同一检查，不得出现迁移、
+  seed 或自动执行。
+- fresh browser profile：board-backed `source_state=present` 的 Task 必须能从
+  `/tasks/slots/{slot}/source` 重新打开 exact source 并重新编译出相同 task-IR digest。
+  IR-only task、source 已被 full import 清除的 task 和 built-in 必须显示
+  “no lossless source”，不得伪造 Open。
+- 超过 4000 字节的 workflow source 只存在于浏览器 `local-only`，设备只收到 IR；
+  新浏览器不能从板子恢复该 source，但工作流导出/导入仍可保留它。4000 字节边界
+  必须覆盖恰好 4000 和 4001 两种情况。
+- `revision_conflict` / `catalog_conflict` 必须零写入；用旧 revision 重放 mutation
+  后，再 GET 确认任务和 digest 未变。full-IR import 只有在同 ID 且 task-IR digest
+  未变时保留 source；changed/removed task 的 source 必须消失。
+- CLI 必须实际执行 `task list`、`task store`、`task import`、`task export`、
+  `task source`、`task delete`、`task clear`、`task run --confirm`。确认
+  `task store` 当前写入 IR-only task（source_state=absent），`task source` 对它返回
+  `task_source_absent`；board-backed source 只能由 Web/API source-bearing upsert 创建。
+  `task list` 必须区分 builtin/stored 和 lossless-source=present|absent|unavailable。
+- Legacy task blob write/delete 路由必须不存在并返回 HTTP 405；不得写入、清空或
+  删除任务。唯一 clear/delete 路径是 JSON mutation。
+- CDC fallback 只验证 `task show` 与 `task clear`；`task show` 的计数必须与 task-v2
+  metadata 一致，`task clear` 后任务为空且 hardware 不变。
+- 旧 `linkr/task/tasks` Settings blob 不得被读取或迁移；旧数据存在时 store 仍按
+  task-v2 空/当前 manifest 处理。
+
+HIL 前后记录 `/api/v1/tasks` metadata、`/tasks/ir`、每个 slot 的 source、Power/GPIO/
+Switch 基线；结束时把 `CON_MAS` 恢复 input，其余硬件状态恢复基线。证据写入
+`docs/testing/results/<YYYY-MM-DD>-pass1-task-v2-adc0.md`。
 
 ### 3. 电源输出 get/set
 
@@ -1042,7 +1111,7 @@ timeout 5s radxa-linkr-debuggerctl --json power get vdd_5v
 
 # x1.2 已删除 switch/usb；GET 必须 404，且不得改变独立的 vdd_5v。
 timeout 5s curl -sS -o /tmp/linkr-switch-usb.json -w '%{http_code}\n' \
-  http://172.29.203.1/api/v1/switch/usb | grep -qx 404
+  $BOARD_URL/api/v1/switch/usb | grep -qx 404
 
 # 注意：vdd_5v 是 USB hub 的辅助 5 V 父轨；关闭会使 hub 及其下游设备断电。
 
@@ -1163,13 +1232,36 @@ timeout 5s radxa-linkr-debuggerctl --json adc read adc3
 验证：
 
 - 返回恰好八个 descriptor，顺序固定为 `5v_out`、`12v_out`、`20v_out`、
-  `vdd_5v`、`adc0`、`adc1`、`adc2`、`adc3`。第五路电源输出
-  `5v_usb_hub` 没有 INA226/ADC descriptor；不得为它伪造电流或电压通道，
-  `vdd_5v` 读数是包含 hub 支路的父轨总量。
-- 前四个是 INA226 电流通道，后四个是 ADC pad 电压通道；四个电压通道都没有
-  `power_enabled`。`adc0` 带固件提供的 `PD input divider; ADC pad voltage` note，
-  但公开值仍是 ADC0 pad 电压，不能乘 `115/15` 还原源侧电压。
-- `raw / mv / current_ua / sensor_value` 可解析，host 不做校准或零点修正。
+  `vdd_5v`、`adc0`、`adc1`、`adc2`、`adc3`。`5v_usb_hub` 与 `5v_otg`
+  没有 INA226/ADC descriptor；不得为它们伪造电流或电压通道，`vdd_5v` 读数是
+  包含 hub 支路的父轨总量。
+- 前四个是 INA226 电流通道，后四个是 ADC 电压通道；四个电压通道都没有
+  `power_enabled`。`adc0` 的 `role` 必须是 `pd_input`，canonical
+  `sensor_value` 是固件按 Device Tree R46/R47 分压还原的源侧 DC20V；
+  `raw`/`mv` 仍是 ADC pad 诊断值。`adc1`、`adc2`、`adc3` 的 `role` 必须是
+  `native`，canonical 值是 pad 电压。
+- `raw / mv / current_ua / sensor_value` 可解析；host 不做校准、零点修正或
+  `115/15` 倍乘。ADC0 精度未校准，约为 2%，不得声称更高精度。
+- Web 布局必须把 ADC0 合并进 PD 设置卡，ADC1-3 作为独立 native 卡片显示在
+  switch route 上方；ADC0 不得使用 0..3.3 V native 图。
+
+#### 4c. ADC0 fixed-voltage matrix and DMM
+
+在 target 由板载 PD 供电、ADC0 量程/接线已确认后，依次请求 fixed
+`5 V`、`9 V`、`12 V`、`15 V`、`20 V`（source 必须实际广告对应 fixed PDO；
+缺失时该档记 `[blocked]`），每档等待稳定后同时记录：
+
+- HTTP `GET /api/v1/adc/read?channel=adc0` 的 `sensor_value`（source）、`raw`、
+  `mv`（pad）、`role=pd_input`；
+- WebSocket single 与 batch 的 ADC0 `value`、`role`、以及 batch 的 channel metadata；
+- CLI `adc read adc0 -v` 的 `source_voltage` 与 `pad_mv`；
+- 若可用，用 DMM 在 Q28 之后、U10 之前的 `DC20V` 源侧测量同一档电压。
+
+验收要求：同一档 HTTP/WS single/WS batch/CLI 的 canonical source 值在协议精度内
+一致，`raw`/`mv` 只作 pad 诊断；不得由 host 用 `mv * 115/15` 生成 source 值。
+DMM 读数与 ADC0 source 值用于记录未校准误差；没有 DMM、或没有对应 fixed PDO
+时，该档必须明确标记 calibration/measurement limitation，不能写成高精度通过。
+现有精度声明上限约为 2%，不得从小样本推断更好精度。
 
 ### 4b. Eight-channel Compact Telemetry & GP29 Ownership
 
@@ -1177,26 +1269,27 @@ timeout 5s radxa-linkr-debuggerctl --json adc read adc3
 [docs/reference/adc-telemetry.md](../reference/adc-telemetry.md) 为准；这里只列出 HIL
 要确认的最小集合。当前固件固定上报八个 descriptor，顺序为
 `5v_out`、`12v_out`、`20v_out`、`vdd_5v`、`adc0`、`adc1`、`adc2`、`adc3`：
-前四个是 INA226 电流通道，后四个是纯监测 ADC pad 电压通道。
+前四个是 INA226 电流通道；ADC0 是 PD 输入源侧通道（`role=pd_input`，canonical
+source-side DC20V，`raw`/`mv` 为 pad），ADC1-3 是 native pad 电压通道。
 
-2026-10-21 的 x1.2 板卡 HIL 已覆盖 4b.1 HTTP 八 descriptor 固定顺序、4b.2/4b.3
-WebSocket 八通道与 18×8 batch、CLI 八通道、内嵌 Web row/pinout，以及 GP29 input-only；
-权威证据见
-[2026-10-21 ADC/pinout/J4 报告](results/2026-10-21-x1.2-adc-pinout-j4-hil.md)。
-该报告没有执行 ADC0 的真实 PD-source 物理拔出/重插自动 monitor，也没有执行 stuck-line
-电气故障注入；这两项仍为 `pending`，不得从数字协议/常态读数外推为通过。历史
-[2026-07-31 报告](results/2026-07-31-adc3-telemetry-hil.md)仅保留为旧四 descriptor
-背景。`capture_arm` / `subscribe` 的 `rate_hz`
-范围为 `1..250`，250 Hz 是当前上限；超过 250 必须返回 `invalid_rate`，不得
-静默 clamp。rolling nightly 检查（第 12h 节）独立于本节，不在本报告范围内。
+2026-10-21 的 x1.2 板卡 HIL 已覆盖旧镜像的 4b.1 HTTP 八 descriptor 固定顺序、
+4b.2/4b.3 WebSocket 八通道与 18×8 batch、CLI 八通道、内嵌 Web row/pinout，以及
+GP29 input-only；该报告是历史证据，不重写。其 ADC0 pad canonical 断言已被本规范
+的 source-side 契约取代。Pass 1 的新 HIL 证据写入
+[2026-10-22 Pass 1 草稿](results/2026-10-22-pass1-task-v2-adc0.md)，最终结果待补。
+该报告也没有执行 ADC0 的真实 PD-source 物理拔出/重插自动 monitor，也没有执行
+stuck-line 电气故障注入；这两项仍为 `pending`，不得从数字协议/常态读数外推为通过。
+历史[2026-07-31 报告](results/2026-07-31-adc3-telemetry-hil.md)仅保留为旧四
+descriptor 背景。`capture_arm` / `subscribe` 的 `rate_hz` 范围为 `1..250`，
+250 Hz 是当前上限；超过 250 必须返回 `invalid_rate`，不得静默 clamp。
 
 **4b.1 HTTP rich read shape (`required`, eight-descriptor digital shape passed 2026-10-21)**
 
 ```sh
-timeout 5s curl -fsS http://172.29.203.1/api/v1/adc/read > /tmp/linkr-adc-all.json
+timeout 5s curl -fsS $BOARD_URL/api/v1/adc/read > /tmp/linkr-adc-all.json
 for channel in 5v_out 12v_out 20v_out vdd_5v adc0 adc1 adc2 adc3; do
   timeout 5s curl -fsS \
-    "http://172.29.203.1/api/v1/adc/read?channel=$channel" \
+    "$BOARD_URL/api/v1/adc/read?channel=$channel" \
     > "/tmp/linkr-adc-$channel.json"
 done
 python3 - <<'PY'
@@ -1229,8 +1322,15 @@ for reading in readings:
         assert isinstance(reading.get('raw'), int) and isinstance(reading.get('mv'), int)
         sensor_value = reading.get('sensor_value', {})
         assert isinstance(sensor_value.get('val1'), int) and isinstance(sensor_value.get('val2'), int)
-        pad_uv = sensor_value['val1'] * 1_000_000 + sensor_value['val2']
-        assert abs(pad_uv - reading['mv'] * 1000) < 1000, f'{name} is not direct pad voltage'
+        canonical_uv = sensor_value['val1'] * 1_000_000 + sensor_value['val2']
+        pad_uv = reading['mv'] * 1000
+        if name == 'adc0':
+            assert reading.get('role') == 'pd_input'
+            expected_source_uv = pad_uv * 115 / 15
+            assert abs(canonical_uv - expected_source_uv) <= max(20_000, canonical_uv * 0.03), 'ADC0 canonical is not source-side'
+        else:
+            assert reading.get('role') == 'native'
+            assert abs(canonical_uv - pad_uv) < 1000, f'{name} is not pad voltage'
         for forbidden in ('value', 'current_ua', 'power_enabled', 'voltage_valid', 'voltage_uv'):
             assert forbidden not in reading, f'{name} must not carry {forbidden}'
 
@@ -1242,14 +1342,15 @@ print('eight-channel HTTP ADC shape accepted')
 PY
 ```
 
-上面的 `pad_uv` 与 `mv` 一致性断言同时禁止把 ADC0 的公开 `sensor_value` 换算为
-分压器源侧电压。host 不做 ADC 校准、零点修正或 `115/15` 倍乘。
+上面的断言确认 ADC0 的公开 `sensor_value` 是源侧值，而 `mv` 仍是 pad；ADC1-3
+的公开值仍是 pad。host 不做 ADC 校准、零点修正或 `115/15` 倍乘；约 2% 的未校准
+精度必须单独记录。
 
 **4b.2 WebSocket compact single-sample shape (`required`, passed 2026-10-21)**
 
 ```text
-timeout 5s node <<'NODE'
-const base = 'http://172.29.203.1';
+BOARD_URL="$BOARD_URL" timeout 5s node <<'NODE'
+const base = process.env.BOARD_URL;
 const session = await fetch(`${base}/api/v1/live-sessions`, { method: 'POST' })
   .then((r) => {
     if (!r.ok) throw new Error(`session create failed: HTTP ${r.status}`);
@@ -1304,6 +1405,13 @@ await new Promise((resolve, reject) => {
         reject(new Error(`current reading missing power_enabled: ${reading.name}`));
         return;
       }
+      if (reading.kind === 'voltage') {
+        const expectedRole = reading.name === 'adc0' ? 'pd_input' : 'native';
+        if (reading.role !== expectedRole) {
+          reject(new Error(`voltage role mismatch on ${reading.name}: ${reading.role}`));
+          return;
+        }
+      }
       if (reading.kind === 'voltage' && 'power_enabled' in reading) {
         reject(new Error(`${reading.name} must not carry power_enabled`));
         return;
@@ -1336,7 +1444,8 @@ console.log('eight-channel compact single-sample frame accepted');
 NODE
 ```
 
-记号含义：紧凑单样本帧没有 `raw`/`mv`/`sensor_value`；电流通道携带
+记号含义：紧凑单样本帧没有 `raw`/`mv`/`sensor_value`；每个电压通道携带
+`role`（ADC0 `pd_input`，ADC1-3 `native`）；电流通道携带
 `current_ua`、`voltage_valid`、`voltage_uv` 双遥测。`rate_hz` 的验收上限是
 250；251 及以上必须返回 `invalid_rate`，不得 clamp。外部 WS 客户端以前如果按
 旧 descriptor 数量或旧字段解析，必须迁移；没有 dual-emission shim。
@@ -1344,8 +1453,8 @@ NODE
 **4b.3 WebSocket compact batch shape (`required`, 18×8 passed 2026-10-21)**
 
 ```text
-timeout 5s node <<'NODE'
-const base = 'http://172.29.203.1';
+BOARD_URL="$BOARD_URL" timeout 5s node <<'NODE'
+const base = process.env.BOARD_URL;
 const session = await fetch(`${base}/api/v1/live-sessions`, { method: 'POST' })
   .then((r) => {
     if (!r.ok) throw new Error(`session create failed: HTTP ${r.status}`);
@@ -1383,6 +1492,13 @@ await new Promise((resolve, reject) => {
           channel.unit !== (current ? 'uA' : 'uV')) {
         reject(new Error(`batch channel metadata wrong: ${channel.name}`));
         return;
+      }
+      if (!current) {
+        const expectedRole = channel.name === 'adc0' ? 'pd_input' : 'native';
+        if (channel.role !== expectedRole) {
+          reject(new Error(`batch voltage role mismatch: ${channel.name}`));
+          return;
+        }
       }
     }
     if (data.channels[4].note !== 'PD input divider; ADC pad voltage') {
@@ -1425,7 +1541,7 @@ NODE
 
 **4b.4 Web sparkline 10 Hz / 90-sample (`required`; eight-row presence/order and production tests passed 2026-10-21, full manual 90-point observation remains required when changed)**
 
-用 Playwright 打开板载页面 `http://172.29.203.1/`，在 Power & measurements 卡片内
+用 Playwright 打开板载页面 `$BOARD_URL/`，在 Power & measurements 卡片内
 断言：四路电流 row（`5v_out`、`12v_out`、`20v_out`、`vdd_5v`）与 ADC0..ADC3
 四个电压区块的 SVG 历史长度都不超过 90 个采样点，且在稳定供电下两个方向各能
 保持 ~9 秒（`±1 秒`）的窗口宽度。ADC 区段按固件 descriptor 渲染并使用固定
@@ -1441,11 +1557,11 @@ NODE
 **4b.5 GP29 ADC3 ownership (`required`, direct ownership subcase `[passed]` by 2026-07-31 HIL; v1 snapshot compatibility subcases `pending`)**
 
 ```text
-timeout 5s curl -fsS http://172.29.203.1/api/v1/gpio
-timeout 5s curl -fsS http://172.29.203.1/api/v1/gpio/GP29
+timeout 5s curl -fsS $BOARD_URL/api/v1/gpio
+timeout 5s curl -fsS $BOARD_URL/api/v1/gpio/GP29
 timeout 5s curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"direction":"output","value":1}' \
-  http://172.29.203.1/api/v1/gpio/GP29   # must fail (firmware-owned input-only)
+  $BOARD_URL/api/v1/gpio/GP29   # must fail (firmware-owned input-only)
 ```
 
 断言：
@@ -1629,7 +1745,7 @@ Create live session and verify sigrok binary protocol over WebSocket:
 
 ```sh
 # Create live session
-timeout 5s curl -fsS -X POST http://172.29.203.1/api/v1/live-sessions
+timeout 5s curl -fsS -X POST $BOARD_URL/api/v1/live-sessions
 # Response: { "ws_url": "/api/v1/ws/0", ... }
 ```
 
@@ -2178,7 +2294,7 @@ Both should return normal JSON, not timeouts or errors.
 Verify sigrok-cli connects via raw-TCP port 5556:
 
 ```sh
-timeout 5s sigrok-cli -d linkr-debugger:conn=tcp-raw/172.29.203.1/5556 --scan
+timeout 5s sigrok-cli -d linkr-debugger:conn=tcp-raw/${BOARD_IP}/5556 --scan
 ```
 
 Verify bounded capture with exactly 65535 samples at 100 kHz, 0 gaps, restart
@@ -2191,10 +2307,10 @@ Verify WASM decoder resources load correctly:
 ```sh
 timeout 5s curl -fsS --compressed -D /tmp/decoder-js.headers \
   -o /tmp/logic-decoder.js \
-  http://172.29.203.1/assets/decoder/logic-decoder.js
+  $BOARD_URL/assets/decoder/logic-decoder.js
 timeout 5s curl -fsS --compressed -D /tmp/decoder-wasm.headers \
   -o /tmp/logic-decoder.wasm \
-  http://172.29.203.1/assets/decoder/logic-decoder_bg.wasm
+  $BOARD_URL/assets/decoder/logic-decoder_bg.wasm
 
 python3 - <<'PY'
 from pathlib import Path
@@ -2235,7 +2351,7 @@ hardware mutation**，第二个 PUT 必须是本轮第二条；二者之间不�
 其它 rail 或配置写操作：
 
 ```sh
-BOARD_URL=http://172.29.203.1
+BOARD_URL=$BOARD_URL
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"state":"on"}' "$BOARD_URL/api/v1/power/5v_out"
 curl -fsS -X PUT -H 'Content-Type: application/json' \
@@ -2357,7 +2473,7 @@ ROM BOOTSEL；如果存在 OTA test marker，同一次复位走 MCUboot 回滚�
 > 替代本节。
 
 ```sh
-timeout 5s curl -fsS -X POST http://172.29.203.1/api/v1/bootloader || true
+timeout 5s curl -fsS -X POST $BOARD_URL/api/v1/bootloader || true
 ```
 
 MCU 重启时 USB 连接可能先断开，因此以 BOOTSEL 枚举结果作为成功判据。使用有界重试循环
@@ -2394,7 +2510,7 @@ cp "$FLASH_UF2" "$RPI_MOUNT/"
 BOARD_READY=
 attempts=15
 while [ "$attempts" -gt 0 ]; do
-  if timeout 5s curl -fsS http://172.29.203.1/api/v1/status >/dev/null; then
+  if timeout 5s curl -fsS $BOARD_URL/api/v1/status >/dev/null; then
     BOARD_READY=1
     break
   fi
@@ -2531,7 +2647,7 @@ timeout 5s curl -fsS -X POST \
   -H 'X-Linkr-Ota-Size: <byte_size>' \
   -H "X-Linkr-Ota-Sha256: 0000000000000000000000000000000000000000000000000000000000000000" \
   --data-binary @"$TEST_BIN" \
-  http://172.29.203.1/api/v1/ota/upload
+  $BOARD_URL/api/v1/ota/upload
 # 验证返回 ok=false 且 error.code 包含 "sha256" 相关错误
 ```
 
@@ -2545,7 +2661,7 @@ timeout 3s curl -fsS -X POST \
   -H 'X-Linkr-Ota-Size: <byte_size>' \
   -H "X-Linkr-Ota-Sha256: $CORRECT_SHA" \
   --data-binary @"$TEST_BIN" \
-  http://172.29.203.1/api/v1/ota/upload || true
+  $BOARD_URL/api/v1/ota/upload || true
 # 立即检查状态：
 timeout 5s radxa-linkr-debuggerctl --json ota status
 # state 应为 idle 或 failed（不是 uploading）
@@ -2562,7 +2678,7 @@ timeout 30s curl -sS -o /tmp/linkr-ota-error.json -w '%{http_code}\n' -X POST \
   -H "X-Linkr-Ota-Size: $(stat -c %s "$TEST_BIN")" \
   -H "X-Linkr-Ota-Sha256: $CORRECT_SHA" \
   --data-binary @"$TEST_BIN" \
-  http://172.29.203.1/api/v1/ota/upload
+  $BOARD_URL/api/v1/ota/upload
 ```
 
 请求必须在服务端排空所有 body fragment 后返回 HTTP 415 和 JSON
@@ -2633,7 +2749,7 @@ timeout 5s radxa-linkr-debuggerctl --json ota upload "$INVALID_UF2"
 OTA 测试完成后，通过以下方式重新进入 BOOTSEL 并刷写，确认回退路径未被破坏：
 
 ```sh
-timeout 5s curl -fsS -X POST http://172.29.203.1/api/v1/bootloader || true
+timeout 5s curl -fsS -X POST $BOARD_URL/api/v1/bootloader || true
 # 使用第 9 节有界重试循环确认 BOOTSEL 枚举
 ```
 
@@ -2668,7 +2784,7 @@ classification assumes no external power-cycle or BOOTSEL action interrupts the
 controlled HIL run.
 
 **Browser runner** (`ota-hil.mjs`): Drives a real Chromium/Chromium-browser
-instance via Playwright against the board-hosted Web UI at `http://172.29.203.1/`.
+instance via Playwright against the board-hosted Web UI at `$BOARD_URL/`.
 Exercises the full front-end OTA card including local SHA-256 computation,
 upload, confirmation dialogs, and state polling. Distinguishes two confirmation
 flows: `auto` (waits for firmware watchdog auto-confirm) and `manual` (clicks
@@ -2696,9 +2812,9 @@ Default preflight (read-only, no gate required):
 
 ```sh
 ./docs/testing/scripts/web-ota-hil.sh --flow preflight
-# DRY-RUN: run_timeout 5s curl -fsS http://172.29.203.1/api/v1/status
-# DRY-RUN: run_timeout 5s curl -fsS http://172.29.203.1/api/v1/watchdog
-# DRY-RUN: run_timeout 5s curl -fsS http://172.29.203.1/api/v1/ota
+# DRY-RUN: run_timeout 5s curl -fsS $BOARD_URL/api/v1/status
+# DRY-RUN: run_timeout 5s curl -fsS $BOARD_URL/api/v1/watchdog
+# DRY-RUN: run_timeout 5s curl -fsS $BOARD_URL/api/v1/ota
 ```
 
 OTA status only:
@@ -2819,7 +2935,7 @@ and defers to the shell API runner for fault injection.
 
 #### 12g. Port and URL
 
-Both runners use `http://172.29.203.1` as the default board URL. The API runner
+Both runners use `$BOARD_URL` as the default board URL. The API runner
 default is port 80. The browser runner connects to the board-hosted Web UI on the
 same NCM-assigned address.
 
@@ -2901,6 +3017,13 @@ product PASS rows. The report also records the final CDC line-coding
 staging/promotion behavior: DTR=false defaults remain staged, HTTP/WS low-state
 changes are immediate, and LOW→HIGH publishes DTR/ingress only after staged work
 completes or rolls back.
+
+The Pass 1 task-v2 store and ADC0 source-side canonical contract are implemented
+but not yet board-validated in this document. The draft
+[2026-10-22 Pass 1 task-v2/ADC0 report](results/2026-10-22-pass1-task-v2-adc0.md)
+is a placeholder for the final artifact identity and HIL results; it is not a
+PASS citation. The 2026-10-21 report remains historical and must not be read as
+validating the new ADC0 source-side scalar.
 
 The current bounded pre-trigger and UART sample-0 decoder results are recorded in
 `docs/testing/results/2026-07-28-logic-analyzer-pre-trigger-uart-hil.md`, including

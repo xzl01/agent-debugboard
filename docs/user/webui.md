@@ -2,52 +2,65 @@
 
 # Web UI
 
-The board serves a React/Vite dashboard at `http://172.29.203.1/` over USB NCM. No proxy or extra software needed — the page talks directly to the board's `/api/v1` endpoints.
+The board serves a React/Vite dashboard over USB NCM at the board `.1` address of the host NCM `/30` (for example `http://10.20.30.1/`). No proxy or extra software needed — the page talks directly to the board's `/api/v1` endpoints.
 
 ## Access
 
-Plug in the USB cable and open:
+Plug in the USB cable, read the board URL, and open it:
 
-```text
-http://172.29.203.1/
+```sh
+ip -brief addr show
+# host NCM is .2 of the board /30; the board is .1
+# or, on the board CDC shell:
+ip
 ```
 
-On most operating systems, the board's captive portal detection will prompt the browser to open this page automatically. If it doesn't, navigate to the URL manually.
+On most operating systems, the board's captive-portal detection will prompt the
+browser to open this page automatically. If it doesn't, navigate to the printed
+URL manually.
 
 ## How auto-open works
 
 The board uses DHCP option 114 and HTTP detection endpoints to trigger the OS
 captive portal prompt without becoming the host's Internet gateway:
 
-- **DHCP**: the DHCPv4 server assigns a local NCM address and subnet route, but
-  deliberately does not advertise a default router or DNS server. It sends
-  DHCP option 114 (Captive Portal URI) with the value
-  `http://172.29.203.1/captive-portal/api`. This prevents the debugger from
-  taking priority over Ethernet, Wi-Fi, or VPN Internet access.
-- **HTTP port 80**: a single Zephyr HTTP service on `172.29.203.1:80` routes by
-  URL path. When a GET request arrives at `/captive-portal/api`, it responds
-  with HTTP 200 and a JSON body:
-  `{"captive":true,"user-portal-url":"http://172.29.203.1/","venue-info-url":"http://172.29.203.1/"}`.
-  Other unmatched GET paths return HTTP 302 with `Location: http://172.29.203.1/`.
+- **DHCP**: the DHCPv4 server assigns `network + 2` from the board's persisted
+  private `/30`, but deliberately does not advertise a default router or DNS
+  server. It sends DHCP option 114 (Captive Portal URI) built at runtime from
+  the current server address with the `/generate_204` path. This prevents the
+  debugger from taking priority over Ethernet, Wi-Fi, or VPN Internet access.
+- **HTTP port 80**: a single Zephyr HTTP service listens on port 80; the NCM host reaches it at the board `.1` address. When a
+  GET request arrives at `/captive-portal/api` or `/generate_204`, it responds
+  with HTTP 200 and the capport JSON body using the current board URL. Other
+  unmatched GET paths return HTTP 302 with `Location` set to the board URL.
 - **Auto-open is best-effort, not guaranteed.** Results vary by operating system
   version, network configuration, and whether the host has other active network
   interfaces. Users who need the Web UI can always open
-  `http://172.29.203.1/` directly in a browser, use `curl`, or rely on the
-  CLI/TUI.
+  the printed URL directly in a browser, use `curl`, or rely on the CLI/TUI.
 
 ## Dashboard Overview
 
 The main dashboard provides cards for:
 
-- **Power controls** — turn `12v_out`, `5v_out`, `20v_out`, `vdd_5v`, and
-  `5v_usb_hub` on/off. The hub is a child of `vdd_5v`: enabling it also enables
-  the parent; enabling the parent alone does not enable the hub.
+- **Power controls** — turn `12v_out`, `5v_out`, `20v_out`, `vdd_5v`,
+  `5v_usb_hub`, and `5v_otg` on/off. The hub and OTG port are children of
+  `vdd_5v`: enabling a child also enables the parent; enabling the parent alone
+  does not enable the children.
 - **ADC monitoring** — live current readings for the four INA226 rails; the hub
-  branch has no separate measurement.
+  and OTG branches have no separate measurement. ADC0 is shown as the PD input's measured
+  DC20V source voltage, while ADC1-3 are native pad-voltage cards.
 - **Switch routes** — TF/SD routing between `target` and `usb-reader`, plus
   `tf_wp` write protection. x1.2 has no USB route control.
 - **GPIO** — safe controls `GP5`-`GP9` and `GP12`-`GP16`, plus input-only
   `GP29`/ADC3. GP5/GP6 are ordinary J8 GPIOs, not switches.
+
+The Power & Measurements card merges ADC0 into the PD settings panel:
+the displayed scalar is the firmware's Device-Tree-reconstructed DC20V source
+value, with `raw`/`mv` available as pad diagnostics. ADC1, ADC2, and ADC3 render
+as separate native-voltage cards above the switch routes, using a 0..3.3 V
+scale. The Web UI never applies `115/15` or a host-side calibration table.
+ADC0 is uncalibrated to approximately 2%; the UI does not claim higher
+precision.
 
 Within the **Configuration > Saved** tab, the **Saved configuration** card is
 always visible. Its saved rows and actions appear below the header; power and
@@ -109,41 +122,65 @@ The Hardware controls drawer remembers its last **Power** or **I/O** section in
 browser storage. Clicking the backdrop outside the drawer closes it; clicks
 inside the drawer do not.
 
-## Built-In And Saved Tasks
+## Workflow Library, Tasks, And Import/Export
 
-Inside the **Automation** workspace, MASKROM and EDL appear as six ordinary
-firmware-owned built-in task rows, fetched from `GET /api/v1/tasks/catalog`
-and covering every combination of mode and `5v_out`, `12v_out`, or `20v_out`.
-The Web UI keeps no recovery recipes of its own: rails, GPIO levels, and wait
-timings all come from the validated firmware catalog. Built-ins use the same
-generic task runner as stored tasks and dispatch only ordinary power and GPIO
-requests. They are not stored in firmware flash and do not consume any of the
-four stored-task slots. The **Task** card lets you:
+### Workflow library
 
-- List the catalog built-ins together with tasks returned by `GET /api/v1/tasks`.
-  The two fetches are independent: if the catalog is unavailable or fails
-  validation, built-in rows disappear behind a visible error while stored
-  tasks stay usable.
-- Run a built-in directly without reading or mutating `/api/v1/tasks`.
-- Save the current editor workflow after it is expanded and verified to
-  contain only firmware-executable primitive steps.
-- Run a stored task: the page downloads the current `linkr-task.v1` blob,
-  selects the task by id, and dispatches each record through the ordinary
-  power, GPIO, and switch endpoints in order. `wait_ms` is applied
-  client-side after every successful request; the first failure stops the
-  run and surfaces the failed record. The wire `body` sent to the board
-  never carries `wait_ms`.
-- Clear all stored tasks. Live hardware is unchanged.
+The **Automation** workspace keeps multiple workflows in the browser's
+IndexedDB library. One workflow may deploy to several boards; deployments are
+keyed by board store UUID and task ID. **Save to library** updates the active
+workflow, **Save as new workflow** creates an independent entry, **Open** loads
+a saved workflow, and the delete action removes only that library entry. The
+unsaved editor draft is separate from the library and survives a reload through
+local draft storage; a changed draft prompts before opening another workflow.
 
-If a stored task uses a reserved built-in ID, the matching built-in row marks
-the stored entry as shadowed and running that ID selects the built-in. Clearing
-stored tasks removes the collision but leaves all catalog built-ins visible.
+The library is browser-local. Export a workflow to keep a portable copy.
+Workflow export/import uses canonical `linkr-test.v1` source and preserves
+loops, Units, and assertions. Workflow import previews and validates the file
+or pasted source before replacing the editor draft; it never runs the board.
+Task IR import/export is a separate action under the **Task** card. Task IR
+contains deployment requests, not an editable workflow.
 
-The firmware does not auto-run, replay, or pre-stage saved tasks at boot.
-A stored task that still lives in flash after a reboot is inert until the
-**Task card** runs it explicitly. Old development-stage task data is
-intentionally invalidated by the new marker `# linkr-task.v1` and the new
-key `linkr/task/tasks`; there is no migration or read alias for it.
+### Built-in and stored tasks
+
+MASKROM and EDL are six immutable firmware catalog entries at
+`GET /api/v1/tasks/catalog`, one per mode and `5v_out`/`12v_out`/`20v_out`.
+They are not stored in flash and do not consume the four task-v2 slots. The
+**Task** card lists them together with task-v2 metadata from
+`GET /api/v1/tasks`. Catalog and metadata fetches are independent: a catalog
+failure hides built-ins behind an error while stored tasks remain usable.
+
+The task-v2 store has four slots, separate UUID/revision, and exact
+`linkr-test.v1` source plus `linkr-task.v1` IR (each up to 4000 bytes on the
+board). The card lets you:
+
+- save the current workflow as a board task; the board receives exact source
+  only when it is at most 4000 bytes;
+- open a stored task's workflow source. A board-backed source (`present`) can
+  be reopened from a fresh browser profile after reboot. A source over 4000
+  bytes stays in the local workflow library only (`local-only`), is clearly
+  marked, and deploys only IR; a fresh browser cannot reopen it unless it was
+  exported/imported. An IR-only task or built-in has no lossless source and
+  shows that limitation instead of a false Open action.
+- run a stored task from the exact `/api/v1/tasks/ir` bytes and dispatch each
+  request through the ordinary power, GPIO, and switch endpoints. `wait_ms`
+  is client-side; the first failure stops the run.
+- import one task IR without changing siblings, or explicitly replace all
+  tasks with full-set IR. Import never runs hardware. Importing full IR keeps
+  a source only for an unchanged task-IR digest.
+- export one task IR or the full IR set. Exporting a built-in copies only its
+  main requests; it is not a lossless copy of catalog cleanup.
+- delete one stored task or clear all stored tasks atomically. Clear keeps the
+  store UUID and never changes live hardware.
+
+If a stored task uses a reserved built-in ID, the built-in row marks the stored
+entry as shadowed and running that ID selects the built-in. The old
+Task writes use only the JSON/base64 mutation endpoint; there is no blob upload
+or per-ID write/delete route.
+
+The firmware does not auto-run, replay, or seed tasks at boot. A stored task
+remains inert until explicitly run. The old `linkr/task/tasks` blob is not
+migrated or read.
 
 ## Firmware Tools And Power Analysis
 
@@ -152,9 +189,9 @@ key `linkr/task/tasks`; there is no migration or read alias for it.
   workflow.
 - **Power Analysis** is a workspace tab with ordinary captures and startup
   analysis.
-- **Automation** is a workspace tab with the test editor and the
-  flash-backed Task card that lists, stores, runs, and clears saved
-  request sequences.
+- **Automation** is a workspace tab with the workflow library, test editor,
+  and the task-v2 Task card that lists, imports, exports, runs, deletes, and
+  clears board tasks.
 
 ### Reboot And BOOTSEL
 
@@ -164,7 +201,7 @@ page reconnects; this action never enters ROM BOOTSEL and never produces an
 `RPI-RP2` device. Holding the physical BOOTSEL button across that reset is a
 separate ROM behavior. Any rail not restored by a saved v1 configuration
 snapshot returns to its inactive boot default; `vdd_5v` is the parent power item
-and `5v_usb_hub` is its child and also boots off. Re-apply rail and PD setup
+and `5v_usb_hub`/`5v_otg` are its children and also boot off. Re-apply rail and PD setup
 after the board returns.
 
 **Enter BOOTSEL** is a separate action through `POST /api/v1/bootloader`; it is

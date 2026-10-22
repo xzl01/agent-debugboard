@@ -4,15 +4,18 @@
 
 Radxa Linkr Debugger 固件 HTTP 和 WebSocket API 的 React/Vite 控制界面。
 生产固件会将 gzip 压缩的 UI 嵌入 flash，通过 USB NCM 在
-`http://172.29.203.1/` 提供服务。页面使用同源 `/api/v1` HTTP 和
-WebSocket 端点，正常板级控制不需要主机代理。
+主机 NCM `/30` 中板卡 `.1` 地址（例如 `http://10.20.30.1/`）提供服务。
+页面使用同源 `/api/v1` HTTP 和 WebSocket 端点，正常板级控制不需要主机代理。
 
 ## 访问
 
-连接 USB NCM 接口后打开：
+连接 USB NCM 接口后先读取板卡 URL，再打开：
 
-```text
-http://172.29.203.1/
+```sh
+ip -brief addr show
+# 主机 NCM 是板卡 /30 的 .2，板卡是 .1
+# 或在板端 CDC shell：
+ip
 ```
 
 ## 强制门户发现
@@ -20,32 +23,36 @@ http://172.29.203.1/
 固件通过 DHCP option 114 和 HTTP 检测端点辅助操作系统打开调试板 Web UI，
 同时避免把调试板配置成 host 的互联网网关。
 
-- **DHCP**：NCM 接口上的 DHCPv4 server 只分配本地地址和子网路由，明确不
-  通告默认网关或 DNS server。它仍发送 DHCP option 114（Captive Portal URI），
-  值为 `http://172.29.203.1/captive-portal/api`，因此不会抢占以太网、Wi-Fi
-  或 VPN 的互联网访问路径。
-- **HTTP port 80**：绑定在 `172.29.203.1:80` 的单一 Zephyr HTTP 服务按
-  URL 路径路由。GET 请求到达 `/captive-portal/api` 时返回 HTTP 200 和
-  JSON 正文：
-  `{"captive":true,"user-portal-url":"http://172.29.203.1/","venue-info-url":"http://172.29.203.1/"}`。
-  其他不匹配路由的 GET 路径返回 HTTP 302，`Location` 指向
-  `http://172.29.203.1/`。
+- **DHCP**：NCM 接口上的 DHCPv4 server 从板卡持久化的私有 `/30` 分配
+  `network + 2`，明确不通告默认网关或 DNS server。它仍发送 DHCP option 114
+  （Captive Portal URI），URI 在运行时由当前 server 地址和 `/generate_204`
+  路径生成，因此不会抢占以太网、Wi-Fi 或 VPN 的互联网访问路径。
+- **HTTP port 80**：单一 Zephyr HTTP 服务监听 80 端口；主机经 NCM 在板卡 `.1` 地址访问。GET 请求到达
+  `/captive-portal/api` 或 `/generate_204` 时返回 HTTP 200 和 capport JSON
+  正文（使用当前板卡 URL）。其他不匹配路由的 GET 路径返回 HTTP 302，
+  `Location` 指向当前板卡 URL。
 - **自动打开为 best-effort，不保证。** 结果因操作系统版本、网络配置和
   主机是否有其他活动网络接口而异。需要 Web UI 时，用户始终可以在浏览器中
-  直接打开 `http://172.29.203.1/`，或使用 `curl`、CLI/TUI。
+  直接打开输出的 URL，或使用 `curl`、CLI/TUI。
 
 ## 仪表盘概览
 
 主仪表盘提供以下卡片：
 
-- **电源控制** — 开关 `12v_out`、`5v_out`、`20v_out`、`vdd_5v` 和
-  `5v_usb_hub`。hub 是 `vdd_5v` 的子轨：打开 hub 会同时打开父轨，仅打开父轨
-  不会打开 hub。
-- **ADC 监测** — 四路 INA226 电源轨的实时电流读数；hub 支路没有独立测量。
+- **电源控制** — 开关 `12v_out`、`5v_out`、`20v_out`、`vdd_5v`、
+  `5v_usb_hub` 和 `5v_otg`。hub 与 OTG 端口是 `vdd_5v` 的子轨：打开子轨会同时
+  打开父轨，仅打开父轨不会打开子轨。
+- **ADC 监测** — 四路 INA226 电源轨的实时电流读数；hub 与 OTG 支路没有独立测量。
+  ADC0 作为 PD 输入的实测 DC20V 源侧电压显示，ADC1-3 是 native pad 电压卡片。
 - **Switch 路由** — TF/SD 在 `target` 和 `usb-reader` 之间切换，并提供 `tf_wp`
   写保护。x1.2 没有 USB route 控件。
 - **GPIO** — safe/control GPIO `GP5`-`GP9`、`GP12`-`GP16`，以及仅输入的
   `GP29`/ADC3。GP5/GP6 是普通 J8 GPIO，不是 switch。
+
+电源与测量卡片把 ADC0 合并到 PD 设置面板：显示值是固件按 Device Tree 还原的
+DC20V 源侧值，`raw`/`mv` 作为 pad 诊断值提供。ADC1、ADC2、ADC3 作为独立
+native 电压卡片显示在 switch 路由上方，使用 0..3.3 V 量程。Web UI 绝不执行
+`115/15` 或主机侧校准。ADC0 未校准精度约 2%，界面不声称更高精度。
 
 在 **Configuration > Saved** 标签页内，**已保存配置**卡片始终可见。配置行和操作
 显示在标题栏下方；电源和 Switch 分组默认展开，GPIO 分组默认折叠。分组折叠只改变
@@ -93,42 +100,63 @@ maskrom/EDL 恢复线 `CON_MAS`（`GP7`）是普通白名单输出，可通过�
 硬件控制浮窗会把上次选择的 **电源** 或 **I/O** 分区保存在浏览器缓存中。
 点击浮窗外侧背景会自动收起浮窗；点击浮窗内部不会收起。
 
-## 内置任务与已保存任务
+## Workflow 库、任务与导入导出
 
-在 **Automation** 工作区中，MASKROM 与 EDL 以六个固件内置任务行出现，
-来自 `GET /api/v1/tasks/catalog`，覆盖两种模式与 `5v_out`、`12v_out`、
-`20v_out` 的所有组合。Web UI 自身不保存任何恢复配方：rail、GPIO 电平
-与等待时间全部来自经过严格校验的固件 catalog。built-in 与 stored task
-共用通用 runner，只派发普通 power/GPIO 请求，不写入固件 flash，也不占用
-四个 stored task 槽。**Task** 卡片可以：
+### Workflow 库
 
-- 把 catalog 中的 built-in 与 `GET /api/v1/tasks` 返回的 stored task 合并显示。
-  两个请求相互独立：catalog 不可用或校验失败时，built-in 行消失并显示
-  错误提示，而 stored task 仍可正常使用。
-- 直接执行 built-in，不读取或修改 `/api/v1/tasks`。
-- 把当前编辑器工作流展开并校验为仅含固件可执行原语步骤后再保存。
-- 执行已存储任务：页面下载当前的 `linkr-task.v1` blob，按 id 选中任务，
-  再按顺序通过普通的 power、GPIO、switch 端点派发每条记录。`wait_ms`
-  在每次成功请求之后由**客户端** sleep；首次失败即停止，并把失败
-  记录展示在界面上。发给板子的 wire `body` 永远不会携带 `wait_ms`。
-- 清除全部已存储任务。当前硬件状态保持不变。
+**Automation** 工作区把多个 workflow 保存在浏览器 IndexedDB 库中。一个 workflow
+可以部署到多个板子；deployment 以 board store UUID 加 task ID 为键。
+**Save to library** 更新当前 workflow，**Save as new workflow** 创建独立条目，
+**Open** 打开已保存条目，删除只移除该库条目。未保存的 editor draft 与库分离，
+并通过本地 draft 存储在刷新后保留；打开另一个 workflow 前会提示未保存变更。
 
-如果 stored task 使用保留的 built-in ID，对应 built-in 行会标记该 stored
-entry 已被遮蔽；执行该 ID 时选择 built-in。清空 stored task 会删除碰撞条目，
-但 catalog 中的 built-in 仍保留显示。
+该库只在当前浏览器本地。需要可移植副本时必须导出 workflow。Workflow
+导入/导出使用 canonical `linkr-test.v1` source，保留 loops、Units 和 assertions。
+Workflow 导入会先预览并校验文件或粘贴的 source，再替换 editor draft；不会运行
+板子。Task IR 导入/导出是 **Task** 卡片中的独立动作；Task IR 是 deployment
+requests，不是可编辑 workflow。
 
-固件**不会**在开机时自动运行、重放或预演已存储任务。重启之后仍存在
-于 flash 中的任务保持静默，直到 **Task 卡片**显式运行它。旧开发期
-任务数据由新标记 `# linkr-task.v1` 与新 key `linkr/task/tasks`
-定向失效；既没有迁移路径，也不提供读取别名。
+### 内置任务与 task-v2 任务
+
+MASKROM 与 EDL 是 `GET /api/v1/tasks/catalog` 的六条不可变固件目录条目，
+覆盖两种模式与 `5v_out`/`12v_out`/`20v_out`。它们不写入 flash，也不占四个
+task-v2 槽。**Task** 卡片把它们与 `GET /api/v1/tasks` 的 task-v2 metadata
+合并显示。Catalog 与 metadata 拉取相互独立：catalog 失败时 built-in 行隐藏并
+显示错误，stored task 仍可用。
+
+Task-v2 store 有四个 slot、独立 UUID/revision，并在板上保存 exact
+`linkr-test.v1` source 加 `linkr-task.v1` IR（各最多 4000 字节）。卡片可以：
+
+- 把当前 workflow 保存为 board task；只有 source <=4000 字节时才把 exact
+  source 写入板子。
+- 打开 stored task 的 workflow source。board-backed source（`present`）可在
+  重启后由新浏览器 profile 从板子重新打开。超过 4000 字节的 source 只保存在
+  本地 workflow library（`local-only`），会明确标记，并只部署 IR；除非导出再
+  导入，新浏览器无法重新打开。IR-only task 或 built-in 没有无损 source，界面
+  显示该限制，不提供假的 Open 动作。
+- 从 exact `/api/v1/tasks/ir` 运行 stored task，并通过普通 power、GPIO、switch
+  端点逐条派发。`wait_ms` 只在客户端；首次失败即停止。
+- 导入一个 task IR 而不改兄弟任务，或显式用 full-set IR 替换全部任务。导入
+  永不运行硬件。Full IR 导入只对 task-IR digest 未变的任务保留 source。
+- 导出一个 task IR 或 full IR set。导出 built-in 只复制其主要请求，不包含
+  catalog cleanup，因此不是 built-in 的无损副本。
+- 原子删除一个 stored task 或清空全部任务。Clear 保持 store UUID，不改变实时
+  硬件。
+
+如果 stored task 使用保留的 built-in ID，对应 built-in 行会标记 stored entry
+已被遮蔽；执行该 ID 时选择 built-in。Task 写入只有 JSON/base64 mutation；不存在
+blob upload 或 per-ID write/delete 路由。
+
+固件不会在 boot 时自动运行、重放或播种任务。Stored task 保持静默，直到显式
+运行。旧 `linkr/task/tasks` blob 不迁移、不读取。
 
 ## 固件工具与电源分析
 
 - **固件工具**位于仪表盘侧栏，包含 OTA、正常重启和 ROM BOOTSEL 控件。
   完整 OTA 工作流参见 [OTA 固件更新](ota.zh-CN.md)。
 - **电源分析**是工作区标签页，包含普通捕获和启动分析。
-- **Automation** 是工作区标签页，包含测试编辑器以及用于列出、保存、
-  执行和清除已存请求序列的 flash 持久化 Task 卡片。
+- **Automation** 是工作区标签页，包含 workflow 库、测试编辑器，以及用于列出、
+  导入、导出、执行、删除和清空 board task 的 task-v2 Task 卡片。
 
 ### 重启与 BOOTSEL
 
@@ -136,7 +164,8 @@ entry 已被遮蔽；执行该 ID 时选择 built-in。清空 stored task 会删
 后 250 ms 重启，页面随后重连；该动作绝不请求 ROM BOOTSEL，也不会出现
 `RPI-RP2` 设备。如果复位期间一直按住物理 BOOTSEL 按键，则由 ROM 单独决定
 进入 BOOTSEL。未被已保存 v1 配置快照恢复的电源轨回到各自未使能的启动默认
-状态；`vdd_5v` 是父级电源项，`5v_usb_hub` 是它的子轨且同样启动关闭。板子恢复
+状态；`vdd_5v` 是父级电源项，`5v_usb_hub` 与 `5v_otg` 是它的子轨且同样启动
+关闭。板子恢复
 后必须重新设置并验证电源轨与 PD。
 
 **Enter BOOTSEL** 通过 `POST /api/v1/bootloader` 执行，是独立动作，不是

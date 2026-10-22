@@ -77,7 +77,7 @@
         <mxCell id="66" value="Logic / Power Capture&#xa;firmware capture engine&#xa;Sigrok server backend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="15">
           <mxGeometry x="980" y="410" width="300" height="180" as="geometry" />
         </mxCell>
-        <mxCell id="17" value="Board I/O Plane&#xa;five power outputs (parent/child) + recovery lines&#xa;SD route + TF write protect&#xa;11 safe GPIO + ADC telemetry" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" vertex="1" parent="14">
+        <mxCell id="17" value="Board I/O Plane&#xa;six power outputs (parent/child) + recovery lines&#xa;SD route + TF write protect&#xa;11 safe GPIO + ADC telemetry" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" vertex="1" parent="14">
           <mxGeometry x="60" y="780" width="300" height="105" as="geometry" />
         </mxCell>
         <mxCell id="16" value="CH347F&#xa;JTAG / SWD only&#xa;NOT the J4 UART path" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="14">

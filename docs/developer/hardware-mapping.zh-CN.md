@@ -140,10 +140,10 @@ CH224A probe遇到bus busy/stuck或timeout分类时，每个probe序列最多调
 恢复SCL脉冲之前和恢复后的probe retry之前都必须重新通过ADC gate。
 
 该voltage-divider实例只在CH224A锁内使用，本身不是公共telemetry descriptor。
-独立的公共`adc0` descriptor通过raw ADC driver读取同一个ADC pad，上报的是pad电压，
-不是分压器还原后的源侧电压；driver的`adc_context`负责串行化ADC0与其它通道。
-未来若上报源侧电压，必须新增由firmware按Device Tree换算的独立字段，不能由host对
-公共`adc0`执行`115/15`倍乘。
+公共`adc0` descriptor使用同一组Device Tree分压事实上报canonical源侧DC20V电压；
+`raw`和`mv`仍是ADC pad诊断值，ADC1-3上报native pad电压。driver的`adc_context`
+负责串行化ADC0与其它通道。主机不得对任何公共ADC字段执行`115/15`或其它分压
+倍乘。ADC0未校准精度约为2%。
 
 | 电源轨 | 器件 | 7 位地址 | 采样电阻 |
 | --- | --- | --- | --- |
@@ -153,10 +153,10 @@ CH224A probe遇到bus busy/stuck或timeout分类时，每个probe序列最多调
 | `vdd_5v` | U12 | `0x45` | 10 mOhm |
 
 J8只引出ADC1/GP27、ADC2/GP28和ADC3/GP29；ADC0/GP26不是J8端子。
-ADC1/ADC2不是电源轨采样输入。ADC0至ADC3均为没有电源状态的纯监测pad电压通道；
-ADC3（`GP29`）仍由`adc3`拥有且仅输入。固件先上报四个INA226电流descriptor，再
-上报这四个ADC descriptor；主机直接展示固件值，不做主机侧校准表、零点修正或
-分压换算。合约见
+ADC1/ADC2不是电源轨采样输入。ADC0是PD输入源侧通道，ADC1-3是native pad电压
+通道；它们都没有电源状态，ADC3（`GP29`）仍由`adc3`拥有且仅输入。固件先上报
+四个INA226电流descriptor，再上报这四个ADC descriptor；主机直接展示固件值，
+不做主机侧校准表、零点修正或分压换算。合约见
 [ADC telemetry 合约](../reference/adc-telemetry.md)。
 
 ## 原理图参考

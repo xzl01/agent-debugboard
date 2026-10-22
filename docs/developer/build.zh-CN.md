@@ -8,7 +8,7 @@ Radxa Linkr Debugger 固件的详细构建流程、产物说明和 CI/release as
 
 仓库提供的 `shell.nix` 包含 Zephyr SDK、cmake、ninja、dtc、gperf、pkg-config、
 udev、含 Zephyr 包的 Python、Node.js 22、Cargo、rustc、clippy、rustfmt、clang、lld、
-wasm-bindgen-cli、固定版本的启用 CH347 的 OpenOCD（`openocd-latest`）、
+wasm-bindgen-cli、Zopfli 1.0.3、固定版本的启用 CH347 的 OpenOCD（`openocd-latest`）、
 picotool 和 udisks2。Zephyr SDK 的安装路径由 shell hook 导出，交互式构建
 会自动获得 `gdb`、`objdump` 等 SDK 工具。
 
@@ -61,6 +61,22 @@ nix-shell --run "cd web && npm run build"
 
 west 工作区（`west init` / `west update`）只需一次性准备，
 `make workspace` 可将其刷新到清单锁定版本。
+
+## 内嵌 Web 压缩与资源门禁
+
+固件 Web bundle 以 **Zopfli 1.0.3** 生成的**标准 gzip**嵌入。CMake 查找真实
+`zopfli` 可执行文件，并用 `--i15` 调用
+`apps/radxa_linkr_debugger/scripts/zopfli_compress.py`；脚本校验 gzip 无
+optional header 且 `mtime=0`，解压必须逐字节等于源文件，并检查重复压缩可复现。
+`generate_inc_file_for_target` 只对已验证的 gzip 字节做 hex 编码，禁止再次用
+别的 codec 压缩。不要给这条内嵌路径增加 Brotli 或其它 content encoding。
+
+Canonical build 保留硬资源门禁：至少 **8 KiB Flash** 和 **32 KiB RAM** 空闲。
+ROM/RAM linker assertion 分别要求 `_flash_used <= 0xCCFD8`（847832 字节中保留
+8192）和 `_image_ram_size <= 0x7A000`（532480 字节中保留 32768）。超过任一门禁
+的 build 必须失败，不能静默吃掉 reserve。`zopfli` 必须存在于 build shell 和
+CI；干净固件构建需要 Node.js 22、npm、Rust `wasm32-unknown-unknown` target、
+`wasm-bindgen-cli 0.2.121` 和 Zopfli 1.0.3。
 
 ## Nix 包边界
 

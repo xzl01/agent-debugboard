@@ -31,7 +31,7 @@ silkscreen.
 ### Host USB
 
 Single USB-C connection at J15 to the PC. The board enumerates as a composite device:
-- **USB NCM** — network interface, control plane at `http://172.29.203.1`
+- **USB NCM** — network interface; the control-plane URL is the board address printed by `ip`
 - **USB CDC ACM** — console serial fallback for the Zephyr shell and BOOTSEL recovery
 - **USB CDC ACM (J4)** — one sink/source of the MCU J4 serial runtime; observed
   as ACM4 in the final x1.2 HIL, but host tty numbering is not stable
@@ -49,7 +49,7 @@ below is owned by the RP2354A runtime and never traverses CH347.
 
 ### Power Outputs
 
-Five firmware-advertised power outputs are controllable:
+Six firmware-advertised power outputs are controllable:
 
 | Output | Voltage | Use case |
 |--------|---------|----------|
@@ -58,19 +58,24 @@ Five firmware-advertised power outputs are controllable:
 | `20v_out` | 20V | USB-PD-class targets |
 | `vdd_5v` | 5V | internal auxiliary/parent 5 V rail for the USB hub |
 | `5v_usb_hub` | 5V | switched child branch for the USB hub |
+| `5v_otg` | 5V | bidirectional J3 VBUS switch, child of `vdd_5v` |
 
 `vdd_5v` is the internal auxiliary 5 V parent rail. `5v_usb_hub` is its switched
 child on GPIO24 and boots off. Enabling the hub enables `vdd_5v` first when
 needed; disabling the hub leaves the parent alone; disabling `vdd_5v` turns the
-hub off first; enabling `vdd_5v` does not enable the hub. x1.2 has no USB route
-switch and no `/switch/usb` endpoint.
+hub off first; enabling `vdd_5v` does not enable the hub. `5v_otg` is the
+GPIO23/Q10 switch for external J3 VBUS; it is also a `vdd_5v` child, and
+external VBUS can backfeed the parent through Q10's body diode. x1.2 has no USB
+route switch and no `/switch/usb` endpoint.
 
 The four INA226 monitors cover `5v_out`, `12v_out`, `20v_out`, and `vdd_5v`;
-they are readable via `adc read`. `5v_usb_hub` has no INA226 and no ADC
+they are readable via `adc read`. `5v_usb_hub` and `5v_otg` have no INA226 and no ADC
 descriptor, so the `vdd_5v` reading is the parent total including the hub
-branch. ADC0 through ADC3 are four separate monitor-only pad-voltage inputs and
-are not rail-current sensors; ADC3 is GP29 and input-only in the safe GPIO
-catalog.
+branch; a released `5v_otg` is not a measured 0 V. ADC0 is the PD-input source-side DC20V channel (`role="pd_input"`,
+Device Tree divider reconstruction); `raw`/`mv` remain pad diagnostics. ADC1-3
+are native pad-voltage inputs (`role="native"`), not rail-current sensors.
+ADC3 is GP29 and input-only in the safe GPIO catalog. No host applies `115/15`.
+ADC0 accuracy is uncalibrated and about 2%.
 
 ### TF/SD Card Slot
 

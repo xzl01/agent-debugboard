@@ -19,11 +19,12 @@ validation. Historical HIL evidence does not establish x1.2 acceptance.
 | --- | --- |
 | USB control | Composite USB: NCM HTTP/WS + CDC ACM fallback |
 | Host automation | Rust `linkr-host` for Web/gateway/Broker/MCP and raw UART RX archives, plus Rust CLI/TUI with JSON output |
-| Web UI | Dashboard at http://172.29.203.1/ |
+| Web UI | Dashboard at the board `.1` address of the host NCM `/30` |
 | Logic analyzer | PIO2+DMA, 100 kHz–125 MHz, WebSocket/raw-TCP Sigrok with a [common packed arena and current WIDE11 capture](docs/reference/logic-analyzer.md) |
 | Power analyzer | Triggered capture with ring buffer, CSV/NDJSON export |
-| Power outputs | `12v_out`, `5v_out`, `20v_out`, `vdd_5v`, `5v_usb_hub` |
-| ADC monitor | Current readings for `5v_out`, `12v_out`, `20v_out`, and `vdd_5v` plus GP29/ADC3 voltage telemetry; see [docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md) |
+| Power outputs | `12v_out`, `5v_out`, `20v_out`, `vdd_5v`, `5v_usb_hub`, `5v_otg` |
+| ADC monitor | Current readings for `5v_out`, `12v_out`, `20v_out`, and `vdd_5v`; ADC0 source-side DC20V; ADC1-3 native pad voltage; see [docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md) |
+| Automation tasks | Four task-v2 slots with exact source/IR, atomic mutations, NVS usage display and a save-reserve gate; immutable MASKROM/EDL catalog; see [task API](docs/user/api.md#tasks-firmware-catalog-and-task-v2-storage) |
 | Switch routes | Firmware-advertised TF/SD route and TF write-protect (`writable`/`protected`) |
 | GPIO | `GP5`–`GP9`, `GP12`–`GP16`; `GP29` remains cataloged but is input-only while owned by `adc3` (see [GP29 ownership](docs/reference/adc-telemetry.md#gp29-ownership)) |
 | OTA update | MCUboot unsigned OTA |
@@ -32,8 +33,12 @@ validation. Historical HIL evidence does not establish x1.2 acceptance.
 | Captive portal | DHCP option 114/HTTP auto-open for Web UI |
 
 `vdd_5v` is an independent power output and is not coupled to switch routes.
-`5v_usb_hub` is a child rail of `vdd_5v` controlled by GPIO24 and has no INA226
-channel.
+`5v_otg` is a bidirectional J3 VBUS child of `vdd_5v` controlled by GPIO23;
+external VBUS can backfeed through Q10, and there is no INA226/ADC. `5v_usb_hub`
+is a child rail of `vdd_5v` controlled by GPIO24 and has no INA226
+channel. The task-v2 store uses the firmware-owned
+Settings NVS partition (128 KiB in the current image) and four slots;
+it does not read the removed `linkr/task/tasks` blob.
 
 WIDE11 uses a 144184 B hardware slice and a 43008 B WS telemetry ring within the 161144 B total backing allocation. Historical strict 10/10 continuous points are FAST8 static 2.600 MHz and GP16-active 1.200 MHz WS / 1.375 MHz TCP; WIDE11 static 1.050 MHz WS / 1.175 MHz TCP and GP16-active 850 kHz WS / 950 kHz TCP. These are transport operating points, not 125 MHz continuous claims or x1.2 revalidation.
 
@@ -91,7 +96,7 @@ Future local tests remain distinct from board HIL.
 1. [Install the CLI](docs/user/install.md)
 2. Connect the board via USB
 3. Run `radxa-linkr-debuggerctl doctor`
-4. Open http://172.29.203.1/ for the Web UI
+4. Open the board `.1` address of the host NCM `/30` for the Web UI
 
 ```sh
 radxa-linkr-debuggerctl --version

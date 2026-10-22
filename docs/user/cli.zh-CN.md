@@ -3,9 +3,13 @@
 [English](cli.md)
 
 `radxa-linkr-debuggerctl` 通过 USB NCM 与调试板通信。release 安装包还会提供
-指向同一可执行文件的 `rdb` 链接，因此两个名称接受完全相同的命令。板子运行
-DHCPv4 server，主机会自动获取兼容地址。默认设备 URL 为
-`http://172.29.203.1`，仅在需要覆盖时才传 `--url`。
+指向同一可执行文件的 `rdb` 链接，因此两个名称接受完全相同的命令。下文示例为
+简洁省略了 `--url`；请在前面加上 `--url http://<板卡 IP>`，或设置
+`LINKR_BOARD_URL=http://<板卡 IP>`。板子运行
+DHCPv4 server，主机会自动获取兼容地址。每块板首次启动会派生并持久化唯一的
+私有 `/30` 与 MAC。主机 NCM 地址是该网络中的 `.2`，板卡是同一 `/30` 的 `.1`；
+用该板卡 URL 传 `--url`（历史编译默认值只作为旧镜像回退）。CDC shell 的 `ip`
+命令也会打印板卡 URL。
 
 安装统一桌面栈后，运行 CLI/TUI 只会在后台启动一个 `linkr-tray` 守护；
 Tray 与 Host 服务位于同一进程。使用 `-d` / `--desktop` 可只启动桌面启动器
@@ -59,6 +63,21 @@ radxa-linkr-debuggerctl --json adc read
 radxa-linkr-debuggerctl --json gpio list
 ```
 
+
+## 网络身份
+
+```sh
+radxa-linkr-debuggerctl --url http://10.20.30.1 ip
+radxa-linkr-debuggerctl --url http://10.20.30.1 ip network 10.20.30.0/30
+radxa-linkr-debuggerctl --url http://10.20.30.1 ip mac 02:11:22:33:44:55
+radxa-linkr-debuggerctl --url http://10.20.30.1 --json ip
+```
+
+`ip` 输出持久化的 MAC、来源、私有 `/30`、板卡地址、DHCP 基址和板卡 URL。
+`network` 与 `mac` 修改由固件原子持久化。`net` 是 `ip` 的别名。非法 MAC、
+非私有或未对齐的 `/30` 会在本地被拒绝。修改网络后可能需要重新连接 USB NCM
+接口或重新获取主机 DHCP 租约；后续命令用 `--url` 指向新的板卡 URL。
+
 ## 电源
 
 四条可控电源轨：`12v_out`、`5v_out`、`20v_out`、`vdd_5v`。其中 `vdd_5v`
@@ -81,9 +100,11 @@ radxa-linkr-debuggerctl power list
 
 ## ADC（电流与电压监测）
 
-四路 INA226 电流监测覆盖 `5v_out`、`12v_out`、`20v_out`、`vdd_5v`；
-`adc0` 到 `adc3` 是四路仅监测 pad 电压通道。默认输出简洁
-（`5v_out=0.540000A`），加 `-v` 可看到 `signal`、`mv` 等原始 ADC 字段。
+四路 INA226 电流监测覆盖 `5v_out`、`12v_out`、`20v_out`、`vdd_5v`。
+`adc0` 是 PD 输入源侧通道：canonical 值是 Device Tree 按 R46/R47 分压还原的
+DC20V 源侧电压；`raw` 和 `mv` 仍是 ADC pad 诊断值。`adc1` 到 `adc3` 是 native
+pad 电压通道。默认输出简洁（`5v_out=0.540000A`），加 `-v` 可看到 `signal`、
+`source_voltage`、`pad_mv`、`raw` 等字段。
 
 ```sh
 radxa-linkr-debuggerctl adc read
@@ -92,6 +113,9 @@ radxa-linkr-debuggerctl adc read vdd_5v
 radxa-linkr-debuggerctl adc read adc0
 radxa-linkr-debuggerctl adc read adc3
 ```
+
+CLI 直接展示固件 canonical 值，不做 `115/15`、校准表或零点修正。ADC0 未校准
+精度约为 2%；没有逐板校准时不得声称更高精度。
 
 ### 录制
 
@@ -109,13 +133,15 @@ radxa-linkr-debuggerctl adc record /tmp/adc.csv 500 --rate-hz 250
 - 设备时间保留在 `metadata.device_timing` 中
 - 采样环覆盖通过 `metadata.dropped_samples` 在首个受影响行报告
 - NDJSON 保留全部八个描述符；CSV 先写四路电流 rail，再追加
-  `adc0_voltage_uv` 到 `adc3_voltage_uv`，未知或不可用字段写为空单元格
+  `adc0_voltage_uv` 到 `adc3_voltage_uv`。ADC0 是 canonical 源侧值，
+  ADC1-3 是 native pad 值；未知或不可用字段写为空单元格。
 
 ### JSON ADC 输出
 
 `--json adc read` 返回固定八通道顺序的完整诊断链路：四路电流 rail 后接
-ADC0..ADC3 pad 电压。主机 CLI 直接展示固件值，不做主机侧校准。PD 控制使用
-`pd status`、`pd fixed MV` 和
+ADC0..ADC3。ADC0 的 canonical scalar 是源侧 DC20V，`raw`/`mv` 是 pad 诊断值；
+ADC1-3 是 native pad 电压。主机 CLI 直接展示固件值，不做主机侧校准或分压换算。
+PD 控制使用 `pd status`、`pd fixed MV` 和
 `pd pps MV`（整板上限 20 V）。
 
 ## Switch 路由
@@ -208,35 +234,16 @@ BOOTSEL 提示。
 独立的 CLI `bootloader` 命令或 Web **Enter BOOTSEL** 卡片。详见
 [TUI 指南](tui.zh-CN.md) 与 [Web UI 指南](webui.zh-CN.md)。
 
-## 任务（固件目录与保存的请求序列）
+## 任务（固件目录与 task-v2 存储）
 
-内置自动化任务全部来自固件拥有的不可变目录 `GET /api/v1/tasks/catalog`。
-CLI 自身不保存任何恢复配方：每条 rail、GPIO、电平、等待与 cleanup 步骤都
-由固件目录提供。当前目录固定包含六个 MASKROM/EDL 配方，分别覆盖模式与
-`5v_out`、`12v_out`、`20v_out` 的组合：
+内置自动化任务来自固件拥有的不可变目录 `GET /api/v1/tasks/catalog`。CLI 不保存
+恢复配方：rail、GPIO、极性、等待和 cleanup 全部来自目录。当前目录始终提供六条
+MASKROM/EDL 配方，覆盖两种模式和 `5v_out`/`12v_out`/`20v_out` 三个 rail。
 
-```text
-builtin/maskrom/5v_out     builtin/edl/5v_out
-builtin/maskrom/12v_out    builtin/edl/12v_out
-builtin/maskrom/20v_out    builtin/edl/20v_out
-```
-
-built-in 不占用固件任务槽，也不会通过 `/api/v1/tasks` 读取、写入或删除；
-它们由通用任务 runner 派发，每条记录就是普通的 `gpio` 或 `power` PUT。
-
-同一个合并列表还包括显式保存在调试板 flash `linkr/task/tasks` 键下的
-任务 blob。固件只校验和保存 blob，不负责执行；CLI 通过
-`GET /api/v1/tasks` 取回已存任务，在本地解析并按顺序派发。`wait_ms` 只在
-成功请求后由客户端 sleep，不会进入控制端点。built-in 与 stored task 都
-在首次失败时停止，失败或部分取消的 built-in 随后执行目录声明的 cleanup
-序列；CLI 不推断也不硬编码任何 cleanup。stored task 不推断 cleanup。
-built-in 成功结束时所选电源轨保持开启。该流程与执行正常冷重启的 `reboot`
-无关，也与进入调试板 RP2350 ROM BOOTSEL 的 `bootloader` 无关。
-
-固件目录接口不可用时，`task list` 仍然展示 stored task，同时返回结构化的
-`catalog_error` 与 `catalog_available:false`；任何 `task run builtin/...`
-调用都会返回 `catalog_unavailable`，不会回退到被 shadow 的 stored task。
-stored task 在目录不可用期间仍可正常工作。
+Stored task 位于独立的四槽 task-v2 store。板子为每个任务保存最多 4000 字节的
+exact canonical `linkr-test.v1` source 和最多 4000 字节的 `linkr-task.v1`
+deployment IR。Store 有独立 UUID、uint64 revision、catalog fingerprint 和
+SHA-256 source/IR digest。Built-in 不占槽，也不出现在 stored metadata 中。
 
 ```sh
 # 列出合并后的固件目录（built-in 与 stored）
@@ -245,63 +252,63 @@ radxa-linkr-debuggerctl task list
 # 直接运行内置任务，不写入固件 flash
 radxa-linkr-debuggerctl task run builtin/maskrom/12v_out --confirm
 
-# 把本地文件里的 linkr-task.v1 blob 写入板子
+# 把 one-task IR 文件写成 IR-only board task
 radxa-linkr-debuggerctl task store my-task.ndjson my-task-id
 
-# 执行已存储任务：CLI 取回 blob 并按顺序派发记录
-radxa-linkr-debuggerctl task run my-task-id --confirm
+# 导入完整 linkr-task.v1 IR 集，替换全部 board task
+radxa-linkr-debuggerctl task import all-tasks.ndjson
 
-# 清除全部已存储任务
+# 导出 exact full IR set
+radxa-linkr-debuggerctl task export all-tasks.ndjson
+
+# 导出 board-backed exact source（存在时）
+radxa-linkr-debuggerctl task source my-task-id my-task.linkr-test.ndjson
+
+# 原子删除单个任务或清空全部任务
+radxa-linkr-debuggerctl task delete my-task-id
 radxa-linkr-debuggerctl task clear
+
+# 执行 stored task：CLI 取回 IR 并按顺序派发记录
+radxa-linkr-debuggerctl task run my-task-id --confirm
 ```
 
-保存记录规则——每条记录都是对 `/api/v1/power/`、`/api/v1/gpio/` 或
-`/api/v1/switch/` 白名单下某路径的单条 `PUT`，附 JSON 字符串形式的
-`body` 以及可选的整数 `wait_ms`（范围 `0..60000`）。blob 始终以
-`# linkr-task.v1` 开头，每个任务用 `# task <id>` 标记，blob 上限为
-4096 字节，最多 4 个任务、每个任务最多 32 条记录。任何越界、不在白名单
-内的路径、JSON body 非法或方法不是 `PUT` 的记录，都会在写入前被
-`invalid_blob` 拒绝，从而保证下一次 `GET /api/v1/tasks` 返回的内容
-与存储内容逐字节相等。
+`task store` 接受 canonical `linkr-test.v1` workflow source 或 one-task
+`linkr-task.v1` IR，并在本地编译/规范化。当前 CLI 不发送 source payload，因此
+board task 是 **IR-only**。需要 board-backed 无损 source 时使用 Web workflow
+editor。`task source` 只对通过 source-bearing Web/API upsert 写入的任务成功；
+否则返回 `task_source_absent`。`task import` 只接受 full-set IR，只有同 ID 且
+task-IR digest 未变时才保留 source。`task export` 写出 exact full IR set，并报告
+full-IR digest。
 
-执行行为——`task run <task-id> --confirm` 采用 fail-closed 契约：缺少
-`--confirm` 时在任何板卡请求前返回 `confirmation_required`。确认后首先
-通过 `GET /api/v1/tasks/catalog` 取回固件目录，并先于任何 stored task
-解析 built-in；若目录不可用且目标 id 以 `builtin/` 开头，CLI 直接返回
-`catalog_unavailable`，不会回退到被 shadow 的 stored task。命中 built-in
-时直接执行且不访问 `/api/v1/tasks`，否则通过 `GET /api/v1/tasks` 下载
-当前 blob，按 id 选中 stored task，再通过普通 HTTP API 按顺序派发每条
-`PUT` 记录。记录之间，客户端**仅在响应成功之后**按记录的 `wait_ms` sleep。
-失败（例如引脚未知或返回 4xx）会立即停止：失败之后的记录**不会**再派发，
-CLI 以非零状态退出。JSON 失败字段使用 `error.record_index`（1-based）
-和 `error.path`（`error` 对象下 snake_case）；非 JSON 失败把
-`task record <n> path "<path>" failed: <message>` 写到 stderr。每条
-请求的 wire `body` 都是存储记录的 `body` 字段原文；`wait_ms` 永远不会到达
-固件。若已存任务使用固件目录声明的 built-in ID，`task list` 会把它标记
-为被遮蔽，`task run` 选择不可变的 built-in；`task clear` 仍会删除该
-stored entry，但不会影响目录条目。JSON 列表的 `task_count` 是合并后的
-可见数量，`stored_task_count` 单独报告固件条目数，每行带 `source`，
-并附 `catalog_available` 与 `catalog_error` 报告目录获取结果。
-Ctrl+C 会在请求之间或 `wait_ms` 期间协作取消。built-in cleanup 来自目录
-声明，作为主失败/取消之外的独立结果报告，cleanup 失败不会覆盖主错误；
-首条请求前取消不执行 cleanup。
+Task-v2 store 只有四个 slot，source/full-IR 上限均为 4000 字节。Mutation 携带
+当前 revision 与 catalog fingerprint；陈旧值返回冲突且零写入。`task clear` 保持
+store UUID，不改变实时硬件。Task 写入只有 JSON/base64 mutation；CLI 不会发送 blob
+upload 或 per-ID write/delete 请求。已移除的
+`linkr/task/tasks` Settings blob 不读取、不迁移。
 
-开机行为——固件**不再**存储或执行任何开机任务。已存任务保持静默，
-直到 CLI 或 Web UI 显式运行它们。旧开发期数据（旧任务存储标记或
-settings key 下写入的任何内容）由新版契约定向失效：新版本固定为
-`# linkr-task.v1` 标记与 `linkr/task/tasks` 键。没有迁移、没有读取
-别名、也没有针对陈旧条目的复位路径；仍持有旧数据的板子只会显示空
-任务契约。
+`task list` 的文本输出还会打印 `storage` 行（NVS 已用/可用、任务字节数、预留和
+`save_allowed`）；JSON 输出保留固件的 `storage` 对象。`task list` 合并不可变
+built-in 与 task-v2 metadata。每行显示
+`source=builtin|stored`、request count 和
+`lossless-source=present|absent|unavailable`。Built-in 没有无损 workflow source；
+IR-only stored task 明确为 `absent`。catalog 端点失败时 stored task 仍可见，并带
+结构化 `catalog_error` 与 `catalog_available:false`；请求 `builtin/...` 返回
+`catalog_unavailable`，不回退到 stored task。
 
-```text
-GET    /api/v1/tasks
-PUT    /api/v1/tasks
-DELETE /api/v1/tasks
-```
+执行行为——`task run <task-id> --confirm` 采用 fail-closed 契约：缺少 `--confirm`
+时在任何板卡请求前返回 `confirmation_required`。确认后先取固件目录并优先解析
+built-in；命中 built-in 时不读取 task-v2 metadata。否则 CLI 下载
+`/api/v1/tasks/ir`，按 id 选中 task，再通过公共 HTTP API 顺序派发每条 `PUT`。
+记录之间仅在响应成功之后按 `wait_ms` sleep。失败立即停止，后续记录不再派发。
+JSON 失败字段为 `error.record_index`（1-based）和 `error.path`；非 JSON 失败写
+`task record <n> path "<path>" failed: <message>` 到 stderr。wire `body` 是存储
+记录的 `body` 原文，`wait_ms` 永不发送给板子。Ctrl+C 在请求之间或 `wait_ms`
+期间协作取消。Built-in cleanup 来自目录，独立于主失败/取消报告；cleanup 失败
+不覆盖主错误。首条请求前取消不执行 cleanup。
 
-固件目录中的 built-in 属于固件镜像，因此执行 `task clear` 后仍然存在。
-显式保存的自定义任务通过 `linkr/task/tasks` 键跨普通重启与 combined-UF2
-恢复保留，直到 `task clear` 删除；清除 stored task 不改变当前硬件状态。
+开机行为——固件永不在 boot 时存储、执行或播种任务。Stored task 保持静默，直到
+CLI 或 Web UI 显式运行。旧 `linkr/task/tasks` blob 没有迁移、读取别名或自动
+reset。
 
 ### CDC 串口 fallback
 
@@ -316,14 +323,15 @@ linkr-debugger:~$ task clear
 task clear ok
 ```
 
-`task show` 输出一行，包含 `available`（固件 Settings+NVS 后端是否
+`task show` 输出一行，包含 `available`（task-v2 NVS 后端是否
 可达）和 `task_count`。`task clear` 先获取 capture 仲裁器，再获取
 flash 仲裁器；如有任一处于忙状态（live capture 或 OTA 正在进行），
 它返回 `task clear error=busy` 并以 `-EBUSY` 退出，**不会**删除
-已存 blob。清除成功时输出 `task clear ok` 并以 0 退出。后端错误
+已存任务。清除成功时输出 `task clear ok` 并以 0 退出。后端错误
 （忙路径之后）则输出 `task clear error=storage_error` 并以 `-EIO`
-退出。CDC shell 使用与 HTTP 层相同的固件枚举 ID，**不**维护主机
-侧目录。这是 HTTP 或 WS 卡死时的 fallback，不改变 HTTP/CLI 表面。
+退出。CDC 表面只提供 show/clear，不运行、导入、导出或删除单个任务，
+也**不**维护主机侧目录。这是 HTTP 或 WS 卡死时的 fallback，不改变
+HTTP/CLI 表面。
 
 ## Watchdog
 

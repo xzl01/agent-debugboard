@@ -233,15 +233,15 @@ J8/J13 位置；GP19 仍是不可驱动的 PD CFG1 strap。
 
 ```sh
 # 扫描板卡
-sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 --scan
+sigrok-cli -d rigol-ds:conn=tcp-raw/<board-ip>/80 --scan
 
 # 带硬件预触发的数字捕获
-sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
+sigrok-cli -d rigol-ds:conn=tcp-raw/<board-ip>/80 \
   --config timebase='20 us' --config triggersource=D0 \
   --config triggerslope=f --frames 1 --channels D0 -o capture.sr
 
 # GP29 模拟通道
-sigrok-cli -d rigol-ds:conn=tcp-raw/172.29.203.1/80 \
+sigrok-cli -d rigol-ds:conn=tcp-raw/<board-ip>/80 \
   --config timebase='1 ms' --frames 1 --channels CH1 -o analog.sr
 ```
 
@@ -345,16 +345,16 @@ Web UI 循环流式传输 600 样本的实时帧。每帧是一个无间隙的�
 
 ## 快速开始
 
-1. 打开 Web UI：`http://172.29.203.1/`
+1. 打开 Web UI：`http://<board-ip>/`
 2. 在 Terminal 工作区选择 **逻辑分析仪** 标签
 3. 配置引脚、采样率和触发模式
 4. 点击 **Arm capture**
 5. 查看波形，或导出 CSV / PulseView `.sr`
 6. 实时监控请点击 **Stream**（1–25 MHz）
 7. Rigol SCPI 兼容访问使用 `rigol-ds` 驱动，连接字符串
-   `tcp-raw/172.29.203.1/80`
+   `tcp-raw/<board-ip>/80`
 8. 原生 Sigrok/BeagleLogic raw TCP 使用
-   `beaglelogic:conn=tcp-raw/172.29.203.1/5556`
+   `beaglelogic:conn=tcp-raw/<board-ip>/5556`
 9. raw TCP 5555 保留给 J4 UART 控制台
 
 ## 延伸阅读

@@ -4,9 +4,13 @@
 
 `radxa-linkr-debuggerctl` talks to the board over USB NCM. Installed release
 packages also provide `rdb` as a link to that exact executable, so either name
-accepts the same commands. The board runs a DHCPv4 server, so the host gets a
-compatible address automatically. The default device URL is
-`http://172.29.203.1`; pass `--url` only to override it.
+accepts the same commands. Examples below omit `--url` for brevity; prefix them
+with `--url http://<board-ip>` or set `LINKR_BOARD_URL=http://<board-ip>`. The board runs a DHCPv4 server, so the host gets a
+compatible address automatically. Each board derives and persists a unique
+private `/30` and MAC on first boot. The host NCM address is the network's
+`.2`; the board is `.1` in the same `/30`. Pass that board URL with `--url`
+(the historical compiled default is only a fallback for old images). The CDC
+shell command `ip` also prints the board URL.
 
 With the unified desktop stack installed, running the CLI/TUI also starts one
 `linkr-tray` daemon if it is not already running. The tray and Host services
@@ -65,6 +69,23 @@ radxa-linkr-debuggerctl --json adc read
 radxa-linkr-debuggerctl --json gpio list
 ```
 
+
+## Network Identity
+
+```sh
+radxa-linkr-debuggerctl --url http://10.20.30.1 ip
+radxa-linkr-debuggerctl --url http://10.20.30.1 ip network 10.20.30.0/30
+radxa-linkr-debuggerctl --url http://10.20.30.1 ip mac 02:11:22:33:44:55
+radxa-linkr-debuggerctl --url http://10.20.30.1 --json ip
+```
+
+`ip` prints the persisted MAC, origin, private `/30`, board address, DHCP base,
+and board URL. `network` and `mac` updates are persisted atomically by the
+firmware. `net` is an alias for `ip`. Invalid MACs and non-private or unaligned
+`/30` values are rejected locally. A network change may require reconnecting
+the USB NCM interface or renewing the host DHCP lease; use `--url` with the new
+board URL afterward.
+
 ## Power
 
 Four rails are controllable: `12v_out`, `5v_out`, `20v_out`, and `vdd_5v`.
@@ -80,10 +101,12 @@ radxa-linkr-debuggerctl power set vdd_5v on
 
 ## ADC (Current And Voltage Monitor)
 
-Four INA226 channels cover `5v_out`, `12v_out`, `20v_out`, and `vdd_5v`;
-`adc0` through `adc3` are four monitor-only pad-voltage channels. Default output is
-concise (`5v_out=0.540000A`); add `-v` for raw ADC fields like `signal` and
-`mv`.
+Four INA226 channels cover `5v_out`, `12v_out`, `20v_out`, and `vdd_5v`.
+`adc0` is the PD-input source-side channel: its canonical value is the
+Device-Tree-reconstructed DC20V source after the R46/R47 divider. `raw` and
+`mv` remain ADC-pad diagnostics. `adc1` through `adc3` are native pad-voltage
+channels. Default output is concise (`5v_out=0.540000A`); add `-v` for raw ADC
+fields such as `signal`, `source_voltage`, `pad_mv`, and `raw`.
 
 ```sh
 radxa-linkr-debuggerctl adc read
@@ -92,6 +115,10 @@ radxa-linkr-debuggerctl adc read vdd_5v
 radxa-linkr-debuggerctl adc read adc0
 radxa-linkr-debuggerctl adc read adc3
 ```
+
+The CLI displays the firmware canonical value and never applies `115/15`,
+a calibration table, or zero-point correction. ADC0's uncalibrated accuracy is
+approximately 2%; do not claim better precision without per-board calibration.
 
 ### Recording
 
@@ -109,14 +136,17 @@ radxa-linkr-debuggerctl adc record /tmp/adc.csv 500 --rate-hz 250
 - Device timing is preserved under `metadata.device_timing`
 - Ring overruns are reported as `metadata.dropped_samples` on the first affected row
 - NDJSON preserves all eight descriptors. CSV starts with the four current
-  rails and appends `adc0_voltage_uv` through `adc3_voltage_uv`; unknown or
+  rails and appends `adc0_voltage_uv` through `adc3_voltage_uv`; ADC0 is the
+  canonical source-side value, ADC1-3 are native pad values, and unknown or
   unavailable fields are empty cells.
 
 ### JSON ADC output
 
 `--json adc read` carries the raw diagnostic chain for the fixed eight-channel
-order: four current rails followed by ADC0..ADC3 pad voltages. The host CLI
-presents firmware values directly without host-side calibration. PD control is
+order: four current rails followed by ADC0..ADC3. ADC0's canonical scalar is
+source-side DC20V; its `raw`/`mv` are pad diagnostics; ADC1-3 are native pad
+voltages. The host CLI presents firmware values directly without host-side
+calibration or divider conversion. PD control is
 available through `pd status`, `pd fixed MV`, and `pd pps MV` (board limit 20 V).
 
 ## Switch Routes
@@ -219,42 +249,19 @@ no BOOTSEL row or direct key. Use the separate CLI `bootloader` command or Web
 **Enter BOOTSEL** card for ROM BOOTSEL. See the [TUI guide](tui.md) and
 [Web UI guide](webui.md).
 
-## Tasks (firmware catalog and saved request sequences)
+## Tasks (firmware catalog and task-v2 storage)
 
 Built-in automation tasks come from the firmware-owned immutable catalog at
 `GET /api/v1/tasks/catalog`. The CLI keeps no recovery recipes of its own:
 every rail, GPIO, polarity, wait, and cleanup step arrives through the
 catalog. The current catalog always exposes the six MASKROM/EDL recipes,
-one per combination of mode and the `5v_out`, `12v_out`, and `20v_out` rails:
+one per combination of mode and the `5v_out`, `12v_out`, and `20v_out` rails.
 
-```text
-builtin/maskrom/5v_out     builtin/edl/5v_out
-builtin/maskrom/12v_out    builtin/edl/12v_out
-builtin/maskrom/20v_out    builtin/edl/20v_out
-```
-
-Built-ins do not consume firmware task slots and are never read from, written
-to, or deleted through `/api/v1/tasks`; they are dispatched through the
-generic task runner, so each record is an ordinary `gpio` or `power` PUT.
-
-The same merged listing includes task blobs explicitly persisted in debugger
-flash under `linkr/task/tasks`. The firmware only validates and stores those
-blobs; the CLI fetches a selected stored task through `GET /api/v1/tasks`,
-parses it locally, and dispatches each record through normal HTTP. `wait_ms`
-is applied client-side after a successful request and never reaches a control
-endpoint. The first failure stops either built-in or stored execution. A
-failed or partially cancelled built-in then runs the cleanup sequence
-declared by the catalog; the CLI never infers or hardcodes its own cleanup.
-Stored tasks never infer cleanup. A successful built-in finishes with the
-selected rail on. This task flow is separate from `reboot`, which performs a
-normal cold restart, and from `bootloader`, which enters the debugger MCU's
-RP2350 ROM BOOTSEL mode.
-
-If the firmware catalog endpoint fails, `task list` still shows the stored
-tasks together with a structured `catalog_error` and `catalog_available:false`,
-and any `task run builtin/...` invocation returns `catalog_unavailable`
-without falling back to a shadowed stored task. Stored tasks continue to work
-while the catalog is unavailable.
+Stored tasks live in the separate four-slot task-v2 store. The board keeps
+exact canonical `linkr-test.v1` source up to 4000 bytes and `linkr-task.v1`
+deployment IR up to 4000 bytes per task. The store has its own UUID, uint64
+revision, catalog fingerprint, and SHA-256 source/IR digests. Built-ins do not
+consume slots and never appear in the stored metadata.
 
 ```sh
 # List the merged firmware catalog (built-in and stored)
@@ -263,73 +270,75 @@ radxa-linkr-debuggerctl task list
 # Run a built-in task without storing it in firmware flash
 radxa-linkr-debuggerctl task run builtin/maskrom/12v_out --confirm
 
-# Store a linkr-task.v1 blob read from a file
+# Store a one-task IR file as an IR-only board task
 radxa-linkr-debuggerctl task store my-task.ndjson my-task-id
 
-# Run a stored task; the CLI fetches the blob and dispatches records
-radxa-linkr-debuggerctl task run my-task-id --confirm
+# Import a full linkr-task.v1 IR set, replacing all board tasks
+radxa-linkr-debuggerctl task import all-tasks.ndjson
 
-# Clear all stored tasks
+# Export the exact full IR set
+radxa-linkr-debuggerctl task export all-tasks.ndjson
+
+# Export the board-backed exact source for one slot when present
+radxa-linkr-debuggerctl task source my-task-id my-task.linkr-test.ndjson
+
+# Delete one task or clear all tasks atomically
+radxa-linkr-debuggerctl task delete my-task-id
 radxa-linkr-debuggerctl task clear
+
+# Run a stored task; the CLI fetches the IR and dispatches records
+radxa-linkr-debuggerctl task run my-task-id --confirm
 ```
 
-Saved record rules — every record is a single `PUT` against an allowlisted
-path under `/api/v1/power/`, `/api/v1/gpio/`, or `/api/v1/switch/`, with a
-JSON-string `body` and an optional integer `wait_ms` in `0..60000`. The blob
-starts with `# linkr-task.v1`, lists each task under `# task <id>`, and is
-bounded at 4096 bytes with at most 4 tasks and 32 records per task. Records
-that fall outside these limits, paths that fail the allowlist, malformed
-JSON bodies, or non-PUT methods are rejected with `invalid_blob` before the
-blob is written, so what is returned by the next `GET /api/v1/tasks` is
-exactly what was stored.
+`task store` accepts a canonical `linkr-test.v1` workflow source or a
+one-task `linkr-task.v1` IR and compiles/canonicalizes it locally. The current
+CLI sends no source payload, so the board task is **IR-only**. Use the Web
+workflow editor when board-backed lossless source is required. `task source`
+therefore succeeds only for tasks whose source was stored through the
+source-bearing Web/API upsert; otherwise it returns `task_source_absent`.
+`task import` is full-set IR only and preserves a source only when the same
+task ID keeps an unchanged task-IR digest. `task export` writes the exact full
+IR set and reports the full-IR digest.
+
+The task-v2 store uses only four slots and 4000-byte source/full-IR limits.
+Mutations carry the current revision and catalog fingerprint; a stale value
+returns a conflict with zero writes. `task clear` keeps the store UUID and
+does not change live hardware. Task writes use only the JSON/base64 mutation endpoint; the CLI never sends a
+blob upload or per-ID write/delete request.
+The removed `linkr/task/tasks` Settings blob is not read or migrated.
+
+`task list` merges the immutable built-ins with task-v2 metadata. Each row
+shows `source=builtin|stored`, request count, and `lossless-source=present|
+absent|unavailable`. Text output also prints a `storage` line with NVS
+used/free, logical task bytes, reserve, and `save_allowed`; JSON output preserves
+the firmware `storage` object. Built-ins have no lossless workflow source; an IR-only
+stored task is explicitly `absent`. If the catalog endpoint fails, stored
+tasks remain visible with a structured `catalog_error` and
+`catalog_available:false`; a requested `builtin/...` fails with
+`catalog_unavailable` rather than falling back to a stored task.
 
 Run behavior — `task run <task-id> --confirm` is fail-closed: omitting
 `--confirm` returns `confirmation_required` before any board request. It first
-fetches the firmware catalog from `GET /api/v1/tasks/catalog` and resolves a
-built-in before any stored task; if the catalog is unavailable and the
-requested id starts with `builtin/`, the CLI returns `catalog_unavailable`
-instead of falling back to a shadowed stored task. A matched built-in is
-executed directly without accessing `/api/v1/tasks`; otherwise the CLI
-downloads the current stored blob, selects the named task, and dispatches each
-record through `PUT` against the public HTTP API in order. Between records the
-client sleeps `wait_ms` **only after a successful response**. A failure
-(for example an unknown pin or a 4xx error) stops immediately: no later
-record is dispatched, and the CLI exits nonzero. The JSON failure uses
-`error.record_index` (1-based) and `error.path` under the `error` object;
-the non-JSON failure writes
-`task record <n> path "<path>" failed: <message>` to stderr. The wire
-`body` sent on each request is the stored record's `body` field verbatim;
-`wait_ms` never reaches the board. If a stored task uses a built-in ID
-declared by the firmware catalog, `task list` marks it as shadowed and
-`task run` selects the immutable built-in. `task clear` still removes that
-stored entry but never removes the catalog entries. JSON `task list` reports
-the merged `task_count` and the firmware entry count separately as
-`stored_task_count`; each row carries `source`, and `catalog_available` plus
-`catalog_error` report the catalog fetch outcome. Ctrl+C stops cooperatively
-between requests or during `wait_ms`. Built-in cleanup comes from the catalog
-and is reported separately from the primary failure/cancellation; cleanup
-failure never replaces the primary error. Cancellation before the first
-request performs no cleanup.
+fetches the firmware catalog and resolves a built-in before any stored task.
+A matched built-in is executed without reading task-v2 metadata; otherwise
+the CLI downloads `/api/v1/tasks/ir`, selects the named task, and dispatches
+each record through `PUT` against the public HTTP API in order. Between
+records the client sleeps `wait_ms` **only after a successful response**. A
+failure stops immediately, and later records are not dispatched. The JSON
+failure uses `error.record_index` (1-based) and `error.path` under the
+`error` object; the non-JSON failure writes
+`task record <n> path "<path>" failed: <message>` to stderr. The wire `body`
+sent on each request is the stored record's `body` field verbatim; `wait_ms`
+never reaches the board. Ctrl+C stops cooperatively between requests or
+during `wait_ms`. Built-in cleanup comes from the catalog and is reported
+separately from the primary failure/cancellation; cleanup failure never
+replaces the primary error. Cancellation before the first request performs no
+cleanup.
 
-Boot behavior — the firmware no longer stores or executes any task at
-boot. Saved tasks are inert until the CLI or Web UI explicitly runs them.
-Old development data (anything written under the previous task-store
-marker or settings key) is intentionally invalidated by the new marker
-`# linkr-task.v1` and the new key `linkr/task/tasks`. There is no
-migration, no read alias, and no reset for stale entries. A board that
-still holds old data simply shows the empty task contract.
-
-```text
-GET    /api/v1/tasks
-PUT    /api/v1/tasks
-DELETE /api/v1/tasks
-```
-
-The firmware catalog built-ins remain available after `task clear` because
-they are part of the firmware image, not the stored blob. Explicitly stored
-custom tasks survive normal firmware reboot and combined-UF2 recovery through
-the `linkr/task/tasks` key until `task clear` removes them; clearing stored
-tasks does not change live hardware.
+Boot behavior — the firmware never stores, executes, or seeds a task at boot.
+Stored tasks remain inert until the CLI or Web UI explicitly runs one. There
+is no migration from the old `linkr/task/tasks` blob, no read alias, and no
+automatic reset.
 
 ### CDC Fallback
 
@@ -345,16 +354,16 @@ linkr-debugger:~$ task clear
 task clear ok
 ```
 
-`task show` prints one line with `available` (firmware Settings+NVS
-backend reachability) and `task_count`. `task clear` acquires the capture
+`task show` prints one line with `available` (task-v2 NVS backend
+reachability) and `task_count`. `task clear` acquires the capture
 owner and then the flash owner; if either is busy (live capture or OTA
 in flight) it returns `task clear error=busy` and exits with `-EBUSY`
-without deleting the stored blob. A successful clear writes
+without deleting stored tasks. A successful clear writes
 `task clear ok` and exits zero. A backend failure (after the busy path)
 prints `task clear error=storage_error` and exits with `-EIO`. The CDC
-shell uses the same firmware-enumerated IDs as the HTTP layer and
-does not maintain a host-side catalog. This is the fallback when HTTP
-or WS is wedged; it does not change the HTTP/CLI command surface.
+surface exposes only show and clear; it does not run, import, export,
+delete one task, or maintain a host-side catalog. This is the fallback when
+HTTP or WS is wedged; it does not change the HTTP/CLI command surface.
 
 ## Watchdog
 

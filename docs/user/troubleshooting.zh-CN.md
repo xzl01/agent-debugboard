@@ -11,18 +11,18 @@
 1. 检查 USB 线。必须是数据线——纯充电线不行。
 2. 确认板子出现了网络接口：
    - Linux：`ip link show` — 找新的 `enp*` 或 `usb*`
-   - macOS：`ifconfig` — 找 `172.29.203.x` 的 `en*`
+   - macOS：`ifconfig` — 找新的 `en*` 接口
    - Windows：网络连接里找新的 RNDIS/NCM 适配器
-3. Ping 板子：`ping 172.29.203.1`
-4. 如果 ping 通但 CLI 不行，显式指定 URL：
+3. 用 `ip -brief addr show` 读取主机 NCM 地址；板卡是同一 `/30` 的主机地址减一
+4. Ping 输出的板卡 IP。如果 ping 通但 CLI 不行，显式指定 URL：
    ```sh
-   radxa-linkr-debuggerctl --url http://172.29.203.1 doctor
+   radxa-linkr-debuggerctl --url "http://<board-ip>" doctor
    ```
 5. 还是不行？换根线或换个 USB 口试试。
 
 ## Web UI 打不开
 
-**症状：** 浏览器访问 `http://172.29.203.1/` 显示"无法访问此网站"。
+**症状：** 浏览器访问主机 NCM `/30` 中的板卡 `.1` 地址显示"无法访问此网站"。
 
 1. 先确认 CLI 能连上：`radxa-linkr-debuggerctl doctor`
 2. 如果 doctor 通过但浏览器不行，检查是否有其他网络接口优先级更高。
@@ -31,7 +31,7 @@
 
 ## macOS 本地 Vite 持续返回 502
 
-**症状：** `curl http://172.29.203.1/api/v1/status` 返回 200，但
+**症状：** `curl "http://<board-ip>/api/v1/status"` 返回 200，但
 `http://127.0.0.1:5173/api/v1/status` 返回 `502 Bad Gateway`，Vite 日志中
 出现来自 Node.js socket 的 `EHOSTUNREACH`。
 
