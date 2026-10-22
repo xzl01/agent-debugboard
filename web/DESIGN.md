@@ -186,18 +186,19 @@ Composite patterns outside `ui.tsx` that are part of the language:
   requires both. Missing draft names remain visibly unavailable instead of
   being silently retargeted to another rail. Historical comparison sources come
   from recorded descriptors rather than the current board's rail list.
-  The monitor-only voltage section follows descriptor order below the current
-  rows: `grid grid-cols-1 gap-3 sm:grid-cols-2` gives four reported channels a
-  desktop 2×2 layout and a mobile single column. Each inset card uses
+  The PD panel owns `role="pd_input"` ADC0 and displays its canonical
+  source-side DC20V value; `raw`/`mv` stay in diagnostics. ADC1-3 render as
+  three native cards above the switch routes using
+  `grid grid-cols-1 gap-3 sm:grid-cols-3`. Each native card uses
   `rounded-lg border-line/60 bg-panel2/40 p-3`, displays the firmware name,
   signal and optional note verbatim, and has its own chart and latest value.
-  Channel histories are keyed by mode, name and signal, never by array position.
-  All ADC charts use a fixed `0..3,300,000 uV` (0..3.3 V) scale and format the
-  latest ADC-pad voltage to three decimal volts, with no host divider conversion
-  or pin map. A visible section disclaimer distinguishes ADC-pin voltage from
-  power-rail/source voltage. Unreported or invalid readings are never fabricated
-  or replaced with zero; missing samples break history instead of joining across
-  the gap. Compact mode keeps identities and latest values but no charts.
+  Channel histories are keyed by role, name and signal, never by array position.
+  Native ADC charts use a fixed `0..3,300,000 uV` (0..3.3 V) scale; ADC0
+  autoscales with a minimum 1 V span and is capable of the approximately 25.3 V
+  source range. No host divider conversion, calibration table, or pin map is
+  applied. ADC0 is not rendered as a 3.3 V native card.
+  Unreported or invalid readings are never fabricated or replaced with zero;
+  missing samples break history instead of joining across the gap. Compact mode keeps identities and latest values but no charts.
   Voltage channels have no controls, trigger, probe scaling, capture or export
   affordance; the Power analyzer capture stays current-only.
 - Watchdog status badges use a wrapping `flex` row with `gap-2`; long localized badges move to the next line instead of overflowing the card.
@@ -273,6 +274,13 @@ Composite patterns outside `ui.tsx` that are part of the language:
   preflight reads this backend's actual MCU state and refuses read-only,
   suspended, configuring, faulted, disconnected, or pending-write states before
   hardware operations. Automation ownership disables manual xterm input.
+- The workflow library owns two IndexedDB stores: `workflows[workflow_id]`
+  and `deployments[[task_store_id,task_id]]`. One workflow may deploy to many
+  boards; local-only sources over 4000 bytes are browser-only and deploy IR only.
+  Board-backed source reopens from `/tasks/slots/{slot}/source`; IR-only and
+  built-in rows never claim lossless source. Workflow import/export and task-IR
+  import/export are separate, and task import never runs hardware. The editor
+  draft is separate from the saved library and is guarded across opens.
 - Blocking confirmations elsewhere (Boot, OTA test boot, switch
   `requires_confirm`, task runs) currently use `window.confirm` with an
   interpolated message naming the target and consequence. Task-run

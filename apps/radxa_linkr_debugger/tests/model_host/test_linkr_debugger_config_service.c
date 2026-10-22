@@ -113,6 +113,9 @@ static void build_full_ordered(struct linkr_debugger_config_snapshot *snapshot)
 		     LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID,
 		     LINKR_DEBUGGER_CONFIG_POWER_ON);
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+		     LINKR_DEBUGGER_CONFIG_POWER_5V_OTG_ID,
+		     LINKR_DEBUGGER_CONFIG_POWER_OFF);
+	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID,
 		     LINKR_DEBUGGER_CONFIG_POWER_ON);
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,

@@ -3,6 +3,7 @@
 """Sigrok WebSocket protocol test script."""
 
 import argparse
+import os
 import struct
 import sys
 import time
@@ -54,10 +55,14 @@ TRIGGER_RISING = 1
 TRIGGER_FALLING = 2
 TRIGGER_EITHER = 3
 
-WS_URL = "ws://172.29.203.1/api/v1/ws/0"
-TCP_HOST = "172.29.203.1"
+BOARD_URL = os.environ.get("LINKR_BOARD_URL", "").rstrip("/")
+if not BOARD_URL:
+    raise SystemExit("set LINKR_BOARD_URL=http://<board-ip>")
+BOARD_HOST = BOARD_URL.removeprefix("http://").removeprefix("https://").split("/", 1)[0]
+WS_URL = f"ws://{BOARD_HOST}/api/v1/ws/0"
+TCP_HOST = BOARD_HOST
 TCP_PORT = 5556
-HTTP_BASE = "http://172.29.203.1"
+HTTP_BASE = BOARD_URL
 
 
 def create_session() -> str:

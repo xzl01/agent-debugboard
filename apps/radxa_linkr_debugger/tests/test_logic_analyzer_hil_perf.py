@@ -24,7 +24,9 @@ sys.modules[RUNNER_SPEC.name] = runner
 RUNNER_SPEC.loader.exec_module(runner)
 
 FakeWebSocketTimeoutException = type("WebSocketTimeoutException", (Exception,), {})
-ADC0_PAD_UV = 2_608_696
+ADC0_PAD_RAW = 2000
+ADC0_PAD_MV = 2608
+ADC0_SOURCE_UV = 20_000_002
 
 
 class FakeSocket:
@@ -167,16 +169,18 @@ def adc_http_readings() -> list[dict[str, object]]:
         {
             "name": "adc0",
             "signal": "GPIO26_ADC0",
-            "note": "PD input divider; ADC pad voltage",
-            "raw": 2000,
-            "mv": 2608,
+            "note": "PD input divider; source voltage",
+            "role": "pd_input",
+            "raw": ADC0_PAD_RAW,
+            "mv": ADC0_PAD_MV,
             "sensor_channel": "voltage",
             "unit": "V",
-            "sensor_value": {"val1": 2, "val2": 608696},
+            "sensor_value": {"val1": 20, "val2": 2},
         },
         {
             "name": "adc1",
             "signal": "GPIO27_ADC1",
+            "role": "native",
             "raw": 1700,
             "mv": 1100,
             "sensor_channel": "voltage",
@@ -186,6 +190,7 @@ def adc_http_readings() -> list[dict[str, object]]:
         {
             "name": "adc2",
             "signal": "GPIO28_ADC2",
+            "role": "native",
             "raw": 3000,
             "mv": 2200,
             "sensor_channel": "voltage",
@@ -195,6 +200,7 @@ def adc_http_readings() -> list[dict[str, object]]:
         {
             "name": "adc3",
             "signal": "GPIO29_ADC3",
+            "role": "native",
             "raw": 1900,
             "mv": 1234,
             "sensor_channel": "voltage",
@@ -255,12 +261,13 @@ def adc_ws_single_readings() -> list[dict[str, object]]:
             "signal": "GPIO26_ADC0",
             "kind": "voltage",
             "unit": "uV",
-            "note": "PD input divider; ADC pad voltage",
-            "value": 2608696,
+            "role": "pd_input",
+            "note": "source voltage",
+            "value": ADC0_SOURCE_UV,
         },
-        {"name": "adc1", "signal": "GPIO27_ADC1", "kind": "voltage", "unit": "uV", "value": 1100000},
-        {"name": "adc2", "signal": "GPIO28_ADC2", "kind": "voltage", "unit": "uV", "value": 2200000},
-        {"name": "adc3", "signal": "GPIO29_ADC3", "kind": "voltage", "unit": "uV", "value": 1234000},
+        {"name": "adc1", "signal": "GPIO27_ADC1", "kind": "voltage", "unit": "uV", "role": "native", "value": 1100000},
+        {"name": "adc2", "signal": "GPIO28_ADC2", "kind": "voltage", "unit": "uV", "role": "native", "value": 2200000},
+        {"name": "adc3", "signal": "GPIO29_ADC3", "kind": "voltage", "unit": "uV", "role": "native", "value": 1234000},
     ]
 
 
@@ -300,11 +307,12 @@ def adc_ws_batch_channels() -> list[dict[str, object]]:
             "signal": "GPIO26_ADC0",
             "kind": "voltage",
             "unit": "uV",
-            "note": "PD input divider; ADC pad voltage",
+            "role": "pd_input",
+            "note": "source voltage",
         },
-        {"name": "adc1", "signal": "GPIO27_ADC1", "kind": "voltage", "unit": "uV"},
-        {"name": "adc2", "signal": "GPIO28_ADC2", "kind": "voltage", "unit": "uV"},
-        {"name": "adc3", "signal": "GPIO29_ADC3", "kind": "voltage", "unit": "uV"},
+        {"name": "adc1", "signal": "GPIO27_ADC1", "kind": "voltage", "unit": "uV", "role": "native"},
+        {"name": "adc2", "signal": "GPIO28_ADC2", "kind": "voltage", "unit": "uV", "role": "native"},
+        {"name": "adc3", "signal": "GPIO29_ADC3", "kind": "voltage", "unit": "uV", "role": "native"},
     ]
 
 
@@ -320,7 +328,7 @@ def adc_ws_batch_sample(
         "uptime_us": uptime_us,
         "power_enabled_mask": power_enabled_mask,
         "voltage_valid_mask": voltage_valid_mask,
-        "values": [540000, 120000, 20000, 150000, 2608696, 1100000, 2200000, 1234000],
+        "values": [540000, 120000, 20000, 150000, ADC0_SOURCE_UV, 1100000, 2200000, 1234000],
         "voltages_uv": [5010000, 12020000, 20030000, 5000000],
     }
 
@@ -2025,7 +2033,7 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertIn("read-only", result["validation_limitations"][0])
         self.assertIn("not validated", result["validation_limitations"][1])
 
-    def test_http_adc_schema_accepts_canonical_eight_descriptors_and_adc0_pad_voltage(self) -> None:
+    def test_http_adc_schema_accepts_canonical_eight_descriptors_and_adc0_source_voltage(self) -> None:
         self.assertEqual(
             [descriptor.name for descriptor in runner.ADC_DESCRIPTORS],
             ["5v_out", "12v_out", "20v_out", "vdd_5v", "adc0", "adc1", "adc2", "adc3"],
@@ -2039,11 +2047,20 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertTrue(result["valid"], result)
         self.assertEqual(result["reading_count"], 8)
         adc0 = readings[4]
+        self.assertEqual(adc0["role"], "pd_input")
+        self.assertEqual(adc0["note"], "PD input divider; source voltage")
+        # raw/mv remain ADC-pad diagnostics; sensor_value is the firmware-provided
+        # canonical source scalar. The host must not derive it from raw/mv.
+        self.assertEqual(adc0["raw"], ADC0_PAD_RAW)
+        self.assertEqual(adc0["mv"], ADC0_PAD_MV)
+        self.assertNotEqual(ADC0_PAD_MV * 1000, ADC0_SOURCE_UV)
+        self.assertEqual(adc0["sensor_value"], {"val1": 20, "val2": 2})
         self.assertEqual(
             adc0["sensor_value"]["val1"] * 1_000_000 + adc0["sensor_value"]["val2"],
-            ADC0_PAD_UV,
+            ADC0_SOURCE_UV,
         )
-        self.assertEqual(adc0["sensor_value"], {"val1": 2, "val2": 608696})
+        self.assertEqual([reading["role"] for reading in readings[5:]], ["native"] * 3)
+        self.assertEqual(readings[5]["sensor_value"], {"val1": 1, "val2": 100000})
 
     def test_http_adc_schema_rejects_order_kind_unit_and_non_signed_scalars(self) -> None:
         mutations = {
@@ -2089,7 +2106,11 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         result = runner.validate_ws_adc_single_readings(readings)
         self.assertTrue(result["valid"], result)
         self.assertEqual(result["reading_count"], 8)
-        self.assertEqual(readings[4]["value"], ADC0_PAD_UV)
+        self.assertEqual(readings[4]["value"], ADC0_SOURCE_UV)
+        self.assertEqual(readings[4]["role"], "pd_input")
+        self.assertEqual(readings[4]["note"], "source voltage")
+        self.assertEqual([reading["role"] for reading in readings[5:]], ["native"] * 3)
+        self.assertEqual(readings[5]["value"], 1100000)
 
         mutations = {
             "missing descriptor": lambda items: items.pop(),
@@ -2114,6 +2135,13 @@ class LogicAnalyzerHilPerfTests(unittest.TestCase):
         self.assertEqual(result["descriptor_count"], 8)
         self.assertEqual(result["current_count"], 4)
         self.assertEqual(result["max_batch_samples"], 18)
+        self.assertEqual(
+            [channel["role"] for channel in message["channels"][4:]],
+            ["pd_input", "native", "native", "native"],
+        )
+        self.assertEqual(message["channels"][4]["note"], "source voltage")
+        self.assertEqual(message["samples"][0]["values"][4], ADC0_SOURCE_UV)
+        self.assertEqual(message["samples"][0]["values"][5:8], [1100000, 2200000, 1234000])
 
         mutations = {
             "channels": lambda batch: batch["channels"].pop(),

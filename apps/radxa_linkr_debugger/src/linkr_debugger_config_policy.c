@@ -204,6 +204,12 @@ linkr_debugger_config_policy_canonicalize_snapshot(
 		}
 	}
 
+	if (linkr_debugger_config_validate_power_parenting(snapshot) !=
+	    LINKR_DEBUGGER_CONFIG_CODEC_OK) {
+		linkr_debugger_config_snapshot_clear(snapshot);
+		return LINKR_DEBUGGER_CONFIG_SERVICE_INVALID_SNAPSHOT;
+	}
+
 	for (size_t i = 1U; i < snapshot->entry_count; i++) {
 		struct linkr_debugger_config_entry key = snapshot->entries[i];
 		size_t j = i;

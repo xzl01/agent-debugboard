@@ -94,7 +94,7 @@ export function StepParams({
       const p = step.params as import("@/lib/testScript").DelayParams;
       return (
         <ParamRow label={t("test.param.ms")}>
-          <input type="number" className={inputCls} value={p.ms} onChange={(e) => onParamChange("ms", Number(e.target.value))} />
+          <input aria-label={t("test.param.ms")} type="number" className={inputCls} value={p.ms} onChange={(e) => onParamChange("ms", Number(e.target.value))} />
         </ParamRow>
       );
     }
@@ -302,6 +302,7 @@ export function StepAssertions({
             <span className="text-[11px] text-ink-dim">{f.label}</span>
             {active && (
               <input
+                aria-label={f.label}
                 className={inputCls + (invalidJson.has(f.key) ? " border-danger" : "") + " flex-1"}
                 value={typeof (assert as Record<string, unknown>)[f.key] === "object"
                   ? JSON.stringify((assert as Record<string, unknown>)[f.key])

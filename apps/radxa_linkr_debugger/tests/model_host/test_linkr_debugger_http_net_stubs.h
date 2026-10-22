@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "linkr_debugger_net_settings.h"
+
 /* Keep this host test focused on the HTTP callback implementation. */
 #define RADXA_LINKR_DEBUGGER_REBOOT_H_
 #define RADXA_LINKR_DEBUGGER_HTTP_H_
@@ -18,10 +20,7 @@
 #define RADXA_LINKR_DEBUGGER_CONFIG_HTTP_H_
 #define RADXA_LINKR_DEBUGGER_FLASH_ARBITER_H_
 #define RADXA_LINKR_DEBUGGER_CONFIG_SUMMARY_H_
-#define RADXA_LINKR_DEBUGGER_HTTP_TASK_RESPONSE_H_
 #define RADXA_LINKR_DEBUGGER_JSON_CURSOR_H_
-#define RADXA_LINKR_DEBUGGER_TASK_HTTP_H_
-#define RADXA_LINKR_DEBUGGER_TASK_CATALOG_H_
 #define RADXA_LINKR_DEBUGGER_MONITORING_H_
 #define RADXA_LINKR_DEBUGGER_MODEL_H_
 #define RADXA_LINKR_DEBUGGER_NETWORK_H_
@@ -36,6 +35,7 @@
 
 #define CONFIG_LINKR_DEBUGGER_LOG_LEVEL 0
 #define CONFIG_HTTP_SERVER_MAX_CLIENTS 1
+#define LINKR_DEBUGGER_TASK_HTTP_HOST_TEST 1
 
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 #define BUILD_ASSERT(condition, message) _Static_assert(condition, message)
@@ -97,6 +97,7 @@ enum http_status {
 	HTTP_413_PAYLOAD_TOO_LARGE = 413,
 	HTTP_500_INTERNAL_SERVER_ERROR = 500,
 	HTTP_503_SERVICE_UNAVAILABLE = 503,
+	HTTP_507_INSUFFICIENT_STORAGE = 507,
 };
 
 enum http_transaction_status {
@@ -111,9 +112,18 @@ struct http_header {
 	const char *value;
 };
 
+enum http_header_status {
+	HTTP_HEADER_STATUS_OK,
+	HTTP_HEADER_STATUS_DROPPED,
+	HTTP_HEADER_STATUS_NONE,
+};
+
 struct http_request_ctx {
 	char *data;
 	size_t data_len;
+	struct http_header *headers;
+	size_t header_count;
+	enum http_header_status headers_status;
 };
 
 struct http_response_ctx {
@@ -167,7 +177,12 @@ struct linkr_debugger_http_service_stub { int *fd; };
 #define HTTP_RESOURCE_TYPE_DYNAMIC 1
 #define HTTP_RESOURCE_TYPE_STATIC 2
 #define HTTP_RESOURCE_TYPE_WEBSOCKET 3
-#define HTTP_RESOURCE_DEFINE(...)
+struct linkr_debugger_http_resource_stub {
+	const char *path;
+	void *detail;
+};
+#define HTTP_RESOURCE_DEFINE(name_, service_, path_, detail_) \
+	static const struct linkr_debugger_http_resource_stub name_ = { path_, detail_ }
 #define HTTP_SERVICE_DEFINE(name, ...) \
 	struct linkr_debugger_http_service_stub name = { 0 }
 
@@ -197,16 +212,25 @@ enum linkr_debugger_adc_kind {
 	LINKR_DEBUGGER_ADC_KIND_CURRENT,
 	LINKR_DEBUGGER_ADC_KIND_VOLTAGE,
 };
+enum linkr_debugger_adc_role {
+	LINKR_DEBUGGER_ADC_ROLE_NATIVE,
+	LINKR_DEBUGGER_ADC_ROLE_PD_INPUT,
+};
 struct linkr_debugger_current_desc {
 	const char *name;
 	const char *signal;
 	const char *sensor;
 	const char *note;
 	enum linkr_debugger_adc_kind kind;
+	enum linkr_debugger_adc_role role;
 	const char *unit;
 	size_t adc_index;
 	size_t sensor_index;
 };
+static inline const char *linkr_debugger_adc_role_name(enum linkr_debugger_adc_role role)
+{
+	return role == LINKR_DEBUGGER_ADC_ROLE_PD_INPUT ? "pd_input" : "native";
+}
 struct linkr_debugger_safe_gpio_desc {
 	uint8_t pin;
 	bool output_capable;
@@ -384,10 +408,6 @@ enum linkr_debugger_captive_action {
 	LINKR_DEBUGGER_CAPTIVE_ACTION_METHOD_NOT_ALLOWED,
 	LINKR_DEBUGGER_CAPTIVE_ACTION_NONE,
 };
-enum linkr_debugger_task_http_route {
-	LINKR_DEBUGGER_TASK_HTTP_ROUTE_TASKS,
-	LINKR_DEBUGGER_TASK_HTTP_ROUTE_CATALOG,
-};
 enum linkr_debugger_config_http_route { LINKR_DEBUGGER_CONFIG_HTTP_ROUTE_CONFIG };
 enum linkr_debugger_serial_parity {
 	LINKR_DEBUGGER_SERIAL_PARITY_NONE,
@@ -497,12 +517,6 @@ enum linkr_debugger_serial_http_route {
 #define LINKR_DEBUGGER_CAPTIVE_PORTAL_URL "/"
 #define LINKR_DEBUGGER_CONFIG_SERVICE_OK 0
 #define LINKR_DEBUGGER_GPIO_NAME_BUFSZ 5U
-#define LINKR_DEBUGGER_NET_DEVICE_HOST 1U
-#define LINKR_DEBUGGER_NET_SUBNET_MIN 1U
-#define LINKR_DEBUGGER_NET_SUBNET_MAX 254U
-#define LINKR_DEBUGGER_TASK_CATALOG_HTTP_PATH "/api/v1/tasks/catalog"
-#define LINKR_DEBUGGER_TASK_HTTP_PATH "/api/v1/tasks"
-#define LINKR_DEBUGGER_TASK_MAX_TASK_ID_LEN 64U
 #define LINKR_DEBUGGER_WS_MAX_CLIENTS 4U
 #define LINKR_DEBUGGER_WS_RECV_BUFFER_SIZE 16U
 #define LINKR_DEBUGGER_REBOOT_DELAY_MS 100U
@@ -524,22 +538,30 @@ static const struct linkr_debugger_rail_desc linkr_debugger_rails[] = {
 static const size_t linkr_debugger_rail_count = ARRAY_SIZE(linkr_debugger_rails);
 static struct linkr_debugger_current_desc linkr_debugger_currents[] = {
 	{ .name = "5v_out", .signal = "INA226_5V", .sensor = "INA226",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .unit = "uA", .sensor_index = 0U },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
+	  .unit = "uA", .sensor_index = 0U },
 	{ .name = "12v_out", .signal = "INA226_12V", .sensor = "INA226",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .unit = "uA", .sensor_index = 1U },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
+	  .unit = "uA", .sensor_index = 1U },
 	{ .name = "20v_out", .signal = "INA226_20V", .sensor = "INA226",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .unit = "uA", .sensor_index = 2U },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
+	  .unit = "uA", .sensor_index = 2U },
 	{ .name = "vdd_5v", .signal = "INA226_VDD_5V", .sensor = "INA226",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .unit = "uA", .sensor_index = 3U },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
+	  .unit = "uA", .sensor_index = 3U },
 	{ .name = "adc0", .signal = "GPIO26_ADC0", .sensor = "ADC",
 	  .note = "PD input divider; ADC pad voltage",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE, .unit = "uV", .adc_index = 0U },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE, .role = LINKR_DEBUGGER_ADC_ROLE_PD_INPUT,
+	  .unit = "uV", .adc_index = 0U },
 	{ .name = "adc1", .signal = "GPIO27_ADC1", .sensor = "ADC",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE, .unit = "uV", .adc_index = 1U },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE, .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
+	  .unit = "uV", .adc_index = 1U },
 	{ .name = "adc2", .signal = "GPIO28_ADC2", .sensor = "ADC",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE, .unit = "uV", .adc_index = 2U },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE, .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
+	  .unit = "uV", .adc_index = 2U },
 	{ .name = "adc3", .signal = "GPIO29_ADC3", .sensor = "ADC",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE, .unit = "uV", .adc_index = 3U },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE, .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
+	  .unit = "uV", .adc_index = 3U },
 };
 static const size_t linkr_debugger_adc_count = ARRAY_SIZE(linkr_debugger_currents);
 static const struct linkr_debugger_safe_gpio_desc linkr_debugger_safe_gpios[] = {
@@ -710,7 +732,20 @@ static inline int linkr_debugger_gpio_set_output(
 	return -1;
 }
 static inline int linkr_debugger_reboot_schedule(void) { return -1; }
-static inline const char *linkr_debugger_captive_capport_body(void) { return ""; }
+static inline int linkr_debugger_captive_capport_body(const char *portal_url,
+						char *buf, size_t cap)
+{
+	int written;
+
+	if (portal_url == NULL || buf == NULL || cap == 0U) {
+		return -1;
+	}
+	written = snprintf(buf, cap,
+			   "{\"captive\":true,\"user-portal-url\":\"%s\","
+			   "\"venue-info-url\":\"%s\"}\n",
+			   portal_url, portal_url);
+	return written < 0 || (size_t)written >= cap ? -1 : 0;
+}
 static inline bool linkr_debugger_captive_method_has_body(
 	enum linkr_debugger_captive_method method)
 {
@@ -821,10 +856,17 @@ static inline int linkr_debugger_current_read(
 		sample->value.val2 = sample->current_ua;
 	} else {
 		sample->raw_available = true;
-		sample->raw = 2000 + (int32_t)current->adc_index;
-		sample->mv = 1200 + (int32_t)current->adc_index;
-		sample->value.val1 = 1;
-		sample->value.val2 = 200000 + (int32_t)current->adc_index * 1000;
+		if (current->role == LINKR_DEBUGGER_ADC_ROLE_PD_INPUT) {
+			sample->raw = 3237;
+			sample->mv = 2608;
+			sample->value.val1 = 20;
+			sample->value.val2 = 2;
+		} else {
+			sample->raw = 2000 + (int32_t)current->adc_index;
+			sample->mv = 1200 + (int32_t)current->adc_index;
+			sample->value.val1 = 1;
+			sample->value.val2 = 200000 + (int32_t)current->adc_index * 1000;
+		}
 	}
 	return 0;
 }
@@ -860,15 +902,6 @@ static inline int linkr_debugger_ws_session_delete(uint32_t session_id)
 	ARG_UNUSED(session_id);
 	return -1;
 }
-static inline int linkr_debugger_task_http_handle_delete_one(
-	struct http_client_ctx *client, struct http_response_ctx *response,
-	const char *identifier)
-{
-	ARG_UNUSED(client);
-	ARG_UNUSED(response);
-	ARG_UNUSED(identifier);
-	return -1;
-}
 static inline enum linkr_debugger_captive_action linkr_debugger_captive_select_action(
 	enum linkr_debugger_captive_method method, const char *path)
 {
@@ -883,11 +916,18 @@ bool linkr_debugger_json_utf8_valid(const char *text, size_t text_len);
 int linkr_debugger_json_append_string(void *context,
 				      int (*write)(void *, const char *, size_t),
 				      const char *value, size_t len);
-int linkr_debugger_net_format_ipv4(uint8_t subnet, uint8_t host,
+int linkr_debugger_net_format_ipv4(uint32_t network, uint8_t host,
 				   char *buf, size_t cap);
-uint8_t linkr_debugger_network_subnet(void);
-int linkr_debugger_network_set_subnet_with_result(uint8_t subnet,
-						  bool *reconnect_required);
+int linkr_debugger_net_format_mac(const uint8_t mac[LINKR_DEBUGGER_NET_MAC_LEN],
+				  char *buf, size_t cap);
+int linkr_debugger_net_format_network(uint32_t network, char *buf, size_t cap);
+int linkr_debugger_net_format_url(uint32_t network, char *buf, size_t cap);
+int linkr_debugger_net_parse_mac(const char *text,
+				 uint8_t mac[LINKR_DEBUGGER_NET_MAC_LEN]);
+int linkr_debugger_net_parse_network(const char *text, uint32_t *network);
+int linkr_debugger_network_identity(struct linkr_debugger_net_identity *identity);
+int linkr_debugger_network_set_identity_with_result(
+	const struct linkr_debugger_net_identity *identity, bool *reconnect_required);
 int linkr_debugger_serial_status_snapshot(
 	struct linkr_debugger_serial_status *status);
 int linkr_debugger_serial_net_status_snapshot(
@@ -910,18 +950,6 @@ int linkr_debugger_serial_http_handle(
 	struct http_client_ctx *client, enum http_transaction_status status,
 	const struct http_request_ctx *request,
 	struct http_response_ctx *response, void *user_data);
-static inline int linkr_debugger_task_http_handle(
-	struct http_client_ctx *client, enum http_transaction_status status,
-	const struct http_request_ctx *request, struct http_response_ctx *response,
-	void *user_data)
-{
-	ARG_UNUSED(client);
-	ARG_UNUSED(status);
-	ARG_UNUSED(request);
-	ARG_UNUSED(response);
-	ARG_UNUSED(user_data);
-	return -1;
-}
 static inline int linkr_debugger_config_http_handle(
 	struct http_client_ctx *client, enum http_transaction_status status,
 	const struct http_request_ctx *request, struct http_response_ctx *response,

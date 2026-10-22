@@ -6,7 +6,6 @@
  */
 
 #include "../../src/linkr_debugger_http_task_response.h"
-#include "../../src/linkr_debugger_task.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -17,142 +16,79 @@ const char *linkr_debugger_json_schema(void)
 	return "radxa-linkr-debugger.v1";
 }
 
-static void extract_blob(const char *json, char *blob, size_t blob_cap, size_t *blob_len)
+static struct linkr_debugger_task_status sample_status(void)
 {
-	const char *src = strstr(json, "\"blob\":\"");
-	size_t len = 0U;
+	struct linkr_debugger_task_status status = {
+		.backend_available = true,
+		.revision = UINT64_C(18446744073709551615),
+		.full_ir_len = 123U,
+		.task_count = 1U,
+	};
 
-	assert(src != NULL);
-	src += strlen("\"blob\":\"");
-	while (*src != '\0' && *src != '"') {
-		char value;
-
-		if (*src != '\\') {
-			value = *src++;
-		} else {
-			src++;
-			switch (*src++) {
-			case 'n': value = '\n'; break;
-			case 'r': value = '\r'; break;
-			case 't': value = '\t'; break;
-			case '"': value = '"'; break;
-			case '\\': value = '\\'; break;
-			default: assert(false); return;
-			}
-		}
-		assert(len < blob_cap);
-		blob[len++] = value;
+	for (size_t i = 0U; i < sizeof(status.task_store_id); i++) {
+		status.task_store_id[i] = (uint8_t)i;
 	}
-	assert(*src == '"');
-	*blob_len = len;
+	memset(status.catalog_fingerprint, 0xab, sizeof(status.catalog_fingerprint));
+	memset(status.full_ir_digest, 0xcd, sizeof(status.full_ir_digest));
+	status.tasks[0].slot = 3U;
+	memcpy(status.tasks[0].id, "quote\"\\\xe4\xb8\xad", sizeof("quote\"\\\xe4\xb8\xad"));
+	status.tasks[0].request_count = 2U;
+	status.tasks[0].source_present = true;
+	status.tasks[0].source_len = 4000U;
+	memset(status.tasks[0].source_digest, 0x12,
+	       sizeof(status.tasks[0].source_digest));
+	status.tasks[0].ir_len = 117U;
+	memset(status.tasks[0].ir_digest, 0x34, sizeof(status.tasks[0].ir_digest));
+	return status;
 }
 
-static void fill_maximum_blob(char *blob)
+static void test_metadata_is_bounded_and_contains_no_raw_ir(void)
 {
-	static const char prefix[] =
-		"# linkr-task.v1\n"
-		"# task max\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP10\",\"body\":\"{\\\"direction\\\":\\\"input\\\"}\",\"wait_ms\":0}\n";
-	size_t len = sizeof(prefix) - 1U;
-
-	memcpy(blob, prefix, len);
-	while (len < LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE) {
-		size_t chunk = LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE - len;
-
-		if (chunk > 256U) {
-			chunk = 256U;
-		}
-		blob[len] = '#';
-		if (chunk > 1U) {
-			memset(blob + len + 1U, 'x', chunk - 2U);
-			blob[len + chunk - 1U] = '\n';
-		}
-		len += chunk;
-	}
-}
-
-static void test_store_and_clear_responses(void)
-{
-	char buffer[128];
-	const char *store =
-		"{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":true,\"command\":\"task\","
-		"\"action\":\"store\",\"stored\":true}\n";
-	const char *clear =
-		"{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":true,\"command\":\"task\","
-		"\"action\":\"clear\",\"cleared\":true}\n";
-	int written;
-
-	written = linkr_debugger_http_task_store_response(buffer, sizeof(buffer));
-	assert(written == (int)strlen(store));
-	assert(strcmp(buffer, store) == 0);
-	written = linkr_debugger_http_task_clear_response(buffer, sizeof(buffer));
-	assert(written == (int)strlen(clear));
-	assert(strcmp(buffer, clear) == 0);
-}
-
-static void test_task_route_and_method_contract(void)
-{
-	assert(linkr_debugger_http_task_path_is_supported(LINKR_DEBUGGER_TASK_HTTP_PATH));
-	assert(!linkr_debugger_http_task_path_is_supported("/api/v1/orch"));
-	assert(!linkr_debugger_http_task_path_is_supported("/api/v1/orch/tasks"));
-	assert(!linkr_debugger_http_task_path_is_supported("/api/v1/tasks/boot"));
-	assert(linkr_debugger_http_task_action_for_method(1U) ==
-	       LINKR_DEBUGGER_TASK_HTTP_ACTION_LIST);
-	assert(linkr_debugger_http_task_action_for_method(4U) ==
-	       LINKR_DEBUGGER_TASK_HTTP_ACTION_STORE);
-	assert(linkr_debugger_http_task_action_for_method(0U) ==
-	       LINKR_DEBUGGER_TASK_HTTP_ACTION_CLEAR);
-	assert(linkr_debugger_http_task_action_for_method(3U) ==
-	       LINKR_DEBUGGER_TASK_HTTP_ACTION_METHOD_NOT_ALLOWED);
-}
-
-static void test_empty_list_response(void)
-{
-	struct linkr_debugger_task_status status = { .backend_available = true };
-	char buffer[LINKR_DEBUGGER_TASK_HTTP_RESPONSE_CAP];
-	const char *expected =
-		"{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":true,\"command\":\"task\","
-		"\"action\":\"list\",\"backend\":{\"available\":true},\"task_count\":0,"
-		"\"tasks\":[],\"blob\":\"\"}\n";
-	int written;
-
-	written = linkr_debugger_http_task_list_response(buffer, sizeof(buffer), &status, "", 0U);
-	assert(written == (int)strlen(expected));
-	assert(strcmp(buffer, expected) == 0);
-}
-
-static void test_maximum_blob_round_trip_and_capacity_failure(void)
-{
-	struct linkr_debugger_task_status status = { .backend_available = true, .task_count = 1U };
-	char blob[LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE];
-	char decoded[LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE];
+	struct linkr_debugger_task_status status = sample_status();
 	char response[LINKR_DEBUGGER_TASK_HTTP_RESPONSE_CAP];
-	char too_small[64];
-	size_t decoded_len;
+	int written = linkr_debugger_http_task_list_response(response, sizeof(response), &status);
+
+	assert(written > 0 && (size_t)written == strlen(response));
+	assert(strstr(response, "\"command\":\"tasks\",\"action\":\"list\"") != NULL);
+	assert(strstr(response, "\"task_store_id\":\"00010203-0405-0607-0809-0a0b0c0d0e0f\"") != NULL);
+	assert(strstr(response, "\"revision\":\"18446744073709551615\"") != NULL);
+	assert(strstr(response, "\"catalog_fingerprint\":\"abab") != NULL);
+	assert(strstr(response, "\"full_ir_bytes\":123") != NULL);
+	assert(strstr(response, "\"source_state\":\"present\"") != NULL);
+	assert(strstr(response, "\"source_bytes\":4000") != NULL);
+	assert(strstr(response, "quote\\\"\\\\\xe4\xb8\xad") != NULL);
+	assert(strstr(response, "\"blob\"") == NULL);
+	assert(linkr_debugger_http_task_list_response(response, 32U, &status) < 0);
+}
+
+static void test_mutation_and_conflict_responses(void)
+{
+	struct linkr_debugger_task_mutation_outcome outcome = {
+		.status = sample_status(),
+		.affected_task_present = true,
+		.affected_slot = 3U,
+	};
+	char response[LINKR_DEBUGGER_TASK_HTTP_RESPONSE_CAP];
 	int written;
 
-	memcpy(status.tasks[0].id, "max", sizeof("max"));
-	memcpy(status.tasks[0].name, "max", sizeof("max"));
-	status.tasks[0].request_count = 1U;
-	fill_maximum_blob(blob);
-	written = linkr_debugger_http_task_list_response(response, sizeof(response), &status,
-						 blob, sizeof(blob));
+	written = linkr_debugger_http_task_mutation_response(response, sizeof(response),
+			&outcome, LINKR_DEBUGGER_TASK_MUTATION_UPSERT);
 	assert(written > 0);
-	extract_blob(response, decoded, sizeof(decoded), &decoded_len);
-	assert(decoded_len == sizeof(blob));
-	assert(memcmp(decoded, blob, sizeof(blob)) == 0);
-	memset(too_small, 'x', sizeof(too_small));
-	assert(linkr_debugger_http_task_list_response(too_small, sizeof(too_small), &status,
-						     blob, sizeof(blob)) < 0);
-	assert(too_small[0] == '\0');
+	assert(strstr(response, "\"action\":\"upsert\"") != NULL);
+	assert(strstr(response, "\"task\":{\"slot\":3") != NULL);
+
+	written = linkr_debugger_http_task_error_response(response, sizeof(response),
+			"revision_conflict", "task revision changed", &outcome.status);
+	assert(written > 0);
+	assert(strstr(response, "\"ok\":false") != NULL);
+	assert(strstr(response, "\"code\":\"revision_conflict\"") != NULL);
+	assert(strstr(response, "\"revision\":\"18446744073709551615\"") != NULL);
 }
 
 int main(void)
 {
-	test_store_and_clear_responses();
-	test_task_route_and_method_contract();
-	test_empty_list_response();
-	test_maximum_blob_round_trip_and_capacity_failure();
+	test_metadata_is_bounded_and_contains_no_raw_ir();
+	test_mutation_and_conflict_responses();
 	puts("linkr_debugger_http_task_response: all tests passed");
 	return 0;
 }

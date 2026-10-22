@@ -363,6 +363,8 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 
 ${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_TASK_HOST_TEST \
+	-DLINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST \
+	-DLINKR_DEBUGGER_FLASH_ARBITER_HOST_TEST \
 	-pthread \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
 	-I"${HOST_STUB_DIR}" \
@@ -371,7 +373,12 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_parse.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_blob.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_catalog.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_sha256.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_mutation.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_arbiter.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_flash_arbiter.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_task.c" \
 	-o "${OUT}/linkr_debugger_task_test"
 
@@ -389,11 +396,11 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_task_blob_test"
 
-${CC} -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -O2 -Wall -Wextra -Werror \
 	-Wframe-larger-than=256 \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
-	-fsyntax-only \
-	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c"
+	-c "${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c" \
+	-o "${OUT}/stack_json_value.o"
 
 ${CC} -std=c11 -Wall -Wextra -Werror \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
@@ -415,15 +422,33 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_http_task_response_test"
 
-${CC} -std=c11 -Wall -Wextra -Werror \
+${CC} -std=c11 -O2 -Wall -Wextra -Werror \
 	-Wframe-larger-than=1024 \
 	-DLINKR_DEBUGGER_TASK_HOST_TEST \
 	-DLINKR_DEBUGGER_TASK_HTTP_HOST_TEST=1 \
 	-include "${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_task_http_stubs.h" \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
-	-fsyntax-only \
-	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_catalog.c" \
-	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_http.c"
+	-c "${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_http.c" \
+	-o "${OUT}/stack_task_http.o"
+
+${CC} -std=c11 -O2 -Wall -Wextra -Werror \
+	-Wframe-larger-than=1024 \
+	-DLINKR_DEBUGGER_TASK_HOST_TEST \
+	-DLINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST \
+	-DLINKR_DEBUGGER_FLASH_ARBITER_HOST_TEST \
+	-I"${HOST_STUB_DIR}" \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	-c "${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task.c" \
+	-o "${OUT}/stack_task.o"
+
+${CC} -std=c11 -O2 -Wall -Wextra -Werror \
+	-Wframe-larger-than=512 \
+	-DLINKR_DEBUGGER_TASK_HOST_TEST \
+	-DLINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST \
+	-DLINKR_DEBUGGER_FLASH_ARBITER_HOST_TEST \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	-c "${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_mutation.c" \
+	-o "${OUT}/stack_task_mutation.o"
 
 ${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_TASK_HOST_TEST \
@@ -438,6 +463,7 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_parse.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_blob.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_sha256.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_mutation.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_http_task_response.c" \
@@ -459,6 +485,8 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_value.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_parse.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_blob.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_catalog.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_sha256.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_task_mutation.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_arbiter.c" \

@@ -15,11 +15,11 @@
 #define LINKR_DEBUGGER_CONFIG_VERSION 1U
 #define LINKR_DEBUGGER_CONFIG_HEADER_SIZE 12U
 #define LINKR_DEBUGGER_CONFIG_ENTRY_SIZE 4U
-#define LINKR_DEBUGGER_CONFIG_MAX_ENTRIES 18U
-#define LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE 84U
+#define LINKR_DEBUGGER_CONFIG_MAX_ENTRIES 19U
+#define LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE 88U
 #define LINKR_DEBUGGER_CONFIG_SETTINGS_MAX_VAL_LEN 256U
 
-_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 18U,
+_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 19U,
 	       "persistent catalog entry count changed");
 _Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE ==
 	       LINKR_DEBUGGER_CONFIG_HEADER_SIZE +
@@ -46,6 +46,7 @@ enum linkr_debugger_config_power_item_id {
 	LINKR_DEBUGGER_CONFIG_POWER_VDD_5V_ID = 3,
 	LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID = 4,
 	LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID = 5,
+	LINKR_DEBUGGER_CONFIG_POWER_5V_OTG_ID = 6,
 };
 
 enum linkr_debugger_config_switch_item_id {
@@ -104,6 +105,8 @@ const struct linkr_debugger_config_item_desc *linkr_debugger_config_find_item_by
 	const char *id);
 enum linkr_debugger_config_codec_result linkr_debugger_config_classify_entry(
 	const struct linkr_debugger_config_entry *entry, bool *requires_confirmation);
+enum linkr_debugger_config_codec_result linkr_debugger_config_validate_power_parenting(
+	const struct linkr_debugger_config_snapshot *snapshot);
 enum linkr_debugger_config_codec_result linkr_debugger_config_encode(
 	const struct linkr_debugger_config_snapshot *snapshot, uint8_t *buffer,
 	size_t buffer_size, size_t *encoded_size);

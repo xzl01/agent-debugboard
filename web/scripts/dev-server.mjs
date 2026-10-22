@@ -5,7 +5,8 @@ import { startNcmLoopback } from "./ncm-loopback.mjs";
 const webRoot = fileURLToPath(new URL("../", import.meta.url));
 const viteBin = fileURLToPath(new URL("../node_modules/vite/bin/vite.js", import.meta.url));
 // Use the firmware's USB-NCM-local port 80 control service.
-const configuredTarget = process.env.VITE_DEBUGGER_TARGET || "http://172.29.203.1";
+const configuredTarget =
+  process.env.VITE_DEBUGGER_TARGET || process.env.LINKR_BOARD_URL || "http://172.29.203.1";
 
 let forwarder;
 try {

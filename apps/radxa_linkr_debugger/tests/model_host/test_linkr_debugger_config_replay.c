@@ -60,6 +60,9 @@ static void build_full_ordered(struct linkr_debugger_config_snapshot *snapshot)
 		     LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID,
 		     LINKR_DEBUGGER_CONFIG_POWER_ON);
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+		     LINKR_DEBUGGER_CONFIG_POWER_5V_OTG_ID,
+		     LINKR_DEBUGGER_CONFIG_POWER_OFF);
+	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID,
 		     LINKR_DEBUGGER_CONFIG_POWER_ON);
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
@@ -120,17 +123,25 @@ static void reset_fake(struct fake_control *control)
 	control->vdd_value = 0xa5U;
 }
 
-static bool fake_dependency_enabled(void *context, bool child)
+static size_t fake_dependency_child_count(void *context)
+{
+	(void)context;
+	return 1U;
+}
+
+static bool fake_dependency_enabled(void *context, bool child, size_t index)
 {
 	struct fake_control *control = context;
 
+	(void)index;
 	return child ? control->child_enabled : control->parent_enabled;
 }
 
-static int fake_dependency_set(void *context, bool child, bool enabled)
+static int fake_dependency_set(void *context, bool child, size_t index, bool enabled)
 {
 	struct fake_control *control = context;
 
+	(void)index;
 	if (child) {
 		control->child_enabled = enabled;
 	} else {
@@ -145,6 +156,7 @@ static int fake_setter(void *context, const struct linkr_debugger_config_entry *
 {
 	struct fake_control *control = context;
 	static const struct linkr_debugger_power_dependency_ops dependency_ops = {
+		.child_count = fake_dependency_child_count,
 		.is_enabled = fake_dependency_enabled,
 		.set_enabled = fake_dependency_set,
 	};
@@ -165,14 +177,14 @@ static int fake_setter(void *context, const struct linkr_debugger_config_entry *
 		return linkr_debugger_power_dependency_apply(
 			LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT,
 			entry->value == LINKR_DEBUGGER_CONFIG_POWER_ON,
-			&dependency_ops, control);
+			0U, &dependency_ops, control);
 	}
 	if (entry->domain == LINKR_DEBUGGER_CONFIG_DOMAIN_POWER &&
 	    entry->item_id == LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID) {
 		return linkr_debugger_power_dependency_apply(
 			LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD,
 			entry->value == LINKR_DEBUGGER_CONFIG_POWER_ON,
-			&dependency_ops, control);
+			0U, &dependency_ops, control);
 	}
 	return 0;
 }

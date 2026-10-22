@@ -17,11 +17,17 @@
 
 /* Exercise the production fallback router and actual route handlers directly. */
 #include "../../src/linkr_debugger_serial_http.c"
+#include "../../src/linkr_debugger_http_task_response.c"
+#include "../../src/linkr_debugger_task_http.c"
 #include "../../src/linkr_debugger_http.c"
 
 static unsigned int setter_calls;
-static uint8_t setter_subnet;
-static uint8_t current_subnet = 203U;
+static struct linkr_debugger_net_identity setter_identity;
+static struct linkr_debugger_net_identity current_identity = {
+	.mac = { 0x02U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U },
+	.network = 0x0a000000U,
+	.origin = LINKR_DEBUGGER_NET_ORIGIN_DERIVED,
+};
 static unsigned int pd_fixed_calls;
 static unsigned int pd_pps_calls;
 static unsigned int pd_status_calls;
@@ -37,6 +43,65 @@ static int serial_config_result;
 static unsigned int serial_config_calls;
 static uint64_t serial_config_expected_generation;
 static uint64_t serial_config_request_id = 77U;
+
+/* Frozen firmware JSON vectors, also consumed by taskV2.test.ts. ir_bytes is
+ * the standalone header + task section, not the section's bytes in full IR.
+ */
+#define TASK_TEST_ID "00010203-0405-0607-0809-0a0b0c0d0e0f"
+#define TASK_TEST_CATALOG "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+#define TASK_TEST_A_SOURCE_DIGEST "bfd3006056fd18bce3a2b1db4818f96079030b0976d846b040efe2a72ee9e1f1"
+#define TASK_TEST_A_IR_DIGEST "5c227cbb48ebc9e91d4a4c2fa60f9d5f4490f51e361110763ebc22cf641d4ef0"
+#define TASK_TEST_B_IR_DIGEST "f7633e2af94cbd64a4fc28378a7790b4051f1576604ab287dc621dc13b5363ae"
+#define TASK_TEST_FULL_IR_DIGEST "b2298f2e1f8b31e99a63a7916460941eea303dc34dc032b1b66a7e63021c5d3f"
+#define TASK_TEST_IDENTITY \
+	"\"task_store_id\":\"" TASK_TEST_ID "\",\"revision\":\"9007199254740993\"," \
+	"\"catalog_fingerprint\":\"" TASK_TEST_CATALOG "\""
+#define TASK_TEST_STORAGE \
+	"\"storage\":{\"total_bytes\":131072,\"used_bytes\":8192," \
+	"\"free_bytes\":122880,\"task_bytes\":1028," \
+	"\"reserve_bytes\":8192,\"measured\":true,\"save_allowed\":true}"
+#define TASK_TEST_A_METADATA \
+	"{\"slot\":0,\"id\":\"A\",\"request_count\":1,\"source_state\":\"present\"," \
+	"\"source_bytes\":148,\"source_digest\":\"" TASK_TEST_A_SOURCE_DIGEST "\"," \
+	"\"ir_bytes\":100,\"task_ir_digest\":\"" TASK_TEST_A_IR_DIGEST "\"}"
+static const char task_test_golden_list[] =
+	"{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":true,\"command\":\"tasks\","
+	"\"action\":\"list\"," TASK_TEST_IDENTITY "," TASK_TEST_STORAGE ",\"full_ir_bytes\":184,"
+	"\"full_ir_digest\":\"" TASK_TEST_FULL_IR_DIGEST "\",\"tasks\":["
+	TASK_TEST_A_METADATA ",{\"slot\":3,\"id\":\"B\",\"request_count\":1,"
+	"\"source_state\":\"absent\",\"source_bytes\":0,\"source_digest\":null,"
+	"\"ir_bytes\":100,\"task_ir_digest\":\"" TASK_TEST_B_IR_DIGEST "\"}]}\n";
+static const char task_test_golden_upsert[] =
+	"{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":true,\"command\":\"tasks\","
+	"\"action\":\"upsert\"," TASK_TEST_IDENTITY "," TASK_TEST_STORAGE ",\"task\":" TASK_TEST_A_METADATA "}\n";
+static const char task_test_golden_delete[] =
+	"{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":true,\"command\":\"tasks\","
+	"\"action\":\"delete\"," TASK_TEST_IDENTITY "," TASK_TEST_STORAGE ",\"task\":null}\n";
+static const char task_test_golden_conflict[] =
+	"{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":false,\"command\":\"tasks\","
+	"\"error\":{\"code\":\"revision_conflict\",\"message\":\"task revision changed\"},"
+	TASK_TEST_IDENTITY "}\n";
+static const char task_test_source[] =
+	"{\"schema\":\"linkr-test.v1\",\"name\":\"A\",\"version\":\"1.0\","
+	"\"created\":\"2026-10-22T00:00:00.000Z\"}\n"
+	"{\"id\":\"s1\",\"params\":{\"rail\":\"5v_out\"},\"type\":\"power_on\"}\n";
+static const char task_test_ir[] =
+	"# linkr-task.v1\n# task A\n"
+	"{\"method\":\"PUT\",\"path\":\"/api/v1/power/5v_out\",\"body\":\"{\\\"state\\\":\\\"on\\\"}\"}\n"
+	"# task B\n"
+	"{\"method\":\"PUT\",\"path\":\"/api/v1/power/5v_out\",\"body\":\"{\\\"state\\\":\\\"on\\\"}\"}\n";
+static const char task_test_mutation_template[] =
+	"{\"schema\":\"radxa-linkr-debugger.v1\",\"action\":\"%s\","
+	"\"expected_revision\":\"9007199254740993\",\"catalog_fingerprint\":\""
+	TASK_TEST_CATALOG "\"}";
+static char task_test_mutation[256];
+static size_t task_test_mutation_len;
+static struct linkr_debugger_task_status task_test_status;
+static enum linkr_debugger_task_result task_test_mutation_result;
+static enum linkr_debugger_task_result task_test_source_result;
+static unsigned int task_test_mutation_calls;
+static unsigned int task_test_source_calls;
+static uint8_t task_test_source_slot;
 
 const char *linkr_debugger_json_schema(void)
 {
@@ -69,14 +134,36 @@ int64_t json_obj_parse(char *payload, size_t len,
 			strcpy((char *)value + descr[0].offset, route);
 			return BIT64(0);
 		}
-		int subnet;
+		return -EINVAL;
+	}
+	if (descr_len == 2U && descr[0].type == JSON_TOK_STRING_BUF) {
+		char mac[LINKR_DEBUGGER_NET_MAC_STR_LEN] = { 0 };
+		char network[LINKR_DEBUGGER_NET_NETWORK_STR_LEN] = { 0 };
+		int mac_consumed = 0;
+		int network_consumed = 0;
+		int matched;
 
-		if (sscanf(text, "{\"subnet\":%d}%n", &subnet, &consumed) != 1 ||
-		    consumed != (int)len) {
-			return -EINVAL;
+		matched = sscanf(text,
+				 "{\"mac\":\"%17[^\"]\",\"network\":\"%19[^\"]\"}%n",
+				 mac, network, &consumed);
+		if (matched == 2 && consumed == (int)len) {
+			strcpy((char *)value + descr[0].offset, mac);
+			strcpy((char *)value + descr[1].offset, network);
+			return BIT64(0) | BIT64(1);
 		}
-		*(int *)((char *)value + descr[0].offset) = subnet;
-		return BIT64(0);
+		matched = sscanf(text, "{\"mac\":\"%17[^\"]\"}%n", mac,
+				 &mac_consumed);
+		if (matched == 1 && mac_consumed == (int)len) {
+			strcpy((char *)value + descr[0].offset, mac);
+			return BIT64(0);
+		}
+		matched = sscanf(text, "{\"network\":\"%19[^\"]\"}%n", network,
+				 &network_consumed);
+		if (matched == 1 && network_consumed == (int)len) {
+			strcpy((char *)value + descr[1].offset, network);
+			return BIT64(1);
+		}
+		return -EINVAL;
 	}
 	if (descr_len == 2U) {
 		int mode;
@@ -121,27 +208,117 @@ int64_t json_obj_parse(char *payload, size_t len,
 	return -EINVAL;
 }
 
-int linkr_debugger_net_format_ipv4(uint8_t subnet, uint8_t host,
+int linkr_debugger_net_format_ipv4(uint32_t network, uint8_t host,
 				   char *buf, size_t cap)
 {
-	int len = snprintf(buf, cap, "172.29.%u.%u",
-			   (unsigned int)subnet, (unsigned int)host);
+	uint32_t addr = network + host;
+	int len = snprintf(buf, cap, "%u.%u.%u.%u",
+			   (unsigned int)((addr >> 24) & 0xffU),
+			   (unsigned int)((addr >> 16) & 0xffU),
+			   (unsigned int)((addr >> 8) & 0xffU),
+			   (unsigned int)(addr & 0xffU));
 
 	return len < 0 || (size_t)len >= cap ? -ENOSPC : 0;
 }
 
-uint8_t linkr_debugger_network_subnet(void)
+int linkr_debugger_net_format_mac(const uint8_t mac[LINKR_DEBUGGER_NET_MAC_LEN],
+				  char *buf, size_t cap)
 {
-	return current_subnet;
+	int len = snprintf(buf, cap, "%02x:%02x:%02x:%02x:%02x:%02x",
+			   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+	return len < 0 || (size_t)len >= cap ? -ENOSPC : 0;
 }
 
-int linkr_debugger_network_set_subnet_with_result(uint8_t subnet,
-						  bool *reconnect_required)
+int linkr_debugger_net_format_network(uint32_t network, char *buf, size_t cap)
+{
+	char ip[LINKR_DEBUGGER_NET_IPV4_STR_LEN];
+	int len;
+
+	if (linkr_debugger_net_format_ipv4(network, 0U, ip, sizeof(ip)) < 0) {
+		return -ENOSPC;
+	}
+	len = snprintf(buf, cap, "%s/30", ip);
+	return len < 0 || (size_t)len >= cap ? -ENOSPC : 0;
+}
+
+int linkr_debugger_net_format_url(uint32_t network, char *buf, size_t cap)
+{
+	char ip[LINKR_DEBUGGER_NET_IPV4_STR_LEN];
+	int len;
+
+	if (linkr_debugger_net_format_ipv4(network, LINKR_DEBUGGER_NET_DEVICE_HOST,
+					   ip, sizeof(ip)) < 0) {
+		return -ENOSPC;
+	}
+	len = snprintf(buf, cap, "http://%s/", ip);
+	return len < 0 || (size_t)len >= cap ? -ENOSPC : 0;
+}
+
+int linkr_debugger_net_parse_mac(const char *text,
+				 uint8_t mac[LINKR_DEBUGGER_NET_MAC_LEN])
+{
+	unsigned int b[LINKR_DEBUGGER_NET_MAC_LEN];
+	char tail;
+
+	if (text == NULL || mac == NULL ||
+	    sscanf(text, "%2x:%2x:%2x:%2x:%2x:%2x%c", &b[0], &b[1], &b[2],
+		   &b[3], &b[4], &b[5], &tail) != 6) {
+		return -EINVAL;
+	}
+	for (size_t i = 0U; i < LINKR_DEBUGGER_NET_MAC_LEN; i++) {
+		mac[i] = (uint8_t)b[i];
+	}
+	return (mac[0] & 0x03U) == 0x02U ? 0 : -EINVAL;
+}
+
+int linkr_debugger_net_parse_network(const char *text, uint32_t *network)
+{
+	unsigned int a, b, c, d;
+	int used = 0;
+	uint32_t value;
+
+	if (text == NULL || network == NULL) {
+		return -EINVAL;
+	}
+	if (sscanf(text, "%u.%u.%u.%u%n", &a, &b, &c, &d, &used) != 4 ||
+	    used <= 0 || (text[used] != '\0' && strcmp(text + used, "/30") != 0) ||
+	    a > 255U || b > 255U || c > 255U || d > 255U) {
+		return -EINVAL;
+	}
+	value = ((uint32_t)a << 24) | ((uint32_t)b << 16) |
+		((uint32_t)c << 8) | (uint32_t)d;
+	if ((value & 0x03U) != 0U ||
+	    !((value & 0xFF000000U) == 0x0A000000U ||
+	      (value & 0xFFF00000U) == 0xAC100000U ||
+	      (value & 0xFFFF0000U) == 0xC0A80000U)) {
+		return -EINVAL;
+	}
+	*network = value;
+	return 0;
+}
+
+int linkr_debugger_network_identity(struct linkr_debugger_net_identity *identity)
+{
+	if (identity == NULL) {
+		return -EINVAL;
+	}
+	*identity = current_identity;
+	return 0;
+}
+
+int linkr_debugger_network_set_identity_with_result(
+	const struct linkr_debugger_net_identity *identity, bool *reconnect_required)
 {
 	setter_calls++;
-	setter_subnet = subnet;
-	*reconnect_required = current_subnet != subnet;
-	current_subnet = subnet;
+	setter_identity = *identity;
+	if (reconnect_required != NULL) {
+		*reconnect_required =
+			memcmp(current_identity.mac, identity->mac,
+			       LINKR_DEBUGGER_NET_MAC_LEN) != 0 ||
+			current_identity.network != identity->network;
+	}
+	current_identity = *identity;
 	return 0;
 }
 
@@ -197,13 +374,134 @@ int linkr_debugger_serial_config_cas(
 	return serial_config_result;
 }
 
+/* Storage is isolated here; the callback, response encoder, registered
+ * resources and fallback dispatch are production implementations.
+ */
+enum linkr_debugger_task_result linkr_debugger_task_status_get(
+	struct linkr_debugger_task_status *status)
+{
+	*status = task_test_status;
+	return LINKR_DEBUGGER_TASK_OK;
+}
+
+enum linkr_debugger_task_result linkr_debugger_task_ir_snapshot(
+	uint8_t *ir, size_t cap, size_t *len)
+{
+	assert(sizeof(task_test_ir) - 1U <= cap);
+	*len = sizeof(task_test_ir) - 1U;
+	memcpy(ir, task_test_ir, *len);
+	return LINKR_DEBUGGER_TASK_OK;
+}
+
+enum linkr_debugger_task_result linkr_debugger_task_source_snapshot(
+	uint8_t slot, uint8_t *source, size_t cap, size_t *len)
+{
+	task_test_source_calls++;
+	task_test_source_slot = slot;
+	assert(sizeof(task_test_source) - 1U <= cap);
+	*len = sizeof(task_test_source) - 1U;
+	memcpy(source, task_test_source, *len);
+	return task_test_source_result;
+}
+
+enum linkr_debugger_task_result linkr_debugger_task_mutation_execute(
+	uint8_t *body, size_t len, struct linkr_debugger_task_mutation_outcome *outcome,
+	enum linkr_debugger_task_mutation_opcode *opcode)
+{
+	task_test_mutation_calls++;
+	assert(len == task_test_mutation_len);
+	assert(memcmp(body, task_test_mutation, len) == 0);
+	if (strstr((const char *)body, "\"action\":\"upsert\"") != NULL) {
+		*opcode = LINKR_DEBUGGER_TASK_MUTATION_UPSERT;
+	} else if (strstr((const char *)body, "\"action\":\"delete\"") != NULL) {
+		*opcode = LINKR_DEBUGGER_TASK_MUTATION_DELETE;
+	} else {
+		*opcode = LINKR_DEBUGGER_TASK_MUTATION_CLEAR;
+	}
+	outcome->status = task_test_status;
+	outcome->affected_task_present = *opcode == LINKR_DEBUGGER_TASK_MUTATION_UPSERT;
+	outcome->affected_slot = 0U;
+	return task_test_mutation_result;
+}
+
+static void task_test_set_mutation_body(const char *action)
+{
+	task_test_mutation_len = (size_t)snprintf(task_test_mutation,
+		sizeof(task_test_mutation), task_test_mutation_template, action);
+}
+
+const uint8_t *linkr_debugger_task_catalog_json(size_t *len)
+{
+	static const uint8_t catalog[] =
+		"{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":true,"
+		"\"command\":\"tasks\",\"action\":\"catalog\",\"tasks\":[]}\n";
+
+	*len = sizeof(catalog) - 1U;
+	return catalog;
+}
+
+static void task_test_digest(uint8_t bytes[32], const char *hex)
+{
+	for (size_t i = 0U; i < 32U; i++) {
+		unsigned int byte;
+
+		assert(sscanf(hex + 2U * i, "%2x", &byte) == 1);
+		bytes[i] = (uint8_t)byte;
+	}
+}
+
+static void task_test_reset(void)
+{
+	task_test_status = (struct linkr_debugger_task_status){
+		.backend_available = true,
+		.storage = {
+			.total_bytes = 131072U,
+			.used_bytes = 8192U,
+			.free_bytes = 122880U,
+			.task_bytes = 1028U,
+			.reserve_bytes = 8192U,
+			.measured = true,
+			.save_allowed = true,
+		},
+		.revision = UINT64_C(9007199254740993),
+		.full_ir_len = sizeof(task_test_ir) - 1U,
+		.task_count = 2U,
+		.tasks = {
+			{ .slot = 0U, .id = "A", .request_count = 1U,
+			  .source_present = true, .source_len = sizeof(task_test_source) - 1U,
+			  .ir_len = 100U },
+			{ .slot = 3U, .id = "B", .request_count = 1U, .ir_len = 100U },
+		},
+	};
+	for (size_t i = 0U; i < sizeof(task_test_status.task_store_id); i++) {
+		task_test_status.task_store_id[i] = (uint8_t)i;
+	}
+	task_test_digest(task_test_status.catalog_fingerprint, TASK_TEST_CATALOG);
+	task_test_digest(task_test_status.full_ir_digest, TASK_TEST_FULL_IR_DIGEST);
+	task_test_digest(task_test_status.tasks[0].source_digest, TASK_TEST_A_SOURCE_DIGEST);
+	task_test_digest(task_test_status.tasks[0].ir_digest, TASK_TEST_A_IR_DIGEST);
+	task_test_digest(task_test_status.tasks[1].ir_digest, TASK_TEST_B_IR_DIGEST);
+	task_test_mutation_result = LINKR_DEBUGGER_TASK_OK;
+	task_test_source_result = LINKR_DEBUGGER_TASK_OK;
+	task_test_set_mutation_body("clear");
+	task_test_mutation_calls = 0U;
+	task_test_source_calls = 0U;
+	task_test_source_slot = UINT8_MAX;
+	memset(&task_input_state, 0, sizeof(task_input_state));
+	task_response_owner = NULL;
+}
+
 static void reset_test(void)
 {
 	static const char *const directions[] = { "input", "output" };
 
 	setter_calls = 0U;
-	setter_subnet = 0U;
-	current_subnet = 203U;
+	memset(&setter_identity, 0, sizeof(setter_identity));
+	current_identity = (struct linkr_debugger_net_identity){
+		.mac = { 0x02U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U },
+		.network = 0x0a000000U,
+		.origin = LINKR_DEBUGGER_NET_ORIGIN_DERIVED,
+	};
 	pd_fixed_calls = 0U;
 	pd_pps_calls = 0U;
 	pd_status_calls = 0U;
@@ -413,6 +711,7 @@ static void reset_test(void)
 	linkr_debugger_gpio_layout_groups[1].edge = "right";
 	linkr_debugger_http_body_reset_all();
 	memset(serial_http_poison, 0, sizeof(serial_http_poison));
+	task_test_reset();
 }
 
 static void route(struct http_client_ctx *client,
@@ -572,15 +871,56 @@ static void test_fragmented_put_executes_once_with_complete_json(void)
 	struct http_response_ctx response = { 0 };
 
 	reset_test();
-	route(&client, HTTP_SERVER_REQUEST_DATA_MORE, "{\"subnet\":", &response);
+	route(&client, HTTP_SERVER_REQUEST_DATA_MORE, "{\"mac\":\"02:aa:bb:cc:dd:ee\",", &response);
 	assert(setter_calls == 0U);
 	assert(!response.final_chunk);
 
-	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, "204}", &response);
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL,
+	      "\"network\":\"10.20.30.0\"}", &response);
 	assert(setter_calls == 1U);
-	assert(setter_subnet == 204U);
+	assert(memcmp(setter_identity.mac,
+		      (const uint8_t[]){ 0x02U, 0xaaU, 0xbbU, 0xccU, 0xddU, 0xeeU },
+		      LINKR_DEBUGGER_NET_MAC_LEN) == 0);
+	assert(setter_identity.network == 0x0a141e00U);
+	assert(setter_identity.origin == LINKR_DEBUGGER_NET_ORIGIN_MANUAL);
 	assert(response.status == HTTP_200_OK);
 	assert(response.final_chunk);
+}
+
+static void test_invalid_network_forms_are_rejected(void)
+{
+	static const char *const bodies[] = {
+		"{\"network\":\"10.0.0.0/24\"}",
+		"{\"network\":\"10.0.0.0/31\"}",
+		"{\"network\":\"10.0.0.1/30\"}",
+		"{\"network\":\"8.8.8.0/30\"}",
+	};
+
+	for (size_t i = 0U; i < sizeof(bodies) / sizeof(bodies[0]); i++) {
+		struct http_client_ctx client = net_put_client();
+		struct http_response_ctx response = { 0 };
+
+		reset_test();
+		route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, bodies[i], &response);
+		assert(setter_calls == 0U);
+		assert(response.status == HTTP_400_BAD_REQUEST);
+		assert(strstr((const char *)response.body,
+			      "\"code\":\"invalid_network\"") != NULL);
+	}
+}
+
+static void test_unchanged_identity_preserves_derived_origin(void)
+{
+	struct http_client_ctx client = net_put_client();
+	struct http_response_ctx response = { 0 };
+
+	reset_test();
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL,
+	      "{\"mac\":\"02:11:22:33:44:55\",\"network\":\"10.0.0.0\"}",
+	      &response);
+	assert(setter_calls == 1U);
+	assert(setter_identity.origin == LINKR_DEBUGGER_NET_ORIGIN_DERIVED);
+	assert(response.status == HTTP_200_OK);
 }
 
 static void test_aborted_and_complete_clear_without_executing(void)
@@ -589,19 +929,19 @@ static void test_aborted_and_complete_clear_without_executing(void)
 	struct http_response_ctx response = { 0 };
 
 	reset_test();
-	route(&client, HTTP_SERVER_REQUEST_DATA_MORE, "{\"subnet\":", &response);
+	route(&client, HTTP_SERVER_REQUEST_DATA_MORE, "{\"mac\":\"02:aa:bb:cc:dd:ee\",", &response);
 	route(&client, HTTP_SERVER_TRANSACTION_ABORTED, NULL, &response);
 	assert(setter_calls == 0U);
-	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, "204}", &response);
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, "\"network\":\"10.20.30.0\"}", &response);
 	assert(setter_calls == 0U);
 	assert(response.status == HTTP_400_BAD_REQUEST);
 
 	memset(&response, 0, sizeof(response));
 	reset_test();
-	route(&client, HTTP_SERVER_REQUEST_DATA_MORE, "{\"subnet\":", &response);
+	route(&client, HTTP_SERVER_REQUEST_DATA_MORE, "{\"mac\":\"02:aa:bb:cc:dd:ee\",", &response);
 	route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
 	assert(setter_calls == 0U);
-	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, "204}", &response);
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, "\"network\":\"10.20.30.0\"}", &response);
 	assert(setter_calls == 0U);
 	assert(response.status == HTTP_400_BAD_REQUEST);
 }
@@ -613,7 +953,7 @@ static void test_invalid_prefix_cannot_be_replaced_by_valid_final_fragment(void)
 
 	reset_test();
 	route(&client, HTTP_SERVER_REQUEST_DATA_MORE, "garbage", &response);
-	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, "{\"subnet\":204}", &response);
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, "{\"network\":\"10.20.30.0\"}", &response);
 	assert(setter_calls == 0U);
 	assert(response.status == HTTP_400_BAD_REQUEST);
 }
@@ -1051,6 +1391,8 @@ static void test_gpio_layout_groups_are_top_level_http_contract(void)
 	assert(count_substring(body, "\"adc_index\":") == HTTP_TEST_ADC_COUNT);
 	assert(strstr(strstr(body, "\"adc_channels\":["), "\"name\":\"5v_usb_hub\"") == NULL);
 	assert(count_substring(body, "\"note\":\"PD input divider; ADC pad voltage\"") == 1U);
+	assert(count_substring(body, "\"role\":\"pd_input\"") == 1U);
+	assert(strstr(body, "\"role\":\"native\"") == NULL);
 	assert(count_substring(body, "\"layoutGroup\":") == HTTP_TEST_MAPPED_GPIO_COUNT);
 	assert(count_substring(body, "\"direction\":") == HTTP_TEST_SAFE_GPIO_COUNT);
 	assert(strstr(body,
@@ -1095,7 +1437,7 @@ static void test_gpio_layout_groups_are_top_level_http_contract(void)
 		assert(strstr(body,
 			"\"name\":\"adc0\",\"signal\":\"GPIO26_ADC0\",\"adc_index\":0,"
 			"\"sensor\":\"ADC\",\"sensor_channel\":\"voltage\",\"unit\":\"V\","
-			"\"note\":\"PD input divider; ADC pad voltage\"") != NULL);
+			"\"role\":\"pd_input\",\"note\":\"PD input divider; ADC pad voltage\"") != NULL);
 	}
 	match = strstr(body, expected_groups);
 	assert(match != NULL);
@@ -1337,6 +1679,8 @@ static void test_adc_read_route_emits_eight_readings_and_adc0_note(void)
 	assert(count_substring(body, "\"sensor_channel\":\"current\"") == 4U);
 	assert(count_substring(body, "\"sensor_channel\":\"voltage\"") == 4U);
 	assert(count_substring(body, "\"note\":\"PD input divider; ADC pad voltage\"") == 1U);
+	assert(count_substring(body, "\"role\":\"pd_input\"") == 1U);
+	assert(count_substring(body, "\"role\":\"native\"") == 7U);
 	{
 		const char *adc_names[] = {
 			"\"name\":\"5v_out\"", "\"name\":\"12v_out\"",
@@ -1354,9 +1698,9 @@ static void test_adc_read_route_emits_eight_readings_and_adc0_note(void)
 	}
 	assert(strstr(body,
 		"{\"name\":\"adc0\",\"signal\":\"GPIO26_ADC0\","
-		"\"note\":\"PD input divider; ADC pad voltage\",\"raw\":2000,"
-		"\"mv\":1200,\"sensor_channel\":\"voltage\",\"unit\":\"V\","
-		"\"sensor_value\":{\"val1\":1,\"val2\":200000}}") != NULL);
+		"\"note\":\"PD input divider; ADC pad voltage\",\"role\":\"pd_input\","
+		"\"raw\":3237,\"mv\":2608,\"sensor_channel\":\"voltage\",\"unit\":\"V\","
+		"\"sensor_value\":{\"val1\":20,\"val2\":2}}") != NULL);
 	assert(strstr(body, "\"name\":\"adc3\",\"signal\":\"GPIO29_ADC3\"") != NULL);
 
 	memset(&response, 0, sizeof(response));
@@ -1428,11 +1772,265 @@ static void test_gpio_workspace_preserves_4096_encoding_limit(void)
 	linkr_debugger_gpio_layout_groups[0].name = "J8";
 }
 
+static const struct {
+	const struct linkr_debugger_http_resource_stub *resource;
+	const char *path;
+	enum http_method method;
+	const char *content_type;
+	enum linkr_debugger_task_http_route route;
+} task_test_resources[] = {
+	{ &linkr_debugger_tasks_resource, "/api/v1/tasks", HTTP_GET,
+	  "application/json", LINKR_DEBUGGER_TASK_HTTP_ROUTE_TASKS },
+	{ &linkr_debugger_task_catalog_resource, "/api/v1/tasks/catalog", HTTP_GET,
+	  "application/json", LINKR_DEBUGGER_TASK_HTTP_ROUTE_CATALOG },
+	{ &linkr_debugger_task_ir_resource, "/api/v1/tasks/ir", HTTP_GET,
+	  "application/vnd.radxa.linkr-task-ir.v1", LINKR_DEBUGGER_TASK_HTTP_ROUTE_IR },
+	{ &linkr_debugger_task_mutations_resource, "/api/v1/tasks/mutations", HTTP_POST,
+	  "application/json", LINKR_DEBUGGER_TASK_HTTP_ROUTE_MUTATIONS },
+	{ &linkr_debugger_task_source_0_resource, "/api/v1/tasks/slots/0/source", HTTP_GET,
+	  "application/vnd.radxa.linkr-test.v1+ndjson", LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_0 },
+	{ &linkr_debugger_task_source_1_resource, "/api/v1/tasks/slots/1/source", HTTP_GET,
+	  "application/vnd.radxa.linkr-test.v1+ndjson", LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_1 },
+	{ &linkr_debugger_task_source_2_resource, "/api/v1/tasks/slots/2/source", HTTP_GET,
+	  "application/vnd.radxa.linkr-test.v1+ndjson", LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_2 },
+	{ &linkr_debugger_task_source_3_resource, "/api/v1/tasks/slots/3/source", HTTP_GET,
+	  "application/vnd.radxa.linkr-test.v1+ndjson", LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_3 },
+};
+
+static void task_route(struct http_client_ctx *client, enum http_transaction_status status,
+		       const void *data, size_t len, const char *content_type,
+		       struct http_response_ctx *response)
+{
+	struct http_header header = { .name = "Content-Type", .value = content_type };
+	struct http_request_ctx request = {
+		.data = (char *)data,
+		.data_len = len,
+		.headers = content_type != NULL ? &header : NULL,
+		.header_count = content_type != NULL ? 1U : 0U,
+		.headers_status = HTTP_HEADER_STATUS_OK,
+	};
+
+	assert(linkr_debugger_http_route_request(client, status, &request, response, NULL) == 0);
+}
+
+static void test_task_resources_methods_types_and_exact_fallback_routes(void)
+{
+	static const enum http_method methods[] = {
+		HTTP_GET, HTTP_HEAD, HTTP_POST, HTTP_PUT, HTTP_DELETE,
+	};
+	struct http_header header = {
+		.name = "Content-Type", .value = LINKR_DEBUGGER_TASK_MUTATION_CONTENT_TYPE,
+	};
+	struct http_request_ctx request = {
+		.data = (char *)task_test_mutation, .data_len = task_test_mutation_len,
+		.headers = &header, .header_count = 1U, .headers_status = HTTP_HEADER_STATUS_OK,
+	};
+
+	assert(ARRAY_SIZE(task_test_resources) == 8U);
+	assert(ARRAY_SIZE(linkr_debugger_task_http_resources) == ARRAY_SIZE(task_test_resources));
+	for (size_t i = 0U; i < ARRAY_SIZE(task_test_resources); i++) {
+		struct http_resource_detail_dynamic *detail = task_test_resources[i].resource->detail;
+
+		assert(strcmp(task_test_resources[i].resource->path, task_test_resources[i].path) == 0);
+		assert(detail->common.type == HTTP_RESOURCE_TYPE_DYNAMIC);
+		assert(detail->common.bitmask_of_supported_http_methods == BIT(task_test_resources[i].method));
+		assert(strcmp(detail->common.content_type, task_test_resources[i].content_type) == 0);
+		assert(detail->cb == linkr_debugger_task_http_handle);
+		assert(*(const enum linkr_debugger_task_http_route *)detail->user_data ==
+		       task_test_resources[i].route);
+		for (size_t fallback = 0U; fallback < 2U; fallback++) {
+			for (size_t m = 0U; m < ARRAY_SIZE(methods); m++) {
+				struct http_client_ctx client = { .method = methods[m] };
+				struct http_response_ctx response = { 0 };
+				bool allowed = methods[m] == task_test_resources[i].method;
+
+				reset_test();
+				(void)snprintf(client.url_buffer, sizeof(client.url_buffer), "%s%s",
+					       task_test_resources[i].path, fallback ? "?test=1" : "");
+				if (fallback) {
+					assert(linkr_debugger_http_route_request(&client,
+						HTTP_SERVER_REQUEST_DATA_FINAL, &request, &response, NULL) == 0);
+				} else {
+					assert(detail->cb(&client, HTTP_SERVER_REQUEST_DATA_FINAL,
+						&request, &response, detail->user_data) == 0);
+				}
+				assert(response.status == (allowed ? HTTP_200_OK : HTTP_405_METHOD_NOT_ALLOWED));
+				assert(response.final_chunk);
+				assert(task_test_mutation_calls ==
+				       (allowed && methods[m] == HTTP_POST ? 1U : 0U));
+				if (allowed && task_test_resources[i].route >= LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_0) {
+					assert(task_test_source_calls == 1U);
+					assert(task_test_source_slot == task_test_resources[i].route -
+					       LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_0);
+				}
+				if (fallback) {
+					route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
+				} else {
+					assert(detail->cb(&client, HTTP_SERVER_TRANSACTION_COMPLETE,
+						NULL, &response, detail->user_data) == 0);
+				}
+				assert(task_response_owner == NULL && task_input_state.client == NULL);
+			}
+		}
+	}
+}
+
+static void test_task_unknown_children_never_use_legacy_delete_fallback(void)
+{
+	static const char *const paths[] = {
+		"/api/v1/tasks/A", "/api/v1/tasks/..", "/api/v1/tasks/%2e%2e",
+		"/api/v1/tasks/ir/child", "/api/v1/tasks/mutations/child",
+		"/api/v1/tasks/catalog/child", "/api/v1/tasks/slots/4/source",
+		"/api/v1/tasks/slots/00/source", "/api/v1/tasks/slots/0/source/child",
+		"/api/v1/tasks/slots/0", "/api/v1/tasks-old",
+	};
+	static const enum http_method methods[] = { HTTP_GET, HTTP_POST, HTTP_PUT, HTTP_DELETE };
+
+	reset_test();
+	for (size_t i = 0U; i < ARRAY_SIZE(paths); i++) {
+		for (size_t m = 0U; m < ARRAY_SIZE(methods); m++) {
+			struct http_client_ctx client = { .method = methods[m] };
+			struct http_response_ctx response = { 0 };
+
+			strcpy(client.url_buffer, paths[i]);
+			route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, "not a mutation", &response);
+			assert(response.status == HTTP_404_NOT_FOUND);
+		}
+	}
+	assert(task_test_mutation_calls == 0U && task_test_source_calls == 0U);
+	assert(task_response_owner == NULL && task_input_state.client == NULL);
+}
+
+static void test_task_raw_arenas_live_until_complete_or_abort(void)
+{
+	static const enum http_transaction_status endings[] = {
+		HTTP_SERVER_TRANSACTION_COMPLETE, HTTP_SERVER_TRANSACTION_ABORTED,
+	};
+
+	for (size_t i = 0U; i < ARRAY_SIZE(task_test_resources); i++) {
+		if (task_test_resources[i].route == LINKR_DEBUGGER_TASK_HTTP_ROUTE_CATALOG ||
+		    task_test_resources[i].route == LINKR_DEBUGGER_TASK_HTTP_ROUTE_MUTATIONS) {
+			continue;
+		}
+		for (size_t e = 0U; e < ARRAY_SIZE(endings); e++) {
+			struct http_client_ctx first = { .method = HTTP_GET };
+			struct http_client_ctx second = { .method = HTTP_GET };
+			struct http_response_ctx response = { 0 };
+			struct http_response_ctx blocked = { 0 };
+			uint8_t saved[LINKR_DEBUGGER_TASK_RAW_BUFFER_SIZE];
+
+			reset_test();
+			strcpy(first.url_buffer, task_test_resources[i].path);
+			strcpy(second.url_buffer, task_test_resources[i].path);
+			route(&first, HTTP_SERVER_REQUEST_DATA_MORE, "ignored", &response);
+			assert(task_response_owner == NULL && task_input_state.client == NULL);
+			route(&first, HTTP_SERVER_REQUEST_DATA_FINAL, "ignored", &response);
+			assert(response.status == HTTP_200_OK && response.body_len < sizeof(saved));
+			memcpy(saved, response.body, response.body_len);
+			route(&second, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &blocked);
+			assert(blocked.status == HTTP_409_CONFLICT);
+			route(&second, endings[e], NULL, &blocked);
+			assert(memcmp(saved, response.body, response.body_len) == 0);
+			assert(task_response_owner == &first || task_input_state.client == &first);
+			route(&first, endings[e], NULL, &response);
+			assert(task_response_owner == NULL && task_input_state.client == NULL);
+			memset(&blocked, 0, sizeof(blocked));
+			route(&second, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &blocked);
+			assert(blocked.status == HTTP_200_OK);
+			route(&second, endings[e], NULL, &blocked);
+			assert(task_test_mutation_calls == 0U);
+		}
+	}
+}
+
+static void test_task_mutation_json_body_headers_and_lifecycle(void)
+{
+	static const enum http_transaction_status endings[] = {
+		HTTP_SERVER_TRANSACTION_COMPLETE, HTTP_SERVER_TRANSACTION_ABORTED,
+	};
+	struct http_client_ctx client = { .method = HTTP_POST };
+	struct http_client_ctx other = { .method = HTTP_POST };
+	struct http_response_ctx response = { 0 };
+	struct http_response_ctx blocked = { 0 };
+
+	strcpy(client.url_buffer, "/api/v1/tasks/mutations");
+	strcpy(other.url_buffer, client.url_buffer);
+	for (size_t e = 0U; e < ARRAY_SIZE(endings); e++) {
+		reset_test();
+		task_route(&client, HTTP_SERVER_REQUEST_DATA_MORE, task_test_mutation, 3U,
+			   LINKR_DEBUGGER_TASK_MUTATION_CONTENT_TYPE, &response);
+		assert(task_test_mutation_calls == 0U && task_input_state.client == &client);
+		task_route(&other, HTTP_SERVER_REQUEST_DATA_FINAL, task_test_mutation,
+			   task_test_mutation_len, LINKR_DEBUGGER_TASK_MUTATION_CONTENT_TYPE, &blocked);
+		assert(blocked.status == HTTP_409_CONFLICT && task_test_mutation_calls == 0U);
+		route(&other, endings[e], NULL, &blocked);
+		assert(task_input_state.client == &client);
+		route(&client, endings[e], NULL, &response);
+		assert(task_input_state.client == NULL && task_response_owner == NULL);
+
+		memset(&response, 0, sizeof(response));
+		task_route(&client, HTTP_SERVER_REQUEST_DATA_MORE, task_test_mutation, 3U,
+			   LINKR_DEBUGGER_TASK_MUTATION_CONTENT_TYPE, &response);
+		task_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, task_test_mutation + 3U,
+			   task_test_mutation_len - 3U, NULL, &response);
+		assert(response.status == HTTP_200_OK && task_test_mutation_calls == 1U);
+		assert(task_response_owner == &client);
+		route(&client, endings[e], NULL, &response);
+		assert(task_response_owner == NULL && task_input_state.client == NULL);
+	}
+
+	reset_test();
+	task_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, task_test_mutation,
+		   task_test_mutation_len, "text/plain", &response);
+	assert(response.status == HTTP_400_BAD_REQUEST && task_test_mutation_calls == 0U);
+	route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
+	task_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, task_test_mutation,
+		   task_test_mutation_len, NULL, &response);
+	assert(response.status == HTTP_400_BAD_REQUEST && task_test_mutation_calls == 0U);
+	route(&client, HTTP_SERVER_TRANSACTION_ABORTED, NULL, &response);
+}
+
+static void test_task_firmware_json_golden_vectors(void)
+{
+	struct http_client_ctx client = { .method = HTTP_GET };
+	struct http_response_ctx response = { 0 };
+
+	reset_test();
+	strcpy(client.url_buffer, "/api/v1/tasks");
+	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response);
+	assert(response.body_len == sizeof(task_test_golden_list) - 1U);
+	assert(memcmp(response.body, task_test_golden_list, response.body_len) == 0);
+	route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
+	strcpy(client.url_buffer, "/api/v1/tasks/mutations");
+	client.method = HTTP_POST;
+	task_test_set_mutation_body("upsert");
+	task_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, (uint8_t *)task_test_mutation,
+		   task_test_mutation_len,
+		   LINKR_DEBUGGER_TASK_MUTATION_CONTENT_TYPE, &response);
+	assert(strcmp((const char *)response.body, task_test_golden_upsert) == 0);
+	route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
+	task_test_set_mutation_body("delete");
+	task_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, (uint8_t *)task_test_mutation,
+		   task_test_mutation_len,
+		   LINKR_DEBUGGER_TASK_MUTATION_CONTENT_TYPE, &response);
+	assert(strcmp((const char *)response.body, task_test_golden_delete) == 0);
+	route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
+	task_test_mutation_result = LINKR_DEBUGGER_TASK_REVISION_CONFLICT;
+	task_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, (uint8_t *)task_test_mutation,
+		   task_test_mutation_len,
+		   LINKR_DEBUGGER_TASK_MUTATION_CONTENT_TYPE, &response);
+	assert(response.status == HTTP_409_CONFLICT);
+	assert(strcmp((const char *)response.body, task_test_golden_conflict) == 0);
+	route(&client, HTTP_SERVER_TRANSACTION_ABORTED, NULL, &response);
+}
+
 int main(void)
 {
 	test_shared_json_workspace_static_ram_contract();
 	test_handlers_share_workspace_until_synchronous_send_finishes();
 	test_fragmented_put_executes_once_with_complete_json();
+	test_unchanged_identity_preserves_derived_origin();
+	test_invalid_network_forms_are_rejected();
 	test_aborted_and_complete_clear_without_executing();
 	test_invalid_prefix_cannot_be_replaced_by_valid_final_fragment();
 	test_pd_fragmented_put_executes_once_with_complete_json();
@@ -1455,5 +2053,10 @@ int main(void)
 	test_status_budget_rejects_inflated_group_metadata();
 	test_status_budget_rejects_inflated_adc_note_metadata();
 	test_gpio_workspace_preserves_4096_encoding_limit();
+	test_task_resources_methods_types_and_exact_fallback_routes();
+	test_task_unknown_children_never_use_legacy_delete_fallback();
+	test_task_raw_arenas_live_until_complete_or_abort();
+	test_task_mutation_json_body_headers_and_lifecycle();
+	test_task_firmware_json_golden_vectors();
 	return 0;
 }

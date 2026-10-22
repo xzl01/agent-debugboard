@@ -111,6 +111,8 @@ enum linkr_debugger_config_service_result linkr_debugger_config_replay_order_sna
 	append_named(&indexed, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID, &ordered);
 	append_named(&indexed, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+		     LINKR_DEBUGGER_CONFIG_POWER_5V_OTG_ID, &ordered);
+	append_named(&indexed, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_12V_OUT_ID, &ordered);
 	append_named(&indexed, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_5V_OUT_ID, &ordered);

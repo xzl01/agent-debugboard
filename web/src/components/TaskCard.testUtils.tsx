@@ -7,23 +7,20 @@ import {
   type AutomationTaskOwner,
 } from "@/lib/automationTask";
 import { LanguageProvider } from "@/lib/i18n";
-import { defaultScript } from "@/lib/testScript";
+import { defaultScript, serializeTestScript, type TestScript } from "@/lib/testScript";
 import { TaskCard } from "./TaskCard";
+import { createHash } from "node:crypto";
+import { taskIrSection } from "@/lib/taskV2";
+import { parseTaskBlob } from "@/lib/taskBlob";
 
 export interface FetchCall {
   readonly url: string;
   readonly method: string;
   readonly body?: string;
+  readonly binary?: Uint8Array;
 }
 
-export const EMPTY_LIST_PAYLOAD = {
-  schema: "radxa-linkr-debugger.v1",
-  ok: true,
-  command: "task",
-  action: "list",
-  tasks: [],
-  blob: "",
-};
+export const EMPTY_LIST_PAYLOAD = storedListPayload([], "");
 
 export const TWO_RECORD_BLOB = [
   "# linkr-task.v1",
@@ -34,12 +31,19 @@ export const TWO_RECORD_BLOB = [
 ].join("\n");
 
 export function storedListPayload(tasks: readonly { id: string; name: string; request_count: number }[], blob: string) {
+  const digest = (value: string) => createHash("sha256").update(value).digest("hex");
   return {
     schema: "radxa-linkr-debugger.v1",
     ok: true,
-    command: "task",
+    command: "tasks",
     action: "list",
-    tasks,
+    task_store_id: "12345678-1234-4234-8234-123456789abc",
+    revision: "1", catalog_fingerprint: "a".repeat(64), full_ir_bytes: new TextEncoder().encode(blob).length, full_ir_digest: digest(blob),
+    tasks: tasks.map((task, slot) => {
+      let section = blob;
+      try { section = taskIrSection(blob, task.id); } catch { /* Deliberately malformed IR is exercised at read time. */ }
+      return { ...task, slot, source_state: "absent", source_bytes: 0, source_digest: null, ir_bytes: new TextEncoder().encode(section).length, task_ir_digest: digest(section) };
+    }),
     blob,
   };
 }
@@ -89,6 +93,7 @@ export function firmwareCatalogPayload(): Record<string, unknown> {
 }
 
 const calls: FetchCall[] = [];
+const sources = new Map<string, string>();
 let listPayload: unknown = EMPTY_LIST_PAYLOAD;
 let catalogPayload: unknown = firmwareCatalogPayload();
 let catalogStatus = 200;
@@ -126,10 +131,50 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
   calls.push({
     url,
     method,
-    body: typeof init?.body === "string" ? init.body : undefined,
+    body: typeof init?.body === "string" ? init.body : init?.body && ArrayBuffer.isView(init.body) ? new TextDecoder().decode(init.body as Uint8Array) : undefined,
+    binary: init?.body && ArrayBuffer.isView(init.body) ? (init.body as Uint8Array) : undefined,
   });
   if (url === "/api/v1/tasks" && method === "GET") {
     return Promise.resolve(jsonResponse(listPayload));
+  }
+  if (url === "/api/v1/tasks/ir" && method === "GET") {
+    return Promise.resolve(new Response((listPayload as { blob: string }).blob, { headers: { "Content-Type": "application/vnd.radxa.linkr-task-ir.v1" } }));
+  }
+  if (/\/api\/v1\/tasks\/slots\/[0-3]\/source$/.test(url)) {
+    const slot = Number(url.split("/").at(-2));
+    const task = (listPayload as ReturnType<typeof storedListPayload>).tasks.find((task) => task.slot === slot);
+    const source = task && sources.get(task.id);
+    return Promise.resolve(source ? new Response(source, { headers: { "Content-Type": "application/vnd.radxa.linkr-test.v1+ndjson" } }) : jsonResponse({ error: { code: "task_source_absent" } }, 404));
+  }
+  if (url === "/api/v1/tasks/mutations" && init?.body && ArrayBuffer.isView(init.body)) {
+    const body = JSON.parse(new TextDecoder().decode(init.body as Uint8Array)) as {
+      action: string;
+      expected_revision: string;
+      id?: string;
+      source_base64?: string;
+      ir_base64?: string;
+    };
+    const decode = (value: string) => Buffer.from(value, "base64").toString("utf8");
+    const id = body.id ?? "";
+    const source = body.source_base64 !== undefined ? decode(body.source_base64) : undefined;
+    const ir = body.ir_base64 !== undefined ? decode(body.ir_base64) : "";
+    const current = listPayload as ReturnType<typeof storedListPayload>;
+    if (body.expected_revision !== current.revision) return Promise.resolve(jsonResponse({ error: { code: "revision_conflict", message: "Store revision changed" } }, 409));
+    let blob = current.blob;
+    if (body.action === "upsert") {
+      if (source !== undefined) sources.set(id, source); else sources.delete(id);
+      const sections = parseTaskBlob(blob).filter((task) => task.id !== id).map((task) => taskIrSection(blob, task.id).slice(16));
+      blob = "# linkr-task.v1\n" + [...sections, taskIrSection(ir, id).slice(16)].join("");
+    } else if (body.action === "delete") {
+      const sections = parseTaskBlob(blob).filter((task) => task.id !== id).map((task) => taskIrSection(blob, task.id).slice(16));
+      blob = sections.length ? "# linkr-task.v1\n" + sections.join("") : "";
+    } else if (body.action === "clear") blob = "";
+    else if (body.action === "import") blob = ir;
+    const tasks = parseTaskBlob(blob);
+    listPayload = { ...storedListPayload(tasks.map((task) => ({ id: task.id, name: task.id, request_count: task.requests.length })), blob), revision: String(BigInt(current.revision) + 1n) };
+    attachSources();
+    const next = listPayload as ReturnType<typeof storedListPayload>;
+    return Promise.resolve(jsonResponse({ ...next, action: body.action, task: next.tasks.find((task) => task.id === id) ?? null }));
   }
   if (url === "/api/v1/tasks/catalog" && method === "GET") {
     return Promise.resolve(jsonResponse(catalogPayload, catalogStatus));
@@ -151,6 +196,7 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
 export function setupTaskCardHarness(): void {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   calls.length = 0;
+  sources.clear();
   putFailures.clear();
   deferredPut = null;
   listPayload = EMPTY_LIST_PAYLOAD;
@@ -180,6 +226,15 @@ export function teardownTaskCardHarness(): void {
 export function stubTaskList(payload: unknown): void {
   listPayload = payload;
 }
+
+function attachSources() {
+  const payload = listPayload as ReturnType<typeof storedListPayload>;
+  listPayload = { ...payload, tasks: payload.tasks.map((task) => {
+    const source = sources.get(task.id);
+    return source ? { ...task, source_state: "present", source_bytes: new TextEncoder().encode(source).length, source_digest: createHash("sha256").update(source).digest("hex") } : task;
+  }) };
+}
+export function stubTaskSource(id: string, script: TestScript): void { sources.set(id, serializeTestScript(script)); attachSources(); }
 
 export function stubTaskCatalog(payload: unknown, status = 200): void {
   catalogPayload = payload;
@@ -237,7 +292,7 @@ export async function flushUntil(predicate: () => boolean, timeoutMs = 5000): Pr
   await flush();
 }
 
-export async function mountTaskCard(connected = true): Promise<HTMLDivElement> {
+export async function mountTaskCard(connected = true, options: { script?: TestScript; onOpenWorkflow?: (script: TestScript) => void } = {}): Promise<HTMLDivElement> {
   localStorage.setItem("lang", "en");
   host = document.createElement("div");
   document.body.append(host);
@@ -248,8 +303,9 @@ export async function mountTaskCard(connected = true): Promise<HTMLDivElement> {
       <LanguageProvider>
         <TaskCard
           connected={connected}
-          currentScript={defaultScript()}
+          currentScript={options.script ?? defaultScript()}
           taskControl={taskControl}
+          onOpenWorkflow={options.onOpenWorkflow}
         />
       </LanguageProvider>
     );
@@ -273,6 +329,14 @@ export function rowFor(view: HTMLElement, taskName: string): HTMLElement {
   );
   if (!row) throw new TypeError(`row not found for ${taskName}`);
   return row;
+}
+
+export function storeButton(view: HTMLElement): HTMLButtonElement {
+  const found = [...view.querySelectorAll("button")].find(
+    (candidate) => candidate.textContent?.trim() === "Store current workflow",
+  );
+  if (!found) throw new TypeError("Store current workflow button not found");
+  return found;
 }
 
 export function runButton(view: HTMLElement, taskName: string): HTMLButtonElement {

@@ -12,6 +12,7 @@ import argparse
 import errno
 import importlib
 import json
+import os
 import threading
 import socket
 import struct
@@ -3343,8 +3344,8 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run logic-analyzer HIL performance matrices")
     parser.add_argument("--dry-run", action="store_true", help="print machine-readable plan without board actions")
-    parser.add_argument("--http-base", default="http://172.29.203.1")
-    parser.add_argument("--tcp-host", default="172.29.203.1")
+    parser.add_argument("--http-base", default=os.environ.get("LINKR_BOARD_URL", "http://172.29.203.1"))
+    parser.add_argument("--tcp-host", default=os.environ.get("LINKR_BOARD_HOST", "172.29.203.1"))
     parser.add_argument("--tcp-port", type=int, default=5556)
     parser.add_argument("--timeout", type=float, default=5.0, help="bounded per-operation timeout in seconds")
     parser.add_argument("--matrix", action="append", choices=["tcp-bounded", "tcp-continuous", "ws-bounded", "ws-continuous", "wide11-mapping", "wide11-telemetry-isolation", "high-rate-packed-burst", "all"])

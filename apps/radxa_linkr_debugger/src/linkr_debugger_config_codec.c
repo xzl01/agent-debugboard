@@ -60,6 +60,7 @@ const struct linkr_debugger_config_item_desc linkr_debugger_config_items[] = {
 	POWER_ITEM(LINKR_DEBUGGER_CONFIG_POWER_VDD_5V_ID, "vdd_5v"),
 	POWER_ITEM(LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID, "20v_out"),
 	POWER_ITEM(LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID, "5v_usb_hub"),
+	POWER_ITEM(LINKR_DEBUGGER_CONFIG_POWER_5V_OTG_ID, "5v_otg"),
 	SWITCH_ITEM(LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID, "sd"),
 	SWITCH_ITEM(LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID, "tf_wp"),
 	LINKR_CONFIG_GPIO_ITEMS
@@ -172,6 +173,51 @@ static bool entry_follows(const struct linkr_debugger_config_entry *entry,
 	       (entry->domain == previous->domain && entry->item_id > previous->item_id);
 }
 
+static bool power_item_is_vdd_5v_child(uint8_t item_id)
+{
+	return item_id == LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID ||
+	       item_id == LINKR_DEBUGGER_CONFIG_POWER_5V_OTG_ID;
+}
+
+enum linkr_debugger_config_codec_result linkr_debugger_config_validate_power_parenting(
+	const struct linkr_debugger_config_snapshot *snapshot)
+{
+	bool parent_off = false;
+
+	if (snapshot == NULL) {
+		return LINKR_DEBUGGER_CONFIG_CODEC_INVALID_ARGUMENT;
+	}
+
+	for (size_t i = 0U; i < snapshot->entry_count; i++) {
+		const struct linkr_debugger_config_entry *entry = &snapshot->entries[i];
+
+		if (entry->domain == LINKR_DEBUGGER_CONFIG_DOMAIN_POWER &&
+		    entry->item_id == LINKR_DEBUGGER_CONFIG_POWER_VDD_5V_ID &&
+		    entry->value == LINKR_DEBUGGER_CONFIG_POWER_OFF) {
+			parent_off = true;
+			break;
+		}
+	}
+	if (!parent_off) {
+		return LINKR_DEBUGGER_CONFIG_CODEC_OK;
+	}
+
+	/* A parent-off/child-on vector is contradictory: an explicit vdd_5v
+	 * off cancels desired for its children (including the bidirectional
+	 * 5v_otg port), so a snapshot must not request both at once.
+	 */
+	for (size_t i = 0U; i < snapshot->entry_count; i++) {
+		const struct linkr_debugger_config_entry *entry = &snapshot->entries[i];
+
+		if (entry->domain == LINKR_DEBUGGER_CONFIG_DOMAIN_POWER &&
+		    power_item_is_vdd_5v_child(entry->item_id) &&
+		    entry->value == LINKR_DEBUGGER_CONFIG_POWER_ON) {
+			return LINKR_DEBUGGER_CONFIG_CODEC_MALFORMED;
+		}
+	}
+	return LINKR_DEBUGGER_CONFIG_CODEC_OK;
+}
+
 static enum linkr_debugger_config_codec_result validate_snapshot(
 	const struct linkr_debugger_config_snapshot *snapshot)
 {
@@ -191,6 +237,11 @@ static enum linkr_debugger_config_codec_result validate_snapshot(
 		if (i > 0U && !entry_follows(entry, &snapshot->entries[i - 1U])) {
 			return LINKR_DEBUGGER_CONFIG_CODEC_MALFORMED;
 		}
+	}
+
+	if (linkr_debugger_config_validate_power_parenting(snapshot) !=
+	    LINKR_DEBUGGER_CONFIG_CODEC_OK) {
+		return LINKR_DEBUGGER_CONFIG_CODEC_MALFORMED;
 	}
 
 	return LINKR_DEBUGGER_CONFIG_CODEC_OK;

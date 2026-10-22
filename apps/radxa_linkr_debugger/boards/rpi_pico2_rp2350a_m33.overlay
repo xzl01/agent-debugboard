@@ -34,6 +34,17 @@
 #include <zephyr/dt-bindings/pinctrl/rpi-pico-rp2350a-pinctrl.h>
 #include <zephyr/dt-bindings/dma/rpi-pico-dma-rp2350.h>
 
+/* The populated RP2354A has 2 MiB, despite the upstream board's generic 4 MiB
+ * partition include. The repo-owned Settings NVS partition holds the config
+ * snapshot plus the task-v2 manifest/per-slot IR/per-slot source keys. Keep it
+ * at 128 KiB: a larger NVS makes the first task write erase for longer than
+ * the 5 s hardware watchdog window. The C store has matching build
+ * assertions.
+ */
+&storage_partition {
+	reg = <0x1b0000 0x20000>;
+};
+
 / {
 	chosen {
 		zephyr,console = &cdc_acm_uart0;
@@ -370,6 +381,23 @@
 		regulator-max-microvolt = <5000000>;
 		enable-gpios = <&gpio0 24 GPIO_ACTIVE_HIGH>;
 		regulator-boot-off;
+	};
+
+	/* OTG_USB_EN: Q10 AO3401A switch driving the externally accessible
+	 * J3 5V_OTG VBUS. Bidirectional: EN low only releases the switch, so
+	 * external VBUS can backfeed VDD_5V through the Q10 body diode.
+	 * Sourced by vdd_5v; there is no 5V_OTG voltage or current sensor.
+	 */
+	reg_5v_otg: regulator-5v-otg {
+		compatible = "radxa,linkr-port-vbus", "regulator-fixed";
+		regulator-name = "5v_otg";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		enable-gpios = <&gpio0 23 GPIO_ACTIVE_HIGH>;
+		regulator-boot-off;
+		vin-supply = <&reg_vdd_5v>;
+		role = "port_vbus";
+		backfeed-capable;
 	};
 
 	reg_20v_out: regulator-20v-out {

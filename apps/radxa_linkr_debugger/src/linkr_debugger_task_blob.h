@@ -9,27 +9,26 @@
 
 #include "linkr_debugger_task.h"
 
-bool linkr_debugger_task_blob_parse(
-	const char *text, size_t len,
-	struct linkr_debugger_task_status *result);
+#define LINKR_DEBUGGER_TASK_BLOB_HEADER "# linkr-task.v1\n"
+#define LINKR_DEBUGGER_TASK_BLOB_HEADER_LEN (sizeof(LINKR_DEBUGGER_TASK_BLOB_HEADER) - 1U)
 
-enum linkr_debugger_task_blob_edit_result {
-	LINKR_DEBUGGER_TASK_BLOB_EDIT_OK = 0,
-	LINKR_DEBUGGER_TASK_BLOB_EDIT_NOT_FOUND,
-	LINKR_DEBUGGER_TASK_BLOB_EDIT_INVALID,
-	LINKR_DEBUGGER_TASK_BLOB_EDIT_TOO_SMALL,
+struct linkr_debugger_task_blob_entry {
+	char id[LINKR_DEBUGGER_TASK_MAX_TASK_ID_LEN + 1U];
+	size_t request_count;
+	size_t section_start;
+	size_t section_end;
+	size_t digest_end;
 };
 
-/* Copies the blob text with the `# task <task_id>` section (its header line and
- * every following line up to the next task header or end) removed. Request lines
- * of all other tasks are preserved byte-for-byte. `remaining_tasks` receives the
- * number of task sections left; when it reaches 0 the output carries just the
- * version marker and callers must clear the backing key instead of storing a
- * task-free blob. Returns NOT_FOUND when no section matches task_id.
- */
-enum linkr_debugger_task_blob_edit_result linkr_debugger_task_blob_delete_task(
-	const char *text, size_t len,
-	const char *task_id,
-	char *out, size_t out_cap, size_t *out_len, size_t *remaining_tasks);
+struct linkr_debugger_task_blob_layout {
+	size_t task_count;
+	struct linkr_debugger_task_blob_entry tasks[LINKR_DEBUGGER_TASK_MAX_TASKS];
+};
 
-#endif
+bool linkr_debugger_task_id_valid(const char *id, size_t len);
+bool linkr_debugger_task_blob_inspect(const char *text, size_t len, bool allow_empty,
+	struct linkr_debugger_task_blob_layout *layout);
+bool linkr_debugger_task_blob_parse(const char *text, size_t len,
+	struct linkr_debugger_task_status *result);
+
+#endif /* RADXA_LINKR_DEBUGGER_TASK_BLOB_H_ */

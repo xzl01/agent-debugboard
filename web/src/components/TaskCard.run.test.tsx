@@ -15,6 +15,7 @@ import {
   stubPutFailure,
   stubTaskList,
   storedListPayload,
+  storeButton,
   taskListGets,
   teardownTaskCardHarness,
   TWO_RECORD_BLOB,
@@ -31,7 +32,7 @@ describe("TaskCard stored-task execution", () => {
 
     // When: running the task
     act(() => runButton(view, "t1").click());
-    await flush();
+    await flushUntil(() => putCalls().length === 2);
 
     // Then: both records went to the normal board APIs in blob order
     const puts = putCalls();
@@ -63,7 +64,7 @@ describe("TaskCard stored-task execution", () => {
 
     // When: running the task
     act(() => runButton(view, "t1").click());
-    await flush();
+    await flushUntil(() => view.textContent?.includes("gpio rejected") === true);
 
     // Then: the third record is never dispatched
     expect(putCalls().map((call) => call.url)).toEqual([
@@ -73,6 +74,28 @@ describe("TaskCard stored-task execution", () => {
     // And: the failure names the failed request path and the board error
     expect(view.textContent).toContain("/api/v1/gpio/CON_REST");
     expect(view.textContent).toContain("gpio rejected");
+  });
+
+  it("shows NVS occupancy and disables task saves below the reserve", async () => {
+    stubTaskList({
+      ...storedListPayload([], ""),
+      storage: {
+        total_bytes: 131072,
+        used_bytes: 8192,
+        free_bytes: 122880,
+        task_bytes: 1024,
+        reserve_bytes: 8192,
+        measured: true,
+        save_allowed: false,
+      },
+    });
+    const view = await mountTaskCard();
+
+    expect(view.textContent).toContain("NVS 8.0 KiB used");
+    expect(view.textContent).toContain("120.0 KiB free");
+    expect(view.textContent).toContain("task data 1.0 KiB");
+    expect(storeButton(view).disabled).toBe(true);
+    expect(view.textContent).toContain("save reserve");
   });
 
   it("shows a visible error when the stored blob is malformed", async () => {
@@ -85,7 +108,7 @@ describe("TaskCard stored-task execution", () => {
 
     // When: running the task
     act(() => runButton(view, "t1").click());
-    await flush();
+    await flushUntil(() => view.textContent?.includes("linkr-task.v1") === true);
 
     // Then: no control request is dispatched and the error is visible
     expect(putCalls()).toEqual([]);
@@ -122,7 +145,7 @@ describe("TaskCard stored-task execution", () => {
     expect(view.textContent).toContain("No tasks stored in flash.");
   });
 
-  it("stores the current workflow through the task API with a linkr-task.v1 blob", async () => {
+  it("stores current workflow source and IR through an atomic task upsert", async () => {
     // Given: the mounted card with a task id entered
     const view = await mountTaskCard();
     const input = view.querySelector("input");
@@ -139,11 +162,14 @@ describe("TaskCard stored-task execution", () => {
     );
     if (!store) throw new TypeError("store button not found");
     act(() => store.click());
-    await flush();
+    await flushUntil(() => fetchCalls().some((call) => call.method === "POST" && call.url === "/api/v1/tasks/mutations"));
 
     // Then: the task API received a linkr-task.v1 blob for that id
-    const put = fetchCalls().find((call) => call.method === "PUT" && call.url === "/api/v1/tasks");
-    expect(put?.body).toContain("# linkr-task.v1\n# task my-task\n");
+    const put = fetchCalls().find((call) => call.method === "POST" && call.url === "/api/v1/tasks/mutations");
+    const stored = JSON.parse(put!.body!) as Record<string, string>;
+    expect(stored.action).toBe("upsert");
+    expect(Buffer.from(stored.source_base64!, "base64").toString("utf8")).toContain('"schema":"linkr-test.v1"');
+    expect(Buffer.from(stored.ir_base64!, "base64").toString("utf8")).toContain("# linkr-task.v1\n# task my-task\n");
   });
 });
 
@@ -173,7 +199,7 @@ describe("TaskCard run confirmation", () => {
 
     // When: running the stored task
     act(() => runButton(view, "t1").click());
-    await flush();
+    await flushUntil(() => confirmCalls().length === 1);
 
     // Then: the snapshot was fetched and parsed, but no control PUT was sent
     expect(taskListGets().length).toBe(getsBefore + 1);
@@ -189,7 +215,7 @@ describe("TaskCard run confirmation", () => {
 
     // When: running the stored task
     act(() => runButton(view, "t1").click());
-    await flush();
+    await flushUntil(() => putCalls().length === 2);
 
     // Then: the confirmation names the id, source, request count, and hardware warning
     expect(confirmCalls()).toHaveLength(1);

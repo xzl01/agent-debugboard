@@ -12,6 +12,7 @@ import {
   readingMetric,
   measuredVoltage,
   powerRailRows,
+  POWER_STATE_STALE_MS,
 } from "@/lib/power";
 import { MeasurementSparkline } from "./PowerSparkline";
 import { EMPTY_PD_STATUS } from "@/lib/pd";
@@ -33,6 +34,7 @@ export function PowerCard({
   stale = false,
   compact = false,
   onOpenDetails,
+  pdInputUpdatedAt,
 }: {
   outputs: PowerOutput[];
   readings: readonly AdcReading[];
@@ -43,6 +45,7 @@ export function PowerCard({
   stale?: boolean;
   compact?: boolean;
   onOpenDetails?: () => void;
+  pdInputUpdatedAt?: number | null;
 }) {
   const { t } = useI18n();
   const [trendsExpanded, setTrendsExpanded] = useState(initialTrendsExpanded);
@@ -74,7 +77,9 @@ export function PowerCard({
       pdVoltageMv >= range.min_voltage_mv && pdVoltageMv <= range.max_voltage_mv &&
       range.step_mv > 0 && (pdVoltageMv - range.min_voltage_mv) % range.step_mv === 0)
   );
-  const voltageReadings = readings.filter(isVoltageAdcReading);
+  const pdInput = readings.filter(isVoltageAdcReading).find((reading) => reading.role === "pd_input");
+  const measurementNow = Math.max(clockMs, Date.now());
+  const pdInputFresh = !stale && pdInput && (pdInputUpdatedAt === undefined || (pdInputUpdatedAt !== null && measurementNow - pdInputUpdatedAt <= POWER_STATE_STALE_MS && measurementNow >= pdInputUpdatedAt));
   const rows = powerRailRows(outputs, readings);
 
   useEffect(() => {
@@ -103,7 +108,7 @@ export function PowerCard({
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      if (railTimersRef.current.size > 0) setClockMs(Date.now());
+      setClockMs(Date.now());
     }, 1000);
     return () => window.clearInterval(timer);
   }, []);
@@ -156,11 +161,11 @@ export function PowerCard({
         </div>
       }
     >
-      <section className="mb-3 rounded-lg border border-line/60 bg-panel2/40 p-3">
+      <section data-testid="pd-input-card" className="mb-3 min-w-0 rounded-lg border border-line/60 bg-panel2/40 p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <div className="flex items-center gap-2 text-sm font-medium text-ink">
-              {t("pd.title")}
+              {t("pd.input.title")}
               <Badge tone={pd.available ? "ok" : "warn"}>
                 {pd.available ? t("pd.available") : t("pd.unavailable")}
               </Badge>
@@ -242,6 +247,16 @@ export function PowerCard({
           </p>
         )}
         {pdError && <p className="mt-2 text-xs text-danger">{pdError}</p>}
+        <div className="mt-3 min-w-0 border-t border-line/50 pt-3" data-testid="pd-input-measurement">
+          <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-2">
+            <span className="text-xs text-ink-dim">{t("pd.input.measured")}</span>
+            <span className="font-mono text-xl font-semibold text-brand">{pdInputFresh ? formatPowerMetric(pdInput.value / 1_000_000, "voltage") : "—"}</span>
+          </div>
+          <p className="mt-1 text-[11px] text-ink-dim">{pdInput ? `${pdInput.name} · ${pdInput.signal}` : t("pd.input.unknown")}{pdInput && !pdInputFresh ? ` · ${t("snapshot.readOnly")}` : ""}</p>
+          <p className="mt-1 text-[11px] text-ink-dim">{t("pd.input.sourceHint")}</p>
+          {pdInputFresh && showTrends && <div className="mt-2"><MeasurementSparkline mode="voltage" reading={pdInput} /></div>}
+          {pdInput && (pdInput.raw != null || pdInput.mv != null) && <details className="mt-2 text-xs text-ink-dim"><summary className="cursor-pointer">{t("pd.input.diagnostics")}</summary><p className="mt-1 break-all font-mono">raw: {pdInput.raw ?? "—"} · pad: {pdInput.mv == null ? "—" : `${pdInput.mv} mV`}</p></details>}
+        </div>
       </section>
       {rows.length === 0 ? (
         <p className="text-sm text-ink-dim">{t("power.combined.none")}</p>
@@ -325,37 +340,6 @@ export function PowerCard({
             );
           })}
         </ul>
-      )}
-      {voltageReadings.length > 0 && (
-        <section className="mt-4 border-t border-line/50 pt-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-medium text-ink">{t("adc.voltage.title")}</h3>
-            <Badge tone="neutral">{t("power.monitorOnly")}</Badge>
-          </div>
-          <p className="mt-1 text-xs text-ink-dim">{t("adc.voltage.disclaimer")}</p>
-          {showTrends && <p className="mt-1 text-xs text-ink-dim">{t("adc.voltage.scale")}</p>}
-          <ul className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {voltageReadings.map((reading) => (
-              <li key={JSON.stringify([reading.name, reading.signal])} className="min-w-0 rounded-lg border border-line/60 bg-panel2/40 p-3">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <h4 className="break-words font-mono text-sm font-medium text-ink">{reading.name}</h4>
-                    <p className="mt-0.5 break-words font-mono text-xs text-ink-dim">{reading.signal}</p>
-                  </div>
-                  <div className="shrink-0 font-mono text-sm font-medium text-brand">
-                    {formatPowerMetric(reading.value / 1_000_000, "voltage")}
-                  </div>
-                </div>
-                {reading.note && <p className="mt-1 break-words text-xs text-ink-dim">{reading.note}</p>}
-                {showTrends && (
-                  <div className="mt-2">
-                    <MeasurementSparkline mode="voltage" reading={reading} />
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
       )}
       {compact && onOpenDetails && (
         <Button

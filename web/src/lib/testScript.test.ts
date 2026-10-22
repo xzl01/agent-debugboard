@@ -10,6 +10,8 @@ import {
   defaultScript,
   parseTestScript,
   serializeTestScript,
+  parseTestScriptDraft,
+  serializeTestScriptDraft,
   isRunSuccessful,
   isTestLoop,
   isTestUnit,
@@ -37,19 +39,121 @@ describe("J4-only serial contract", () => {
     assert.equal(buildExecutionPlan(parseTestScript(serializeTestScript(script))).length, 2);
   });
 
-  it("rejects obsolete unpublished channel fixtures during import, draft loading, export and planning", () => {
+  it("rejects obsolete unpublished channel fixtures during strict import, export and planning", () => {
     // Intentional historical negative fixtures, never supported product aliases.
     for (const channel of ["uart0", "uart1", "other"]) {
       const step = { id: "send", type: "serial_send" as const, params: { channel, text: "must not run" } };
       const source = `${JSON.stringify({ schema: "linkr-test.v1" })}\n${JSON.stringify(step)}\n`;
       assert.throws(() => parseTestScript(source), /serial channel must be j4/);
-      assert.throws(() => parseTestScript(source, { validatePlan: false }), /serial channel must be j4/);
       const script = { ...defaultScript(), steps: [step] } as never;
       assert.throws(() => serializeTestScript(script), /serial channel must be j4/);
       assert.throws(() => buildExecutionPlan(script), /serial channel must be j4/);
       const nested = `${JSON.stringify({ schema: "linkr-test.v1" })}\n${JSON.stringify({ id: "loop", type: "loop", params: { count: 1, steps: [step] } })}\n`;
-      assert.throws(() => parseTestScript(nested, { validatePlan: false }), /serial channel must be j4/);
+      assert.throws(() => parseTestScript(nested), /serial channel must be j4/);
     }
+  });
+});
+
+describe("strict NDJSON duplicate-key boundary", () => {
+  const header = '{"schema":"linkr-test.v1","name":"Review","created":"2026-10-22T00:00:00.000Z"}';
+  it("rejects later keys overwriting a dangerous rail, including escaped params and nested flow objects", () => {
+    const lines = [
+      '{"id":"on","type":"power_on","params":{"rail":"20v_out"},"params":{"rail":"5v_out"}}',
+      String.raw`{"id":"on","type":"power_on","params":{"rail":"20v_out"},"pa\u0072ams":{"rail":"5v_out"}}`,
+      '{"id":"on","id":"off","type":"power_on","params":{"rail":"5v_out"}}',
+      '{"id":"on","type":"power_off","type":"power_on","params":{"rail":"5v_out"}}',
+      '{"id":"on","type":"power_on","params":{"rail":"20v_out","rail":"5v_out"}}',
+      '{"id":"read","type":"adc_read","params":{"channel":"5v_out"},"assert":{"exit_code":1,"exit_code":0}}',
+      '{"id":"read","type":"adc_read","params":{"channel":"5v_out"},"assert":{"current_range":{"min_a":1,"min_a":0,"max_a":2}}}',
+      '{"id":"loop","type":"loop","params":{"count":2,"count":1,"steps":[]}}',
+      String.raw`{"id":"loop","type":"loop","params":{"count":1,"unit":{"name":"A","na\u006de":"B"},"steps":[]}}`,
+      '{"id":"loop","type":"loop","params":{"count":1,"steps":[{"id":"on","type":"power_on","params":{"rail":"20v_out","rail":"5v_out"}}]}}',
+      '{"id":"cond","type":"condition","params":{"check":{"id":"check","type":"adc_read","params":{"channel":"5v_out"}},"then_steps":[],"then_steps":[],"else_steps":[]}}',
+    ];
+    for (const line of lines) {
+      assert.throws(() => parseTestScript(`${header}\n${line}\n`), /Duplicate JSON key/, line);
+    }
+    assert.throws(() => parseTestScript('{"schema":"wrong","schema":"linkr-test.v1"}\n'), /Duplicate JSON key/);
+    assert.throws(() => parseTestScript(String.raw`{"schema":"linkr-test.v1","name":"A","na\u006de":"B"}`), /Duplicate JSON key/);
+  });
+
+  it("accepts legal string content, decoded Unicode keys and repeated keys in separate sibling objects", () => {
+    const text = 'Unicode 😀: {"params":{"rail":"20v_out"},"params":{"rail":"5v_out"}} [ ] \\ "';
+    const steps = ["a", "b"].map((id) => JSON.stringify({ id, type: "serial_send", params: { channel: "j4", text } }));
+    const parsed = parseTestScript([header, ...steps].join("\n"));
+    assert.equal(parsed.steps.length, 2);
+    assert.equal((parsed.steps[0].params as { text: string }).text, text);
+    const escaped = String.raw`{"id":"on","type":"power_on","pa\u0072ams":{"r\u0061il":"5v_out"}}`;
+    assert.equal(parseTestScript(`${header}\n${escaped}`).steps[0].type, "power_on");
+  });
+});
+
+describe("local-only editor draft codec", () => {
+  it("roundtrips empty/partial current ranges as drafts but rejects strict serialization/import", () => {
+    for (const range of [{}, { min_a: 0 }, { max_a: NaN }, { min_a: NaN, max_a: 1 }]) {
+      const script = defaultScript("Current range draft");
+      script.steps = [{ id: "read", type: "adc_read", params: { channel: "5v_out" }, assert: {
+        current_range: range as { min_a: number; max_a: number },
+      } }];
+      const buffer = serializeTestScriptDraft(script);
+      assert.deepEqual(parseTestScriptDraft(buffer), script);
+      assert.equal(serializeTestScriptDraft(parseTestScriptDraft(buffer)), buffer);
+      assert.throws(() => serializeTestScript(script), /Invalid current range/);
+      assert.throws(() => parseTestScript(`${JSON.stringify({ schema: script.schema })}\n${JSON.stringify(script.steps[0])}`), /Invalid current range/);
+    }
+    for (const range of [{ min_a: undefined }, { max_a: "" }, { min_a: null }]) {
+      const script = defaultScript();
+      script.steps = [{ id: "read", type: "adc_read", params: { channel: "5v_out" }, assert: {
+        current_range: range as unknown as { min_a: number; max_a: number },
+      } }];
+      assert.throws(() => serializeTestScriptDraft(script), /Invalid current range/);
+    }
+  });
+
+  it("roundtrips transient illegal numbers without normalization, defaulting, trimming or stamping created", () => {
+    for (const value of [NaN, Infinity, -Infinity, -0, -1, 0, 1.5, 1001]) {
+      const script = defaultScript("Draft");
+      delete script.created;
+      script.steps = [
+        { id: "loop", type: "loop", params: { count: value, unit: { name: "  " }, steps: [] } },
+        { id: "delay", type: "delay", params: { ms: value }, continue_on_error: false },
+        { id: "read", type: "adc_read", params: { channel: "" }, assert: { current_range: { min_a: value, max_a: -1 }, energy_max_j: value } },
+        { id: "wait", type: "serial_wait", params: { channel: "j4", pattern: "", timeout_ms: value }, assert: { regex: "[" } },
+      ];
+      const buffer = serializeTestScriptDraft(script);
+      const restored = parseTestScriptDraft(buffer);
+      assert.deepEqual(restored, script);
+      assert.equal(script.created, undefined);
+      assert.equal(serializeTestScriptDraft(restored), buffer);
+      assert.throws(() => serializeTestScript(script));
+      assert.throws(() => parseTestScript(buffer), /unknown field|Unknown schema/);
+    }
+  });
+
+  it("preserves incomplete conditions and nested units while strict import/export reject them", () => {
+    const script = defaultScript();
+    script.steps = [{ id: "condition", type: "condition", params: {
+      check: { id: "check", type: "serial_expect", params: { channel: "j4", command: "", pattern: "", timeout_ms: -1 } },
+      then_steps: [{ id: "unit", type: "loop", params: { count: NaN, unit: { name: " Untitled " }, steps: [] } }],
+      else_steps: [],
+    } }];
+    assert.deepEqual(parseTestScriptDraft(serializeTestScriptDraft(script)), script);
+    assert.throws(() => serializeTestScript(script));
+    for (const step of [
+      { id: "delay", type: "delay", params: { ms: -1 } },
+      { id: "loop", type: "loop", params: { count: 0, steps: [] } },
+      { id: "read", type: "adc_read", params: { channel: "5v_out" }, assert: { regex: "[" } },
+    ]) {
+      assert.throws(() => parseTestScript(`${JSON.stringify({ schema: script.schema })}\n${JSON.stringify(step)}`));
+    }
+  });
+
+  it("accepts only known draft structure and keeps draft files distinct from workflow imports", () => {
+    const script = defaultScript();
+    assert.throws(() => serializeTestScriptDraft({ ...script, hidden: true } as typeof script), /unknown field/);
+    assert.throws(() => parseTestScriptDraft(JSON.stringify({ schema: "linkr-test-draft.v1", script: { ...script, steps: [{ id: "delay", type: "delay", params: { ms: 1, hidden: true } }] } })), /unknown field/);
+    assert.throws(() => parseTestScriptDraft('{"schema":"linkr-test-draft.v1","script":{"schema":"linkr-test.v1","name":"A","name":"B","version":"1","steps":[]}}'), /Duplicate JSON key/);
+    assert.throws(() => parseTestScriptDraft(serializeTestScript(script)), /trailing JSON|local test-script draft|unknown field/);
   });
 });
 
@@ -643,7 +747,7 @@ describe("serializeTestScript / parseTestScript", () => {
       type: "loop",
       params: { count: 2, steps: [] },
     });
-    const draft = parseTestScript(`${header}\n${loop}\n`, { validatePlan: false });
+    const draft = parseTestScriptDraft(serializeTestScriptDraft({ ...defaultScript("Draft"), steps: [{ id: "loop1", type: "loop", params: { count: 2, steps: [] } }] }));
     assert.equal(draft.steps[0].type, "loop");
     assert.equal(isTestLoop(draft.steps[0]) && draft.steps[0].params.steps.length, 0);
     assert.throws(() => parseTestScript(`${header}\n${loop}\n`), /non-empty array|at least one step is required/);
@@ -661,7 +765,9 @@ describe("serializeTestScript / parseTestScript", () => {
         else_steps: [],
       },
     });
-    const incompleteCondition = parseTestScript(`${header}\n${bareAdc}\n`, { validatePlan: false });
+    const incompleteCondition = parseTestScriptDraft(serializeTestScriptDraft({ ...defaultScript("Draft"), steps: [{ id: "condition1", type: "condition", params: {
+      check: { id: "check", type: "adc_read", params: { channel: "5v_out" } }, then_steps: [], else_steps: [],
+    } }] }));
     assert.equal(incompleteCondition.steps[0].type, "condition");
     assert.throws(() => parseTestScript(`${header}\n${bareAdc}\n`), /adc_read check requires an assert/);
     assert.match(

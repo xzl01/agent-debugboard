@@ -24,7 +24,7 @@ static void test_rail_table_matches_schematic(void)
 	const struct linkr_debugger_rail_desc *rail;
 	const struct linkr_debugger_rail_desc *vdd_rail;
 
-	assert(linkr_debugger_rail_count == 5);
+	assert(linkr_debugger_rail_count == 6);
 
 	rail = linkr_debugger_find_rail("12v_out");
 	assert(rail != NULL);
@@ -55,6 +55,16 @@ static void test_rail_table_matches_schematic(void)
 	assert(!rail->always_on);
 	assert_str_eq(rail->signal, "GPIO24_USB_CRL");
 	assert_str_eq(rail->parent, "vdd_5v");
+
+	rail = linkr_debugger_find_rail("5v_otg");
+	assert(rail != NULL);
+	assert(rail->pin == 23U);
+	assert(rail->controllable);
+	assert(!rail->always_on);
+	assert_str_eq(rail->signal, "OTG_USB_EN");
+	assert_str_eq(rail->parent, "vdd_5v");
+	assert(rail->role == LINKR_DEBUGGER_RAIL_ROLE_PORT_VBUS);
+	assert(rail->backfeed_capable);
 }
 
 static void test_vdd_5v_state_contract_matches_board_revision(void)
@@ -126,14 +136,19 @@ static void test_adc_table(void)
 		case LINKR_DEBUGGER_ADC_KIND_CURRENT:
 			assert_str_eq(adc->sensor, "INA226");
 			assert_str_eq(adc->unit, "uA");
+			assert(adc->role == LINKR_DEBUGGER_ADC_ROLE_NATIVE);
 			current_descriptor_count++;
 			break;
 		case LINKR_DEBUGGER_ADC_KIND_VOLTAGE:
+			assert(i >= LINKR_DEBUGGER_CURRENT_SENSOR_COUNT);
 			assert_str_eq(adc->sensor, "ADC");
 			assert_str_eq(adc->unit, "uV");
 			assert(adc->adc_index == i - LINKR_DEBUGGER_CURRENT_SENSOR_COUNT);
 			assert_str_eq(adc->signal,
 				expected_adc_signals[i - LINKR_DEBUGGER_CURRENT_SENSOR_COUNT]);
+			assert(adc->role == (adc->adc_index == 0U ?
+				LINKR_DEBUGGER_ADC_ROLE_PD_INPUT :
+				LINKR_DEBUGGER_ADC_ROLE_NATIVE));
 			break;
 		default:
 			assert(false);
@@ -145,6 +160,8 @@ static void test_adc_table(void)
 	assert_str_eq(adc0->signal, "GPIO26_ADC0");
 	assert_str_eq(adc0->note, "PD input divider; ADC pad voltage");
 	assert(adc0->adc_index == 0U);
+	assert(adc0->role == LINKR_DEBUGGER_ADC_ROLE_PD_INPUT);
+	assert_str_eq(linkr_debugger_adc_role_name(adc0->role), "pd_input");
 	assert(linkr_debugger_find_current("adc0") == NULL);
 
 	adc3 = linkr_debugger_find_adc("adc3");
@@ -155,6 +172,8 @@ static void test_adc_table(void)
 	assert_str_eq(adc3->unit, "uV");
 	assert(adc3->adc_index == 3);
 	assert(adc3->note == NULL);
+	assert(adc3->role == LINKR_DEBUGGER_ADC_ROLE_NATIVE);
+	assert_str_eq(linkr_debugger_adc_role_name(adc3->role), "native");
 
 	assert(linkr_debugger_find_adc("5V_FIN") == NULL);
 	assert(linkr_debugger_find_adc("5v_usb_hub") == NULL);
@@ -189,6 +208,35 @@ static void test_adc_microvolt_conversion_fallback(void)
 						       &microvolts) == -ERANGE);
 	assert(linkr_debugger_adc_resolve_microvolts(-ENOTSUP, 2048, 12U,
 						       NULL) == -EINVAL);
+}
+
+static void test_adc0_voltage_divider_scale64_bounds(void)
+{
+	const int64_t full_ohms = 115000;
+	const int64_t output_ohms = 15000;
+	int64_t source_microvolts;
+	int64_t safe_limit = INT64_MAX / full_ohms;
+
+	assert(linkr_debugger_adc_scale64_validate(2608695, full_ohms,
+						      output_ohms) == 0);
+	source_microvolts = 2608695 * full_ohms / output_ohms;
+	assert(source_microvolts == 19999995);
+
+	assert(linkr_debugger_adc_scale64_validate(2608696, full_ohms,
+						      output_ohms) == 0);
+	source_microvolts = 2608696 * full_ohms / output_ohms;
+	assert(source_microvolts == 20000002);
+
+	assert(linkr_debugger_adc_scale64_validate(safe_limit, full_ohms,
+						      output_ohms) == 0);
+	assert(linkr_debugger_adc_scale64_validate(safe_limit + 1, full_ohms,
+						      output_ohms) == -ERANGE);
+	assert(linkr_debugger_adc_scale64_validate(INT64_MAX, full_ohms,
+						      output_ohms) == -ERANGE);
+	assert(linkr_debugger_adc_scale64_validate(INT64_MIN, full_ohms,
+						      output_ohms) == -ERANGE);
+	assert(linkr_debugger_adc_scale64_validate(1, 0U, output_ohms) == -ENOTSUP);
+	assert(linkr_debugger_adc_scale64_validate(1, full_ohms, 0U) == -EINVAL);
 }
 
 static void test_safe_gpio_allowlist(void)
@@ -415,16 +463,25 @@ struct power_dependency_fixture {
 	} trace[4];
 };
 
-static bool dependency_enabled(void *context, bool child)
+static size_t dependency_child_count(void *context)
+{
+	(void)context;
+	return 1U;
+}
+
+static bool dependency_enabled(void *context, bool child, size_t index)
 {
 	struct power_dependency_fixture *fixture = context;
 
+	(void)index;
 	return child ? fixture->child : fixture->parent;
 }
 
-static int dependency_set(void *context, bool child, bool enabled)
+static int dependency_set(void *context, bool child, size_t index, bool enabled)
 {
 	struct power_dependency_fixture *fixture = context;
+
+	(void)index;
 	int call = fixture->calls++;
 
 	fixture->trace[call].child = child;
@@ -443,13 +500,14 @@ static int dependency_set(void *context, bool child, bool enabled)
 static void test_power_dependency_order_and_rollback(void)
 {
 	static const struct linkr_debugger_power_dependency_ops ops = {
+		.child_count = dependency_child_count,
 		.is_enabled = dependency_enabled,
 		.set_enabled = dependency_set,
 	};
 	struct power_dependency_fixture fixture = { .fail_call = -1 };
 
 	assert(linkr_debugger_power_dependency_apply(
-		       LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD, true, &ops, &fixture) == 0);
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD, true, 0U, &ops, &fixture) == 0);
 	assert(fixture.parent && fixture.child);
 	assert(fixture.calls == 2);
 	assert(!fixture.trace[0].child && fixture.trace[0].enabled);
@@ -459,7 +517,7 @@ static void test_power_dependency_order_and_rollback(void)
 		.parent = true, .child = true, .fail_call = -1,
 	};
 	assert(linkr_debugger_power_dependency_apply(
-		       LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT, false, &ops, &fixture) == 0);
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT, false, 0U, &ops, &fixture) == 0);
 	assert(!fixture.parent && !fixture.child);
 	assert(fixture.calls == 2);
 	assert(fixture.trace[0].child && !fixture.trace[0].enabled);
@@ -469,13 +527,13 @@ static void test_power_dependency_order_and_rollback(void)
 		.parent = true, .child = true, .fail_call = -1,
 	};
 	assert(linkr_debugger_power_dependency_apply(
-		       LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD, false, &ops, &fixture) == 0);
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD, false, 0U, &ops, &fixture) == 0);
 	assert(fixture.parent && !fixture.child);
 	assert(fixture.calls == 1);
 
 	fixture = (struct power_dependency_fixture){ .fail_call = 1 };
 	assert(linkr_debugger_power_dependency_apply(
-		       LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD, true, &ops, &fixture) == -EIO);
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD, true, 0U, &ops, &fixture) == -EIO);
 	assert(!fixture.parent && !fixture.child);
 	assert(fixture.calls == 3);
 	assert(!fixture.trace[2].child && !fixture.trace[2].enabled);
@@ -484,14 +542,14 @@ static void test_power_dependency_order_and_rollback(void)
 		.parent = true, .child = true, .fail_call = 1,
 	};
 	assert(linkr_debugger_power_dependency_apply(
-		       LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT, false, &ops, &fixture) == -EIO);
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT, false, 0U, &ops, &fixture) == -EIO);
 	assert(fixture.parent && fixture.child);
 	assert(fixture.calls == 3);
 	assert(fixture.trace[2].child && fixture.trace[2].enabled);
 
 	fixture = (struct power_dependency_fixture){ .fail_call = 0 };
 	assert(linkr_debugger_power_dependency_apply(
-		       LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD, true, &ops, &fixture) == -EIO);
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD, true, 0U, &ops, &fixture) == -EIO);
 	assert(!fixture.parent && !fixture.child);
 	assert(fixture.calls == 1);
 
@@ -499,7 +557,7 @@ static void test_power_dependency_order_and_rollback(void)
 		.parent = true, .child = true, .fail_call = 0,
 	};
 	assert(linkr_debugger_power_dependency_apply(
-		       LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT, false, &ops, &fixture) == -EIO);
+		       LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT, false, 0U, &ops, &fixture) == -EIO);
 	assert(fixture.parent && fixture.child);
 	assert(fixture.calls == 1);
 }
@@ -659,6 +717,7 @@ int main(void)
 	test_current_table();
 	test_adc_table();
 	test_adc_microvolt_conversion_fallback();
+	test_adc0_voltage_divider_scale64_bounds();
 	test_safe_gpio_allowlist();
 	test_full_gpio_layout_catalog();
 	test_power_dependency_order_and_rollback();

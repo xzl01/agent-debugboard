@@ -456,6 +456,7 @@ static inline size_t linkr_debugger_ws_adc_batch_worst_case_size_from(
 		const struct linkr_debugger_current_desc *channel = &channels[i];
 		const char *kind = channel->kind == LINKR_DEBUGGER_ADC_KIND_CURRENT ?
 			"current" : "voltage";
+		const char *role = linkr_debugger_adc_role_name(channel->role);
 
 		size += i > 0U ? 1U : 0U;
 		size += sizeof("{\"name\":") - 1U +
@@ -466,6 +467,8 @@ static inline size_t linkr_debugger_ws_adc_batch_worst_case_size_from(
 			linkr_debugger_ws_json_string_size(kind);
 		size += sizeof(",\"unit\":") - 1U +
 			linkr_debugger_ws_json_string_size(channel->unit);
+		size += sizeof(",\"role\":") - 1U +
+			linkr_debugger_ws_json_string_size(role);
 		if (channel->note != NULL && channel->note[0] != '\0') {
 			size += sizeof(",\"note\":") - 1U +
 				linkr_debugger_ws_json_string_size(channel->note);
@@ -2507,8 +2510,9 @@ static int linkr_debugger_ws_append_adc_readings(char *buf, size_t size, size_t 
 		}
 		if (linkr_debugger_ws_append(buf, size, cursor,
 					 "{\"name\":\"%s\",\"signal\":\"%s\",\"kind\":\"%s\","
-					 "\"unit\":\"%s\"",
-					 adc->name, adc->signal, linkr_debugger_ws_adc_kind_name(adc), adc->unit) < 0) {
+					 "\"unit\":\"%s\",\"role\":\"%s\"",
+					 adc->name, adc->signal, linkr_debugger_ws_adc_kind_name(adc), adc->unit,
+					 linkr_debugger_adc_role_name(adc->role)) < 0) {
 			return -ENOMEM;
 		}
 		if (linkr_debugger_ws_append_adc_note(buf, size, cursor, adc) < 0) {
@@ -2625,9 +2629,9 @@ static int linkr_debugger_ws_emit_adc_batch(struct linkr_debugger_ws_client *cli
 				if (linkr_debugger_ws_append(buf, LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE,
 							 &cursor,
 							 "{\"name\":\"%s\",\"signal\":\"%s\",\"kind\":\"%s\","
-							 "\"unit\":\"%s\"",
+							 "\"unit\":\"%s\",\"role\":\"%s\"",
 							 adc->name, adc->signal, linkr_debugger_ws_adc_kind_name(adc),
-							 adc->unit) < 0) {
+							 adc->unit, linkr_debugger_adc_role_name(adc->role)) < 0) {
 					return -ENOMEM;
 				}
 				if (linkr_debugger_ws_append_adc_note(

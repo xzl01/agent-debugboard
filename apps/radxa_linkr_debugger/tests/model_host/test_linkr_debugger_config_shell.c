@@ -20,7 +20,7 @@
 #define SHELL_OUTPUT_LINE_CAP 160U
 #define SAVED_ID_CAP 64U
 
-_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 18U,
+_Static_assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 19U,
 	       "config shell selection limit changed");
 
 enum fake_shell_line_kind {
@@ -340,7 +340,7 @@ static void test_save_accepts_confirmation_after_maximum_selection(void)
 
 	/* Then */
 	assert(result == 0);
-	assert_print_line("config save saved_count=18 pending_count=0");
+	assert_print_line("config save saved_count=19 pending_count=0");
 	assert(service.saved_item_count == LINKR_DEBUGGER_CONFIG_MAX_ENTRIES);
 	assert(service.last_save_confirmed);
 	assert(strcmp(service.saved_ids[0], "power/12v_out") == 0);
@@ -398,7 +398,7 @@ static void test_save_rejects_too_many_ids_before_service_io(void)
 
 	/* Then */
 	assert(result == -E2BIG);
-	assert_error_line("config save error=too_many_items max=18");
+	assert_error_line("config save error=too_many_items max=19");
 	assert_no_service_calls();
 }
 

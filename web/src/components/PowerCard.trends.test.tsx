@@ -2,7 +2,8 @@ import { act, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CurrentAdcReading, VoltageAdcReading } from "@/lib/types";
-import { PowerCard } from "./PowerCard";
+import { PowerCard as PowerOnlyCard } from "./PowerCard";
+import { NativeAdcCards } from "./NativeAdcCards";
 import { MeasurementSparkline } from "./PowerSparkline";
 import { MEASUREMENT_HISTORY_LIMIT, MEASUREMENT_PREVIEW_SAMPLES } from "@/lib/adc";
 
@@ -13,6 +14,11 @@ vi.mock("@/lib/i18n", () => ({
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const closeViews: (() => void)[] = [];
+
+// Exercise the new composition: PD+outputs, followed by independent native monitors.
+function PowerCard(props: React.ComponentProps<typeof PowerOnlyCard>) {
+  return <><PowerOnlyCard {...props} /><NativeAdcCards readings={props.readings} showTrends={!props.compact} /></>;
+}
 
 function render(node: React.ReactNode) {
   const host = document.createElement("div");
@@ -52,6 +58,7 @@ function voltageReading(overrides: Partial<VoltageAdcReading> = {}): VoltageAdcR
     signal: "GPIO26_ADC0",
     kind: "voltage",
     unit: "uV",
+    role: "pd_input",
     value: 2_608_696,
     ...overrides,
   };
@@ -59,10 +66,10 @@ function voltageReading(overrides: Partial<VoltageAdcReading> = {}): VoltageAdcR
 
 function voltageReadings(): VoltageAdcReading[] {
   return [
-    voltageReading({ note: "PD input divider; ADC pad voltage" }),
-    voltageReading({ name: "adc1", signal: "GPIO27_ADC1", value: 1_100_000 }),
-    voltageReading({ name: "adc2", signal: "GPIO28_ADC2", value: 2_200_000 }),
-    voltageReading({ name: "adc3", signal: "GPIO29_ADC3", value: 1_650_000 }),
+    voltageReading({ value: 20_000_000, note: "PD input; source-side voltage" }),
+    voltageReading({ name: "adc1", signal: "GPIO27_ADC1", role: "native", value: 1_100_000 }),
+    voltageReading({ name: "adc2", signal: "GPIO28_ADC2", role: "native", value: 2_200_000 }),
+    voltageReading({ name: "adc3", signal: "GPIO29_ADC3", role: "native", value: 1_650_000 }),
   ];
 }
 
@@ -213,33 +220,32 @@ describe("overlaid power measurement trends", () => {
     expect(localStorage.getItem("linkr-power-trends-expanded")).toBe("true");
   });
 
-  it("renders four descriptor-driven voltage cards after the four current overlays", () => {
+  it("merges ADC0 with PD and renders three independent native cards after the current overlays", () => {
     const onSet = vi.fn();
     const currents = ["5v_out", "12v_out", "20v_out", "vdd_5v"].map((name) => reading({ name }));
     const voltages = voltageReadings();
     const view = render(<PowerCard outputs={[]} readings={[...currents, ...voltages]} onSet={onSet} />);
     expect(view.host.querySelectorAll('svg[role="img"]')).toHaveLength(8);
-    const cards = [...view.host.querySelectorAll("h4")].map((heading) => heading.closest("li")!);
-    expect(cards).toHaveLength(4);
-    expect(cards[0].parentElement?.className).toContain("grid-cols-1");
-    expect(cards[0].parentElement?.className).toContain("sm:grid-cols-2");
-    expect(view.host.textContent?.split("adc.voltage.disclaimer")).toHaveLength(2);
-    voltages.forEach((voltage, index) => {
-      expect(cards[index].querySelector("h4")?.textContent).toBe(voltage.name);
+    const cards = [...view.host.querySelectorAll<HTMLElement>("[data-native-adc]")];
+    expect(cards).toHaveLength(3);
+    expect(view.host.textContent?.split("adc.voltage.disclaimer")).toHaveLength(4);
+    voltages.slice(1).forEach((voltage, index) => {
+      expect(cards[index].getAttribute("data-native-adc")).toBe(voltage.name);
       expect(cards[index].textContent).toContain(voltage.signal);
       expect(cards[index].textContent).toContain(`${(voltage.value / 1_000_000).toFixed(3)} V`);
       expect(chart(cards[index], voltage.name).querySelectorAll("g[data-metric]")).toHaveLength(1);
       expect(cards[index].querySelector('[role="switch"]')).toBeNull();
     });
-    expect(cards[0].textContent).toContain(voltages[0].note);
-    expect(cards[0].textContent).not.toContain("20.000 V");
+    const pd = view.host.querySelector('[data-testid="pd-input-card"]')!;
+    expect(pd.textContent).toContain("20.000 V");
+    expect(pd.querySelectorAll('svg[role="img"]')).toHaveLength(1);
     expect(onSet).not.toHaveBeenCalled();
   });
 
   it("keeps all reported voltage identities and latest values visible in compact mode", () => {
     const voltages = voltageReadings();
     const view = render(<PowerCard outputs={[]} readings={voltages} onSet={vi.fn()} compact />);
-    expect([...view.host.querySelectorAll("h4")].map((heading) => heading.textContent)).toEqual(voltages.map(({ name }) => name));
+    expect([...view.host.querySelectorAll("[data-native-adc]")].map((item) => item.getAttribute("data-native-adc"))).toEqual(["adc1", "adc2", "adc3"]);
     for (const voltage of voltages) {
       expect(view.host.textContent).toContain(voltage.signal);
       expect(view.host.textContent).toContain(`${(voltage.value / 1_000_000).toFixed(3)} V`);
@@ -252,12 +258,12 @@ describe("overlaid power measurement trends", () => {
     const onSet = vi.fn();
     const adc3 = voltageReadings()[3];
     const view = render(<PowerCard outputs={[]} readings={[reading(), adc3]} onSet={onSet} />);
-    expect([...view.host.querySelectorAll("h4")].map((heading) => heading.textContent)).toEqual(["adc3"]);
+    expect([...view.host.querySelectorAll("[data-native-adc]")].map((item) => item.getAttribute("data-native-adc"))).toEqual(["adc3"]);
     view.rerender(<PowerCard outputs={[]} readings={[reading()]} onSet={onSet} />);
-    expect(view.host.querySelector("h4")).toBeNull();
+    expect(view.host.querySelector("[data-native-adc]")).toBeNull();
     expect(view.host.textContent).not.toContain("adc.voltage.disclaimer");
     view.rerender(<PowerCard outputs={[]} readings={[reading(), { ...adc3, value: 0 }]} onSet={onSet} />);
-    expect(view.host.querySelector("h4")?.closest("li")?.textContent).toContain("0.000 V");
+    expect(view.host.querySelector('[data-native-adc="adc3"]')?.textContent).toContain("0.000 V");
     // An absent channel unmounts its history, so resumed samples never bridge the missing interval.
     expect(chart(view.host, "adc3").querySelector("polyline")).toBeNull();
     expect(onSet).not.toHaveBeenCalled();
@@ -484,7 +490,7 @@ describe("overlaid power measurement trends", () => {
     expect(chart(view.host, "12V").querySelector("polyline")).toBeNull();
     expect(legend(chart(view.host, "12V"), "voltage").textContent).toContain("11.800 V");
     view.rerender(
-      <MeasurementSparkline mode="voltage" reading={{ kind: "voltage", unit: "uV", name: "adc3", signal: "GP29", value: 1_650_000 }} />,
+      <MeasurementSparkline mode="voltage" reading={{ kind: "voltage", unit: "uV", role: "native", name: "adc3", signal: "GP29", value: 1_650_000 }} />,
     );
     const adc3 = chart(view.host, "adc3");
     expect(adc3.getAttribute("aria-label")).toBe("adc3 · GP29 · adc.voltage.chart.aria");
@@ -499,7 +505,7 @@ describe("overlaid power measurement trends", () => {
     const onSet = vi.fn();
     const initial = voltageReadings();
     const view = render(<PowerCard outputs={[]} readings={initial} onSet={onSet} />);
-    const updated = [{ ...initial[0], value: 2_700_000 }, ...initial.slice(1)];
+    const updated = [{ ...initial[0], value: 21_000_000 }, ...initial.slice(1)];
     view.rerender(<PowerCard outputs={[]} readings={updated} onSet={onSet} />);
     expect(points(chart(view.host, "adc0"), "voltage")).toHaveLength(2);
     expect(chart(view.host, "adc1").querySelector("polyline")).toBeNull();
@@ -509,8 +515,8 @@ describe("overlaid power measurement trends", () => {
     expect(chart(view.host, "adc2").querySelector("polyline")).toBeNull();
     expect(chart(view.host, "adc3").querySelector("polyline")).toBeNull();
     const { modal } = expandChart(view.host, "adc0");
-    expect(modal.textContent).toContain("adc0 · GPIO26_ADC0 · adc.voltage.chart.title");
-    expect(modal.textContent).toContain("2.700 V");
+    expect(modal.textContent).toContain("adc0 · GPIO26_ADC0 · pd.input.chart");
+    expect(modal.textContent).toContain("21.000 V");
     expect(modal.textContent).not.toContain("1.200 V");
     act(() => dialogButton(modal, "power.chart.close").click());
     view.rerender(<PowerCard outputs={[]} readings={[{ ...updated[0], signal: "replacement-sensor" }]} onSet={onSet} />);
@@ -519,11 +525,11 @@ describe("overlaid power measurement trends", () => {
     expect(onSet).not.toHaveBeenCalled();
   });
 
-  it.each(["preview", "expanded"] as const)("uses a fixed 0–3.3 V domain for every %s ADC channel without rail scaling", (size) => {
-    const view = render(<MeasurementSparkline mode="voltage" reading={voltageReading({ value: 0 })} />);
-    view.rerender(<MeasurementSparkline mode="voltage" reading={voltageReading()} />);
-    view.rerender(<MeasurementSparkline mode="voltage" reading={voltageReading({ value: 3_300_000 })} />);
-    const svg = chart(size === "expanded" ? expandChart(view.host, "adc0").modal : view.host, "adc0");
+  it.each(["preview", "expanded"] as const)("uses a fixed 0–3.3 V domain for %s native ADC without source scaling", (size) => {
+    const view = render(<MeasurementSparkline mode="voltage" reading={voltageReading({ name: "adc1", role: "native", value: 0 })} />);
+    view.rerender(<MeasurementSparkline mode="voltage" reading={voltageReading({ name: "adc1", role: "native" })} />);
+    view.rerender(<MeasurementSparkline mode="voltage" reading={voltageReading({ name: "adc1", role: "native", value: 3_300_000 })} />);
+    const svg = chart(size === "expanded" ? expandChart(view.host, "adc1").modal : view.host, "adc1");
     const height = size === "expanded" ? 280 : 58;
     const trace = points(svg, "voltage");
     expect(trace).toHaveLength(3);

@@ -123,23 +123,19 @@ describe("PowerCard PD editing and real translated measurement copy", () => {
     expect(document.activeElement).toBe(enlarge);
   });
 
-  it.each(["en", "zh"] as const)("distinguishes ADC-pad voltage from source voltage in %s", (lang) => {
+  it.each(["en", "zh"] as const)("merges source-side ADC0 into PD while keeping pad diagnostics distinct in %s", (lang) => {
     const view = render(lang, {}, [{
-      kind: "voltage", unit: "uV", name: "adc0", signal: "GPIO26_ADC0", value: 2_608_696,
-      note: "PD input divider; ADC pad voltage",
+      kind: "voltage", unit: "uV", role: "pd_input", name: "adc0", signal: "GPIO26_ADC0", value: 20_000_000,
+      raw: 3236, mv: 2609,
     }]);
-    const disclaimer = lang === "en"
-      ? "ADC pin voltage; not power-rail/source voltage"
-      : "ADC 引脚电压，非电源轨或电源输入电压";
-    expect(view.host.textContent?.split(disclaimer)).toHaveLength(2);
-    expect(view.host.querySelector("h4")?.closest("li")?.textContent).toContain("2.609 V");
-    expect(view.host.textContent).toContain("PD input divider; ADC pad voltage");
-    expect(view.host.textContent).not.toContain("20.000 V");
+    expect(view.host.querySelector('[data-testid="pd-input-card"]')?.textContent).toContain("20.000 V");
+    expect(view.host.querySelector('[data-testid="pd-input-card"] details')?.textContent).toContain("2609 mV");
+    expect(view.host.querySelector('[data-native-adc="adc0"]')).toBeNull();
     const enlarge = view.host.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!;
     expect(enlarge.getAttribute("aria-label")).toContain("adc0 · GPIO26_ADC0");
     act(() => enlarge.click());
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
-      lang === "en" ? "adc0 · GPIO26_ADC0 · Voltage trend" : "adc0 · GPIO26_ADC0 · 电压趋势",
+      lang === "en" ? "adc0 · GPIO26_ADC0 · PD input voltage trend" : "adc0 · GPIO26_ADC0 · PD 输入电压趋势",
     );
   });
 

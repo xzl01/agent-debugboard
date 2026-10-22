@@ -15,6 +15,12 @@
 enum linkr_debugger_task_http_route {
 	LINKR_DEBUGGER_TASK_HTTP_ROUTE_TASKS = 0,
 	LINKR_DEBUGGER_TASK_HTTP_ROUTE_CATALOG,
+	LINKR_DEBUGGER_TASK_HTTP_ROUTE_IR,
+	LINKR_DEBUGGER_TASK_HTTP_ROUTE_MUTATIONS,
+	LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_0,
+	LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_1,
+	LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_2,
+	LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_3,
 };
 
 int linkr_debugger_task_http_handle(
@@ -24,9 +30,4 @@ int linkr_debugger_task_http_handle(
 	struct http_response_ctx *response_ctx,
 	void *user_data);
 
-int linkr_debugger_task_http_handle_delete_one(
-	struct http_client_ctx *client,
-	struct http_response_ctx *response_ctx,
-	const char *id);
-
-#endif
+#endif /* RADXA_LINKR_DEBUGGER_TASK_HTTP_H_ */

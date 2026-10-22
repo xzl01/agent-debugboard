@@ -12,13 +12,13 @@ const CURRENT_CHANNELS = [
   { name: "vdd_5v", signal: "INA226_VDD_5V", kind: "current", unit: "uA" },
 ];
 const VOLTAGE_CHANNELS = [
-  { name: "adc0", signal: "GPIO26_ADC0", kind: "voltage", unit: "uV", note: "PD input divider; ADC pad voltage" },
-  { name: "adc1", signal: "GPIO27_ADC1", kind: "voltage", unit: "uV" },
-  { name: "adc2", signal: "GPIO28_ADC2", kind: "voltage", unit: "uV" },
-  { name: "adc3", signal: "GPIO29_ADC3", kind: "voltage", unit: "uV" },
+  { name: "adc0", signal: "GPIO26_ADC0", kind: "voltage", unit: "uV", role: "pd_input" },
+  { name: "adc1", signal: "GPIO27_ADC1", kind: "voltage", unit: "uV", role: "native" },
+  { name: "adc2", signal: "GPIO28_ADC2", kind: "voltage", unit: "uV", role: "native" },
+  { name: "adc3", signal: "GPIO29_ADC3", kind: "voltage", unit: "uV", role: "native" },
 ];
 const CHANNELS = [...CURRENT_CHANNELS, ...VOLTAGE_CHANNELS];
-const VALUES = [100, -200, 300, 400, 2_608_696, 1_100_000, 2_200_000, 1_650_000];
+const VALUES = [100, -200, 300, 400, 20_000_000, 1_100_000, 2_200_000, 1_650_000];
 
 function compactReadings() {
   return CHANNELS.map((channel, index) => ({
@@ -35,7 +35,7 @@ test("decodeTelemetryReadings previews all eight single-frame descriptors", () =
 
   assert.deepEqual(readings, compactReadings());
   assert.equal(readings.length, 8);
-  assert.equal(readings[4].value, 2_608_696);
+  assert.equal(readings[4].value, 20_000_000);
 });
 
 test("decodeTelemetryReadings previews only the latest batch sample", () => {
@@ -54,7 +54,7 @@ test("decodeTelemetryReadings previews only the latest batch sample", () => {
   })));
 });
 
-test("decodeTelemetryReadings keeps four rail-voltage slots separate from ADC-pad values", () => {
+test("decodeTelemetryReadings keeps four rail-voltage slots separate from source/native ADC values", () => {
   const readings = decodeTelemetryReadings({
     type: "telemetry-batch",
     channels: CHANNELS,

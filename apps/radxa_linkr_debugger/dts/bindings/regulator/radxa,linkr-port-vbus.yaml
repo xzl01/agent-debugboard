@@ -1,0 +1,34 @@
+# Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Radxa Linkr bidirectional port VBUS rail. A fixed-regulator switch that
+  drives an externally accessible connector VBUS which can also be sourced
+  externally and backfed into the parent rail (for example 5V_OTG on J3
+  through the Q10 AO3401A body diode) even while the switch is released.
+
+compatible: "radxa,linkr-port-vbus"
+
+include:
+  - name: regulator-fixed.yaml
+  - name: power.yaml
+
+properties:
+  role:
+    type: string
+    required: true
+    description: |
+      Rail role. Port VBUS rails are bidirectional external supplies and
+      must not be reported as ordinary measured rails.
+    enum:
+      - "supply"
+      - "port_vbus"
+
+  backfeed-capable:
+    type: boolean
+    required: true
+    description: |
+      Present when the switch topology can conduct externally driven
+      voltage back into the parent rail (for example through the switch
+      body diode) even while released. Firmware must never report "no
+      backfeed" for such rails.

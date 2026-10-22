@@ -3,437 +3,504 @@
  *
  * Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
  * Copyright (c) Jiali Chen <chenjiali@radxa.com>
+ *
+ * Task-v2 HTTP transaction ownership. The mutation arena and raw response
+ * arena are distinct and remain owned until the corresponding transaction
+ * completes or aborts.
  */
 
-/* allow: SIZE_OK — cohesive /api/v1/tasks endpoint handler; the PUT upload
- * state machine, method dispatch, and response wiring share one HTTP
- * transaction lifecycle and stay readable as a single unit.
- */
 #include "linkr_debugger_task_http.h"
 
 #include "linkr_debugger_http_task_response.h"
-#include "linkr_debugger_json_cursor.h"
 #include "linkr_debugger_task.h"
 #include "linkr_debugger_task_catalog.h"
 #include "linkr_debugger_task_mutation.h"
 
+#ifndef LINKR_DEBUGGER_TASK_HTTP_HOST_TEST
+#include <zephyr/net/http/parser.h>
+HTTP_SERVER_REGISTER_HEADER_CAPTURE(linkr_debugger_task_content_type_capture,
+				    "Content-Type");
+#endif
+
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 const char *linkr_debugger_json_schema(void);
 
-struct linkr_debugger_task_http_upload {
+struct task_http_input_state {
 	struct http_client_ctx *client;
 	size_t len;
-	char buf[LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE];
+	bool headers_seen;
+	bool content_type_valid;
+	bool headers_dropped;
+	bool terminal;
+	bool terminal_emitted;
+	enum http_status terminal_status;
+	const uint8_t *terminal_body;
+	size_t terminal_body_len;
 };
 
-static struct linkr_debugger_task_http_upload task_upload;
-static uint8_t task_http_response_buf[LINKR_DEBUGGER_TASK_HTTP_RESPONSE_CAP];
+/* Task-v2 arenas sized by the JSON mutation contract: two canonical
+ * base64 4000-byte payloads plus envelope keys, and 4001-byte raw
+ * outputs. */
+static uint8_t task_http_input[LINKR_DEBUGGER_TASK_MUTATION_MAX_SIZE];
+static struct task_http_input_state task_input_state;
+static uint8_t task_http_raw_response[LINKR_DEBUGGER_TASK_RAW_BUFFER_SIZE];
+static struct http_client_ctx *task_response_owner;
+/* Single-owner mutation outcome: avoids a large frame on the 3 KiB HTTP
+ * server stack. task_input_state/task_response_owner serialize users.
+ */
+static struct linkr_debugger_task_mutation_outcome task_http_outcome;
+
 static const struct http_header task_http_json_headers[] = {
 	{ .name = "Cache-Control", .value = "no-store" },
+	{ .name = "Content-Type", .value = "application/json" },
 };
 
-/* FIXME(review-20260821): One shared response workspace depends on serialized
- * HTTP callback response lifetimes. Consequence: concurrent dispatch could overwrite a body.
- * Remove when the HTTP layer provides transaction-owned response storage.
- */
+static const struct http_header task_http_ir_headers[] = {
+	{ .name = "Cache-Control", .value = "no-store" },
+	{ .name = "Content-Type", .value = LINKR_DEBUGGER_TASK_IR_CONTENT_TYPE },
+};
 
-static void task_upload_reset(void)
+static const struct http_header task_http_source_headers[] = {
+	{ .name = "Cache-Control", .value = "no-store" },
+	{ .name = "Content-Type", .value = LINKR_DEBUGGER_TASK_SOURCE_CONTENT_TYPE },
+};
+
+static const uint8_t task_http_busy_response[] =
+	"{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":false,"
+	"\"command\":\"tasks\",\"error\":{\"code\":\"busy\","
+	"\"message\":\"another task transaction owns the response arena\"}}\n";
+
+static void task_http_set_response(struct http_response_ctx *response,
+				   const struct http_header *headers,
+				   size_t header_count, const uint8_t *body,
+				   size_t body_len, enum http_status status)
 {
-	task_upload.client = NULL;
-	task_upload.len = 0U;
+	response->status = status;
+	response->headers = headers;
+	response->header_count = header_count;
+	response->body = body;
+	response->body_len = body_len;
+	response->final_chunk = true;
 }
 
-static size_t task_http_strnlen(const char *text, size_t max_len)
-{
-	size_t len = 0U;
-
-	while (len < max_len && text[len] != '\0') {
-		len++;
-	}
-	return len;
-}
-
-static void task_http_set_json_response(struct http_response_ctx *response_ctx,
-					uint8_t *buf, size_t len,
+static void task_http_set_json_response(struct http_response_ctx *response,
+					const uint8_t *body, size_t body_len,
 					enum http_status status)
 {
-	response_ctx->status = status;
-	response_ctx->headers = task_http_json_headers;
-	response_ctx->header_count = sizeof(task_http_json_headers) / sizeof(task_http_json_headers[0]);
-	response_ctx->body = buf;
-	response_ctx->body_len = task_http_strnlen((char *)buf, len);
-	response_ctx->final_chunk = true;
+	task_http_set_response(response, task_http_json_headers,
+			       sizeof(task_http_json_headers) /
+				       sizeof(task_http_json_headers[0]),
+			       body, body_len, status);
 }
 
-static void task_http_set_catalog_response(struct http_response_ctx *response_ctx)
+static void task_http_set_no_response(struct http_response_ctx *response)
 {
-	size_t body_len;
-
-	response_ctx->status = HTTP_200_OK;
-	response_ctx->headers = task_http_json_headers;
-	response_ctx->header_count = sizeof(task_http_json_headers) / sizeof(task_http_json_headers[0]);
-	response_ctx->body = linkr_debugger_task_catalog_json(&body_len);
-	response_ctx->body_len = body_len;
-	response_ctx->final_chunk = true;
+	response->status = (enum http_status)0;
+	response->headers = NULL;
+	response->header_count = 0U;
+	response->body = NULL;
+	response->body_len = 0U;
+	response->final_chunk = false;
 }
 
-static void task_http_error(struct http_response_ctx *response_ctx, uint8_t *buf,
-			    size_t len, enum http_status status, const char *code,
-			    const char *message)
+static void task_http_set_static_busy(struct http_response_ctx *response)
 {
-	int written = snprintf((char *)buf, len,
-		"{\"schema\":\"%s\",\"ok\":false,\"command\":\"task\","
-		"\"error\":{\"code\":\"%s\",\"message\":\"%s\"}}\n",
-		linkr_debugger_json_schema(), code, message);
-
-	if (written < 0 || (size_t)written >= len) {
-		buf[0] = '\0';
-	}
-	task_http_set_json_response(response_ctx, buf, len, status);
+	task_http_set_json_response(response, task_http_busy_response,
+				    sizeof(task_http_busy_response) - 1U,
+				    HTTP_409_CONFLICT);
 }
 
-struct task_http_get_context {
-	uint8_t *json_buf;
-	size_t json_buf_len;
-	const struct linkr_debugger_task_status *status;
-	int written;
-};
-
-static void task_http_encode_list(const char *blob, size_t blob_len, void *context)
+static void task_http_latch_terminal(struct http_response_ctx *response,
+				     bool emit_now)
 {
-	struct task_http_get_context *get_context = context;
-
-	get_context->written = linkr_debugger_http_task_list_response(
-		(char *)get_context->json_buf, get_context->json_buf_len,
-		get_context->status, blob, blob_len);
+	task_input_state.terminal = true;
+	task_input_state.terminal_emitted = emit_now;
+	task_input_state.terminal_status = response->status;
+	task_input_state.terminal_body = response->body;
+	task_input_state.terminal_body_len = response->body_len;
+	if (!emit_now) {
+		task_http_set_no_response(response);
+	}
 }
 
-static int task_http_handle_get(uint8_t *json_buf, size_t json_buf_len,
-				struct http_response_ctx *response_ctx)
+static void task_http_replay_terminal(struct http_response_ctx *response)
 {
-	struct linkr_debugger_task_status status;
-	struct task_http_get_context context = {
-		.json_buf = json_buf,
-		.json_buf_len = json_buf_len,
-		.status = &status,
-	};
-	enum linkr_debugger_task_result result;
-
-	result = linkr_debugger_task_status_get(&status);
-
-	if (result != LINKR_DEBUGGER_TASK_OK) {
-		task_http_error(response_ctx, json_buf, json_buf_len,
-				HTTP_500_INTERNAL_SERVER_ERROR,
-				"status_unavailable", "task status unavailable");
-		return -1;
-	}
-	result = linkr_debugger_task_blob_visit(task_http_encode_list, &context);
-	if (result != LINKR_DEBUGGER_TASK_OK) {
-		task_http_error(response_ctx, json_buf, json_buf_len,
-				HTTP_500_INTERNAL_SERVER_ERROR,
-				"snapshot_unavailable", "task blob snapshot unavailable");
-		return -1;
-	}
-	if (context.written < 0) {
-		task_http_error(response_ctx, json_buf, json_buf_len,
-				HTTP_500_INTERNAL_SERVER_ERROR,
-				"response_too_large", "failed to encode task response");
-		return -1;
-	}
-	return 0;
+	task_http_set_json_response(response, task_input_state.terminal_body,
+				    task_input_state.terminal_body_len,
+				    task_input_state.terminal_status);
+	task_input_state.terminal_emitted = true;
 }
 
-static void task_http_error_result(uint8_t *json_buf, size_t json_buf_len,
-				   struct http_response_ctx *response_ctx,
-				   enum linkr_debugger_task_result result)
+static bool task_http_acquire_response(struct http_client_ctx *client,
+				       struct http_response_ctx *response)
+{
+	if (task_response_owner == NULL) {
+		task_response_owner = client;
+		return true;
+	}
+	if (task_response_owner == client) {
+		return true;
+	}
+	task_http_set_static_busy(response);
+	return false;
+}
+
+static void task_http_release_client(struct http_client_ctx *client)
+{
+	if (task_response_owner == client) {
+		task_response_owner = NULL;
+	}
+	if (task_input_state.client == client) {
+		memset(&task_input_state, 0, sizeof(task_input_state));
+	}
+}
+
+static const char *task_http_header_value(const struct http_request_ctx *request,
+					  const char *name)
+{
+	if (request == NULL || request->headers == NULL) {
+		return NULL;
+	}
+	for (size_t i = 0U; i < request->header_count; i++) {
+		if (request->headers[i].name != NULL &&
+		    strcasecmp(request->headers[i].name, name) == 0) {
+			return request->headers[i].value;
+		}
+	}
+	return NULL;
+}
+
+static bool task_http_content_type_valid(const struct http_request_ctx *request)
+{
+	const char *value = task_http_header_value(request, "Content-Type");
+	size_t expected_len = strlen(LINKR_DEBUGGER_TASK_MUTATION_CONTENT_TYPE);
+
+	return value != NULL &&
+		strncasecmp(value, LINKR_DEBUGGER_TASK_MUTATION_CONTENT_TYPE,
+			    expected_len) == 0 &&
+		(value[expected_len] == '\0' || value[expected_len] == ';');
+}
+
+static void task_http_error(struct http_response_ctx *response,
+			    enum http_status status, const char *code,
+			    const char *message,
+			    const struct linkr_debugger_task_status *current)
+{
+	int written = linkr_debugger_http_task_error_response(
+		(char *)task_http_raw_response, sizeof(task_http_raw_response),
+		code, message, current);
+
+	if (written < 0) {
+		written = 0;
+	}
+	task_http_set_json_response(response, task_http_raw_response, (size_t)written,
+				    status);
+}
+
+static void task_http_result_error(struct http_response_ctx *response,
+				   enum linkr_debugger_task_result result,
+				   const struct linkr_debugger_task_status *current)
 {
 	switch (result) {
 	case LINKR_DEBUGGER_TASK_INVALID_ARGUMENT:
-		task_http_error(response_ctx, json_buf, json_buf_len,
-				HTTP_400_BAD_REQUEST, "invalid_argument",
-				"invalid task argument");
+	case LINKR_DEBUGGER_TASK_INVALID_MUTATION:
+		task_http_error(response, HTTP_400_BAD_REQUEST, "invalid_mutation",
+				"task mutation is malformed", NULL);
 		break;
-	case LINKR_DEBUGGER_TASK_BACKEND_UNAVAILABLE:
-		task_http_error(response_ctx, json_buf, json_buf_len,
-				HTTP_500_INTERNAL_SERVER_ERROR,
-				"backend_unavailable", "task storage is unavailable");
-		break;
-	case LINKR_DEBUGGER_TASK_INVALID_BLOB:
-		task_http_error(response_ctx, json_buf, json_buf_len,
-				HTTP_400_BAD_REQUEST, "invalid_blob",
-				"task blob is invalid or contains unsupported requests");
+	case LINKR_DEBUGGER_TASK_INVALID_TASK:
+		task_http_error(response, HTTP_400_BAD_REQUEST, "invalid_task",
+				"task source or IR is invalid", NULL);
 		break;
 	case LINKR_DEBUGGER_TASK_BUSY:
-		task_http_error(response_ctx, json_buf, json_buf_len,
-				HTTP_409_CONFLICT, "busy", "task store is busy");
+		task_http_error(response, HTTP_409_CONFLICT, "busy",
+				"task or flash storage is busy", NULL);
 		break;
+	case LINKR_DEBUGGER_TASK_REVISION_CONFLICT:
+		task_http_error(response, HTTP_409_CONFLICT, "revision_conflict",
+				"task revision changed", current);
+		break;
+	case LINKR_DEBUGGER_TASK_CATALOG_CONFLICT:
+		task_http_error(response, HTTP_409_CONFLICT, "catalog_conflict",
+				"task catalog changed", current);
+		break;
+	case LINKR_DEBUGGER_TASK_STORAGE_FULL:
+		task_http_error(response, HTTP_507_INSUFFICIENT_STORAGE, "storage_full",
+				"task storage is full", NULL);
+		break;
+	case LINKR_DEBUGGER_TASK_READBACK_FAILED:
+		task_http_error(response, HTTP_500_INTERNAL_SERVER_ERROR, "readback_failed",
+				"task storage readback failed", NULL);
+		break;
+	case LINKR_DEBUGGER_TASK_SOURCE_ABSENT:
+		task_http_error(response, HTTP_404_NOT_FOUND, "task_source_absent",
+				"task slot has no lossless source", NULL);
+		break;
+	case LINKR_DEBUGGER_TASK_BODY_TOO_LARGE:
+		task_http_error(response, HTTP_400_BAD_REQUEST, "body_too_large",
+				"task source or IR exceeds 4000 bytes", NULL);
+		break;
+	case LINKR_DEBUGGER_TASK_BACKEND_UNAVAILABLE:
 	case LINKR_DEBUGGER_TASK_STORAGE_ERROR:
-		task_http_error(response_ctx, json_buf, json_buf_len,
-				HTTP_500_INTERNAL_SERVER_ERROR,
-				"storage_error", "failed to write task storage");
-		break;
-	case LINKR_DEBUGGER_TASK_NOT_FOUND:
-		task_http_error(response_ctx, json_buf, json_buf_len,
-				HTTP_404_NOT_FOUND, "not_found",
-				"no stored task with that id");
-		break;
 	default:
-		task_http_error(response_ctx, json_buf, json_buf_len,
-				HTTP_500_INTERNAL_SERVER_ERROR,
-				"internal_error", "internal task error");
+		task_http_error(response, HTTP_500_INTERNAL_SERVER_ERROR, "storage_error",
+				"task storage is unavailable", NULL);
 		break;
 	}
 }
 
-static int task_http_handle_tasks_put(struct http_client_ctx *client,
-				      enum http_transaction_status status,
-				      const struct http_request_ctx *request_ctx,
-				      struct http_response_ctx *response_ctx)
+static int task_http_handle_list(struct http_client_ctx *client,
+				 struct http_response_ctx *response)
 {
-	enum linkr_debugger_task_result result;
+	struct linkr_debugger_task_status status;
 	int written;
-	bool final = status == HTTP_SERVER_REQUEST_DATA_FINAL;
 
-	if (status == HTTP_SERVER_TRANSACTION_ABORTED ||
-	    status == HTTP_SERVER_TRANSACTION_COMPLETE) {
-		if (task_upload.client == client) {
-			task_upload_reset();
-		}
+	if (!task_http_acquire_response(client, response)) {
 		return 0;
 	}
-
-	if (task_upload.client == NULL) {
-		task_upload.client = client;
-		task_upload.len = 0U;
-	} else if (task_upload.client != client) {
-		task_http_error(response_ctx, task_http_response_buf,
-					sizeof(task_http_response_buf),
-			HTTP_409_CONFLICT, "busy",
-			"another task upload is in progress");
+	if (linkr_debugger_task_status_get(&status) != LINKR_DEBUGGER_TASK_OK ||
+	    !status.backend_available) {
+		task_http_result_error(response, LINKR_DEBUGGER_TASK_BACKEND_UNAVAILABLE,
+				       NULL);
 		return 0;
 	}
+	written = linkr_debugger_http_task_list_response(
+		(char *)task_http_raw_response, sizeof(task_http_raw_response), &status);
+	if (written < 0) {
+		task_http_result_error(response, LINKR_DEBUGGER_TASK_STORAGE_ERROR, NULL);
+		return 0;
+	}
+	task_http_set_json_response(response, task_http_raw_response, (size_t)written,
+				    HTTP_200_OK);
+	return 0;
+}
 
-	if (request_ctx->data != NULL && request_ctx->data_len > 0U) {
-		if (task_upload.len + request_ctx->data_len >
-		    LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE) {
-			task_upload_reset();
-			task_http_error(response_ctx, task_http_response_buf,
-						sizeof(task_http_response_buf),
-					HTTP_413_PAYLOAD_TOO_LARGE,
-					"body_too_large",
-					"task blob exceeds the 4096 byte limit");
+static int task_http_handle_ir(struct http_client_ctx *client,
+			       struct http_response_ctx *response)
+{
+	size_t len = 0U;
+	enum linkr_debugger_task_result result;
+
+	if (!task_http_acquire_response(client, response)) {
+		return 0;
+	}
+	result = linkr_debugger_task_ir_snapshot(task_http_raw_response,
+						 sizeof(task_http_raw_response), &len);
+	if (result != LINKR_DEBUGGER_TASK_OK) {
+		task_http_result_error(response, result, NULL);
+		return 0;
+	}
+	task_http_set_response(response, task_http_ir_headers,
+			       sizeof(task_http_ir_headers) /
+				       sizeof(task_http_ir_headers[0]),
+			       task_http_raw_response, len, HTTP_200_OK);
+	return 0;
+}
+
+static int task_http_handle_source(struct http_client_ctx *client,
+				   struct http_response_ctx *response, uint8_t slot)
+{
+	size_t len = 0U;
+	enum linkr_debugger_task_result result;
+
+	if (task_input_state.client != NULL && task_input_state.client != client) {
+		task_http_set_static_busy(response);
+		return 0;
+	}
+	memset(&task_input_state, 0, sizeof(task_input_state));
+	task_input_state.client = client;
+	result = linkr_debugger_task_source_snapshot(slot, task_http_input,
+						     sizeof(task_http_input), &len);
+	if (result != LINKR_DEBUGGER_TASK_OK) {
+		memset(&task_input_state, 0, sizeof(task_input_state));
+		if (!task_http_acquire_response(client, response)) {
 			return 0;
 		}
-		memcpy(task_upload.buf + task_upload.len, request_ctx->data,
-		       request_ctx->data_len);
-		task_upload.len += request_ctx->data_len;
+		task_http_result_error(response, result, NULL);
+		return 0;
 	}
+	task_input_state.len = len;
+	task_http_set_response(response, task_http_source_headers,
+			       sizeof(task_http_source_headers) /
+				       sizeof(task_http_source_headers[0]),
+			       task_http_input, len, HTTP_200_OK);
+	return 0;
+}
 
+static int task_http_handle_mutation(struct http_client_ctx *client,
+				     enum http_transaction_status transaction_status,
+				     const struct http_request_ctx *request,
+				     struct http_response_ctx *response)
+{
+	struct linkr_debugger_task_mutation_outcome *outcome = &task_http_outcome;
+	enum linkr_debugger_task_mutation_opcode opcode = 0;
+	enum linkr_debugger_task_result result;
+	bool final = transaction_status == HTTP_SERVER_REQUEST_DATA_FINAL;
+	int written;
+
+	if (task_input_state.client == NULL) {
+		memset(&task_input_state, 0, sizeof(task_input_state));
+		task_input_state.client = client;
+	} else if (task_input_state.client != client) {
+		task_http_set_static_busy(response);
+		return 0;
+	}
+	if (task_input_state.terminal) {
+		if (final && !task_input_state.terminal_emitted) {
+			task_http_replay_terminal(response);
+		} else {
+			task_http_set_no_response(response);
+		}
+		return 0;
+	}
+	task_http_set_no_response(response);
+	if (request != NULL && (request->headers != NULL ||
+				request->headers_status == HTTP_HEADER_STATUS_DROPPED)) {
+		task_input_state.headers_seen = true;
+		task_input_state.headers_dropped =
+			request->headers_status == HTTP_HEADER_STATUS_DROPPED;
+		task_input_state.content_type_valid = task_http_content_type_valid(request);
+		if (task_input_state.headers_dropped ||
+		    !task_input_state.content_type_valid) {
+			if (!task_http_acquire_response(client, response)) {
+				task_http_latch_terminal(response, final);
+				return 0;
+			}
+			task_http_error(response, HTTP_400_BAD_REQUEST, "invalid_mutation",
+				task_input_state.headers_dropped ?
+					"task mutation headers were dropped" :
+					"task mutation content type is invalid",
+				NULL);
+			task_http_latch_terminal(response, final);
+			return 0;
+		}
+	}
+	if (request != NULL && request->data != NULL && request->data_len > 0U) {
+		if (request->data_len > sizeof(task_http_input) - task_input_state.len) {
+			if (!task_http_acquire_response(client, response)) {
+				task_http_latch_terminal(response, final);
+				return 0;
+			}
+			task_http_error(response, HTTP_400_BAD_REQUEST,
+					"body_too_large",
+					"task mutation body is too large", NULL);
+			task_http_latch_terminal(response, final);
+			return 0;
+		}
+		memcpy(task_http_input + task_input_state.len,
+		       request->data, request->data_len);
+		task_input_state.len += request->data_len;
+	}
 	if (!final) {
 		return 0;
 	}
-
-	if (task_upload.len == 0U) {
-		task_upload_reset();
-		task_http_error(response_ctx, task_http_response_buf,
-				sizeof(task_http_response_buf),
-				HTTP_400_BAD_REQUEST, "missing_body",
-				"missing task blob body");
+	if (!task_http_acquire_response(client, response)) {
+		task_http_latch_terminal(response, true);
 		return 0;
 	}
-
-	if (task_upload.buf[0] == '"') {
-		size_t decoded_len;
-
-		if (!linkr_debugger_json_decode_complete_string(
-				task_upload.buf, task_upload.len, task_upload.buf,
-				sizeof(task_upload.buf), &decoded_len)) {
-			task_upload_reset();
-			task_http_error(response_ctx, task_http_response_buf,
-					sizeof(task_http_response_buf),
-					HTTP_400_BAD_REQUEST, "invalid_body",
-					"task blob body is not valid JSON text");
-			return 0;
-		}
-		task_upload.len = decoded_len;
-	}
-
-	if (linkr_debugger_task_mutation_acquire() != LINKR_DEBUGGER_TASK_OK) {
-		task_upload_reset();
-		task_http_error(response_ctx, task_http_response_buf,
-				sizeof(task_http_response_buf),
-				HTTP_409_CONFLICT, "busy",
-				"capture or OTA activity is in progress");
+	if (task_input_state.headers_dropped) {
+		task_http_error(response, HTTP_400_BAD_REQUEST, "invalid_mutation",
+				"task mutation headers were dropped", NULL);
+		task_http_latch_terminal(response, true);
 		return 0;
 	}
-	result = linkr_debugger_task_tasks_store(task_upload.buf, task_upload.len);
-	task_upload_reset();
-	linkr_debugger_task_mutation_release();
+	if (!task_input_state.headers_seen || !task_input_state.content_type_valid) {
+		task_http_error(response, HTTP_400_BAD_REQUEST, "invalid_mutation",
+				"task mutation content type is invalid", NULL);
+		task_http_latch_terminal(response, true);
+		return 0;
+	}
+	memset(outcome, 0, sizeof(*outcome));
+	result = linkr_debugger_task_mutation_execute(task_http_input,
+						      task_input_state.len,
+						      outcome, &opcode);
 	if (result != LINKR_DEBUGGER_TASK_OK) {
-		task_http_error_result(task_http_response_buf,
-				       sizeof(task_http_response_buf), response_ctx, result);
+		task_http_result_error(response, result,
+			(result == LINKR_DEBUGGER_TASK_REVISION_CONFLICT ||
+			 result == LINKR_DEBUGGER_TASK_CATALOG_CONFLICT) ?
+				&outcome->status : NULL);
+		task_http_latch_terminal(response, true);
 		return 0;
 	}
-
-	written = linkr_debugger_http_task_store_response((char *)task_http_response_buf,
-							      sizeof(task_http_response_buf));
-
+	written = linkr_debugger_http_task_mutation_response(
+		(char *)task_http_raw_response, sizeof(task_http_raw_response),
+		outcome, opcode);
 	if (written < 0) {
-		task_http_error(response_ctx, task_http_response_buf,
-				sizeof(task_http_response_buf),
-				HTTP_500_INTERNAL_SERVER_ERROR,
-				"response_too_large", "failed to encode task response");
+		task_http_result_error(response, LINKR_DEBUGGER_TASK_STORAGE_ERROR, NULL);
+		task_http_latch_terminal(response, true);
 		return 0;
 	}
-	task_http_set_json_response(response_ctx, task_http_response_buf,
-				    (size_t)written + 1U, HTTP_200_OK);
+	task_http_set_json_response(response, task_http_raw_response, (size_t)written,
+				    HTTP_200_OK);
+	task_http_latch_terminal(response, true);
 	return 0;
 }
 
-static int task_http_handle_tasks_delete(struct http_response_ctx *response_ctx)
+static int task_http_method_error(struct http_client_ctx *client,
+				  struct http_response_ctx *response)
 {
-	enum linkr_debugger_task_result result;
-	int written;
-
-	if (linkr_debugger_task_mutation_acquire() != LINKR_DEBUGGER_TASK_OK) {
-		task_http_error(response_ctx, task_http_response_buf,
-				sizeof(task_http_response_buf),
-				HTTP_409_CONFLICT, "busy",
-				"capture or OTA activity is in progress");
-		return -1;
+	if (task_http_acquire_response(client, response)) {
+		task_http_error(response, HTTP_405_METHOD_NOT_ALLOWED,
+				"invalid_mutation", "method not allowed", NULL);
 	}
-	result = linkr_debugger_task_tasks_clear();
-	linkr_debugger_task_mutation_release();
-	if (result != LINKR_DEBUGGER_TASK_OK) {
-		task_http_error_result(task_http_response_buf,
-				       sizeof(task_http_response_buf), response_ctx, result);
-		return -1;
-	}
-	written = linkr_debugger_http_task_clear_response((char *)task_http_response_buf,
-							      sizeof(task_http_response_buf));
-	if (written < 0) {
-		task_http_error(response_ctx, task_http_response_buf,
-				sizeof(task_http_response_buf),
-				HTTP_500_INTERNAL_SERVER_ERROR,
-				"response_too_large", "failed to encode task response");
-		return -1;
-	}
-	task_http_set_json_response(response_ctx, task_http_response_buf,
-				    (size_t)written + 1U, HTTP_200_OK);
 	return 0;
 }
 
-int linkr_debugger_task_http_handle_delete_one(struct http_client_ctx *client,
-					       struct http_response_ctx *response_ctx,
-					       const char *id)
-{
-	enum linkr_debugger_task_result result;
-	int written;
-
-	if (client == NULL || response_ctx == NULL) {
-		return -1;
-	}
-	if (client->method != HTTP_DELETE) {
-		task_http_error(response_ctx, task_http_response_buf,
-				sizeof(task_http_response_buf),
-				HTTP_405_METHOD_NOT_ALLOWED,
-				"method_not_allowed", "method not allowed");
-		return 0;
-	}
-	if (id == NULL || id[0] == '\0') {
-		task_http_error(response_ctx, task_http_response_buf,
-				sizeof(task_http_response_buf),
-				HTTP_400_BAD_REQUEST, "missing_id", "missing task id in URL");
-		return 0;
-	}
-	if (linkr_debugger_task_mutation_acquire() != LINKR_DEBUGGER_TASK_OK) {
-		task_http_error(response_ctx, task_http_response_buf,
-				sizeof(task_http_response_buf),
-				HTTP_409_CONFLICT, "busy",
-				"capture or OTA activity is in progress");
-		return 0;
-	}
-	result = linkr_debugger_task_tasks_delete_one(id);
-	linkr_debugger_task_mutation_release();
-	if (result != LINKR_DEBUGGER_TASK_OK) {
-		task_http_error_result(task_http_response_buf,
-				       sizeof(task_http_response_buf), response_ctx, result);
-		return 0;
-	}
-	written = linkr_debugger_http_task_delete_one_response((char *)task_http_response_buf,
-							      sizeof(task_http_response_buf), id);
-	if (written < 0) {
-		task_http_error(response_ctx, task_http_response_buf,
-				sizeof(task_http_response_buf),
-				HTTP_500_INTERNAL_SERVER_ERROR,
-				"response_too_large", "failed to encode task response");
-		return 0;
-	}
-	task_http_set_json_response(response_ctx, task_http_response_buf,
-				    (size_t)written + 1U, HTTP_200_OK);
-	return 0;
-}
-
-int linkr_debugger_task_http_handle(struct http_client_ctx *client,
-				    enum http_transaction_status status,
-				    const struct http_request_ctx *request_ctx,
-				    struct http_response_ctx *response_ctx,
-				    void *user_data)
+int linkr_debugger_task_http_handle(
+	struct http_client_ctx *client,
+	enum http_transaction_status transaction_status,
+	const struct http_request_ctx *request,
+	struct http_response_ctx *response,
+	void *user_data)
 {
 	enum linkr_debugger_task_http_route route = user_data != NULL ?
 		*(const enum linkr_debugger_task_http_route *)user_data :
 		LINKR_DEBUGGER_TASK_HTTP_ROUTE_TASKS;
 
-	if (route == LINKR_DEBUGGER_TASK_HTTP_ROUTE_CATALOG) {
-		if (client->method != HTTP_GET) {
-			task_http_error(response_ctx, task_http_response_buf,
-					sizeof(task_http_response_buf),
-					HTTP_405_METHOD_NOT_ALLOWED,
-					"method_not_allowed", "method not allowed");
-			return 0;
+	if (client == NULL || response == NULL) {
+		return -1;
+	}
+	if (transaction_status == HTTP_SERVER_TRANSACTION_ABORTED ||
+	    transaction_status == HTTP_SERVER_TRANSACTION_COMPLETE) {
+		task_http_release_client(client);
+		return 0;
+	}
+	if (route == LINKR_DEBUGGER_TASK_HTTP_ROUTE_MUTATIONS) {
+		return client->method == HTTP_POST ?
+			task_http_handle_mutation(client, transaction_status, request, response) :
+			task_http_method_error(client, response);
+	}
+	if (transaction_status != HTTP_SERVER_REQUEST_DATA_FINAL) {
+		return 0;
+	}
+	if (client->method != HTTP_GET) {
+		return task_http_method_error(client, response);
+	}
+	switch (route) {
+	case LINKR_DEBUGGER_TASK_HTTP_ROUTE_TASKS:
+		return task_http_handle_list(client, response);
+	case LINKR_DEBUGGER_TASK_HTTP_ROUTE_CATALOG: {
+		size_t len;
+		const uint8_t *catalog = linkr_debugger_task_catalog_json(&len);
+
+		task_http_set_json_response(response, catalog, len, HTTP_200_OK);
+		return 0;
+	}
+	case LINKR_DEBUGGER_TASK_HTTP_ROUTE_IR:
+		return task_http_handle_ir(client, response);
+	case LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_0:
+	case LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_1:
+	case LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_2:
+	case LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_3:
+		return task_http_handle_source(client, response,
+			(uint8_t)(route - LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_0));
+	default:
+		if (task_http_acquire_response(client, response)) {
+			task_http_error(response, HTTP_400_BAD_REQUEST, "invalid_mutation",
+					"unknown task route", NULL);
 		}
-		if (status == HTTP_SERVER_REQUEST_DATA_FINAL) {
-			task_http_set_catalog_response(response_ctx);
-		}
 		return 0;
 	}
-	if (route != LINKR_DEBUGGER_TASK_HTTP_ROUTE_TASKS) {
-		task_http_error(response_ctx, task_http_response_buf,
-				sizeof(task_http_response_buf),
-				HTTP_404_NOT_FOUND, "not_found", "unknown task path");
-		return 0;
-	}
-	switch (linkr_debugger_http_task_action_for_method((unsigned int)client->method)) {
-	case LINKR_DEBUGGER_TASK_HTTP_ACTION_STORE:
-		return task_http_handle_tasks_put(client, status, request_ctx, response_ctx);
-	case LINKR_DEBUGGER_TASK_HTTP_ACTION_LIST:
-		break;
-	case LINKR_DEBUGGER_TASK_HTTP_ACTION_CLEAR:
-		break;
-	case LINKR_DEBUGGER_TASK_HTTP_ACTION_METHOD_NOT_ALLOWED:
-		task_http_error(response_ctx, task_http_response_buf,
-				sizeof(task_http_response_buf),
-				HTTP_405_METHOD_NOT_ALLOWED,
-				"method_not_allowed", "method not allowed");
-		return 0;
-	}
-	if (status != HTTP_SERVER_REQUEST_DATA_FINAL) {
-		return 0;
-	}
-	if (client->method == HTTP_GET) {
-		if (task_http_handle_get(task_http_response_buf, sizeof(task_http_response_buf),
-					 response_ctx) < 0) {
-			return 0;
-		}
-		task_http_set_json_response(response_ctx, task_http_response_buf,
-					    sizeof(task_http_response_buf), HTTP_200_OK);
-		return 0;
-	}
-	if (client->method == HTTP_DELETE) {
-		(void)task_http_handle_tasks_delete(response_ctx);
-		return 0;
-	}
-	return 0;
 }

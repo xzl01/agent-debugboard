@@ -238,50 +238,128 @@ static int cmd_uname(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-static void linkr_debugger_shell_print_ip_subnet(const struct shell *sh)
+static void linkr_debugger_shell_print_ip_identity(const struct shell *sh)
 {
-	char ip[16];
-	char url[48];
-	uint8_t subnet = linkr_debugger_network_subnet();
+	struct linkr_debugger_net_identity identity;
+	char mac[LINKR_DEBUGGER_NET_MAC_STR_LEN];
+	char network[LINKR_DEBUGGER_NET_NETWORK_STR_LEN];
+	char ip[LINKR_DEBUGGER_NET_IPV4_STR_LEN];
+	char dhcp_base[LINKR_DEBUGGER_NET_IPV4_STR_LEN];
+	char url[LINKR_DEBUGGER_NET_URL_STR_LEN];
 
-	if (linkr_debugger_net_format_ipv4(subnet, LINKR_DEBUGGER_NET_DEVICE_HOST,
+	if (linkr_debugger_network_identity(&identity) < 0 ||
+	    linkr_debugger_net_format_mac(identity.mac, mac, sizeof(mac)) < 0 ||
+	    linkr_debugger_net_format_network(identity.network, network,
+					      sizeof(network)) < 0 ||
+	    linkr_debugger_net_format_ipv4(identity.network,
+					   LINKR_DEBUGGER_NET_DEVICE_HOST,
 					   ip, sizeof(ip)) < 0 ||
-	    linkr_debugger_net_format_captive_uri(subnet, url, sizeof(url)) < 0) {
-		shell_error(sh, "failed to format network address");
+	    linkr_debugger_net_format_ipv4(identity.network,
+					   LINKR_DEBUGGER_NET_DHCP_BASE_HOST,
+					   dhcp_base, sizeof(dhcp_base)) < 0 ||
+	    linkr_debugger_net_format_url(identity.network, url, sizeof(url)) < 0) {
+		shell_error(sh, "identity format failed");
 		return;
 	}
 
-	shell_print(sh, "subnet=%u ip=%s url=%s", (unsigned int)subnet, ip, url);
+	shell_print(sh, "mac=%s origin=%s network=%s ip=%s dhcp_base=%s url=%s",
+		    mac,
+		    identity.origin == LINKR_DEBUGGER_NET_ORIGIN_MANUAL ? "manual" :
+									  "derived",
+		    network, ip, dhcp_base, url);
 }
 
-static int cmd_ip_subnet(const struct shell *sh, size_t argc, char **argv)
+static int cmd_ip(const struct shell *sh, size_t argc, char **argv)
 {
-	uint8_t subnet;
+	ARG_UNUSED(argv);
+
+	if (argc != 1U) {
+		shell_error(sh, "unknown ip subcommand");
+		return -EINVAL;
+	}
+	linkr_debugger_shell_print_ip_identity(sh);
+	return 0;
+}
+
+static int cmd_ip_mac(const struct shell *sh, size_t argc, char **argv)
+{
+	struct linkr_debugger_net_identity identity;
+	uint8_t mac[LINKR_DEBUGGER_NET_MAC_LEN];
+	bool reconnect_required;
 	int ret;
 
-	if (argc == 1U) {
-		linkr_debugger_shell_print_ip_subnet(sh);
-		return 0;
-	}
-
 	if (argc != 2U) {
-		shell_error(sh, "usage: ip subnet [1-254]");
+		shell_error(sh, "usage: ip mac <aa:bb:cc:dd:ee:ff>");
 		return -EINVAL;
 	}
 
-	ret = linkr_debugger_net_parse_subnet(argv[1], &subnet);
+	ret = linkr_debugger_net_parse_mac(argv[1], mac);
 	if (ret < 0) {
-		shell_error(sh, "subnet must be between 1 and 254");
+		shell_error(sh, "invalid locally administered unicast mac");
 		return ret;
 	}
 
-	ret = linkr_debugger_network_set_subnet(subnet);
+	ret = linkr_debugger_network_identity(&identity);
 	if (ret < 0) {
-		shell_error(sh, "failed to set network subnet: %d", ret);
+		shell_error(sh, "identity unavailable: %d", ret);
 		return ret;
 	}
 
-	linkr_debugger_shell_print_ip_subnet(sh);
+	memcpy(identity.mac, mac, sizeof(mac));
+	identity.origin = LINKR_DEBUGGER_NET_ORIGIN_MANUAL;
+
+	ret = linkr_debugger_network_set_identity_with_result(&identity,
+							     &reconnect_required);
+	if (ret < 0) {
+		shell_error(sh, "MAC set failed: %d", ret);
+		return ret;
+	}
+
+	linkr_debugger_shell_print_ip_identity(sh);
+	if (reconnect_required) {
+		shell_print(sh, "Reconnect USB NCM or renew DHCP");
+	}
+	return 0;
+}
+
+static int cmd_ip_network(const struct shell *sh, size_t argc, char **argv)
+{
+	struct linkr_debugger_net_identity identity;
+	uint32_t network;
+	bool reconnect_required;
+	int ret;
+
+	if (argc != 2U) {
+		shell_error(sh, "usage: ip network <a.b.c.d[/30]>");
+		return -EINVAL;
+	}
+
+	ret = linkr_debugger_net_parse_network(argv[1], &network);
+	if (ret < 0) {
+		shell_error(sh, "invalid private /30 network base");
+		return ret;
+	}
+
+	ret = linkr_debugger_network_identity(&identity);
+	if (ret < 0) {
+		shell_error(sh, "identity unavailable: %d", ret);
+		return ret;
+	}
+
+	identity.network = network;
+	identity.origin = LINKR_DEBUGGER_NET_ORIGIN_MANUAL;
+
+	ret = linkr_debugger_network_set_identity_with_result(&identity,
+							     &reconnect_required);
+	if (ret < 0) {
+		shell_error(sh, "identity set failed: %d", ret);
+		return ret;
+	}
+
+	linkr_debugger_shell_print_ip_identity(sh);
+	if (reconnect_required) {
+		shell_print(sh, "Reconnect USB NCM or renew DHCP");
+	}
 	return 0;
 }
 
@@ -417,8 +495,10 @@ static int cmd_pd(const struct shell *sh, size_t argc, char **argv)
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(ip_cmds,
-	SHELL_CMD_ARG(subnet, NULL, "Show or set the per-device IPv4 subnet octet (1-254).",
-		      cmd_ip_subnet, 1, 1),
+	SHELL_CMD_ARG(mac, NULL, "Set the board MAC address (aa:bb:cc:dd:ee:ff).",
+		      cmd_ip_mac, 2, 0),
+	SHELL_CMD_ARG(network, NULL, "Set the board /30 network base (a.b.c.d or a.b.c.d/30).",
+		      cmd_ip_network, 2, 0),
 	SHELL_SUBCMD_SET_END);
 
 #if defined(CONFIG_LINKR_DEBUGGER_FAULT_INJECTION)
@@ -438,8 +518,8 @@ SHELL_CMD_REGISTER(uname, NULL, "Print system information and firmware build id.
 SHELL_CMD_REGISTER(config, &config_cmds, "Control configuration snapshots.", NULL);
 SHELL_CMD_REGISTER(tf_wp, &tf_wp_cmds, "Control TF card write-protect route.", NULL);
 SHELL_CMD_REGISTER(task, &task_cmds, "Manage tasks stored in flash.", NULL);
-SHELL_CMD_REGISTER(ip, &ip_cmds, "Show or set the device IPv4 subnet.", NULL);
-SHELL_CMD_REGISTER(net, &ip_cmds, "Alias for 'ip'.", NULL);
+SHELL_CMD_REGISTER(ip, &ip_cmds, "Show or set the board network identity.", cmd_ip);
+SHELL_CMD_REGISTER(net, &ip_cmds, "Alias for 'ip'.", cmd_ip);
 SHELL_CMD_REGISTER(pd, NULL,
 		   "Show or set PD voltage (fixed 5/9/12/15/20 V; PPS 3300-21000 mV/100 mV).",
 		   cmd_pd);

@@ -28,6 +28,8 @@ static const struct expected_item expected_catalog[] = {
 	  LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID },
 	{ "power/5v_usb_hub", LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 	  LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID },
+	{ "power/5v_otg", LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+	  LINKR_DEBUGGER_CONFIG_POWER_5V_OTG_ID },
 	{ "switch/sd", LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 	  LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID },
 	{ "switch/tf_wp", LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
@@ -64,6 +66,8 @@ static const struct value_case value_cases[] = {
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_POWER, LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID,
 	  LINKR_DEBUGGER_CONFIG_POWER_ON, true },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_POWER, LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID,
+	  LINKR_DEBUGGER_CONFIG_POWER_ON, true },
+	{ LINKR_DEBUGGER_CONFIG_DOMAIN_POWER, LINKR_DEBUGGER_CONFIG_POWER_5V_OTG_ID,
 	  LINKR_DEBUGGER_CONFIG_POWER_ON, true },
 	{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH, LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID,
 	  LINKR_DEBUGGER_CONFIG_SD_TARGET, false },
@@ -113,6 +117,10 @@ static uint8_t control_value_for(const struct linkr_debugger_config_item_desc *i
 				 size_t index)
 {
 	if (item->domain == LINKR_DEBUGGER_CONFIG_DOMAIN_POWER) {
+		/* Keep the parent rail on so alternating child states stay coherent. */
+		if (item->item_id == LINKR_DEBUGGER_CONFIG_POWER_VDD_5V_ID) {
+			return LINKR_DEBUGGER_CONFIG_POWER_ON;
+		}
 		return (index & 1U) != 0U ? LINKR_DEBUGGER_CONFIG_POWER_ON :
 			LINKR_DEBUGGER_CONFIG_POWER_OFF;
 	}
@@ -366,8 +374,7 @@ static void test_project_copies_selected_values_in_selection_order(void)
 	assert(projected.entry_count == 4U);
 	assert(projected.entries[0].domain == LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO);
 	assert(projected.entries[0].item_id == 15U);
-	assert(projected.entries[0].value ==
-	       (LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT | LINKR_DEBUGGER_CONFIG_GPIO_LEVEL));
+	assert(projected.entries[0].value == 0U);
 	assert(projected.entries[1].domain == LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH);
 	assert(projected.entries[1].item_id == LINKR_DEBUGGER_CONFIG_SWITCH_TF_WP_ID);
 	assert(projected.entries[1].value == LINKR_DEBUGGER_CONFIG_TF_WP_PROTECTED);
@@ -376,7 +383,7 @@ static void test_project_copies_selected_values_in_selection_order(void)
 	assert(projected.entries[2].value == LINKR_DEBUGGER_CONFIG_POWER_OFF);
 	assert(projected.entries[3].domain == LINKR_DEBUGGER_CONFIG_DOMAIN_GPIO);
 	assert(projected.entries[3].item_id == 12U);
-	assert(projected.entries[3].value == 0U);
+	assert(projected.entries[3].value == LINKR_DEBUGGER_CONFIG_GPIO_OUTPUT);
 }
 
 static void test_project_full_18_items_copies_every_value_exactly(void)

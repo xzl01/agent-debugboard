@@ -32,47 +32,44 @@ function taskListResponse(blob: string): Record<string, unknown> {
   return {
     schema: FROZEN_SCHEMA,
     ok: true,
-    command: "task",
+    command: "tasks",
     action: "list",
-    task_count: blob === "" ? 0 : 1,
-    tasks: blob === "" ? [] : [{ id: "t1", name: "t1", request_count: 1 }],
-    blob,
+    task_store_id: "12345678-1234-4567-890a-123456789abc",
+    revision: "9007199254740993",
+    catalog_fingerprint: "0".repeat(64),
+    full_ir_bytes: byteLength(blob),
+    full_ir_digest: "1".repeat(64),
+    tasks: blob === "" ? [] : [taskMetadata()],
   };
 }
 
 function taskListResponseWithTasks(tasks: readonly Record<string, unknown>[], blob: string): unknown {
   return {
-    schema: FROZEN_SCHEMA,
-    ok: true,
-    command: "task",
-    action: "list",
-    task_count: tasks.length,
-    tasks,
-    blob,
+    ...taskListResponse(blob),
+    tasks: tasks.map((task, slot) => ({ ...taskMetadata(), slot, ...task })),
   };
+}
+
+function taskMetadata() {
+  return { id: "t1", slot: 0, request_count: 1, source_state: "absent", source_bytes: 0, source_digest: null, ir_bytes: 100, task_ir_digest: "2".repeat(64) };
 }
 
 describe("parseTaskListResponse", () => {
   it("accepts the frozen empty-storage response", () => {
     // Given: the firmware empty-storage envelope
     // When: parsing it
-    const data = parseTaskListResponse({
-      schema: "radxa-linkr-debugger.v1",
-      ok: true,
-      command: "task",
-      action: "list",
-      task_count: 0,
-      tasks: [],
-      blob: "",
-    });
+    const data = parseTaskListResponse(taskListResponse(""));
     // Then: it is a valid empty state, not an error
-    expect(data).toEqual({ tasks: [], blob: "" });
+    expect(data.tasks).toEqual([]);
+    expect(data.full_ir_bytes).toBe(0);
+    expect(data.revision).toBe("9007199254740993");
   });
 
-  it("accepts a populated list with the exact stored blob", () => {
+  it("accepts populated metadata without embedding a raw blob", () => {
     const data = parseTaskListResponse(taskListResponse(MASKROM_BLOB));
-    expect(data.blob).toBe(MASKROM_BLOB);
-    expect(data.tasks).toEqual([{ id: "t1", name: "t1", request_count: 1 }]);
+    expect(data.full_ir_bytes).toBe(byteLength(MASKROM_BLOB));
+    expect(data.tasks).toEqual([taskMetadata()]);
+    expect(data).not.toHaveProperty("blob");
   });
 
   it("rejects an envelope with a wrong or missing schema literal", () => {
@@ -81,37 +78,37 @@ describe("parseTaskListResponse", () => {
     const missing = { ...taskListResponse("") };
     delete missing.schema;
     // When/Then: both are rejected as invalid responses
-    expect(() => parseTaskListResponse(wrong)).toThrow(/schema/);
-    expect(() => parseTaskListResponse(missing)).toThrow(/schema/);
+    expect(() => parseTaskListResponse(wrong)).toThrow(/envelope/);
+    expect(() => parseTaskListResponse(missing)).toThrow(/envelope/);
   });
 
   it("rejects an envelope without ok:true", () => {
     const failed = { ...taskListResponse(""), ok: false };
     const missing = { ...taskListResponse("") };
     delete missing.ok;
-    expect(() => parseTaskListResponse(failed)).toThrow(/ok/);
-    expect(() => parseTaskListResponse(missing)).toThrow(/ok/);
+    expect(() => parseTaskListResponse(failed)).toThrow(/envelope/);
+    expect(() => parseTaskListResponse(missing)).toThrow(/envelope/);
   });
 
   it("rejects a response from another command", () => {
     expect(() =>
       parseTaskListResponse({ ...taskListResponse(""), command: "orch" }),
-    ).toThrow(TaskDataError);
+    ).toThrow(/envelope/);
     expect(() =>
       parseTaskListResponse({ ...taskListResponse(""), command: "orch" }),
-    ).toThrow(/command/);
+    ).toThrow(/envelope/);
   });
 
   it("rejects a wrong action", () => {
     expect(() =>
       parseTaskListResponse({ ...taskListResponse(""), action: "store" }),
-    ).toThrow(/action/);
+    ).toThrow(/envelope/);
   });
 
-  it("rejects a missing blob field", () => {
+  it("rejects a missing raw-IR digest field", () => {
     const missing = taskListResponse("");
-    delete missing.blob;
-    expect(() => parseTaskListResponse(missing)).toThrow(/blob/);
+    delete missing.full_ir_digest;
+    expect(() => parseTaskListResponse(missing)).toThrow(/digest/);
   });
 
   it("rejects malformed task summaries", () => {
@@ -119,7 +116,7 @@ describe("parseTaskListResponse", () => {
       parseTaskListResponse(
         taskListResponseWithTasks([{ id: "t1", name: "t1", request_count: "two" }], ""),
       ),
-    ).toThrow(/request_count/);
+    ).toThrow(/count/);
   });
 
   it("rejects duplicate task ids even when the summaries differ", () => {
@@ -131,7 +128,7 @@ describe("parseTaskListResponse", () => {
     // When/Then: the envelope is rejected before any task is selectable
     expect(() =>
       parseTaskListResponse(taskListResponseWithTasks(summaries, MASKROM_BLOB)),
-    ).toThrow(/duplicate/);
+    ).toThrow(/Duplicate/);
   });
 
   it("rejects more task summaries than the firmware task limit", () => {
@@ -144,7 +141,7 @@ describe("parseTaskListResponse", () => {
     // When/Then: the envelope is rejected
     expect(() =>
       parseTaskListResponse(taskListResponseWithTasks(summaries, MASKROM_BLOB)),
-    ).toThrow(new RegExp(String(TASK_MAX_TASKS)));
+    ).toThrow(/slots/);
   });
 
   it("accepts exactly the firmware task summary boundary values", () => {
@@ -161,12 +158,12 @@ describe("parseTaskListResponse", () => {
     expect(data.tasks[0]?.id).toBe(summaries[0]?.id);
   });
 
-  it("rejects summaries past the firmware id, name, and count bounds", () => {
+  it("rejects summaries past the firmware id and count bounds", () => {
     const base = { id: "t1", name: "t1", request_count: 1 };
     const cases: Record<string, unknown>[] = [
       { ...base, id: "i".repeat(TASK_ID_MAX_BYTES + 1) },
       { ...base, id: "" },
-      { ...base, name: "n".repeat(TASK_NAME_MAX_BYTES + 1) },
+      { ...base, slot: TASK_MAX_TASKS },
       { ...base, request_count: TASK_MAX_REQUESTS + 1 },
       { ...base, request_count: -1 },
       { ...base, request_count: 1.5 },
@@ -174,17 +171,17 @@ describe("parseTaskListResponse", () => {
     for (const summary of cases) {
       expect(() =>
         parseTaskListResponse(taskListResponseWithTasks([summary], "")),
-      ).toThrow(TaskDataError);
+      ).toThrow();
     }
   });
 
   it("measures the blob limit in UTF-8 bytes, not code units", () => {
-    // Given: a blob under 4096 code units but over 4096 UTF-8 bytes
+    // Given: a blob under 4000 code units but over 4000 UTF-8 bytes
     const oversized = "界".repeat(Math.floor(TASK_BLOB_MAX_BYTES / 3) + 1);
     expect(oversized.length).toBeLessThanOrEqual(TASK_BLOB_MAX_BYTES);
     expect(byteLength(oversized)).toBeGreaterThan(TASK_BLOB_MAX_BYTES);
     // When/Then: the envelope is rejected by byte length
-    expect(() => parseTaskListResponse(taskListResponse(oversized))).toThrow(/4096/);
+    expect(() => parseTaskListResponse(taskListResponse(oversized))).toThrow(/length/);
   });
 });
 
@@ -418,7 +415,7 @@ describe("parseTaskBlob", () => {
     expect(byteLength(atLimit)).toBe(TASK_BLOB_MAX_BYTES);
     // When/Then: the limit is inclusive, one byte over is rejected
     expect(parseTaskBlob(atLimit)).toHaveLength(1);
-    expect(() => parseTaskBlob(overLimit)).toThrow(/4096/);
+    expect(() => parseTaskBlob(overLimit)).toThrow(new RegExp(String(TASK_BLOB_MAX_BYTES)));
   });
 
   it("measures the blob size limit in UTF-8 bytes, not code units", () => {
@@ -429,7 +426,7 @@ describe("parseTaskBlob", () => {
     expect(blob.length).toBeLessThanOrEqual(TASK_BLOB_MAX_BYTES);
     expect(byteLength(blob)).toBeGreaterThan(TASK_BLOB_MAX_BYTES);
     // When/Then: rejected by byte length
-    expect(() => parseTaskBlob(blob)).toThrow(/4096/);
+    expect(() => parseTaskBlob(blob)).toThrow(new RegExp(String(TASK_BLOB_MAX_BYTES)));
   });
 
   it("accepts the firmware task count boundary and rejects one task past it", () => {
@@ -454,7 +451,7 @@ describe("parseTaskBlob", () => {
   it("measures the task id limit in UTF-8 bytes and rejects forbidden characters", () => {
     // Given: task ids around the 31-byte firmware limit
     const blobFor = (id: string) => `# linkr-task.v1\n# task ${id}\n${POWER_ON_LINE}\n`;
-    const multibyteOver = "界".repeat(11);
+    const multibyteOver = "界".repeat(Math.floor(TASK_ID_MAX_BYTES / 3) + 1);
     expect(multibyteOver.length).toBeLessThanOrEqual(TASK_ID_MAX_BYTES);
     expect(byteLength(multibyteOver)).toBeGreaterThan(TASK_ID_MAX_BYTES);
     // When/Then: the boundary holds in bytes and firmware-forbidden characters reject

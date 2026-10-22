@@ -66,6 +66,24 @@ static inline int linkr_debugger_adc_resolve_microvolts(int conversion_result,
 	return 0;
 }
 
+static inline int linkr_debugger_adc_scale64_validate(int64_t input,
+						       uint32_t full_ohms,
+						       uint32_t output_ohms)
+{
+	if (full_ohms == 0U) {
+		return -ENOTSUP;
+	}
+	if (output_ohms == 0U) {
+		return -EINVAL;
+	}
+	if (input > INT64_MAX / (int64_t)full_ohms ||
+	    input < INT64_MIN / (int64_t)full_ohms) {
+		return -ERANGE;
+	}
+
+	return 0;
+}
+
 struct linkr_debugger_control_item_state {
 	uint8_t domain;
 	uint8_t item_id;
@@ -106,6 +124,8 @@ const char *linkr_debugger_usb_mode(void);
 
 bool linkr_debugger_power_output_enabled(const struct linkr_debugger_rail_desc *rail);
 int linkr_debugger_power_output_set(const struct linkr_debugger_rail_desc *rail, bool enabled);
+int linkr_debugger_power_port_state_get(const struct linkr_debugger_rail_desc *rail,
+					struct linkr_debugger_port_state *state);
 
 enum linkr_debugger_sd_route linkr_debugger_sd_route_get(void);
 const char *linkr_debugger_sd_route_name(void);

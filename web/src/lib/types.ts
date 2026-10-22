@@ -98,6 +98,7 @@ export interface PdStatus {
 export type VoltageAdcReading = AdcReadingBase & {
   readonly kind: "voltage";
   readonly unit: "uV";
+  readonly role?: "pd_input" | "native";
 };
 
 export type AdcReading = CurrentAdcReading | VoltageAdcReading;

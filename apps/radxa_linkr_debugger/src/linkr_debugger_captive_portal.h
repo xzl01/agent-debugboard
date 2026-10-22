@@ -9,9 +9,11 @@
 #define RADXA_LINKR_DEBUGGER_CAPTIVE_PORTAL_H_
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #define LINKR_DEBUGGER_CAPTIVE_PORTAL_API_PATH "/captive-portal/api"
-#define LINKR_DEBUGGER_CAPTIVE_PORTAL_URL "http://172.29.203.1/"
+/* Zephyr DHCP option 114 auto-URI appends this path to the board address. */
+#define LINKR_DEBUGGER_CAPTIVE_PORTAL_PROBE_PATH "/generate_204"
 
 enum linkr_debugger_captive_method {
 	LINKR_DEBUGGER_CAPTIVE_METHOD_GET,
@@ -29,7 +31,13 @@ enum linkr_debugger_captive_action {
 enum linkr_debugger_captive_action linkr_debugger_captive_select_action(
 	enum linkr_debugger_captive_method method, const char *path);
 bool linkr_debugger_captive_method_has_body(enum linkr_debugger_captive_method method);
-const char *linkr_debugger_captive_portal_url(void);
-const char *linkr_debugger_captive_capport_body(void);
+
+/*
+ * Build the capport JSON body for the given per-device portal URL. The URL is
+ * the board's own network identity (http://<device-address>/), formatted by
+ * the caller from the persisted network identity.
+ */
+int linkr_debugger_captive_capport_body(const char *portal_url, char *buf,
+					size_t cap);
 
 #endif /* RADXA_LINKR_DEBUGGER_CAPTIVE_PORTAL_H_ */

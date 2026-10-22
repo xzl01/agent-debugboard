@@ -36,6 +36,11 @@ MCUboot plus application BOOTSEL flashing, and
 Flash the combined UF2 for initial install or recovery; it contains both the
 bootloader and the application and supports `picotool load -x`.
 
+Storage uses one repo-owned Settings NVS region below the 2 MiB physical flash
+boundary: `0x1B0000..0x1D0000` (128 KiB) holds the config snapshot and task-v2
+manifest/IR/source keys. Task-v2 has its own manifest and does not read the
+removed `linkr/task/tasks` Settings blob.
+
 Tests:
 
 ```sh
@@ -48,10 +53,12 @@ Schematics:
 docs/hardware/RA051_MB_X1.2.pdf  (RP2354A, RP2350A-compatible)
 ```
 
-The USB interface enumerates as a composite USB device. The board exposes its
-HTTP control API on the USB NCM interface at `http://172.29.203.1` by
-default. Normal host-side use should prefer the released
-`radxa-linkr-debuggerctl` CLI; direct `curl` is mainly for raw HTTP/API checks.
+The USB interface enumerates as a composite USB device. On first boot the
+firmware derives and persists a unique locally administered MAC and a private
+IPv4 `/30` from the RP2350 chip ID; the board is `.1` of the host NCM `/30`; the CDC ACM
+`ip` command prints the URL. Normal host-side use
+should prefer the released `radxa-linkr-debuggerctl` CLI; direct `curl` is
+mainly for raw HTTP/API checks.
 A USB CDC ACM serial port is also kept available for Zephyr cmdline access and
 BOOTSEL fallback.
 
@@ -87,18 +94,25 @@ git build id remains the reliable identity. The boot log also emits
 `firmware build id ...` after the controller is ready, so the image can be
 identified without opening the shell.
 
-The same HTTP service exposes the embedded production Web UI at
-`http://172.29.203.1/`. A clean firmware build requires Node.js 22, npm,
-the Rust toolchain, the `wasm32-unknown-unknown` target, and
-`wasm-bindgen-cli 0.2.121`; CMake builds the Vite application, verifies its fixed asset set, and
-stores the gzip-compressed resources in flash. The embedded logic decoder is served at the
+The same HTTP service exposes the embedded production Web UI at the per-board
+URL printed by `ip`. A clean firmware build requires Node.js 22, npm,
+the Rust toolchain, the `wasm32-unknown-unknown` target,
+`wasm-bindgen-cli 0.2.121`, and Zopfli 1.0.3; CMake builds the Vite application,
+verifies its fixed asset set, and embeds every asset as standard gzip produced
+by Zopfli with `mtime=0`. The helper verifies exact decompression and
+reproducible bytes; `file2hex` only encodes the verified stream. Brotli is not
+used. The embedded logic decoder is served at the
 stable browser URLs `/assets/decoder/logic-decoder.js` and
 `/assets/decoder/logic-decoder_bg.wasm`, with `application/wasm` MIME for the
 WASM binary. The project-owned Rust/WASM decoder supports UART, I2C, and SPI
 protocols only; it is not a libsigrokdecode Python plugin compatibility layer.
 
-The board also runs a DHCPv4 server on the NCM link so the host can acquire a
-compatible address automatically.
+The canonical link enforces at least 8 KiB Flash and 32 KiB RAM free
+(`_flash_used <= 0xCCFD8`, `_image_ram_size <= 0x7A000`); a crossing build
+fails.
+
+The board also runs a DHCPv4 server on the NCM link so the host acquires
+`network + 2` from that persisted `/30` automatically.
 
 For long-lived telemetry and bidirectional control, create a live session over
 HTTP first and connect to the returned dedicated WebSocket URL under
@@ -119,41 +133,63 @@ persists the waveform from ADC telemetry. Only one trigger owner is allowed at
 a time. See
 [the power analyzer protocol](../../docs/reference/power-analyzer.md).
 
+### Task-v2 Storage
+
+Task persistence is a four-slot `task-v2` store in the shared 128 KiB Settings
+NVS partition. Each board task may carry exact canonical `linkr-test.v1` source
+(<=4000 bytes) and standalone `linkr-task.v1` IR (<=4000 bytes); the full-set
+IR is also <=4000 bytes. The manifest owns a UUID, uint64 revision, catalog
+fingerprint, active source/IR banks, and SHA-256 digests. Mutations write
+inactive banks, read them back, verify digests, and commit the manifest as the
+only linearization point.
+
+The HTTP surface is metadata `GET /api/v1/tasks`, raw
+`GET /api/v1/tasks/ir`, per-slot
+`GET /api/v1/tasks/slots/{0..3}/source`, and JSON
+`POST /api/v1/tasks/mutations` (schema/action/expected_revision/
+catalog_fingerprint plus action-scoped `id`, `source_base64`, `ir_base64`;
+body at most 12288 bytes). Mutations carry expected revision/catalog and
+actions upsert/delete/clear/full-IR import.
+Upsert source is optional; omitting it makes the slot IR-only and clears any
+old source. Full import retains a source only for an unchanged task-IR digest.
+There is no task blob upload or per-ID write/delete route. See [the HTTP task contract](../../docs/user/api.md#tasks-firmware-catalog-and-task-v2-storage).
+
 ### ADC Telemetry
 
-The firmware exposes five ADC descriptors in a fixed order on both
+The firmware exposes eight ADC descriptors in a fixed order on both
 `GET /api/v1/adc/read` and the live WebSocket telemetry frames
 (`topic="adc"` for both single and batch frames):
 
 - `5v_out`, `12v_out`, `20v_out`, `vdd_5v`: `kind="current"`, signed integer
-  microamps from four INA226 devices. `power_enabled` carries the live state of the matching
-  `power/<name>` output.
-- `adc3`: `kind="voltage"`, signed integer microvolts on GP29
-  (`ADC3`). Nominal range 0..3,300,000 µV (0..3.3 V) with no probe
-  scaling or host-side calibration.
+  microamps from four INA226 devices. `power_enabled` carries the live state of
+  the matching `power/<name>` output.
+- `adc0`: `kind="voltage"`, `role="pd_input"`. The canonical scalar is
+  source-side DC20V reconstructed by firmware from the Device Tree R46/R47
+  divider (`115/15`) in 64-bit arithmetic. `raw` and `mv` remain ADC-pad
+  diagnostics.
+- `adc1`, `adc2`, `adc3`: `kind="voltage"`, `role="native"`, signed integer
+  microvolts of the ADC pad. ADC3/GP29 owns the pin, so GP29 is input-only.
 
-The HTTP read path stays rich and emits the diagnostic chain (`raw`,
-`mv`, `current_ua`, `sensor_value`); for `adc3`, clients reconstruct
-signed microvolts from `sensor_value`. HTTP does not emit `voltage_uv`
-or `value`. The live WebSocket emits a compact shape: per reading only
-`name`, `signal`, `kind`, `unit`, `value` (signed integer in `unit`),
-and (current only) `power_enabled`.
-There is no dual-emission shim on the WS path; clients that build on
-the previous verbose WebSocket shape must update. Host clients must
-not apply any ADC calibration table or zero-point correction on
-either path.
+The HTTP read path stays rich and emits the diagnostic chain (`raw`, `mv`,
+`current_ua`, `sensor_value`) plus `role` on voltage readings. For ADC0,
+`sensor_value` is source-side; for ADC1-3 it is pad voltage. HTTP does not emit
+`voltage_uv` or `value`. The live WebSocket emits a compact shape: per reading
+`name`, `signal`, `kind`, `unit`, `role`, `value` (signed integer in `unit`),
+and (current only) `power_enabled`/`current_ua`/voltage-valid fields. The batch
+frame declares channels once (kind, unit, role per channel) and then carries
+`values: i32[]` positionally aligned with channels, one scalar per channel per
+sample. `power_enabled_mask` is an unsigned 8-bit field whose bits map to
+current channels only; the voltage channels do not carry a power state.
 
-The batch frame declares channels once (kind, unit per channel) and
-then carries `values: i32[]` positionally aligned with channels, one
-scalar per channel per sample. `power_enabled_mask` is an unsigned 8-bit
-field whose bits map to current channels only (kind="current"); the
-voltage channel does not carry a power state. See the authoritative
-contract in [docs/reference/adc-telemetry.md](../../docs/reference/adc-telemetry.md).
+Host clients must not apply any ADC calibration table, zero-point correction,
+or `115/15` conversion on either path. ADC0's uncalibrated accuracy is
+approximately 2%. See the authoritative contract in
+[docs/reference/adc-telemetry.md](../../docs/reference/adc-telemetry.md).
 
-`adc read adc3` is a thin convenience path used by the host CLI and
-Web UI to surface the new voltage reading. The `GET /api/v1/adc/read`
-HTTP path remains the rich read; the WebSocket path remains the
-compact telemetry.
+`adc read adc0` returns the source-side canonical value plus pad diagnostics;
+`adc read adc1`/`adc2`/`adc3` return native pad values. The `GET /api/v1/adc/read`
+HTTP path remains the rich read; the WebSocket path remains the compact
+telemetry.
 
 ### GP29 ADC3 Ownership
 
@@ -219,18 +255,18 @@ workflow.
 Raw HTTP checks for firmware/API debugging:
 
 ```sh
-curl -fsS http://172.29.203.1/api/v1/status
-curl -fsS http://172.29.203.1/api/v1/power
+curl -fsS $BOARD_URL/api/v1/status
+curl -fsS $BOARD_URL/api/v1/power
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"state":"on"}' \
-  http://172.29.203.1/api/v1/power/12v_out
-curl -fsS http://172.29.203.1/api/v1/adc/read?channel=5v_out
-curl -fsS http://172.29.203.1/api/v1/watchdog
-curl -fsS http://172.29.203.1/api/v1/switch
-curl -fsS http://172.29.203.1/api/v1/switch/tf_wp   # returns writable or protected
+  $BOARD_URL/api/v1/power/12v_out
+curl -fsS $BOARD_URL/api/v1/adc/read?channel=5v_out
+curl -fsS $BOARD_URL/api/v1/watchdog
+curl -fsS $BOARD_URL/api/v1/switch
+curl -fsS $BOARD_URL/api/v1/switch/tf_wp   # returns writable or protected
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"route":"writable"}' \
-  http://172.29.203.1/api/v1/switch/tf_wp   # safe default (switch off)
+  $BOARD_URL/api/v1/switch/tf_wp   # safe default (switch off)
 ```
 
 ## Persistent Configuration
@@ -249,8 +285,8 @@ subsystem initializes only the `linkr/config/snapshot` key, validates the
 record through the bounded v1 codec, and reports its state through the
 config service. The snapshot header is exactly 12 bytes; byte 4 version 1 is
 the only accepted version and byte 7 zero is the only accepted restore
-padding. The maximum encoded snapshot is 84 bytes (12-byte header plus 18
-four-byte entries). The catalog is exactly 18 items: 5 power outputs, 2
+padding. The maximum encoded snapshot is 88 bytes (12-byte header plus 19
+four-byte entries). The catalog is exactly 19 items: 6 power outputs, 2
 switches, and 11 GPIO entries. The codec returns `unsupported_version` for any version byte other
 than 1; a v1 header with a nonzero byte 7 is rejected as `invalid_snapshot`.
 A version byte other than 1 is never replayed, migrated, or auto-cleared. The config service
@@ -266,7 +302,8 @@ and is idempotent.
 
 ### HTTP Contract
 
-Three endpoints under `http://172.29.203.1` form the authoritative contract.
+Three endpoints under `$BOARD_URL` form the authoritative contract. Set
+`BOARD_URL` from the `ip` command output before running these examples.
 The full request and response shapes are defined by the firmware, and every
 client enumerates item identities from the firmware rather than embedding
 them locally.
@@ -448,7 +485,7 @@ Raw MCUboot OTA API (RP2350 only; SHA256 only, no signature/authentication/secur
 
 ```sh
 # Check OTA state
-curl -fsS http://172.29.203.1/api/v1/ota
+curl -fsS $BOARD_URL/api/v1/ota
 
 # Upload MCUboot-format application binary
 curl -fsS -X POST \
@@ -456,13 +493,13 @@ curl -fsS -X POST \
   -H 'X-Linkr-Ota-Size: <byte_size>' \
   -H 'X-Linkr-Ota-Sha256: <hex_sha256>' \
   --data-binary @/path/to/firmware.bin \
-  http://172.29.203.1/api/v1/ota/upload
+  $BOARD_URL/api/v1/ota/upload
 
 # Request test boot of verified image
-curl -fsS -X POST http://172.29.203.1/api/v1/ota/test
+curl -fsS -X POST $BOARD_URL/api/v1/ota/test
 
 # Manually confirm the running image
-curl -fsS -X POST http://172.29.203.1/api/v1/ota/confirm
+curl -fsS -X POST $BOARD_URL/api/v1/ota/confirm
 ```
 
 `GET /api/v1/ota` returns the OTA state machine state, expected/written/max byte
@@ -479,17 +516,16 @@ the release asset `radxa-linkr-debugger-rp2350-ota.bin`.
 
 Captive portal discovery: the firmware runs a DHCPv4 server that assigns the
 host a local NCM address without advertising a default router or DNS server, so
-connecting the debugger cannot take over the host's Internet route. It sends
-DHCP option 114 (Captive Portal URI) with value
-`http://172.29.203.1/captive-portal/api`. A single HTTP service bound to the
-NCM-local `172.29.203.1` address on port 80 routes by URL
-path (`/`, `/assets/*`, `/api/v1/*`,
-`/api/v1/ws/*`, `/captive-portal/api`, and legacy detection probes). It answers
-GET `/captive-portal/api` with `application/captive+json` and a JSON body
-carrying the portal URL; all other GET paths not matching the routed paths
-return HTTP 302 redirecting to `http://172.29.203.1/`. OS auto-open is best-effort;
-results vary by OS version and network configuration. Users can always open
-`http://172.29.203.1/` directly or use curl/CLI.
+connecting the debugger cannot take over the host's Internet route. DHCP option
+114 (Captive Portal URI) is built at runtime from the current server address
+and the `/generate_204` path. A single HTTP service listens on port 80 and is reached at the board `.1` address
+on port 80 routes by URL path (`/`, `/assets/*`, `/api/v1/*`, `/api/v1/ws/*`,
+`/captive-portal/api`, `/generate_204`, and legacy detection probes). It answers
+GET `/captive-portal/api` and `/generate_204` with `application/captive+json`
+and a JSON body carrying the current portal URL; other unmatched GET paths
+return HTTP 302 redirecting to that URL. OS auto-open is best-effort; results
+vary by OS version and network configuration. Users can always open the URL
+printed by `ip` directly or use curl/CLI.
 
 The pinned Zephyr HTTP/1 server short-circuits dynamic-resource `HEAD` requests
 before the application callback and returns a default headers-only HTTP 200.
@@ -550,13 +586,13 @@ HTTP API (available only in the HIL build):
 
 ```sh
 # Read availability and arm state
-curl -fsS http://172.29.203.1/api/v1/watchdog/fault
+curl -fsS $BOARD_URL/api/v1/watchdog/fault
 
 # Arm after /api/v1/ota/test has booted and the retained test marker is present
-curl --fail-with-body -sS -X POST http://172.29.203.1/api/v1/watchdog/fault
+curl --fail-with-body -sS -X POST $BOARD_URL/api/v1/watchdog/fault
 
 # Cancel before the deadline
-curl --fail-with-body -sS -X DELETE http://172.29.203.1/api/v1/watchdog/fault
+curl --fail-with-body -sS -X DELETE $BOARD_URL/api/v1/watchdog/fault
 ```
 
 如果 hook 已处于 armed 状态，重复 `POST` 返回 HTTP 409 和
@@ -622,8 +658,8 @@ cargo run --manifest-path cmd-ng/Cargo.toml -- switch get tf_wp
 cargo run --manifest-path cmd-ng/Cargo.toml -- watchdog status
 ```
 
-The released Rust CLI and direct `curl` HTTP requests both use the same endpoint
-`http://172.29.203.1`.
+The released Rust CLI and direct `curl` HTTP requests both use the same
+per-board endpoint (host NCM `/30` address minus one).
 
 **Logic Analyzer Backend**: The sigrok binary protocol runs over WebSocket
 (`/api/v1/live-sessions` → `/api/v1/ws/<slot>`) and raw-TCP port 5556; the two

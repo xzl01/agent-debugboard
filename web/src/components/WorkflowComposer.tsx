@@ -63,6 +63,7 @@ import {
 } from "@/lib/testScript";
 import { downloadBlob } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { SourceImportDialog } from "./SourceImportDialog";
 
 // ─── Main component ────────────────────────────────────────────────────────────
 
@@ -73,12 +74,13 @@ export function WorkflowComposer({
   onChange,
   onRun,
   onNew,
+  onImport,
   draftState,
   runDisabled = false,
   runDisabledReason,
 }: WorkflowComposerProps) {
   const { t } = useI18n();
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(script.steps[0]?.id ?? null);
   const [groupSelection, setGroupSelection] = useState<Set<string>>(new Set());
   const [unitName, setUnitName] = useState("");
@@ -317,35 +319,13 @@ export function WorkflowComposer({
 
   // ─── Import / Export ─────────────────────────────────────────────────────────
 
-  const handleImport = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const imported = parseTestScript(String(reader.result));
-        setImportError(null);
-        setMutationError(null);
-        setGroupSelection(new Set());
-        setSelectedId(imported.steps[0]?.id ?? null);
-        pushHistory(script);
-        onChange(imported);
-      } catch (error) {
-        setImportError(error instanceof Error ? error.message : String(error));
-      }
-    };
-    reader.onerror = () => setImportError(t("test.workflow.importReadError"));
-    reader.readAsText(file);
-    event.target.value = "";
-  }, [onChange, t, script, pushHistory]);
-
   const handleExport = useCallback(() => {
-    downloadBlob(
-      `${script.name.replace(/\s+/g, "-") || "workflow"}.ndjson`,
-      serializeTestScript(script),
-      "application/x-ndjson",
-    );
-  }, [script]);
+    try {
+      const source = serializeTestScript(parseTestScript(serializeTestScript(script)));
+      downloadBlob(`${script.name.replace(/\s+/g, "-") || "workflow"}.ndjson`, source, "application/x-ndjson");
+      setImportError(null);
+    } catch (cause) { setImportError(`${t("library.validationError")} ${cause instanceof Error ? cause.message : String(cause)}`); }
+  }, [script, t]);
 
   // ─── Undo / Redo ─────────────────────────────────────────────────────────────
 
@@ -528,17 +508,10 @@ export function WorkflowComposer({
                 {t("test.new")}
               </Button>
             )}
-            <Button variant="ghost" className="min-h-8 py-1 text-xs" onClick={() => fileRef.current?.click()}>
+            <Button variant="ghost" className="min-h-8 py-1 text-xs" onClick={() => setImportOpen(true)}>
               <FileUp size={15} />
-              {t("test.import")}
+              {t("library.importWorkflow")}
             </Button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".ndjson,.jsonl,.json"
-              className="hidden"
-              onChange={handleImport}
-            />
             <Button
               variant="ghost"
               className="min-h-8 py-1 text-xs"
@@ -546,11 +519,20 @@ export function WorkflowComposer({
               disabled={script.steps.length === 0}
             >
               <Download size={15} />
-              {t("test.export")}
+              {t("library.exportWorkflow")}
             </Button>
           </div>
         </div>
       </div>
+
+      {importOpen && <SourceImportDialog title={t("library.importWorkflow")} description={t("library.importHint")} onClose={() => setImportOpen(false)} parse={(text) => {
+        const imported = parseTestScript(text);
+        return [{ id: "workflow", label: imported.name, detail: t("test.stepCountExpanded", { commands: countScriptCommands(imported), executions: tryBuildExecutionPlan(imported).plan.length }), value: imported }];
+      }} onImport={(entry) => {
+        if (!entry) return;
+        setImportError(null); setMutationError(null);
+        if (onImport) onImport(entry.value); else { pushHistory(script); onChange(entry.value); }
+      }} />}
 
       {script.steps.length === 0 && (
         <div role="status" className="mx-4 mt-3 shrink-0 rounded-xl border border-line/60 bg-panel2/40 px-3 py-2 text-xs text-ink-dim">

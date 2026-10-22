@@ -213,7 +213,7 @@ export function Dialog({ title, description, closeLabel, onClose, children }: {
       } else if (event.key === "Tab") {
         event.stopPropagation();
         const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), [tabindex="0"]',
+          'button:not(:disabled), [href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]',
         ) ?? [])];
         const first = focusable[0];
         const last = focusable.at(-1);

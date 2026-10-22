@@ -70,11 +70,13 @@ function parseHttpReading(value: unknown): AdcReading | null {
 
   const sensorValue = parseSensorValue(value.sensor_value);
   if (value.sensor_channel === "voltage" && value.unit === "V" && sensorValue) {
+    if ((value.name === "adc0" && value.role !== "pd_input") || (value.role !== undefined && value.role !== "pd_input" && value.role !== "native")) return null;
     const voltageUv = (sensorValue.val1 * 1_000_000) + sensorValue.val2;
     if (!Number.isSafeInteger(voltageUv)) return null;
     return {
       kind: "voltage",
       unit: "uV",
+      role: value.role ?? "native",
       name: value.name,
       signal: value.signal,
       ...channelMetadata(value),
@@ -115,9 +117,11 @@ function parseCompactReading(value: unknown): AdcReading | null {
   }
 
   if (value.kind === "voltage" && value.unit === "uV") {
+    if ((value.name === "adc0" && value.role !== "pd_input") || (value.role !== undefined && value.role !== "pd_input" && value.role !== "native")) return null;
     return {
       kind: "voltage",
       unit: "uV",
+      role: value.role ?? "native",
       name: value.name,
       signal: value.signal,
       ...channelMetadata(value),
@@ -191,4 +195,20 @@ export function isCurrentAdcReading(reading: AdcReading): reading is CurrentAdcR
 
 export function isVoltageAdcReading(reading: AdcReading): reading is VoltageAdcReading {
   return reading.kind === "voltage";
+}
+
+export interface PdInputMeasurement {
+  readonly reading: VoltageAdcReading;
+  readonly receivedAtMs: number;
+}
+
+/** Feed only newly received HTTP/WS readings, not a merged cached board snapshot. */
+export function updatePdInputMeasurement(previous: PdInputMeasurement | null, readings: readonly AdcReading[], receivedAtMs: number): PdInputMeasurement | null {
+  const reading = readings.find((item): item is VoltageAdcReading => item.kind === "voltage" && item.role === "pd_input" && Number.isSafeInteger(item.value));
+  return reading && Number.isFinite(receivedAtMs) ? { reading, receivedAtMs } : previous;
+}
+export function freshPdInputMeasurement(measurement: PdInputMeasurement | null, nowMs: number, maxAgeMs: number): VoltageAdcReading | null {
+  if (!measurement || !Number.isFinite(nowMs) || !Number.isFinite(maxAgeMs) || maxAgeMs < 0) return null;
+  const age = nowMs - measurement.receivedAtMs;
+  return age >= 0 && age <= maxAgeMs ? measurement.reading : null;
 }

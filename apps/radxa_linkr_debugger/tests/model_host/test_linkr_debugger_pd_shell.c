@@ -20,8 +20,6 @@
 #define BIT(bit) (1UL << (bit))
 #endif
 
-#define LINKR_DEBUGGER_NET_DEVICE_HOST 1U
-
 /*
  * Exercise the real shell parser behind `pd`, including its rejection paths,
  * without pulling the unrelated Zephyr shell subsystem or firmware services
@@ -30,12 +28,12 @@
 #define RADXA_LINKR_DEBUGGER_BUILD_INFO_H_
 #define RADXA_LINKR_DEBUGGER_CONFIG_SHELL_H_
 #define RADXA_LINKR_DEBUGGER_CONTROL_H_
-#define RADXA_LINKR_DEBUGGER_NET_SETTINGS_H_
 #define RADXA_LINKR_DEBUGGER_NETWORK_H_
 #define RADXA_LINKR_DEBUGGER_SHELL_H_
 #define RADXA_LINKR_DEBUGGER_TASK_SHELL_H_
 
 #include "linkr_debugger_model.h"
+#include "linkr_debugger_net_settings.h"
 #include "linkr_debugger_pd.h"
 
 int linkr_debugger_bootloader_now(void);
@@ -52,13 +50,18 @@ const char *linkr_debugger_build_version(void);
 const char *linkr_debugger_build_machine(void);
 const char *linkr_debugger_build_processor(void);
 const char *linkr_debugger_build_platform(void);
-uint8_t linkr_debugger_network_subnet(void);
-int linkr_debugger_net_format_ipv4(uint8_t subnet, uint8_t host,
+int linkr_debugger_network_identity(struct linkr_debugger_net_identity *identity);
+int linkr_debugger_net_format_mac(const uint8_t mac[LINKR_DEBUGGER_NET_MAC_LEN],
+				  char *buf, size_t cap);
+int linkr_debugger_net_format_network(uint32_t network, char *buf, size_t cap);
+int linkr_debugger_net_format_ipv4(uint32_t network, uint8_t host,
 				   char *buf, size_t cap);
-int linkr_debugger_net_format_captive_uri(uint8_t subnet, char *buf,
-					  size_t cap);
-int linkr_debugger_net_parse_subnet(const char *text, uint8_t *subnet);
-int linkr_debugger_network_set_subnet(uint8_t subnet);
+int linkr_debugger_net_format_url(uint32_t network, char *buf, size_t cap);
+int linkr_debugger_net_parse_mac(const char *text,
+				 uint8_t mac[LINKR_DEBUGGER_NET_MAC_LEN]);
+int linkr_debugger_net_parse_network(const char *text, uint32_t *network);
+int linkr_debugger_network_set_identity_with_result(
+	const struct linkr_debugger_net_identity *identity, bool *reconnect_required);
 int linkr_debugger_config_shell_show(const struct shell *sh, size_t argc,
 				     char **argv);
 int linkr_debugger_config_shell_save(const struct shell *sh, size_t argc,
@@ -242,40 +245,70 @@ const char *linkr_debugger_build_platform(void)
 	return "test";
 }
 
-uint8_t linkr_debugger_network_subnet(void)
+int linkr_debugger_network_identity(struct linkr_debugger_net_identity *identity)
 {
-	return 203U;
+	(void)identity;
+	return -ENODEV;
 }
 
-int linkr_debugger_net_format_ipv4(uint8_t subnet, uint8_t host,
+int linkr_debugger_net_format_mac(const uint8_t mac[LINKR_DEBUGGER_NET_MAC_LEN],
+				  char *buf, size_t cap)
+{
+	(void)mac;
+	(void)buf;
+	(void)cap;
+	return -ENODEV;
+}
+
+int linkr_debugger_net_format_network(uint32_t network, char *buf, size_t cap)
+{
+	(void)network;
+	(void)buf;
+	(void)cap;
+	return -ENODEV;
+}
+
+int linkr_debugger_net_format_ipv4(uint32_t network, uint8_t host,
 				   char *buf, size_t cap)
 {
-	int written = snprintf(buf, cap, "172.29.%u.%u", (unsigned int)subnet,
-			       (unsigned int)host);
-
-	return written < 0 || (size_t)written >= cap ? -ENOSPC : 0;
+	(void)network;
+	(void)host;
+	(void)buf;
+	(void)cap;
+	return -ENODEV;
 }
 
-int linkr_debugger_net_format_captive_uri(uint8_t subnet, char *buf,
-					  size_t cap)
+int linkr_debugger_net_format_url(uint32_t network, char *buf, size_t cap)
 {
-	int written = snprintf(buf, cap, "http://172.29.%u.1/",
-			       (unsigned int)subnet);
-
-	return written < 0 || (size_t)written >= cap ? -ENOSPC : 0;
+	(void)network;
+	(void)buf;
+	(void)cap;
+	return -ENODEV;
 }
 
-int linkr_debugger_net_parse_subnet(const char *text, uint8_t *subnet)
+int linkr_debugger_net_parse_mac(const char *text,
+				 uint8_t mac[LINKR_DEBUGGER_NET_MAC_LEN])
 {
 	(void)text;
-	(void)subnet;
+	(void)mac;
 	return -EINVAL;
 }
 
-int linkr_debugger_network_set_subnet(uint8_t subnet)
+int linkr_debugger_net_parse_network(const char *text, uint32_t *network)
 {
-	(void)subnet;
-	return 0;
+	(void)text;
+	(void)network;
+	return -EINVAL;
+}
+
+int linkr_debugger_network_set_identity_with_result(
+	const struct linkr_debugger_net_identity *identity, bool *reconnect_required)
+{
+	(void)identity;
+	if (reconnect_required != NULL) {
+		*reconnect_required = false;
+	}
+	return -ENODEV;
 }
 
 int linkr_debugger_config_shell_show(const struct shell *sh, size_t argc,

@@ -14,6 +14,7 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/adc.h>
+#include <zephyr/drivers/adc/voltage_divider.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/regulator.h>
 #include <zephyr/drivers/sensor.h>
@@ -38,11 +39,13 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 #define GPIO0_NODE DT_NODELABEL(gpio0)
 #define ZEPHYR_USER_NODE DT_PATH(zephyr_user)
 #define ADC_INPUTS_NODE ZEPHYR_USER_NODE
+#define CH224A_INPUT_VOLTAGE_NODE DT_NODELABEL(ch224a_input_voltage)
 #define REGULATOR_12V_OUT_NODE DT_NODELABEL(reg_12v_out)
 #define REGULATOR_5V_OUT_NODE DT_NODELABEL(reg_5v_out)
 #define REGULATOR_VDD_5V_NODE DT_NODELABEL(reg_vdd_5v)
 #define REGULATOR_20V_OUT_NODE DT_NODELABEL(reg_20v_out)
 #define REGULATOR_5V_USB_HUB_NODE DT_NODELABEL(reg_5v_usb_hub)
+#define REGULATOR_5V_OTG_NODE DT_NODELABEL(reg_5v_otg)
 #define CURRENT_5V_OUT_NODE DT_NODELABEL(ina226_5v)
 #define CURRENT_12V_OUT_NODE DT_NODELABEL(ina226_12v)
 #define CURRENT_20V_OUT_NODE DT_NODELABEL(ina226_20v)
@@ -85,17 +88,35 @@ LOG_MODULE_REGISTER(linkr_debugger_control, LOG_LEVEL_INF);
 	COND_CODE_1(DT_PHA_HAS_CELL_AT_IDX(node_id, prop, idx, input), \
 			(ADC_DT_SPEC_GET_BY_IDX(node_id, idx),), ())
 
+BUILD_ASSERT(DT_NODE_HAS_STATUS(CH224A_INPUT_VOLTAGE_NODE, okay),
+	     "CH224A input voltage divider must be enabled");
+BUILD_ASSERT(DT_SAME_NODE(DT_IO_CHANNELS_CTLR(CH224A_INPUT_VOLTAGE_NODE),
+			  DT_NODELABEL(adc)) &&
+	     DT_SAME_NODE(DT_IO_CHANNELS_CTLR(CH224A_INPUT_VOLTAGE_NODE),
+			  DT_IO_CHANNELS_CTLR_BY_IDX(ADC_INPUTS_NODE, 0)),
+	     "CH224A input voltage divider must use the telemetry ADC controller");
+BUILD_ASSERT(DT_IO_CHANNELS_INPUT(CH224A_INPUT_VOLTAGE_NODE) == 0U &&
+	     DT_IO_CHANNELS_INPUT_BY_IDX(ADC_INPUTS_NODE, 0) == 0U,
+	     "CH224A input voltage divider must use ADC channel 0");
+BUILD_ASSERT(DT_PROP(CH224A_INPUT_VOLTAGE_NODE, full_ohms) >
+	     DT_PROP(CH224A_INPUT_VOLTAGE_NODE, output_ohms),
+	     "CH224A input voltage divider full resistance must exceed output resistance");
+BUILD_ASSERT(DT_PROP(CH224A_INPUT_VOLTAGE_NODE, output_ohms) > 0U,
+	     "CH224A input voltage divider output resistance must be nonzero");
+
 #if DT_NODE_HAS_STATUS(REGULATOR_12V_OUT_NODE, okay) && \
     DT_NODE_HAS_STATUS(REGULATOR_5V_OUT_NODE, okay) && \
     DT_NODE_HAS_STATUS(REGULATOR_VDD_5V_NODE, okay) && \
     DT_NODE_HAS_STATUS(REGULATOR_20V_OUT_NODE, okay) && \
-    DT_NODE_HAS_STATUS(REGULATOR_5V_USB_HUB_NODE, okay)
+    DT_NODE_HAS_STATUS(REGULATOR_5V_USB_HUB_NODE, okay) && \
+    DT_NODE_HAS_STATUS(REGULATOR_5V_OTG_NODE, okay)
 #define HAS_REGULATORS 1
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_12V_OUT_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_5V_OUT_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_VDD_5V_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_20V_OUT_NODE, okay));
 BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_5V_USB_HUB_NODE, okay));
+BUILD_ASSERT(DT_NODE_HAS_STATUS(REGULATOR_5V_OTG_NODE, okay));
 #else
 #define HAS_REGULATORS 0
 #endif
@@ -159,10 +180,28 @@ static const struct device *const regulators[] = {
 	DEVICE_DT_GET(REGULATOR_VDD_5V_NODE),
 	DEVICE_DT_GET(REGULATOR_20V_OUT_NODE),
 	DEVICE_DT_GET(REGULATOR_5V_USB_HUB_NODE),
+	DEVICE_DT_GET(REGULATOR_5V_OTG_NODE),
 };
 #else
 static const struct device *const regulators[] = {};
 #endif
+
+/* The 5v_otg port rail is fully described in Device Tree: GPIO23 active-high
+ * enable, boot-off, sourced by vdd_5v, role port_vbus, backfeed-capable.
+ */
+BUILD_ASSERT(DT_SAME_NODE(DT_PHANDLE(REGULATOR_5V_OTG_NODE, vin_supply),
+			  REGULATOR_VDD_5V_NODE),
+	     "5v_otg must be sourced by vdd_5v");
+BUILD_ASSERT(DT_GPIO_PIN(REGULATOR_5V_OTG_NODE, enable_gpios) == 23U,
+	     "5v_otg enable must be GPIO23");
+BUILD_ASSERT(DT_GPIO_FLAGS(REGULATOR_5V_OTG_NODE, enable_gpios) == GPIO_ACTIVE_HIGH,
+	     "5v_otg enable must be active-high");
+BUILD_ASSERT(DT_NODE_HAS_PROP(REGULATOR_5V_OTG_NODE, regulator_boot_off),
+	     "5v_otg must boot off");
+BUILD_ASSERT(DT_PROP(REGULATOR_5V_OTG_NODE, backfeed_capable),
+	     "5v_otg must be declared backfeed-capable");
+BUILD_ASSERT(DT_ENUM_IDX(REGULATOR_5V_OTG_NODE, role) == 1U,
+	     "5v_otg role must be port_vbus");
 
 #if HAS_CURRENT_SENSE
 static const struct device *const current_sensors[] = {
@@ -184,6 +223,9 @@ static const struct adc_dt_spec adc_channels[] = {
 #else
 static const struct adc_dt_spec adc_channels[] = {};
 #endif
+
+static const struct voltage_divider_dt_spec ch224a_input_voltage =
+	VOLTAGE_DIVIDER_DT_SPEC_GET(CH224A_INPUT_VOLTAGE_NODE);
 
 #if HAS_HEARTBEAT_LED
 static const struct gpio_dt_spec heartbeat_led = GPIO_DT_SPEC_GET(HEARTBEAT_LED_NODE, gpios);
@@ -918,6 +960,39 @@ static int read_adc_debug(const struct linkr_debugger_current_desc *current,
 	return 0;
 }
 
+static int linkr_debugger_adc_set_canonical_voltage(
+	const struct linkr_debugger_current_desc *current,
+	int32_t pad_microvolts,
+	struct sensor_value *value)
+{
+	int64_t canonical_microvolts = pad_microvolts;
+	int ret;
+
+	if (current == NULL || value == NULL) {
+		return -EINVAL;
+	}
+
+	if (current->role == LINKR_DEBUGGER_ADC_ROLE_PD_INPUT) {
+		ret = linkr_debugger_adc_scale64_validate(
+			canonical_microvolts, ch224a_input_voltage.full_ohms,
+			ch224a_input_voltage.output_ohms);
+		if (ret < 0) {
+			return ret;
+		}
+		ret = voltage_divider_scale64_dt(&ch224a_input_voltage,
+						 &canonical_microvolts);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
+	if (canonical_microvolts > INT32_MAX || canonical_microvolts < INT32_MIN) {
+		return -ERANGE;
+	}
+
+	return sensor_value_from_micro(value, (int32_t)canonical_microvolts);
+}
+
 const char *linkr_debugger_json_schema(void)
 {
 	return LINKR_DEBUGGER_JSON_SCHEMA;
@@ -1024,48 +1099,191 @@ static int linkr_debugger_power_set_one_locked(
 
 struct linkr_debugger_power_dependency_context {
 	const struct linkr_debugger_rail_desc *parent;
-	const struct linkr_debugger_rail_desc *child;
+	const struct linkr_debugger_rail_desc
+		*children[LINKR_DEBUGGER_POWER_DEPENDENCY_MAX_CHILDREN];
+	size_t child_count;
 };
 
-static const struct linkr_debugger_rail_desc *linkr_debugger_power_child(
-	const struct linkr_debugger_rail_desc *parent)
-{
-	for (size_t i = 0U; i < linkr_debugger_rail_count; i++) {
-		if (linkr_debugger_rails[i].parent != NULL &&
-		    strcmp(linkr_debugger_rails[i].parent, parent->name) == 0) {
-			return &linkr_debugger_rails[i];
-		}
-	}
-	return NULL;
-}
-
-static bool linkr_debugger_power_dependency_is_enabled(void *context, bool child)
+static size_t linkr_debugger_power_dependency_child_count(void *context)
 {
 	struct linkr_debugger_power_dependency_context *dependency = context;
 
-	return linkr_debugger_power_output_enabled(
-		child ? dependency->child : dependency->parent);
+	return dependency->child_count;
+}
+
+static bool linkr_debugger_power_dependency_is_enabled(void *context, bool child,
+						       size_t index)
+{
+	struct linkr_debugger_power_dependency_context *dependency = context;
+	const struct linkr_debugger_rail_desc *rail = child ?
+		dependency->children[index] : dependency->parent;
+
+	return linkr_debugger_power_output_enabled(rail);
 }
 
 static int linkr_debugger_power_dependency_set_enabled(void *context, bool child,
-						      bool enabled)
+						      size_t index, bool enabled)
 {
 	struct linkr_debugger_power_dependency_context *dependency = context;
+	const struct linkr_debugger_rail_desc *rail = child ?
+		dependency->children[index] : dependency->parent;
 
-	return linkr_debugger_power_set_one_locked(
-		child ? dependency->child : dependency->parent, enabled);
+	return linkr_debugger_power_set_one_locked(rail, enabled);
+}
+
+static const struct linkr_debugger_power_dependency_ops
+	linkr_debugger_power_dependency_ops = {
+		.child_count = linkr_debugger_power_dependency_child_count,
+		.is_enabled = linkr_debugger_power_dependency_is_enabled,
+		.set_enabled = linkr_debugger_power_dependency_set_enabled,
+	};
+
+/* Port-VBUS (5v_otg) state: desired is user/persist intent, the request is
+ * the GPIO23/regulator enable, effective separates "on" (requested while the
+ * parent is sourcing/qualified) from "off" (released, never a 0 V claim) and
+ * "blocked" (desired but the parent is absent or backfeed is detected).
+ * backfeed is never "none": Q10's body diode can backfeed VDD_5V from J3
+ * even with the switch released.
+ */
+static bool linkr_debugger_power_port_desired[REGULATOR_STATE_CAPACITY];
+static bool linkr_debugger_power_port_backfeed_detected[REGULATOR_STATE_CAPACITY];
+
+/* Firmware-owned parent qualification threshold: vdd_5v must actually source
+ * above this INA226 bus voltage before a port VBUS may be requested. Missing
+ * or invalid telemetry fails closed (blocked), never open.
+ */
+#define LINKR_DEBUGGER_POWER_PARENT_QUALIFY_UV 4500000
+/* Settle time after enabling a parent before qualifying it. */
+#define LINKR_DEBUGGER_POWER_PARENT_SETTLE_MS 20
+
+static bool linkr_debugger_power_parent_sourcing_locked(
+	const struct linkr_debugger_rail_desc *rail)
+{
+	const struct linkr_debugger_current_desc *current;
+	const struct device *sensor;
+	struct sensor_value value;
+	int32_t microvolts;
+
+	if (rail == NULL || !linkr_debugger_power_output_enabled(rail)) {
+		return false;
+	}
+
+	/* The enable request alone is not proof of sourcing; the parent's
+	 * INA226 bus voltage must be present and in range.
+	 */
+	current = linkr_debugger_find_current(rail->name);
+	if (current == NULL || current->kind != LINKR_DEBUGGER_ADC_KIND_CURRENT) {
+		return false;
+	}
+	sensor = linkr_debugger_current_sensor(current);
+	if (sensor == NULL || !device_is_ready(sensor)) {
+		return false;
+	}
+	if (sensor_sample_fetch_chan(sensor, SENSOR_CHAN_VOLTAGE) < 0) {
+		return false;
+	}
+	if (sensor_channel_get(sensor, SENSOR_CHAN_VOLTAGE, &value) < 0) {
+		return false;
+	}
+	microvolts = sensor_value_to_micro_units(&value);
+	return microvolts >= LINKR_DEBUGGER_POWER_PARENT_QUALIFY_UV;
+}
+
+static void linkr_debugger_power_port_apply_locked(
+	const struct linkr_debugger_rail_desc *rail, bool *parent_sourcing_out)
+{
+	const struct linkr_debugger_rail_desc *parent =
+		rail->parent != NULL ? linkr_debugger_find_rail(rail->parent) : NULL;
+	size_t index = regulator_index(rail);
+	bool parent_sourcing;
+	bool allowed;
+	bool requested;
+
+	if (index >= REGULATOR_STATE_CAPACITY) {
+		return;
+	}
+
+	parent_sourcing = linkr_debugger_power_parent_sourcing_locked(parent);
+	if (parent_sourcing_out != NULL) {
+		*parent_sourcing_out = parent_sourcing;
+	}
+
+	allowed = linkr_debugger_port_request_allowed(
+		linkr_debugger_power_port_desired[index], parent_sourcing,
+		linkr_debugger_power_port_backfeed_detected[index]);
+	requested = linkr_debugger_power_output_enabled(rail);
+	if (requested != allowed) {
+		(void)linkr_debugger_power_set_one_locked(rail, allowed);
+	}
+}
+
+static void linkr_debugger_power_ports_reevaluate_locked(
+	const struct linkr_debugger_rail_desc *parent)
+{
+	const struct linkr_debugger_rail_desc
+		*children[LINKR_DEBUGGER_POWER_DEPENDENCY_MAX_CHILDREN];
+	size_t count = linkr_debugger_rail_children(parent, children,
+						   ARRAY_SIZE(children));
+
+	if (count > ARRAY_SIZE(children)) {
+		count = ARRAY_SIZE(children);
+	}
+	for (size_t i = 0U; i < count; i++) {
+		if (linkr_debugger_rail_is_port_vbus(children[i])) {
+			linkr_debugger_power_port_apply_locked(children[i], NULL);
+		}
+	}
+}
+
+static struct linkr_debugger_port_state linkr_debugger_power_port_state_get_locked(
+	const struct linkr_debugger_rail_desc *rail)
+{
+	size_t index = regulator_index(rail);
+	bool parent_sourcing = false;
+	struct linkr_debugger_port_state state = {
+		.effective = LINKR_DEBUGGER_RAIL_EFFECTIVE_OFF,
+		.backfeed = LINKR_DEBUGGER_BACKFEED_UNKNOWN,
+	};
+
+	if (index >= REGULATOR_STATE_CAPACITY) {
+		return state;
+	}
+
+	/* Lazy enforcement: keep the request aligned with the policy so parent
+	 * loss or detected backfeed releases the port, and parent return
+	 * restores desired-on ports after qualification.
+	 */
+	linkr_debugger_power_port_apply_locked(rail, &parent_sourcing);
+	state = linkr_debugger_port_state_resolve(
+		linkr_debugger_power_port_desired[index],
+		linkr_debugger_power_output_enabled(rail), parent_sourcing,
+		linkr_debugger_power_port_backfeed_detected[index]);
+	return state;
+}
+
+int linkr_debugger_power_port_state_get(const struct linkr_debugger_rail_desc *rail,
+					struct linkr_debugger_port_state *state)
+{
+	if (rail == NULL || state == NULL) {
+		return -EINVAL;
+	}
+	if (!linkr_debugger_rail_is_port_vbus(rail)) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	*state = linkr_debugger_power_port_state_get_locked(rail);
+	k_mutex_unlock(&linkr_debugger_control_lock);
+	return 0;
 }
 
 int linkr_debugger_power_output_set(const struct linkr_debugger_rail_desc *rail, bool enabled)
 {
 	const struct linkr_debugger_rail_desc *parent;
-	const struct linkr_debugger_rail_desc *child;
 	struct linkr_debugger_power_dependency_context dependency;
-	static const struct linkr_debugger_power_dependency_ops dependency_ops = {
-		.is_enabled = linkr_debugger_power_dependency_is_enabled,
-		.set_enabled = linkr_debugger_power_dependency_set_enabled,
-	};
 	enum linkr_debugger_power_dependency_target target;
+	size_t self_index = 0U;
+	bool self_found = false;
 	int ret;
 
 	if (rail == NULL) {
@@ -1083,26 +1301,95 @@ int linkr_debugger_power_output_set(const struct linkr_debugger_rail_desc *rail,
 	}
 
 	parent = rail->parent != NULL ? linkr_debugger_find_rail(rail->parent) : rail;
-	child = rail->parent != NULL ? rail : linkr_debugger_power_child(rail);
 	if (rail->parent != NULL && parent == NULL) {
 		return -ENODEV;
 	}
+
 	dependency = (struct linkr_debugger_power_dependency_context){
 		.parent = parent,
-		.child = child,
 	};
+	dependency.child_count = linkr_debugger_rail_children(
+		parent, dependency.children, ARRAY_SIZE(dependency.children));
+	if (dependency.child_count > ARRAY_SIZE(dependency.children)) {
+		return -E2BIG;
+	}
 	target = rail->parent != NULL ? LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD :
-		child != NULL ? LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT :
+		dependency.child_count > 0U ? LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT :
 		LINKR_DEBUGGER_POWER_DEPENDENCY_INDEPENDENT;
+	if (target == LINKR_DEBUGGER_POWER_DEPENDENCY_CHILD) {
+		for (size_t i = 0U; i < dependency.child_count; i++) {
+			if (dependency.children[i] == rail) {
+				self_index = i;
+				self_found = true;
+				break;
+			}
+		}
+		if (!self_found) {
+			return -ENODEV;
+		}
+	}
+
+	if (linkr_debugger_rail_is_port_vbus(rail)) {
+		bool parent_just_enabled = false;
+		size_t index = regulator_index(rail);
+
+		/* Desired is the user/persist intent: record it first so it
+		 * survives parent absence (blocked), then enforce the request
+		 * through the backfeed policy. Reported success is acceptance
+		 * of the intent; effective reports on/off/blocked.
+		 */
+		if (index >= REGULATOR_STATE_CAPACITY) {
+			return -ERANGE;
+		}
+		k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+		linkr_debugger_power_port_desired[index] = enabled;
+		if (enabled && !linkr_debugger_power_output_enabled(parent)) {
+			parent_just_enabled =
+				linkr_debugger_power_set_one_locked(parent, true) == 0;
+		}
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		if (parent_just_enabled) {
+			k_msleep(LINKR_DEBUGGER_POWER_PARENT_SETTLE_MS);
+		}
+		k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+		linkr_debugger_power_port_apply_locked(rail, NULL);
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		return 0;
+	}
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	if (target == LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT && !enabled) {
+		/* Explicit parent off cancels desired for bidirectional port
+		 * children before the cascade releases them (up-order release
+		 * runs in reverse: 5v_otg first, then 5v_usb_hub).
+		 */
+		for (size_t i = 0U; i < dependency.child_count; i++) {
+			const struct linkr_debugger_rail_desc *child = dependency.children[i];
+
+			if (linkr_debugger_port_desired_cleared_by_parent_off(child) &&
+			    regulator_index(child) < REGULATOR_STATE_CAPACITY) {
+				linkr_debugger_power_port_desired[regulator_index(child)] = false;
+			}
+		}
+	}
 	if (target == LINKR_DEBUGGER_POWER_DEPENDENCY_INDEPENDENT) {
 		ret = linkr_debugger_power_set_one_locked(rail, enabled);
 	} else {
 		ret = linkr_debugger_power_dependency_apply(
-			target, enabled, &dependency_ops, &dependency);
+			target, enabled, self_index,
+			&linkr_debugger_power_dependency_ops, &dependency);
 	}
 	k_mutex_unlock(&linkr_debugger_control_lock);
+
+	if (ret == 0 && target == LINKR_DEBUGGER_POWER_DEPENDENCY_PARENT && enabled) {
+		/* Parent on must not early-return without the port backfeed
+		 * policy re-qualifying desired-on port children.
+		 */
+		k_msleep(LINKR_DEBUGGER_POWER_PARENT_SETTLE_MS);
+		k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+		linkr_debugger_power_ports_reevaluate_locked(parent);
+		k_mutex_unlock(&linkr_debugger_control_lock);
+	}
 	return ret;
 }
 
@@ -1255,7 +1542,8 @@ int linkr_debugger_current_read(const struct linkr_debugger_current_desc *curren
 							    &microvolts),
 				sample->raw, resolution, &microvolts);
 			if (ret == 0) {
-				(void)sensor_value_from_micro(&sample->value, microvolts);
+				ret = linkr_debugger_adc_set_canonical_voltage(
+					current, microvolts, &sample->value);
 			}
 		}
 		k_mutex_unlock(&linkr_debugger_control_lock);
@@ -1363,7 +1651,11 @@ int linkr_debugger_current_read_batch(struct linkr_debugger_current_sample *samp
 					goto out;
 				}
 				sample->mv = microvolts / 1000;
-				(void)sensor_value_from_micro(&sample->value, microvolts);
+				ret = linkr_debugger_adc_set_canonical_voltage(
+					current, microvolts, &sample->value);
+				if (ret < 0) {
+					goto out;
+				}
 			} else {
 				ret = -EINVAL;
 				goto out;
@@ -1502,9 +1794,22 @@ int linkr_debugger_control_snapshot_get(struct linkr_debugger_control_snapshot *
 
 			if (regulator != NULL && device_is_ready(regulator)) {
 				state->available = true;
-				state->value = linkr_debugger_power_output_enabled(rail) ?
-					LINKR_DEBUGGER_CONFIG_POWER_ON :
-					LINKR_DEBUGGER_CONFIG_POWER_OFF;
+				/* Persistence and the config catalog store the
+				 * desired intent for port VBUS rails, not the
+				 * enable request: effective conduction is
+				 * reported separately by the power API.
+				 */
+				if (linkr_debugger_rail_is_port_vbus(rail) &&
+				    regulator_index(rail) < REGULATOR_STATE_CAPACITY) {
+					state->value = linkr_debugger_power_port_desired[
+						regulator_index(rail)] ?
+						LINKR_DEBUGGER_CONFIG_POWER_ON :
+						LINKR_DEBUGGER_CONFIG_POWER_OFF;
+				} else {
+					state->value = linkr_debugger_power_output_enabled(rail) ?
+						LINKR_DEBUGGER_CONFIG_POWER_ON :
+						LINKR_DEBUGGER_CONFIG_POWER_OFF;
+				}
 			}
 			break;
 		}

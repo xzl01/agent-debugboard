@@ -35,7 +35,8 @@ describe("TaskCard built-in catalog layout contract", () => {
     for (const row of rows) {
       expect(row.textContent).toContain("Built-in");
       const buttons = [...row.querySelectorAll("button")];
-      expect(buttons.map((button) => button.textContent?.trim())).toEqual(["Run task"]);
+      expect(buttons.map((button) => button.textContent?.trim())).toEqual(["Export task IR", "Run task"]);
+      expect(row.textContent).toContain("no lossless workflow source");
     }
   });
 

@@ -7,12 +7,10 @@
 
 #include "linkr_debugger_captive_portal.h"
 
+#include <errno.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
-
-static const char capport_body[] =
-	"{\"captive\":true,\"user-portal-url\":\"" LINKR_DEBUGGER_CAPTIVE_PORTAL_URL
-	"\",\"venue-info-url\":\"" LINKR_DEBUGGER_CAPTIVE_PORTAL_URL "\"}\n";
 
 static bool path_equals_ignoring_query(const char *path, const char *target)
 {
@@ -49,7 +47,8 @@ enum linkr_debugger_captive_action linkr_debugger_captive_select_action(
 		return LINKR_DEBUGGER_CAPTIVE_ACTION_METHOD_NOT_ALLOWED;
 	}
 
-	if (path_equals_ignoring_query(path, LINKR_DEBUGGER_CAPTIVE_PORTAL_API_PATH)) {
+	if (path_equals_ignoring_query(path, LINKR_DEBUGGER_CAPTIVE_PORTAL_API_PATH) ||
+	    path_equals_ignoring_query(path, LINKR_DEBUGGER_CAPTIVE_PORTAL_PROBE_PATH)) {
 		return LINKR_DEBUGGER_CAPTIVE_ACTION_CAPPORT_JSON;
 	}
 
@@ -65,12 +64,26 @@ bool linkr_debugger_captive_method_has_body(enum linkr_debugger_captive_method m
 	return method == LINKR_DEBUGGER_CAPTIVE_METHOD_GET;
 }
 
-const char *linkr_debugger_captive_portal_url(void)
+int linkr_debugger_captive_capport_body(const char *portal_url, char *buf,
+					size_t cap)
 {
-	return LINKR_DEBUGGER_CAPTIVE_PORTAL_URL;
-}
+	int written;
 
-const char *linkr_debugger_captive_capport_body(void)
-{
-	return capport_body;
+	if (portal_url == NULL || portal_url[0] == '\0' || buf == NULL ||
+	    cap == 0U) {
+		return -EINVAL;
+	}
+
+	written = snprintf(buf, cap,
+			   "{\"captive\":true,\"user-portal-url\":\"%s\","
+			   "\"venue-info-url\":\"%s\"}\n",
+			   portal_url, portal_url);
+	if (written < 0) {
+		return -EINVAL;
+	}
+	if ((size_t)written >= cap) {
+		return -ENOSPC;
+	}
+
+	return 0;
 }

@@ -7,7 +7,7 @@ import type { UseBoard } from "@/hooks/useBoard";
 import type { AutomationTaskControl, AutomationTaskOwner } from "@/lib/automationTask";
 import type { RunnerCallbacks } from "@/lib/testRunner";
 import { preflightTestRun } from "@/lib/testRunner";
-import type { RunSummary, TestScript } from "@/lib/testScript";
+import { parseTestScript, serializeTestScriptDraft, type RunSummary, type TestScript } from "@/lib/testScript";
 import type { WorkflowComposerProps } from "./workflow/types";
 import type { SerialAutomationHandle } from "./SerialCard";
 import { TestAutomation } from "./TestAutomation";
@@ -116,7 +116,7 @@ async function mountAutomation({
   acquire = true,
   validWorkflow = false,
 }: MountOptions = {}): Promise<View> {
-  if (validWorkflow) localStorage.setItem("linkr-test-script", VALID_WORKFLOW);
+  if (validWorkflow) localStorage.setItem("linkr-test-script", serializeTestScriptDraft(parseTestScript(VALID_WORKFLOW)));
   const host = document.createElement("div");
   document.body.append(host);
   const root: Root = createRoot(host);
@@ -201,6 +201,7 @@ describe("TestAutomation workspace shell", () => {
     expect(tab(host, "running").disabled).toBe(false);
     expect(tab(host, "editor").disabled).toBe(true);
     expect(tab(host, "report").disabled).toBe(true);
+    expect([...host.querySelectorAll<HTMLButtonElement>('[data-testid="workflow-library"] button')].every((button) => button.disabled)).toBe(true);
     expect(host.querySelector("[data-automation-view='running']")?.getAttribute("aria-busy")).toBe("true");
     expect(host.querySelector("[data-testid='runner-abort']")).not.toBeNull();
 
@@ -278,14 +279,14 @@ describe("TestAutomation workspace shell", () => {
 });
 
 describe("TestAutomation editor state", () => {
-  it("starts a confirmed localized draft and exposes its save state", async () => {
-    await mountAutomation({ validWorkflow: true });
+  it("starts a clean localized draft without a destructive prompt and exposes its local save state", async () => {
+    const { host } = await mountAutomation({ validWorkflow: true });
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    if (!workflowCapture.props?.onNew) throw new TypeError("New workflow action not available");
+    const newButton = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "test.new");
+    if (!newButton) throw new TypeError("New workflow action not available");
+    act(() => newButton.click());
 
-    act(() => workflowCapture.props?.onNew?.());
-
-    expect(window.confirm).toHaveBeenCalledWith("test.new.confirm");
+    expect(window.confirm).not.toHaveBeenCalled();
     expect(workflowCapture.props?.script.name).toBe("test.defaultName");
     expect(workflowCapture.props?.draftState).toBe("saved");
     expect(localStorage.getItem("linkr-test-script")).toContain("test.defaultName");

@@ -10,48 +10,27 @@
 #include "../../src/linkr_debugger_capture_arbiter.h"
 #include "../../src/linkr_debugger_flash_arbiter.h"
 #include "../../src/linkr_debugger_http_task_response.h"
-#include "../../src/linkr_debugger_json_cursor.h"
+#include "../../src/linkr_debugger_json_value.h"
 #include "../../src/linkr_debugger_task.h"
 #include "../../src/linkr_debugger_task_catalog.h"
+#include "../../src/linkr_debugger_task_mutation.h"
 
 #include <assert.h>
 #include <errno.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+
+#define ENTRY_COUNT 64U
+#define RESPONSE_COPY_CAP LINKR_DEBUGGER_TASK_RAW_BUFFER_SIZE
 
 const char *linkr_debugger_json_schema(void)
 {
 	return "radxa-linkr-debugger.v1";
 }
 
-static size_t host_http_strnlen(const char *text, size_t cap)
-{
-	const char *end = memchr(text, '\0', cap);
-
-	return end != NULL ? (size_t)(end - text) : cap;
-}
-
-/* Compile the production callbacks and JSON encoding, not test copies. */
-#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
-#define vsnprintk vsnprintf
-#define strnlen host_http_strnlen
-#define LINKR_DEBUGGER_HTTP_TASK_ROUTE_HOST_TEST 1
-#include "../../src/linkr_debugger_http.c"
-#undef strnlen
-#undef vsnprintk
-#undef ARRAY_SIZE
-
-#define ARRAY_SIZE_LOCAL(array) (sizeof(array) / sizeof((array)[0]))
-#define RESPONSE_TEXT_CAP (LINKR_DEBUGGER_TASK_HTTP_RESPONSE_CAP + 1U)
-
-/* Fake capture/flash arbiters with call counters and busy injection. */
-static unsigned int capture_acquire_calls;
-static unsigned int capture_release_calls;
-static unsigned int flash_acquire_calls;
-static unsigned int flash_release_calls;
 static bool capture_busy;
 static bool flash_busy;
+static unsigned int capture_acquire_calls;
 
 bool linkr_debugger_capture_arbiter_try_acquire(enum linkr_debugger_capture_owner owner)
 {
@@ -63,100 +42,146 @@ bool linkr_debugger_capture_arbiter_try_acquire(enum linkr_debugger_capture_owne
 bool linkr_debugger_capture_arbiter_release(enum linkr_debugger_capture_owner owner)
 {
 	assert(owner == LINKR_DEBUGGER_CAPTURE_OWNER_TASK);
-	capture_release_calls++;
 	return true;
 }
 
 bool linkr_debugger_flash_arbiter_try_acquire(enum linkr_debugger_flash_owner owner)
 {
 	assert(owner == LINKR_DEBUGGER_FLASH_OWNER_TASK);
-	flash_acquire_calls++;
 	return !flash_busy;
 }
 
 bool linkr_debugger_flash_arbiter_release(enum linkr_debugger_flash_owner owner)
 {
 	assert(owner == LINKR_DEBUGGER_FLASH_OWNER_TASK);
-	flash_release_calls++;
 	return true;
 }
 
-/* In-memory task storage backend. */
-static char store_buf[LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE];
-static size_t store_len;
-static bool store_present;
-static bool fail_load;
-static bool fail_save;
-static bool fail_delete;
-
-static int fake_load_one(void *context, const char *name, void *value, size_t value_size)
-{
-	(void)context;
-	assert(name != NULL);
-	if (fail_load) {
-		return -EIO;
-	}
-	if (!store_present) {
-		return -ENOENT;
-	}
-	assert(value_size >= store_len);
-	memcpy(value, store_buf, store_len);
-	return (int)store_len;
-}
-
-static int fake_save_one(void *context, const char *name, const void *value, size_t value_size)
-{
-	(void)context;
-	assert(name != NULL);
-	if (fail_save || value_size > sizeof(store_buf)) {
-		return -EIO;
-	}
-	memcpy(store_buf, value, value_size);
-	store_len = value_size;
-	store_present = true;
-	return 0;
-}
-
-static int fake_delete_one(void *context, const char *name)
-{
-	(void)context;
-	assert(name != NULL);
-	if (fail_delete) {
-		return -EIO;
-	}
-	store_present = false;
-	store_len = 0U;
-	return 0;
-}
-
-static const struct linkr_debugger_task_backend_ops fake_backend = {
-	.load_one = fake_load_one,
-	.save_one = fake_save_one,
-	.delete_one = fake_delete_one,
+struct memory_entry {
+	bool present;
+	size_t len;
+	uint8_t data[LINKR_DEBUGGER_TASK_RAW_BUFFER_SIZE];
+	char name[48];
 };
 
-static const enum linkr_debugger_task_http_route tasks_route =
-	LINKR_DEBUGGER_TASK_HTTP_ROUTE_TASKS;
-static const enum linkr_debugger_task_http_route catalog_route =
-	LINKR_DEBUGGER_TASK_HTTP_ROUTE_CATALOG;
+static struct memory_entry entries[ENTRY_COUNT];
+static bool force_enospc;
+static uint8_t random_byte;
 
-static const struct http_header sentinel_headers[] = { { "X-Sentinel", "sentinel" } };
-static const char sentinel_body[] = "sentinel";
-
-static void reset_all(void)
+static struct memory_entry *memory_find(const char *name)
 {
-	capture_acquire_calls = 0U;
-	capture_release_calls = 0U;
-	flash_acquire_calls = 0U;
-	flash_release_calls = 0U;
+	for (size_t i = 0U; i < ENTRY_COUNT; i++) {
+		if (entries[i].present && strcmp(entries[i].name, name) == 0) {
+			return &entries[i];
+		}
+	}
+	return NULL;
+}
+
+static int memory_subsys_init(void *context)
+{
+	(void)context;
+	return 0;
+}
+
+static int memory_load_one(void *context, const char *name, void *value, size_t cap)
+{
+	struct memory_entry *entry;
+	size_t copied;
+
+	(void)context;
+	entry = memory_find(name);
+	if (entry == NULL) {
+		return 0;
+	}
+	copied = entry->len < cap ? entry->len : cap;
+	memcpy(value, entry->data, copied);
+	return (int)entry->len;
+}
+
+static int memory_save_one(void *context, const char *name, const void *value,
+			   size_t len)
+{
+	struct memory_entry *entry;
+
+	(void)context;
+	if (force_enospc) {
+		force_enospc = false;
+		return -ENOSPC;
+	}
+	assert(len <= LINKR_DEBUGGER_TASK_RAW_BUFFER_SIZE);
+	entry = memory_find(name);
+	if (entry == NULL) {
+		for (size_t i = 0U; i < ENTRY_COUNT; i++) {
+			if (!entries[i].present) {
+				entry = &entries[i];
+				break;
+			}
+		}
+		assert(entry != NULL);
+		(void)snprintf(entry->name, sizeof(entry->name), "%s", name);
+		entry->present = true;
+	}
+	memcpy(entry->data, value, len);
+	entry->len = len;
+	return 0;
+}
+
+static int memory_delete_one(void *context, const char *name)
+{
+	struct memory_entry *entry;
+
+	(void)context;
+	entry = memory_find(name);
+	if (entry != NULL) {
+		entry->present = false;
+		entry->len = 0U;
+	}
+	return 0;
+}
+
+static void memory_random(void *context, void *value, size_t len)
+{
+	uint8_t *bytes = value;
+
+	(void)context;
+	for (size_t i = 0U; i < len; i++) {
+		bytes[i] = ++random_byte;
+	}
+}
+
+static const struct linkr_debugger_task_backend_ops memory_backend = {
+	.subsys_init = memory_subsys_init,
+	.load_one = memory_load_one,
+	.save_one = memory_save_one,
+	.delete_one = memory_delete_one,
+	.random = memory_random,
+};
+
+static const enum linkr_debugger_task_http_route route_tasks =
+	LINKR_DEBUGGER_TASK_HTTP_ROUTE_TASKS;
+static const enum linkr_debugger_task_http_route route_catalog =
+	LINKR_DEBUGGER_TASK_HTTP_ROUTE_CATALOG;
+static const enum linkr_debugger_task_http_route route_ir =
+	LINKR_DEBUGGER_TASK_HTTP_ROUTE_IR;
+static const enum linkr_debugger_task_http_route route_mutations =
+	LINKR_DEBUGGER_TASK_HTTP_ROUTE_MUTATIONS;
+static const enum linkr_debugger_task_http_route route_source_0 =
+	LINKR_DEBUGGER_TASK_HTTP_ROUTE_SOURCE_0;
+
+static const struct http_header mutation_headers[] = {
+	{ .name = "Content-Type", .value = LINKR_DEBUGGER_TASK_MUTATION_CONTENT_TYPE },
+};
+
+static void reset_store(void)
+{
+	memset(entries, 0, sizeof(entries));
 	capture_busy = false;
 	flash_busy = false;
-	store_len = 0U;
-	store_present = false;
-	fail_load = false;
-	fail_save = false;
-	fail_delete = false;
-	linkr_debugger_task_test_set_backend(&fake_backend, NULL);
+	capture_acquire_calls = 0U;
+	force_enospc = false;
+	random_byte = 0U;
+	linkr_debugger_task_test_set_backend(&memory_backend, NULL);
 	linkr_debugger_task_init();
 }
 
@@ -166,1036 +191,638 @@ static void init_client(struct http_client_ctx *client, enum http_method method)
 	client->method = method;
 }
 
-static void set_response_sentinel(struct http_response_ctx *response)
-{
-	response->status = (enum http_status)599;
-	response->headers = sentinel_headers;
-	response->header_count = ARRAY_SIZE_LOCAL(sentinel_headers);
-	response->body = (const uint8_t *)sentinel_body;
-	response->body_len = sizeof(sentinel_body) - 1U;
-	response->final_chunk = false;
-}
-
-static void assert_response_sentinel(const struct http_response_ctx *response)
-{
-	assert(response->status == (enum http_status)599);
-	assert(response->headers == sentinel_headers);
-	assert(response->header_count == ARRAY_SIZE_LOCAL(sentinel_headers));
-	assert(response->body == (const uint8_t *)sentinel_body);
-	assert(response->body_len == sizeof(sentinel_body) - 1U);
-	assert(!response->final_chunk);
-}
-
-static void call_task(struct http_client_ctx *client,
-		      enum http_transaction_status transaction_status,
-		      const void *data, size_t data_len,
-		      const enum linkr_debugger_task_http_route *route,
-		      struct http_response_ctx *response)
+static void call_route(struct http_client_ctx *client,
+		       enum http_transaction_status status,
+		       const void *data, size_t data_len,
+		       const struct http_header *headers, size_t header_count,
+		       const enum linkr_debugger_task_http_route *route,
+		       struct http_response_ctx *response)
 {
 	struct http_request_ctx request = {
 		.data = (uint8_t *)data,
 		.data_len = data_len,
-		.headers = NULL,
-		.header_count = 0U,
-		.headers_status = HTTP_HEADER_STATUS_NONE,
+		.headers = (struct http_header *)headers,
+		.header_count = header_count,
+		.headers_status = HTTP_HEADER_STATUS_OK,
 	};
 
-	assert(linkr_debugger_task_http_handle(
-		       client, transaction_status, &request, response, (void *)route) == 0);
+	assert(linkr_debugger_task_http_handle(client, status, &request, response,
+					       (void *)route) == 0);
 }
 
-static void call_final(enum http_method method, const void *data, size_t data_len,
-		       struct http_response_ctx *response)
+static void complete(struct http_client_ctx *client,
+		     const enum linkr_debugger_task_http_route *route)
 {
-	struct http_client_ctx client;
+	struct http_response_ctx ignored = { 0 };
 
-	init_client(&client, method);
-	set_response_sentinel(response);
-	call_task(&client, HTTP_SERVER_REQUEST_DATA_FINAL, data, data_len,
-		  &tasks_route, response);
+	call_route(client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, 0U, NULL, 0U,
+		   route, &ignored);
 }
 
-static void response_text(const struct http_response_ctx *response, char text[RESPONSE_TEXT_CAP])
+static void abort_transaction(struct http_client_ctx *client,
+			      const enum linkr_debugger_task_http_route *route)
 {
-	assert(response->body != NULL);
-	assert(response->body_len < RESPONSE_TEXT_CAP);
+	struct http_response_ctx ignored = { 0 };
+
+	call_route(client, HTTP_SERVER_TRANSACTION_ABORTED, NULL, 0U, NULL, 0U,
+		   route, &ignored);
+}
+
+static void copy_response(const struct http_response_ctx *response,
+			  char text[RESPONSE_COPY_CAP])
+{
+	assert(response->body_len < RESPONSE_COPY_CAP);
 	memcpy(text, response->body, response->body_len);
 	text[response->body_len] = '\0';
 }
 
-static void assert_well_formed_response(const struct http_response_ctx *response,
-					enum http_status expected_status)
+static void assert_json_status(const struct http_response_ctx *response,
+			       enum http_status status, const char *needle)
 {
-	assert(response->status == expected_status);
-	assert(response->headers != NULL);
-	assert(response->header_count == 1U);
+	char text[RESPONSE_COPY_CAP];
+
+	assert(response->status == status && response->final_chunk);
+	assert(response->header_count == 2U);
 	assert(strcmp(response->headers[0].name, "Cache-Control") == 0);
 	assert(strcmp(response->headers[0].value, "no-store") == 0);
-	assert(response->final_chunk);
+	assert(strcmp(response->headers[1].name, "Content-Type") == 0);
+	assert(strcmp(response->headers[1].value, "application/json") == 0);
+	copy_response(response, text);
+	assert(strstr(text, needle) != NULL);
+}
+
+static void assert_content_type(const struct http_response_ctx *response,
+				const char *expected)
+{
+	assert(response->header_count == 2U);
+	assert(strcmp(response->headers[1].name, "Content-Type") == 0);
+	assert(strcmp(response->headers[1].value, expected) == 0);
+}
+
+struct transaction_output {
+	char body[2U * RESPONSE_COPY_CAP];
+	size_t len;
+	unsigned int chunks;
+};
+
+static void transaction_output_add(struct transaction_output *output,
+				   const struct http_response_ctx *response)
+{
+	if (!response->final_chunk) {
+		assert(response->body == NULL && response->body_len == 0U);
+		return;
+	}
 	assert(response->body != NULL);
-	assert(response->body_len > 0U);
-	assert(response->body[response->body_len - 1U] == '\n');
+	assert(output->len + response->body_len < sizeof(output->body));
+	memcpy(output->body + output->len, response->body, response->body_len);
+	output->len += response->body_len;
+	output->body[output->len] = '\0';
+	output->chunks++;
 }
 
-static void assert_error_response(const struct http_response_ctx *response,
-				  enum http_status expected_status, const char *expected_code)
+static void assert_one_cmd_json(const struct transaction_output *output,
+				const char *ok_field, const char *detail)
 {
-	char text[RESPONSE_TEXT_CAP];
-
-	assert_well_formed_response(response, expected_status);
-	response_text(response, text);
-	assert(strstr(text, "\"schema\":\"radxa-linkr-debugger.v1\"") != NULL);
-	assert(strstr(text, "\"ok\":false") != NULL);
-	assert(strstr(text, "\"command\":\"task\"") != NULL);
-	assert(strstr(text, expected_code) != NULL);
-}
-
-static void extract_blob(const char *json, char *blob, size_t blob_cap, size_t *blob_len)
-{
-	const char *src = strstr(json, "\"blob\":\"");
-	size_t len = 0U;
-
-	assert(src != NULL);
-	src += strlen("\"blob\":\"");
-	while (*src != '\0' && *src != '"') {
-		char value;
-
-		if (*src != '\\') {
-			value = *src++;
-		} else {
-			src++;
-			switch (*src++) {
-			case 'n': value = '\n'; break;
-			case 'r': value = '\r'; break;
-			case 't': value = '\t'; break;
-			case '"': value = '"'; break;
-			case '\\': value = '\\'; break;
-			default: assert(false); return;
-			}
-		}
-		assert(len < blob_cap);
-		blob[len++] = value;
-	}
-	assert(*src == '"');
-	*blob_len = len;
-}
-
-static void fill_maximum_blob(char *blob)
-{
-	static const char prefix[] =
-		"# linkr-task.v1\n"
-		"# task max\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP10\",\"body\":\"{\\\"direction\\\":\\\"input\\\"}\",\"wait_ms\":0}\n";
-	size_t len = sizeof(prefix) - 1U;
-
-	memcpy(blob, prefix, len);
-	while (len < LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE) {
-		size_t chunk = LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE - len;
-
-		if (chunk > 256U) {
-			chunk = 256U;
-		}
-		blob[len] = '#';
-		if (chunk > 1U) {
-			memset(blob + len + 1U, 'x', chunk - 2U);
-			blob[len + chunk - 1U] = '\n';
-		}
-		len += chunk;
+	assert(output->chunks == 1U);
+	assert(linkr_debugger_json_value_valid(output->body, 16U, 193U));
+	assert(strstr(output->body, "\"schema\":\"radxa-linkr-debugger.v1\"") != NULL);
+	assert(strstr(output->body, "\"command\":\"tasks\"") != NULL);
+	assert(strstr(output->body, ok_field) != NULL);
+	assert(strstr(output->body, detail) != NULL);
+	if (strcmp(ok_field, "\"ok\":false") == 0) {
+		assert(strstr(output->body, "\"error\":{") != NULL);
+		assert(strstr(output->body, "\"code\":") != NULL);
+		assert(strstr(output->body, "\"message\":") != NULL);
 	}
 }
 
-static size_t json_quote_blob(const char *blob, size_t blob_len, char *out, size_t out_cap)
+/* Minimal JSON escaping for task IDs only; source/IR travel as canonical
+ * base64 and never need JSON escaping. */
+static size_t json_escape(char *out, size_t cap, const char *text)
 {
-	size_t len = 0U;
+	size_t written = 0U;
 
-	out[len++] = '"';
-	for (size_t i = 0U; i < blob_len; i++) {
-		const char *escaped = NULL;
+	for (size_t i = 0U; text[i] != '\0'; i++) {
+		char ch = text[i];
 
-		switch (blob[i]) {
-		case '"': escaped = "\\\""; break;
-		case '\\': escaped = "\\\\"; break;
-		case '\n': escaped = "\\n"; break;
-		case '\r': escaped = "\\r"; break;
-		case '\t': escaped = "\\t"; break;
-		default: break;
+		assert(written + 3U < cap);
+		if (ch == '"' || ch == '\\') {
+			out[written++] = '\\';
 		}
-		if (escaped != NULL) {
-			size_t escaped_len = strlen(escaped);
-
-			assert(len + escaped_len < out_cap);
-			memcpy(out + len, escaped, escaped_len);
-			len += escaped_len;
-		} else {
-			assert(len + 1U < out_cap);
-			out[len++] = blob[i];
-		}
+		out[written++] = ch;
 	}
-	assert(len + 1U < out_cap);
-	out[len++] = '"';
+	out[written] = '\0';
+	return written;
+}
+
+/* Canonical RFC 4648 base64 with padding and zero pad bits. */
+static size_t base64_encode(const uint8_t *data, size_t len, char *out,
+			    size_t cap)
+{
+	static const char alphabet[] =
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	size_t written = 0U;
+
+	assert(cap >= ((len + 2U) / 3U) * 4U + 1U);
+	for (size_t i = 0U; i < len; i += 3U) {
+		uint32_t chunk = (uint32_t)data[i] << 16;
+		size_t remain = len - i;
+
+		if (remain > 1U) {
+			chunk |= (uint32_t)data[i + 1U] << 8;
+		}
+		if (remain > 2U) {
+			chunk |= data[i + 2U];
+		}
+		out[written++] = alphabet[(chunk >> 18) & 0x3fU];
+		out[written++] = alphabet[(chunk >> 12) & 0x3fU];
+		out[written++] = remain > 1U ? alphabet[(chunk >> 6) & 0x3fU] : '=';
+		out[written++] = remain > 2U ? alphabet[chunk & 0x3fU] : '=';
+	}
+	out[written] = '\0';
+	return written;
+}
+
+static size_t mutation_clear(uint8_t *body, size_t cap, uint64_t revision,
+			     const uint8_t catalog[32], bool bad_catalog)
+{
+	char catalog_hex[2U * LINKR_DEBUGGER_TASK_SHA256_SIZE + 1U];
+	int written;
+
+	for (size_t i = 0U; i < LINKR_DEBUGGER_TASK_SHA256_SIZE; i++) {
+		uint8_t byte = catalog[i];
+
+		if (bad_catalog && i == 0U) {
+			byte ^= 1U;
+		}
+		(void)snprintf(catalog_hex + 2U * i, 3U, "%02x", byte);
+	}
+	written = snprintf((char *)body, cap,
+		"{\"schema\":\"radxa-linkr-debugger.v1\",\"action\":\"clear\","
+		"\"expected_revision\":\"%llu\",\"catalog_fingerprint\":\"%s\"}",
+		(unsigned long long)revision, catalog_hex);
+	assert(written > 0 && (size_t)written < cap);
+	return (size_t)written;
+}
+
+static size_t mutation_upsert(uint8_t *body, size_t cap, const char *id,
+			      const char *source, const char *ir,
+			      uint64_t revision, const uint8_t catalog[32])
+{
+	char catalog_hex[2U * LINKR_DEBUGGER_TASK_SHA256_SIZE + 1U];
+	static char encoded[(((LINKR_DEBUGGER_TASK_MAX_SOURCE_SIZE + 2U) / 3U) * 4U) + 1U];
+	char escaped_id[4U * LINKR_DEBUGGER_TASK_MAX_TASK_ID_LEN];
+	int written;
+	size_t len;
+
+	for (size_t i = 0U; i < LINKR_DEBUGGER_TASK_SHA256_SIZE; i++) {
+		(void)snprintf(catalog_hex + 2U * i, 3U, "%02x", catalog[i]);
+	}
+	(void)json_escape(escaped_id, sizeof(escaped_id), id);
+	written = snprintf((char *)body, cap,
+		"{\"schema\":\"radxa-linkr-debugger.v1\",\"action\":\"upsert\","
+		"\"expected_revision\":\"%llu\",\"catalog_fingerprint\":\"%s\","
+		"\"id\":\"%s\"",
+		(unsigned long long)revision, catalog_hex, escaped_id);
+	assert(written > 0 && (size_t)written < cap);
+	len = (size_t)written;
+	if (source != NULL) {
+		(void)base64_encode((const uint8_t *)source, strlen(source), encoded,
+				    sizeof(encoded));
+		written = snprintf((char *)body + len, cap - len,
+				   ",\"source_base64\":\"%s\"", encoded);
+		assert(written > 0 && (size_t)written < cap - len);
+		len += (size_t)written;
+	}
+	(void)base64_encode((const uint8_t *)ir, strlen(ir), encoded,
+			    sizeof(encoded));
+	written = snprintf((char *)body + len, cap - len, ",\"ir_base64\":\"%s\"}",
+			   encoded);
+	assert(written > 0 && (size_t)written < cap - len);
+	len += (size_t)written;
 	return len;
 }
 
-static void get_and_assert_blob_equals(const char *expected, size_t expected_len)
+static void test_chunked_mutation_then_metadata_ir_and_source(void)
 {
-	struct http_response_ctx response;
-	char text[RESPONSE_TEXT_CAP];
-	char decoded[LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE];
-	size_t decoded_len;
-
-	call_final(HTTP_GET, NULL, 0U, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	response_text(&response, text);
-	assert(strstr(text, "\"action\":\"list\"") != NULL);
-	extract_blob(text, decoded, sizeof(decoded), &decoded_len);
-	assert(decoded_len == expected_len);
-	assert(memcmp(decoded, expected, expected_len) == 0);
-}
-
-static void test_get_empty_returns_frozen_empty_contract(void)
-{
-	struct http_response_ctx response;
-	char text[RESPONSE_TEXT_CAP];
-	const char *expected =
-		"{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":true,\"command\":\"task\","
-		"\"action\":\"list\",\"backend\":{\"available\":true},\"task_count\":0,"
-		"\"tasks\":[],\"blob\":\"\"}\n";
-
-	reset_all();
-	call_final(HTTP_GET, NULL, 0U, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	response_text(&response, text);
-	assert(strcmp(text, expected) == 0);
-	assert(capture_acquire_calls == 0U);
-	assert(flash_acquire_calls == 0U);
-}
-
-static void test_get_with_stored_blob_returns_summaries_and_exact_blob(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task alpha\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/power/12v_out\",\"body\":\"{\\\"state\\\":\\\"on\\\"}\",\"wait_ms\":250}\n"
-		"# task beta\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/switch/sd\",\"body\":\"{\\\"route\\\":\\\"usb-reader\\\"}\"}\n";
-	struct http_response_ctx response;
-	char text[RESPONSE_TEXT_CAP];
-
-	reset_all();
-	assert(linkr_debugger_task_tasks_store(blob, sizeof(blob) - 1U) ==
-	       LINKR_DEBUGGER_TASK_OK);
-	capture_acquire_calls = 0U;
-	flash_acquire_calls = 0U;
-	call_final(HTTP_GET, NULL, 0U, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	response_text(&response, text);
-	assert(strstr(text, "\"schema\":\"radxa-linkr-debugger.v1\"") != NULL);
-	assert(strstr(text, "\"ok\":true") != NULL);
-	assert(strstr(text, "\"command\":\"task\"") != NULL);
-	assert(strstr(text, "\"action\":\"list\"") != NULL);
-	assert(strstr(text, "\"backend\":{\"available\":true}") != NULL);
-	assert(strstr(text, "\"task_count\":2") != NULL);
-	assert(strstr(text, "\"id\":\"alpha\"") != NULL);
-	assert(strstr(text, "\"name\":\"alpha\"") != NULL);
-	assert(strstr(text, "\"request_count\":1") != NULL);
-	assert(strstr(text, "\"id\":\"beta\"") != NULL);
-	assert(capture_acquire_calls == 0U);
-	assert(flash_acquire_calls == 0U);
-	get_and_assert_blob_equals(blob, sizeof(blob) - 1U);
-	assert(capture_acquire_calls == 0U);
-	assert(flash_acquire_calls == 0U);
-}
-
-static void test_put_then_get_max_blob_round_trip(void)
-{
-	char blob[LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE];
-	struct http_response_ctx response;
-	char text[RESPONSE_TEXT_CAP];
-
-	reset_all();
-	fill_maximum_blob(blob);
-	call_final(HTTP_PUT, blob, sizeof(blob), &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	response_text(&response, text);
-	assert(strstr(text, "\"ok\":true") != NULL);
-	assert(strstr(text, "\"command\":\"task\"") != NULL);
-	assert(strstr(text, "\"action\":\"store\"") != NULL);
-	assert(strstr(text, "\"stored\":true") != NULL);
-	get_and_assert_blob_equals(blob, sizeof(blob));
-}
-
-static void test_put_chunked_upload_round_trip(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task chunked\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP11\",\"body\":\"{\\\"direction\\\":\\\"output\\\",\\\"value\\\":1}\",\"wait_ms\":10}\n";
-	const size_t split = 17U;
+	static const char source[] =
+		"{\"schema\":\"linkr-test.v1\",\"name\":\"exact\"}\n";
+	static const char ir[] =
+		"# linkr-task.v1\n# task A\n"
+		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP7\",\"body\":\"{}\"}\n";
+	struct linkr_debugger_task_status status;
 	struct http_client_ctx client;
-	struct http_response_ctx response;
-	char text[RESPONSE_TEXT_CAP];
+	struct http_response_ctx response = { 0 };
+	uint8_t body[2048];
+	char text[RESPONSE_COPY_CAP];
+	size_t body_len;
 
-	reset_all();
-	init_client(&client, HTTP_PUT);
-	set_response_sentinel(&response);
-	call_task(&client, HTTP_SERVER_REQUEST_DATA_MORE, blob, split,
-		  &tasks_route, &response);
-	assert_response_sentinel(&response);
-	set_response_sentinel(&response);
-	call_task(&client, HTTP_SERVER_REQUEST_DATA_FINAL, blob + split,
-		  sizeof(blob) - 1U - split, &tasks_route, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	response_text(&response, text);
-	assert(strstr(text, "\"action\":\"store\"") != NULL);
-	get_and_assert_blob_equals(blob, sizeof(blob) - 1U);
-}
-
-static void test_put_oversized_returns_413_and_upload_recovers(void)
-{
-	char oversized[LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE + 1U];
-	struct http_response_ctx response;
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task small\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/power/5v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\"}\n";
-
-	reset_all();
-	memset(oversized, 'x', sizeof(oversized));
-	call_final(HTTP_PUT, oversized, sizeof(oversized), &response);
-	assert_error_response(&response, HTTP_413_PAYLOAD_TOO_LARGE,
-			      "\"code\":\"body_too_large\"");
-	call_final(HTTP_PUT, blob, sizeof(blob) - 1U, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	get_and_assert_blob_equals(blob, sizeof(blob) - 1U);
-}
-
-static void test_put_invalid_blob_returns_400(void)
-{
-	static const char blob[] = "# linkr-task.v1\n# task broken\nnot-a-request\n";
-	struct http_response_ctx response;
-
-	reset_all();
-	call_final(HTTP_PUT, blob, sizeof(blob) - 1U, &response);
-	assert_error_response(&response, HTTP_400_BAD_REQUEST, "\"code\":\"invalid_blob\"");
-}
-
-static void test_put_storage_failure_returns_500(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task small\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/power/5v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\"}\n";
-	struct http_response_ctx response;
-
-	reset_all();
-	fail_save = true;
-	call_final(HTTP_PUT, blob, sizeof(blob) - 1U, &response);
-	assert_error_response(&response, HTTP_500_INTERNAL_SERVER_ERROR,
-			      "\"code\":\"storage_error\"");
-}
-
-static void test_put_backend_unavailable_returns_500(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task small\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/power/5v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\"}\n";
-	struct http_response_ctx response;
-
-	reset_all();
-	fail_load = true;
-	linkr_debugger_task_init();
-	call_final(HTTP_PUT, blob, sizeof(blob) - 1U, &response);
-	assert_error_response(&response, HTTP_500_INTERNAL_SERVER_ERROR,
-			      "\"code\":\"backend_unavailable\"");
-}
-
-static void test_put_capture_busy_returns_409(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task small\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/power/5v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\"}\n";
-	struct http_response_ctx response;
-
-	reset_all();
-	capture_busy = true;
-	call_final(HTTP_PUT, blob, sizeof(blob) - 1U, &response);
-	assert_error_response(&response, HTTP_409_CONFLICT, "\"code\":\"busy\"");
-	assert(flash_acquire_calls == 0U);
-}
-
-static void test_put_flash_busy_returns_409_and_releases_capture(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task small\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/power/5v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\"}\n";
-	struct http_response_ctx response;
-
-	reset_all();
-	flash_busy = true;
-	call_final(HTTP_PUT, blob, sizeof(blob) - 1U, &response);
-	assert_error_response(&response, HTTP_409_CONFLICT, "\"code\":\"busy\"");
-	assert(capture_acquire_calls == 1U);
-	assert(capture_release_calls == 1U);
-}
-
-static void test_put_missing_body_returns_400(void)
-{
-	struct http_response_ctx response;
-
-	reset_all();
-	call_final(HTTP_PUT, NULL, 0U, &response);
-	assert_error_response(&response, HTTP_400_BAD_REQUEST, "\"code\":\"missing_body\"");
-}
-
-static void test_put_json_quoted_body_is_unescaped(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task quoted\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP12\",\"body\":\"{\\\"direction\\\":\\\"input\\\"}\",\"wait_ms\":5}\n";
-	char quoted[2U * sizeof(blob) + 2U];
-	size_t quoted_len;
-	struct http_response_ctx response;
-
-	reset_all();
-	quoted_len = json_quote_blob(blob, sizeof(blob) - 1U, quoted, sizeof(quoted));
-	call_final(HTTP_PUT, quoted, quoted_len, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	get_and_assert_blob_equals(blob, sizeof(blob) - 1U);
-}
-
-static void test_put_json_quoted_body_accepts_unicode(void)
-{
-	static const char quoted[] =
-		"\"# linkr-task.v1\\n"
-		"# task unicode\\n"
-		"# \\u00e9 \\uD83D\\uDE80 raw \xc3\xa9 \xf0\x9f\x9a\x80\\n"
-		"{\\\"method\\\":\\\"PUT\\\",\\\"path\\\":\\\"/api/v1/gpio/GP12\\\","
-		"\\\"body\\\":\\\"{\\\\\\\"direction\\\\\\\":\\\\\\\"input\\\\\\\"}\\\","
-		"\\\"wait_ms\\\":5}\\n\"";
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task unicode\n"
-		"# \xc3\xa9 \xf0\x9f\x9a\x80 raw \xc3\xa9 \xf0\x9f\x9a\x80\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP12\","
-		"\"body\":\"{\\\"direction\\\":\\\"input\\\"}\",\"wait_ms\":5}\n";
-	struct http_response_ctx response;
-
-	reset_all();
-	call_final(HTTP_PUT, quoted, sizeof(quoted) - 1U, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	get_and_assert_blob_equals(blob, sizeof(blob) - 1U);
-}
-
-static void test_put_json_quoted_body_rejects_invalid_tokens(void)
-{
-	static const char *const invalid[] = {
-		"\"# linkr-task.v1\\n# task invalid\\n# \\q\\n"
-		"{\\\"method\\\":\\\"PUT\\\",\\\"path\\\":\\\"/api/v1/gpio/GP12\\\","
-		"\\\"body\\\":\\\"{\\\\\\\"direction\\\\\\\":\\\\\\\"input\\\\\\\"}\\\"}\\n\"",
-		"\"# linkr-task.v1\\n# task invalid\\n# \\u12\\n"
-		"{\\\"method\\\":\\\"PUT\\\",\\\"path\\\":\\\"/api/v1/gpio/GP12\\\","
-		"\\\"body\\\":\\\"{\\\\\\\"direction\\\\\\\":\\\\\\\"input\\\\\\\"}\\\"}\\n\"",
-		"\"# linkr-task.v1\\n# task invalid\\n# \\uD800\\n"
-		"{\\\"method\\\":\\\"PUT\\\",\\\"path\\\":\\\"/api/v1/gpio/GP12\\\","
-		"\\\"body\\\":\\\"{\\\\\\\"direction\\\\\\\":\\\\\\\"input\\\\\\\"}\\\"}\\n\"",
-		"\"# linkr-task.v1\\n# task invalid\\n# slash\\\"",
-		"\"# linkr-task.v1\\n# task invalid\\n# quote\" trailing\"",
-	};
-	struct http_response_ctx response;
-
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(invalid); i++) {
-		reset_all();
-		call_final(HTTP_PUT, invalid[i], strlen(invalid[i]), &response);
-		assert_error_response(&response, HTTP_400_BAD_REQUEST,
-				      "\"code\":\"invalid_body\"");
-	}
-}
-
-static void test_put_c0_control_byte_returns_400_and_nothing_persisted(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task c0\n"
-		"#\x01 raw control\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/power/5v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\"}\n";
-	struct http_response_ctx response;
-	char text[RESPONSE_TEXT_CAP];
-
-	reset_all();
-	call_final(HTTP_PUT, blob, sizeof(blob) - 1U, &response);
-	assert_error_response(&response, HTTP_400_BAD_REQUEST, "\"code\":\"invalid_blob\"");
-	call_final(HTTP_GET, NULL, 0U, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	response_text(&response, text);
-	assert(strstr(text, "\"task_count\":0,\"tasks\":[],\"blob\":\"\"") != NULL);
-}
-
-static void test_get_discards_invalid_utf8_from_storage(void)
-{
-	static const char invalid_blob[] =
-		"# linkr-task.v1\n"
-		"# \xc0\x80 retained comment\n"
-		"# task valid\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP10\",\"body\":\"{}\"}\n";
-	struct http_response_ctx response;
-	char text[RESPONSE_TEXT_CAP];
-
-	reset_all();
-	memcpy(store_buf, invalid_blob, sizeof(invalid_blob) - 1U);
-	store_len = sizeof(invalid_blob) - 1U;
-	store_present = true;
-	linkr_debugger_task_init();
-	call_final(HTTP_GET, NULL, 0U, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	response_text(&response, text);
-	assert(linkr_debugger_json_utf8_valid(text, response.body_len));
-	assert(strstr(text, "\"task_count\":0,\"tasks\":[],\"blob\":\"\"") != NULL);
-}
-
-static void test_put_tab_and_crlf_blob_round_trip(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\r\n"
-		"# task tabs\r\n"
-		"#\tindented comment\r\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP13\",\"body\":\"{\\\"direction\\\":\\\"input\\\"}\",\"wait_ms\":0}\r\n";
-	struct http_response_ctx response;
-
-	reset_all();
-	call_final(HTTP_PUT, blob, sizeof(blob) - 1U, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	get_and_assert_blob_equals(blob, sizeof(blob) - 1U);
-}
-
-static void test_delete_clears_blob_and_get_returns_empty(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task small\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/power/5v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\"}\n";
-	struct http_response_ctx response;
-	char text[RESPONSE_TEXT_CAP];
-
-	reset_all();
-	assert(linkr_debugger_task_tasks_store(blob, sizeof(blob) - 1U) ==
-	       LINKR_DEBUGGER_TASK_OK);
-	call_final(HTTP_DELETE, NULL, 0U, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	response_text(&response, text);
-	assert(strstr(text, "\"ok\":true") != NULL);
-	assert(strstr(text, "\"command\":\"task\"") != NULL);
-	assert(strstr(text, "\"action\":\"clear\"") != NULL);
-	assert(strstr(text, "\"cleared\":true") != NULL);
-	call_final(HTTP_GET, NULL, 0U, &response);
-	response_text(&response, text);
-	assert(strstr(text, "\"task_count\":0,\"tasks\":[],\"blob\":\"\"") != NULL);
-}
-
-static void test_delete_busy_returns_409(void)
-{
-	struct http_response_ctx response;
-
-	reset_all();
-	flash_busy = true;
-	call_final(HTTP_DELETE, NULL, 0U, &response);
-	assert_error_response(&response, HTTP_409_CONFLICT, "\"code\":\"busy\"");
-	assert(capture_release_calls == 1U);
-	assert(flash_release_calls == 0U);
-}
-
-static void test_post_returns_405(void)
-{
-	struct http_client_ctx client;
-	struct http_response_ctx response;
-
-	reset_all();
-	call_final(HTTP_POST, NULL, 0U, &response);
-	assert_error_response(&response, HTTP_405_METHOD_NOT_ALLOWED,
-			      "\"code\":\"method_not_allowed\"");
+	reset_store();
+	assert(linkr_debugger_task_status_get(&status) == LINKR_DEBUGGER_TASK_OK);
+	body_len = mutation_upsert(body, sizeof(body), "A", source, ir,
+				   status.revision, status.catalog_fingerprint);
 	init_client(&client, HTTP_POST);
-	set_response_sentinel(&response);
-	call_task(&client, HTTP_SERVER_REQUEST_DATA_MORE, "x", 1U,
-		  &tasks_route, &response);
-	assert_error_response(&response, HTTP_405_METHOD_NOT_ALLOWED,
-			      "\"code\":\"method_not_allowed\"");
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_MORE, body, 17U,
+		   mutation_headers, 1U, &route_mutations, &response);
+	assert(response.body == NULL);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, body + 17U, body_len - 17U,
+		   NULL, 0U, &route_mutations, &response);
+	assert_json_status(&response, HTTP_200_OK, "\"action\":\"upsert\"");
+	assert(strstr((const char *)response.body, "\"revision\":\"1\"") != NULL);
+	complete(&client, &route_mutations);
+
+	init_client(&client, HTTP_GET);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, 0U, NULL, 0U,
+		   &route_tasks, &response);
+	assert_json_status(&response, HTTP_200_OK, "\"source_state\":\"present\"");
+	copy_response(&response, text);
+	assert(strstr(text, "\"blob\"") == NULL);
+	complete(&client, &route_tasks);
+
+	init_client(&client, HTTP_GET);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, 0U, NULL, 0U,
+		   &route_ir, &response);
+	assert(response.status == HTTP_200_OK && response.body_len == sizeof(ir) - 1U);
+	assert_content_type(&response, LINKR_DEBUGGER_TASK_IR_CONTENT_TYPE);
+	assert(memcmp(response.body, ir, response.body_len) == 0);
+	complete(&client, &route_ir);
+
+	init_client(&client, HTTP_GET);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, 0U, NULL, 0U,
+		   &route_source_0, &response);
+	assert(response.status == HTTP_200_OK && response.body_len == sizeof(source) - 1U);
+	assert_content_type(&response, LINKR_DEBUGGER_TASK_SOURCE_CONTENT_TYPE);
+	assert(memcmp(response.body, source, response.body_len) == 0);
+	complete(&client, &route_source_0);
 }
 
-static void call_delete_one(enum http_method method, const char *id,
-			    struct http_response_ctx *response)
+static void test_stale_catalog_busy_storage_and_content_type_errors(void)
 {
+	struct linkr_debugger_task_status status;
 	struct http_client_ctx client;
+	struct http_response_ctx response = { 0 };
+	struct http_header wrong_type = { .name = "Content-Type", .value = "text/plain" };
+	uint8_t body[512];
+	size_t body_len;
 
-	init_client(&client, method);
-	set_response_sentinel(response);
-	assert(linkr_debugger_task_http_handle_delete_one(&client, response, id) == 0);
+	reset_store();
+	assert(linkr_debugger_task_status_get(&status) == LINKR_DEBUGGER_TASK_OK);
+	body_len = mutation_clear(body, sizeof(body), status.revision + 1U,
+				  status.catalog_fingerprint, false);
+	init_client(&client, HTTP_POST);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, body, body_len,
+		   mutation_headers, 1U, &route_mutations, &response);
+	assert_json_status(&response, HTTP_409_CONFLICT, "revision_conflict");
+	assert(strstr((const char *)response.body, "\"revision\":\"0\"") != NULL);
+	complete(&client, &route_mutations);
+
+	body_len = mutation_clear(body, sizeof(body), status.revision,
+				  status.catalog_fingerprint, true);
+	init_client(&client, HTTP_POST);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, body, body_len,
+		   mutation_headers, 1U, &route_mutations, &response);
+	assert_json_status(&response, HTTP_409_CONFLICT, "catalog_conflict");
+	complete(&client, &route_mutations);
+
+	body_len = mutation_clear(body, sizeof(body), status.revision,
+				  status.catalog_fingerprint, false);
+	init_client(&client, HTTP_POST);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, body, body_len,
+		   &wrong_type, 1U, &route_mutations, &response);
+	assert_json_status(&response, HTTP_400_BAD_REQUEST, "invalid_mutation");
+	complete(&client, &route_mutations);
+
+	flash_busy = true;
+	init_client(&client, HTTP_POST);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, body, body_len,
+		   mutation_headers, 1U, &route_mutations, &response);
+	assert_json_status(&response, HTTP_409_CONFLICT, "\"code\":\"busy\"");
+	complete(&client, &route_mutations);
+	flash_busy = false;
+
+	force_enospc = true;
+	init_client(&client, HTTP_POST);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, body, body_len,
+		   mutation_headers, 1U, &route_mutations, &response);
+	assert_json_status(&response, HTTP_507_INSUFFICIENT_STORAGE, "storage_full");
+	complete(&client, &route_mutations);
 }
 
-static void test_delete_one_removes_only_the_named_task(void)
+static void assert_store_revision(uint64_t revision)
 {
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task recovery\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/power/5v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\"}\n"
-		"# task alternate\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/CON_MAS\",\"body\":\"{\\\"direction\\\":\\\"input\\\"}\"}\n";
-	struct http_response_ctx response;
-	char text[RESPONSE_TEXT_CAP];
+	struct linkr_debugger_task_status status;
 
-	reset_all();
-	assert(linkr_debugger_task_tasks_store(blob, sizeof(blob) - 1U) == LINKR_DEBUGGER_TASK_OK);
-	call_delete_one(HTTP_DELETE, "recovery", &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	response_text(&response, text);
-	assert(strstr(text, "\"action\":\"delete\"") != NULL);
-	assert(strstr(text, "\"deleted\":true") != NULL);
-	assert(strstr(text, "\"id\":\"recovery\"") != NULL);
-
-	/* The untouched task is still listed and the deleted one is gone. */
-	call_final(HTTP_GET, NULL, 0U, &response);
-	response_text(&response, text);
-	assert(strstr(text, "\"task_count\":1") != NULL);
-	assert(strstr(text, "\"id\":\"alternate\"") != NULL);
-	assert(strstr(text, "\"id\":\"recovery\"") == NULL);
+	assert(linkr_debugger_task_status_get(&status) == LINKR_DEBUGGER_TASK_OK);
+	assert(status.revision == revision);
 }
 
-static void call_delete_path(const char *path, struct http_response_ctx *response)
+static void test_oversize_discards_until_complete(void)
 {
+	struct linkr_debugger_task_status status;
 	struct http_client_ctx client;
+	struct http_response_ctx response = { 0 };
+	struct transaction_output failed = { 0 };
+	struct transaction_output succeeded = { 0 };
+	uint8_t body[LINKR_DEBUGGER_TASK_MUTATION_MAX_SIZE + 1U];
+	uint8_t valid[512];
+	size_t valid_len;
+
+	reset_store();
+	assert(linkr_debugger_task_status_get(&status) == LINKR_DEBUGGER_TASK_OK);
+	valid_len = mutation_clear(valid, sizeof(valid), status.revision,
+				   status.catalog_fingerprint, false);
+	memset(body, 0, sizeof(body));
+	init_client(&client, HTTP_POST);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_MORE, body, sizeof(body),
+		   mutation_headers, 1U,
+		   &route_mutations, &response);
+	transaction_output_add(&failed, &response);
+
+	/* The rest of this failed transaction is discarded, even if it is a
+	 * complete valid mutation.
+	 */
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_MORE, valid, valid_len,
+		   mutation_headers, 1U, &route_mutations, &response);
+	transaction_output_add(&failed, &response);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, valid, valid_len,
+		   mutation_headers, 1U, &route_mutations, &response);
+	assert_json_status(&response, HTTP_400_BAD_REQUEST, "body_too_large");
+	transaction_output_add(&failed, &response);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, valid, valid_len,
+		   mutation_headers, 1U, &route_mutations, &response);
+	transaction_output_add(&failed, &response);
+	assert_one_cmd_json(&failed, "\"ok\":false", "\"code\":\"body_too_large\"");
+	assert(capture_acquire_calls == 0U);
+	assert_store_revision(0U);
+
+	complete(&client, &route_mutations);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, valid, valid_len,
+		   mutation_headers, 1U, &route_mutations, &response);
+	assert_json_status(&response, HTTP_200_OK, "\"action\":\"clear\"");
+	transaction_output_add(&succeeded, &response);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, valid, valid_len,
+		   mutation_headers, 1U, &route_mutations, &response);
+	transaction_output_add(&succeeded, &response);
+	assert_one_cmd_json(&succeeded, "\"ok\":true", "\"action\":\"clear\"");
+	assert(capture_acquire_calls == 1U);
+	assert_store_revision(1U);
+	complete(&client, &route_mutations);
+}
+
+static void test_malformed_discards_until_abort(void)
+{
+	struct linkr_debugger_task_status status;
+	struct http_client_ctx client;
+	struct http_response_ctx response = { 0 };
+	struct transaction_output failed = { 0 };
+	uint8_t malformed[512];
+	uint8_t valid[512];
+	size_t valid_len;
+
+	reset_store();
+	assert(linkr_debugger_task_status_get(&status) == LINKR_DEBUGGER_TASK_OK);
+	valid_len = mutation_clear(valid, sizeof(valid), status.revision,
+				   status.catalog_fingerprint, false);
+	memcpy(malformed, valid, valid_len);
+	malformed[0] = 'X';
+	init_client(&client, HTTP_POST);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, malformed, valid_len,
+		   mutation_headers, 1U, &route_mutations, &response);
+	assert_json_status(&response, HTTP_400_BAD_REQUEST, "invalid_mutation");
+	transaction_output_add(&failed, &response);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, valid, valid_len,
+		   mutation_headers, 1U, &route_mutations, &response);
+	transaction_output_add(&failed, &response);
+	assert_one_cmd_json(&failed, "\"ok\":false", "\"code\":\"invalid_mutation\"");
+	assert(capture_acquire_calls == 0U);
+	assert_store_revision(0U);
+
+	abort_transaction(&client, &route_mutations);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, valid, valid_len,
+		   mutation_headers, 1U, &route_mutations, &response);
+	assert_json_status(&response, HTTP_200_OK, "\"action\":\"clear\"");
+	assert(capture_acquire_calls == 1U);
+	assert_store_revision(1U);
+	complete(&client, &route_mutations);
+}
+
+static void test_content_failure_and_clients_do_not_share_terminal_state(void)
+{
+	struct linkr_debugger_task_status status;
+	struct http_client_ctx client_a;
+	struct http_client_ctx client_b;
+	struct http_response_ctx response_a = { 0 };
+	struct http_response_ctx response_b = { 0 };
+	struct transaction_output failed = { 0 };
+	struct http_header wrong_type = { .name = "Content-Type", .value = "text/plain" };
+	uint8_t valid[512];
+	size_t valid_len;
+
+	reset_store();
+	assert(linkr_debugger_task_status_get(&status) == LINKR_DEBUGGER_TASK_OK);
+	valid_len = mutation_clear(valid, sizeof(valid), status.revision,
+				   status.catalog_fingerprint, false);
+	init_client(&client_a, HTTP_POST);
+	call_route(&client_a, HTTP_SERVER_REQUEST_DATA_MORE, valid, valid_len,
+		   &wrong_type, 1U, &route_mutations, &response_a);
+	transaction_output_add(&failed, &response_a);
+	call_route(&client_a, HTTP_SERVER_REQUEST_DATA_FINAL, valid, valid_len,
+		   mutation_headers, 1U, &route_mutations, &response_a);
+	assert_json_status(&response_a, HTTP_400_BAD_REQUEST, "invalid_mutation");
+	transaction_output_add(&failed, &response_a);
+	call_route(&client_a, HTTP_SERVER_REQUEST_DATA_FINAL, valid, valid_len,
+		   mutation_headers, 1U, &route_mutations, &response_a);
+	transaction_output_add(&failed, &response_a);
+	assert_one_cmd_json(&failed, "\"ok\":false", "\"code\":\"invalid_mutation\"");
+
+	/* A second client is busy, but never inherits client A's 400 state. */
+	init_client(&client_b, HTTP_POST);
+	call_route(&client_b, HTTP_SERVER_REQUEST_DATA_FINAL, valid, valid_len,
+		   mutation_headers, 1U, &route_mutations, &response_b);
+	assert_json_status(&response_b, HTTP_409_CONFLICT, "\"code\":\"busy\"");
+	assert(capture_acquire_calls == 0U);
+	assert_store_revision(0U);
+	complete(&client_b, &route_mutations);
+	complete(&client_a, &route_mutations);
+
+	call_route(&client_b, HTTP_SERVER_REQUEST_DATA_FINAL, valid, valid_len,
+		   mutation_headers, 1U, &route_mutations, &response_b);
+	assert_json_status(&response_b, HTTP_200_OK, "\"action\":\"clear\"");
+	assert(capture_acquire_calls == 1U);
+	assert_store_revision(1U);
+	complete(&client_b, &route_mutations);
+}
+
+static void test_raw_ir_response_lifetime_blocks_without_being_overwritten(void)
+{
+	static const char source[] = "{\"schema\":\"linkr-test.v1\"}\n";
+	static const char ir[] =
+		"# linkr-task.v1\n# task A\n"
+		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP7\",\"body\":\"{}\"}\n";
+	struct linkr_debugger_task_status status;
+	struct http_client_ctx setup;
+	struct http_client_ctx raw_client;
+	struct http_client_ctx mutation_client;
+	struct http_response_ctx response = { 0 };
+	struct http_response_ctx busy_response = { 0 };
+	uint8_t upsert[2048];
+	uint8_t clear[512];
+	uint8_t saved_ir[sizeof(ir) - 1U];
+	size_t upsert_len;
+	size_t clear_len;
+
+	reset_store();
+	assert(linkr_debugger_task_status_get(&status) == LINKR_DEBUGGER_TASK_OK);
+	upsert_len = mutation_upsert(upsert, sizeof(upsert), "A", source, ir,
+				     status.revision, status.catalog_fingerprint);
+	init_client(&setup, HTTP_POST);
+	call_route(&setup, HTTP_SERVER_REQUEST_DATA_FINAL, upsert, upsert_len,
+		   mutation_headers, 1U, &route_mutations, &response);
+	assert(response.status == HTTP_200_OK);
+	complete(&setup, &route_mutations);
+	assert(linkr_debugger_task_status_get(&status) == LINKR_DEBUGGER_TASK_OK);
+	clear_len = mutation_clear(clear, sizeof(clear), status.revision,
+				   status.catalog_fingerprint, false);
+	capture_acquire_calls = 0U;
+
+	init_client(&raw_client, HTTP_GET);
+	call_route(&raw_client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, 0U, NULL, 0U,
+		   &route_ir, &response);
+	assert(response.status == HTTP_200_OK && response.body_len == sizeof(saved_ir));
+	assert_content_type(&response, LINKR_DEBUGGER_TASK_IR_CONTENT_TYPE);
+	memcpy(saved_ir, response.body, sizeof(saved_ir));
+
+	init_client(&mutation_client, HTTP_POST);
+	call_route(&mutation_client, HTTP_SERVER_REQUEST_DATA_FINAL, clear, clear_len,
+		   mutation_headers, 1U, &route_mutations, &busy_response);
+	assert_json_status(&busy_response, HTTP_409_CONFLICT, "\"code\":\"busy\"");
+	assert(memcmp(response.body, saved_ir, sizeof(saved_ir)) == 0);
+	assert(capture_acquire_calls == 0U);
+	assert_store_revision(1U);
+	call_route(&mutation_client, HTTP_SERVER_REQUEST_DATA_FINAL, clear, clear_len,
+		   mutation_headers, 1U, &route_mutations, &busy_response);
+	assert(!busy_response.final_chunk && busy_response.body == NULL);
+	assert(memcmp(response.body, saved_ir, sizeof(saved_ir)) == 0);
+	complete(&mutation_client, &route_mutations);
+	complete(&raw_client, &route_ir);
+
+	call_route(&mutation_client, HTTP_SERVER_REQUEST_DATA_FINAL, clear, clear_len,
+		   mutation_headers, 1U, &route_mutations, &busy_response);
+	assert_json_status(&busy_response, HTTP_200_OK, "\"action\":\"clear\"");
+	assert(capture_acquire_calls == 1U);
+	assert_store_revision(2U);
+	complete(&mutation_client, &route_mutations);
+}
+
+static void test_large_json_body_across_many_chunks(void)
+{
+	static char source[LINKR_DEBUGGER_TASK_MAX_SOURCE_SIZE + 1U];
+	static uint8_t body[LINKR_DEBUGGER_TASK_MUTATION_MAX_SIZE];
+	char ir[LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE + 1U];
+	struct linkr_debugger_task_status status;
+	struct http_client_ctx client;
+	struct http_response_ctx response = { 0 };
+	size_t body_len;
+	size_t offset;
+	size_t ir_len;
 	int written;
 
+	reset_store();
+	/* Worst-case valid canonical source: quotes, backslashes and
+	 * multi-byte UTF-8 fill exactly 4000 bytes and still must arrive
+	 * losslessly from the bounded base64 body. */
+	for (size_t i = 0U; i < LINKR_DEBUGGER_TASK_MAX_SOURCE_SIZE; i += 8U) {
+		source[i + 0U] = '\\';
+		source[i + 1U] = '"';
+		source[i + 2U] = (char)0xe4;
+		source[i + 3U] = (char)0xb8;
+		source[i + 4U] = (char)0xad;
+		source[i + 5U] = (char)0xe6;
+		source[i + 6U] = (char)0x96;
+		source[i + 7U] = (char)0x87;
+	}
+	source[LINKR_DEBUGGER_TASK_MAX_SOURCE_SIZE] = '\0';
+	ir_len = 0U;
+	written = snprintf(ir, sizeof(ir),
+		"# linkr-task.v1\n# task A\n"
+		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP7\",\"body\":\"{}\"}\n");
+	assert(written > 0);
+	ir_len = (size_t)written;
+	while (ir_len + 5U <= LINKR_DEBUGGER_TASK_MAX_BLOB_SIZE) {
+		memcpy(ir + ir_len, "#pad\n", 5U);
+		ir_len += 5U;
+	}
+	ir[ir_len] = '\0';
+	assert(linkr_debugger_task_status_get(&status) == LINKR_DEBUGGER_TASK_OK);
+	body_len = mutation_upsert(body, sizeof(body), "A", source, ir,
+				   status.revision, status.catalog_fingerprint);
+	/* Both maximum payloads fit the bounded body: two 5336-character
+	 * base64 fields plus the fixed envelope keys. */
+	assert(body_len > 2U * (((LINKR_DEBUGGER_TASK_MAX_SOURCE_SIZE + 2U) / 3U) * 4U));
+	assert(body_len <= LINKR_DEBUGGER_TASK_MUTATION_MAX_SIZE);
+
+	init_client(&client, HTTP_POST);
+	for (offset = 0U; offset + 256U < body_len; offset += 256U) {
+		call_route(&client, HTTP_SERVER_REQUEST_DATA_MORE, body + offset, 256U,
+			   mutation_headers, 1U, &route_mutations, &response);
+		assert(response.body == NULL);
+	}
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, body + offset,
+		   body_len - offset, NULL, 0U, &route_mutations, &response);
+	assert_json_status(&response, HTTP_200_OK, "\"action\":\"upsert\"");
+	complete(&client, &route_mutations);
+
+	init_client(&client, HTTP_GET);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, 0U, NULL, 0U,
+		   &route_source_0, &response);
+	assert(response.status == HTTP_200_OK &&
+	       response.body_len == LINKR_DEBUGGER_TASK_MAX_SOURCE_SIZE);
+	assert(memcmp(response.body, source, response.body_len) == 0);
+	complete(&client, &route_source_0);
+
+	init_client(&client, HTTP_GET);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, 0U, NULL, 0U,
+		   &route_ir, &response);
+	assert(response.status == HTTP_200_OK && response.body_len == ir_len);
+	assert(memcmp(response.body, ir, response.body_len) == 0);
+	complete(&client, &route_ir);
+}
+
+static void test_catalog_source_absent_and_methods(void)
+{
+	struct http_client_ctx client;
+	struct http_response_ctx response = { 0 };
+
+	reset_store();
+	init_client(&client, HTTP_GET);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, 0U, NULL, 0U,
+		   &route_catalog, &response);
+	assert_json_status(&response, HTTP_200_OK, "\"action\":\"catalog\"");
+	complete(&client, &route_catalog);
+
+	init_client(&client, HTTP_GET);
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, 0U, NULL, 0U,
+		   &route_source_0, &response);
+	assert_json_status(&response, HTTP_404_NOT_FOUND, "task_source_absent");
+	complete(&client, &route_source_0);
+
 	init_client(&client, HTTP_DELETE);
-	written = snprintf(client.url_buffer, sizeof(client.url_buffer), "%s", path);
-	assert(written > 0 && (size_t)written < sizeof(client.url_buffer));
-	set_response_sentinel(response);
-	assert(linkr_debugger_http_handle_task_by_id(
-		       &client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, response) == 0);
-}
-
-static void test_delete_path_rejects_decoded_nul_without_truncating_id(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\n# task recovery\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP7\",\"body\":\"{}\"}\n";
-	static const char *const paths[] = {
-		"/api/v1/tasks/recovery%00junk",
-		"/api/v1/tasks/recovery%00",
-		"/api/v1/tasks/%00recovery",
-	};
-	struct http_response_ctx response;
-
-	reset_all();
-	assert(linkr_debugger_task_tasks_store(blob, sizeof(blob) - 1U) ==
-	       LINKR_DEBUGGER_TASK_OK);
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(paths); i++) {
-		call_delete_path(paths[i], &response);
-		assert_error_response(&response, HTTP_400_BAD_REQUEST, "\"code\":\"missing_id\"");
-		assert(capture_acquire_calls == 0U);
-		assert(flash_acquire_calls == 0U);
-		get_and_assert_blob_equals(blob, sizeof(blob) - 1U);
-	}
-}
-
-static void test_delete_path_preserves_utf8_and_percent_encoded_ids(void)
-{
-	static const struct {
-		const char *id;
-		const char *path;
-	} cases[] = {
-		{ "caf\xc3\xa9", "/api/v1/tasks/caf%C3%A9" },
-		{ "caf\xc3\xa9", "/api/v1/tasks/caf\xc3\xa9" },
-		{ "route/1?2%+", "/api/v1/tasks/route%2f1%3F2%25%2B" },
-		{ "%00", "/api/v1/tasks/%2500" },
-		{ ".hidden", "/api/v1/tasks/.hidden" },
-		{ "...", "/api/v1/tasks/..." },
-	};
-	struct http_response_ctx response;
-	char blob[256];
-	char text[RESPONSE_TEXT_CAP];
-
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(cases); i++) {
-		int written = snprintf(blob, sizeof(blob),
-			"# linkr-task.v1\n# task %s\n"
-			"{\"method\":\"PUT\",\"path\":\"/api/v1/gpio/GP7\",\"body\":\"{}\"}\n",
-			cases[i].id);
-
-		assert(written > 0 && (size_t)written < sizeof(blob));
-		reset_all();
-		assert(linkr_debugger_task_tasks_store(blob, (size_t)written) ==
-		       LINKR_DEBUGGER_TASK_OK);
-		call_delete_path(cases[i].path, &response);
-		assert_well_formed_response(&response, HTTP_200_OK);
-		response_text(&response, text);
-		assert(strstr(text, "\"deleted\":true") != NULL);
-		assert(strstr(text, cases[i].id) != NULL);
-		assert(!store_present);
-	}
-}
-
-static void test_delete_path_rejects_exact_dot_ids_even_with_empty_storage(void)
-{
-	static const char *const paths[] = {
-		"/api/v1/tasks/.", "/api/v1/tasks/..",
-		"/api/v1/tasks/%2e", "/api/v1/tasks/%2E%2e",
-	};
-	struct http_response_ctx response;
-
-	reset_all();
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(paths); i++) {
-		call_delete_path(paths[i], &response);
-		assert_error_response(&response, HTTP_400_BAD_REQUEST, "\"code\":\"missing_id\"");
-		assert(capture_acquire_calls == 0U);
-		assert(flash_acquire_calls == 0U);
-	}
-}
-
-static void test_delete_one_absent_id_returns_404(void)
-{
-	struct http_response_ctx response;
-
-	reset_all();
-	call_delete_one(HTTP_DELETE, "absent", &response);
-	assert_error_response(&response, HTTP_404_NOT_FOUND, "\"code\":\"not_found\"");
-}
-
-static void test_delete_one_invalid_id_returns_400(void)
-{
-	struct http_response_ctx response;
-
-	reset_all();
-	call_delete_one(HTTP_DELETE, "has space", &response);
-	assert_error_response(&response, HTTP_400_BAD_REQUEST, "\"code\":\"invalid_argument\"");
-	call_delete_one(HTTP_DELETE, "catalog", &response);
-	assert_error_response(&response, HTTP_400_BAD_REQUEST, "\"code\":\"invalid_argument\"");
-	call_delete_one(HTTP_DELETE, "", &response);
-	assert_error_response(&response, HTTP_400_BAD_REQUEST, "\"code\":\"missing_id\"");
-}
-
-static void test_delete_one_non_delete_returns_405(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task recovery\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/power/5v_out\",\"body\":\"{\\\"state\\\":\\\"off\\\"}\"}\n";
-	struct http_response_ctx response;
-
-	reset_all();
-	assert(linkr_debugger_task_tasks_store(blob, sizeof(blob) - 1U) == LINKR_DEBUGGER_TASK_OK);
-	call_delete_one(HTTP_GET, "recovery", &response);
-	assert_error_response(&response, HTTP_405_METHOD_NOT_ALLOWED,
-			      "\"code\":\"method_not_allowed\"");
-}
-
-static void test_delete_one_busy_returns_409(void)
-{
-	struct http_response_ctx response;
-
-	reset_all();
-	flash_busy = true;
-	call_delete_one(HTTP_DELETE, "recovery", &response);
-	assert_error_response(&response, HTTP_409_CONFLICT, "\"code\":\"busy\"");
-}
-
-static void test_catalog_get_returns_immutable_response(void)
-{
-	const uint8_t *catalog;
-	size_t catalog_len;
-	struct http_client_ctx client;
-	struct http_response_ctx response;
-
-	reset_all();
-	init_client(&client, HTTP_GET);
-	set_response_sentinel(&response);
-	call_task(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, 0U,
-		  &catalog_route, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	catalog = linkr_debugger_task_catalog_json(&catalog_len);
-	assert(response.body == catalog);
-	assert(response.body_len == catalog_len);
-	assert(strstr((const char *)response.body, "\"action\":\"catalog\"") != NULL);
-	assert(capture_acquire_calls == 0U);
-	assert(flash_acquire_calls == 0U);
-}
-
-static void test_catalog_non_get_returns_405(void)
-{
-	struct http_client_ctx client;
-	struct http_response_ctx response;
-
-	reset_all();
-	init_client(&client, HTTP_POST);
-	set_response_sentinel(&response);
-	call_task(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, 0U,
-		  &catalog_route, &response);
-	assert_error_response(&response, HTTP_405_METHOD_NOT_ALLOWED,
-		      "\"code\":\"method_not_allowed\"");
-}
-
-static void test_unknown_route_returns_404(void)
-{
-	static const enum linkr_debugger_task_http_route bogus_route =
-		(enum linkr_debugger_task_http_route)99;
-	struct http_client_ctx client;
-	struct http_response_ctx response;
-
-	reset_all();
-	init_client(&client, HTTP_GET);
-	set_response_sentinel(&response);
-	call_task(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, 0U,
-		  &bogus_route, &response);
-	assert_error_response(&response, HTTP_404_NOT_FOUND, "\"code\":\"not_found\"");
-}
-
-static void test_concurrent_upload_conflict_returns_409(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task first\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/power/20v_out\",\"body\":\"{\\\"state\\\":\\\"on\\\"}\"}\n";
-	const size_t split = 11U;
-	struct http_client_ctx client_a;
-	struct http_client_ctx client_b;
-	struct http_response_ctx response;
-
-	reset_all();
-	init_client(&client_a, HTTP_PUT);
-	init_client(&client_b, HTTP_PUT);
-	set_response_sentinel(&response);
-	call_task(&client_a, HTTP_SERVER_REQUEST_DATA_MORE, blob, split,
-		  &tasks_route, &response);
-	assert_response_sentinel(&response);
-	call_task(&client_b, HTTP_SERVER_REQUEST_DATA_MORE, blob, split,
-		  &tasks_route, &response);
-	assert_error_response(&response, HTTP_409_CONFLICT, "\"code\":\"busy\"");
-	set_response_sentinel(&response);
-	call_task(&client_a, HTTP_SERVER_REQUEST_DATA_FINAL, blob + split,
-		  sizeof(blob) - 1U - split, &tasks_route, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	get_and_assert_blob_equals(blob, sizeof(blob) - 1U);
-}
-
-static void test_aborted_upload_resets_state(void)
-{
-	static const char partial[] = "# linkr-task.v1\n# task truncated\n";
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task final\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/switch/tf_wp\",\"body\":\"{\\\"route\\\":\\\"protected\\\"}\"}\n";
-	struct http_client_ctx client;
-	struct http_response_ctx response;
-
-	reset_all();
-	init_client(&client, HTTP_PUT);
-	set_response_sentinel(&response);
-	call_task(&client, HTTP_SERVER_REQUEST_DATA_MORE, partial,
-		  sizeof(partial) - 1U, &tasks_route, &response);
-	assert_response_sentinel(&response);
-	set_response_sentinel(&response);
-	call_task(&client, HTTP_SERVER_TRANSACTION_ABORTED, NULL, 0U,
-		  &tasks_route, &response);
-	assert_response_sentinel(&response);
-	call_final(HTTP_PUT, blob, sizeof(blob) - 1U, &response);
-	assert_well_formed_response(&response, HTTP_200_OK);
-	get_and_assert_blob_equals(blob, sizeof(blob) - 1U);
-}
-
-static void test_foreign_upload_terminal_does_not_reset_owner(void)
-{
-	static const char blob[] =
-		"# linkr-task.v1\n"
-		"# task owner\n"
-		"{\"method\":\"PUT\",\"path\":\"/api/v1/switch/tf_wp\","
-		"\"body\":\"{\\\"route\\\":\\\"protected\\\"}\"}\n";
-	const size_t split = 19U;
-	const enum http_transaction_status terminal_statuses[] = {
-		HTTP_SERVER_TRANSACTION_ABORTED,
-		HTTP_SERVER_TRANSACTION_COMPLETE,
-	};
-	struct http_client_ctx client_a;
-	struct http_client_ctx client_b;
-	struct http_response_ctx response;
-
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(terminal_statuses); i++) {
-		reset_all();
-		init_client(&client_a, HTTP_PUT);
-		init_client(&client_b, HTTP_PUT);
-		set_response_sentinel(&response);
-		call_task(&client_a, HTTP_SERVER_REQUEST_DATA_MORE, blob, split,
-			  &tasks_route, &response);
-		assert_response_sentinel(&response);
-		set_response_sentinel(&response);
-		call_task(&client_b, terminal_statuses[i], NULL, 0U, &tasks_route, &response);
-		assert_response_sentinel(&response);
-		set_response_sentinel(&response);
-		call_task(&client_a, HTTP_SERVER_REQUEST_DATA_FINAL, blob + split,
-			  sizeof(blob) - 1U - split, &tasks_route, &response);
-		assert_well_formed_response(&response, HTTP_200_OK);
-		get_and_assert_blob_equals(blob, sizeof(blob) - 1U);
-	}
-}
-
-static unsigned int reboot_schedule_calls;
-static unsigned int reboot_accepted;
-static int reboot_error;
-
-int linkr_debugger_reboot_schedule(void)
-{
-	reboot_schedule_calls++;
-	if (reboot_error != 0) {
-		return reboot_error;
-	}
-	if (reboot_accepted != 0U) {
-		return -EALREADY;
-	}
-	reboot_accepted++;
-	return 0;
-}
-
-static void reset_reboot(void)
-{
-	reboot_schedule_calls = 0U;
-	reboot_accepted = 0U;
-	reboot_error = 0;
-}
-
-static void assert_reboot_error(const struct http_response_ctx *response,
-				enum http_status status, const char *code)
-{
-	char text[RESPONSE_TEXT_CAP];
-
-	assert_well_formed_response(response, status);
-	response_text(response, text);
-	assert(strstr(text, "\"command\":\"reboot\"") != NULL);
-	assert(strstr(text, "\"ok\":false") != NULL);
-	assert(strstr(text, code) != NULL);
-}
-
-static void test_reboot_non_post_has_no_side_effects(void)
-{
-	const enum http_method methods[] = {HTTP_GET, HTTP_PUT, HTTP_DELETE};
-
-	reset_reboot();
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(methods); i++) {
-		struct http_client_ctx client;
-		struct http_response_ctx response;
-
-		init_client(&client, methods[i]);
-		set_response_sentinel(&response);
-		assert(linkr_debugger_http_handle_reboot(&client,
-			HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response, NULL) == 0);
-		assert_reboot_error(&response, HTTP_405_METHOD_NOT_ALLOWED,
-				    "\"code\":\"method_not_allowed\"");
-		assert(reboot_schedule_calls == 0U);
-		assert(reboot_accepted == 0U);
-	}
-}
-
-static void test_reboot_only_handles_final_and_needs_no_body(void)
-{
-	const enum http_transaction_status ignored[] = {
-		HTTP_SERVER_REQUEST_DATA_MORE,
-		HTTP_SERVER_TRANSACTION_ABORTED,
-		HTTP_SERVER_TRANSACTION_COMPLETE,
-	};
-	struct http_client_ctx client;
-	struct http_response_ctx response;
-	char text[RESPONSE_TEXT_CAP];
-
-	reset_reboot();
-	init_client(&client, HTTP_POST);
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(ignored); i++) {
-		set_response_sentinel(&response);
-		assert(linkr_debugger_http_handle_reboot(&client, ignored[i],
-			NULL, &response, NULL) == 0);
-		assert_response_sentinel(&response);
-		assert(reboot_schedule_calls == 0U);
-	}
-	assert(linkr_debugger_http_handle_reboot(&client,
-		HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response, NULL) == 0);
-	assert_well_formed_response(&response, HTTP_202_ACCEPTED);
-	response_text(&response, text);
-	assert(strcmp(text,
-		"{\"schema\":\"radxa-linkr-debugger.v1\",\"ok\":true,\"command\":\"reboot\","
-		"\"reboot_delay_ms\":250,\"message\":\"normal cold reboot (not BOOTSEL)\"}\n") == 0);
-	assert(reboot_schedule_calls == 1U);
-	assert(reboot_accepted == 1U);
-
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(ignored); i++) {
-		set_response_sentinel(&response);
-		assert(linkr_debugger_http_handle_reboot(&client, ignored[i],
-			NULL, &response, NULL) == 0);
-		assert_response_sentinel(&response);
-		assert(reboot_schedule_calls == 1U);
-	}
-
-	assert(linkr_debugger_http_handle_reboot(&client,
-		HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response, NULL) == 0);
-	assert_reboot_error(&response, HTTP_409_CONFLICT, "\"code\":\"reboot_pending\"");
-	assert(reboot_schedule_calls == 2U);
-	assert(reboot_accepted == 1U);
-}
-
-static void test_reboot_schedule_error_is_500(void)
-{
-	const int errors[] = {-EIO, -EBUSY};
-	struct http_client_ctx client;
-	struct http_response_ctx response;
-
-	init_client(&client, HTTP_POST);
-	for (size_t i = 0U; i < ARRAY_SIZE_LOCAL(errors); i++) {
-		reset_reboot();
-		reboot_error = errors[i];
-		assert(linkr_debugger_http_handle_reboot(&client,
-			HTTP_SERVER_REQUEST_DATA_FINAL, NULL, &response, NULL) == 0);
-		assert_reboot_error(&response, HTTP_500_INTERNAL_SERVER_ERROR,
-				    "\"code\":\"reboot_failed\"");
-		assert(reboot_schedule_calls == 1U);
-		assert(reboot_accepted == 0U);
-	}
+	call_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, NULL, 0U, NULL, 0U,
+		   &route_tasks, &response);
+	assert_json_status(&response, HTTP_405_METHOD_NOT_ALLOWED, "\"error\":{");
+	complete(&client, &route_tasks);
 }
 
 int main(void)
 {
-	test_reboot_non_post_has_no_side_effects();
-	test_reboot_only_handles_final_and_needs_no_body();
-	test_reboot_schedule_error_is_500();
-	test_get_empty_returns_frozen_empty_contract();
-	test_get_with_stored_blob_returns_summaries_and_exact_blob();
-	test_put_then_get_max_blob_round_trip();
-	test_put_chunked_upload_round_trip();
-	test_put_oversized_returns_413_and_upload_recovers();
-	test_put_invalid_blob_returns_400();
-	test_put_storage_failure_returns_500();
-	test_put_backend_unavailable_returns_500();
-	test_put_capture_busy_returns_409();
-	test_put_flash_busy_returns_409_and_releases_capture();
-	test_put_missing_body_returns_400();
-	test_put_json_quoted_body_is_unescaped();
-	test_put_json_quoted_body_accepts_unicode();
-	test_put_json_quoted_body_rejects_invalid_tokens();
-	test_put_c0_control_byte_returns_400_and_nothing_persisted();
-	test_get_discards_invalid_utf8_from_storage();
-	test_put_tab_and_crlf_blob_round_trip();
-	test_delete_clears_blob_and_get_returns_empty();
-	test_delete_busy_returns_409();
-	test_post_returns_405();
-	test_delete_one_removes_only_the_named_task();
-	test_delete_path_rejects_decoded_nul_without_truncating_id();
-	test_delete_path_preserves_utf8_and_percent_encoded_ids();
-	test_delete_path_rejects_exact_dot_ids_even_with_empty_storage();
-	test_delete_one_absent_id_returns_404();
-	test_delete_one_invalid_id_returns_400();
-	test_delete_one_non_delete_returns_405();
-	test_delete_one_busy_returns_409();
-	test_catalog_get_returns_immutable_response();
-	test_catalog_non_get_returns_405();
-	test_unknown_route_returns_404();
-	test_concurrent_upload_conflict_returns_409();
-	test_aborted_upload_resets_state();
-	test_foreign_upload_terminal_does_not_reset_owner();
+	test_chunked_mutation_then_metadata_ir_and_source();
+	test_stale_catalog_busy_storage_and_content_type_errors();
+	test_oversize_discards_until_complete();
+	test_malformed_discards_until_abort();
+	test_content_failure_and_clients_do_not_share_terminal_state();
+	test_raw_ir_response_lifetime_blocks_without_being_overwritten();
+	test_large_json_body_across_many_chunks();
+	test_catalog_source_absent_and_methods();
 	puts("linkr_debugger_task_http: all tests passed");
 	return 0;
 }

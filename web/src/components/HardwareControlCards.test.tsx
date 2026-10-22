@@ -7,6 +7,7 @@ import { layoutForTestGpios } from "@/lib/gpioPhysicalLayout.testFixtures";
 import { x12SwitchesFixture } from "@/lib/switches.testFixtures";
 import { setSwitch } from "@/lib/api";
 import { PowerCard } from "./PowerCard";
+import { NativeAdcCards } from "./NativeAdcCards";
 import { SwitchCard } from "./SwitchCard";
 
 const I18N_TEMPLATES: Record<string, string> = {
@@ -100,6 +101,7 @@ const readings: AdcReading[] = [
     signal: "GP29",
     kind: "voltage",
     unit: "uV",
+    role: "native",
     value: 373_000,
   },
 ];
@@ -117,19 +119,20 @@ describe("hardware control cards", () => {
     const onSet = vi.fn();
     const onOpenDetails = vi.fn();
     const view = render(
-      <PowerCard
+      <><PowerCard
         outputs={outputs}
         readings={readings}
         onSet={onSet}
         onOpenDetails={onOpenDetails}
         disabled
         compact
-      />,
+      /><NativeAdcCards readings={readings} showTrends={false} /></>,
     );
 
     expect(view.host.textContent).toContain("0.184 A");
     expect(view.host.textContent).toContain("0.92 W");
     expect(view.host.textContent).toContain("0.373 V");
+    expect(view.host.querySelector('[data-native-adc="adc3"]')?.textContent).toContain("0.373 V");
     expect(view.host.querySelector('[role="tablist"]')).toBeNull();
     expect(view.host.querySelector('[data-testid="measurement-sparkline"]')).toBeNull();
     const railToggle = view.host.querySelector<HTMLButtonElement>('[role="switch"]');

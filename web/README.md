@@ -1,8 +1,8 @@
 # Radxa Linkr Debugger Web UI
 
 React/Vite control interface for the debugger firmware HTTP and WebSocket APIs.
-Production firmware embeds the gzip-compressed UI and serves it from
-`http://172.29.203.1/` over USB NCM. The page uses same-origin `/api/v1`
+Production firmware embeds the gzip-compressed UI and serves it from the board
+`.1` address of its private USB-NCM `/30`. The page uses same-origin `/api/v1`
 HTTP and WebSocket endpoints, so normal board controls do not require a host
 proxy.
 
@@ -15,8 +15,9 @@ npm test
 npm run dev
 ```
 
-Open <http://127.0.0.1:5173/>. The board must be connected over USB NCM and
-reachable at `172.29.203.1`.
+Open <http://127.0.0.1:5173/>. The board must be connected over USB NCM; set
+`VITE_DEBUGGER_TARGET=http://<board-ip>` or `LINKR_BOARD_URL=http://<board-ip>`
+(board `.1` of the host NCM `/30`).
 
 On macOS, the operating system can allow `/usr/bin/curl` to reach the USB-NCM
 interface while rejecting a direct Node.js socket with `EHOSTUNREACH`. The
@@ -43,9 +44,12 @@ documented in [docs/reference/adc-telemetry.md](../docs/reference/adc-telemetry.
   only four current descriptors; a new output does not create a sensor.
 - The four reported INA226 channels keep the current/voltage/power overlay.
   Shared sparklines retain 600 browser samples and preview 90 at the live
-  animation-frame cadence. ADC-pad voltage descriptors (currently four) remain
-  a separate monitor-only section, with canonical signed microvolt values and
-  no host-side calibration or GPIO control.
+  animation-frame cadence.
+- ADC0 is presented in the PD settings panel as the firmware canonical
+  source-side DC20V value; `raw`/`mv` remain pad diagnostics. ADC1-3 are native
+  pad-voltage cards above the switch routes. No host-side `115/15` conversion or
+  calibration table is applied; ADC0's uncalibrated accuracy is approximately
+  2%.
 - Workflow power-on/off choices come from controllable output descriptors.
   Current-read, capture and startup-analysis choices require current readings;
   an uninstrumented output cannot silently become a capture source. Historical
@@ -81,21 +85,22 @@ Generated files are written to `web/dist/` and are intentionally ignored by
 Git.
 
 The canonical firmware build runs `npm ci` and `npm run build:firmware`
-automatically, verifies the fixed embedded asset set, and converts the app plus
-decoder files into gzip-compressed Zephyr HTTP resources. Node.js 22, npm,
-Rust with the `wasm32-unknown-unknown` target, and `wasm-bindgen` must therefore
-be available when building firmware from a clean checkout. Run
+automatically, verifies the fixed embedded asset set, and runs every embedded
+asset through **Zopfli 1.0.3 standard gzip**. The helper verifies gzip with
+`mtime=0`, exact decompression, and deterministic output; `generate_inc_file`
+only hex-encodes the verified bytes. Brotli is not part of the embedded
+firmware path. Node.js 22, npm,
+Rust with the `wasm32-unknown-unknown` target, `wasm-bindgen`, and the Zopfli
+executable must therefore be available when building firmware from a clean
+checkout. Run
 `npm run build:firmware` directly to reproduce that fixed-asset build from the
 Web workspace; unlike the normal build, it disables JavaScript code splitting.
 The board-hosted decoder public contract is stable for the future React loader:
 import `/assets/decoder/logic-decoder.js`, which loads
 `/assets/decoder/logic-decoder_bg.wasm` next to itself.
 
-After flashing, connect the USB NCM interface and open:
-
-```text
-http://172.29.203.1/
-```
+After flashing, connect the USB NCM interface and open the board `.1` address
+of the host `/30`, or read the URL from the CDC shell `ip` command.
 
 ## GitHub Pages
 
@@ -196,6 +201,34 @@ binary and gzip compression. It decodes UART, I2C, and SPI protocols only and
 is not a libsigrokdecode Python plugin compatibility layer. The capture and
 decode workflow: arm capture, wait for done, then decode in-browser using the
 WASM decoder with annotations rendered in the waveform view.
+
+## Workflow library and task-v2
+
+The **Automation** workspace keeps multiple workflows in IndexedDB:
+`workflows[workflow_id]` owns canonical source/name/baseline/timestamps, and
+`deployments[[task_store_id,task_id]]` links a workflow to a board task with
+source/task-IR digests, catalog fingerprint, revision, and
+`board|local-only|ir-only` source state. One workflow may deploy to several
+boards. A source over 4000 bytes is saved only in the browser
+(`local-only`) and deploys IR only; a fresh browser cannot reopen it from the
+board. Board-backed exact source remains reopenable from
+`GET /api/v1/tasks/slots/{slot}/source`. IR-only tasks and built-ins never
+claim lossless source.
+
+Workflow import/export and task-IR import/export are separate actions. Workflow
+files are canonical `linkr-test.v1` source and preserve loops, Units, and
+assertions. Task IR contains deployment requests only; importing one task
+leaves siblings unchanged, while full-set import explicitly replaces all
+tasks. Import never runs hardware. Opening a built-in export is not lossless
+because catalog cleanup is not representable in task IR.
+
+Task writes use only `POST /api/v1/tasks/mutations` with the revision/catalog
+CAS. There is no task blob upload or per-ID write/delete route. `GET /api/v1/tasks`
+returns metadata only; raw bytes come from `/api/v1/tasks/ir` or the per-slot
+source route and are digest-checked before use. See
+[docs/user/api.md](../docs/user/api.md) for the task wire contract and
+[docs/reference/adc-telemetry.md](../docs/reference/adc-telemetry.md) for the
+ADC role/layout contract.
 
 ## J4 target serial terminal
 
@@ -362,10 +395,10 @@ by the API-level runner in `docs/testing/hil-functional-test-spec.md`; keep ROM
 BOOTSEL recovery available.
 
 **Same-origin vs GitHub Pages**: when the UI is served from the board at
-`http://172.29.203.1/` it talks to the OTA endpoints directly (same-origin).
+`http://<board-ip>/` it talks to the OTA endpoints directly (same-origin).
 When the UI is served from GitHub Pages over HTTPS, Linkr Host
 (`npm run host`) is required to reach the board at
-`http://172.29.203.1`. The gateway now permits the OTA-specific headers
+`http://<board-ip>`. The gateway now permits the OTA-specific headers
 (`X-Linkr-Ota-Size`, `X-Linkr-Ota-Sha256`) in CORS responses, so upload
 progress and SHA-256 verification work end-to-end from Pages. Start the bridge
 before opening the OTA card from the hosted page.

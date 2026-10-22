@@ -52,6 +52,15 @@ const struct linkr_debugger_rail_desc linkr_debugger_rails[] = {
 		.pin = 24,
 		.controllable = true,
 	},
+	{
+		.name = "5v_otg",
+		.signal = "OTG_USB_EN",
+		.parent = "vdd_5v",
+		.pin = 23,
+		.controllable = true,
+		.role = LINKR_DEBUGGER_RAIL_ROLE_PORT_VBUS,
+		.backfeed_capable = true,
+	},
 };
 
 const size_t linkr_debugger_rail_count = ARRAY_SIZE_LOCAL(linkr_debugger_rails);
@@ -62,6 +71,7 @@ const struct linkr_debugger_current_desc linkr_debugger_currents[] = {
 		.signal = "INA226_5V",
 		.sensor = INA226_SENSOR,
 		.kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
+		.role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
 		.unit = CURRENT_UNIT,
 		.sensor_index = 0,
 	},
@@ -70,6 +80,7 @@ const struct linkr_debugger_current_desc linkr_debugger_currents[] = {
 		.signal = "INA226_12V",
 		.sensor = INA226_SENSOR,
 		.kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
+		.role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
 		.unit = CURRENT_UNIT,
 		.sensor_index = 1,
 	},
@@ -78,6 +89,7 @@ const struct linkr_debugger_current_desc linkr_debugger_currents[] = {
 		.signal = "INA226_20V",
 		.sensor = INA226_SENSOR,
 		.kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
+		.role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
 		.unit = CURRENT_UNIT,
 		.sensor_index = 2,
 	},
@@ -86,6 +98,7 @@ const struct linkr_debugger_current_desc linkr_debugger_currents[] = {
 		.signal = "INA226_VDD_5V",
 		.sensor = INA226_SENSOR,
 		.kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
+		.role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
 		.unit = CURRENT_UNIT,
 		.sensor_index = 3,
 	},
@@ -95,6 +108,7 @@ const struct linkr_debugger_current_desc linkr_debugger_currents[] = {
 		.sensor = ADC_SENSOR,
 		.note = "PD input divider; ADC pad voltage",
 		.kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE,
+		.role = LINKR_DEBUGGER_ADC_ROLE_PD_INPUT,
 		.unit = VOLTAGE_UNIT,
 		.adc_index = 0,
 	},
@@ -103,6 +117,7 @@ const struct linkr_debugger_current_desc linkr_debugger_currents[] = {
 		.signal = "GPIO27_ADC1",
 		.sensor = ADC_SENSOR,
 		.kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE,
+		.role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
 		.unit = VOLTAGE_UNIT,
 		.adc_index = 1,
 	},
@@ -111,6 +126,7 @@ const struct linkr_debugger_current_desc linkr_debugger_currents[] = {
 		.signal = "GPIO28_ADC2",
 		.sensor = ADC_SENSOR,
 		.kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE,
+		.role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
 		.unit = VOLTAGE_UNIT,
 		.adc_index = 2,
 	},
@@ -119,6 +135,7 @@ const struct linkr_debugger_current_desc linkr_debugger_currents[] = {
 		.signal = "GPIO29_ADC3",
 		.sensor = ADC_SENSOR,
 		.kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE,
+		.role = LINKR_DEBUGGER_ADC_ROLE_NATIVE,
 		.unit = VOLTAGE_UNIT,
 		.adc_index = 3,
 	},
@@ -243,6 +260,99 @@ bool linkr_debugger_rail_state_allowed(const struct linkr_debugger_rail_desc *ra
 	}
 
 	return !rail->always_on || enabled;
+}
+
+bool linkr_debugger_rail_is_port_vbus(const struct linkr_debugger_rail_desc *rail)
+{
+	return rail != NULL && rail->role == LINKR_DEBUGGER_RAIL_ROLE_PORT_VBUS &&
+	       rail->backfeed_capable;
+}
+
+bool linkr_debugger_port_desired_cleared_by_parent_off(
+	const struct linkr_debugger_rail_desc *rail)
+{
+	/* An explicit parent off cancels desired for bidirectional port VBUS
+	 * rails only: the external connector can source into the tree, so a
+	 * pending desire must not survive a deliberate parent shutdown.
+	 * Ordinary child rails keep their desired state across parent loss.
+	 */
+	return linkr_debugger_rail_is_port_vbus(rail);
+}
+
+const char *linkr_debugger_rail_effective_name(
+	enum linkr_debugger_rail_effective_state effective)
+{
+	switch (effective) {
+	case LINKR_DEBUGGER_RAIL_EFFECTIVE_ON:
+		return "on";
+	case LINKR_DEBUGGER_RAIL_EFFECTIVE_BLOCKED:
+		return "blocked";
+	case LINKR_DEBUGGER_RAIL_EFFECTIVE_OFF:
+	default:
+		return "off";
+	}
+}
+
+const char *linkr_debugger_backfeed_state_name(enum linkr_debugger_backfeed_state backfeed)
+{
+	switch (backfeed) {
+	case LINKR_DEBUGGER_BACKFEED_DETECTED:
+		return "detected";
+	case LINKR_DEBUGGER_BACKFEED_POSSIBLE:
+		return "possible";
+	case LINKR_DEBUGGER_BACKFEED_UNKNOWN:
+	default:
+		return "unknown";
+	}
+}
+
+struct linkr_debugger_port_state linkr_debugger_port_state_resolve(
+	bool desired, bool requested, bool parent_sourcing, bool backfeed_detected)
+{
+	struct linkr_debugger_port_state state = {
+		.desired = desired,
+		.requested = requested,
+		.effective = LINKR_DEBUGGER_RAIL_EFFECTIVE_OFF,
+		.backfeed = backfeed_detected ? LINKR_DEBUGGER_BACKFEED_DETECTED :
+						LINKR_DEBUGGER_BACKFEED_POSSIBLE,
+	};
+
+	if (requested && parent_sourcing && !backfeed_detected) {
+		state.effective = LINKR_DEBUGGER_RAIL_EFFECTIVE_ON;
+	} else if (desired) {
+		state.effective = LINKR_DEBUGGER_RAIL_EFFECTIVE_BLOCKED;
+	}
+	return state;
+}
+
+bool linkr_debugger_port_request_allowed(bool desired, bool parent_sourcing,
+					 bool backfeed_detected)
+{
+	return desired && parent_sourcing && !backfeed_detected;
+}
+
+size_t linkr_debugger_rail_children(
+	const struct linkr_debugger_rail_desc *parent,
+	const struct linkr_debugger_rail_desc **children, size_t capacity)
+{
+	size_t count = 0U;
+
+	if (parent == NULL) {
+		return 0U;
+	}
+
+	for (size_t i = 0; i < linkr_debugger_rail_count; i++) {
+		const struct linkr_debugger_rail_desc *child = &linkr_debugger_rails[i];
+
+		if (child->parent == NULL || !streq(child->parent, parent->name)) {
+			continue;
+		}
+		if (children != NULL && count < capacity) {
+			children[count] = child;
+		}
+		count++;
+	}
+	return count;
 }
 
 bool linkr_debugger_heartbeat_step(struct linkr_debugger_heartbeat_state *state,

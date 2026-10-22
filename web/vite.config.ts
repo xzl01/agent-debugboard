@@ -8,7 +8,8 @@ import path from "path";
 // WebSocket upgrades stay same-origin in the browser to avoid CORS/PNA issues.
 export default defineConfig(({ mode }) => {
   const isFirmwareBuild = mode === "firmware" || Boolean(process.env.VITE_OUT_DIR);
-  const debuggerTarget = process.env.VITE_DEBUGGER_TARGET || "http://172.29.203.1";
+  const debuggerTarget =
+    process.env.VITE_DEBUGGER_TARGET || process.env.LINKR_BOARD_URL || "http://172.29.203.1";
 
   return {
     base: process.env.VITE_BASE_PATH || "/",

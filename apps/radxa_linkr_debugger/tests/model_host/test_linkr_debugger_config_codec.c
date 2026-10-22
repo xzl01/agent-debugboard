@@ -142,6 +142,9 @@ static void build_max_snapshot(struct linkr_debugger_config_snapshot *snapshot)
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		     LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID,
 		     LINKR_DEBUGGER_CONFIG_POWER_OFF);
+	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+		     LINKR_DEBUGGER_CONFIG_POWER_5V_OTG_ID,
+		     LINKR_DEBUGGER_CONFIG_POWER_OFF);
 	append_entry(snapshot, LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		     LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID,
 		     LINKR_DEBUGGER_CONFIG_SD_TARGET);
@@ -172,6 +175,8 @@ static void test_constants_and_catalog(void)
 		  LINKR_DEBUGGER_CONFIG_POWER_20V_OUT_ID, "power/20v_out" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
 		  LINKR_DEBUGGER_CONFIG_POWER_5V_USB_HUB_ID, "power/5v_usb_hub" },
+		{ LINKR_DEBUGGER_CONFIG_DOMAIN_POWER,
+		  LINKR_DEBUGGER_CONFIG_POWER_5V_OTG_ID, "power/5v_otg" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
 		  LINKR_DEBUGGER_CONFIG_SWITCH_SD_ID, "switch/sd" },
 		{ LINKR_DEBUGGER_CONFIG_DOMAIN_SWITCH,
@@ -192,8 +197,8 @@ static void test_constants_and_catalog(void)
 	assert(LINKR_DEBUGGER_CONFIG_VERSION == 1U);
 	assert(LINKR_DEBUGGER_CONFIG_HEADER_SIZE == 12U);
 	assert(LINKR_DEBUGGER_CONFIG_ENTRY_SIZE == 4U);
-	assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 18U);
-	assert(LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE == 84U);
+	assert(LINKR_DEBUGGER_CONFIG_MAX_ENTRIES == 19U);
+	assert(LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE == 88U);
 	assert(LINKR_DEBUGGER_CONFIG_SETTINGS_MAX_VAL_LEN == 256U);
 	assert(linkr_debugger_config_item_count == ARRAY_SIZE_LOCAL(expected));
 
@@ -400,7 +405,7 @@ static void test_maximum_round_trip(void)
 	assert(linkr_debugger_config_encode(&source, encoded, sizeof(encoded), &encoded_len) ==
 	       LINKR_DEBUGGER_CONFIG_CODEC_OK);
 	assert(encoded_len == LINKR_DEBUGGER_CONFIG_MAX_ENCODED_SIZE);
-	assert(encoded[8] == 0x54U);
+	assert(encoded[8] == 0x58U);
 	assert(encoded[9] == 0x00U);
 	for (size_t i = 0; i < source.entry_count; i++) {
 		const size_t offset = LINKR_DEBUGGER_CONFIG_HEADER_SIZE +

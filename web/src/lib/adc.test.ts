@@ -7,17 +7,19 @@ import {
   parseCaptureCurrentReadings,
   parseCompactAdcReadings,
   parseHttpAdcReadings,
+  updatePdInputMeasurement,
+  freshPdInputMeasurement,
 } from "./adc.ts";
 
 const currentNames = ["5v_out", "12v_out", "20v_out", "vdd_5v"];
 const voltageChannels = [
-  { name: "adc0", signal: "GPIO26_ADC0", value: 2_608_696, note: "PD input divider; ADC pad voltage" },
-  { name: "adc1", signal: "GPIO27_ADC1", value: 1_100_000 },
-  { name: "adc2", signal: "GPIO28_ADC2", value: 2_200_000 },
-  { name: "adc3", signal: "GPIO29_ADC3", value: 1_650_000 },
+  { name: "adc0", signal: "GPIO26_ADC0", role: "pd_input", value: 20_000_000 },
+  { name: "adc1", signal: "GPIO27_ADC1", role: "native", value: 1_100_000 },
+  { name: "adc2", signal: "GPIO28_ADC2", role: "native", value: 2_200_000 },
+  { name: "adc3", signal: "GPIO29_ADC3", role: "native", value: 1_650_000 },
 ];
 
-test("normalizes all eight HTTP readings without scaling ADC-pad voltage", () => {
+test("normalizes all eight HTTP source/native readings and preserves pad diagnostics", () => {
   const readings = parseHttpAdcReadings({
     readings: [
       ...currentNames.map((name) => ({
@@ -36,7 +38,7 @@ test("normalizes all eight HTTP readings without scaling ADC-pad voltage", () =>
       ...voltageChannels.map(({ value, ...metadata }) => ({
         ...metadata,
         raw: 2048,
-        mv: Math.trunc(value / 1000),
+        mv: metadata.role === "pd_input" ? 2609 : Math.trunc(value / 1000),
         sensor_channel: "voltage",
         unit: "V",
         sensor_value: { val1: Math.trunc(value / 1_000_000), val2: value % 1_000_000 },
@@ -64,7 +66,7 @@ test("normalizes all eight HTTP readings without scaling ADC-pad voltage", () =>
       unit: "uV",
       ...channel,
       raw: 2048,
-      mv: Math.trunc(channel.value / 1000),
+      mv: channel.role === "pd_input" ? 2609 : Math.trunc(channel.value / 1000),
       sensor_channel: "voltage",
       sensor_value: { val1: Math.trunc(channel.value / 1_000_000), val2: channel.value % 1_000_000 },
     })),
@@ -123,7 +125,7 @@ test("accepts all eight compact channels with matching kind and unit pairs", () 
 
 test("does not turn missing or invalid voltage values into zero or invent unreported channels", () => {
   const channel = { name: "adc3", signal: "GPIO29_ADC3", kind: "voltage", unit: "uV" };
-  assert.deepEqual(parseCompactAdcReadings([{ ...channel, value: 0 }]), [{ ...channel, value: 0 }]);
+  assert.deepEqual(parseCompactAdcReadings([{ ...channel, value: 0 }]), [{ ...channel, role: "native", value: 0 }]);
   for (const value of [null, undefined, NaN, Infinity, "1650000", 1.5]) {
     assert.deepEqual(parseCompactAdcReadings([{ ...channel, value }]), []);
   }
@@ -163,4 +165,17 @@ test("retains a bounded 600-sample browser history independently from the 90-sam
   assert.equal(history.length, MEASUREMENT_HISTORY_LIMIT);
   assert.equal(history[0], 1);
   assert.equal(history.at(-1), MEASUREMENT_HISTORY_LIMIT);
+});
+
+test("ADC0 uses source-side HTTP/WS values while retaining raw/mv pad diagnostics", () => {
+  const http = parseHttpAdcReadings({ readings: [{ name: "adc0", signal: "DC20V", role: "pd_input", sensor_channel: "voltage", unit: "V", raw: 3238, mv: 2609, sensor_value: { val1: 20, val2: 0 } }] });
+  const compact = parseCompactAdcReadings([{ name: "adc0", signal: "DC20V", role: "pd_input", kind: "voltage", unit: "uV", value: 20_000_000 }]);
+  assert.equal(http[0].value, 20_000_000); assert.equal(http[0].mv, 2609); assert.equal(http[0].raw, 3238); assert.equal(compact[0].value, http[0].value);
+  const sample = updatePdInputMeasurement(null, http, 1000);
+  assert.equal(freshPdInputMeasurement(sample, 1500, 1000), http[0]);
+  const missing = updatePdInputMeasurement(sample, parseCompactAdcReadings([{ name: "adc1", signal: "pad", kind: "voltage", unit: "uV", value: 1 }]), 1900);
+  assert.equal(missing, sample); assert.equal(freshPdInputMeasurement(missing, 2001, 1000), null);
+  assert.equal(updatePdInputMeasurement(sample, parseCompactAdcReadings([{ name: "adc0", signal: "DC20V", role: "pd_input", kind: "voltage", unit: "uV", value: null }]), 1900), sample);
+  assert.equal(freshPdInputMeasurement(updatePdInputMeasurement(sample, [{ ...compact[0], value: 0 }], 2002), 2002, 1000)?.value, 0);
+  assert.deepEqual(parseCompactAdcReadings([{ name: "adc0", signal: "DC20V", kind: "voltage", unit: "uV", value: 100 }]), []);
 });

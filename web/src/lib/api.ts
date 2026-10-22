@@ -1,6 +1,6 @@
 import { parsePersistentConfigError, parsePersistentConfigGet, parsePersistentConfigMutation } from "./persistentConfig.ts";
 import type { PersistentConfig } from "./persistentConfig.ts";
-import { parseTaskListResponse, type TaskListData } from "./taskRunner.ts";
+import { createTaskV2Client, type TaskStoreMetadata } from "./taskV2.ts";
 import { isTaskControlPath } from "./taskBlob.ts";
 import { parseTaskCatalogResponse, type BuiltInTask } from "./builtinTasks.ts";
 import { parseGpioPhysicalLayout } from "./gpioPhysicalLayout.ts";
@@ -166,23 +166,30 @@ export const rebootBoard = async (signal?: AbortSignal): Promise<void> => {
   await request<void>("/reboot", { method: "POST", signal }, 202);
 };
 
-export const getTasks = async (signal?: AbortSignal): Promise<TaskListData> =>
-  parseTaskListResponse(await request<unknown>("/tasks", { signal }));
+const taskClient = createTaskV2Client(BASE);
+export const getTaskMetadata = taskClient.list;
+export const getTaskIr = taskClient.readIr;
+export const getTaskSource = taskClient.readSource;
+export const mutateTasks = taskClient.mutate;
+export const upsertWorkflowTask = taskClient.upsertSource;
+export const getTasks = async (signal?: AbortSignal) => {
+  const snapshot = await taskClient.readIr(signal);
+  return { ...snapshot, tasks: snapshot.metadata.tasks.map((task) => ({ ...task, name: task.id })) };
+};
 
 export const getTaskCatalog = async (signal?: AbortSignal): Promise<readonly BuiltInTask[]> =>
   parseTaskCatalogResponse(await request<unknown>("/tasks/catalog", { signal }));
 
-export const storeTaskBlob = (blob: string) =>
-  request<unknown>("/tasks", {
-    method: "PUT",
-    body: blob,
-  });
-
-export const clearTasks = () =>
-  request<unknown>("/tasks", { method: "DELETE" });
-
-export const deleteTask = (id: string) =>
-  request<unknown>(`/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const importTaskIr = (blob: string, metadata: TaskStoreMetadata, signal?: AbortSignal) =>
+  taskClient.mutate({ action: "import", ir: blob, expectedRevision: metadata.revision, catalogFingerprint: metadata.catalog_fingerprint }, signal);
+export const clearTasks = async (metadata?: TaskStoreMetadata) => {
+  const current = metadata ?? await taskClient.list();
+  return taskClient.mutate({ action: "clear", expectedRevision: current.revision, catalogFingerprint: current.catalog_fingerprint });
+};
+export const deleteTask = async (id: string, metadata?: TaskStoreMetadata) => {
+  const current = metadata ?? await taskClient.list();
+  return taskClient.mutate({ action: "delete", id, expectedRevision: current.revision, catalogFingerprint: current.catalog_fingerprint });
+};
 
 const BOARD_API_PREFIX = "/api/v1";
 
@@ -212,29 +219,74 @@ export const clearPersistentConfig = async () => {
   parsePersistentConfigMutation(await configRequest("/config", "clear", { method: "DELETE" }), "clear");
 };
 
+export type NetOrigin = "derived" | "manual";
+
 export interface NetSettings {
-  readonly subnet: number;
+  readonly mac: string;
+  readonly origin: NetOrigin;
+  readonly network: string;
+  readonly prefix: 30;
   readonly ip: string;
+  readonly dhcp_base: string;
+  readonly url: string;
   readonly reconnect_required?: boolean;
   readonly message?: string;
 }
 
+const IPV4_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+export function parseNetworkBase(value: string): number | null {
+  const match = IPV4_PATTERN.exec(value.trim());
+  if (!match) return null;
+  const octets = match.slice(1).map(Number);
+  if (octets.some((octet) => octet < 0 || octet > 255)) return null;
+  return ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
+}
+
+export function isPrivateSlash30(value: string): boolean {
+  const address = parseNetworkBase(value);
+  if (address === null || (address & 3) !== 0) return false;
+  const first = address >>> 24;
+  const second = (address >>> 16) & 0xff;
+  return first === 10 ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168);
+}
+
+export function isLocallyAdministeredMac(value: string): boolean {
+  const parts = value.trim().toLowerCase().split(":");
+  if (parts.length !== 6 || parts.some((part) => !/^[0-9a-f]{2}$/.test(part))) return false;
+  return (Number.parseInt(parts[0], 16) & 0x03) === 0x02;
+}
+
 function parseNetSettings(data: unknown): NetSettings {
   const record = asRecord(data);
-  const subnet = record?.subnet;
+  const mac = record?.mac;
+  const origin = record?.origin;
+  const network = record?.network;
+  const prefix = record?.prefix;
   const ip = record?.ip;
+  const dhcpBase = record?.dhcp_base;
+  const url = record?.url;
   if (
-    typeof subnet !== "number" ||
-    !Number.isInteger(subnet) ||
-    subnet < 1 ||
-    subnet > 254 ||
-    typeof ip !== "string"
+    typeof mac !== "string" || !isLocallyAdministeredMac(mac) ||
+    (origin !== "derived" && origin !== "manual") ||
+    typeof network !== "string" || !isPrivateSlash30(network) ||
+    prefix !== 30 ||
+    typeof ip !== "string" || !IPV4_PATTERN.test(ip) ||
+    typeof dhcpBase !== "string" || !IPV4_PATTERN.test(dhcpBase) ||
+    typeof url !== "string" || !/^http:\/\/[^/]+\/$/.test(url)
   ) {
     throw new BoardApiError("Device returned an invalid network settings response.", "invalid_response", data);
   }
   return {
-    subnet,
+    mac,
+    origin,
+    network,
+    prefix,
     ip,
+    dhcp_base: dhcpBase,
+    url,
     ...(typeof record?.reconnect_required === "boolean" ? { reconnect_required: record.reconnect_required } : {}),
     ...(typeof record?.message === "string" && record.message.trim() ? { message: record.message.trim() } : {}),
   };
@@ -243,8 +295,13 @@ function parseNetSettings(data: unknown): NetSettings {
 export const getNetSettings = async (): Promise<NetSettings> =>
   parseNetSettings(await request("/net"));
 
-export const setNetSubnet = async (subnet: number): Promise<NetSettings> =>
+export interface NetIdentityUpdate {
+  readonly mac?: string;
+  readonly network?: string;
+}
+
+export const setNetIdentity = async (update: NetIdentityUpdate): Promise<NetSettings> =>
   parseNetSettings(await request("/net", {
     method: "PUT",
-    body: JSON.stringify({ subnet }),
+    body: JSON.stringify(update),
   }));

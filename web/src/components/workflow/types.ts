@@ -95,6 +95,7 @@ export interface WorkflowComposerProps {
   onChange: (script: TestScript) => void;
   onRun: () => void;
   onNew?: () => void;
+  onImport?: (script: TestScript) => void;
   draftState?: "saving" | "saved" | "error";
   runDisabled?: boolean;
   runDisabledReason?: string;

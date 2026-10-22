@@ -16,6 +16,7 @@ enum http_status {
 	HTTP_409_CONFLICT = 409,
 	HTTP_413_PAYLOAD_TOO_LARGE = 413,
 	HTTP_500_INTERNAL_SERVER_ERROR = 500,
+	HTTP_507_INSUFFICIENT_STORAGE = 507,
 };
 
 enum http_transaction_status {

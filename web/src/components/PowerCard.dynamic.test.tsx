@@ -33,7 +33,7 @@ describe("firmware-driven power rows", () => {
     expect(hub.querySelector("[data-power-measurements], [data-chart-reading]")).toBeNull();
     expect(hub.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true");
     expect(view.host.querySelectorAll("[data-power-measurements]")).toHaveLength(4);
-    expect(view.host.querySelectorAll("[data-chart-reading]")).toHaveLength(8); // Four current + four ADC pads.
+    expect(view.host.querySelectorAll("[data-chart-reading]")).toHaveLength(4); // Native ADCs now live in independent cards above routing.
     expect(view.host.querySelector('[data-testid="pd-live-status"]')?.textContent).toBe(lang === "en" ? "Voltage not reported yet" : "电压尚未读取");
     expect(view.onSet).not.toHaveBeenCalled();
     act(() => (hub.querySelector('[role="switch"]') as HTMLButtonElement).click());

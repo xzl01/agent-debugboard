@@ -42,6 +42,7 @@ zephyr_iterable_section(NAME http_resource_desc_linkr_debugger_http_service
   KVMA RAM_REGION GROUP RODATA_REGION)
 
 find_program(NPM_EXECUTABLE NAMES npm REQUIRED)
+find_program(ZOPFLI_EXECUTABLE NAMES zopfli REQUIRED)
 
 set(linkr_debugger_web_dir ${CMAKE_CURRENT_SOURCE_DIR}/../../web)
 set(linkr_debugger_web_dist_dir ${ZEPHYR_BINARY_DIR}/web-dist)
@@ -99,46 +100,36 @@ add_custom_command(
   VERBATIM
 )
 
-generate_inc_file_for_target(app
-  ${linkr_debugger_web_dist_dir}/index.html
-  ${linkr_debugger_web_gen_dir}/linkr_debugger_web_index.html.gz.inc
-  --gzip
-)
-generate_inc_file_for_target(app
-  ${linkr_debugger_web_dist_dir}/linkr-mark.svg
-  ${linkr_debugger_web_gen_dir}/linkr_debugger_web_linkr_mark.svg.gz.inc
-  --gzip
-)
-generate_inc_file_for_target(app
-  ${linkr_debugger_web_dist_dir}/linkr-logo.svg
-  ${linkr_debugger_web_gen_dir}/linkr_debugger_web_linkr_logo.svg.gz.inc
-  --gzip
-)
-generate_inc_file_for_target(app
-  ${linkr_debugger_web_dist_dir}/robots.txt
-  ${linkr_debugger_web_gen_dir}/linkr_debugger_web_robots.txt.gz.inc
-  --gzip
-)
-generate_inc_file_for_target(app
-  ${linkr_debugger_web_dist_dir}/assets/app.css
-  ${linkr_debugger_web_gen_dir}/linkr_debugger_web_app.css.gz.inc
-  --gzip
-)
-generate_inc_file_for_target(app
-  ${linkr_debugger_web_dist_dir}/assets/app.js
-  ${linkr_debugger_web_gen_dir}/linkr_debugger_web_app.js.gz.inc
-  --gzip
-)
-generate_inc_file_for_target(app
-  ${linkr_debugger_web_dist_dir}/assets/decoder/logic-decoder.js
-  ${linkr_debugger_web_gen_dir}/linkr_debugger_web_logic_decoder.js.gz.inc
-  --gzip
-)
-generate_inc_file_for_target(app
-  ${linkr_debugger_web_dist_dir}/assets/decoder/logic-decoder_bg.wasm
-  ${linkr_debugger_web_gen_dir}/linkr_debugger_web_logic_decoder_bg.wasm.gz.inc
-  --gzip
-)
+# Zopfli 1.0.3 produces reproducible gzip streams without changing web-dist.
+# file2hex only encodes the verified gzip bytes; it must not compress again.
+set(linkr_debugger_zopfli_script
+  ${CMAKE_CURRENT_SOURCE_DIR}/scripts/zopfli_compress.py)
+function(linkr_debugger_embed_web_resource source_name output_name)
+  set(source_file "${linkr_debugger_web_dist_dir}/${source_name}")
+  set(gzip_file "${linkr_debugger_web_gen_dir}/${output_name}.gz")
+  add_custom_command(
+    OUTPUT "${gzip_file}"
+    COMMAND ${Python3_EXECUTABLE} "${linkr_debugger_zopfli_script}"
+            --zopfli "${ZOPFLI_EXECUTABLE}"
+            --input "${source_file}" --output "${gzip_file}"
+    DEPENDS "${source_file}" "${linkr_debugger_zopfli_script}"
+            "${ZOPFLI_EXECUTABLE}"
+    COMMENT "Compressing ${source_name} with Zopfli"
+    VERBATIM
+  )
+  generate_inc_file_for_target(app "${gzip_file}" "${gzip_file}.inc")
+endfunction()
+
+linkr_debugger_embed_web_resource(index.html linkr_debugger_web_index.html)
+linkr_debugger_embed_web_resource(linkr-mark.svg linkr_debugger_web_linkr_mark.svg)
+linkr_debugger_embed_web_resource(linkr-logo.svg linkr_debugger_web_linkr_logo.svg)
+linkr_debugger_embed_web_resource(robots.txt linkr_debugger_web_robots.txt)
+linkr_debugger_embed_web_resource(assets/app.css linkr_debugger_web_app.css)
+linkr_debugger_embed_web_resource(assets/app.js linkr_debugger_web_app.js)
+linkr_debugger_embed_web_resource(assets/decoder/logic-decoder.js
+  linkr_debugger_web_logic_decoder.js)
+linkr_debugger_embed_web_resource(assets/decoder/logic-decoder_bg.wasm
+  linkr_debugger_web_logic_decoder_bg.wasm)
 
 target_sources(app PRIVATE
   src/main.c
@@ -184,10 +175,12 @@ target_sources(app PRIVATE
   src/linkr_debugger_network.c
   src/linkr_debugger_net_settings.c
   src/linkr_debugger_pd.c
+  src/linkr_debugger_power_json.c
   src/linkr_debugger_reboot.c
   src/wch_ch224a.c
   src/linkr_debugger_task.c
   src/linkr_debugger_task_parse.c
+  src/linkr_debugger_task_sha256.c
   src/linkr_debugger_task_mutation.c
   src/linkr_debugger_task_shell.c
   src/linkr_debugger_shell.c

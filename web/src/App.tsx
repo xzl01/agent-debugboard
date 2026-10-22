@@ -34,6 +34,8 @@ import {
   type SerialConnectionSummary,
 } from "./components/SerialCard";
 import { PowerAnalysisWorkspace } from "./components/PowerAnalysisWorkspace";
+import { NativeAdcCards } from "./components/NativeAdcCards";
+import { updatePdInputMeasurement, type PdInputMeasurement } from "@/lib/adc";
 import { TestAutomation } from "./components/TestAutomation";
 import { LogicAnalyzerCard } from "./components/LogicAnalyzerCard";
 import { ConfigurationWorkspace } from "./components/ConfigurationWorkspace";
@@ -90,6 +92,10 @@ function writeStoredHardwareSection(section: HardwareSectionId): void {
 // allow: SIZE_OK — one app-shell orchestrator owns workspace routing and shared status.
 export default function App() {
   const board = useBoard();
+  const [pdInputMeasurement, setPdInputMeasurement] = useState<PdInputMeasurement | null>(null);
+  useEffect(() => {
+    setPdInputMeasurement((previous) => updatePdInputMeasurement(previous, board.snapshot.adc, Date.now()));
+  }, [board.snapshot.adc]);
   const [ota, setOta] = useState<OtaStatus | null>(null);
   const persistentConfig = usePersistentConfig({
     connected: board.connected,
@@ -370,6 +376,7 @@ export default function App() {
           outputs={board.snapshot.powerOutputs}
           readings={board.snapshot.adc}
           pd={board.snapshot.pd}
+          pdInputUpdatedAt={pdInputMeasurement?.receivedAtMs ?? null}
           onSet={board.setPower}
           onSetPd={board.setPd}
           disabled={!board.connected || automationOwner != null}
@@ -377,6 +384,7 @@ export default function App() {
         />
       </div>
       <div className="grid min-w-0 gap-4">
+        <NativeAdcCards readings={board.snapshot.adc} stale={!board.connected} />
         <div id="hardware-control-routing" className="scroll-mt-14">
           <SwitchCard
             switches={board.snapshot.switches}

@@ -1,3 +1,5 @@
+import { assertUniqueJsonObjectKeys } from "./jsonUniqueKeys.ts";
+
 export type StepType =
   | "power_on"
   | "power_off"
@@ -702,15 +704,15 @@ export function defaultStepParams<T extends StepType>(type: T): StepParamsFor<T>
   return params[type] as unknown as StepParamsFor<T>;
 }
 
-export function parseTestScript(
-  ndjson: string,
-  options: { validatePlan?: boolean } = {},
-): TestScript {
-  const validatePlan = options.validatePlan !== false;
+export function parseTestScript(ndjson: string): TestScript {
   const lines = ndjson.split("\n").filter((l) => l.trim());
   if (lines.length === 0) throw new Error("Empty script");
+  // Validate raw tokens first: JSON.parse otherwise silently keeps the last key.
+  lines.forEach(assertUniqueJsonObjectKeys);
   const header = JSON.parse(lines[0]);
+  validateScriptHeader(header);
   if (header.schema !== "linkr-test.v1") throw new Error(`Unknown schema: ${header.schema}`);
+  for (const line of lines.slice(1)) validateScriptItem(JSON.parse(line));
   const steps: TestScriptItem[] = [];
   const parseChildStep = (child: unknown, location: string): TestStep => {
     if (!child || typeof child !== "object" || Array.isArray(child)) {
@@ -738,7 +740,7 @@ export function parseTestScript(
       continue_on_error: value.continue_on_error as boolean | undefined,
     };
     assertJ4Channel(step, location);
-    if (validatePlan) assertSerialWaitPattern(step, location);
+    assertSerialWaitPattern(step, location);
     return step;
   };
 
@@ -762,7 +764,7 @@ export function parseTestScript(
     if (!Array.isArray(unitSteps)) {
       throw new Error(`${location} Unit "steps" must be an array`);
     }
-    if (validatePlan && unitSteps.length === 0) {
+    if (unitSteps.length === 0) {
       throw new Error(`${location} Unit "steps" must be a non-empty array`);
     }
     return {
@@ -807,7 +809,7 @@ export function parseTestScript(
       if (!Array.isArray(childSteps)) {
         throw new Error(`Line ${i + 1}: loop "steps" must be an array`);
       }
-      if (validatePlan && childSteps.length === 0) {
+      if (childSteps.length === 0) {
         throw new Error(`Line ${i + 1}: loop "steps" must be a non-empty array`);
       }
       if (unit != null && (
@@ -841,10 +843,7 @@ export function parseTestScript(
     }
     if (obj.type === "condition") {
       const check = parseChildStep(obj.params?.check, `Line ${i + 1}: condition check`);
-      if (validatePlan) assertConditionCheck(check, `Line ${i + 1}: condition check`);
-      else if (!(["serial_expect", "adc_read", "gpio_assert"] as StepType[]).includes(check.type)) {
-        throw new Error(`Line ${i + 1}: unsupported condition check type "${check.type}"`);
-      }
+      assertConditionCheck(check, `Line ${i + 1}: condition check`);
       if (!Array.isArray(obj.params?.then_steps) || !Array.isArray(obj.params?.else_steps)) {
         throw new Error(`Line ${i + 1}: condition branches must be arrays`);
       }
@@ -873,7 +872,7 @@ export function parseTestScript(
       continue_on_error: obj.continue_on_error,
     };
     assertJ4Channel(step, `Line ${i + 1}`);
-    if (validatePlan) assertSerialWaitPattern(step, `Line ${i + 1}`);
+    assertSerialWaitPattern(step, `Line ${i + 1}`);
     steps.push(step);
   }
   const script: TestScript = {
@@ -881,30 +880,30 @@ export function parseTestScript(
     name: header.name ?? "Untitled",
     version: header.version ?? "1.0",
     board: header.board,
-    created: header.created,
+    created: header.created ?? new Date().toISOString(),
     steps,
   };
-  if (validatePlan) buildExecutionPlan(script);
+  buildExecutionPlan(script);
   return script;
 }
 
 export function serializeTestScript(script: TestScript): string {
+  validateScriptHeader({ schema: script.schema, name: script.name, version: script.version, board: script.board, created: script.created });
+  script.steps.forEach((item) => validateScriptItem(item));
   assertJ4ScriptChannels(script.steps);
+  buildExecutionPlan(script);
+  // Stamp once, before persistence; repeated exports of the same workflow are exact.
+  script.created ??= new Date().toISOString();
   const header = {
     schema: script.schema,
     name: script.name,
     version: script.version,
     board: script.board,
-    created: script.created ?? new Date().toISOString(),
+    created: script.created,
   };
   const lines = [JSON.stringify(header)];
   for (const step of script.steps) {
-    const obj: Record<string, unknown> = { id: step.id, type: step.type, params: step.params };
-    if (!isTestLoop(step) && !isTestCondition(step) && step.assert) obj.assert = step.assert;
-    if (!isTestLoop(step) && !isTestCondition(step) && step.continue_on_error) {
-      obj.continue_on_error = step.continue_on_error;
-    }
-    lines.push(JSON.stringify(obj));
+    lines.push(JSON.stringify(canonicalValue(canonicalScriptItem(step))));
   }
   return lines.join("\n") + "\n";
 }
@@ -914,7 +913,155 @@ export function defaultScript(name = "New Test"): TestScript {
     schema: "linkr-test.v1",
     name,
     version: "1.0",
+    created: new Date().toISOString(),
     steps: [],
   };
+}
+
+function strictObject(value: unknown, keys: readonly string[], location: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${location} must be an object`);
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!keys.includes(key)) throw new Error(`${location}: unknown field "${key}"`);
+  }
+  return record;
+}
+
+function validateScriptHeader(value: unknown, draft = false): void {
+  const header = strictObject(value, ["schema", "name", "version", "board", "created"], "Header");
+  if (header.schema !== "linkr-test.v1") throw new Error(`Unknown schema: ${header.schema}`);
+  for (const key of ["name", "version", "board", "created"]) {
+    if (header[key] !== undefined && typeof header[key] !== "string") throw new Error(`Header ${key} must be a string`);
+  }
+  if (!draft && header.created !== undefined && !Number.isFinite(Date.parse(header.created as string))) throw new Error("Header created must be a timestamp");
+}
+
+const PARAM_FIELDS: Record<StepType, readonly string[]> = {
+  power_on: ["rail"], power_off: ["rail"], delay: ["ms"],
+  serial_wait: ["channel", "pattern", "timeout_ms"], serial_send: ["channel", "text"],
+  serial_expect: ["channel", "command", "pattern", "timeout_ms"], adc_read: ["channel"],
+  gpio_set: ["pin", "direction", "value"], gpio_assert: ["pin", "direction", "value"],
+  switch_route: ["switch", "route"], capture: ["rail", "trigger", "duration_ms", "threshold_a"],
+};
+
+function validateScriptItem(value: unknown, draft = false): void {
+  const item = strictObject(value, ["id", "type", "params", "assert", "continue_on_error"], "Step");
+  if (typeof item.id !== "string" || (!draft && !item.id)) throw new Error('Step: missing or invalid "id"');
+  if (item.type === "loop" || item.type === "condition") {
+    strictObject(value, ["id", "type", "params"], "Flow");
+    const params = strictObject(item.params, item.type === "loop" ? ["count", "steps", "unit"] : ["check", "then_steps", "else_steps"], "Flow params");
+    if (item.type === "loop" && (typeof params.count !== "number" || (!draft && (!Number.isInteger(params.count) || params.count < MIN_LOOP_COUNT || params.count > MAX_LOOP_COUNT)))) throw new Error('loop "count" must be an integer between 1 and 1000');
+    if (params.unit !== undefined) {
+      const unit = strictObject(params.unit, ["name"], "Unit");
+      if (typeof unit.name !== "string" || (!draft && (!unit.name.trim() || unit.name.length > 80))) throw new Error('unit "name" must be a non-empty string up to 80 characters');
+    }
+    if (item.type === "condition") validateScriptItem(params.check, draft);
+    for (const key of item.type === "loop" ? ["steps"] : ["then_steps", "else_steps"]) {
+      if (!Array.isArray(params[key])) throw new Error(`Flow ${key} must be an array`);
+      (params[key] as unknown[]).forEach((child) => validateScriptItem(child, draft));
+    }
+    return;
+  }
+  if (!STEP_TYPES.includes(item.type as StepType)) throw new Error(`unknown step type "${String(item.type)}"`);
+  const params = item.params === undefined ? {} : strictObject(item.params, PARAM_FIELDS[item.type as StepType], 'Step "params"');
+  for (const [key, val] of Object.entries(params)) {
+    if (val === undefined) continue;
+    if (["ms", "timeout_ms", "duration_ms", "threshold_a"].includes(key)) {
+      if (typeof val !== "number" || (!draft && (!Number.isFinite(val) || val < 0 || (key !== "threshold_a" && !Number.isSafeInteger(val))))) throw new Error(`Invalid numeric parameter ${key}`);
+    } else if (key === "value") {
+      if (typeof val !== "number" || (!draft && val !== 0 && val !== 1)) throw new Error("GPIO value must be 0 or 1");
+    } else if (typeof val !== "string") throw new Error(`Parameter ${key} must be a string`);
+    if (!draft && key === "direction" && val !== "input" && val !== "output") throw new Error("Invalid GPIO direction");
+    if (!draft && key === "trigger" && !["manual", "current", "gpio", "power_on"].includes(val as string)) throw new Error("Invalid capture trigger");
+  }
+  if (item.continue_on_error !== undefined && typeof item.continue_on_error !== "boolean") throw new Error("continue_on_error must be boolean");
+  if (item.assert !== undefined) {
+    const assertion = strictObject(item.assert, ["continue_on_error", "current_range", "contains", "regex", "exit_code", "pin_direction", "pin_value", "peak_current_max_a", "energy_max_j"], "Assertion");
+    for (const [key, val] of Object.entries(assertion)) {
+      if (val === undefined) continue;
+      if (key === "current_range") {
+        const range = strictObject(val, ["min_a", "max_a"], "Current range");
+        const bounds = draft ? Object.values(range) : [range.min_a, range.max_a];
+        if (!bounds.every((n) => typeof n === "number" && (draft || Number.isFinite(n))) || (!draft && (range.min_a as number) > (range.max_a as number))) throw new Error("Invalid current range");
+      } else if (key === "continue_on_error") {
+        if (typeof val !== "boolean") throw new Error("Assertion continue_on_error must be boolean");
+      } else if (key === "contains" || key === "regex") {
+        if (typeof val !== "string") throw new Error(`Assertion ${key} must be a string`);
+        if (!draft && key === "regex") new RegExp(val);
+      } else if (key === "pin_direction") {
+        if (typeof val !== "string" || (!draft && val !== "input" && val !== "output")) throw new Error("Invalid assertion direction");
+      } else if (key === "pin_value") {
+        if (typeof val !== "number" || (!draft && val !== 0 && val !== 1)) throw new Error("Invalid assertion pin value");
+      } else if (typeof val !== "number" || (!draft && (!Number.isFinite(val) || (key === "exit_code" && !Number.isSafeInteger(val))))) throw new Error(`Invalid assertion ${key}`);
+    }
+  }
+}
+
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, val]) => [key, canonicalValue(val)]));
+  return value;
+}
+
+function canonicalScriptItem(item: TestScriptItem): unknown {
+  if (isTestLoop(item)) return { id: item.id, type: item.type, params: {
+    count: item.params.count,
+    steps: item.params.steps.map(canonicalScriptItem),
+    ...(item.params.unit ? { unit: { name: item.params.unit.name.trim() } } : {}),
+  } };
+  if (isTestCondition(item)) return { id: item.id, type: item.type, params: {
+    check: canonicalScriptItem(item.params.check),
+    then_steps: item.params.then_steps.map(canonicalScriptItem),
+    else_steps: item.params.else_steps.map(canonicalScriptItem),
+  } };
+  return { id: item.id, type: item.type,
+    params: { ...defaultStepParams(item.type), ...Object.fromEntries(Object.entries(item.params).filter(([, val]) => val !== undefined)) },
+    ...(item.assert ? { assert: item.assert } : {}),
+    ...(item.continue_on_error ? { continue_on_error: true } : {}),
+  };
+}
+
+const DRAFT_SCHEMA = "linkr-test-draft.v1";
+const DRAFT_NUMBER = "$linkrDraftNumber";
+
+function validateTestScriptDraft(value: unknown): asserts value is TestScript {
+  const script = strictObject(value, ["schema", "name", "version", "board", "created", "steps"], "Draft script");
+  const { steps, ...header } = script;
+  validateScriptHeader(header, true);
+  if (typeof script.name !== "string" || typeof script.version !== "string" || !Array.isArray(steps)) throw new Error("Draft requires name, version and steps");
+  steps.forEach((item) => validateScriptItem(item, true));
+}
+
+/** Local editor buffer ONLY: not canonical workflow NDJSON, export, library or deploy input. */
+export function serializeTestScriptDraft(script: TestScript): string {
+  validateTestScriptDraft(script);
+  // JSON normally turns NaN/Infinity into null. Explicit tags preserve input-in-progress.
+  return JSON.stringify({ schema: DRAFT_SCHEMA, script }, (_key, value: unknown) => {
+    if (typeof value !== "number") return value;
+    if (Number.isNaN(value)) return { [DRAFT_NUMBER]: "NaN" };
+    if (value === Infinity) return { [DRAFT_NUMBER]: "+Infinity" };
+    if (value === -Infinity) return { [DRAFT_NUMBER]: "-Infinity" };
+    return Object.is(value, -0) ? { [DRAFT_NUMBER]: "-0" } : value;
+  });
+}
+
+/** Restore known editor structure without validating ranges, regexes or execution plans. */
+export function parseTestScriptDraft(buffer: string): TestScript {
+  assertUniqueJsonObjectKeys(buffer);
+  const decoded: unknown = JSON.parse(buffer, (_key, value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, DRAFT_NUMBER)) return value;
+    const tag = strictObject(value, [DRAFT_NUMBER], "Draft number")[DRAFT_NUMBER];
+    switch (tag) {
+      case "NaN": return NaN;
+      case "+Infinity": return Infinity;
+      case "-Infinity": return -Infinity;
+      case "-0": return -0;
+      default: throw new Error("Invalid draft number tag");
+    }
+  });
+  const envelope = strictObject(decoded, ["schema", "script"], "Draft buffer");
+  if (envelope.schema !== DRAFT_SCHEMA) throw new Error("Not a local test-script draft");
+  validateTestScriptDraft(envelope.script);
+  return envelope.script;
 }
 import type { PowerCapture } from "./types.ts";

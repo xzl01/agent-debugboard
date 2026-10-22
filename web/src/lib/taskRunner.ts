@@ -1,13 +1,6 @@
-import { TASK_MAX_REQUESTS, type TaskRequest } from "./taskRequests.ts";
-import {
-  taskByteLength,
-  TaskDataError,
-  TASK_BLOB_MAX_BYTES,
-  TASK_ID_MAX_BYTES,
-  TASK_MAX_TASKS,
-  TASK_NAME_MAX_BYTES,
-  type ParsedTask,
-} from "./taskBlob.ts";
+import { type TaskRequest } from "./taskRequests.ts";
+import { TaskDataError, type ParsedTask } from "./taskBlob.ts";
+export { parseTaskStoreMetadata as parseTaskListResponse } from "./taskV2.ts";
 
 export {
   parseTaskBlob,
@@ -24,8 +17,6 @@ export {
   type TaskDataErrorCode,
 } from "./taskBlob.ts";
 
-const FROZEN_SCHEMA = "radxa-linkr-debugger.v1";
-
 export interface TaskSummary {
   readonly id: string;
   readonly name: string;
@@ -35,83 +26,6 @@ export interface TaskSummary {
 export interface TaskListData {
   readonly tasks: readonly TaskSummary[];
   readonly blob: string;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? Object.fromEntries(Object.entries(value))
-    : null;
-}
-
-export function parseTaskListResponse(data: unknown): TaskListData {
-  const envelope = asRecord(data);
-  if (!envelope) throw new TaskDataError("invalid_response", "response is not a JSON object");
-  if (envelope.schema !== FROZEN_SCHEMA) {
-    throw new TaskDataError("invalid_response", `unexpected schema ${JSON.stringify(envelope.schema)}`);
-  }
-  if (envelope.ok !== true) throw new TaskDataError("invalid_response", "response does not report ok:true");
-  if (envelope.command !== "task") {
-    throw new TaskDataError("invalid_response", `unexpected command ${JSON.stringify(envelope.command)}`);
-  }
-  if (envelope.action !== "list") {
-    throw new TaskDataError("invalid_response", `unexpected action ${JSON.stringify(envelope.action)}`);
-  }
-  if (!Array.isArray(envelope.tasks)) throw new TaskDataError("invalid_response", "tasks is not an array");
-  if (envelope.tasks.length > TASK_MAX_TASKS) {
-    throw new TaskDataError(
-      "invalid_response",
-      `tasks carries ${envelope.tasks.length} entries, above the firmware limit of ${TASK_MAX_TASKS}`,
-    );
-  }
-  const tasks = envelope.tasks.map((entry): TaskSummary => {
-    const summary = asRecord(entry);
-    if (
-      !summary ||
-      typeof summary.id !== "string" ||
-      typeof summary.name !== "string" ||
-      typeof summary.request_count !== "number"
-    ) {
-      throw new TaskDataError("invalid_response", "task summary must carry id, name, request_count");
-    }
-    if (taskByteLength(summary.id) === 0 || taskByteLength(summary.id) > TASK_ID_MAX_BYTES) {
-      throw new TaskDataError(
-        "invalid_response",
-        `task id must be 1..${TASK_ID_MAX_BYTES} UTF-8 bytes`,
-      );
-    }
-    if (taskByteLength(summary.name) > TASK_NAME_MAX_BYTES) {
-      throw new TaskDataError(
-        "invalid_response",
-        `task name exceeds the ${TASK_NAME_MAX_BYTES} byte firmware limit`,
-      );
-    }
-    if (
-      !Number.isInteger(summary.request_count) ||
-      summary.request_count < 0 ||
-      summary.request_count > TASK_MAX_REQUESTS
-    ) {
-      throw new TaskDataError(
-        "invalid_response",
-        `request_count must be an integer within 0..${TASK_MAX_REQUESTS}`,
-      );
-    }
-    return { id: summary.id, name: summary.name, request_count: summary.request_count };
-  });
-  const seenIds = new Set<string>();
-  for (const task of tasks) {
-    if (seenIds.has(task.id)) {
-      throw new TaskDataError("invalid_response", `task list carries duplicate id ${JSON.stringify(task.id)}`);
-    }
-    seenIds.add(task.id);
-  }
-  if (typeof envelope.blob !== "string") throw new TaskDataError("invalid_response", "blob is not a string");
-  if (taskByteLength(envelope.blob) > TASK_BLOB_MAX_BYTES) {
-    throw new TaskDataError(
-      "invalid_response",
-      `blob exceeds the ${TASK_BLOB_MAX_BYTES} byte firmware limit`,
-    );
-  }
-  return { tasks, blob: envelope.blob };
 }
 
 export function selectTaskRequests(tasks: readonly ParsedTask[], taskId: string): readonly TaskRequest[] {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { enterBootloader, rebootBoard, setGpio, setNetSubnet, setPower, setSwitch } from "./api";
+import { enterBootloader, isPrivateSlash30, rebootBoard, setGpio, setNetIdentity, setPower, setSwitch } from "./api";
 
 function response(): Response {
   return new Response("{}", { status: 200, statusText: "OK" });
@@ -101,13 +101,36 @@ describe("network response semantics", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it.each([true, false])("preserves explicit reconnect_required=%s and firmware advice through API normalization", async (reconnect_required) => {
-    const data = { subnet: 204, ip: "172.29.204.1", reconnect_required, message: "Renew the host DHCP lease." };
+    const data = {
+      mac: "02:11:22:33:44:55", origin: "manual", network: "10.0.0.4",
+      prefix: 30, ip: "10.0.0.5", dhcp_base: "10.0.0.6", url: "http://10.0.0.5/",
+      reconnect_required, message: "Renew the host DHCP lease.",
+    };
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(data), { status: 200 })));
-    await expect(setNetSubnet(204)).resolves.toEqual(data);
+    await expect(setNetIdentity({ network: "10.0.0.4" })).resolves.toEqual(data);
   });
 
   it("keeps missing or malformed optional advice absent so UI fallback remains possible", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ subnet: 204, ip: "172.29.204.1", reconnect_required: "false", message: "  " }), { status: 200 })));
-    await expect(setNetSubnet(204)).resolves.toEqual({ subnet: 204, ip: "172.29.204.1" });
+    const data = {
+      mac: "02:11:22:33:44:55", origin: "derived", network: "10.0.0.0",
+      prefix: 30, ip: "10.0.0.1", dhcp_base: "10.0.0.2", url: "http://10.0.0.1/",
+      reconnect_required: "false", message: "  ",
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(data), { status: 200 })));
+    await expect(setNetIdentity({ network: "10.0.0.0" })).resolves.toEqual({
+      mac: "02:11:22:33:44:55", origin: "derived", network: "10.0.0.0",
+      prefix: 30, ip: "10.0.0.1", dhcp_base: "10.0.0.2", url: "http://10.0.0.1/",
+    });
+  });
+});
+
+
+describe("private /30 validation", () => {
+  it.each(["10.0.0.0", "10.255.255.252", "172.16.0.0", "172.31.255.252", "192.168.0.0"])("accepts %s", (value) => {
+    expect(isPrivateSlash30(value)).toBe(true);
+  });
+
+  it.each(["8.8.8.0", "172.15.0.0", "172.32.0.0", "192.167.0.0", "10.0.0.1", "172.29.0.2"])("rejects %s", (value) => {
+    expect(isPrivateSlash30(value)).toBe(false);
   });
 });

@@ -126,7 +126,7 @@ function plotTrace(trace: ChartTrace, extents: ReturnType<typeof traceExtents>, 
 
 export function MeasurementSparkline(props: MeasurementSparklineProps) {
   // A reused component must never join samples from different rails or sensor modes.
-  return <MeasurementSparklineHistory key={JSON.stringify([props.mode, props.reading.name, props.reading.signal])} {...props} />;
+  return <MeasurementSparklineHistory key={JSON.stringify([props.mode, props.reading.name, props.reading.signal, props.mode === "voltage" ? props.reading.role : null])} {...props} />;
 }
 
 function MeasurementSparklineHistory(props: MeasurementSparklineProps) {
@@ -147,6 +147,7 @@ function MeasurementSparklineHistory(props: MeasurementSparklineProps) {
   // previews remain cheap and never duplicate the retained sample objects.
   const preview = useMemo(() => history.slice(-MEASUREMENT_PREVIEW_SAMPLES), [history]);
   const name = props.mode === "power" ? powerRailLabel(props.reading.name) : `${props.reading.name} · ${props.reading.signal}`;
+  const sourceSide = props.mode === "voltage" && props.reading.role === "pd_input";
   return (
     <div className="min-w-0">
       <div className="mb-1 flex items-center justify-between gap-2 text-[10px] text-ink-dim">
@@ -161,15 +162,15 @@ function MeasurementSparklineHistory(props: MeasurementSparklineProps) {
           <Maximize2 size={13} aria-hidden="true" />{t("power.chart.enlarge")}
         </button>
       </div>
-      <MeasurementChart mode={props.mode} name={name} history={preview} />
+      <MeasurementChart mode={props.mode} name={name} history={preview} sourceSide={sourceSide} />
       {expanded && (
         <Dialog
-          title={`${name} · ${t(props.mode === "power" ? "power.chart.title" : "adc.voltage.chart.title")}`}
+          title={`${name} · ${t(props.mode === "power" ? "power.chart.title" : sourceSide ? "pd.input.chart" : "adc.voltage.chart.title")}`}
           description={t("power.chart.history", { count: history.length, limit: MEASUREMENT_HISTORY_LIMIT })}
           closeLabel={t("power.chart.close")}
           onClose={closeExpanded}
         >
-          <ExpandedMeasurementChart mode={props.mode} name={name} history={history} />
+          <ExpandedMeasurementChart mode={props.mode} name={name} history={history} sourceSide={sourceSide} />
         </Dialog>
       )}
     </div>
@@ -180,6 +181,7 @@ type MeasurementChartProps = {
   readonly mode: MeasurementSparklineProps["mode"];
   readonly name: string;
   readonly history: readonly MeasurementSample[];
+  readonly sourceSide?: boolean;
 };
 
 function ExpandedMeasurementChart(props: MeasurementChartProps) {
@@ -211,7 +213,7 @@ function ExpandedMeasurementChart(props: MeasurementChartProps) {
   );
 }
 
-const MeasurementChart = memo(function MeasurementChart({ mode, name, history, zoom, viewportRef }: MeasurementChartProps & {
+const MeasurementChart = memo(function MeasurementChart({ mode, name, history, sourceSide = false, zoom, viewportRef }: MeasurementChartProps & {
   readonly zoom?: number;
   readonly viewportRef?: RefObject<HTMLDivElement>;
 }) {
@@ -228,8 +230,8 @@ const MeasurementChart = memo(function MeasurementChart({ mode, name, history, z
   })) : [{
     metric: "voltage",
     values: history.map((sample) => sample.voltageUv),
-    minimumScale: ADC_MAX_UV,
-    maximumScale: ADC_MAX_UV,
+    minimumScale: sourceSide ? 1_000_000 : ADC_MAX_UV,
+    maximumScale: sourceSide ? undefined : ADC_MAX_UV,
     color: "rgb(var(--c-brand))",
     label: name,
     unit: "V",
@@ -246,7 +248,7 @@ const MeasurementChart = memo(function MeasurementChart({ mode, name, history, z
   const plotted = traces.map((trace, index) => plotTrace(trace, extents[index], history, width, height, positiveRatio));
   const ariaLabel = mode === "power"
     ? `${name} · ${t("power.chart.overlaid")} · ${t("power.chart.independentScales")} · ${t("power.chart.zeroBaseline")}`
-    : `${name} · ${t("adc.voltage.chart.aria")}`;
+    : `${name} · ${t(sourceSide ? "pd.input.chart" : "adc.voltage.chart.aria")}`;
   const hasSamples = plotted.some((trace) => trace.segments.length > 0);
   const noVoltage = mode === "power" && plotted.find((trace) => trace.metric === "voltage")?.latest === null;
   const firstSample = history[0];
@@ -339,7 +341,7 @@ const MeasurementChart = memo(function MeasurementChart({ mode, name, history, z
         </div>
       ) : graphic}
       <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-[10px] text-ink-dim">
-        <span>{mode === "power" ? t("power.chart.independentScales") : t("adc.voltage.scale")}</span>
+        <span>{mode === "power" ? t("power.chart.independentScales") : t(sourceSide ? "pd.input.chart" : "adc.voltage.scale")}</span>
         {mode === "voltage" && <span className="font-mono text-ink">{plotted[0].latest === null ? "—" : plotted[0].formatLatest(plotted[0].latest)}</span>}
         {duration > 0 && <span>{`${large ? historyOffset(elapsedSeconds) : `-${duration}s`} → ${t("power.chart.now")}`}</span>}
         {noVoltage && <span className="basis-full">{t("power.chart.noVoltage")}</span>}

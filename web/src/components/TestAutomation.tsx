@@ -18,7 +18,7 @@ import type { UseBoard } from "@/hooks/useBoard";
 import type { SerialAutomationHandle } from "@/lib/j4SerialSession";
 import type { TestScript, StepResult, StepStatus, RunSummary, AdcSampleEntry, SerialLogEntry, PowerCaptureEvidenceEntry } from "@/lib/testScript";
 import { defaultScript, parseTestScript, serializeTestScript, tryBuildExecutionPlan } from "@/lib/testScript";
-import { loadStoredTestScript, persistTestScript } from "@/lib/testScriptStorage";
+import { useWorkflowEditor, WorkflowLibraryControls } from "./WorkflowLibraryControls";
 import { createTestRunner, preflightTestRun, type RunnerCallbacks, type RunnerHandle } from "@/lib/testRunner";
 import { useI18n } from "@/lib/i18n";
 import type { AutomationTaskControl } from "@/lib/automationTask";
@@ -48,11 +48,8 @@ export function TestAutomation({
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>("editor");
-  const [script, setScript] = useState<TestScript>(() => {
-    const loaded = loadStoredTestScript();
-    return loaded.name === "New Test" ? { ...loaded, name: t("test.defaultName") } : loaded;
-  });
-  const [draftState, setDraftState] = useState<"saving" | "saved" | "error">("saved");
+  const editor = useWorkflowEditor(t("test.defaultName"));
+  const { script, draftState } = editor;
   const [stepStates, setStepStates] = useState<Map<string, StepStatus>>(new Map());
   const [stepResults, setStepResults] = useState<StepResult[]>([]);
   const [serialLogs, setSerialLogs] = useState<SerialLogEntry[]>([]);
@@ -77,24 +74,17 @@ export function TestAutomation({
     [executedScript, executionPlan],
   );
 
-  useEffect(() => {
-    persistTestScript(script);
-    setDraftState("saved");
-  }, [script]);
-
   const handleScriptChange = useCallback((nextScript: TestScript) => {
-    setDraftState("saving");
     setRunError(null);
-    setScript(nextScript);
-  }, []);
+    editor.change(nextScript);
+  }, [editor.change]);
 
   const handleNew = useCallback(() => {
-    if (!window.confirm(t("test.new.confirm"))) return;
+    editor.guard(() => {
     runnerRef.current?.abort();
     runningRef.current = false;
     taskControl.release("test");
-    setScript(defaultScript(t("test.defaultName")));
-    setDraftState("saving");
+    editor.replace(defaultScript(t("test.defaultName")));
     setRunError(null);
     setStepStates(new Map());
     setStepResults([]);
@@ -105,7 +95,8 @@ export function TestAutomation({
     setExecutedScript(null);
     setIsRunning(false);
     setTab("editor");
-  }, [t, taskControl.release]);
+    });
+  }, [t, taskControl.release, editor.guard, editor.replace]);
 
   useEffect(() => () => {
     runnerRef.current?.abort();
@@ -169,8 +160,9 @@ export function TestAutomation({
       setRunError(runExecution.error);
       return;
     }
-    const runScript = parseTestScript(serializeTestScript(sourceScript));
+    let runScript: TestScript;
     try {
+      runScript = parseTestScript(serializeTestScript(sourceScript));
       preflightTestRun(runScript, boardRef.current, serialRef.current);
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -296,6 +288,7 @@ export function TestAutomation({
           </Button>
         )}
       </div>
+      <WorkflowLibraryControls editor={editor} onNew={handleNew} disabled={isRunning} />
       {runError && (
         <div
           className="automation-error mx-4 mt-3 flex shrink-0 items-start gap-2 rounded-lg border border-danger/30 bg-panel px-3 py-2 text-xs text-danger"
@@ -324,12 +317,13 @@ export function TestAutomation({
             </div>
           }>
             <WorkflowComposer
+              key={editor.documentEpoch}
               script={script}
               onChange={handleScriptChange}
-              onNew={handleNew}
+              onImport={(next) => editor.importWorkflow(next)}
               draftState={draftState}
               onRun={handleRun}
-              runDisabled={execution.error != null || taskBusy || !board.connected}
+               runDisabled={editor.validationError != null || execution.error != null || taskBusy || !board.connected}
               runDisabledReason={runDisabledReason}
             />
           </Suspense>
@@ -339,6 +333,9 @@ export function TestAutomation({
             connected={board.connected}
             currentScript={script}
             taskControl={taskControl}
+            workflowId={editor.activeId}
+            onOpenWorkflow={(next) => editor.importWorkflow(next, () => setTab("editor"))}
+            onLibraryChange={() => void editor.refresh()}
           />
         )}
         {tab === "running" && (

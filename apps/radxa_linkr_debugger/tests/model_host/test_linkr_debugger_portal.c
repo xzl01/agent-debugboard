@@ -6,6 +6,7 @@
  */
 
 #include <assert.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -16,7 +17,6 @@ static void test_captive_non_api_paths_redirect(void)
 {
 	const char *paths[] = {
 		"/",
-		"/generate_204",
 		"/hotspot-detect.html",
 		"/connecttest.txt",
 		"/ncsi.txt",
@@ -75,12 +75,25 @@ static void test_captive_methods(void)
 	       LINKR_DEBUGGER_CAPTIVE_ACTION_METHOD_NOT_ALLOWED);
 }
 
-static void test_captive_canonical_url(void)
+static void test_captive_capport_body(void)
 {
-	assert(strcmp(linkr_debugger_captive_portal_url(), "http://172.29.203.1/") == 0);
-	assert(strstr(linkr_debugger_captive_capport_body(), ":8080") == NULL);
-	assert(strstr(linkr_debugger_captive_capport_body(),
-		      "\"user-portal-url\":\"http://172.29.203.1/\"") != NULL);
+	char buf[128];
+
+	assert(linkr_debugger_captive_capport_body("http://10.201.110.253/", buf,
+						  sizeof(buf)) == 0);
+	assert(strcmp(buf,
+		      "{\"captive\":true,\"user-portal-url\":\"http://10.201.110.253/\","
+		      "\"venue-info-url\":\"http://10.201.110.253/\"}\n") == 0);
+	assert(strstr(buf, ":8080") == NULL);
+
+	assert(linkr_debugger_captive_capport_body(NULL, buf, sizeof(buf)) == -EINVAL);
+	assert(linkr_debugger_captive_capport_body("", buf, sizeof(buf)) == -EINVAL);
+	assert(linkr_debugger_captive_capport_body("http://10.0.0.1/", NULL,
+						  sizeof(buf)) == -EINVAL);
+	assert(linkr_debugger_captive_capport_body("http://10.0.0.1/", buf, 0U) ==
+	       -EINVAL);
+	assert(linkr_debugger_captive_capport_body("http://10.0.0.1/", buf, 8U) ==
+	       -ENOSPC);
 }
 
 int main(void)
@@ -89,7 +102,7 @@ int main(void)
 	test_captive_api_path();
 	test_captive_unknown_api_paths_json_404();
 	test_captive_methods();
-	test_captive_canonical_url();
+	test_captive_capport_body();
 	printf("linkr_debugger_portal_test: OK\n");
 	return 0;
 }

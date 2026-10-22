@@ -19,7 +19,7 @@ beforeEach(setupTaskCardHarness);
 afterEach(teardownTaskCardHarness);
 
 describe("TaskCard single-task delete", () => {
-  it("deletes one stored task through the per-task DELETE endpoint after confirmation", async () => {
+  it("deletes one stored task through a revision-bound atomic mutation after confirmation", async () => {
     // Given: a stored task
     stubTaskList(storedListPayload([{ id: "t1", name: "t1", request_count: 2 }], TWO_RECORD_BLOB));
     const view = await mountTaskCard();
@@ -31,8 +31,11 @@ describe("TaskCard single-task delete", () => {
     // Then: the confirmation named the id and the targeted DELETE went out
     expect(confirmCalls()).toHaveLength(1);
     expect(confirmCalls()[0]).toContain("t1");
-    const deletes = fetchCalls().filter((call) => call.method === "DELETE");
-    expect(deletes.map((call) => call.url)).toEqual(["/api/v1/tasks/t1"]);
+    const deletes = fetchCalls().filter((call) => call.method === "POST");
+    expect(deletes.map((call) => call.url)).toEqual(["/api/v1/tasks/mutations"]);
+    const deleted = JSON.parse(deletes[0].body!) as Record<string, string>;
+    expect(deleted.action).toBe("delete");
+    expect(deleted.id).toBe("t1");
   });
 
   it("sends no DELETE when the user rejects the confirmation", async () => {
@@ -48,6 +51,7 @@ describe("TaskCard single-task delete", () => {
     // Then: the confirmation was shown but nothing was sent
     expect(confirmCalls()).toHaveLength(1);
     expect(fetchCalls().filter((call) => call.method === "DELETE")).toEqual([]);
+    expect(fetchCalls().filter((call) => call.method === "POST")).toEqual([]);
   });
 
   it("offers no delete control for immutable built-in tasks", async () => {

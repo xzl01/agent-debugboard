@@ -2,9 +2,9 @@ import { TASK_MAX_REQUESTS, TASK_MAX_WAIT_MS, type TaskRequest } from "./taskReq
 
 export const TASK_BLOB_MARKER = "# linkr-task.v1";
 const TASK_ID_MARKER = "# task ";
-export const TASK_BLOB_MAX_BYTES = 4096;
+export const TASK_BLOB_MAX_BYTES = 4000;
 export const TASK_MAX_TASKS = 4;
-export const TASK_ID_MAX_BYTES = 31;
+export const TASK_ID_MAX_BYTES = 63;
 export const TASK_NAME_MAX_BYTES = 63;
 export const TASK_LINE_MAX_BYTES = 256;
 export const TASK_PATH_MAX_BYTES = 96;
@@ -188,7 +188,7 @@ function parseRequestLine(line: string): TaskRequest {
   return { method: "PUT", path, body, wait_ms: record.wait_ms };
 }
 
-function taskIdValid(id: string): boolean {
+export function taskIdValid(id: string): boolean {
   if (taskByteLength(id) === 0 || taskByteLength(id) > TASK_ID_MAX_BYTES) return false;
   return !/[ \t\r\n#]/.test(id);
 }

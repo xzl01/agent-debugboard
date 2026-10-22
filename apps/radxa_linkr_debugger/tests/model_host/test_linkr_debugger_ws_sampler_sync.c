@@ -117,22 +117,30 @@ static int linkr_debugger_ws_send_json(struct linkr_debugger_ws_client *client,
 
 const struct linkr_debugger_current_desc linkr_debugger_currents[] = {
 	{ .name = "5v_out", .signal = "INA226_5V",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .unit = "uA" },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
+	  .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE, .unit = "uA" },
 	{ .name = "12v_out", .signal = "INA226_12V",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .unit = "uA" },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
+	  .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE, .unit = "uA" },
 	{ .name = "20v_out", .signal = "INA226_20V",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .unit = "uA" },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
+	  .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE, .unit = "uA" },
 	{ .name = "vdd_5v", .signal = "INA226_VDD_5V",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT, .unit = "uA" },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_CURRENT,
+	  .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE, .unit = "uA" },
 	{ .name = "adc0", .signal = "GPIO26_ADC0",
 	  .note = "PD input divider; ADC pad voltage",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE, .unit = "uV" },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE,
+	  .role = LINKR_DEBUGGER_ADC_ROLE_PD_INPUT, .unit = "uV" },
 	{ .name = "adc1", .signal = "GPIO27_ADC1",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE, .unit = "uV" },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE,
+	  .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE, .unit = "uV" },
 	{ .name = "adc2", .signal = "GPIO28_ADC2",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE, .unit = "uV" },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE,
+	  .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE, .unit = "uV" },
 	{ .name = "adc3", .signal = "GPIO29_ADC3",
-	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE, .unit = "uV" },
+	  .kind = LINKR_DEBUGGER_ADC_KIND_VOLTAGE,
+	  .role = LINKR_DEBUGGER_ADC_ROLE_NATIVE, .unit = "uV" },
 };
 const size_t linkr_debugger_adc_count = 8U;
 const size_t linkr_debugger_current_count = 4U;
@@ -452,6 +460,8 @@ static void expect_channel(struct linkr_debugger_json_cursor *json, size_t index
 	expect_string(json, index < 4U ? "current" : "voltage");
 	expect_text(json, ",\"unit\":");
 	expect_string(json, index < 4U ? "uA" : "uV");
+	expect_text(json, ",\"role\":");
+	expect_string(json, index == 4U ? "pd_input" : "native");
 	if (index == 4U) {
 		expect_text(json, ",\"note\":");
 		expect_string(json, "PD input divider; ADC pad voltage");
@@ -461,7 +471,7 @@ static void expect_channel(struct linkr_debugger_json_cursor *json, size_t index
 static void test_eight_channel_single_encoder(void)
 {
 	static const int32_t expected_values[8] = {
-		-1234, -1235, -1236, -1237, -1002349, -2002350, -3002351, -4002352,
+		-1234, -1235, -1236, -1237, 20000002, -2002350, -3002351, -4002352,
 	};
 	struct linkr_debugger_ws_client client = reset_adc();
 	struct linkr_debugger_current_sample readings[8] = {0};
@@ -479,6 +489,8 @@ static void test_eight_channel_single_encoder(void)
 			readings[i].value.val2 = -2345 - (int32_t)i;
 		}
 	}
+	readings[4].value.val1 = 20;
+	readings[4].value.val2 = 2;
 	store_sample(readings, 123456789, 7U);
 	assert(linkr_debugger_ws_emit_adc_sample(&client) == 0);
 	assert(send_calls == 1U);
@@ -570,7 +582,7 @@ static void expect_batch(size_t count, uint64_t first_sequence, int64_t timestam
 
 static void test_eight_channel_batch_encoder_masks_and_source_drops(void)
 {
-	static const int32_t values[8] = { -1, 2, -3, 4, -1000005, 1000006, -7, 8 };
+	static const int32_t values[8] = { -1, 2, -3, 4, 20000002, 1000006, -7, 8 };
 	static const int32_t voltages[4] = { -9, 10, -11, 12 };
 	struct linkr_debugger_ws_client client = reset_adc();
 	struct linkr_debugger_current_sample readings[8] = {0};
@@ -632,7 +644,7 @@ static void test_eight_channel_batch_actual_frame_budget(void)
 	client.telemetry_batch_size = 18U;
 	assert(linkr_debugger_ws_emit_adc_batch(&client) == 0);
 	assert(send_calls == 1U);
-	assert(strlen(sent_json) == 5872U);
+	assert(strlen(sent_json) == 6002U);
 	assert(strlen(sent_json) < sizeof(client.tx_buffer));
 	assert(strlen(sent_json) == linkr_debugger_ws_adc_batch_worst_case_size_from(
 		linkr_debugger_currents, 8U, 4U, 18U, linkr_debugger_json_schema()));
