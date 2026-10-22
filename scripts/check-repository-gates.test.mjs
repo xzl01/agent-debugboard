@@ -10,6 +10,7 @@ import { gunzipSync } from "node:zlib";
 import { POLICY_FILES, checkRepositoryGateContents } from "./check-repository-gates.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ZOPFLI_AVAILABLE = spawnSync("zopfli", ["--version"]).status === 0;
 const PRJ_CONFIG = "apps/radxa_linkr_debugger/prj.conf";
 const HIL_SPEC = "docs/testing/hil-functional-test-spec.md";
 const OTA_HIL = "docs/testing/scripts/web-ota-hil.sh";
@@ -258,7 +259,8 @@ function runZopfli(source, output, zopfli = "zopfli") {
   ], { encoding: "utf8" });
 }
 
-test("Zopfli Python CLI preserves exact bytes and zero mtime with reproducible gzip hashes", async (t) => {
+test("Zopfli Python CLI preserves exact bytes and zero mtime with reproducible gzip hashes",
+  { skip: ZOPFLI_AVAILABLE ? false : "zopfli not installed" }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "linkr-zopfli-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const dist = path.join(root, "web-dist");
