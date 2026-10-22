@@ -7,7 +7,7 @@
 
 import { useId } from "react";
 import { MousePointerClick } from "lucide-react";
-import { GpioPhysicalPinoutSvg } from "./GpioPhysicalPinoutSvg";
+import { GpioPhysicalPinoutSvg, physicalControlGpioName } from "./GpioPhysicalPinoutSvg";
 import { logicPinState, type LogicPinState } from "./GpioSelectionPin";
 import {
   FILL_DISABLED,
@@ -28,7 +28,7 @@ const CAPTURE_PINS = AVAILABLE_PINS.map((entry) => entry.pin);
 const UNAVAILABLE_PINS: readonly number[] = LOGIC_ANALYZER_SIGROK_DISABLED_PINS;
 const CONTROL_PINS = new Set<number>([...CAPTURE_PINS, ...UNAVAILABLE_PINS]);
 
-export function logicPinStateLabel(state: LogicPinState, t: (key: string) => string): string {
+function logicPinStateLabel(state: LogicPinState, t: (key: string) => string): string {
   return t(`logicAnalyzer.pinout.legend.${state}`);
 }
 
@@ -82,6 +82,13 @@ function SelectionChip({
         toggle();
       }}
       onKeyDown={(event) => {
+        if (event.ctrlKey || event.metaKey || event.altKey) {
+          // Modifier combos never act on the chip. Modified Enter/Space only
+          // suppress the native button activation; browser shortcuts such as
+          // Ctrl/Cmd+C stay untouched.
+          if (event.key === "Enter" || event.key === " ") event.preventDefault();
+          return;
+        }
         if (event.key === "c" || event.key === "C") {
           event.preventDefault();
           toggle();
@@ -143,7 +150,10 @@ export function LogicAnalyzerPinSelector({
   if (physicalLayout) {
     for (const group of physicalLayout.groups) {
       for (const cell of group.cells) {
-        const gpio = cell.controllable && cell.gpioName ? liveByName.get(cell.gpioName) : undefined;
+        // Same control predicate as the physical renderer, so a pin is either
+        // selectable on the diagram or in the extra area, never neither.
+        const controlName = physicalControlGpioName(cell);
+        const gpio = controlName ? liveByName.get(controlName) : undefined;
         if (gpio && CONTROL_PINS.has(gpio.pin)) diagramPins.add(gpio.pin);
       }
     }
@@ -179,7 +189,7 @@ export function LogicAnalyzerPinSelector({
         />
       ) : (
         <p className="rounded-lg border border-line/50 bg-panel/70 px-3 py-2 text-[11px] text-ink-dim">
-          {t("pinout.awaiting")}
+          {t("logicAnalyzer.pinoutUnavailable")}
         </p>
       )}
 

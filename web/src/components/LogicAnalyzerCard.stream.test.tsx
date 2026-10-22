@@ -28,10 +28,6 @@ vi.mock("@/lib/i18n", () => ({
   useI18n: () => ({ t: (key: string) => key }),
 }));
 
-vi.mock("./GpioPinoutSvg", () => ({
-  GpioPinoutSvg: () => <div data-testid="gpio-pinout" />,
-}));
-
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 function deferred<T>() {

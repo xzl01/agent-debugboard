@@ -123,6 +123,9 @@ export function GpioSelectionPin({
         toggle();
       }}
       onKeyDown={(event) => {
+        // Modifier combos never act on the pin: browser shortcuts such as
+        // Ctrl/Cmd+C stay untouched and modified Enter/Space never trigger.
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           setTrigger();

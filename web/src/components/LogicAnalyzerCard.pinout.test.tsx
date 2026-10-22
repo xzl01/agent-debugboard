@@ -5,6 +5,7 @@
  * Copyright (c) Jiali Chen <chenjiali@radxa.com>
  */
 
+import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LogicAnalyzerCard } from "./LogicAnalyzerCard";
 import {
@@ -19,6 +20,7 @@ import {
   type View,
 } from "./GpioPinoutSvg.testUtils";
 import { physicalLayoutFixture } from "@/lib/gpioPhysicalLayout.testFixtures";
+import type { GpioPhysicalLayout } from "@/lib/types";
 
 const sigrokMocks = vi.hoisted(() => ({
   ensureConnected: vi.fn(),
@@ -54,6 +56,22 @@ function chip(host: HTMLElement, number: number): HTMLButtonElement {
 
 function stateOf(element: Element): string | null {
   return element.getAttribute("data-logic-pin-state");
+}
+
+function triggerTypeSelect(host: HTMLElement): HTMLSelectElement | undefined {
+  return Array.from(host.querySelectorAll("label")).find((label) => {
+    const text = label.textContent?.trim() ?? "";
+    return text.startsWith("Trigger") && !text.startsWith("Trigger pin");
+  })?.querySelector("select") ?? undefined;
+}
+
+/** Dispatch a raw key event so tests can inspect `defaultPrevented`. */
+function keyEvent(element: Element, init: KeyboardEventInit): KeyboardEvent {
+  const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+  act(() => {
+    element.dispatchEvent(event);
+  });
+  return event;
 }
 
 function renderCard(overrides: { readonly withLayout?: boolean } = {}): View {
@@ -151,10 +169,7 @@ describe("LogicAnalyzerCard physical pin selection", () => {
 
   it("sets and clears the trigger pin with left click and Enter/Space", () => {
     const view = renderCard();
-    const triggerSelect = Array.from(view.host.querySelectorAll("label")).find((label) => {
-      const text = label.textContent?.trim() ?? "";
-      return text.startsWith("Trigger") && !text.startsWith("Trigger pin");
-    })?.querySelector("select");
+    const triggerSelect = triggerTypeSelect(view.host);
     expect(triggerSelect?.value).toBe("none");
 
     click(pin(view.host, 13));
@@ -184,10 +199,7 @@ describe("LogicAnalyzerCard physical pin selection", () => {
 
   it("clears the trigger when right click removes its pin instead of leaving a dangling trigger", () => {
     const view = renderCard();
-    const triggerSelect = Array.from(view.host.querySelectorAll("label")).find((label) => {
-      const text = label.textContent?.trim() ?? "";
-      return text.startsWith("Trigger") && !text.startsWith("Trigger pin");
-    })?.querySelector("select");
+    const triggerSelect = triggerTypeSelect(view.host);
 
     click(pin(view.host, 13));
     expect(stateOf(pin(view.host, 13))).toBe("trigger");
@@ -210,10 +222,7 @@ describe("LogicAnalyzerCard physical pin selection", () => {
 
   it("keeps the trigger on its own pin across sorting and non-trigger removals", () => {
     const view = renderCard();
-    const triggerSelect = Array.from(view.host.querySelectorAll("label")).find((label) => {
-      const text = label.textContent?.trim() ?? "";
-      return text.startsWith("Trigger") && !text.startsWith("Trigger pin");
-    })?.querySelector("select");
+    const triggerSelect = triggerTypeSelect(view.host);
 
     // GP12 is added behind GP13 but sorts before it: the trigger index must
     // follow the pin identity, not the pre-sort position.
@@ -236,6 +245,79 @@ describe("LogicAnalyzerCard physical pin selection", () => {
     expect(triggerSelect?.value).toBe("none");
     expect(view.host.textContent).toContain("0/11");
     expect(view.host.querySelector('[data-logic-pin-state="trigger"]')).toBeNull();
+    view.close();
+  });
+
+  it("activates chips through the native Enter/Space click path", () => {
+    const view = renderCard();
+    const gp10 = chip(view.host, 10);
+    // Chips are native buttons: bare Enter/Space stay on the browser's own
+    // activation path, which arrives at the component as a click.
+    expect(gp10.tagName).toBe("BUTTON");
+    expect(gp10.type).toBe("button");
+    expect(keyEvent(gp10, { key: "Enter" }).defaultPrevented).toBe(false);
+    expect(keyEvent(gp10, { key: " " }).defaultPrevented).toBe(false);
+
+    click(gp10);
+    expect(stateOf(chip(view.host, 10))).toBe("trigger");
+    click(gp10);
+    expect(stateOf(chip(view.host, 10))).toBe("selected");
+    keyDown(chip(view.host, 10), "c");
+    expect(stateOf(chip(view.host, 10))).toBe("unselected");
+    view.close();
+  });
+
+  it("never triggers from Ctrl/Meta/Alt key combos on pins or chips", () => {
+    const view = renderCard();
+    const gp13 = pin(view.host, 13);
+    const gp10 = chip(view.host, 10);
+
+    for (const element of [gp13, gp10]) {
+      for (const modifiers of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }]) {
+        for (const key of ["Enter", " ", "c", "C"]) {
+          keyEvent(element, { key, ...modifiers });
+        }
+      }
+    }
+    // No combo acts on the pin or the chip.
+    expect(stateOf(pin(view.host, 13))).toBe("selected");
+    expect(stateOf(chip(view.host, 10))).toBe("unselected");
+    expect(triggerTypeSelect(view.host)?.value).toBe("none");
+    expect(view.host.textContent).toContain("1/11");
+
+    // Browser shortcuts such as Ctrl/Cmd+C are never swallowed.
+    expect(keyEvent(gp13, { key: "c", ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(keyEvent(gp10, { key: "C", metaKey: true }).defaultPrevented).toBe(false);
+    // Modified Enter/Space do nothing at all on the SVG pin.
+    expect(keyEvent(gp13, { key: "Enter", altKey: true }).defaultPrevented).toBe(false);
+    expect(keyEvent(gp13, { key: " ", ctrlKey: true }).defaultPrevented).toBe(false);
+    // On a native chip button they only suppress its activation.
+    expect(keyEvent(gp10, { key: "Enter", ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(keyEvent(gp10, { key: " ", metaKey: true }).defaultPrevented).toBe(true);
+    view.close();
+  });
+
+  it("keeps controllable dedicated-route pins selectable only through the extra area", () => {
+    const { layout, gpios } = physicalLayoutFixture();
+    const patched: GpioPhysicalLayout = {
+      ...layout,
+      groups: layout.groups.map((group) => ({
+        ...group,
+        cells: group.cells.map((cell) =>
+          cell.gpioName === "GP13" ? { ...cell, role: "dedicated" } : cell
+        ),
+      })),
+    };
+    const view = mount(<LogicAnalyzerCard boardGpios={gpios} physicalLayout={patched} />);
+    // The shared control predicate excludes dedicated routes, so the pin can
+    // never vanish between the diagram and the extra area.
+    expect(view.host.querySelector('[data-logic-pin="13"]')).toBeNull();
+    const gp13Cell = view.host.querySelector('[data-layout-group="J8"] [data-physical-cell="2"]')!;
+    expect(gp13Cell.querySelector("[data-physical-inert]")).not.toBeNull();
+    expect(view.host.querySelector('[data-logic-chip="13"]')).not.toBeNull();
+
+    click(chip(view.host, 13));
+    expect(stateOf(chip(view.host, 13))).toBe("trigger");
     view.close();
   });
 
@@ -298,7 +380,8 @@ describe("LogicAnalyzerCard physical pin selection", () => {
   it("falls back to the full capture pin list when no physical layout is available", () => {
     const view = renderCard({ withLayout: false });
     expect(view.host.querySelector("[data-physical-assembly]")).toBeNull();
-    expect(view.host.textContent).toContain("connector layout");
+    expect(view.host.textContent).toContain("Connector layout unavailable");
+    expect(view.host.textContent).toContain("all capture pins are listed below");
     for (let number = 10; number <= 20; number += 1) {
       expect(view.host.querySelector(`[data-logic-chip="${number}"]`)).not.toBeNull();
     }

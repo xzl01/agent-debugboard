@@ -30,6 +30,12 @@ export function placePhysicalAssembly(layout: GpioPhysicalLayout) {
   return { columns: Math.max(0, offset - 1), rows, groups: placed };
 }
 
+/** Cells that can carry a live control: firmware-controllable, never a
+ * dedicated route contact, and joined to the live GPIO set by firmware name. */
+export function physicalControlGpioName(cell: GpioPhysicalCell): string | null {
+  return cell.controllable && cell.role !== "dedicated" && cell.gpioName ? cell.gpioName : null;
+}
+
 /** Presentation of firmware-provided purpose, not a net-to-MCU pin map. */
 export function physicalPinPurpose(cell: GpioPhysicalCell): string {
   const label = cell.label.trim();
@@ -158,7 +164,8 @@ export function GpioPhysicalPinoutSvg({
               </g>
               {cells.map(({ cell, row: displayRow, column: displayColumn }) => {
                 const { x: cx, y: cy } = point(displayRow, displayColumn);
-                const gpio = cell.controllable && cell.role !== "dedicated" && cell.gpioName ? liveByName.get(cell.gpioName) : undefined;
+                const controlName = physicalControlGpioName(cell);
+                const gpio = controlName ? liveByName.get(controlName) : undefined;
                 const purpose = physicalPinPurpose(cell);
                 const label = purposeLabel(purpose);
                 const dedicated = cell.role === "dedicated";
