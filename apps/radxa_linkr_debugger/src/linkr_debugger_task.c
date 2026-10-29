@@ -830,7 +830,6 @@ static void task_slot_set_ir_metadata(struct task_manifest_slot *slot,
 	slot->ir_len = (uint16_t)(LINKR_DEBUGGER_TASK_BLOB_HEADER_LEN +
 				 entry->digest_end - entry->section_start);
 	task_digest_section(ir, entry, slot->ir_digest);
-	slot->ir_bank = (uint8_t)(1U - slot->ir_bank);
 }
 
 static bool task_prepare_import_slots(struct task_manifest *candidate,
@@ -930,7 +929,6 @@ static enum linkr_debugger_task_result task_prepare_candidate(
 		slot->source_present = mutation->source_len > 0U ? 1U : 0U;
 		slot->source_len = (uint16_t)mutation->source_len;
 		if (mutation->source_len > 0U) {
-			slot->source_bank = (uint8_t)(1U - slot->source_bank);
 			linkr_debugger_task_sha256_digest(mutation->source,
 				mutation->source_len, slot->source_digest);
 			task_work.writes[slot_index].source_pending = true;
@@ -1068,6 +1066,23 @@ static enum linkr_debugger_task_result task_prepare_candidate(
 		task_digest_section(task_work.full_ir, entry, digest);
 		if (memcmp(digest, slot->ir_digest, sizeof(digest)) != 0) {
 			return LINKR_DEBUGGER_TASK_INVALID_TASK;
+		}
+	}
+	/* Banks belong to physical slots, not IDs. A full replacement may have
+	 * cleared all candidate metadata while the committed manifest still
+	 * references those slots. Retries must also use that committed bank. */
+	for (size_t i = 0U; i < LINKR_DEBUGGER_TASK_MAX_TASKS; i++) {
+		const struct task_manifest_slot *old = &task_runtime.manifest.slots[i];
+		struct task_manifest_slot *slot = &candidate->slots[i];
+
+		if (task_work.writes[i].ir_pending) {
+			slot->ir_bank = (uint8_t)(1U - old->ir_bank);
+		}
+		if (task_work.writes[i].source_pending) {
+			slot->source_bank = (uint8_t)(1U - old->source_bank);
+		}
+		if (old->source_present && !slot->source_present) {
+			task_work.delete_source_keys[i] = true;
 		}
 	}
 	candidate->full_ir_len = (uint16_t)task_work.full_ir_len;

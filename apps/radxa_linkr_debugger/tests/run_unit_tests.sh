@@ -301,6 +301,7 @@ ${CC} -D_GNU_SOURCE -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/tests/model_host" \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_http_net.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_gpio_error.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_http_body.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
 	-Wl,--gc-sections \
@@ -348,6 +349,10 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_gpio_guard.c" \
+	-DLINKR_DEBUGGER_LA_HOST_TEST -DLINKR_DEBUGGER_CONTROL_GPIO_HOST_TEST \
+	-DCONFIG_SOC_SERIES_RP2350 \
+	-I"${ROOT}/apps/radxa_linkr_debugger/tests/model_host" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_logic_analyzer.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_capture_gpio_guard.c" \
 	-o "${OUT}/linkr_debugger_capture_gpio_guard_test"
 
@@ -356,6 +361,7 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 ${CC} -std=c11 -Wall -Wextra -Werror \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
 	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_ws_sampler_sync.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_gpio_error.c" \
 	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_json_cursor.c" \
 	-o "${OUT}/linkr_debugger_ws_sampler_sync_test"
 

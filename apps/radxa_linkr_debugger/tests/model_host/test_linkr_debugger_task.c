@@ -1159,6 +1159,55 @@ static void test_settings_power_loss_ordering_and_atomicity(void)
 	}
 }
 
+static void test_import_new_ids_preserves_committed_banks(void)
+{
+	struct linkr_debugger_task_mutation_outcome outcome;
+	char old_ir[256], new_ir[256];
+	size_t old_len = one_task_ir(old_ir, sizeof(old_ir), "A", "1");
+	size_t new_len = one_task_ir(new_ir, sizeof(new_ir), "C", "0");
+	const uint8_t source[] = "old source";
+
+	for (unsigned int saves = 1U; saves <= 2U; saves++) {
+		mount_settings(true);
+		for (unsigned int i = 0U; i < saves; i++) {
+			assert(mutate(LINKR_DEBUGGER_TASK_MUTATION_UPSERT, "A",
+				source, sizeof(source) - 1U, old_ir, old_len, &outcome) ==
+			       LINKR_DEBUGGER_TASK_OK);
+		}
+		take_store_snapshot(&old_snapshot);
+		baseline = fake;
+		/* Fail the IR write, its readback, or the manifest commit. */
+		for (unsigned int attempt = 0U; attempt < 6U; attempt++) {
+			unsigned int failure = (attempt + 2U) % 3U;
+
+			fake = baseline;
+			mount_settings(false);
+			fake.step_count = 0U;
+			fake.cut_at_step = failure == 1U ? 0U : (failure == 0U ? 1U : 2U);
+			fake.corrupt_next_read = failure == 1U;
+			assert(mutate(LINKR_DEBUGGER_TASK_MUTATION_IMPORT, NULL, NULL, 0U,
+				new_ir, new_len, &outcome) == (failure == 1U ?
+				LINKR_DEBUGGER_TASK_READBACK_FAILED : LINKR_DEBUGGER_TASK_STORAGE_ERROR));
+			fake.cut_at_step = 0U;
+			fake.power_dead = false;
+			if (attempt < 3U) {
+				mount_settings(false);
+			}
+			assert_store_snapshot(&old_snapshot);
+			/* Retry still chooses the inactive bank, then deletes old sources. */
+			assert(mutate(LINKR_DEBUGGER_TASK_MUTATION_IMPORT, NULL, NULL, 0U,
+				new_ir, new_len, &outcome) == LINKR_DEBUGGER_TASK_OK);
+			take_store_snapshot(&new_snapshot);
+			assert(new_snapshot.status.task_count == 1U);
+			assert(strcmp(new_snapshot.status.tasks[0].id, "C") == 0);
+			assert(fake_find(&fake, "linkr/task/src/0/0") < 0);
+			assert(fake_find(&fake, "linkr/task/src/0/1") < 0);
+			mount_settings(false);
+			assert_store_snapshot(&new_snapshot);
+		}
+	}
+}
+
 static void test_no_overwrite_siblings(void)
 {
 	struct linkr_debugger_task_mutation_outcome outcome;
@@ -1329,6 +1378,7 @@ int main(void)
 	test_conflicts_overflow_and_validation_write_nothing();
 	test_enospc_and_readback_failure_do_not_commit();
 	test_settings_power_loss_ordering_and_atomicity();
+	test_import_new_ids_preserves_committed_banks();
 	test_no_overwrite_siblings();
 	test_concurrent_same_revision_has_one_linearized_winner();
 	test_storage_usage_and_save_gate();

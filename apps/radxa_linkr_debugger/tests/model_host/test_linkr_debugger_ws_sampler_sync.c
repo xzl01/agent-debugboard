@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "linkr_debugger_model.h"
+#include "linkr_debugger_gpio_error.h"
 
 /* Only the control/RTOS dependencies are stubbed: the WS sample, workspace,
  * ring store/get and both encoders below are included from production. */
@@ -1241,8 +1242,30 @@ static void test_ws_serial_sidecars_are_isolated_and_reset_on_slot_reuse(void)
 	assert(slot1->serial_last_drops == 3U);
 }
 
+static void test_gpio_busy_error_uses_shared_wire_code(void)
+{
+	struct linkr_debugger_ws_client client = { 0 };
+
+	expect_reboot_send = false;
+	send_calls = 0U;
+	send_result = 0;
+	for (unsigned int output = 0U; output < 2U; output++) {
+		const struct linkr_debugger_gpio_error *error =
+			linkr_debugger_gpio_configure_error(output != 0U, -EBUSY);
+
+		assert(linkr_debugger_ws_emit_error(&client, "gpio", error->code,
+			error->message) == 0);
+		assert(strstr(sent_json, "\"type\":\"error\"") != NULL);
+		assert(strstr(sent_json, "\"command\":\"gpio\"") != NULL);
+		assert(strstr(sent_json, "\"code\":\"busy\"") != NULL);
+		assert(strstr(sent_json, "GPIO is reserved by a capture") != NULL);
+	}
+	assert(send_calls == 2U);
+}
+
 int main(void)
 {
+	test_gpio_busy_error_uses_shared_wire_code();
 	test_old_resume_does_not_release_new_pause();
 	test_pause_generation_never_uses_zero();
 	test_adc_sample_rate_budget();

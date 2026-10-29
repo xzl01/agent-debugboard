@@ -12,6 +12,7 @@ static void test_output_eperm_maps_to_input_only(void)
 	assert(strcmp(mapping->code, "input_only") == 0);
 	assert(strstr(mapping->message, "input-only") != NULL);
 	assert(mapping->forbidden);
+	assert(!mapping->busy);
 }
 
 static void test_output_other_negative_maps_to_configure_failed(void)
@@ -22,6 +23,7 @@ static void test_output_other_negative_maps_to_configure_failed(void)
 	assert(strcmp(mapping->code, "configure_failed") == 0);
 	assert(strcmp(mapping->message, "failed to configure GPIO") == 0);
 	assert(!mapping->forbidden);
+	assert(!mapping->busy);
 }
 
 static void test_input_eperm_remains_configure_failed(void)
@@ -32,6 +34,7 @@ static void test_input_eperm_remains_configure_failed(void)
 	assert(strcmp(mapping->code, "configure_failed") == 0);
 	assert(strcmp(mapping->message, "failed to configure GPIO") == 0);
 	assert(!mapping->forbidden);
+	assert(!mapping->busy);
 }
 
 static void test_input_other_negative_remains_configure_failed(void)
@@ -42,6 +45,19 @@ static void test_input_other_negative_remains_configure_failed(void)
 	assert(strcmp(mapping->code, "configure_failed") == 0);
 	assert(strcmp(mapping->message, "failed to configure GPIO") == 0);
 	assert(!mapping->forbidden);
+	assert(!mapping->busy);
+}
+
+static void test_input_and_output_busy_share_mapping(void)
+{
+	const struct linkr_debugger_gpio_error *mapping =
+		linkr_debugger_gpio_configure_error(false, -EBUSY);
+
+	assert(mapping == linkr_debugger_gpio_configure_error(true, -EBUSY));
+	assert(strcmp(mapping->code, "busy") == 0);
+	assert(strcmp(mapping->message, "GPIO is reserved by a capture") == 0);
+	assert(mapping->busy);
+	assert(!mapping->forbidden);
 }
 
 int main(void)
@@ -50,5 +66,6 @@ int main(void)
 	test_output_other_negative_maps_to_configure_failed();
 	test_input_eperm_remains_configure_failed();
 	test_input_other_negative_remains_configure_failed();
+	test_input_and_output_busy_share_mapping();
 	return 0;
 }

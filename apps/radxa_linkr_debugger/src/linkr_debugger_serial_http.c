@@ -36,12 +36,6 @@ struct serial_http_config_request {
 	uint64_t expected_generation;
 };
 
-struct serial_http_poison_slot {
-	uintptr_t client_key;
-	uint16_t method_id;
-	bool active;
-};
-
 struct serial_http_buffer {
 	char *data;
 	size_t capacity;
@@ -64,49 +58,7 @@ static const struct json_obj_descr serial_http_config_request_descr[] = {
 };
 
 static uint8_t serial_http_json[SERIAL_HTTP_JSON_CAPACITY];
-static struct serial_http_poison_slot
-	serial_http_poison[CONFIG_HTTP_SERVER_MAX_CLIENTS];
 K_MUTEX_DEFINE(serial_http_lock);
-
-static struct serial_http_poison_slot *poison_find(uintptr_t client_key,
-						    uint16_t method_id)
-{
-	for (size_t i = 0U; i < ARRAY_SIZE(serial_http_poison); ++i) {
-		if (serial_http_poison[i].active &&
-		    serial_http_poison[i].client_key == client_key &&
-		    serial_http_poison[i].method_id == method_id) {
-			return &serial_http_poison[i];
-		}
-	}
-	return NULL;
-}
-
-static bool poison_mark(uintptr_t client_key, uint16_t method_id)
-{
-	struct serial_http_poison_slot *slot = poison_find(client_key, method_id);
-
-	if (slot != NULL) {
-		return true;
-	}
-	for (size_t i = 0U; i < ARRAY_SIZE(serial_http_poison); ++i) {
-		if (!serial_http_poison[i].active) {
-			serial_http_poison[i].active = true;
-			serial_http_poison[i].client_key = client_key;
-			serial_http_poison[i].method_id = method_id;
-			return true;
-		}
-	}
-	return false;
-}
-
-static void poison_clear(uintptr_t client_key, uint16_t method_id)
-{
-	struct serial_http_poison_slot *slot = poison_find(client_key, method_id);
-
-	if (slot != NULL) {
-		memset(slot, 0, sizeof(*slot));
-	}
-}
 
 static enum linkr_debugger_http_body_event body_event_from_status(
 	enum http_transaction_status status)
@@ -523,28 +475,6 @@ int linkr_debugger_serial_http_handle(
 
 	if (route == LINKR_DEBUGGER_SERIAL_HTTP_ROUTE_CONFIG &&
 	    client->method == HTTP_PUT) {
-		bool poisoned;
-
-		k_mutex_lock(&serial_http_lock, K_FOREVER);
-		if (body_event == LINKR_DEBUGGER_HTTP_BODY_ABORTED ||
-		    body_event == LINKR_DEBUGGER_HTTP_BODY_COMPLETE) {
-			poison_clear((uintptr_t)client, (uint16_t)client->method);
-			k_mutex_unlock(&serial_http_lock);
-			(void)linkr_debugger_http_body_accumulate(
-				(uintptr_t)client, (uint16_t)client->method,
-				SERIAL_HTTP_BODY_ROUTE, body_event, NULL, 0U, &body);
-			return 0;
-		}
-		poisoned = poison_find((uintptr_t)client,
-				       (uint16_t)client->method) != NULL;
-		k_mutex_unlock(&serial_http_lock);
-		if (poisoned) {
-			/* The first assembly error already produced the response. Drain
-			 * transaction callbacks without allowing FINAL to become a new
-			 * request on the same client key.
-			 */
-			return 0;
-		}
 		body_result = linkr_debugger_http_body_accumulate(
 			(uintptr_t)client, (uint16_t)client->method,
 			SERIAL_HTTP_BODY_ROUTE, body_event,
@@ -556,8 +486,6 @@ int linkr_debugger_serial_http_handle(
 		}
 		if (body_result == LINKR_DEBUGGER_HTTP_BODY_TOO_LARGE) {
 			k_mutex_lock(&serial_http_lock, K_FOREVER);
-			(void)poison_mark((uintptr_t)client,
-					  (uint16_t)client->method);
 			set_error(response, HTTP_413_PAYLOAD_TOO_LARGE,
 				  "body_too_large",
 				  "serial configuration body is too large");
@@ -566,8 +494,6 @@ int linkr_debugger_serial_http_handle(
 		}
 		if (body_result != LINKR_DEBUGGER_HTTP_BODY_READY) {
 			k_mutex_lock(&serial_http_lock, K_FOREVER);
-			(void)poison_mark((uintptr_t)client,
-					  (uint16_t)client->method);
 			set_error(response, HTTP_400_BAD_REQUEST, "invalid_body",
 				  "failed to assemble serial configuration body");
 			k_mutex_unlock(&serial_http_lock);
@@ -602,7 +528,6 @@ int linkr_debugger_serial_http_handle(
 	if (decode_config(body.data, body.len, &decoded, &config) < 0) {
 		linkr_debugger_http_body_clear((uintptr_t)client,
 					 HTTP_PUT, SERIAL_HTTP_BODY_ROUTE);
-		(void)poison_mark((uintptr_t)client, (uint16_t)client->method);
 		set_error(response, HTTP_400_BAD_REQUEST, "invalid_config",
 			  "expected baud, data_bits, parity, stop_bits, "
 			  "flow_control=none, and expected_generation");

@@ -93,7 +93,7 @@ static void test_exact_cap(void)
 	linkr_debugger_http_body_clear(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER);
 }
 
-static void test_overflow_clears_slot(void)
+static void test_overflow_drains_until_complete(void)
 {
 	struct linkr_debugger_http_body_view view;
 	uint8_t body[LINKR_DEBUGGER_HTTP_BODY_CAP];
@@ -104,8 +104,16 @@ static void test_overflow_clears_slot(void)
 						 LINKR_DEBUGGER_HTTP_BODY_MORE, body,
 						 sizeof(body), &view) == LINKR_DEBUGGER_HTTP_BODY_WAITING);
 	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER,
-						 LINKR_DEBUGGER_HTTP_BODY_FINAL, "x", 1U,
+						 LINKR_DEBUGGER_HTTP_BODY_MORE, "x", 1U,
 						 &view) == LINKR_DEBUGGER_HTTP_BODY_TOO_LARGE);
+	linkr_debugger_http_body_clear(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER);
+	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER,
+						 LINKR_DEBUGGER_HTTP_BODY_FINAL, "{}", 2U,
+						 &view) == LINKR_DEBUGGER_HTTP_BODY_WAITING);
+	assert(view.data == NULL);
+	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER,
+						 LINKR_DEBUGGER_HTTP_BODY_COMPLETE, NULL, 0U,
+						 &view) == LINKR_DEBUGGER_HTTP_BODY_CLEARED);
 	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER,
 						 LINKR_DEBUGGER_HTTP_BODY_FINAL, "{}", 2U,
 						 &view) == LINKR_DEBUGGER_HTTP_BODY_READY);
@@ -146,9 +154,11 @@ static void test_route_method_isolation(void)
 						 &view) == LINKR_DEBUGGER_HTTP_BODY_MISMATCH);
 	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER,
 						 LINKR_DEBUGGER_HTTP_BODY_FINAL, "C", 1U,
-						 &view) == LINKR_DEBUGGER_HTTP_BODY_READY);
-	assert_view_eq(&view, "C");
+						 &view) == LINKR_DEBUGGER_HTTP_BODY_WAITING);
 	linkr_debugger_http_body_clear(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER);
+	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER,
+						 LINKR_DEBUGGER_HTTP_BODY_COMPLETE, NULL, 0U,
+						 &view) == LINKR_DEBUGGER_HTTP_BODY_CLEARED);
 
 	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER,
 						 LINKR_DEBUGGER_HTTP_BODY_MORE, "D", 1U,
@@ -158,8 +168,7 @@ static void test_route_method_isolation(void)
 						 &view) == LINKR_DEBUGGER_HTTP_BODY_MISMATCH);
 	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER,
 						 LINKR_DEBUGGER_HTTP_BODY_FINAL, "F", 1U,
-						 &view) == LINKR_DEBUGGER_HTTP_BODY_READY);
-	assert_view_eq(&view, "F");
+						 &view) == LINKR_DEBUGGER_HTTP_BODY_WAITING);
 	linkr_debugger_http_body_clear(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER);
 }
 
@@ -179,6 +188,9 @@ static void test_aborted_complete_reset(void)
 						 &view) == LINKR_DEBUGGER_HTTP_BODY_READY);
 	assert_view_eq(&view, "new");
 	linkr_debugger_http_body_clear(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER);
+	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER,
+						 LINKR_DEBUGGER_HTTP_BODY_COMPLETE, NULL, 0U,
+						 &view) == LINKR_DEBUGGER_HTTP_BODY_CLEARED);
 
 	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_POST, ROUTE_LOGIC_ANALYZER,
 						 LINKR_DEBUGGER_HTTP_BODY_MORE, "old", 3U,
@@ -251,6 +263,46 @@ static void test_net_put_abort_discards_partial_json(void)
 	linkr_debugger_http_body_clear(CLIENT_A, METHOD_PUT, ROUTE_NET);
 }
 
+static void test_all_clients_poison_when_body_slots_exhausted(void)
+{
+	struct linkr_debugger_http_body_view view;
+
+	linkr_debugger_http_body_reset_all();
+	for (uintptr_t client = 1U; client <= 8U; client++) {
+		assert(linkr_debugger_http_body_accumulate(client, METHOD_PUT, ROUTE_NET,
+			LINKR_DEBUGGER_HTTP_BODY_MORE, "{", 1U, &view) ==
+		       (client <= LINKR_DEBUGGER_HTTP_BODY_SLOTS ?
+			LINKR_DEBUGGER_HTTP_BODY_WAITING : LINKR_DEBUGGER_HTTP_BODY_MISMATCH));
+	}
+	for (uintptr_t client = 1U; client <= LINKR_DEBUGGER_HTTP_BODY_SLOTS; client++) {
+		assert(linkr_debugger_http_body_accumulate(client, METHOD_PUT, ROUTE_NET,
+			LINKR_DEBUGGER_HTTP_BODY_ABORTED, NULL, 0U, &view) ==
+		       LINKR_DEBUGGER_HTTP_BODY_CLEARED);
+	}
+	for (uintptr_t client = LINKR_DEBUGGER_HTTP_BODY_SLOTS + 1U; client <= 8U; client++) {
+		linkr_debugger_http_body_clear(client, METHOD_PUT, ROUTE_NET);
+		assert(linkr_debugger_http_body_accumulate(client, METHOD_PUT, ROUTE_NET,
+			LINKR_DEBUGGER_HTTP_BODY_FINAL, "{}", 2U, &view) ==
+		       LINKR_DEBUGGER_HTTP_BODY_WAITING);
+		assert(view.data == NULL);
+		assert(linkr_debugger_http_body_accumulate(client, METHOD_PUT, ROUTE_NET,
+			LINKR_DEBUGGER_HTTP_BODY_COMPLETE, NULL, 0U, &view) ==
+		       LINKR_DEBUGGER_HTTP_BODY_CLEARED);
+		assert(linkr_debugger_http_body_accumulate(client, METHOD_PUT, ROUTE_NET,
+			LINKR_DEBUGGER_HTTP_BODY_FINAL, "{}", 2U, &view) ==
+		       LINKR_DEBUGGER_HTTP_BODY_READY);
+		linkr_debugger_http_body_clear(client, METHOD_PUT, ROUTE_NET);
+		assert(linkr_debugger_http_body_accumulate(client, METHOD_PUT, ROUTE_NET,
+			LINKR_DEBUGGER_HTTP_BODY_FINAL, "{}", 2U, &view) ==
+		       LINKR_DEBUGGER_HTTP_BODY_WAITING);
+	}
+	linkr_debugger_http_body_reset_all();
+	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_PUT, ROUTE_NET,
+		LINKR_DEBUGGER_HTTP_BODY_MORE, NULL, 1U, &view) == LINKR_DEBUGGER_HTTP_BODY_BAD_ARG);
+	assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_PUT, ROUTE_NET,
+		LINKR_DEBUGGER_HTTP_BODY_FINAL, "{}", 2U, &view) == LINKR_DEBUGGER_HTTP_BODY_WAITING);
+}
+
 static void test_lifecycle_gate(void)
 {
 	assert(linkr_debugger_http_body_should_handle(true,
@@ -272,13 +324,53 @@ static void test_lifecycle_gate(void)
 						    LINKR_DEBUGGER_HTTP_BODY_COMPLETE));
 }
 
+static void test_terminal_releases_recycled_client_across_routes(void)
+{
+	const char old[] = "{\"state\":\"on\"}";
+	const char next[] = "{\"state\":\"off\"}";
+	uint8_t oversized[LINKR_DEBUGGER_HTTP_BODY_CAP + 1U];
+	struct linkr_debugger_http_body_view view;
+
+	memset(oversized, 'x', sizeof(oversized));
+	for (size_t overflow = 0U; overflow < 2U; overflow++) {
+		for (uint16_t route = ROUTE_LOGIC_ANALYZER; route <= ROUTE_NET; route++) {
+			linkr_debugger_http_body_reset_all();
+			assert(linkr_debugger_http_body_accumulate(
+				       CLIENT_A, METHOD_PUT, ROUTE_OTHER,
+				       LINKR_DEBUGGER_HTTP_BODY_MORE,
+				       overflow ? oversized : (const void *)old,
+				       overflow ? sizeof(oversized) : strlen(old),
+				       &view) == (overflow ? LINKR_DEBUGGER_HTTP_BODY_TOO_LARGE
+							   : LINKR_DEBUGGER_HTTP_BODY_WAITING));
+			/* The registered resource teardown ends the connection's transaction,
+			 * even without consulting its method/URL, before CLIENT_A is reused.
+			 */
+			assert(linkr_debugger_http_body_accumulate(
+				       CLIENT_A, 0U, 0U, LINKR_DEBUGGER_HTTP_BODY_ABORTED, NULL, 0U,
+				       &view) == LINKR_DEBUGGER_HTTP_BODY_CLEARED);
+			assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_PUT, route,
+								   LINKR_DEBUGGER_HTTP_BODY_FINAL,
+								   next, strlen(next), &view) ==
+			       LINKR_DEBUGGER_HTTP_BODY_READY);
+			assert_view_eq(&view, next);
+			linkr_debugger_http_body_clear(CLIENT_A, METHOD_PUT, route);
+			assert(linkr_debugger_http_body_accumulate(CLIENT_A, METHOD_PUT, route,
+								   LINKR_DEBUGGER_HTTP_BODY_FINAL,
+								   old, strlen(old), &view) ==
+			       LINKR_DEBUGGER_HTTP_BODY_WAITING);
+		}
+	}
+}
+
 int main(void)
 {
+	test_terminal_releases_recycled_client_across_routes();
 	test_one_shot_final();
 	test_two_fragment_body();
 	test_three_fragment_body();
 	test_exact_cap();
-	test_overflow_clears_slot();
+	test_overflow_drains_until_complete();
+	test_all_clients_poison_when_body_slots_exhausted();
 	test_client_isolation();
 	test_route_method_isolation();
 	test_aborted_complete_reset();

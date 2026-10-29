@@ -39,6 +39,10 @@ struct linkr_debugger_http_body_view {
 bool linkr_debugger_http_body_should_handle(bool body_method,
 					   enum linkr_debugger_http_body_event event);
 void linkr_debugger_http_body_reset_all(void);
+/* Keys identify live HTTP connections, not reusable context addresses forever.
+ * The owning resource MUST deliver COMPLETE/ABORTED before its client is reused.
+ * Release body storage, but drain this transaction until that terminal event.
+ */
 void linkr_debugger_http_body_clear(uintptr_t client_key, uint16_t method_id,
 				    uint16_t route_id);
 enum linkr_debugger_http_body_result linkr_debugger_http_body_accumulate(

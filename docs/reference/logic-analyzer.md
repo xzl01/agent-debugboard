@@ -37,6 +37,22 @@ serial traffic is unavailable. Cleanup restores `GPIO_FUNC_UART_AUX` on the pins
 the capture configured; the J4 bridge works again without a reboot. Do not
 expect J4 UART traffic during an active capture that selects GP10 or GP11.
 
+### GPIO Ownership
+
+Both capture transports reserve the full physical sampling-lane pin set before
+hardware preparation, not just the channels selected for display. Ownership
+lasts until DMA/PIO have stopped and the pin mux has been restored, including
+failure and cancellation cleanup. An existing safe-GPIO output on any reserved
+lane pin makes capture preparation fail rather than taking over that output.
+
+While reserved, safe-GPIO input and output setters both reject changes with
+`-EBUSY`, mapped to HTTP 409 with `error.code` `busy`; WebSocket uses `busy`
+as well. The message is `GPIO is reserved by a capture`.
+Stop capture and wait for cleanup before changing
+those GPIOs; do not automatically change directions to seize the pins.
+GP20 remains a read-only I2C tap: capture does not reconfigure GP20 or GP21 or
+change their I2C electrical behavior.
+
 ### Capture Parameters
 
 **CONFIG v1 pre/post are uint16.** Ordinary bounded captures use 1..65535 and

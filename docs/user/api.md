@@ -33,6 +33,16 @@ Failure (`error` is present only when `ok` is `false`):
 }
 ```
 
+## Control Request Bodies
+
+Power, switch, and GPIO JSON writes accumulate all body fragments within the
+endpoint's size bound. The control operation executes
+at most once, only after the complete body has been received and validated.
+After the first rejection, remaining fragments are discarded until request
+completion or abort (`COMPLETE`/`ABORT`); a valid trailing JSON fragment cannot
+restart the rejected operation. Exhausting the shared body slots also fails
+closed, even if a slot becomes available before a later fragment arrives.
+
 ## Network Identity
 
 ### `GET /api/v1/net`
@@ -268,6 +278,16 @@ arrays are the current 11-entry firmware safe-GPIO allowlist, not a complete
 connector pinout or a mating-face diagram. Ten entries are output-capable;
 GP29 is input-only.
 
+Logic capture reserves its full physical lane, including pins not selected for
+display. An existing safe-GPIO output on that lane blocks capture preparation.
+Until capture cleanup has stopped DMA/PIO and restored the mux, both input and
+output writes to reserved safe GPIOs are rejected with `-EBUSY`: HTTP **409**
+with `error.code: "busy"`; WebSocket uses `busy` as well. The message is
+`GPIO is reserved by a capture`. Actual configuration failures remain HTTP
+500 with `configure_failed`; input-only output attempts remain HTTP 403 with `input_only`.
+Stop capture and wait for cleanup before changing these pins; do not switch
+directions automatically to take ownership. See [GPIO ownership](../reference/logic-analyzer.md#gpio-ownership).
+
 ## Reboot
 
 ### `POST /api/v1/reboot`
@@ -346,6 +366,9 @@ back to a stored task with the same ID.
 - A mutation writes inactive banks, reads them back, verifies the digests, then
   commits the manifest. The manifest write is the only linearization point, so
   a power loss leaves the previous manifest active. Revision never wraps.
+  Full-set replacement chooses inactive banks against the previous committed
+  manifest's physical slots even when every task ID changes; obsolete keys are
+  cleaned only after the new manifest commits.
 - `task_store_id` is created with the first manifest and is stable across
   clear and normal reboot; only factory erase changes it.
 - The store is task-v2 only. It does not read or migrate the removed

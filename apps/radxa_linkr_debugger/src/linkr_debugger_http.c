@@ -54,6 +54,7 @@ LOG_MODULE_REGISTER(linkr_debugger_http, CONFIG_LINKR_DEBUGGER_LOG_LEVEL);
 #define LINKR_DEBUGGER_HTTP_HOST "0.0.0.0"
 #define LINKR_DEBUGGER_HTTP_BODY_BUFSZ 160U
 #define LINKR_DEBUGGER_HTTP_JSON_BUFSZ 4096U
+#define LINKR_DEBUGGER_HTTP_JSON_MAX_DEPTH     16U
 /* {"captive":true,"user-portal-url":"http://255.255.255.255/","venue-info-url":"http://255.255.255.255/"} */
 #define LINKR_DEBUGGER_HTTP_CAPPORT_BODY_BUFSZ 128U
 #define LINKR_DEBUGGER_HTTP_STATUS_JSON_BUFSZ 6656U
@@ -65,6 +66,9 @@ enum linkr_debugger_http_route_id {
 	LINKR_DEBUGGER_HTTP_ROUTE_LOGIC_ANALYZER_STREAM,
 	LINKR_DEBUGGER_HTTP_ROUTE_NET,
 	LINKR_DEBUGGER_HTTP_ROUTE_PD,
+	LINKR_DEBUGGER_HTTP_ROUTE_POWER,
+	LINKR_DEBUGGER_HTTP_ROUTE_SWITCH,
+	LINKR_DEBUGGER_HTTP_ROUTE_GPIO,
 };
 
 struct linkr_debugger_http_power_set_request {
@@ -214,6 +218,78 @@ static const struct json_obj_descr pd_set_request_descr[] = {
 	JSON_OBJ_DESCR_PRIM(struct linkr_debugger_http_pd_set_request, voltage_mv, JSON_TOK_NUMBER),
 };
 
+static bool linkr_debugger_http_json_space(char ch)
+{
+	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
+}
+
+/* Zephyr's json_obj_parse stops at the first object's closing brace. Check the
+ * length-delimited envelope BEFORE it can modify strings in the payload. Its
+ * unknown-field skipper does not distinguish object/array closing delimiters,
+ * so validate container types here as well as the single-object boundary.
+ */
+static int64_t linkr_debugger_http_parse_object(const char *body, size_t len,
+						const struct json_obj_descr *descr,
+						size_t descr_len, void *value)
+{
+	char containers[LINKR_DEBUGGER_HTTP_JSON_MAX_DEPTH];
+	size_t i = 0U;
+	size_t depth = 0U;
+	bool string = false;
+	bool escape = false;
+	bool closed = false;
+
+	if (body == NULL) {
+		return -EINVAL;
+	}
+	while (i < len && linkr_debugger_http_json_space(body[i])) {
+		i++;
+	}
+	if (i == len || body[i] != '{') {
+		return -EINVAL;
+	}
+	for (; i < len; i++) {
+		char ch = body[i];
+
+		if (ch == '\0') {
+			return -EINVAL;
+		}
+		if (string) {
+			if (escape) {
+				escape = false;
+			} else if (ch == '\\') {
+				escape = true;
+			} else if (ch == '"') {
+				string = false;
+			}
+		} else if (ch == '"') {
+			string = true;
+		} else if (ch == '{' || ch == '[') {
+			if (depth == sizeof(containers)) {
+				return -EINVAL;
+			}
+			containers[depth++] = ch == '{' ? '}' : ']';
+		} else if (ch == '}' || ch == ']') {
+			if (depth == 0U || containers[depth - 1U] != ch) {
+				return -EINVAL;
+			}
+			if (--depth == 0U) {
+				closed = true;
+				i++;
+				break;
+			}
+		}
+	}
+	if (!closed) {
+		return -EINVAL;
+	}
+	for (; i < len; i++) {
+		if (!linkr_debugger_http_json_space(body[i])) {
+			return -EINVAL;
+		}
+	}
+	return json_obj_parse((char *)body, len, descr, descr_len, value);
+}
 
 static int linkr_debugger_http_control_power(const char *name, const char *body,
 					      size_t body_len)
@@ -226,8 +302,8 @@ static int linkr_debugger_http_control_power(const char *name, const char *body,
 	if (rail == NULL || body == NULL || body_len == 0U) {
 		return -EINVAL;
 	}
-	ret = json_obj_parse((char *)body, body_len, power_set_request_descr,
-			     ARRAY_SIZE(power_set_request_descr), &req);
+	ret = linkr_debugger_http_parse_object(body, body_len, power_set_request_descr,
+					       ARRAY_SIZE(power_set_request_descr), &req);
 	if (ret < 0 || !linkr_debugger_parse_bool_arg(req.state, &enabled)) {
 		return -EINVAL;
 	}
@@ -243,8 +319,8 @@ static int linkr_debugger_http_control_switch(const char *name, const char *body
 	if (name == NULL || body == NULL || body_len == 0U) {
 		return -EINVAL;
 	}
-	ret = json_obj_parse((char *)body, body_len, switch_route_request_descr,
-			     ARRAY_SIZE(switch_route_request_descr), &req);
+	ret = linkr_debugger_http_parse_object(body, body_len, switch_route_request_descr,
+					       ARRAY_SIZE(switch_route_request_descr), &req);
 	if (ret < 0) {
 		return -EINVAL;
 	}
@@ -278,8 +354,8 @@ static int linkr_debugger_http_control_gpio(const char *identifier, const char *
 	if (desc == NULL || body == NULL || body_len == 0U) {
 		return -EINVAL;
 	}
-	ret = json_obj_parse((char *)body, body_len, gpio_write_request_descr,
-			     ARRAY_SIZE(gpio_write_request_descr), &req);
+	ret = linkr_debugger_http_parse_object(body, body_len, gpio_write_request_descr,
+					       ARRAY_SIZE(gpio_write_request_descr), &req);
 	if (ret < 0) {
 		return -EINVAL;
 	}
@@ -1948,6 +2024,7 @@ static int linkr_debugger_http_handle_gpio(struct http_client_ctx *client,
 			gpio_error = linkr_debugger_gpio_configure_error(output_requested, ret);
 			linkr_debugger_http_error(response_ctx, json_buf, env.cap,
 					     gpio_error->forbidden ? HTTP_403_FORBIDDEN :
+					     gpio_error->busy ? HTTP_409_CONFLICT :
 							      HTTP_500_INTERNAL_SERVER_ERROR,
 					     "gpio", gpio_error->code, gpio_error->message);
 			return 0;
@@ -2337,41 +2414,19 @@ static struct http_resource_detail_dynamic fallback_resource_detail = {
 	.cb = linkr_debugger_http_route_request,
 };
 
-#define LINKR_DEBUGGER_HTTP_HOLDER_STALE_MS 5000U
-
-void linkr_debugger_http_reap_stale_holders(void)
-{
-	static int64_t holder_since_ms;
-	struct http_client_ctx *holder = fallback_resource_detail.holder;
-	int64_t now = k_uptime_get();
-
-	if (holder == NULL) {
-		holder_since_ms = 0;
-		return;
-	}
-	if (holder_since_ms == 0) {
-		holder_since_ms = now;
-		return;
-	}
-	if (now - holder_since_ms < (int64_t)LINKR_DEBUGGER_HTTP_HOLDER_STALE_MS) {
-		return;
-	}
-
-	/* A dynamic-resource holder should only live for one request
-	 * transaction (milliseconds). When it persists, the owning connection
-	 * died without the HTTP server noticing, and every fallback API
-	 * request gets a bare 409 until reboot.
-	 *
-	 * FIXME: this reaps the symptom; the exact Zephyr-side sequence that
-	 * strands the holder (connection dropped mid-transaction without
-	 * client_release_resources running) is not root-caused yet and
-	 * deserves an upstream fix once reproduced deterministically.
-	 */
-	LOG_WRN("clearing stuck fallback resource holder: fd=%d server_state=%d method=%d",
-		holder->fd, (int)holder->server_state, (int)holder->method);
-	fallback_resource_detail.holder = NULL;
-	holder_since_ms = 0;
-}
+/* Matching is exact (RESOURCE_WILDCARD is disabled): children still select the
+ * service fallback. Register the SAME detail, not separate parent details, so
+ * client_release_resources() finds its holder even for children/encoded GPIO
+ * identifiers/queries. It clears holder before ABORTED, so these aliases notify
+ * exactly once, before Zephyr can recycle the client context. No extra buffers
+ * or per-resource mutable state are needed.
+ */
+HTTP_RESOURCE_DEFINE(linkr_debugger_power_resource, linkr_debugger_http_service, "/api/v1/power",
+		     &fallback_resource_detail);
+HTTP_RESOURCE_DEFINE(linkr_debugger_switch_resource, linkr_debugger_http_service, "/api/v1/switch",
+		     &fallback_resource_detail);
+HTTP_RESOURCE_DEFINE(linkr_debugger_gpio_resource, linkr_debugger_http_service, "/api/v1/gpio",
+		     &fallback_resource_detail);
 
 #define LINKR_DEBUGGER_TASK_HTTP_RESOURCE(name_, path_, methods_, content_type_, route_)        \
 	static const enum linkr_debugger_task_http_route name_##_route = route_;                \
@@ -2680,9 +2735,9 @@ static int linkr_debugger_http_handle_pd(struct http_client_ctx *client,
 					     "missing JSON request body");
 			return 0;
 		}
-		parsed_fields = json_obj_parse((char *)body.data,
-					       body.len, pd_set_request_descr,
-					       ARRAY_SIZE(pd_set_request_descr), &req);
+		parsed_fields = linkr_debugger_http_parse_object(
+			(const char *)body.data, body.len, pd_set_request_descr,
+			ARRAY_SIZE(pd_set_request_descr), &req);
 		linkr_debugger_http_body_clear((uintptr_t)client, HTTP_PUT,
 					 LINKR_DEBUGGER_HTTP_ROUTE_PD);
 		/* json_obj_parse returns a bitmap, not a decoded-field count. */
@@ -2834,9 +2889,9 @@ static int linkr_debugger_http_handle_net(struct http_client_ctx *client,
 			return 0;
 		}
 
-		parsed_fields = json_obj_parse((char *)body.data, body.len,
-					       net_set_request_descr,
-					       ARRAY_SIZE(net_set_request_descr), &req);
+		parsed_fields = linkr_debugger_http_parse_object(
+			(const char *)body.data, body.len, net_set_request_descr,
+			ARRAY_SIZE(net_set_request_descr), &req);
 		linkr_debugger_http_body_clear((uintptr_t)client,
 					HTTP_PUT, LINKR_DEBUGGER_HTTP_ROUTE_NET);
 		if (parsed_fields < 0 ||
@@ -3085,6 +3140,49 @@ static bool linkr_debugger_http_path_matches(const char *path, const char *prefi
 		(allow_children && path[prefix_len] == '/'));
 }
 
+/* Consume complete control bodies synchronously; clear storage even on early
+ * handler errors, without clearing the transaction's drain state. */
+static int linkr_debugger_http_handle_control_body(struct http_client_ctx *client,
+	enum http_transaction_status status, const struct http_request_ctx *request_ctx,
+	struct http_response_ctx *response_ctx, void *user_data,
+	enum linkr_debugger_http_route_id route, const char *command,
+	int (*handler)(struct http_client_ctx *, enum http_transaction_status,
+		       const struct http_request_ctx *, struct http_response_ctx *, void *))
+{
+	struct linkr_debugger_http_body_view body = { 0 };
+	struct http_request_ctx complete = { 0 };
+	int ret;
+
+	if (client->method != HTTP_PUT) {
+		return handler(client, status, request_ctx, response_ctx, user_data);
+	}
+	ret = linkr_debugger_http_body_accumulate((uintptr_t)client, HTTP_PUT, route,
+		linkr_debugger_http_body_event_from_status(status),
+		request_ctx != NULL ? request_ctx->data : NULL,
+		request_ctx != NULL ? request_ctx->data_len : 0U, &body);
+	if (ret == LINKR_DEBUGGER_HTTP_BODY_WAITING || ret == LINKR_DEBUGGER_HTTP_BODY_CLEARED) {
+		return 0;
+	}
+	if (ret != LINKR_DEBUGGER_HTTP_BODY_READY) {
+		bool large = ret == LINKR_DEBUGGER_HTTP_BODY_TOO_LARGE;
+
+		linkr_debugger_http_error(response_ctx, linkr_debugger_http_json_workspace,
+			LINKR_DEBUGGER_HTTP_JSON_BUFSZ,
+			large ? HTTP_413_PAYLOAD_TOO_LARGE : HTTP_400_BAD_REQUEST, command,
+			large ? "body_too_large" : "invalid_body",
+			large ? "JSON request body is too large" : "failed to assemble JSON request body");
+		return 0;
+	}
+	if (request_ctx != NULL) {
+		complete = *request_ctx;
+	}
+	complete.data = (void *)body.data;
+	complete.data_len = body.len;
+	ret = handler(client, HTTP_SERVER_REQUEST_DATA_FINAL, &complete, response_ctx, user_data);
+	linkr_debugger_http_body_clear((uintptr_t)client, HTTP_PUT, route);
+	return ret;
+}
+
 static int linkr_debugger_http_route_request(struct http_client_ctx *client,
 					 enum http_transaction_status status,
 					 const struct http_request_ctx *request_ctx,
@@ -3099,9 +3197,33 @@ static int linkr_debugger_http_route_request(struct http_client_ctx *client,
 	static const enum linkr_debugger_serial_http_route serial_config_route =
 		LINKR_DEBUGGER_SERIAL_HTTP_ROUTE_CONFIG;
 
-	/* Network PUT owns a fragmented JSON body and must receive MORE, FINAL,
-	 * ABORTED and COMPLETE events. Other fallback routes remain final-only.
+	/* Teardown owns the client key, independent of the current method/path.
+	 * Keep rejected/consumed tombstones until this terminal callback, never a
+	 * timeout or an error MORE: trailing FINAL still belongs to the old body.
 	 */
+	if (status == HTTP_SERVER_TRANSACTION_ABORTED ||
+	    status == HTTP_SERVER_TRANSACTION_COMPLETE) {
+		(void)linkr_debugger_http_body_accumulate(
+			(uintptr_t)client, 0U, 0U,
+			linkr_debugger_http_body_event_from_status(status), NULL, 0U, NULL);
+	}
+
+	/* Body owners must receive MORE/FINAL and terminal lifecycle callbacks. */
+	if (linkr_debugger_http_path_matches(path, "/api/v1/power", true)) {
+		return linkr_debugger_http_handle_control_body(client, status, request_ctx,
+			response_ctx, user_data, LINKR_DEBUGGER_HTTP_ROUTE_POWER, "power",
+			linkr_debugger_http_handle_power);
+	}
+	if (linkr_debugger_http_path_matches(path, "/api/v1/switch", true)) {
+		return linkr_debugger_http_handle_control_body(client, status, request_ctx,
+			response_ctx, user_data, LINKR_DEBUGGER_HTTP_ROUTE_SWITCH, "switch",
+			linkr_debugger_http_handle_switch);
+	}
+	if (linkr_debugger_http_path_matches(path, "/api/v1/gpio", true)) {
+		return linkr_debugger_http_handle_control_body(client, status, request_ctx,
+			response_ctx, user_data, LINKR_DEBUGGER_HTTP_ROUTE_GPIO, "gpio",
+			linkr_debugger_http_handle_gpio);
+	}
 	if (linkr_debugger_http_path_matches(path, "/api/v1/net", false)) {
 		return linkr_debugger_http_handle_net(client, status, request_ctx,
 					      response_ctx, user_data);
@@ -3152,20 +3274,8 @@ static int linkr_debugger_http_route_request(struct http_client_ctx *client,
 		return linkr_debugger_http_handle_status(client, status, request_ctx, response_ctx, user_data);
 	}
 
-	if (linkr_debugger_http_path_matches(path, "/api/v1/power", true)) {
-		return linkr_debugger_http_handle_power(client, status, request_ctx, response_ctx, user_data);
-	}
-
 	if (linkr_debugger_http_path_matches(path, "/api/v1/adc/read", false)) {
 		return linkr_debugger_http_handle_adc(client, status, request_ctx, response_ctx, user_data);
-	}
-
-	if (linkr_debugger_http_path_matches(path, "/api/v1/switch", true)) {
-		return linkr_debugger_http_handle_switch(client, status, request_ctx, response_ctx, user_data);
-	}
-
-	if (linkr_debugger_http_path_matches(path, "/api/v1/gpio", true)) {
-		return linkr_debugger_http_handle_gpio(client, status, request_ctx, response_ctx, user_data);
 	}
 
 	if (linkr_debugger_http_path_matches(path, "/api/v1/bootloader", false)) {

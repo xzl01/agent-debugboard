@@ -16,7 +16,7 @@
 #define RADXA_LINKR_DEBUGGER_CAPTIVE_PORTAL_H_
 #define RADXA_LINKR_DEBUGGER_CAPTURE_ARBITER_H_
 #define RADXA_LINKR_DEBUGGER_CONTROL_H_
-#define RADXA_LINKR_DEBUGGER_GPIO_ERROR_H_
+#include "linkr_debugger_gpio_error.h"
 #define RADXA_LINKR_DEBUGGER_CONFIG_HTTP_H_
 #define RADXA_LINKR_DEBUGGER_FLASH_ARBITER_H_
 #define RADXA_LINKR_DEBUGGER_CONFIG_SUMMARY_H_
@@ -34,7 +34,7 @@
 #define RADXA_LINKR_DEBUGGER_WS_H_
 
 #define CONFIG_LINKR_DEBUGGER_LOG_LEVEL 0
-#define CONFIG_HTTP_SERVER_MAX_CLIENTS 1
+#define CONFIG_HTTP_SERVER_MAX_CLIENTS 8
 #define LINKR_DEBUGGER_TASK_HTTP_HOST_TEST 1
 
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
@@ -74,7 +74,11 @@ static inline int k_work_reschedule(struct k_work_delayable *work, int timeout)
 	ARG_UNUSED(timeout);
 	return 0;
 }
-static inline int64_t k_uptime_get(void) { return 0; }
+static int64_t http_test_uptime_ms;
+static inline int64_t k_uptime_get(void)
+{
+	return http_test_uptime_ms;
+}
 
 enum http_method {
 	HTTP_DELETE = 0,
@@ -172,7 +176,10 @@ struct http_resource_detail_websocket {
 	void *user_data;
 };
 
-struct linkr_debugger_http_service_stub { int *fd; };
+struct linkr_debugger_http_service_stub {
+	int *fd;
+	struct http_resource_detail_common *res_fallback;
+};
 
 #define HTTP_RESOURCE_TYPE_DYNAMIC 1
 #define HTTP_RESOURCE_TYPE_STATIC 2
@@ -181,10 +188,14 @@ struct linkr_debugger_http_resource_stub {
 	const char *path;
 	void *detail;
 };
-#define HTTP_RESOURCE_DEFINE(name_, service_, path_, detail_) \
-	static const struct linkr_debugger_http_resource_stub name_ = { path_, detail_ }
-#define HTTP_SERVICE_DEFINE(name, ...) \
-	struct linkr_debugger_http_service_stub name = { 0 }
+#define HTTP_RESOURCE_DEFINE(name_, service_, path_, detail_)                                      \
+	static const struct linkr_debugger_http_resource_stub name_ __attribute__((                \
+		section("http_test_resources"), used, aligned(sizeof(void *)))) = {path_, detail_}
+#define HTTP_SERVICE_DEFINE(name_, host_, port_, concurrent_, backlog_, detail_, fallback_,        \
+			    config_)                                                               \
+	struct linkr_debugger_http_service_stub name_ = {.res_fallback = fallback_}
+extern const struct linkr_debugger_http_resource_stub __start_http_test_resources[];
+extern const struct linkr_debugger_http_resource_stub __stop_http_test_resources[];
 
 enum json_tokens {
 	JSON_TOK_STRING_BUF,
@@ -285,7 +296,10 @@ enum linkr_debugger_sd_route {
 	LINKR_DEBUGGER_SD_ROUTE_TARGET,
 	LINKR_DEBUGGER_SD_ROUTE_USB_READER,
 };
-enum linkr_debugger_tf_wp_route { LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE };
+enum linkr_debugger_tf_wp_route {
+	LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE,
+	LINKR_DEBUGGER_TF_WP_ROUTE_PROTECTED,
+};
 
 #define LINKR_DEBUGGER_PD_MAX_SOURCE_PROFILES 10U
 #define LINKR_DEBUGGER_PD_VOLTAGE_20V 20000U
@@ -384,11 +398,6 @@ struct linkr_debugger_config_summary_buffer {
 	size_t capacity;
 	size_t length;
 	size_t tail_reserve;
-};
-struct linkr_debugger_gpio_error {
-	const char *code;
-	const char *message;
-	bool forbidden;
 };
 struct linkr_debugger_ws_session_info {
 	uint8_t slot;
@@ -645,6 +654,8 @@ static const char *http_test_gpio_directions[HTTP_TEST_SAFE_GPIO_COUNT];
 static struct linkr_debugger_watchdog_status http_test_watchdog_status;
 static struct linkr_debugger_monitoring_snapshot http_test_monitoring_snapshot;
 static struct linkr_debugger_config_service_status http_test_config_status;
+static unsigned int http_test_control_calls;
+static int http_test_gpio_set_result;
 
 static inline const struct linkr_debugger_rail_desc *linkr_debugger_find_rail(const char *name)
 {
@@ -677,6 +688,7 @@ static inline int linkr_debugger_power_output_set(
 		return -1;
 	}
 	http_test_power_states[index] = enabled;
+	http_test_control_calls++;
 	return 0;
 }
 static inline bool linkr_debugger_power_output_enabled(
@@ -689,19 +701,27 @@ static inline bool linkr_debugger_power_output_enabled(
 static inline int linkr_debugger_sd_route_set(enum linkr_debugger_sd_route route)
 {
 	ARG_UNUSED(route);
-	return -1;
+	http_test_control_calls++;
+	return 0;
 }
 static inline bool linkr_debugger_parse_tf_wp_route(
 	const char *arg, enum linkr_debugger_tf_wp_route *route)
 {
-	ARG_UNUSED(arg);
-	ARG_UNUSED(route);
+	if (strcmp(arg, "writable") == 0) {
+		*route = LINKR_DEBUGGER_TF_WP_ROUTE_WRITABLE;
+		return true;
+	}
+	if (strcmp(arg, "protected") == 0) {
+		*route = LINKR_DEBUGGER_TF_WP_ROUTE_PROTECTED;
+		return true;
+	}
 	return false;
 }
 static inline int linkr_debugger_tf_wp_route_set(enum linkr_debugger_tf_wp_route route)
 {
 	ARG_UNUSED(route);
-	return -1;
+	http_test_control_calls++;
+	return 0;
 }
 static inline const struct linkr_debugger_safe_gpio_desc *
 linkr_debugger_find_safe_gpio_by_identifier(const char *identifier)
@@ -722,14 +742,16 @@ static inline int linkr_debugger_gpio_set_input(
 	const struct linkr_debugger_safe_gpio_desc *desc)
 {
 	ARG_UNUSED(desc);
-	return -1;
+	http_test_control_calls++;
+	return http_test_gpio_set_result;
 }
 static inline int linkr_debugger_gpio_set_output(
 	const struct linkr_debugger_safe_gpio_desc *desc, bool value)
 {
 	ARG_UNUSED(desc);
 	ARG_UNUSED(value);
-	return -1;
+	http_test_control_calls++;
+	return http_test_gpio_set_result;
 }
 static inline int linkr_debugger_reboot_schedule(void) { return -1; }
 static inline int linkr_debugger_captive_capport_body(const char *portal_url,
@@ -873,13 +895,6 @@ static inline int linkr_debugger_current_read(
 static inline const char *linkr_debugger_reserved_gpios(void)
 {
 	return "GP00-GP04 GP10-GP11 GP19 GP22-GP25 GP26-GP28";
-}
-static inline const struct linkr_debugger_gpio_error *linkr_debugger_gpio_configure_error(
-	bool output, int error)
-{
-	ARG_UNUSED(output);
-	ARG_UNUSED(error);
-	return NULL;
 }
 static inline int linkr_debugger_bootloader_now(void) { return -1; }
 int linkr_debugger_pd_get_status(struct linkr_debugger_pd_status *status);

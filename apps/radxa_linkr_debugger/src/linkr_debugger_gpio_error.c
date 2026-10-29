@@ -14,9 +14,18 @@ static const struct linkr_debugger_gpio_error configure_failed_error = {
 	.forbidden = false,
 };
 
+static const struct linkr_debugger_gpio_error busy_error = {
+	.code = "busy",
+	.message = "GPIO is reserved by a capture",
+	.busy = true,
+};
+
 const struct linkr_debugger_gpio_error *
 linkr_debugger_gpio_configure_error(bool output, int error)
 {
+	if (error == -EBUSY) {
+		return &busy_error;
+	}
 	if (output && error == -EPERM) {
 		return &input_only_error;
 	}

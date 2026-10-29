@@ -8,6 +8,7 @@
 #include "linkr_debugger_logic_analyzer.h"
 
 #include "linkr_debugger_capture_arena.h"
+#include "linkr_debugger_capture_gpio_guard.h"
 #include "linkr_debugger_serial.h"
 
 #include <errno.h>
@@ -88,6 +89,21 @@ static uint8_t la_pin_at(const struct linkr_debugger_la_config *config, uint8_t 
 }
 
 #if defined(LINKR_DEBUGGER_LA_HOST_TEST)
+#if !defined(LINKR_DEBUGGER_CONTROL_GPIO_HOST_TEST)
+/* Planning-only host tests do not link the control runtime. The ownership
+ * integration test instead links the production claim/release and setters. */
+int linkr_debugger_capture_gpio_claim(uint32_t pin_mask, uint32_t generation)
+{
+	(void)pin_mask;
+	(void)generation;
+	return 0;
+}
+
+void linkr_debugger_capture_gpio_release(uint32_t generation)
+{
+	(void)generation;
+}
+#endif
 __attribute__((weak)) int linkr_debugger_serial_runtime_pause(void)
 {
 	return 0;
@@ -111,6 +127,54 @@ __attribute__((weak)) int linkr_debugger_serial_status_snapshot(
 #endif
 
 static bool la_j4_serial_paused;
+static uint32_t la_gpio_next_generation;
+static uint32_t la_gpio_generation;
+static void la_start_prepare_clear_active_locked(void);
+
+static uint32_t la_lane_gpio_mask(uint8_t base, uint8_t count)
+{
+	return ((UINT32_C(1) << count) - 1U) << base;
+}
+
+static int la_claim_gpio_locked(uint32_t mask)
+{
+	int ret;
+
+	if (++la_gpio_next_generation == 0U) {
+		la_gpio_next_generation++;
+	}
+	ret = linkr_debugger_capture_gpio_claim(mask, la_gpio_next_generation);
+	if (ret == 0) {
+		la_gpio_generation = la_gpio_next_generation;
+	}
+	return ret;
+}
+
+static int la_claim_burst_gpio_locked(const struct linkr_debugger_la_packed_burst_plan *plan)
+{
+	uint32_t mask = 0U;
+
+	for (uint8_t i = 0U; i < plan->lane_count; i++) {
+		mask |= la_lane_gpio_mask(plan->lanes[i].pin_base, plan->lanes[i].pin_count);
+	}
+	return la_claim_gpio_locked(mask);
+}
+
+static int la_claim_ring_gpio_locked(const struct linkr_debugger_la_packed_ring_plan *plan)
+{
+	uint32_t mask = 0U;
+
+	for (uint8_t i = 0U; i < plan->lane_count; i++) {
+		mask |= la_lane_gpio_mask(plan->lanes[i].pin_base, plan->lanes[i].pin_count);
+	}
+	return la_claim_gpio_locked(mask);
+}
+
+static void la_release_gpio_locked(void)
+{
+	linkr_debugger_capture_gpio_release(la_gpio_generation);
+	la_gpio_generation = 0U;
+}
 
 static bool la_pin_span_claims_j4_uart(uint8_t pin_base, uint8_t pin_count)
 {
@@ -3128,16 +3192,26 @@ static void la_stream_ring_wait_idle_if_needed(void)
 
 static void la_stream_stop_and_cleanup(enum linkr_debugger_la_state state)
 {
+	uint32_t generation;
+	uint32_t gpio_generation;
+
 	k_mutex_lock(&la_mutex, K_FOREVER);
 	la_stream_request_inactive_locked();
+	generation = la_generation;
+	gpio_generation = la_gpio_generation;
 	k_mutex_unlock(&la_mutex);
 
 	la_stream_ring_wait_idle_if_needed();
 	la_stream_ring_consumer_set_priority(false);
 
 	k_mutex_lock(&la_mutex, K_FOREVER);
+	if (generation != la_generation || gpio_generation != la_gpio_generation) {
+		k_mutex_unlock(&la_mutex);
+		return;
+	}
 	la_cleanup_locked();
 	la_stream_clear_callback_locked();
+	la_start_prepare_clear_active_locked();
 	la_capture.state = state;
 	la_capture.samples = NULL;
 	k_mutex_unlock(&la_mutex);
@@ -3179,6 +3253,7 @@ static void la_restore_configured_pins(void)
 	}
 	la_configured_pin_count = 0U;
 	la_resume_j4_serial_after_mux_restore_locked();
+	la_release_gpio_locked();
 }
 
 static void la_cleanup_locked(void)
@@ -3420,6 +3495,7 @@ static void la_packed_burst_work_handler(struct k_work *work)
 	struct linkr_debugger_capture_arena_lease lease;
 	bool have_sink;
 	bool have_lease;
+	uint32_t generation;
 
 	ARG_UNUSED(work);
 
@@ -3428,6 +3504,7 @@ static void la_packed_burst_work_handler(struct k_work *work)
 		k_mutex_unlock(&la_mutex);
 		return;
 	}
+	generation = la_generation;
 	if (la_packed_sm_a_claimed) {
 		pio_sm_set_enabled(pio_rpi_pico_get_pio(la_pio_dev), (uint)la_packed_sm_a, false);
 	}
@@ -3468,9 +3545,11 @@ static void la_packed_burst_work_handler(struct k_work *work)
 		}
 		if (!have_sink) {
 			k_mutex_lock(&la_mutex, K_FOREVER);
-			la_capture.state = status == LINKR_DEBUGGER_LA_RING_POLL_OK ?
-				LINKR_DEBUGGER_LA_STATE_DONE : LINKR_DEBUGGER_LA_STATE_ERROR;
-			la_cleanup_locked();
+			if (generation == la_generation) {
+				la_capture.state = status == LINKR_DEBUGGER_LA_RING_POLL_OK ?
+					LINKR_DEBUGGER_LA_STATE_DONE : LINKR_DEBUGGER_LA_STATE_ERROR;
+				la_cleanup_locked();
+			}
 			k_mutex_unlock(&la_mutex);
 		} else {
 			/* Arena release is deferred to stop_stream(), which WS invokes only after
@@ -3479,9 +3558,11 @@ static void la_packed_burst_work_handler(struct k_work *work)
 		}
 	} else if (!have_sink) {
 		k_mutex_lock(&la_mutex, K_FOREVER);
-		la_capture.state = status == LINKR_DEBUGGER_LA_RING_POLL_OK ?
-			LINKR_DEBUGGER_LA_STATE_DONE : LINKR_DEBUGGER_LA_STATE_ERROR;
-		la_cleanup_locked();
+		if (generation == la_generation) {
+			la_capture.state = status == LINKR_DEBUGGER_LA_RING_POLL_OK ?
+				LINKR_DEBUGGER_LA_STATE_DONE : LINKR_DEBUGGER_LA_STATE_ERROR;
+			la_cleanup_locked();
+		}
 		k_mutex_unlock(&la_mutex);
 	}
 }
@@ -3670,6 +3751,10 @@ static int la_packed_burst_configure_locked(
 	if (!device_is_ready(gpio_dev) || !device_is_ready(la_pio_dev) || !device_is_ready(la_dma_dev)) {
 		return -ENODEV;
 	}
+	ret = la_claim_burst_gpio_locked(plan);
+	if (ret < 0) {
+		return ret;
+	}
 	ret = la_pause_j4_serial_locked(
 		la_packed_burst_plan_claims_j4_uart(plan));
 	if (ret < 0) {
@@ -3840,6 +3925,10 @@ static int la_packed_ring_configure_locked(const struct linkr_debugger_la_config
 
 	if (!device_is_ready(gpio_dev) || !device_is_ready(la_pio_dev) || !device_is_ready(la_dma_dev)) {
 		return -ENODEV;
+	}
+	ret = la_claim_ring_gpio_locked(&la_stream_ring_plan);
+	if (ret < 0) {
+		return ret;
 	}
 	ret = la_pause_j4_serial_locked(
 		la_packed_ring_plan_claims_j4_uart(&la_stream_ring_plan));
@@ -4019,6 +4108,7 @@ static void la_cleanup_locked(void)
 		la_host_j4_mux_claimed = false;
 	}
 	la_resume_j4_serial_after_mux_restore_locked();
+	la_release_gpio_locked();
 }
 
 int linkr_debugger_logic_analyzer_host_j4_capture_prepare(
@@ -4028,10 +4118,17 @@ int linkr_debugger_logic_analyzer_host_j4_capture_prepare(
 	bool claims_j4_uart;
 	int ret;
 
-	claims_j4_uart = config != NULL &&
-		linkr_debugger_logic_analyzer_packed_ring_plan(config, &plan) == 0 &&
-		la_packed_ring_plan_claims_j4_uart(&plan);
+	ret = linkr_debugger_logic_analyzer_packed_ring_plan(config, &plan);
+	if (ret < 0) {
+		return ret;
+	}
+	claims_j4_uart = la_packed_ring_plan_claims_j4_uart(&plan);
 	k_mutex_lock(&la_mutex, K_FOREVER);
+	ret = la_claim_ring_gpio_locked(&plan);
+	if (ret < 0) {
+		k_mutex_unlock(&la_mutex);
+		return ret;
+	}
 	ret = la_pause_j4_serial_locked(claims_j4_uart);
 	if (ret == 0 && claims_j4_uart) {
 		linkr_debugger_logic_analyzer_host_j4_mux_event(false);
@@ -4323,7 +4420,22 @@ int linkr_debugger_logic_analyzer_prepare_wide11_burst_start_sink(
 		la_packed_burst_hw_configured = true;
 		next.hardware_prepared = true;
 	}
+#else
+	if (next.sink_bound) {
+		ret = la_claim_burst_gpio_locked(&burst_plan);
+		if (ret < 0) {
+			k_mutex_unlock(&la_mutex);
+			return ret;
+		}
+	}
 #endif
+	if (!next.sink_bound) {
+		ret = la_claim_burst_gpio_locked(&burst_plan);
+		if (ret < 0) {
+			k_mutex_unlock(&la_mutex);
+			return ret;
+		}
+	}
 	if (next.plan.legacy_adapter ==
 	    LINKR_DEBUGGER_LA_LEGACY_ADAPTER_PACKED_BURST) {
 		next.hardware_prepared = true;
@@ -4342,6 +4454,7 @@ static int la_prepare_stream_common_locked(
 {
 	const struct linkr_debugger_la_config *config;
 	const struct linkr_debugger_la_stream_sink *sink;
+	uint32_t prepare_generation;
 	int ret;
 
 	if (prepare == NULL || (!prepare->sink_bound && callback == NULL)) {
@@ -4349,6 +4462,7 @@ static int la_prepare_stream_common_locked(
 	}
 
 	config = &prepare->config;
+	prepare_generation = prepare->generation;
 	sink = prepare->sink_bound ? &prepare->sink : NULL;
 	while (true) {
 		if (la_stream_active) {
@@ -4375,6 +4489,9 @@ static int la_prepare_stream_common_locked(
 		la_stream_ring_wait_idle_if_needed();
 		k_mutex_lock(&la_mutex, K_FOREVER);
 		la_stream_ring_start_waiter = false;
+		if (la_start_prepare_active.generation != prepare_generation) {
+			return -ESTALE;
+		}
 	}
 
 	la_stream_ring_consumer_set_priority(sink != NULL);
@@ -4512,12 +4629,25 @@ int linkr_debugger_logic_analyzer_prepare_stream_start_sink(
 #if defined(CONFIG_SOC_SERIES_RP2350) && !defined(LINKR_DEBUGGER_LA_HOST_TEST)
 	ret = la_prepare_stream_common_locked(&la_start_prepare_active, NULL, NULL);
 	if (ret < 0) {
-		la_start_prepare_clear_active_locked();
+		if (la_start_prepare_active.generation == next.generation) {
+			la_start_prepare_clear_active_locked();
+		}
 		k_mutex_unlock(&la_mutex);
 		return ret;
 	}
 	la_start_prepare_active.hardware_prepared = true;
 #else
+	struct linkr_debugger_la_packed_ring_plan plan;
+
+	ret = linkr_debugger_logic_analyzer_packed_ring_plan(config, &plan);
+	if (ret == 0) {
+		ret = la_claim_ring_gpio_locked(&plan);
+	}
+	if (ret < 0) {
+		la_start_prepare_clear_active_locked();
+		k_mutex_unlock(&la_mutex);
+		return ret;
+	}
 	la_start_prepare_active.hardware_prepared = true;
 #endif
 	la_start_prepare_copy_active_to_token_locked(prepare);
@@ -4548,6 +4678,8 @@ int linkr_debugger_logic_analyzer_start_prepare_cancel(
 			prepare->sink_bound = false;
 			prepare->hardware_prepared = false;
 		}
+		la_release_gpio_locked();
+		la_capture.state = LINKR_DEBUGGER_LA_STATE_IDLE;
 		prepare->state = LINKR_DEBUGGER_LA_START_PREPARE_CANCELLED;
 		la_start_prepare_clear_active_locked();
 	}
@@ -4610,10 +4742,12 @@ int linkr_debugger_logic_analyzer_start_prepare_go(
 			ret = -EPROTO;
 		} else {
 			if (!prepare->sink_bound) {
+				la_release_gpio_locked();
 				prepare->state = LINKR_DEBUGGER_LA_START_PREPARE_GO_FAILED;
 				la_start_prepare_clear_active_locked();
 				ret = -ENOTSUP;
 			} else if (!prepare->hardware_prepared) {
+				la_cleanup_locked();
 				prepare->state = LINKR_DEBUGGER_LA_START_PREPARE_GO_FAILED;
 				la_start_prepare_clear_active_locked();
 				ret = -EPROTO;
@@ -4765,9 +4899,10 @@ int linkr_debugger_logic_analyzer_arm(const struct linkr_debugger_la_config *con
 	}
 
 	k_mutex_lock(&la_mutex, K_FOREVER);
-	if (la_capture.state != LINKR_DEBUGGER_LA_STATE_IDLE &&
+	if (la_start_prepare_is_active() ||
+	    (la_capture.state != LINKR_DEBUGGER_LA_STATE_IDLE &&
 	    la_capture.state != LINKR_DEBUGGER_LA_STATE_DONE &&
-	    la_capture.state != LINKR_DEBUGGER_LA_STATE_ERROR) {
+	    la_capture.state != LINKR_DEBUGGER_LA_STATE_ERROR)) {
 		k_mutex_unlock(&la_mutex);
 		return -EBUSY;
 	}
@@ -4860,11 +4995,9 @@ int linkr_debugger_logic_analyzer_cancel(void)
 {
 #if defined(CONFIG_SOC_SERIES_RP2350) && !defined(LINKR_DEBUGGER_LA_HOST_TEST)
 	la_stream_stop_and_cleanup(LINKR_DEBUGGER_LA_STATE_IDLE);
-	k_mutex_lock(&la_mutex, K_FOREVER);
-	la_start_prepare_clear_active_locked();
-	k_mutex_unlock(&la_mutex);
 #else
 	k_mutex_lock(&la_mutex, K_FOREVER);
+	la_cleanup_locked();
 	la_start_prepare_clear_active_locked();
 	la_capture.state = LINKR_DEBUGGER_LA_STATE_IDLE;
 	la_capture.samples = NULL;
@@ -4877,6 +5010,8 @@ int linkr_debugger_logic_analyzer_cancel(void)
 
 static void la_pre_trigger_finalize_handler(struct k_work *work)
 {
+	uint32_t generation;
+
 	ARG_UNUSED(work);
 
 	k_mutex_lock(&la_mutex, K_FOREVER);
@@ -4906,13 +5041,16 @@ static void la_pre_trigger_finalize_handler(struct k_work *work)
 	la_capture.trigger_index = pre_count;
 
 	la_stream_request_inactive_locked();
+	generation = la_generation;
 	k_mutex_unlock(&la_mutex);
 
 	la_stream_ring_wait_idle_if_needed();
 
 	k_mutex_lock(&la_mutex, K_FOREVER);
-	la_cleanup_locked();
-	la_stream_clear_callback_locked();
+	if (generation == la_generation) {
+		la_cleanup_locked();
+		la_stream_clear_callback_locked();
+	}
 	k_mutex_unlock(&la_mutex);
 }
 
@@ -4980,7 +5118,7 @@ static int la_arm_pre_trigger_locked(const struct linkr_debugger_la_config *conf
 	int ret;
 
 	k_mutex_lock(&la_mutex, K_FOREVER);
-	if (la_pre_trigger_active) {
+	if (la_start_prepare_is_active() || la_pre_trigger_active) {
 		k_mutex_unlock(&la_mutex);
 		return -EBUSY;
 	}
@@ -6258,7 +6396,9 @@ static int la_start_stream_common(
 	la_start_prepare_active = next;
 	ret = la_prepare_stream_common_locked(&la_start_prepare_active, callback, user_data);
 	if (ret < 0) {
-		la_start_prepare_clear_active_locked();
+		if (la_start_prepare_active.generation == next.generation) {
+			la_start_prepare_clear_active_locked();
+		}
 		k_mutex_unlock(&la_mutex);
 		return ret;
 	}

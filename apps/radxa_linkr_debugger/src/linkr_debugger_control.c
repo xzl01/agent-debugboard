@@ -5,6 +5,10 @@
  * Copyright (c) Jiali Chen <chenjiali@radxa.com>
  */
 
+#include "linkr_debugger_capture_gpio_guard.h"
+#ifdef LINKR_DEBUGGER_CONTROL_GPIO_HOST_TEST
+#include "test_linkr_debugger_control_gpio_stubs.h"
+#else
 #include "linkr_debugger_control.h"
 #include "linkr_debugger_http.h"
 #include "linkr_debugger_monitoring.h"
@@ -764,7 +768,6 @@ static void linkr_debugger_watchdog_supervisor_thread_main(void *arg1, void *arg
 			grace_remaining_ms = 0;
 		}
 		listener_fd = linkr_debugger_http_listener_fd();
-		linkr_debugger_http_reap_stale_holders();
 		failing_service = linkr_debugger_watchdog_failing_service;
 		if (linkr_debugger_watchdog_failing_service != linkr_debugger_watchdog_last_reported_service) {
 			linkr_debugger_watchdog_last_reported_service = linkr_debugger_watchdog_failing_service;
@@ -1682,6 +1685,42 @@ int linkr_debugger_current_read_all(struct linkr_debugger_current_sample *sample
 					       &timestamp_us, 0U);
 }
 
+#endif /* LINKR_DEBUGGER_CONTROL_GPIO_HOST_TEST */
+
+static uint32_t capture_gpio_mask;
+static uint32_t capture_gpio_generation;
+
+int linkr_debugger_capture_gpio_claim(uint32_t pin_mask, uint32_t generation)
+{
+	int ret = 0;
+
+	if (pin_mask == 0U || generation == 0U) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	if (capture_gpio_generation != 0U ||
+	    linkr_debugger_capture_gpio_conflicts_with_output(pin_mask,
+		linkr_debugger_safe_gpios, linkr_debugger_gpio_directions,
+		linkr_debugger_safe_gpio_count, NULL)) {
+		ret = -EBUSY;
+	} else {
+		capture_gpio_mask = pin_mask;
+		capture_gpio_generation = generation;
+	}
+	k_mutex_unlock(&linkr_debugger_control_lock);
+	return ret;
+}
+
+void linkr_debugger_capture_gpio_release(uint32_t generation)
+{
+	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	if (generation != 0U && generation == capture_gpio_generation) {
+		capture_gpio_mask = 0U;
+		capture_gpio_generation = 0U;
+	}
+	k_mutex_unlock(&linkr_debugger_control_lock);
+}
+
 int linkr_debugger_gpio_get(const struct linkr_debugger_safe_gpio_desc *desc, int *value)
 {
 	size_t index;
@@ -1728,6 +1767,10 @@ int linkr_debugger_gpio_set_output(const struct linkr_debugger_safe_gpio_desc *d
 	}
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	if (capture_gpio_mask & BIT(desc->pin)) {
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		return -EBUSY;
+	}
 	ret = gpio_pin_configure(gpio0, desc->pin,
 				 value ? GPIO_OUTPUT_ACTIVE : GPIO_OUTPUT_INACTIVE);
 	if (ret >= 0) {
@@ -1755,6 +1798,10 @@ int linkr_debugger_gpio_set_input(const struct linkr_debugger_safe_gpio_desc *de
 	}
 
 	k_mutex_lock(&linkr_debugger_control_lock, K_FOREVER);
+	if (capture_gpio_mask & BIT(desc->pin)) {
+		k_mutex_unlock(&linkr_debugger_control_lock);
+		return -EBUSY;
+	}
 	ret = gpio_pin_configure(gpio0, desc->pin, GPIO_INPUT);
 	if (ret >= 0) {
 		linkr_debugger_gpio_apply_safe_drive_strength(desc);
@@ -1764,6 +1811,7 @@ int linkr_debugger_gpio_set_input(const struct linkr_debugger_safe_gpio_desc *de
 	return ret;
 }
 
+#ifndef LINKR_DEBUGGER_CONTROL_GPIO_HOST_TEST
 int linkr_debugger_control_snapshot_get(struct linkr_debugger_control_snapshot *snapshot)
 {
 	if (snapshot == NULL) {
@@ -2080,3 +2128,4 @@ int linkr_debugger_bootloader_now(void)
 	reset_usb_boot(0, 0);
 	return 0;
 }
+#endif /* LINKR_DEBUGGER_CONTROL_GPIO_HOST_TEST */

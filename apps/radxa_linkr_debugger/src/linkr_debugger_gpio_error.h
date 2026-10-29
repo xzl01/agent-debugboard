@@ -7,6 +7,7 @@ struct linkr_debugger_gpio_error {
 	const char *code;
 	const char *message;
 	bool forbidden;
+	bool busy;
 };
 
 const struct linkr_debugger_gpio_error *

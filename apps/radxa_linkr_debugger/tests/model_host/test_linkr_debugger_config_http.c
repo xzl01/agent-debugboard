@@ -310,6 +310,7 @@ static void call_final(enum http_method method,
 	set_response_sentinel(response);
 	call_config(&client, HTTP_SERVER_REQUEST_DATA_FINAL, body,
 		    body == NULL ? 0U : strlen(body), route, response);
+	call_config(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, 0U, route, response);
 }
 
 static void test_get_all_status_reasons(void)
@@ -630,7 +631,7 @@ static void test_fragment_boundaries(void)
 	call_config(&client, HTTP_SERVER_REQUEST_DATA_MORE, body + 512U, 512U,
 		    &config_route, &response);
 	assert_response_sentinel(&response);
-	call_config(&client, HTTP_SERVER_REQUEST_DATA_FINAL, "x", 1U,
+	call_config(&client, HTTP_SERVER_REQUEST_DATA_MORE, "x", 1U,
 		    &config_route, &response);
 	assert_terminal_response(&response, HTTP_413_PAYLOAD_TOO_LARGE,
 				 "\"code\":\"body_too_large\"");
@@ -639,7 +640,19 @@ static void test_fragment_boundaries(void)
 	set_response_sentinel(&response);
 	call_config(&client, HTTP_SERVER_REQUEST_DATA_FINAL, valid, valid_len,
 		    &config_route, &response);
+	assert_response_sentinel(&response);
+	assert(fake.save_calls == 0U);
+	call_config(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, 0U,
+		    &config_route, &response);
+	call_config(&client, HTTP_SERVER_REQUEST_DATA_FINAL, valid, valid_len,
+		    &config_route, &response);
 	assert_terminal_response(&response, HTTP_200_OK, "\"action\":\"save\"");
+	assert(fake.save_calls == 1U);
+	set_response_sentinel(&response);
+	call_config(&client, HTTP_SERVER_REQUEST_DATA_FINAL, valid, valid_len,
+		    &config_route, &response);
+	assert_response_sentinel(&response);
+	assert(fake.save_calls == 1U);
 
 	reset_fixture();
 	init_client(&client, HTTP_PUT);
@@ -750,6 +763,13 @@ static void test_four_slots_and_fifth_client(void)
 		assert_terminal_response(&responses[i], HTTP_200_OK,
 					 "\"action\":\"save\"");
 	}
+	assert(fake.save_calls == LINKR_DEBUGGER_HTTP_BODY_SLOTS);
+	/* A body slot is now free, but the rejected client's transaction is not. */
+	set_response_sentinel(&responses[LINKR_DEBUGGER_HTTP_BODY_SLOTS]);
+	call_config(&clients[LINKR_DEBUGGER_HTTP_BODY_SLOTS], HTTP_SERVER_REQUEST_DATA_FINAL,
+		"{\"items\":[]}", strlen("{\"items\":[]}"), &config_route,
+		&responses[LINKR_DEBUGGER_HTTP_BODY_SLOTS]);
+	assert_response_sentinel(&responses[LINKR_DEBUGGER_HTTP_BODY_SLOTS]);
 	assert(fake.save_calls == LINKR_DEBUGGER_HTTP_BODY_SLOTS);
 }
 

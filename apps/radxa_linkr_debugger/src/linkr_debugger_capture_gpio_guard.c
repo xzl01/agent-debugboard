@@ -13,28 +13,23 @@
 #endif
 
 bool linkr_debugger_capture_gpio_conflicts_with_output(
-	const uint8_t *capture_pins,
-	size_t capture_pin_count,
+	uint32_t capture_pin_mask,
 	const struct linkr_debugger_safe_gpio_desc *safe_gpios,
 	const uint8_t *gpio_directions,
 	size_t safe_gpio_count,
 	uint8_t *conflict_pin)
 {
-	if ((capture_pin_count > 0U && capture_pins == NULL) ||
-	    (safe_gpio_count > 0U && (safe_gpios == NULL || gpio_directions == NULL))) {
+	if (safe_gpio_count > 0U && (safe_gpios == NULL || gpio_directions == NULL)) {
 		return false;
 	}
 
-	for (size_t pin_index = 0U; pin_index < capture_pin_count; pin_index++) {
-		for (size_t gpio_index = 0U; gpio_index < safe_gpio_count; gpio_index++) {
-			if (capture_pins[pin_index] != safe_gpios[gpio_index].pin) {
-				continue;
-			}
-			if (gpio_directions[gpio_index] != LINKR_DEBUGGER_GPIO_DIR_OUTPUT) {
-				continue;
-			}
+	for (size_t i = 0U; i < safe_gpio_count; i++) {
+		uint8_t pin = safe_gpios[i].pin;
+
+		if (pin < 32U && (capture_pin_mask & (UINT32_C(1) << pin)) &&
+		    gpio_directions[i] == LINKR_DEBUGGER_GPIO_DIR_OUTPUT) {
 			if (conflict_pin != NULL) {
-				*conflict_pin = capture_pins[pin_index];
+				*conflict_pin = pin;
 			}
 			return true;
 		}

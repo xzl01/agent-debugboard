@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Exercise the production fallback router and actual route handlers directly. */
+/* Exercise production resource registration, fallback router and handlers. */
 #include "../../src/linkr_debugger_serial_http.c"
 #include "../../src/linkr_debugger_http_task_response.c"
 #include "../../src/linkr_debugger_task_http.c"
@@ -120,15 +120,26 @@ int64_t json_obj_parse(char *payload, size_t len,
 	}
 	memcpy(text, payload, len);
 	text[len] = '\0';
+	/* Like Zephyr, decode the FIRST object and do not enforce end-of-input.
+	 * Production envelope validation, not a stricter stub, must reject suffixes.
+	 */
+	char *object = text;
+	while (*object == ' ' || *object == '\t' || *object == '\r' || *object == '\n') {
+		object++;
+	}
 
 	if (descr_len == 1U) {
 		if (descr[0].type == JSON_TOK_STRING_BUF) {
 			char route[16];
 
-			if ((sscanf(text, "{\"route\":\"%15[^\"]\"}%n", route,
-				    &consumed) != 1 || consumed != (int)len) &&
-			    (sscanf(text, "{\"state\":\"%15[^\"]\"}%n", route,
-				    &consumed) != 1 || consumed != (int)len)) {
+			/* Deliberately leave unknown-field/container validation to the
+			 * production scanner. Requiring '}' here would mask the pinned
+			 * Zephyr skip_field() mismatched-container regression.
+			 */
+			if ((sscanf(object, "{\"route\":\"%15[^\"]\"%n", route, &consumed) != 1 ||
+			     consumed == 0) &&
+			    (sscanf(object, "{\"state\":\"%15[^\"]\"%n", route, &consumed) != 1 ||
+			     consumed == 0)) {
 				return -EINVAL;
 			}
 			strcpy((char *)value + descr[0].offset, route);
@@ -137,29 +148,40 @@ int64_t json_obj_parse(char *payload, size_t len,
 		return -EINVAL;
 	}
 	if (descr_len == 2U && descr[0].type == JSON_TOK_STRING_BUF) {
+		if (descr[1].type == JSON_TOK_NUMBER) {
+			char direction[8];
+			int level;
+
+			if (sscanf(object, "{\"direction\":\"%7[^\"]\",\"value\":%d}%n", direction,
+				   &level, &consumed) != 2 ||
+			    consumed == 0) {
+				return -EINVAL;
+			}
+			strcpy((char *)value + descr[0].offset, direction);
+			*(int *)((char *)value + descr[1].offset) = level;
+			return BIT64(0) | BIT64(1);
+		}
 		char mac[LINKR_DEBUGGER_NET_MAC_STR_LEN] = { 0 };
 		char network[LINKR_DEBUGGER_NET_NETWORK_STR_LEN] = { 0 };
 		int mac_consumed = 0;
 		int network_consumed = 0;
 		int matched;
 
-		matched = sscanf(text,
-				 "{\"mac\":\"%17[^\"]\",\"network\":\"%19[^\"]\"}%n",
-				 mac, network, &consumed);
-		if (matched == 2 && consumed == (int)len) {
+		matched = sscanf(object, "{\"mac\":\"%17[^\"]\",\"network\":\"%19[^\"]\"}%n", mac,
+				 network, &consumed);
+		if (matched == 2 && consumed > 0) {
 			strcpy((char *)value + descr[0].offset, mac);
 			strcpy((char *)value + descr[1].offset, network);
 			return BIT64(0) | BIT64(1);
 		}
-		matched = sscanf(text, "{\"mac\":\"%17[^\"]\"}%n", mac,
-				 &mac_consumed);
-		if (matched == 1 && mac_consumed == (int)len) {
+		matched = sscanf(object, "{\"mac\":\"%17[^\"]\"}%n", mac, &mac_consumed);
+		if (matched == 1 && mac_consumed > 0) {
 			strcpy((char *)value + descr[0].offset, mac);
 			return BIT64(0);
 		}
-		matched = sscanf(text, "{\"network\":\"%19[^\"]\"}%n", network,
-				 &network_consumed);
-		if (matched == 1 && network_consumed == (int)len) {
+		matched =
+			sscanf(object, "{\"network\":\"%19[^\"]\"}%n", network, &network_consumed);
+		if (matched == 1 && network_consumed > 0) {
 			strcpy((char *)value + descr[1].offset, network);
 			return BIT64(1);
 		}
@@ -169,9 +191,9 @@ int64_t json_obj_parse(char *payload, size_t len,
 		int mode;
 		int voltage_mv;
 
-		if (sscanf(text, "{\"mode\":%d,\"voltage_mv\":%d}%n", &mode,
-			   &voltage_mv, &consumed) != 2 ||
-		    consumed != (int)len) {
+		if (sscanf(object, "{\"mode\":%d,\"voltage_mv\":%d}%n", &mode, &voltage_mv,
+			   &consumed) != 2 ||
+		    consumed == 0) {
 			return -EINVAL;
 		}
 		*(int *)((char *)value + descr[0].offset) = mode;
@@ -186,12 +208,13 @@ int64_t json_obj_parse(char *payload, size_t len,
 		char parity[8];
 		char flow_control[12];
 
-		if (sscanf(text,
+		if (sscanf(object,
 			   "{\"baud\":%lld,\"data_bits\":%lld,\"parity\":\"%7[^\"]\","
 			   "\"stop_bits\":%lld,\"flow_control\":\"%11[^\"]\","
 			   "\"expected_generation\":%llu}%n",
 			   &baud, &data_bits, parity, &stop_bits, flow_control,
-			   &expected_generation, &consumed) != 6 || consumed != (int)len) {
+			   &expected_generation, &consumed) != 6 ||
+		    consumed == 0) {
 			return -EINVAL;
 		}
 		*(int64_t *)((char *)value + descr[0].offset) = (int64_t)baud;
@@ -496,6 +519,9 @@ static void reset_test(void)
 	static const char *const directions[] = { "input", "output" };
 
 	setter_calls = 0U;
+	http_test_uptime_ms = 1;
+	http_test_control_calls = 0U;
+	http_test_gpio_set_result = 0;
 	memset(&setter_identity, 0, sizeof(setter_identity));
 	current_identity = (struct linkr_debugger_net_identity){
 		.mac = { 0x02U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U },
@@ -710,7 +736,15 @@ static void reset_test(void)
 	linkr_debugger_gpio_layout_groups[1].name = "J13";
 	linkr_debugger_gpio_layout_groups[1].edge = "right";
 	linkr_debugger_http_body_reset_all();
-	memset(serial_http_poison, 0, sizeof(serial_http_poison));
+	for (const struct linkr_debugger_http_resource_stub *resource = __start_http_test_resources;
+	     resource < __stop_http_test_resources; resource++) {
+		struct http_resource_detail_common *common = resource->detail;
+
+		if (common->type == HTTP_RESOURCE_TYPE_DYNAMIC) {
+			((struct http_resource_detail_dynamic *)common)->holder = NULL;
+		}
+	}
+	fallback_resource_detail.holder = NULL;
 	task_test_reset();
 }
 
@@ -725,6 +759,70 @@ static void route(struct http_client_ctx *client,
 
 	assert(linkr_debugger_http_route_request(client, status, &request,
 						 response, NULL) == 0);
+}
+
+/* Model the pinned Zephyr HTTP/1 contract, not direct router calls:
+ * get_resource_detail() matches exact paths (ignoring query), then fallback;
+ * handle_http1_dynamic_resource() acquires holder before delivering data;
+ * client_release_resources() only scans REGISTERED dynamic details, clears
+ * holder, then calls ABORTED before the context can be reinitialized/reused.
+ */
+static struct http_resource_detail_dynamic *transport_detail(const char *path)
+{
+	size_t len = strcspn(path, "?");
+	struct http_resource_detail_common *common = linkr_debugger_http_service.res_fallback;
+
+	for (const struct linkr_debugger_http_resource_stub *resource = __start_http_test_resources;
+	     resource < __stop_http_test_resources; resource++) {
+		if (strlen(resource->path) == len && memcmp(path, resource->path, len) == 0) {
+			common = resource->detail;
+			break;
+		}
+	}
+	assert(common != NULL && common->type == HTTP_RESOURCE_TYPE_DYNAMIC);
+	return (struct http_resource_detail_dynamic *)common;
+}
+
+static void transport_route(struct http_client_ctx *client, enum http_transaction_status status,
+			    const char *fragment, struct http_response_ctx *response)
+{
+	struct http_resource_detail_dynamic *detail = transport_detail(client->url_buffer);
+	struct http_request_ctx request = {
+		.data = (char *)fragment,
+		.data_len = fragment != NULL ? strlen(fragment) : 0U,
+	};
+
+	assert(detail->common.bitmask_of_supported_http_methods & BIT(client->method));
+	assert(detail->holder == NULL || detail->holder == client);
+	detail->holder = client;
+	assert(detail->cb(client, status, &request, response, detail->user_data) == 0);
+	if (status == HTTP_SERVER_TRANSACTION_COMPLETE) {
+		detail->holder = NULL;
+	}
+}
+
+static size_t transport_disconnect(struct http_client_ctx *client)
+{
+	size_t callbacks = 0U;
+
+	for (const struct linkr_debugger_http_resource_stub *resource = __start_http_test_resources;
+	     resource < __stop_http_test_resources; resource++) {
+		struct http_resource_detail_common *common = resource->detail;
+		struct http_resource_detail_dynamic *detail = resource->detail;
+		struct http_request_ctx request = {0};
+		struct http_response_ctx response = {0};
+
+		if (common->type != HTTP_RESOURCE_TYPE_DYNAMIC || detail->holder != client) {
+			continue;
+		}
+		detail->holder = NULL;
+		assert(detail->cb(client, HTTP_SERVER_TRANSACTION_ABORTED, &request, &response,
+				  detail->user_data) == 0);
+		assert(!response.final_chunk);
+		callbacks++;
+	}
+	client->fd = -1;
+	return callbacks;
 }
 
 static size_t count_substring(const char *text, const char *needle)
@@ -997,6 +1095,7 @@ static void test_pd_aborted_request_clears_partial_body(void)
 	assert(pd_pps_calls == 0U);
 	assert(response.status == HTTP_400_BAD_REQUEST);
 
+	route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
 	memset(&response, 0, sizeof(response));
 	route(&client, HTTP_SERVER_REQUEST_DATA_MORE, "{\"mode\":0,\"voltage_mv\":",
 	      &response);
@@ -1023,6 +1122,7 @@ static void test_pd_complete_request_clears_partial_body(void)
 	assert(pd_pps_calls == 0U);
 	assert(response.status == HTTP_400_BAD_REQUEST);
 
+	route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
 	memset(&response, 0, sizeof(response));
 	route(&client, HTTP_SERVER_REQUEST_DATA_MORE, "{\"mode\":0,\"voltage_mv\":",
 	      &response);
@@ -1107,6 +1207,7 @@ static void test_serial_status_config_and_methods(void)
 		      "\"accepted\":true,\"request_id\":77") != NULL);
 
 	memset(&response, 0, sizeof(response));
+	route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
 	serial_status.generation = 10U;
 	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, config_json, &response);
 	assert(response.status == HTTP_409_CONFLICT);
@@ -1115,6 +1216,7 @@ static void test_serial_status_config_and_methods(void)
 		      "\"code\":\"generation_conflict\"") != NULL);
 
 	memset(&response, 0, sizeof(response));
+	route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
 	serial_status.generation = 9U;
 	serial_config_result = -EBUSY;
 	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, config_json, &response);
@@ -1125,6 +1227,7 @@ static void test_serial_status_config_and_methods(void)
 
 	memset(&response, 0, sizeof(response));
 	serial_config_result = 0;
+	route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
 	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL,
 	      "{\"baud\":57600,\"data_bits\":8,\"parity\":\"none\","
 	      "\"stop_bits\":1,\"flow_control\":\"rts_cts\","
@@ -1222,8 +1325,8 @@ static void test_serial_config_poison_survives_final_until_complete(void)
 	assert(response.status == HTTP_413_PAYLOAD_TOO_LARGE);
 	assert(serial_config_calls == 0U);
 
-	/* The body accumulator cleared its slot on overflow, but the serial
-	 * route poison prevents this legal FINAL fragment becoming a request.
+	/* The shared accumulator releases storage on overflow, but retains the
+	 * transaction tombstone so a legal FINAL cannot become a new request.
 	 */
 	memset(&response, 0, sizeof(response));
 	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, legal, &response);
@@ -1236,6 +1339,7 @@ static void test_serial_config_poison_survives_final_until_complete(void)
 	assert(response.status == HTTP_202_ACCEPTED);
 	assert(serial_config_calls == 1U);
 
+	route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
 	memset(&response, 0, sizeof(response));
 	route(&client, HTTP_SERVER_REQUEST_DATA_MORE, overflow, &response);
 	assert(response.status == HTTP_413_PAYLOAD_TOO_LARGE);
@@ -1293,6 +1397,7 @@ static void test_serial_config_accepts_continuous_baud_range(void)
 	assert(serial_config_request.baud == 5200U);
 	assert(serial_config_expected_generation == 9U);
 
+	route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
 	memset(&response, 0, sizeof(response));
 	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL,
 	      "{\"baud\":115201,\"data_bits\":8,\"parity\":\"none\","
@@ -2024,8 +2129,413 @@ static void test_task_firmware_json_golden_vectors(void)
 	route(&client, HTTP_SERVER_TRANSACTION_ABORTED, NULL, &response);
 }
 
+static unsigned int mutation_calls(void)
+{
+	return http_test_control_calls + setter_calls + pd_fixed_calls + pd_pps_calls +
+		serial_config_calls;
+}
+
+static const struct {
+	const char *path;
+	const char *old_body;
+	const char *new_body;
+} control_lifecycle_cases[] = {
+	{"/api/v1/power/5v_out", "{\"state\":\"on\"}", "{\"state\":\"off\"}"},
+	{"/api/v1/power/vdd_5v", "{\"state\":\"on\"}", "{\"state\":\"off\"}"},
+	{"/api/v1/switch/sd", "{\"route\":\"target\"}", "{\"route\":\"usb-reader\"}"},
+	{"/api/v1/switch/tf_wp", "{\"route\":\"writable\"}", "{\"route\":\"protected\"}"},
+	{"/api/v1/gpio/GP5", "{\"direction\":\"output\",\"value\":1}",
+	 "{\"direction\":\"output\",\"value\":0}"},
+	{"/api/v1/gpio/%47P6", "{\"direction\":\"output\",\"value\":1}",
+	 "{\"direction\":\"output\",\"value\":0}"},
+};
+
+static void test_registered_fallback_detail_owns_children_until_disconnect(void)
+{
+	static const char *const parents[] = {
+		"/api/v1/power",
+		"/api/v1/switch",
+		"/api/v1/gpio",
+	};
+
+	reset_test();
+	assert(linkr_debugger_http_service.res_fallback == &fallback_resource_detail.common);
+	for (size_t i = 0U; i < ARRAY_SIZE(parents); i++) {
+		size_t registered = 0U;
+
+		for (const struct linkr_debugger_http_resource_stub *resource =
+			     __start_http_test_resources;
+		     resource < __stop_http_test_resources; resource++) {
+			if (strcmp(resource->path, parents[i]) == 0) {
+				assert(resource->detail == &fallback_resource_detail);
+				registered++;
+			}
+		}
+		assert(registered == 1U);
+		assert(transport_detail(parents[i]) == &fallback_resource_detail);
+	}
+	for (size_t i = 0U; i < ARRAY_SIZE(control_lifecycle_cases); i++) {
+		struct http_client_ctx client = {.method = HTTP_PUT, .fd = 42};
+		struct http_response_ctx response = {0};
+
+		snprintf(client.url_buffer, sizeof(client.url_buffer), "%s?lifecycle=1",
+			 control_lifecycle_cases[i].path);
+		assert(transport_detail(client.url_buffer) == &fallback_resource_detail);
+		transport_route(&client, HTTP_SERVER_REQUEST_DATA_MORE, "{", &response);
+		assert(fallback_resource_detail.holder == &client);
+		/* Even a long but still live upload must not lose its cleanup owner. */
+		http_test_uptime_ms += 60000;
+		assert(fallback_resource_detail.holder == &client);
+		assert(transport_disconnect(&client) == 1U);
+		assert(fallback_resource_detail.holder == NULL);
+		assert(mutation_calls() == 0U);
+	}
+}
+
+static void test_disconnect_recycled_context_never_inherits_body_or_tombstone(void)
+{
+	char oversized[LINKR_DEBUGGER_HTTP_BODY_CAP + 2U];
+
+	memset(oversized, 'x', sizeof(oversized) - 1U);
+	oversized[sizeof(oversized) - 1U] = '\0';
+	for (size_t old = 0U; old < ARRAY_SIZE(control_lifecycle_cases); old++) {
+		for (size_t next = 0U; next < ARRAY_SIZE(control_lifecycle_cases); next++) {
+			for (size_t overflow = 0U; overflow < 2U; overflow++) {
+				struct http_client_ctx client = {.method = HTTP_PUT, .fd = 42};
+				struct http_response_ctx response = {0};
+
+				reset_test();
+				strcpy(client.url_buffer, control_lifecycle_cases[old].path);
+				transport_route(&client, HTTP_SERVER_REQUEST_DATA_MORE,
+						overflow ? oversized
+							 : control_lifecycle_cases[old].old_body,
+						&response);
+				assert(mutation_calls() == 0U);
+				assert(response.final_chunk == (overflow != 0U));
+				assert(transport_disconnect(&client) == 1U);
+
+				/* Same context address AND fd: neither is a generation token. */
+				client = (struct http_client_ctx){.method = HTTP_PUT, .fd = 42};
+				strcpy(client.url_buffer, control_lifecycle_cases[next].path);
+				response = (struct http_response_ctx){0};
+				transport_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL,
+						control_lifecycle_cases[next].new_body, &response);
+				assert(mutation_calls() == 1U && response.status == HTTP_200_OK);
+				if (next < 2U) {
+					assert(!linkr_debugger_power_output_enabled(
+						linkr_debugger_find_rail(
+							strrchr(client.url_buffer, '/') + 1)));
+				}
+				assert(transport_disconnect(&client) == 1U);
+			}
+		}
+	}
+}
+
+static void test_control_trailing_final_and_keepalive_transaction_boundary(void)
+{
+	char oversized[LINKR_DEBUGGER_HTTP_BODY_CAP + 2U];
+
+	memset(oversized, 'x', sizeof(oversized) - 1U);
+	oversized[sizeof(oversized) - 1U] = '\0';
+	for (size_t i = 0U; i < ARRAY_SIZE(control_lifecycle_cases); i++) {
+		struct http_client_ctx client = {.method = HTTP_PUT, .fd = 42};
+		struct http_response_ctx response = {0};
+
+		reset_test();
+		strcpy(client.url_buffer, control_lifecycle_cases[i].path);
+		transport_route(&client, HTTP_SERVER_REQUEST_DATA_MORE, oversized, &response);
+		assert(response.status == HTTP_413_PAYLOAD_TOO_LARGE);
+		response = (struct http_response_ctx){0};
+		transport_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL,
+				control_lifecycle_cases[i].new_body, &response);
+		assert(mutation_calls() == 0U && !response.final_chunk);
+		transport_route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
+		assert(fallback_resource_detail.holder == NULL);
+
+		/* On HTTP/1 keepalive the URL can change only AFTER COMPLETE. */
+		size_t next = (i + 1U) % ARRAY_SIZE(control_lifecycle_cases);
+		const char *body = control_lifecycle_cases[next].new_body;
+		char prefix[6];
+
+		strcpy(client.url_buffer, control_lifecycle_cases[next].path);
+		memcpy(prefix, body, 5U);
+		prefix[5] = '\0';
+		transport_route(&client, HTTP_SERVER_REQUEST_DATA_MORE, prefix, &response);
+		assert(mutation_calls() == 0U);
+		transport_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, body + 5U, &response);
+		assert(mutation_calls() == 1U && response.status == HTTP_200_OK);
+		response = (struct http_response_ctx){0};
+		transport_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, body, &response);
+		assert(mutation_calls() == 1U && !response.final_chunk);
+		transport_route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
+	}
+}
+
+static void test_control_json_requires_exactly_one_object(void)
+{
+	static const char *const suffixes[] = {"{}", " \r\n{}", "garbage", "\v", "\f"};
+	char body[256];
+	struct linkr_debugger_http_power_set_request parsed = {0};
+	char concatenated[] = "{\"state\":\"on\"}{\"state\":\"off\"}";
+	char embedded_nul[] = "{\"state\":\"on\"}\0{\"state\":\"off\"}";
+
+	/* Establish the regression oracle: the stub, like Zephyr, accepts a prefix. */
+	assert(json_obj_parse(concatenated, strlen(concatenated), power_set_request_descr,
+			      ARRAY_SIZE(power_set_request_descr), &parsed) == BIT64(0));
+	assert(strcmp(parsed.state, "on") == 0);
+	assert(linkr_debugger_http_control_power("5v_out", embedded_nul,
+						 sizeof(embedded_nul) - 1U) == -EINVAL);
+	for (size_t i = 0U; i < ARRAY_SIZE(control_lifecycle_cases); i++) {
+		struct http_client_ctx client = {.method = HTTP_PUT, .fd = 42};
+		struct http_response_ctx response = {0};
+
+		for (size_t suffix = 0U; suffix < ARRAY_SIZE(suffixes); suffix++) {
+			reset_test();
+			strcpy(client.url_buffer, control_lifecycle_cases[i].path);
+			/* A complete-looking MORE object must not execute if FINAL adds junk. */
+			transport_route(&client, HTTP_SERVER_REQUEST_DATA_MORE,
+					control_lifecycle_cases[i].old_body, &response);
+			transport_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, suffixes[suffix],
+					&response);
+			assert(mutation_calls() == 0U && response.status == HTTP_400_BAD_REQUEST);
+			assert(transport_disconnect(&client) == 1U);
+		}
+		reset_test();
+		strcpy(client.url_buffer, control_lifecycle_cases[i].path);
+		snprintf(body, sizeof(body), " \t\r\n%s \t\r\n",
+			 control_lifecycle_cases[i].new_body);
+		transport_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, body, &response);
+		assert(mutation_calls() == 1U && response.status == HTTP_200_OK);
+		assert(transport_disconnect(&client) == 1U);
+	}
+}
+
+static void test_net_pd_use_the_same_complete_object_guard(void)
+{
+	static const struct {
+		const char *path;
+		const char *body;
+	} cases[] = {
+		{"/api/v1/net", "{\"network\":\"10.20.30.0\"}"},
+		{"/api/v1/pd", "{\"mode\":0,\"voltage_mv\":9000}"},
+	};
+
+	for (size_t i = 0U; i < ARRAY_SIZE(cases); i++) {
+		struct http_client_ctx client = {.method = HTTP_PUT, .fd = 42};
+		struct http_response_ctx response = {0};
+
+		reset_test();
+		strcpy(client.url_buffer, cases[i].path);
+		transport_route(&client, HTTP_SERVER_REQUEST_DATA_MORE, cases[i].body, &response);
+		transport_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, "{}", &response);
+		assert(mutation_calls() == 0U && response.status == HTTP_400_BAD_REQUEST);
+		assert(transport_disconnect(&client) == 1U);
+	}
+}
+
+static void assert_power_json_container_result(const char *body, bool valid)
+{
+	for (size_t fragmented = 0U; fragmented < 2U; fragmented++) {
+		struct http_client_ctx client = {.method = HTTP_PUT, .fd = 42};
+		struct http_response_ctx response = {0};
+		char prefix[LINKR_DEBUGGER_HTTP_BODY_CAP + 1U];
+		size_t split = fragmented ? strlen(body) / 2U : 0U;
+
+		reset_test();
+		strcpy(client.url_buffer, "/api/v1/power/5v_out");
+		assert(split < sizeof(prefix));
+		if (fragmented) {
+			memcpy(prefix, body, split);
+			prefix[split] = '\0';
+			transport_route(&client, HTTP_SERVER_REQUEST_DATA_MORE, prefix, &response);
+			assert(mutation_calls() == 0U && !response.final_chunk);
+		}
+		transport_route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, body + split, &response);
+		assert(response.status == (valid ? HTTP_200_OK : HTTP_400_BAD_REQUEST));
+		assert(mutation_calls() == (valid ? 1U : 0U));
+		assert(linkr_debugger_power_output_enabled(linkr_debugger_find_rail("5v_out")) ==
+		       valid);
+		assert(transport_disconnect(&client) == 1U);
+	}
+}
+
+static void test_json_container_types_depth_and_quoted_delimiters(void)
+{
+	static const char *const invalid[] = {
+		"{\"state\":\"on\",\"ignored\":{]}{\"state\":\"off\"}}",
+		"{\"state\":\"on\",\"ignored\":[}",
+		"{\"state\":\"on\",\"ignored\":{]}",
+		"{\"state\":\"on\"}]",
+		"{\"state\":\"on\"}}",
+		"{\"state\":\"on\",\"ignored\":{}",
+		"{\"state\":\"on\",\"ignored\":[[]]",
+		"{\"state\":\"on\",\"ignored\":\"unterminated\\\"}",
+	};
+	static const char *const valid[] = {
+		"{\"state\":\"on\",\"ignored\":{}}",
+		"{\"state\":\"on\",\"ignored\":[]}",
+		"{\"state\":\"on\",\"ignored\":{\"nested\":[{},[]]}} \t\r\n",
+		"{\"state\":\"on\",\"ignored\":{\"escaped\":\"}\\\"{\",\"array\":[{},1]}}",
+		"{\"state\":\"on\",\"ignored\":[\"\\\\\",{\"text\":\"[}]\"},[]]}",
+	};
+	char nested[128];
+	char mismatched[] = "{\"state\":\"on\",\"ignored\":{]}{\"state\":\"off\"}}";
+	struct linkr_debugger_http_power_set_request decoded = {0};
+
+	/* Both the permissive stub and pinned json.c accept this malformed input.
+	 * It is the production scanner, not the decoder stub, that must reject it.
+	 */
+	assert(json_obj_parse(mismatched, sizeof(mismatched) - 1U, power_set_request_descr,
+			      ARRAY_SIZE(power_set_request_descr), &decoded) == BIT64(0));
+	assert(strcmp(decoded.state, "on") == 0);
+	for (size_t i = 0U; i < ARRAY_SIZE(invalid); i++) {
+		assert_power_json_container_result(invalid[i], false);
+	}
+	for (size_t i = 0U; i < ARRAY_SIZE(valid); i++) {
+		assert_power_json_container_result(valid[i], true);
+	}
+	/* Root counts as one container: accept the limit, reject one beyond it. */
+	for (size_t depth = LINKR_DEBUGGER_HTTP_JSON_MAX_DEPTH;
+	     depth <= LINKR_DEBUGGER_HTTP_JSON_MAX_DEPTH + 1U; depth++) {
+		size_t len =
+			(size_t)snprintf(nested, sizeof(nested), "{\"state\":\"on\",\"ignored\":");
+
+		assert(len + 2U * depth + 1U < sizeof(nested));
+		memset(nested + len, '[', depth - 1U);
+		len += depth - 1U;
+		nested[len++] = '0';
+		memset(nested + len, ']', depth - 1U);
+		len += depth - 1U;
+		nested[len++] = '}';
+		nested[len] = '\0';
+		assert_power_json_container_result(nested,
+						   depth == LINKR_DEBUGGER_HTTP_JSON_MAX_DEPTH);
+	}
+}
+
+static void test_control_body_transaction_boundaries(void)
+{
+	static const struct {
+		const char *path;
+		const char *body;
+		enum http_status success;
+	} cases[] = {
+		{ "/api/v1/power/5v_out", "{\"state\":\"on\"}", HTTP_200_OK },
+		{ "/api/v1/switch/sd", "{\"route\":\"target\"}", HTTP_200_OK },
+		{ "/api/v1/gpio/GP13", "{\"direction\":\"output\",\"value\":1}", HTTP_200_OK },
+		{ "/api/v1/net", "{\"network\":\"10.20.30.0\"}", HTTP_200_OK },
+		{ "/api/v1/pd", "{\"mode\":0,\"voltage_mv\":9000}", HTTP_200_OK },
+		{ "/api/v1/serial/j4/config", "{\"baud\":57600,\"data_bits\":8,\"parity\":\"even\","
+		  "\"stop_bits\":1,\"flow_control\":\"none\",\"expected_generation\":9}", HTTP_202_ACCEPTED },
+	};
+	char oversized[LINKR_DEBUGGER_HTTP_BODY_CAP + 2U];
+
+	memset(oversized, 'x', sizeof(oversized) - 1U);
+	oversized[sizeof(oversized) - 1U] = '\0';
+	for (size_t i = 0U; i < ARRAY_SIZE(cases); i++) {
+		struct http_client_ctx client = { .method = HTTP_PUT };
+		struct http_response_ctx response = { 0 };
+		char prefix[16];
+
+		strcpy(client.url_buffer, cases[i].path);
+		reset_test();
+		memcpy(prefix, cases[i].body, 5U);
+		prefix[5] = '\0';
+		route(&client, HTTP_SERVER_REQUEST_DATA_MORE, prefix, &response);
+		assert(mutation_calls() == 0U && !response.final_chunk);
+		route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, cases[i].body + 5U, &response);
+		assert(mutation_calls() == 1U && response.status == cases[i].success);
+		response = (struct http_response_ctx){ 0 };
+		route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, cases[i].body, &response);
+		assert(mutation_calls() == 1U && !response.final_chunk);
+
+		reset_test();
+		route(&client, HTTP_SERVER_REQUEST_DATA_MORE, "garbage", &response);
+		route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, cases[i].body, &response);
+		assert(mutation_calls() == 0U && response.status == HTTP_400_BAD_REQUEST);
+
+		reset_test();
+		route(&client, HTTP_SERVER_REQUEST_DATA_MORE, oversized, &response);
+		assert(response.status == HTTP_413_PAYLOAD_TOO_LARGE);
+		response = (struct http_response_ctx){ 0 };
+		route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, cases[i].body, &response);
+		assert(mutation_calls() == 0U && !response.final_chunk);
+		route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
+		route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, cases[i].body, &response);
+		assert(mutation_calls() == 1U && response.status == cases[i].success);
+
+		reset_test();
+		route(&client, HTTP_SERVER_REQUEST_DATA_MORE, "garbage", &response);
+		route(&client, HTTP_SERVER_TRANSACTION_ABORTED, NULL, &response);
+		assert(mutation_calls() == 0U);
+		route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, cases[i].body, &response);
+		assert(mutation_calls() == 1U && response.status == cases[i].success);
+
+		reset_test();
+		/* Exhaust four body buffers; all four remaining clients must drain
+		 * even after those buffers have been freed by other transactions. */
+		struct http_client_ctx clients[8];
+		for (size_t c = 0U; c < ARRAY_SIZE(clients); c++) {
+			clients[c] = client;
+			response = (struct http_response_ctx){ 0 };
+			route(&clients[c], HTTP_SERVER_REQUEST_DATA_MORE, "{", &response);
+			assert(response.final_chunk == (c >= LINKR_DEBUGGER_HTTP_BODY_SLOTS));
+		}
+		for (size_t c = 0U; c < LINKR_DEBUGGER_HTTP_BODY_SLOTS; c++) {
+			route(&clients[c], HTTP_SERVER_TRANSACTION_ABORTED, NULL, &response);
+		}
+		for (size_t c = LINKR_DEBUGGER_HTTP_BODY_SLOTS; c < ARRAY_SIZE(clients); c++) {
+			response = (struct http_response_ctx){ 0 };
+			route(&clients[c], HTTP_SERVER_REQUEST_DATA_FINAL, cases[i].body, &response);
+			assert(mutation_calls() == 0U && !response.final_chunk);
+		}
+	}
+}
+
+static void test_gpio_uses_real_error_mapping(void)
+{
+	static const struct {
+		const char *direction;
+		int error;
+		enum http_status status;
+		const char *code;
+	} cases[] = {
+		{ "output", -EPERM, HTTP_403_FORBIDDEN, "input_only" },
+		{ "input", -EBUSY, HTTP_409_CONFLICT, "busy" },
+		{ "output", -EBUSY, HTTP_409_CONFLICT, "busy" },
+		{ "input", -EIO, HTTP_500_INTERNAL_SERVER_ERROR, "configure_failed" },
+		{ "output", -EIO, HTTP_500_INTERNAL_SERVER_ERROR, "configure_failed" },
+	};
+	struct http_client_ctx client = { .method = HTTP_PUT };
+
+	strcpy(client.url_buffer, "/api/v1/gpio/GP13");
+	reset_test();
+	for (size_t i = 0U; i < ARRAY_SIZE(cases); i++) {
+		struct http_response_ctx response = { 0 };
+		char body[64];
+		char code[64];
+
+		snprintf(body, sizeof(body), "{\"direction\":\"%s\",\"value\":1}", cases[i].direction);
+		snprintf(code, sizeof(code), "\"code\":\"%s\"", cases[i].code);
+		http_test_gpio_set_result = cases[i].error;
+		route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, body, &response);
+		assert(response.status == cases[i].status);
+		assert(strstr((const char *)response.body, code) != NULL);
+		route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
+	}
+}
+
 int main(void)
 {
+	test_registered_fallback_detail_owns_children_until_disconnect();
+	test_disconnect_recycled_context_never_inherits_body_or_tombstone();
+	test_control_trailing_final_and_keepalive_transaction_boundary();
+	test_control_json_requires_exactly_one_object();
+	test_net_pd_use_the_same_complete_object_guard();
+	test_json_container_types_depth_and_quoted_delimiters();
+	test_control_body_transaction_boundaries();
+	test_gpio_uses_real_error_mapping();
 	test_shared_json_workspace_static_ram_contract();
 	test_handlers_share_workspace_until_synchronous_send_finishes();
 	test_fragmented_put_executes_once_with_complete_json();

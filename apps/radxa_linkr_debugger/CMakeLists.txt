@@ -144,6 +144,7 @@ target_sources(app PRIVATE
   src/linkr_debugger_captive_portal.c
   src/linkr_debugger_capture_arbiter.c
   src/linkr_debugger_capture_arena.c
+  src/linkr_debugger_capture_gpio_guard.c
   src/linkr_debugger_control.c
   src/linkr_debugger_gpio_error.c
   src/linkr_debugger_config_codec.c

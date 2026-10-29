@@ -7,137 +7,73 @@
 
 #include "linkr_debugger_http_body.h"
 
-#include <stdbool.h>
 #include <string.h>
 
-struct linkr_debugger_http_body_slot {
-	bool active;
+/* The HTTP server serializes callbacks. Keep transaction tombstones for EVERY
+ * client, independently of the smaller, shared body pool. A rejected client
+ * must not acquire a newly freed body slot for its trailing FINAL fragment. */
+#ifndef CONFIG_HTTP_SERVER_MAX_CLIENTS
+#define CONFIG_HTTP_SERVER_MAX_CLIENTS 8
+#endif
+
+struct body_transaction {
 	uintptr_t client_key;
 	uint16_t method_id;
 	uint16_t route_id;
+	int8_t slot;
+	bool drained;
+};
+
+struct body_slot {
 	size_t len;
+	bool used;
 	uint8_t data[LINKR_DEBUGGER_HTTP_BODY_CAP];
 };
 
-static struct linkr_debugger_http_body_slot body_slots[LINKR_DEBUGGER_HTTP_BODY_SLOTS];
+static struct body_transaction transactions[CONFIG_HTTP_SERVER_MAX_CLIENTS];
+static struct body_slot body_slots[LINKR_DEBUGGER_HTTP_BODY_SLOTS];
 
-static void linkr_debugger_http_body_view_reset(struct linkr_debugger_http_body_view *view)
+static struct body_transaction *find_transaction(uintptr_t key)
 {
-	if (view != NULL) {
-		view->data = NULL;
-		view->len = 0U;
-	}
-}
-
-static bool linkr_debugger_http_body_slot_matches(
-	const struct linkr_debugger_http_body_slot *slot, uintptr_t client_key,
-	uint16_t method_id, uint16_t route_id)
-{
-	return slot->active && slot->client_key == client_key &&
-	       slot->method_id == method_id && slot->route_id == route_id;
-}
-
-static void linkr_debugger_http_body_slot_clear(struct linkr_debugger_http_body_slot *slot)
-{
-	memset(slot, 0, sizeof(*slot));
-}
-
-static struct linkr_debugger_http_body_slot *linkr_debugger_http_body_find_slot(
-	uintptr_t client_key, uint16_t method_id, uint16_t route_id)
-{
-	for (size_t i = 0U; i < LINKR_DEBUGGER_HTTP_BODY_SLOTS; i++) {
-		if (linkr_debugger_http_body_slot_matches(&body_slots[i], client_key,
-							 method_id, route_id)) {
-			return &body_slots[i];
+	for (size_t i = 0U; i < CONFIG_HTTP_SERVER_MAX_CLIENTS; i++) {
+		if (transactions[i].client_key == key) {
+			return &transactions[i];
 		}
 	}
-
 	return NULL;
 }
 
-static bool linkr_debugger_http_body_key_in_use(uintptr_t client_key, uint16_t method_id,
-					       uint16_t route_id)
+static void drain_transaction(struct body_transaction *tx)
 {
-	for (size_t i = 0U; i < LINKR_DEBUGGER_HTTP_BODY_SLOTS; i++) {
-		if (!body_slots[i].active || body_slots[i].client_key != client_key) {
-			continue;
-		}
-		if (body_slots[i].method_id != method_id || body_slots[i].route_id != route_id) {
-			linkr_debugger_http_body_slot_clear(&body_slots[i]);
-			return true;
-		}
+	if (tx->slot >= 0) {
+		body_slots[tx->slot].used = false;
+		tx->slot = -1;
 	}
-
-	return false;
-}
-
-static struct linkr_debugger_http_body_slot *linkr_debugger_http_body_alloc_slot(
-	uintptr_t client_key, uint16_t method_id, uint16_t route_id)
-{
-	if (linkr_debugger_http_body_key_in_use(client_key, method_id, route_id)) {
-		return NULL;
-	}
-
-	for (size_t i = 0U; i < LINKR_DEBUGGER_HTTP_BODY_SLOTS; i++) {
-		if (!body_slots[i].active) {
-			body_slots[i].active = true;
-			body_slots[i].client_key = client_key;
-			body_slots[i].method_id = method_id;
-			body_slots[i].route_id = route_id;
-			body_slots[i].len = 0U;
-			return &body_slots[i];
-		}
-	}
-
-	return NULL;
-}
-
-static enum linkr_debugger_http_body_result linkr_debugger_http_body_append(
-	struct linkr_debugger_http_body_slot *slot, const void *data, size_t len)
-{
-	if (len == 0U) {
-		return LINKR_DEBUGGER_HTTP_BODY_WAITING;
-	}
-	if (data == NULL) {
-		return LINKR_DEBUGGER_HTTP_BODY_BAD_ARG;
-	}
-	if (len > LINKR_DEBUGGER_HTTP_BODY_CAP ||
-	    slot->len > LINKR_DEBUGGER_HTTP_BODY_CAP - len) {
-		linkr_debugger_http_body_slot_clear(slot);
-		return LINKR_DEBUGGER_HTTP_BODY_TOO_LARGE;
-	}
-
-	memcpy(&slot->data[slot->len], data, len);
-	slot->len += len;
-	return LINKR_DEBUGGER_HTTP_BODY_WAITING;
+	tx->drained = true;
 }
 
 bool linkr_debugger_http_body_should_handle(bool body_method,
 					   enum linkr_debugger_http_body_event event)
 {
-	if (event == LINKR_DEBUGGER_HTTP_BODY_FINAL) {
-		return true;
-	}
-
-	return body_method &&
-	       (event == LINKR_DEBUGGER_HTTP_BODY_MORE ||
-		event == LINKR_DEBUGGER_HTTP_BODY_ABORTED ||
-		event == LINKR_DEBUGGER_HTTP_BODY_COMPLETE);
+	return event == LINKR_DEBUGGER_HTTP_BODY_FINAL ||
+	       (body_method && (event == LINKR_DEBUGGER_HTTP_BODY_MORE ||
+			       event == LINKR_DEBUGGER_HTTP_BODY_ABORTED ||
+			       event == LINKR_DEBUGGER_HTTP_BODY_COMPLETE));
 }
 
 void linkr_debugger_http_body_reset_all(void)
 {
+	memset(transactions, 0, sizeof(transactions));
 	memset(body_slots, 0, sizeof(body_slots));
 }
 
 void linkr_debugger_http_body_clear(uintptr_t client_key, uint16_t method_id,
 				    uint16_t route_id)
 {
-	struct linkr_debugger_http_body_slot *slot =
-		linkr_debugger_http_body_find_slot(client_key, method_id, route_id);
+	struct body_transaction *tx = client_key ? find_transaction(client_key) : NULL;
 
-	if (slot != NULL) {
-		linkr_debugger_http_body_slot_clear(slot);
+	if (tx != NULL && tx->method_id == method_id && tx->route_id == route_id) {
+		drain_transaction(tx);
 	}
 }
 
@@ -146,48 +82,84 @@ enum linkr_debugger_http_body_result linkr_debugger_http_body_accumulate(
 	enum linkr_debugger_http_body_event event, const void *data, size_t len,
 	struct linkr_debugger_http_body_view *view)
 {
-	struct linkr_debugger_http_body_slot *slot;
-	enum linkr_debugger_http_body_result ret;
+	struct body_transaction *tx;
+	struct body_slot *slot;
+	enum linkr_debugger_http_body_result error;
 
-	linkr_debugger_http_body_view_reset(view);
-
+	if (view != NULL) {
+		view->data = NULL;
+		view->len = 0U;
+	}
 	if (client_key == 0U) {
 		return LINKR_DEBUGGER_HTTP_BODY_BAD_ARG;
 	}
-
-	slot = linkr_debugger_http_body_find_slot(client_key, method_id, route_id);
-
+	tx = find_transaction(client_key);
 	if (event == LINKR_DEBUGGER_HTTP_BODY_ABORTED ||
 	    event == LINKR_DEBUGGER_HTTP_BODY_COMPLETE) {
-		if (slot != NULL) {
-			linkr_debugger_http_body_slot_clear(slot);
+		if (tx != NULL) {
+			drain_transaction(tx);
+			memset(tx, 0, sizeof(*tx));
 		}
 		return LINKR_DEBUGGER_HTTP_BODY_CLEARED;
 	}
-
-	if (event != LINKR_DEBUGGER_HTTP_BODY_MORE && event != LINKR_DEBUGGER_HTTP_BODY_FINAL) {
-		return LINKR_DEBUGGER_HTTP_BODY_BAD_ARG;
-	}
-
-	if (slot == NULL) {
-		slot = linkr_debugger_http_body_alloc_slot(client_key, method_id, route_id);
-		if (slot == NULL) {
+	if (tx == NULL) {
+		tx = find_transaction(0U);
+		if (tx == NULL) {
+			/* Impossible for the configured server client pool. Fail closed. */
 			return LINKR_DEBUGGER_HTTP_BODY_MISMATCH;
 		}
+		*tx = (struct body_transaction){
+			.client_key = client_key, .method_id = method_id,
+			.route_id = route_id, .slot = -1,
+		};
 	}
-
-	ret = linkr_debugger_http_body_append(slot, data, len);
-	if (ret < 0) {
-		return ret;
+	if (tx->drained) {
+		return LINKR_DEBUGGER_HTTP_BODY_WAITING;
 	}
-
+	error = LINKR_DEBUGGER_HTTP_BODY_MISMATCH;
+	if (tx->method_id != method_id || tx->route_id != route_id) {
+		goto reject;
+	}
+	error = LINKR_DEBUGGER_HTTP_BODY_BAD_ARG;
+	if ((event != LINKR_DEBUGGER_HTTP_BODY_MORE && event != LINKR_DEBUGGER_HTTP_BODY_FINAL) ||
+	    (len > 0U && data == NULL)) {
+		goto reject;
+	}
+	if (tx->slot < 0) {
+		for (size_t i = 0U; i < LINKR_DEBUGGER_HTTP_BODY_SLOTS; i++) {
+			if (!body_slots[i].used) {
+				tx->slot = (int8_t)i;
+				body_slots[i].used = true;
+				body_slots[i].len = 0U;
+				break;
+			}
+		}
+		if (tx->slot < 0) {
+			error = LINKR_DEBUGGER_HTTP_BODY_MISMATCH;
+			goto reject;
+		}
+	}
+	slot = &body_slots[tx->slot];
+	if (len > LINKR_DEBUGGER_HTTP_BODY_CAP - slot->len) {
+		error = LINKR_DEBUGGER_HTTP_BODY_TOO_LARGE;
+		goto reject;
+	}
+	if (len > 0U) {
+		memcpy(slot->data + slot->len, data, len);
+		slot->len += len;
+	}
 	if (event == LINKR_DEBUGGER_HTTP_BODY_MORE) {
 		return LINKR_DEBUGGER_HTTP_BODY_WAITING;
 	}
-
+	/* READY at most once. Keep the view alive until caller clear/end. */
+	tx->drained = true;
 	if (view != NULL) {
 		view->data = slot->data;
 		view->len = slot->len;
 	}
 	return LINKR_DEBUGGER_HTTP_BODY_READY;
+
+reject:
+	drain_transaction(tx);
+	return error;
 }
