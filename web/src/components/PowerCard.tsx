@@ -20,8 +20,11 @@ import { EMPTY_PD_STATUS } from "@/lib/pd";
 const POWER_TRENDS_STORAGE_KEY = "linkr-power-trends-expanded";
 
 function initialTrendsExpanded() {
-  if (typeof localStorage === "undefined") return true;
-  return localStorage.getItem(POWER_TRENDS_STORAGE_KEY) !== "false";
+  try {
+    return typeof localStorage === "undefined" || localStorage.getItem(POWER_TRENDS_STORAGE_KEY) !== "false";
+  } catch {
+    return true;
+  }
 }
 
 export function PowerCard({
@@ -35,17 +38,21 @@ export function PowerCard({
   compact = false,
   onOpenDetails,
   pdInputUpdatedAt,
+  vdd5vPending = false,
+  vdd5vError,
 }: {
   outputs: PowerOutput[];
   readings: readonly AdcReading[];
   pd?: PdStatus;
-  onSet: (name: string, on: boolean) => void;
+  onSet: (name: string, on: boolean) => void | Promise<void>;
   onSetPd?: (mode: 0 | 1, voltageMv: number) => Promise<void>;
   disabled?: boolean;
   stale?: boolean;
   compact?: boolean;
   onOpenDetails?: () => void;
   pdInputUpdatedAt?: number | null;
+  vdd5vPending?: boolean;
+  vdd5vError?: string | null;
 }) {
   const { t } = useI18n();
   const [trendsExpanded, setTrendsExpanded] = useState(initialTrendsExpanded);
@@ -58,6 +65,7 @@ export function PowerCard({
   const pdVoltageErrorId = useId();
   const [pdBusy, setPdBusy] = useState(false);
   const [pdError, setPdError] = useState<string | null>(null);
+  const [railError, setRailError] = useState<string | null>(null);
   const [railTimers, setRailTimers] = useState(new Map<string, { startedAtMs: number; approximate: boolean }>());
   const railTimersRef = useRef(railTimers);
   const observedRailsRef = useRef(new Set<string>());
@@ -66,6 +74,8 @@ export function PowerCard({
   const ppsMinMv = ppsRanges.length > 0 ? Math.min(...ppsRanges.map((range) => range.min_voltage_mv)) : 0;
   const ppsMaxMv = ppsRanges.length > 0 ? Math.max(...ppsRanges.map((range) => range.max_voltage_mv)) : 0;
   const ppsStepMv = ppsRanges[0]?.step_mv ?? 100;
+  const hasPdCapabilities = pd.capabilities_valid && (fixedProfiles.length > 0 || ppsRanges.length > 0);
+  const pdControlsDisabled = disabled || stale || pdBusy || !pd.available || !pd.pd || pd.last_error !== 0 || !hasPdCapabilities;
   const modeSupported = pdMode === 0 ? fixedProfiles.length > 0 : ppsRanges.length > 0;
   const draftVoltageMv = Number(pdVoltageDraft);
   const pdVoltageMv = pdMode === 0
@@ -114,7 +124,11 @@ export function PowerCard({
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(POWER_TRENDS_STORAGE_KEY, String(trendsExpanded));
+    try {
+      localStorage.setItem(POWER_TRENDS_STORAGE_KEY, String(trendsExpanded));
+    } catch {
+      // Preferences are best-effort; blocked storage must not hide controls.
+    }
   }, [trendsExpanded]);
 
   useEffect(() => {
@@ -125,7 +139,7 @@ export function PowerCard({
 
   const applyPd = async () => {
     setPdVoltageTouched(true);
-    if (disabled || stale || pdBusy || !pd.available || !pdVoltageKnown || !modeSupported || !voltageValid) return;
+    if (pdControlsDisabled || !modeSupported || !voltageValid) return;
     setPdBusy(true);
     setPdError(null);
     try {
@@ -134,6 +148,19 @@ export function PowerCard({
       setPdError(error instanceof Error ? error.message : String(error));
     } finally {
       setPdBusy(false);
+    }
+  };
+
+  const setRail = async (name: string, on: boolean) => {
+    setRailError(null);
+    try {
+      await onSet(name, on);
+    } catch (cause) {
+      // A shared vdd_5v action supplies its error as well as pending state, so
+      // a retry from the header cannot leave an obsolete drawer-only error.
+      if (name !== "vdd_5v" || vdd5vError === undefined) {
+        setRailError(cause instanceof Error ? cause.message : String(cause));
+      }
     }
   };
 
@@ -175,14 +202,14 @@ export function PowerCard({
                 protocol: pd.protocol.toUpperCase(),
                 voltage: pd.voltage_mv > 0 ? (pd.voltage_mv / 1000).toFixed(1) : "—",
                 current: pd.max_current_ma,
-              }) : t("pd.voltageUnknown")}
+              }) : t(hasPdCapabilities ? "pd.requestVoltageUnknownHint" : "pd.voltageUnknown")}
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <select
               aria-label={t("pd.mode")}
               value={pdMode}
-              disabled={disabled || stale || pdBusy || !pdVoltageKnown}
+              disabled={pdControlsDisabled}
               onChange={(event) => {
                 const mode = Number(event.target.value) === 1 ? 1 : 0;
                 setPdMode(mode);
@@ -193,18 +220,18 @@ export function PowerCard({
               }}
               className="min-h-9 rounded-lg border border-line bg-panel px-2 text-sm text-ink"
             >
-              <option value={0}>{t("pd.fixed")}</option>
-              {ppsRanges.length > 0 && <option value={1}>{t("pd.pps")}</option>}
+              <option value={0} disabled={fixedProfiles.length === 0}>{t("pd.fixed")}</option>
+              <option value={1} disabled={ppsRanges.length === 0}>{t("pd.pps")}</option>
             </select>
             {pdMode === 0 ? (
               <select
                 aria-label={t("pd.voltage")}
                 value={pdVoltageMv}
-                disabled={disabled || stale || pdBusy || !pdVoltageKnown || fixedProfiles.length === 0}
+                disabled={pdControlsDisabled || !modeSupported}
                 onChange={(event) => setPdVoltageDraft(event.target.value)}
                 className="min-h-9 rounded-lg border border-line bg-panel px-2 text-sm text-ink"
               >
-                {pdVoltageMv === 0 && <option value={0} disabled>{pdVoltageKnown ? `${pd.voltage_mv / 1000} V` : t("pd.voltageUnknown")}</option>}
+                {pdVoltageMv === 0 && <option value={0} disabled>{pdVoltageKnown ? `${pd.voltage_mv / 1000} V` : t("pd.requestVoltageUnknown")}</option>}
                 {fixedProfiles.map((profile) => (
                   <option key={profile.voltage_mv} value={profile.voltage_mv}>
                     {profile.voltage_mv / 1000} V · {profile.max_current_ma} mA
@@ -222,7 +249,7 @@ export function PowerCard({
                   max={Math.min(ppsMaxMv, pd.board_max_voltage_mv)}
                   step={ppsStepMv}
                   value={pdVoltageDraft}
-                  disabled={disabled || stale || pdBusy || !pdVoltageKnown}
+                  disabled={pdControlsDisabled || !modeSupported}
                   onChange={(event) => setPdVoltageDraft(event.target.value)}
                   onBlur={() => setPdVoltageTouched(true)}
                   className="min-h-9 w-28 rounded-lg border border-line bg-panel px-2 font-mono text-sm text-ink"
@@ -230,7 +257,7 @@ export function PowerCard({
                 <span>mV</span>
               </label>
             )}
-            <Button type="button" disabled={disabled || stale || pdBusy || !pd.available || !pdVoltageKnown || !modeSupported || !voltageValid} onClick={() => void applyPd()}>
+            <Button type="button" disabled={pdControlsDisabled || !modeSupported || !voltageValid} onClick={() => void applyPd()}>
               {pdBusy ? t("pd.applying") : t("pd.apply")}
             </Button>
           </div>
@@ -322,8 +349,9 @@ export function PowerCard({
                     <Toggle
                       aria-label={t("power.railSwitch", { rail: powerRailLabel(name) })}
                       checked={on}
-                      disabled={disabled || stale || locked || !["on", "off"].includes(output.state)}
-                      onChange={(value) => onSet(output.name, value)}
+                      disabled={disabled || stale || locked || !["on", "off"].includes(output.state) || (name === "vdd_5v" && vdd5vPending)}
+                      aria-busy={name === "vdd_5v" && vdd5vPending}
+                      onChange={(value) => { void setRail(output.name, value); }}
                     />
                   )}
                 </div>
@@ -341,6 +369,7 @@ export function PowerCard({
           })}
         </ul>
       )}
+      {(vdd5vError || railError) && <p role="alert" className="mt-3 text-xs text-danger">{vdd5vError || railError}</p>}
       {compact && onOpenDetails && (
         <Button
           type="button"

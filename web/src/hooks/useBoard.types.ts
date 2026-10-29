@@ -6,6 +6,21 @@ import type {
   PowerCapture,
 } from "@/lib/types";
 
+export interface BoardStatusRequest {
+  isCurrent: () => boolean;
+  canUpdateConnection: () => boolean;
+  canUpdatePower: () => boolean;
+  mergeSnapshot: (snapshot: BoardSnapshot) => BoardSnapshot;
+}
+
+/** HTTP ordering is independent of the fields supplied by live snapshots. */
+export interface BoardRequestLifecycle {
+  beginSession: () => () => void;
+  beginRequest: () => BoardStatusRequest;
+  noteLiveSnapshot: (message: Record<string, unknown>) => void;
+  invalidateRequests: () => void;
+}
+
 export interface UseBoard {
   snapshot: BoardSnapshot;
   persistentConfigCurrentStateKey: string;

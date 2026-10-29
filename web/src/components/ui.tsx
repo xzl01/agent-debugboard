@@ -270,11 +270,13 @@ export function Toggle({
   onChange,
   disabled,
   "aria-label": ariaLabel,
+  "aria-busy": ariaBusy,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   disabled?: boolean;
   "aria-label"?: string;
+  "aria-busy"?: boolean;
 }) {
   return (
     <button
@@ -282,6 +284,7 @@ export function Toggle({
       role="switch"
       aria-label={ariaLabel}
       aria-checked={checked}
+      aria-busy={ariaBusy}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(

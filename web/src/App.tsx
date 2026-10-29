@@ -29,6 +29,7 @@ import { PowerRailCatalogProvider } from "./components/PowerRailCatalog";
 import { SwitchCard } from "./components/SwitchCard";
 import { GpioCard } from "./components/GpioCard";
 import { WatchdogCard } from "./components/WatchdogCard";
+import { useVdd5vAction } from "./components/useVdd5vAction";
 import {
   SerialCard,
   type SerialConnectionSummary,
@@ -45,7 +46,6 @@ import {
 import { Button } from "./components/ui";
 import { useI18n } from "@/lib/i18n";
 import { useJ4Serial } from "@/lib/j4SerialReact";
-import { POWER_STATE_STALE_MS } from "@/lib/power";
 import type { OtaStatus } from "@/lib/ota";
 import {
   createAutomationTaskLock,
@@ -132,24 +132,19 @@ export default function App() {
     release: releaseAutomation,
   }), [acquireAutomation, automationOwner, releaseAutomation]);
 
-  const headerBoardRef = useRef(board);
-  headerBoardRef.current = board;
-  const setHeaderVdd5v = useCallback(async (on: boolean) => {
-    const current = headerBoardRef.current;
-    const output = current.snapshot.powerOutputs.find((item) => item.name === "vdd_5v");
-    if (!current.connected || !current.hasData || current.powerStateStale || current.loading || current.restarting ||
-      current.powerUpdatedAt == null || Date.now() - current.powerUpdatedAt >= POWER_STATE_STALE_MS ||
-      !output?.controllable || (output.state !== "on" && output.state !== "off")) {
-      throw new Error(t("status.vdd5v.unavailable"));
-    }
-    // Use the live lock, not the render-time owner, after the header confirms.
-    if (!acquireAutomation("power")) throw new Error(t("task.error.busy"));
-    try {
-      await current.setPower("vdd_5v", on);
-    } finally {
-      releaseAutomation("power");
-    }
-  }, [acquireAutomation, releaseAutomation, t]);
+  const vdd5vOutput = board.snapshot.powerOutputs.find((item) => item.name === "vdd_5v");
+  const vdd5vAction = useVdd5vAction({
+    available: board.connected && board.hasData && !board.powerStateStale && !board.loading &&
+      !board.restarting && vdd5vOutput?.controllable === true,
+    state: vdd5vOutput?.state === "on" || vdd5vOutput?.state === "off" ? vdd5vOutput.state : null,
+    updatedAt: board.powerUpdatedAt,
+    isLocked: () => automationTaskLockRef.current.owner() != null,
+    acquire: () => acquireAutomation("power"),
+    release: () => releaseAutomation("power"),
+    setPower: (on) => board.setPower("vdd_5v", on),
+  });
+  const setDrawerPower = (name: string, on: boolean) =>
+    name === "vdd_5v" ? vdd5vAction.set(on) : board.setPower(name, on);
 
   const rebootDebugger = useCallback(async () => {
     if (!acquireAutomation("reboot")) throw new Error(t("task.error.busy"));
@@ -180,6 +175,7 @@ export default function App() {
   const hardwareDialogRef = useRef<HTMLDialogElement>(null);
   const hardwareDialogCloseRef = useRef<HTMLButtonElement>(null);
   const hardwareDialogOpenerRef = useRef<HTMLElement | null>(null);
+  const hardwareTabRefs = useRef<Record<HardwareSectionId, HTMLButtonElement | null>>({ power: null, io: null });
   const workspaceTabs = [
     { id: "terminal" as const, icon: Terminal, label: t("workspace.terminalTab") },
     {
@@ -377,10 +373,12 @@ export default function App() {
           readings={board.snapshot.adc}
           pd={board.snapshot.pd}
           pdInputUpdatedAt={pdInputMeasurement?.receivedAtMs ?? null}
-          onSet={board.setPower}
+          onSet={setDrawerPower}
           onSetPd={board.setPd}
-          disabled={!board.connected || automationOwner != null}
-          stale={!board.connected}
+          vdd5vPending={vdd5vAction.pending}
+          vdd5vError={vdd5vAction.error}
+          disabled={!board.connected || board.loading || board.restarting || !board.hasData || automationOwner != null || vdd5vAction.pending}
+          stale={board.powerStateStale || !board.connected}
         />
       </div>
       <div className="grid min-w-0 gap-4">
@@ -436,7 +434,9 @@ export default function App() {
         onRefresh={board.refresh}
         ota={ota}
         logicAnalyzerActive={logicAnalyzerActive}
-        onSetVdd5v={setHeaderVdd5v}
+        onSetVdd5v={vdd5vAction.set}
+        powerBusy={vdd5vAction.pending}
+        powerError={vdd5vAction.error}
         powerDisabled={automationOwner != null || board.restarting || !board.hasData}
         powerStale={board.powerStateStale}
         powerUpdatedAt={board.powerUpdatedAt}
@@ -646,12 +646,13 @@ export default function App() {
                 aria-label={t("test.hardware.sections")}
                 className="grid shrink-0 grid-cols-2 gap-1 border-b border-line/70 bg-panel px-3 py-2"
               >
-                {hardwareSections.map((section) => {
+                {hardwareSections.map((section, index) => {
                   const Icon = section.icon;
                   const selected = section.id === selectedHardwareSection;
                   return (
                     <button
                       key={section.id}
+                      ref={(node) => { hardwareTabRefs.current[section.id] = node; }}
                       id={`hardware-section-tab-${section.id}`}
                       type="button"
                       role="tab"
@@ -660,6 +661,15 @@ export default function App() {
                       tabIndex={selected ? 0 : -1}
                       data-testid={`hardware-section-tab-${section.id}`}
                       onClick={() => selectHardwareSection(section.id)}
+                      onKeyDown={(event) => {
+                        if (event.altKey || event.ctrlKey || event.metaKey) return;
+                        const nextIndex = getNextWorkspaceTabIndex(index, event.key, hardwareSections.length);
+                        if (nextIndex == null) return;
+                        event.preventDefault();
+                        const next = hardwareSections[nextIndex].id;
+                        selectHardwareSection(next);
+                        hardwareTabRefs.current[next]?.focus();
+                      }}
                       className={`flex min-h-10 items-center justify-center gap-2 rounded-lg px-3 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand/40 ${
                         selected
                           ? "bg-brand/10 text-brand ring-1 ring-inset ring-brand/15"

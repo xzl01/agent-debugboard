@@ -1,4 +1,3 @@
-import { useRef, useState } from "react";
 import { Languages, RefreshCw } from "lucide-react";
 import { Button } from "./ui";
 import type { BoardSnapshot, MemoryPressureSnapshot } from "@/lib/types";
@@ -38,6 +37,8 @@ export function StatusBar({
   powerDisabled = false,
   powerStale = !connected,
   powerUpdatedAt = null,
+  powerBusy = false,
+  powerError = null,
 }: {
   snapshot: BoardSnapshot;
   connected: boolean;
@@ -54,6 +55,8 @@ export function StatusBar({
   powerDisabled?: boolean;
   powerStale?: boolean;
   powerUpdatedAt?: number | null;
+  powerBusy?: boolean;
+  powerError?: string | null;
 }) {
   const { t, lang, setLang } = useI18n();
   const logoState = loading ? "connecting" : connected ? "ready" : "offline";
@@ -65,36 +68,14 @@ export function StatusBar({
   ];
   const vdd5vOutput = outputs.get("vdd_5v");
   const vdd5vOn = vdd5vOutput?.state === "on" ? true : vdd5vOutput?.state === "off" ? false : null;
-  const [powerBusy, setPowerBusy] = useState(false);
-  const [powerError, setPowerError] = useState<string | null>(null);
-  const powerPendingRef = useRef(false);
   const powerExpired = powerUpdatedAt == null || Date.now() - powerUpdatedAt >= POWER_STATE_STALE_MS;
   const powerBlocked = powerBusy || powerDisabled || powerStale || powerExpired || !connected || loading || !onSetVdd5v ||
     !vdd5vOutput?.controllable || vdd5vOn == null;
-  const powerActionRef = useRef({ blocked: powerBlocked, on: vdd5vOn, set: onSetVdd5v, updatedAt: powerUpdatedAt });
-  powerActionRef.current = { blocked: powerBlocked, on: vdd5vOn, set: onSetVdd5v, updatedAt: powerUpdatedAt };
-  const toggleVdd5v = async () => {
-    if (powerBlocked || powerPendingRef.current || vdd5vOn == null) return;
-    powerPendingRef.current = true;
-    const next = !vdd5vOn;
-    try {
-      if (!window.confirm(t(next ? "status.vdd5v.confirmOn" : "status.vdd5v.confirmOff"))) return;
-      // Confirmation can outlive a snapshot or task-lock change. Never act on its old closure.
-      const current = powerActionRef.current;
-      // Native confirm blocks expiry timers, so compare wall time again before dispatch.
-      if (current.blocked || current.on !== vdd5vOn || !current.set ||
-        current.updatedAt == null || Date.now() - current.updatedAt >= POWER_STATE_STALE_MS) {
-        throw new Error(t("status.vdd5v.unavailable"));
-      }
-      setPowerBusy(true);
-      setPowerError(null);
-      await current.set(next);
-    } catch (reason) {
-      setPowerError(`${t("status.vdd5v.failed")}${reason instanceof Error ? reason.message : String(reason)}`);
-    } finally {
-      powerPendingRef.current = false;
-      setPowerBusy(false);
-    }
+  const toggleVdd5v = () => {
+    if (powerBlocked || vdd5vOn == null) return;
+    // The App-owned action owns confirmation, pending and error state for both
+    // this entry and the hardware drawer. Never confirm a second time here.
+    void onSetVdd5v?.(!vdd5vOn).catch(() => {});
   };
   const powerStateLabel = t(vdd5vOn == null ? "status.vdd5v.unknown" : vdd5vOn ? "power.on" : "power.off");
   const powerStatus = powerBusy

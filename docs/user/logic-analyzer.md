@@ -5,33 +5,46 @@
 RP2350 PIO2+DMA high-speed single-shot GPIO capture for short-burst diagnostics
 at PIO rates. Not intended for sustained streaming at high sample rates.
 
-The logic analyzer is available in the Web UI under the **Terminal workspace**,
-alongside the serial terminal.
+The logic analyzer has its own **Logic Analyzer workspace** in the Web UI,
+separate from the serial terminal.
 
 ## Capture GPIO Pins
 
-Only the following pins are available for logic analyzer capture:
+The target capture set is **eight digital logic inputs: GP12–GP16 and
+GP27–GP29**. ADC1–ADC3 name the latter three contacts; here they mean digital
+HIGH/LOW capture, not analog voltage sampling.
 
-| Pin | x1.2 ownership / access |
+The Web UI is **temporarily limited to GP12–GP16** (five channels), with GP13
+selected by default. GP27–GP29 capture support is **not implemented** and awaits
+review of firmware channel mapping, pin ownership and the protocol contract.
+Their current read-only display is a temporary safety state, not completion of
+the eight-channel requirement. The J8/J13 diagram remains the physical layout
+reference:
+
+| Pin / contact | Web UI behavior |
 | --- | --- |
-| GP7–GP9 | J13 recovery controls (`CON_MAS`, `CON_REST`, `CON_USER`) |
-| GP10–GP11 | J4 target UART; capture temporarily takes ownership from UART |
-| GP12–GP16 | J8 pins 1–5 |
-| GP17–GP18 | Capture-only lanes with no safe/control or J8/J13 mapping |
-| GP19 | PD CFG1 strap; capture-only internal signal, never drive it |
-| GP20 | J8 pin 9, PIO I2C SCL; read-only tap, never drive or pull it low |
-| GP29 | J8 pin 6, ADC3-owned and input-only |
+| GP12–GP16 | Selectable digital capture pins, J8 pins 1–5 |
+| GP7–GP9 | Disabled J13 recovery controls (`CON_MAS`, `CON_REST`, `CON_USER`) |
+| ADC1–ADC3 (GP27/GP28/GP29) | Retained contacts, J8 pins 8/7/6; capture support pending, currently read-only and not sampled by Web capture |
+| GP5, GP6, GP20 and other non-capture contacts | Inert layout context; no capture or trigger gestures |
 
-No other GPIO pins can be used. In particular, GP21 is J8 pin 10 / PIO I2C
-SDA and is not a WIDE11 channel. This list is an analyzer capability list, not
-a physical connector pinout; use firmware GPIO metadata and the x1.2 board
-drawing before attaching probes.
+The underlying native sigrok/CLI hardware allowlist remains **GP10–GP20**.
+Its former supplemental capture entries GP10/GP11/GP17–GP20 are no longer
+offered by the Web picker. This UI limit does not change the sigrok protocol or
+its WIDE11 channel mapping. GP10/GP11 belong to J4 UART; GP19 is the internal,
+non-drivable PD CFG1 strap; GP20 is J8 pin 9 / PIO I2C SCL and must never be
+driven or pulled low. GP21 (J8 pin 10 / SDA) is not a WIDE11 channel. Use firmware
+GPIO metadata and the x1.2 board drawing before attaching probes.
+
+**J4 is still affected:** the current FAST8 backend takes the GP10–GP17 physical
+span, including GP10/GP11, and pauses J4 UART even when the Web selection contains
+only GP12–GP16. Hiding UART pins in the picker does not isolate them from capture.
 
 ## Configuration
 
 | Parameter | Range | Notes |
 | --- | --- | --- |
-| Channels | 1–16 | Selected from the capture allowlist above |
+| Web UI channels | 1–5 for now | GP12–GP16 only; ADC1–ADC3 capture remains pending |
 | Sample rate | 100,000–125,000,000 Hz | Actual rate may differ due to PIO clock divider quantization |
 | post_samples | 1–512 | Samples captured after the trigger |
 | pre_samples | 0–512 | Requires edge trigger + rate ≤25 MHz; total (pre+post) capped at 512 |
@@ -161,12 +174,33 @@ DELETE /api/v1/logic-analyzer
 
 ## Web UI
 
-The Logic Analyzer card is in the **Terminal workspace** of the Web UI.
+Open the **Logic Analyzer workspace** in the Web UI.
+Sampling settings and pin selection stay side by side on wider screens (stacked
+on smaller screens). A separate full-width waveform section sits below both
+controls, followed by protocol settings and results on the same page. There is
+no Capture/Protocol Decode mode switch.
 
 ### Waveform Preview
 
 Captured samples display as an SVG waveform visualization directly in the
-browser. Each configured pin is shown as a separate channel.
+browser. Each configured pin is shown as a separate channel. Bounded capture and
+live stream use the same waveform area, with protocol annotations aligned to the
+same time axis rather than a second waveform preview.
+The settings preview shows the requested rate. The actual rate beside the
+waveform comes from the capture acknowledgement; editing settings for the next
+capture does not change the rate or time axis of an existing capture.
+
+During a stream, clear **Follow latest** to freeze the current absolute sample
+window while acquisition continues. The slider selects another retained window;
+enabling Follow latest returns to the newest samples. The browser retains the
+latest 1,000,000 samples. If the frozen window is evicted, a warning appears and
+the plot moves to the earliest available window instead of silently relabeling
+newer samples as the old history.
+
+The stream preview groups samples into display-width buckets and keeps their
+first and last edges, so rapid activity and single-sample pulses do not appear
+as a false constant level. Dense activity is compressed: reduce the window size
+for closer inspection; the overview does not show every individual edge.
 
 ### Protocol Decoding
 
@@ -182,8 +216,14 @@ The decoder is served from these stable URLs:
 - `/assets/decoder/logic-decoder.js`
 - `/assets/decoder/logic-decoder_bg.wasm` (`application/wasm`, gzip-compressed)
 
-To decode: arm a capture, wait for `done`, then use the in-browser decoder.
-Annotations are rendered directly on the waveform view.
+Protocol settings can be prepared before capture. For a bounded capture, wait
+for `done`, then run the in-browser decoder on the same page. Changing protocol
+settings makes the previous result stale until decoding is run again. During a
+live stream, annotations update automatically using the visible protocol
+settings. Invalid channel mappings and decoder failures appear in the protocol
+panel; correct the settings to resume decoding. Annotations are drawn directly
+on the existing waveform; export,
+capture cancellation and stream stop remain separate capture actions.
 
 ### Export Formats
 
@@ -227,7 +267,7 @@ WebSocket at `ws://<board>/api/v1/scpi` for browser clients.
 
 The D0–D11 sequence is a compatibility channel order, not a connector order or
 a complete physical pinout. GP10/GP11 are on J4, GP12–GP16 and GP20/GP29 have
-the J8 placements listed above, GP17/GP18 have no confirmed J8/J13 placement,
+J8 pins 1–5, 9 and 6 respectively, GP17/GP18 have no confirmed J8/J13 placement,
 and GP19 remains the non-drivable PD CFG1 strap.
 
 ### Behavior
@@ -333,42 +373,51 @@ paced GPIO-register loop.
 - If the client receives target-console bytes instead of protocol frames, it is
   connected to J4 on 5555; disconnect and use 5556.
 
-## Streaming Mode (1–25 MHz)
+## Stream Mode
 
-For real-time waveform monitoring at lower sample rates, use continuous
-streaming via the same SCPI scope protocol carried over WebSocket.
+The Web UI uses a sigrok live session and its binary WebSocket protocol for
+Stream. This is separate from the optional Rigol SCPI compatibility interface
+described above.
 
 ### Transport
 
-```
-ws://<board>/api/v1/scpi
-```
+The UI creates `/api/v1/live-sessions`, connects to the returned
+`/api/v1/ws/<slot>` URL, and sends a sigrok `CONFIG` with `post=0`. Up to 25 MHz
+this is the rolling Stream path. The browser retains at most one million recent
+samples; this bounded browser history is not a promise of an indefinitely
+lossless recording.
 
-The Web UI streams 600-sample live frames in a loop. Each frame is a gap-free
-island delivered at tens-of-milliseconds cadence. This is not a contiguous
-multi-MHz record.
+At supported high-rate combinations, 100/125 MHz Stream is a single lossless
+packed burst rather than indefinite monitoring. It requires negotiated
+`GENERIC_PACKED_BURST`; the `post=0` sentinel remains a CONFIG v1 request and
+does not require `CONFIG_V2`. The stream stops when the device's 100000-sample
+buffer fills and remains visible as a read-only final Stream snapshot. WIDE11
+at 125 MHz remains unsupported. Bounded captures whose post-trigger depth
+exceeds 65535 still require `CONFIG_V2`.
 
 ### Browser UI
 
-Click **Stream** on the Logic Analyzer card to start (disabled above 25 MHz).
-A live status line shows streaming state, actual rate, and total received
-samples. A rolling live waveform renders the buffered sample history per
-selected pin.
+Click **Stream** in the Logic Analyzer workspace. The status line shows the
+requested and actual rate, total received samples, and whether a retained
+snapshot stopped automatically, manually, or incompletely. A rolling waveform
+renders the buffered history per selected pin. High-rate capability and
+automatic-stop notices are shown before and after the operation.
 
 The stream keeps up to one million buffered samples with window-size selection
 (1K–256K), a follow-latest toggle, and a pan slider for browsing older history.
 
-The decoder operates on single-shot captures for full post-hoc analysis, not on
-stream data.
+The decoder supports full post-hoc analysis of single-shot captures and updates
+live annotations from a bounded window of stream data.
 
 ## Quick Start
 
 1. Open Web UI at `http://<board-ip>/`
-2. Select the **Logic Analyzer** tab in the Terminal workspace
+2. Open the **Logic Analyzer** workspace
 3. Configure pins, sample rate, and trigger mode
 4. Click **Arm capture**
 5. View the waveform, or export as CSV / PulseView `.sr`
-6. For live monitoring, click **Stream** (1–25 MHz)
+6. For rolling monitoring up to 25 MHz, click **Stream**; supported 100/125 MHz
+   combinations run one 100000-sample packed burst and retain a read-only result
 7. For Rigol SCPI compatibility, connect with the `rigol-ds` driver via
    `tcp-raw/<board-ip>/80`
 8. For native Sigrok/BeagleLogic raw TCP, connect to

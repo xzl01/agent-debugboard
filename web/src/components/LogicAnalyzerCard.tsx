@@ -5,7 +5,7 @@
  * Copyright (c) Jiali Chen <chenjiali@radxa.com>
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   Binary,
@@ -17,8 +17,10 @@ import {
   TriangleAlert,
   Zap,
 } from "lucide-react";
-import { Badge, Button, Card, Toggle, WorkspaceModeHeader, WorkspaceModeTab } from "./ui";
+import { Badge, Button, Card, Toggle } from "./ui";
 import { LogicAnalyzerPinSelector } from "./LogicAnalyzerPinSelector";
+import { activityWaveformPoints, stepWaveformPath, type WaveformPoint } from "./logicAnalyzerWaveform";
+import { resolveStreamWindow, type FrozenSampleWindow } from "./logicAnalyzerStreamWindow";
 import { useSigrokScope } from "@/hooks/useSigrokScope";
 import type {
   LogicAnalyzerCapture,
@@ -38,7 +40,6 @@ import {
   SAMPLE_RATES,
   assembleBoundedSigrokCapture,
   buildSigrokCaptureRequest,
-  calculateActualSampleRate,
   classifyLogicAnalyzerStreamStop,
   getLogicAnalyzerMaxSamplesForConfig,
   getLogicAnalyzerPreTriggerReason,
@@ -110,8 +111,6 @@ const WAVEFORM_COLORS = [
   "rgb(var(--c-ink) / 0.8)",
 ];
 
-type LogicAnalyzerMode = "capture" | "decode";
-
 const WIDTH = 800;
 const PLOT_LEFT = 48;
 const PLOT_RIGHT = 12;
@@ -154,11 +153,6 @@ function warnSigrokCleanup(action: string, cleanupError: unknown) {
 }
 
 
-interface WaveformPoint {
-  x: number;
-  y: number;
-}
-
 interface DecoderRunState {
   status: "idle" | "loading" | "done";
   result: LogicDecoderResult | null;
@@ -171,6 +165,24 @@ interface InlineNotice {
   message: string;
 }
 
+interface CaptureOperation {
+  lifecycle: object;
+  cancelled: boolean;
+  cleanup: Promise<void> | null;
+  stream?: { config: LogicAnalyzerConfig; actualRateHz: number };
+}
+
+// A stopped stream owns its bounded backing buffer, not a trigger capture. It
+// must not inherit the bounded-capture decoder/export completion contract.
+interface StreamSnapshot {
+  source: "stream";
+  config: LogicAnalyzerConfig;
+  actualRateHz: number;
+  samples: readonly number[];
+  sampleCount: number;
+  stopReason: "auto_buffer_full" | "manual" | "incomplete";
+}
+
 const INITIAL_DECODER_STATE: DecoderRunState = {
   status: "idle",
   result: null,
@@ -180,6 +192,12 @@ const INITIAL_DECODER_STATE: DecoderRunState = {
 
 function pinLabel(pin: number | null): string {
   return pin == null ? "—" : `GP${pin}`;
+}
+
+// Samples occupy intervals [index, index + 1). Waveforms, trigger markers and
+// protocol annotations all use this same time-to-pixel mapping.
+function waveformX(samplePosition: number, sampleCount: number): number {
+  return PLOT_LEFT + (samplePosition / Math.max(1, sampleCount)) * (WIDTH - PLOT_LEFT - PLOT_RIGHT);
 }
 
 function replaceTokens(template: string, values: Record<string, string | number>): string {
@@ -197,35 +215,18 @@ interface StepWaveformProps {
   readonly svgHeight?: number;
 }
 
-function stepWaveformPath(points: readonly WaveformPoint[], yOffset: number): string {
-  const pathPoints = points.map((point) => ({
-    x: point.x,
-    y: yOffset + point.y,
-  }));
-
-  let d = `M ${pathPoints[0]?.x ?? 0} ${pathPoints[0]?.y ?? 0}`;
-  for (let pointIndex = 1; pointIndex < pathPoints.length; pointIndex += 1) {
-    const previous = pathPoints[pointIndex - 1];
-    const current = pathPoints[pointIndex];
-    if (!previous || !current) continue;
-
-    if (current.y !== previous.y) {
-      d += ` L ${current.x} ${previous.y}`;
-      d += ` L ${current.x} ${current.y}`;
-    } else {
-      d += ` L ${current.x} ${current.y}`;
-    }
-  }
-  return d;
-}
-
-function StepWaveform({
+const StepWaveform = memo(function StepWaveform({
   channels,
   pinKeys,
   channelTop,
   triggerLineX,
   svgHeight,
 }: StepWaveformProps) {
+  // Trigger/annotation updates can rerender the plot without changing its
+  // geometry. Keep the large path strings until samples or vertical layout change.
+  const paths = useMemo(() => channels.map((points, channelIndex) =>
+    stepWaveformPath(points, channelTop + channelIndex * (CHANNEL_HEIGHT + CHANNEL_GAP))
+  ), [channels, channelTop]);
   return (
     <>
       {pinKeys.map((pin, channelIndex) => {
@@ -254,6 +255,7 @@ function StepWaveform({
       })}
       {triggerLineX != null && svgHeight != null && (
         <line
+          data-logic-trigger=""
           x1={triggerLineX}
           x2={triggerLineX}
           y1={10}
@@ -265,11 +267,11 @@ function StepWaveform({
       )}
       {channels.map((channelPoints, channelIndex) => {
         if (channelPoints.length === 0) return null;
-        const yOffset = channelTop + channelIndex * (CHANNEL_HEIGHT + CHANNEL_GAP);
         return (
           <path
             key={pinKeys[channelIndex] ?? channelIndex}
-            d={stepWaveformPath(channelPoints, yOffset)}
+            data-logic-waveform-channel={pinKeys[channelIndex]}
+            d={paths[channelIndex]}
             fill="none"
             stroke={WAVEFORM_COLORS[channelIndex % WAVEFORM_COLORS.length]}
             strokeWidth={1.5}
@@ -279,7 +281,7 @@ function StepWaveform({
       })}
     </>
   );
-}
+});
 
 function areDecoderConfigsEqual(
   left: LogicDecoderProtocolConfigs,
@@ -376,7 +378,6 @@ export function LogicAnalyzerCard({
   onActivityChange?: (active: boolean) => void;
 }) {
   const { t } = useI18n();
-  const [workspaceMode, setWorkspaceMode] = useState<LogicAnalyzerMode>("capture");
   const [config, setConfig] = useState<LogicAnalyzerConfig>(DEFAULT_CONFIG);
   const [state, setState] = useState<LogicAnalyzerState>("idle");
   const [capture, setCapture] = useState<LogicAnalyzerCapture | null>(null);
@@ -387,22 +388,24 @@ export function LogicAnalyzerCard({
     createDefaultLogicDecoderConfigs(DEFAULT_CONFIG.selectedPins)
   );
   const [decoderState, setDecoderState] = useState<DecoderRunState>(INITIAL_DECODER_STATE);
-  const captureOperationRef = useRef<"bounded" | "stream" | null>(null);
-  const boundedCancelRef = useRef(false);
-  const currentDecodeSignatureRef = useRef<string | null>(null);
+  const lifecycleRef = useRef<object | null>(null);
+  const captureOperationRef = useRef<CaptureOperation | null>(null);
+  const activityCallbackRef = useRef(onActivityChange);
+  const [isStopping, setIsStopping] = useState(false);
+  const boundedDecodeRunRef = useRef(0);
   const streamSamplesRef = useRef<number[]>([]);
   const streamSequenceRef = useRef(0);
   const streamTotalRef = useRef(0);
   const streamDirtyRef = useRef(false);
-  const streamDecodeBusyRef = useRef(false);
   const [streamSampleCount, setStreamSampleCount] = useState(0);
   const [streamWaveformVersion, setStreamWaveformVersion] = useState(0);
-  const [streamFollow, setStreamFollow] = useState(true);
   const [streamSpan, setStreamSpan] = useState<number>(4096);
-  const [streamAnchor, setStreamAnchor] = useState(0);
+  const [frozenStreamWindow, setFrozenStreamWindow] = useState<FrozenSampleWindow | null>(null);
+  const streamFollow = frozenStreamWindow == null;
   const [liveAnnotations, setLiveAnnotations] = useState<LogicDecoderAnnotation[]>([]);
+  const [liveDecodeError, setLiveDecodeError] = useState<string | null>(null);
   const [streamNotice, setStreamNotice] = useState<InlineNotice | null>(null);
-  const manualStreamStopRef = useRef(false);
+  const [streamSnapshot, setStreamSnapshot] = useState<StreamSnapshot | null>(null);
 
   const {
     close: sigrokClose,
@@ -414,10 +417,14 @@ export function LogicAnalyzerCard({
     readCaptureFrame: sigrokReadCaptureFrame,
   } = useSigrokScope();
   const [streaming, setStreaming] = useState(false);
-  const streamingRef = useRef(false);
   const [streamStarting, setStreamStarting] = useState(false);
   const [activeStreamConfig, setActiveStreamConfig] = useState<LogicAnalyzerConfig | null>(null);
   const [activeStreamRate, setActiveStreamRate] = useState<number | null>(null);
+  const streamTimeline = streaming || streamSnapshot != null;
+  const displayedStreamConfig = streaming ? activeStreamConfig : streamSnapshot?.config;
+  const displayedStreamRate = streaming ? activeStreamRate : streamSnapshot?.actualRateHz;
+
+  useEffect(() => { activityCallbackRef.current = onActivityChange; }, [onActivityChange]);
 
   useEffect(() => {
     const flush = () => {
@@ -440,10 +447,7 @@ export function LogicAnalyzerCard({
 
   const normalizedConfig = useMemo(() => normalizeLogicAnalyzerLocalConfig(config), [config]);
 
-  const actualRate = useMemo(
-    () => calculateActualSampleRate(normalizedConfig.sampleRateHz),
-    [normalizedConfig.sampleRateHz]
-  );
+  const configuredRate = normalizedConfig.sampleRateHz;
   const sigrokCapabilities = sigrokGetServerCapabilities();
   const highRatePackedBurst = supportsHighRatePackedBurst(normalizedConfig);
   const selectionMaxSamples = getLogicAnalyzerSelectionMaxSamples(normalizedConfig);
@@ -524,7 +528,7 @@ export function LogicAnalyzerCard({
   ]);
   const preTriggerAvailable = preTriggerReason == null;
   const controlsDisabled =
-    state === "armed" || state === "capturing" || isArming || streamStarting || streaming;
+    state === "armed" || state === "capturing" || isArming || streamStarting || streaming || isStopping;
   const decodeAvailable = state === "done" && capture != null && capture.sampleCount > 0;
   const captureRequestedRate = capture ? getLogicAnalyzerRequestedSampleRate(capture.config) : null;
   const captureActualRate = capture ? getLogicAnalyzerActualSampleRate(capture.config) : null;
@@ -532,10 +536,11 @@ export function LogicAnalyzerCard({
     ? formatSamplePeriod(getLogicAnalyzerSamplePeriodPs(capture.config))
     : null;
   const captureBackend = capture ? getLogicAnalyzerBackend(capture.config) : null;
-  const capturePins = useMemo(
-    () => (capture ? getLogicDecoderCapturePins(capture.config) : config.selectedPins),
-    [capture, config.selectedPins]
+  const capturedPins = useMemo(
+    () => capture ? getLogicDecoderCapturePins(capture.config) : null,
+    [capture]
   );
+  const capturePins = displayedStreamConfig?.selectedPins ?? capturedPins ?? config.selectedPins;
   const capturePinsKey = capturePins.join(",");
   const highRateInfoNotice = useMemo<InlineNotice | null>(() => {
     if (!highRatePackedBurst || unsupportedRateReason != null) {
@@ -594,46 +599,119 @@ export function LogicAnalyzerCard({
     [capturePins, capturePinsKey]
   );
 
+  const ownsOperation = useCallback((operation: CaptureOperation) =>
+    captureOperationRef.current === operation && lifecycleRef.current === operation.lifecycle, []);
+  const operationIsActive = useCallback((operation: CaptureOperation) =>
+    ownsOperation(operation) && !operation.cancelled, [ownsOperation]);
+
+  const beginOperation = useCallback(() => {
+    if (!lifecycleRef.current || captureOperationRef.current) return null;
+    const operation: CaptureOperation = {
+      lifecycle: lifecycleRef.current, cancelled: false, cleanup: null,
+    };
+    captureOperationRef.current = operation;
+    return operation;
+  }, []);
+
+  const finishOperation = useCallback((operation: CaptureOperation) => {
+    if (captureOperationRef.current !== operation) return;
+    captureOperationRef.current = null;
+    if (lifecycleRef.current !== operation.lifecycle) return;
+    if (operation.cancelled) setState("idle");
+    setIsArming(false);
+    setStreamStarting(false);
+    setIsStopping(false);
+    setStreaming(false);
+    setActiveStreamConfig(null);
+    setActiveStreamRate(null);
+    activityCallbackRef.current?.(false);
+  }, []);
+
   const stopAndCloseSigrok = useCallback(
-    async (action: string) => {
-      try {
-        await sigrokStop();
-      } catch (cleanupError) {
-        warnSigrokCleanup(`${action} stop`, cleanupError);
-      }
-      try {
-        sigrokClose();
-      } catch (cleanupError) {
-        warnSigrokCleanup(`${action} close`, cleanupError);
-      }
+    (operation: CaptureOperation, action: string): Promise<void> => {
+      if (operation.cleanup) return operation.cleanup;
+      if (captureOperationRef.current !== operation) return Promise.resolve();
+      operation.cleanup = (async () => {
+        try {
+          await sigrokStop();
+        } catch (cleanupError) {
+          warnSigrokCleanup(`${action} stop`, cleanupError);
+        }
+        // An obsolete cleanup must never disconnect a later operation.
+        if (captureOperationRef.current !== operation) return;
+        try {
+          sigrokClose();
+        } catch (cleanupError) {
+          warnSigrokCleanup(`${action} close`, cleanupError);
+        }
+      })();
+      return operation.cleanup;
     },
     [sigrokClose, sigrokStop]
   );
 
-  const handleArm = useCallback(async () => {
-    if (captureOperationRef.current != null || streamingRef.current) return;
-    boundedCancelRef.current = false;
-    setError(null);
+  const clearStreamData = useCallback(() => {
+    streamSamplesRef.current = [];
+    streamSequenceRef.current = 0;
+    streamTotalRef.current = 0;
+    streamDirtyRef.current = false;
+    setStreamSampleCount(0);
+    setStreamSnapshot(null);
     setStreamNotice(null);
+    setFrozenStreamWindow(null);
+    setLiveAnnotations([]);
+    setLiveDecodeError(null);
+    setStreamWaveformVersion((version) => version + 1);
+  }, []);
+
+  const preserveStreamSnapshot = useCallback((operation: CaptureOperation, stopReason: StreamSnapshot["stopReason"]) => {
+    if (!ownsOperation(operation) || !operation.stream || streamSamplesRef.current.length === 0) return;
+    // No more frames can be accepted after this operation stops/cancels. Share
+    // the capped buffer without copying it; the next operation replaces it.
+    setStreamSnapshot({
+      source: "stream",
+      ...operation.stream,
+      samples: streamSamplesRef.current,
+      sampleCount: streamTotalRef.current,
+      stopReason,
+    });
+    // STOPPED may arrive before the first 150 ms UI flush (or even before
+    // React commits streaming=true), so publish the final data synchronously.
+    streamDirtyRef.current = false;
+    setStreamSampleCount(streamTotalRef.current);
+    setStreamWaveformVersion((version) => version + 1);
+    setStreamNotice({
+      tone: stopReason === "incomplete" ? "warn" : "brand",
+      message: t(stopReason === "auto_buffer_full" ? "logicAnalyzer.streamAutoStopped"
+        : stopReason === "manual" ? "logicAnalyzer.streamManuallyStopped" : "logicAnalyzer.streamIncomplete"),
+    });
+  }, [ownsOperation, t]);
+
+  const handleArm = useCallback(async () => {
+    if (captureOperationRef.current != null) return;
+    setError(null);
     const nextConfig = normalizedConfig;
     setConfig(nextConfig);
     if (nextConfig.selectedPins.length === 0) { setError("Select at least one pin"); return; }
-    captureOperationRef.current = "bounded";
+    const operation = beginOperation();
+    if (!operation) return;
+    clearStreamData();
+    setCapture(null);
+    setDecoderState(INITIAL_DECODER_STATE);
     setIsArming(true);
     const hasTrigger = nextConfig.triggerType !== "none";
     try {
       await sigrokEnsureConnected();
+      if (!operationIsActive(operation)) return;
       const sigrokRequest = buildSigrokCaptureRequest(nextConfig, sigrokGetServerCapabilities());
       const requestedSampleTarget = sigrokRequest.preSamples + sigrokRequest.postSamples;
       const ack = await sigrokConfigure(sigrokRequest);
+      if (!operationIsActive(operation)) return;
       const actualRate = ack.actualRateKhz * 1000;
       await sigrokStart();
-      if (boundedCancelRef.current) {
-        await stopAndCloseSigrok("capture startup cancelled");
-        return;
-      }
-      onActivityChange?.(true);
+      if (!operationIsActive(operation)) return;
       setState(hasTrigger ? "armed" : "capturing");
+      activityCallbackRef.current?.(true);
 
       const dataFrames: Array<{ meta: { sampleIndex: number; sampleCount: number; channelMask: number }; samples: Uint8Array }> = [];
       let receivedSampleCount = 0;
@@ -642,9 +720,9 @@ export function LogicAnalyzerCard({
       let clientStopIssued = false;
       let stopped = false;
 
-      while (!stopped) {
+      while (!stopped && operationIsActive(operation)) {
         const frame = await sigrokReadCaptureFrame(triggerObserved ? 5000 : 15000);
-        if (boundedCancelRef.current) return;
+        if (!operationIsActive(operation)) return;
         if (!frame) {
           throw new Error(triggerObserved ? "Timed out waiting for capture completion" : "Trigger timeout");
         }
@@ -662,7 +740,8 @@ export function LogicAnalyzerCard({
           setState("capturing");
           if (triggerObserved && receivedSampleCount >= requestedSampleTarget) {
             clientStopIssued = true;
-            await stopAndCloseSigrok("bounded capture sample completion cleanup");
+            await stopAndCloseSigrok(operation, "bounded capture sample completion cleanup");
+            if (!operationIsActive(operation)) return;
             stopped = true;
           }
           continue;
@@ -688,7 +767,8 @@ export function LogicAnalyzerCard({
             setState("capturing");
             if (receivedSampleCount >= requestedSampleTarget) {
               clientStopIssued = true;
-              await stopAndCloseSigrok("bounded capture trigger completion cleanup");
+              await stopAndCloseSigrok(operation, "bounded capture trigger completion cleanup");
+              if (!operationIsActive(operation)) return;
               stopped = true;
             }
             break;
@@ -710,10 +790,10 @@ export function LogicAnalyzerCard({
       }
 
       if (!clientStopIssued) {
-        await stopAndCloseSigrok("capture completion cleanup");
+        await stopAndCloseSigrok(operation, "capture completion cleanup");
       }
 
-      if (boundedCancelRef.current) return;
+      if (!operationIsActive(operation)) return;
 
       if (hasTrigger && triggerSampleIndex == null) {
         throw new Error("Capture completed without TRIGGERED event");
@@ -748,157 +828,143 @@ export function LogicAnalyzerCard({
         })),
       }));
       setState("done");
-      setWorkspaceMode("decode");
     } catch (err) {
-      if (!boundedCancelRef.current) {
+      if (operationIsActive(operation)) {
         setError(err instanceof Error ? err.message : "Network error");
+        setState("idle");
       }
-      setState("idle");
-      await stopAndCloseSigrok("capture error cleanup");
     } finally {
-      if (captureOperationRef.current === "bounded") captureOperationRef.current = null;
-      boundedCancelRef.current = false;
-      setIsArming(false);
-      onActivityChange?.(false);
+      await stopAndCloseSigrok(operation, "capture completion cleanup");
+      finishOperation(operation);
     }
-  }, [assembleBoundedSigrokCapture, normalizedConfig, onActivityChange, sigrokConfigure, sigrokEnsureConnected, sigrokGetServerCapabilities, sigrokReadCaptureFrame, sigrokStart, stopAndCloseSigrok]);
+  }, [beginOperation, clearStreamData, finishOperation, normalizedConfig, operationIsActive, sigrokConfigure, sigrokEnsureConnected, sigrokGetServerCapabilities, sigrokReadCaptureFrame, sigrokStart, stopAndCloseSigrok]);
 
   const handleCancel = useCallback(async () => {
-    boundedCancelRef.current = true;
+    const operation = captureOperationRef.current;
+    if (!operation || !operationIsActive(operation)) return;
+    operation.cancelled = true;
     setError(null);
     setStreamNotice(null);
-    await stopAndCloseSigrok("manual cancel");
-    setState("idle");
-    onActivityChange?.(false);
-  }, [onActivityChange, stopAndCloseSigrok]);
-
-  const stopStream = useCallback(async () => {
-    manualStreamStopRef.current = true;
-    streamingRef.current = false;
+    preserveStreamSnapshot(operation, "manual");
+    setIsStopping(true);
     setStreaming(false);
-    await stopAndCloseSigrok("stream stop");
-    onActivityChange?.(false);
-  }, [onActivityChange, stopAndCloseSigrok]);
+    await stopAndCloseSigrok(operation, "manual cancel");
+    finishOperation(operation);
+  }, [finishOperation, operationIsActive, preserveStreamSnapshot, stopAndCloseSigrok]);
+
+  const stopStream = handleCancel;
 
   const startStream = useCallback(async () => {
     if (
-      streamingRef.current ||
       captureOperationRef.current != null ||
-      state === "armed" ||
-      state === "capturing"
+      state !== "idle"
     ) return;
-    captureOperationRef.current = "stream";
-    setStreamStarting(true);
     setError(null);
-    setStreamNotice(null);
     const cfg = normalizedConfig;
     if (cfg.selectedPins.length === 0) {
       setError("Select at least one pin");
-      captureOperationRef.current = null;
-      setStreamStarting(false);
       return;
     }
+    const operation = beginOperation();
+    if (!operation) return;
+    clearStreamData();
+    setCapture(null);
+    setDecoderState(INITIAL_DECODER_STATE);
+    setStreamStarting(true);
     try {
       await sigrokEnsureConnected();
+      if (!operationIsActive(operation)) return;
       const sigrokRequest = buildSigrokCaptureRequest(cfg, { ...sigrokGetServerCapabilities(), stream: true });
       const ack = await sigrokConfigure(sigrokRequest);
+      if (!operationIsActive(operation)) return;
       await sigrokStart();
-      if (boundedCancelRef.current) {
-        await stopAndCloseSigrok("stream startup cancelled");
-        return;
-      }
-      onActivityChange?.(true);
-      setActiveStreamConfig({ ...cfg, selectedPins: [...cfg.selectedPins] });
-      setActiveStreamRate(ack.actualRateKhz * 1000);
-      manualStreamStopRef.current = false;
-      streamingRef.current = true;
-      setStreaming(true);
-      void (async () => {
-        try {
-          while (streamingRef.current) {
-            const frame = await sigrokReadCaptureFrame(8000);
-            if (!frame) {
-              throw new Error("Timed out waiting for stream data");
-            }
-
-            if (isSigrokDataFrame(frame)) {
-              const values = unpackSigrokSamples(frame.samples, sigrokRequest.channelMask);
-              const arr = streamSamplesRef.current;
-              for (const value of values) arr.push(value);
-              if (arr.length > STREAM_BUFFER_CAP) arr.splice(0, arr.length - STREAM_BUFFER_CAP);
-              streamSequenceRef.current += 1;
-              streamTotalRef.current += values.length;
-              streamDirtyRef.current = true;
-              continue;
-            }
-
-            if (isSigrokErrorFrame(frame)) {
-              throw new Error(formatSigrokErrorMessage(frame.payload));
-            }
-
-            if (!isSigrokEventFrame(frame)) {
-              throw new Error("Unexpected stream frame");
-            }
-
-            switch (frame.payload.typeDetail) {
-              case SigrokEventCode.ARMED:
-              case SigrokEventCode.TRIGGERED:
-              case SigrokEventCode.RUNNING:
-                break;
-              case SigrokEventCode.STOPPED: {
-                const stopReason = classifyLogicAnalyzerStreamStop({
-                  config: cfg,
-                  sampleCount: streamTotalRef.current,
-                  userInitiated: manualStreamStopRef.current || !streamingRef.current,
-                });
-                if (stopReason === "auto_buffer_full") {
-                  setStreamNotice({
-                    tone: "brand",
-                    message: t("logicAnalyzer.streamAutoStopped"),
-                  });
-                } else if (stopReason === "unexpected_stop") {
-                  throw new Error(t("logicAnalyzer.streamUnexpectedStop"));
-                }
-                streamingRef.current = false;
-                break;
-              }
-              case SigrokEventCode.OVERRUN:
-                throw new Error("Capture overrun");
-              case SigrokEventCode.ERROR:
-                throw new Error("Capture failed");
-              default:
-                throw new Error(
-                  `Unexpected stream event ${sigrokEventCodeName(frame.payload.typeDetail)}`
-                );
-            }
-          }
-        } catch (err) {
-          if (streamingRef.current) {
-            setError(err instanceof Error ? err.message : "stream failed");
-          }
-        }
-        finally {
-          streamingRef.current = false;
-          setStreaming(false);
-          await stopAndCloseSigrok("stream completion cleanup");
-          setActiveStreamConfig(null);
-          setActiveStreamRate(null);
-          onActivityChange?.(false);
-        }
-      })();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
-      await stopAndCloseSigrok("stream setup cleanup");
-      setActiveStreamConfig(null);
-      setActiveStreamRate(null);
-      onActivityChange?.(false);
-    } finally {
-      if (captureOperationRef.current === "stream") captureOperationRef.current = null;
+      if (!operationIsActive(operation)) return;
+      operation.stream = {
+        config: { ...cfg, selectedPins: [...cfg.selectedPins] },
+        actualRateHz: ack.actualRateKhz * 1000,
+      };
+      setActiveStreamConfig(operation.stream.config);
+      setActiveStreamRate(operation.stream.actualRateHz);
       setStreamStarting(false);
+      setStreaming(true);
+      activityCallbackRef.current?.(true);
+      let stopped = false;
+      while (!stopped && operationIsActive(operation)) {
+        const frame = await sigrokReadCaptureFrame(8000);
+        if (!operationIsActive(operation)) return;
+        if (!frame) {
+          throw new Error("Timed out waiting for stream data");
+        }
+
+        if (isSigrokDataFrame(frame)) {
+          const values = unpackSigrokSamples(frame.samples, sigrokRequest.channelMask);
+          const arr = streamSamplesRef.current;
+          for (const value of values) arr.push(value);
+          if (arr.length > STREAM_BUFFER_CAP) arr.splice(0, arr.length - STREAM_BUFFER_CAP);
+          streamSequenceRef.current += 1;
+          streamTotalRef.current += values.length;
+          streamDirtyRef.current = true;
+          continue;
+        }
+
+        if (isSigrokErrorFrame(frame)) {
+          throw new Error(formatSigrokErrorMessage(frame.payload));
+        }
+
+        if (!isSigrokEventFrame(frame)) {
+          throw new Error("Unexpected stream frame");
+        }
+
+        switch (frame.payload.typeDetail) {
+          case SigrokEventCode.ARMED:
+          case SigrokEventCode.TRIGGERED:
+          case SigrokEventCode.RUNNING:
+            break;
+          case SigrokEventCode.STOPPED: {
+            const stopReason = classifyLogicAnalyzerStreamStop({
+              config: cfg,
+              sampleCount: streamTotalRef.current,
+              userInitiated: false,
+            });
+            if (stopReason === "auto_buffer_full") {
+              preserveStreamSnapshot(operation, "auto_buffer_full");
+            } else if (stopReason === "unexpected_stop") {
+              throw new Error(t("logicAnalyzer.streamUnexpectedStop"));
+            }
+            stopped = true;
+            break;
+          }
+          case SigrokEventCode.OVERRUN:
+            throw new Error("Capture overrun");
+          case SigrokEventCode.ERROR:
+            throw new Error("Capture failed");
+          default:
+            throw new Error(
+              `Unexpected stream event ${sigrokEventCodeName(frame.payload.typeDetail)}`
+            );
+        }
+      }
+    } catch (err) {
+      if (operationIsActive(operation)) {
+        preserveStreamSnapshot(operation, "incomplete");
+        setError(err instanceof Error ? err.message : "Network error");
+      }
+    } finally {
+      if (ownsOperation(operation)) {
+        setIsStopping(true);
+        setStreaming(false);
+      }
+      await stopAndCloseSigrok(operation, "stream completion cleanup");
+      finishOperation(operation);
     }
   }, [
     normalizedConfig,
-    onActivityChange,
+    beginOperation,
+    clearStreamData,
+    finishOperation,
+    operationIsActive,
+    ownsOperation,
+    preserveStreamSnapshot,
     sigrokConfigure,
     sigrokEnsureConnected,
     sigrokGetServerCapabilities,
@@ -908,18 +974,22 @@ export function LogicAnalyzerCard({
     stopAndCloseSigrok,
     t,
   ]);
-
-
-
-
-
   useEffect(() => {
+    // StrictMode may replay this lifecycle, but a cancelled operation's identity
+    // is never reused or reactivated by the next setup.
+    const lifecycle = {};
+    lifecycleRef.current = lifecycle;
     return () => {
-      boundedCancelRef.current = true;
-      streamingRef.current = false;
-      onActivityChange?.(false);
-      if (captureOperationRef.current != null) {
-        void stopAndCloseSigrok("component cleanup");
+      if (lifecycleRef.current !== lifecycle) return;
+      lifecycleRef.current = null;
+      streamSamplesRef.current = [];
+      streamTotalRef.current = 0;
+      streamDirtyRef.current = false;
+      activityCallbackRef.current?.(false);
+      const operation = captureOperationRef.current;
+      if (operation != null) {
+        operation.cancelled = true;
+        void stopAndCloseSigrok(operation, "component cleanup").then(() => finishOperation(operation));
         return;
       }
       try {
@@ -928,14 +998,16 @@ export function LogicAnalyzerCard({
         warnSigrokCleanup("component cleanup close", cleanupError);
       }
     };
-  }, [onActivityChange, sigrokClose, stopAndCloseSigrok]);
+  }, [finishOperation, sigrokClose, stopAndCloseSigrok]);
 
   const handleClear = useCallback(() => {
+    if (captureOperationRef.current) return;
+    clearStreamData();
     setCapture(null);
     setState("idle");
+    setError(null);
     setDecoderState(INITIAL_DECODER_STATE);
-    setWorkspaceMode("capture");
-  }, []);
+  }, [clearStreamData]);
 
   // The trigger is stored as an index into the normalized, sorted pin list,
   // so these handlers resolve pin identity instead of trusting raw indices.
@@ -987,9 +1059,6 @@ export function LogicAnalyzerCard({
   const waveformData = useMemo(() => {
     if (!capture || capture.sampleCount === 0) return [];
 
-    const plotWidth = Math.max(1, WIDTH - PLOT_LEFT - PLOT_RIGHT);
-    const xScale = capture.sampleCount > 1 ? plotWidth / (capture.sampleCount - 1) : 0;
-
     return Array.from({ length: capturePins.length }, (_, channelIndex) => {
       const channelPoints: WaveformPoint[] = [];
 
@@ -999,62 +1068,34 @@ export function LogicAnalyzerCard({
 
         const bit = (sample.values >> channelIndex) & 1;
         channelPoints.push({
-          x: PLOT_LEFT + sampleIndex * xScale,
+          x: waveformX(sampleIndex, capture.sampleCount),
           y: bit ? CHANNEL_GAP : CHANNEL_HEIGHT - CHANNEL_GAP,
         });
       }
 
+      const last = channelPoints.at(-1);
+      if (last) channelPoints.push({ x: waveformX(capture.sampleCount, capture.sampleCount), y: last.y });
       return channelPoints;
     });
   }, [capture, capturePins]);
 
   const streamWindow = useMemo(() => {
-    const samples = streamSamplesRef.current;
-    const len = samples.length;
-    const plotWidth = Math.max(1, WIDTH - PLOT_LEFT - PLOT_RIGHT);
-    const span = Math.min(streamSpan, Math.max(1, len));
-    const end = streamFollow ? len : Math.min(len, Math.max(span, len - streamAnchor));
-    const start = end - span;
-    const stride = Math.max(1, Math.floor(span / plotWidth));
-    const pointCount = Math.min(plotWidth, Math.max(1, Math.ceil(span / stride)));
-    return { samples, len, span, start, end, stride, pointCount, plotWidth };
+    const samples = streamSnapshot?.samples ?? streamSamplesRef.current;
+    const total = streamSnapshot?.sampleCount ?? streamTotalRef.current;
+    return { samples, ...resolveStreamWindow(total, samples.length, streamSpan, frozenStreamWindow) };
     // streamSamplesRef content is versioned through streamWaveformVersion
-  }, [streamWaveformVersion, streamFollow, streamSpan, streamAnchor]);
+  }, [streamWaveformVersion, streamSpan, frozenStreamWindow, streamSnapshot]);
 
   const streamWaveformData = useMemo(() => {
-    if (!streaming) return [];
-    const pins = activeStreamConfig?.selectedPins ?? [];
+    if (!streamTimeline) return [];
+    const pins = displayedStreamConfig?.selectedPins ?? [];
     if (pins.length === 0 || streamWindow.len === 0) return [];
-    const { samples, start, span, stride, pointCount, plotWidth } = streamWindow;
-    const xScale = pointCount > 1 ? plotWidth / (pointCount - 1) : 0;
-
-    return pins.map((_, channelIndex) => {
-      const channelPoints: WaveformPoint[] = [];
-      for (let i = 0; i < pointCount; i += 1) {
-        const sampleIndex = start + Math.min(i * stride, span - 1);
-        const bit = (samples[sampleIndex] >> channelIndex) & 1;
-        channelPoints.push({
-          x: PLOT_LEFT + i * xScale,
-          y: bit ? CHANNEL_GAP : CHANNEL_HEIGHT - CHANNEL_GAP,
-        });
-      }
-      return channelPoints;
-    });
-  }, [streaming, activeStreamConfig, streamWindow]);
-
-  const liveAnnotationLayout = useMemo(
-    () => layoutLogicDecoderAnnotations(liveAnnotations),
-    [liveAnnotations]
-  );
-  const liveAnnotationAreaHeight = liveAnnotationLayout.laneCount > 0
-    ? liveAnnotationLayout.laneCount * (ANNOTATION_HEIGHT + ANNOTATION_GAP) + ANNOTATION_MARGIN
-    : 0;
-  const streamChannelTop = TOP_PADDING + liveAnnotationAreaHeight;
-
-  const streamSvgHeight = useMemo(() => {
-    const pinCount = activeStreamConfig?.selectedPins.length || 1;
-    return streamChannelTop + pinCount * CHANNEL_HEIGHT + Math.max(0, pinCount - 1) * CHANNEL_GAP + BOTTOM_PADDING;
-  }, [activeStreamConfig, streamChannelTop]);
+    const { samples, start, end } = streamWindow;
+    return pins.map((_, channelIndex) => activityWaveformPoints({
+      samples, channelIndex, start, end, left: PLOT_LEFT, width: WIDTH - PLOT_LEFT - PLOT_RIGHT,
+      high: CHANNEL_GAP, low: CHANNEL_HEIGHT - CHANNEL_GAP,
+    }));
+  }, [streamTimeline, displayedStreamConfig, streamWindow]);
 
   const streamWindowRef = useRef(streamWindow);
   useEffect(() => {
@@ -1063,43 +1104,83 @@ export function LogicAnalyzerCard({
     // its immediate decode run observes the current stream window.
     streamWindowRef.current = streamWindow;
   }, [streamWindow]);
-  const streamMaxAnchor = Math.max(0, streamWindow.len - streamWindow.span);
-  const streamDecodeBase = streamWindow.end - Math.min(streamWindow.span, STREAM_DECODE_MAX_SAMPLES);
+  const streamMaxStart = Math.max(0, streamWindow.len - streamWindow.span);
 
-  useEffect(() => {
-    if (!streaming) {
-      setLiveAnnotations([]);
-      return;
+  const liveDecodePreparation = useMemo(() => {
+    if (!streaming || !activeStreamConfig || activeStreamRate == null) {
+      return { request: null, error: null as string | null };
     }
-    let cancelled = false;
-    const decodeWindow = async () => {
-      if (streamDecodeBusyRef.current) return;
-      const { samples, start, end } = streamWindowRef.current;
-      const decodeLen = Math.min(end - start, STREAM_DECODE_MAX_SAMPLES);
-      const streamPins = activeStreamConfig?.selectedPins ?? [];
-      if (decodeLen <= 0 || streamPins.length === 0) return;
-      streamDecodeBusyRef.current = true;
-      try {
-        const pseudoCapture: LogicAnalyzerCapture = {
+    // Validate protocol/pin mapping even before the first data frame arrives.
+    // The scheduler replaces this one-sample template with its bounded window.
+    try {
+      return {
+        request: buildLogicDecoderRequest({
           state: "done",
           config: {
-            pinCount: streamPins.length,
-            pinBase: streamPins[0] ?? 0,
-            selectedPins: [...streamPins],
-            actualSampleRateHz: activeStreamRate ?? actualRate,
+            pinCount: activeStreamConfig.selectedPins.length,
+            pinBase: activeStreamConfig.selectedPins[0] ?? 0,
+            selectedPins: activeStreamConfig.selectedPins,
+            actualSampleRateHz: activeStreamRate,
           },
-          sampleCount: decodeLen,
+          sampleCount: 1,
           triggerIndex: 0,
-          samples: samples.slice(end - decodeLen, end).map((values) => ({ timestampUs: 0, values })),
-        };
-        const request = buildLogicDecoderRequest(pseudoCapture, decoderProtocol, decoderConfigs);
-        const result = await decodeLogicCapture(request);
-        if (!cancelled) setLiveAnnotations(result.annotations);
+          samples: [{ timestampUs: 0, values: 0 }],
+        }, decoderProtocol, decoderConfigs),
+        error: null as string | null,
+      };
+    } catch (decodeError) {
+      return {
+        request: null,
+        error: decodeError instanceof Error ? decodeError.message : String(decodeError),
+      };
+    }
+  }, [streaming, activeStreamConfig, activeStreamRate, decoderProtocol, decoderConfigs]);
+
+  useEffect(() => {
+    setLiveAnnotations([]);
+    setLiveDecodeError(null);
+    const template = liveDecodePreparation.request;
+    if (!template) return;
+    const sampleMask = (1 << (activeStreamConfig?.selectedPins.length ?? 0)) - 1;
+    let cancelled = false;
+    let busy = false;
+    const decodeWindow = async () => {
+      if (busy) return;
+      const { samples, start, end, firstSampleIndex } = streamWindowRef.current;
+      const decodeLen = Math.min(end - start, STREAM_DECODE_MAX_SAMPLES);
+      const decodeBase = firstSampleIndex + end - decodeLen;
+      if (decodeLen <= 0) return;
+      // The backing ring may advance between UI flushes. Read the same absolute
+      // window, never silently relabel newer data with a frozen window's time.
+      const currentFirst = streamTotalRef.current - samples.length;
+      const decodeStart = decodeBase - currentFirst;
+      if (decodeStart < 0) return;
+      busy = true;
+      try {
+        const result = await decodeLogicCapture({
+          ...template,
+          samples: {
+            ...template.samples,
+            sampleCount: decodeLen,
+            words: Array.from({ length: decodeLen }, (_, index) =>
+              samples[decodeStart + index] & sampleMask),
+          },
+        });
+        if (!cancelled) {
+          setLiveDecodeError(null);
+          setLiveAnnotations(result.annotations.map((annotation) => ({
+            ...annotation,
+            startSample: decodeBase + annotation.startSample,
+            endSample: decodeBase + annotation.endSample,
+          })));
+        }
       } catch (decodeError) {
-        warnSigrokCleanup("live decode", decodeError);
-        if (!cancelled) setLiveAnnotations([]);
+        if (!cancelled) {
+          setLiveDecodeError(decodeError instanceof Error ? decodeError.message : String(decodeError));
+          setLiveAnnotations([]);
+        }
       } finally {
-        streamDecodeBusyRef.current = false;
+        busy = false;
       }
     };
     const timer = window.setInterval(() => { void decodeWindow(); }, STREAM_DECODE_MS);
@@ -1108,14 +1189,7 @@ export function LogicAnalyzerCard({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [
-    streaming,
-    decoderProtocol,
-    decoderConfigs,
-    activeStreamConfig,
-    activeStreamRate,
-    actualRate,
-  ]);
+  }, [liveDecodePreparation, activeStreamConfig]);
 
   const uartConfig: LogicDecoderProtocolConfigs["uart"] = decoderConfigs.uart;
   const i2cConfig: LogicDecoderProtocolConfigs["i2c"] = decoderConfigs.i2c;
@@ -1142,17 +1216,28 @@ export function LogicAnalyzerCard({
   }, [capture, decoderConfigs, decoderProtocol, state]);
 
   useEffect(() => {
-    currentDecodeSignatureRef.current = decodePreparation.requestSignature;
-  }, [decodePreparation.requestSignature]);
+    // Configuration/capture changes cancel this UI job immediately, including
+    // loading. A generation also prevents an old promise completing a newer job
+    // when the user returns to an identical request.
+    boundedDecodeRunRef.current += 1;
+    setDecoderState((current) => current.status === "loading" ? INITIAL_DECODER_STATE : current);
+    return () => { boundedDecodeRunRef.current += 1; };
+  }, [decodePreparation]);
 
   const decodeIsStale =
     decoderState.lastRequestSignature != null &&
     decoderState.lastRequestSignature !== decodePreparation.requestSignature;
   const decodeResult = decodeIsStale ? null : decoderState.result;
   const decodeError = decodeIsStale ? null : decoderState.error;
+  const waveformPins = streamTimeline ? displayedStreamConfig?.selectedPins ?? [] : capturePins;
+  const waveformSampleStart = streamTimeline ? streamWindow.firstSampleIndex + streamWindow.start : 0;
+  const waveformSampleCount = streamTimeline ? streamWindow.span : capture?.sampleCount ?? 0;
   const annotationLayout = useMemo(
-    () => layoutLogicDecoderAnnotations(decodeResult?.annotations ?? []),
-    [decodeResult]
+    () => layoutLogicDecoderAnnotations(streamTimeline
+      ? streaming ? liveAnnotations.filter((annotation) => annotation.endSample > waveformSampleStart &&
+          annotation.startSample < waveformSampleStart + waveformSampleCount) : []
+      : decodeResult?.annotations ?? []),
+    [streamTimeline, streaming, liveAnnotations, waveformSampleStart, waveformSampleCount, decodeResult]
   );
   const decodeStatusKey = decodeIsStale
     ? "logicAnalyzer.decoder.status.stale"
@@ -1176,6 +1261,9 @@ export function LogicAnalyzerCard({
     decodePreparation.error == null ? null : localizeLogicDecoderErrorMessage(decodePreparation.error, t);
   const localizedDecodeError =
     decodeError == null ? null : localizeLogicDecoderErrorMessage(decodeError, t);
+  const liveDecodeMessage = liveDecodePreparation.error ?? liveDecodeError;
+  const localizedLiveDecodeError = liveDecodeMessage == null
+    ? null : localizeLogicDecoderErrorMessage(liveDecodeMessage, t);
   const decoderSignalMap = useMemo(
     () => decoderSignalPins(decoderProtocol, decoderConfigs),
     [decoderConfigs, decoderProtocol]
@@ -1189,13 +1277,12 @@ export function LogicAnalyzerCard({
   const channelTop = TOP_PADDING + annotationAreaHeight;
 
   const triggerLineX = useMemo(() => {
-    if (!capture || capture.sampleCount <= 0) return null;
-    const plotWidth = WIDTH - PLOT_LEFT - PLOT_RIGHT;
-    return PLOT_LEFT + (capture.triggerIndex / Math.max(1, capture.sampleCount)) * plotWidth;
-  }, [capture]);
+    if (streamTimeline || !capture || capture.sampleCount <= 0) return null;
+    return waveformX(capture.triggerIndex, capture.sampleCount);
+  }, [capture, streamTimeline]);
 
   const svgHeight = useMemo(() => {
-    const pinCount = capturePins.length || 1;
+    const pinCount = waveformPins.length || 1;
     return Math.max(
       140,
       channelTop +
@@ -1203,9 +1290,10 @@ export function LogicAnalyzerCard({
         Math.max(0, pinCount - 1) * CHANNEL_GAP +
         BOTTOM_PADDING
     );
-  }, [capturePins.length, channelTop]);
+  }, [waveformPins.length, channelTop]);
 
-  const sampleRateForAnnotations = captureActualRate ?? actualRate;
+  const sampleRateForAnnotations = captureActualRate ?? 1;
+  const waveformRate = streamTimeline ? displayedStreamRate : captureActualRate;
   const diagnosticCounts = useMemo(() => {
     return (decodeResult?.diagnostics ?? []).reduce(
       (counts, diagnostic) => {
@@ -1228,6 +1316,7 @@ export function LogicAnalyzerCard({
     }
 
     const requestSignature = decodePreparation.requestSignature;
+    const runId = ++boundedDecodeRunRef.current;
     setDecoderState({
       status: "loading",
       result: null,
@@ -1237,7 +1326,7 @@ export function LogicAnalyzerCard({
 
     try {
       const result = await decodeLogicCapture(decodePreparation.request);
-      if (currentDecodeSignatureRef.current !== requestSignature) {
+      if (boundedDecodeRunRef.current !== runId) {
         return;
       }
       setDecoderState({
@@ -1247,7 +1336,7 @@ export function LogicAnalyzerCard({
         lastRequestSignature: requestSignature,
       });
     } catch (decodeRunError) {
-      if (currentDecodeSignatureRef.current !== requestSignature) {
+      if (boundedDecodeRunRef.current !== runId) {
         return;
       }
       setDecoderState({
@@ -1304,55 +1393,18 @@ export function LogicAnalyzerCard({
       headerLeading={workspaceTabs}
       contentClassName="p-0"
     >
-      <WorkspaceModeHeader
-        icon={Activity}
-        title={t("logicAnalyzer.title")}
-        subtitle={t("logicAnalyzer.subtitle")}
-        status={
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line/60 px-3 py-3 sm:px-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand/10 text-brand"><Activity size={17} /></span>
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold tracking-[-0.01em] text-ink">{t("logicAnalyzer.title")}</h2>
+            <p className="mt-0.5 text-[11px] leading-4 text-ink-dim">{t("logicAnalyzer.subtitle")}</p>
+          </div>
+        </div>
           <Badge tone={state === "idle" ? "neutral" : state === "armed" ? "warn" : "brand"}>
             {t(`logicAnalyzer.state.${state}`)}
           </Badge>
-        }
-      >
-        <div
-          role="tablist"
-          aria-label={t("logicAnalyzer.modes")}
-          data-testid="logic-analyzer-mode-switch"
-          className="grid min-w-0 grid-cols-2 gap-1 rounded-xl border border-line/70 bg-panel2/70 p-1"
-        >
-          <WorkspaceModeTab
-            role="tab"
-            id="logic-analyzer-mode-capture"
-            aria-controls="logic-analyzer-panel-capture"
-            aria-selected={workspaceMode === "capture"}
-            disabled={controlsDisabled && workspaceMode !== "capture"}
-            onClick={() => setWorkspaceMode("capture")}
-            selected={workspaceMode === "capture"}
-            icon={Activity}
-            label={t("logicAnalyzer.mode.capture")}
-            summary={t("logicAnalyzer.mode.captureSummary")}
-          />
-          <WorkspaceModeTab
-            role="tab"
-            id="logic-analyzer-mode-decode"
-            aria-controls="logic-analyzer-panel-decode"
-            aria-selected={workspaceMode === "decode"}
-            aria-describedby={!decodeAvailable ? "logic-analyzer-decode-requirement" : undefined}
-            disabled={!decodeAvailable || controlsDisabled}
-            title={!decodeAvailable ? t("logicAnalyzer.mode.decodeUnavailable") : undefined}
-            onClick={() => setWorkspaceMode("decode")}
-            selected={workspaceMode === "decode"}
-            icon={Binary}
-            label={t("logicAnalyzer.mode.decode")}
-            summary={t("logicAnalyzer.mode.decodeSummary")}
-          />
-        </div>
-        {!decodeAvailable && (
-          <span id="logic-analyzer-decode-requirement" className="sr-only">
-            {t("logicAnalyzer.mode.decodeUnavailable")}
-          </span>
-        )}
-      </WorkspaceModeHeader>
+      </header>
 
       <div className="p-3 sm:p-4">
 
@@ -1363,14 +1415,10 @@ export function LogicAnalyzerCard({
       )}
 
       <div
-        id={workspaceMode === "capture" ? "logic-analyzer-panel-capture" : "logic-analyzer-panel-decode"}
-        role="tabpanel"
-        aria-labelledby={workspaceMode === "capture" ? "logic-analyzer-mode-capture" : "logic-analyzer-mode-decode"}
-        className={`grid items-start gap-3 ${workspaceMode === "capture" ? "lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]" : "grid-cols-1"}`}
+        data-testid="logic-analyzer-controls"
+        className="grid items-start gap-3 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]"
       >
         <section data-testid="logic-analyzer-sampling-settings" className="min-w-0 rounded-xl border border-line/60 bg-panel2/20 p-3">
-          {workspaceMode === "capture" && (
-          <>
           <div className="grid grid-cols-2 gap-x-3 gap-y-2">
             <label className="text-[11px] text-ink-dim">
               {t("logicAnalyzer.sampleRate")}
@@ -1484,18 +1532,18 @@ export function LogicAnalyzerCard({
                   type="button"
                   variant="ghost"
                   title={streamRateExceeded ? t("logicAnalyzer.streamRateLimit") : undefined}
-                  onClick={() => {
-                    streamSamplesRef.current = [];
-                    streamSequenceRef.current = 0;
-                    streamTotalRef.current = 0;
-                    setStreamSampleCount(0);
-                    void startStream();
-                  }}
+                  onClick={() => { void startStream(); }}
                   disabled={controlsDisabled || config.selectedPins.length === 0 || streamRateExceeded}
                 >
                   {streamStarting ? <Loader2 size={15} className="animate-spin" /> : <Zap size={15} />}
                   {t("logicAnalyzer.startStream")}
                 </Button>
+                {(isArming || streamStarting || isStopping) && (
+                  <Button type="button" onClick={handleCancel} disabled={isStopping}>
+                    <Square size={15} />
+                    {t("logicAnalyzer.cancel")}
+                  </Button>
+                )}
                 {streamRateExceeded && (
                   <span className="text-[10px] text-ink-dim">
                     {t("logicAnalyzer.streamRateLimit")}
@@ -1503,7 +1551,7 @@ export function LogicAnalyzerCard({
                 )}
               </>
             ) : state === "armed" || state === "capturing" || isArming ? (
-              <Button type="button" onClick={handleCancel}>
+              <Button type="button" onClick={handleCancel} disabled={isStopping}>
                 <Square size={15} />
                 {t("logicAnalyzer.cancel")}
               </Button>
@@ -1536,201 +1584,22 @@ export function LogicAnalyzerCard({
                 </Button>
               </div>
             )}
-          </div>
-          </>
-          )}
-
-          {workspaceMode === "decode" && capture && (
-            <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-line/50 pb-3">
-              <div className="mr-auto min-w-0">
-                <div className="text-xs font-semibold text-ink">{t("logicAnalyzer.mode.decode")}</div>
-                <div className="text-[10px] text-ink-dim">
-                  {formatSampleCount(capture.sampleCount)} {t("logicAnalyzer.samples")} · {capturePins.map((pin) => pinLabel(pin)).join(" · ")}
-                </div>
-              </div>
-              <Button type="button" onClick={() => setWorkspaceMode("capture")}>
-                <Radio size={13} />
-                {t("logicAnalyzer.returnCapture")}
-              </Button>
-              <Button type="button" variant="ghost" onClick={() => exportToCsv(capture)}>
-                <Download size={13} />
-                CSV
-              </Button>
-              <Button type="button" variant="ghost" onClick={() => exportToSr(capture)}>
-                <Download size={13} />
-                PulseView (.sr)
-              </Button>
-              <Button type="button" variant="ghost" onClick={handleClear} aria-label={t("logicAnalyzer.clear")}>
+            {streamSnapshot && (
+              <Button type="button" variant="ghost" onClick={handleClear}
+                disabled={controlsDisabled} aria-label={t("logicAnalyzer.clear")}>
                 <Trash2 size={13} />
               </Button>
-            </div>
-          )}
+            )}
+          </div>
 
-          {workspaceMode === "capture" && streaming && streamWaveformData.length > 0 && (
-            <div className="mt-3">
-              <div className="mb-2 flex flex-wrap items-center gap-3 text-[10px] text-ink-dim">
-                <span className="flex items-center gap-1 text-xs">
-                  <Activity size={12} />
-                  {t("logicAnalyzer.streamWaveform")}
-                </span>
-                <label className="inline-flex items-center gap-1">
-                  <input
-                    type="checkbox"
-                    checked={streamFollow}
-                    onChange={(event) => {
-                      setStreamFollow(event.target.checked);
-                      if (event.target.checked) setStreamAnchor(0);
-                    }}
-                  />
-                  {t("logicAnalyzer.streamFollow")}
-                </label>
-                <select
-                  value={streamSpan}
-                  onChange={(event) => {
-                    setStreamSpan(Number(event.target.value));
-                    setStreamAnchor(0);
-                  }}
-                  className="rounded border border-line bg-panel px-1 py-0.5 text-[10px] text-ink"
-                  aria-label={t("logicAnalyzer.streamWindow")}
-                >
-                  {STREAM_SPAN_OPTIONS.map((spanOption) => (
-                    <option key={spanOption} value={spanOption}>
-                      {formatSampleCount(spanOption)}
-                    </option>
-                  ))}
-                </select>
-                {!streamFollow && streamMaxAnchor > 0 && (
-                  <input
-                    type="range"
-                    min={0}
-                    max={streamMaxAnchor}
-                    value={streamMaxAnchor - streamAnchor}
-                    onChange={(event) => setStreamAnchor(streamMaxAnchor - Number(event.target.value))}
-                    className="min-w-24 flex-1"
-                    aria-label={t("logicAnalyzer.streamWindow")}
-                  />
-                )}
-              </div>
-              <svg
-                viewBox={`0 0 ${WIDTH} ${streamSvgHeight}`}
-                className="w-full rounded-lg border border-line/60 bg-panel"
-                style={{ height: `${streamSvgHeight}px` }}
-                role="img"
-                aria-label={t("logicAnalyzer.streamWaveform")}
-              >
-                {liveAnnotationLayout.annotations.map((annotation, index) => {
-                  const xScale = streamWindow.pointCount > 1
-                    ? streamWindow.plotWidth / (streamWindow.pointCount - 1)
-                    : 0;
-                  const xFor = (samplePos: number) =>
-                    PLOT_LEFT + (((streamDecodeBase + samplePos) - streamWindow.start) / streamWindow.stride) * xScale;
-                  const x1 = xFor(annotation.startSample);
-                  const x2 = xFor(annotation.endSample);
-                  const width = Math.max(4, x2 - x1);
-                  const y = TOP_PADDING + annotation.lane * (ANNOTATION_HEIGHT + ANNOTATION_GAP);
-                  const palette = annotationPalette(annotation.class);
-                  const labelFits = width >= annotation.shortText.length * 5.5 + 10;
+          {highRateInfoNotice && <p role="status" data-testid="logic-analyzer-high-rate-notice"
+            className={`mt-3 rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${highRateInfoNotice.tone === "warn"
+              ? "border-warn/30 bg-warn/10 text-warn" : "border-brand/20 bg-brand/5 text-ink-dim"}`}>
+            {highRateInfoNotice.message}
+          </p>}
 
-                  return (
-                    <g key={`live-${annotation.row}-${annotation.startSample}-${index}`}>
-                      <rect
-                        x={x1}
-                        y={y}
-                        width={width}
-                        height={ANNOTATION_HEIGHT}
-                        rx={4}
-                        ry={4}
-                        fill={palette.fill}
-                        stroke={palette.stroke}
-                      />
-                      <title>{annotation.longText}</title>
-                      {labelFits && (
-                        <text
-                          x={x1 + 4}
-                          y={y + 12}
-                          style={{ fill: palette.text }}
-                          className="text-[9px] font-medium"
-                        >
-                          {annotation.shortText}
-                        </text>
-                      )}
-                    </g>
-                  );
-                })}
-                <StepWaveform
-                  channels={streamWaveformData}
-                  pinKeys={activeStreamConfig?.selectedPins ?? []}
-                  channelTop={streamChannelTop}
-                />
-              </svg>
-            </div>
-          )}
-          {workspaceMode === "decode" && !streaming && capture && capture.sampleCount > 0 && (
-            <div className="mt-3">
-              <svg
-                viewBox={`0 0 ${WIDTH} ${svgHeight}`}
-                className="w-full rounded-lg border border-line/60 bg-panel"
-                style={{ height: `${svgHeight}px` }}
-                role="img"
-                aria-label={t("logicAnalyzer.decoder.waveformAria")}
-              >
-                {annotationLayout.annotations.map((annotation, index) => {
-                  if (!capture) return null;
-
-                  const plotWidth = WIDTH - PLOT_LEFT - PLOT_RIGHT;
-                  const x1 = PLOT_LEFT + (annotation.startSample / capture.sampleCount) * plotWidth;
-                  const x2 = PLOT_LEFT + (annotation.endSample / capture.sampleCount) * plotWidth;
-                  const width = Math.max(10, x2 - x1);
-                  const y = TOP_PADDING + annotation.lane * (ANNOTATION_HEIGHT + ANNOTATION_GAP);
-                  const palette = annotationPalette(annotation.class);
-                  const labelFits = width >= annotation.shortText.length * 5.5 + 10;
-
-                  return (
-                    <g key={`${annotation.row}-${annotation.startSample}-${annotation.endSample}-${index}`}>
-                      <rect
-                        x={x1}
-                        y={y}
-                        width={width}
-                        height={ANNOTATION_HEIGHT}
-                        rx={4}
-                        ry={4}
-                        fill={palette.fill}
-                        stroke={palette.stroke}
-                      />
-                      <title>{annotation.longText}</title>
-                      {labelFits && (
-                        <text
-                          x={x1 + 4}
-                          y={y + 12}
-                          style={{ fill: palette.text }}
-                          className="text-[9px] font-medium"
-                        >
-                          {annotation.shortText}
-                        </text>
-                      )}
-                    </g>
-                  );
-                })}
-
-                <StepWaveform
-                  channels={waveformData}
-                  pinKeys={capturePins}
-                  channelTop={channelTop}
-                  triggerLineX={triggerLineX}
-                  svgHeight={svgHeight}
-                />
-              </svg>
-
-              <div className="mt-1 flex justify-between text-[9px] text-ink-dim">
-                <span>0</span>
-                <span>{t("logicAnalyzer.triggerPoint")}</span>
-                <span>{formatSampleCount(capture.sampleCount)}</span>
-              </div>
-            </div>
-          )}
         </section>
 
-        {workspaceMode === "capture" && (
         <section data-testid="logic-analyzer-pin-select" className="min-w-0 rounded-xl border border-line/60 bg-panel2/35 p-3">
           <div className="flex items-center justify-between gap-3">
             <div className="text-xs font-semibold text-ink">{t("logicAnalyzer.selectPins")}</div>
@@ -1753,29 +1622,122 @@ export function LogicAnalyzerCard({
             onSetTriggerPin={handleSetTriggerPin}
           />
         </section>
-        )}
       </div>
 
-      {workspaceMode === "capture" && (
-      <div className="mt-2 flex flex-wrap gap-4 text-[10px] text-ink-dim">
+      <section data-testid="logic-analyzer-waveform" aria-label={t("logicAnalyzer.waveform")}
+        data-stream-stop-reason={streamSnapshot?.stopReason}
+        className="mt-3 min-w-0 rounded-xl border border-line/60 bg-panel2/20 p-3">
+        <div className="mb-3 flex flex-wrap items-center gap-3 text-[10px] text-ink-dim">
+          <h3 className="mr-auto inline-flex items-center gap-2 text-xs font-semibold text-ink">
+            <Activity size={14} className="text-brand" />
+            {t(streamSnapshot ? "logicAnalyzer.streamSnapshot" : streaming ? "logicAnalyzer.streamWaveform" : "logicAnalyzer.waveform")}
+          </h3>
+          {waveformRate != null && <span data-testid="logic-analyzer-waveform-rate">
+            {t("logicAnalyzer.actualRate")}: {formatSampleRate(waveformRate)}
+          </span>}
+          {streamTimeline && <>
+            <Badge tone={streamSnapshot?.stopReason === "incomplete" ? "warn" : streaming ? "brand" : "neutral"}>
+              {t(streaming ? "logicAnalyzer.streaming" : streamSnapshot?.stopReason === "incomplete"
+                ? "logicAnalyzer.streamSnapshotIncomplete" : "logicAnalyzer.streamSnapshotReadOnly")}
+            </Badge>
+            {streamSnapshot && <span data-testid="logic-analyzer-stream-requested-rate">
+              {t("logicAnalyzer.requestedRate")}: {formatSampleRate(streamSnapshot.config.sampleRateHz)}
+            </span>}
+            <span>{formatSampleCount(streamSnapshot?.sampleCount ?? streamSampleCount)} {t("logicAnalyzer.samples")}</span>
+            {streamSnapshot && streamSnapshot.samples.length < streamSnapshot.sampleCount && <span>
+              {replaceTokens(t("logicAnalyzer.streamRetainedSamples"), { count: formatSampleCount(streamSnapshot.samples.length) })}
+            </span>}
+            <label className="inline-flex items-center gap-1">
+              <input type="checkbox" checked={streamFollow} disabled={streamWindow.len === 0} onChange={(event) => {
+                setFrozenStreamWindow(event.target.checked ? null : {
+                  start: streamWindow.firstSampleIndex + streamWindow.start,
+                  end: streamWindow.firstSampleIndex + streamWindow.end,
+                });
+              }} />
+              {t("logicAnalyzer.streamFollow")}
+            </label>
+            <select value={streamSpan} onChange={(event) => {
+              const span = Number(event.target.value);
+              setStreamSpan(span);
+              if (!streamFollow) {
+                const end = streamWindow.firstSampleIndex + streamWindow.end;
+                setFrozenStreamWindow({ start: Math.max(streamWindow.firstSampleIndex, end - span), end });
+              }
+            }} className="rounded border border-line bg-panel px-1 py-0.5 text-[10px] text-ink"
+              aria-label={t("logicAnalyzer.streamWindow")}>
+              {STREAM_SPAN_OPTIONS.map((spanOption) => <option key={spanOption} value={spanOption}>{formatSampleCount(spanOption)}</option>)}
+            </select>
+            {!streamFollow && streamMaxStart > 0 && <input type="range" min={0} max={streamMaxStart}
+              value={streamWindow.start}
+              onChange={(event) => {
+                const start = streamWindow.firstSampleIndex + Number(event.target.value);
+                setFrozenStreamWindow({ start, end: start + streamWindow.span });
+              }}
+              className="min-w-24 flex-1" aria-label={t("logicAnalyzer.streamWindow")} />}
+          </>}
+        </div>
+        {streamNotice && <p role="status" data-testid="logic-analyzer-stream-notice"
+          className={`mb-3 rounded-lg border px-3 py-2 text-xs leading-relaxed ${streamNotice.tone === "warn"
+            ? "border-warn/30 bg-warn/10 text-warn" : "border-brand/20 bg-brand/5 text-ink-dim"}`}>
+          {streamNotice.message}
+        </p>}
+        {streamTimeline && streamWindow.historyEvicted && <p role="status" data-testid="logic-analyzer-history-evicted"
+          className="mb-3 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
+          {t("logicAnalyzer.streamHistoryEvicted")}
+        </p>}
+        {(streamTimeline ? streamWaveformData : waveformData).length > 0 ? <>
+          <svg data-testid="logic-analyzer-waveform-plot" viewBox={`0 0 ${WIDTH} ${svgHeight}`}
+            data-sample-start={waveformSampleStart} data-sample-end={waveformSampleStart + waveformSampleCount}
+            className="block w-full rounded-lg border border-line/60 bg-panel"
+            style={{ height: `${svgHeight}px` }} preserveAspectRatio="none" role="img"
+            aria-label={t(streamSnapshot ? "logicAnalyzer.streamSnapshot" : streaming
+              ? "logicAnalyzer.streamWaveform" : "logicAnalyzer.decoder.waveformAria")}>
+            {annotationLayout.annotations.map((annotation, index) => {
+              const start = Math.max(0, annotation.startSample - waveformSampleStart);
+              const end = Math.min(waveformSampleCount, annotation.endSample - waveformSampleStart);
+              const x1 = waveformX(start, waveformSampleCount);
+              const width = Math.max(0.5, waveformX(end, waveformSampleCount) - x1);
+              const y = TOP_PADDING + annotation.lane * (ANNOTATION_HEIGHT + ANNOTATION_GAP);
+              const palette = annotationPalette(annotation.class);
+              const labelFits = width >= annotation.shortText.length * 5.5 + 10;
+              return <g key={`${annotation.row}-${annotation.startSample}-${annotation.endSample}-${index}`} data-logic-annotation="">
+                <rect x={x1} y={y} width={width} height={ANNOTATION_HEIGHT} rx={4} ry={4}
+                  fill={palette.fill} stroke={palette.stroke} />
+                <title>{annotation.longText}</title>
+                {labelFits && <text x={x1 + 4} y={y + 12} style={{ fill: palette.text }}
+                  className="text-[9px] font-medium">{annotation.shortText}</text>}
+              </g>;
+            })}
+            <StepWaveform channels={streamTimeline ? streamWaveformData : waveformData}
+              pinKeys={waveformPins} channelTop={channelTop} triggerLineX={triggerLineX} svgHeight={svgHeight} />
+          </svg>
+          <div className="mt-1 flex justify-between font-mono text-[9px] text-ink-dim">
+            <span>{formatDuration(waveformSampleStart, waveformRate ?? 1)}</span>
+            {!streamTimeline && <span>{t("logicAnalyzer.triggerPoint")}</span>}
+            <span>{formatDuration(waveformSampleStart + waveformSampleCount, waveformRate ?? 1)}</span>
+          </div>
+        </> : <p className="rounded-lg border border-dashed border-line/60 bg-panel px-3 py-8 text-center text-xs text-ink-dim">
+          {t(streaming ? "logicAnalyzer.waveformWaiting" : "logicAnalyzer.waveformEmpty")}
+        </p>}
+      </section>
+
+      <div data-testid="logic-analyzer-config-preview" className="mt-2 flex flex-wrap gap-4 text-[10px] text-ink-dim">
         <span>
-          {t("logicAnalyzer.actualRate")}: {formatSampleRate(actualRate)}
+          {t("logicAnalyzer.requestedRate")}: {formatSampleRate(configuredRate)}
         </span>
         <span>
           {t("logicAnalyzer.totalSamples")}: {formatSampleCount(totalSamples)}
         </span>
         <span>
-          {t("logicAnalyzer.duration")}: {formatDuration(totalSamples, actualRate)}
+          {t("logicAnalyzer.duration")}: {formatDuration(totalSamples, configuredRate)}
         </span>
         <span>
           {t("logicAnalyzer.maxSamples")}: {formatSampleCount(maxSamples)}
           <span className="ml-1 text-ink-dim/70">
-            ({formatDuration(maxSamples, actualRate)})
+            ({formatDuration(maxSamples, configuredRate)})
           </span>
         </span>
       </div>
-      )}
-      {workspaceMode === "capture" && (
       <details className="mt-2 rounded-xl border border-line/60 bg-panel2/25 px-3 py-2">
         <summary className="cursor-pointer text-[10px] font-medium text-ink-dim outline-none focus-visible:ring-2 focus-visible:ring-brand/30">
           {t("logicAnalyzer.capabilityDetails")}
@@ -1793,21 +1755,9 @@ export function LogicAnalyzerCard({
           </div>
         </div>
       </details>
-      )}
 
-      {workspaceMode === "capture" && streaming && (
-        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-brand/30 bg-brand/5 px-3 py-2 text-xs text-ink">
-          <Badge tone="brand">{t("logicAnalyzer.streaming")}</Badge>
-          <span>{formatSampleRate(actualRate)}</span>
-          <span>{formatSampleCount(streamSampleCount)} {t("logicAnalyzer.samples")}</span>
-          {error && (
-            <span className="text-danger">{error}</span>
-          )}
-        </div>
-      )}
-
-      {workspaceMode === "decode" && capture && capture.sampleCount > 0 && (
         <div className="mt-4">
+          {!streaming && capture && capture.sampleCount > 0 && <>
           <div className="mb-2 flex items-center gap-2 text-xs text-ink-dim">
             <Zap size={12} />
             <span>
@@ -1815,7 +1765,7 @@ export function LogicAnalyzerCard({
               {formatSampleCount(capture.sampleCount)} {t("logicAnalyzer.samples")} @{" "}
               {captureActualRate != null
                 ? formatSampleRate(captureActualRate)
-                : formatSampleRate(actualRate)}
+                : "—"}
             </span>
           </div>
 
@@ -1832,11 +1782,6 @@ export function LogicAnalyzerCard({
             )}
             {captureActualRate != null && (
               <span>
-                {t("logicAnalyzer.actualRate")}: {formatSampleRate(captureActualRate)}
-              </span>
-            )}
-            {captureActualRate != null && (
-              <span>
                 {t("logicAnalyzer.duration")}: {formatDuration(capture.sampleCount, captureActualRate)}
               </span>
             )}
@@ -1846,18 +1791,21 @@ export function LogicAnalyzerCard({
               </span>
             )}
           </div>
+          </>}
 
-          {state === "done" && (
-            <section className="mb-4 rounded-xl border border-line/60 bg-panel p-3">
+            <section data-testid="logic-analyzer-decoder" className="mb-4 rounded-xl border border-line/60 bg-panel p-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-xs font-medium text-ink">
                   <Binary size={14} className="text-brand" />
                   <span>{t("logicAnalyzer.decoder.title")}</span>
                 </div>
-                <Badge tone={decodeStatusTone}>{t(decodeStatusKey)}</Badge>
+                <Badge tone={streaming ? liveDecodeMessage ? "danger" : "brand" : streamSnapshot ? "neutral" : decodeStatusTone}>
+                  {t(streaming ? liveDecodeMessage ? "logicAnalyzer.decoder.status.error" : "logicAnalyzer.decoder.live"
+                    : streamSnapshot ? "logicAnalyzer.decoder.stopped" : decodeStatusKey)}
+                </Badge>
               </div>
 
-              <div className="mt-3 grid items-start gap-3 xl:grid-cols-[170px_minmax(0,1fr)]">
+              <fieldset disabled={controlsDisabled && !streaming} className="mt-3 grid min-w-0 items-start gap-3 xl:grid-cols-[170px_minmax(0,1fr)]">
               <div
                 role="tablist"
                 aria-label={t("logicAnalyzer.decoder.protocol")}
@@ -2063,7 +2011,7 @@ export function LogicAnalyzerCard({
                 <Button
                   type="button"
                   onClick={runDecode}
-                  disabled={decoderState.status === "loading" || decodePreparation.request == null}
+                  disabled={controlsDisabled || decoderState.status === "loading" || decodePreparation.request == null}
                 >
                   {decoderState.status === "loading" ? (
                     <Loader2 size={14} className="animate-spin" />
@@ -2082,6 +2030,16 @@ export function LogicAnalyzerCard({
               </div>
 
               <div aria-live="polite" className="mt-3 space-y-2">
+                {!decodeAvailable && !liveDecodeMessage && <p className="text-xs text-ink-dim">
+                  {t(streaming ? "logicAnalyzer.decoder.liveHint" : streamSnapshot
+                    ? "logicAnalyzer.decoder.streamStoppedHint" : "logicAnalyzer.decoder.captureRequired")}
+                </p>}
+                {streaming && localizedLiveDecodeError && (
+                  <div role="alert" data-testid="logic-analyzer-live-decode-error"
+                    className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+                    {localizedLiveDecodeError}
+                  </div>
+                )}
                 {decodeIsStale && (
                   <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
                     {t("logicAnalyzer.decoder.staleWarning")}
@@ -2127,9 +2085,8 @@ export function LogicAnalyzerCard({
                 )}
               </div>
               </div>
-              </div>
+              </fieldset>
             </section>
-          )}
 
           {decodeResult && (
             <div className="mt-3 grid gap-4 border-t border-line/50 pt-3 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -2181,7 +2138,6 @@ export function LogicAnalyzerCard({
             </div>
           )}
         </div>
-      )}
       </div>
     </Card>
   );

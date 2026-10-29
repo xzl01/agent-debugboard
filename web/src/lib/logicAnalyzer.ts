@@ -91,11 +91,13 @@ export const LOGIC_ANALYZER_SIGROK_DISABLED_PINS = [7, 8, 9] as const;
 export const LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS = [
   10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
 ] as const;
-const WEB_SIGROK_SUPPORTED_PINS = LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS;
-const WEB_SIGROK_SUPPORTED_PIN_SET = new Set<number>(WEB_SIGROK_SUPPORTED_PINS);
+// The Web picker is narrower than the hardware/transport allowlist. Keep
+// protocol normalization and WIDE11 capture metadata independent of this list.
+export const LOGIC_ANALYZER_WEB_CAPTURE_PINS = [12, 13, 14, 15, 16] as const;
+const SIGROK_SUPPORTED_PIN_SET = new Set<number>(LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS);
 const CAPTURE_AVAILABLE_PIN_SET = new Set<number>([
   ...LOGIC_ANALYZER_SIGROK_DISABLED_PINS,
-  ...WEB_SIGROK_SUPPORTED_PINS,
+  ...LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS,
 ]);
 
 function dedupeAndSortPins(pins: number[]): number[] {
@@ -384,7 +386,7 @@ function normalizeLogicAnalyzerSelectedPins(pins: number[]): number[] {
     pins.flatMap((pin) => {
       if (!Number.isFinite(pin)) return [];
       const normalizedPin = Math.trunc(pin);
-      return WEB_SIGROK_SUPPORTED_PIN_SET.has(normalizedPin) ? [normalizedPin] : [];
+      return SIGROK_SUPPORTED_PIN_SET.has(normalizedPin) ? [normalizedPin] : [];
     })
   );
 }
@@ -399,8 +401,8 @@ function normalizeCaptureSelectedPins(pins: number[]): number[] {
   );
 }
 
-export function isWebSigrokPinSupported(pin: number): boolean {
-  return WEB_SIGROK_SUPPORTED_PIN_SET.has(pin);
+export function isSigrokPinSupported(pin: number): boolean {
+  return SIGROK_SUPPORTED_PIN_SET.has(pin);
 }
 
 export function hasExactWide11PinSelection(pins: readonly number[]): boolean {
@@ -926,7 +928,7 @@ function normalizeLogicAnalyzerCaptureConfig(
   const selectedPins = config.selectedPins
     ? normalizeCaptureSelectedPins(config.selectedPins)
     : undefined;
-  const pinCountLimit = selectedPins?.length ?? AVAILABLE_PINS.length;
+  const pinCountLimit = selectedPins?.length ?? LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS.length;
   const pinCount = clampInteger(config.pinCount, 1, Math.max(1, pinCountLimit));
   const pinBase = selectedPins?.[0] ?? clampInteger(config.pinBase, 7, 29);
   const triggerPin =
@@ -1033,19 +1035,11 @@ export const DEFAULT_CONFIG: LogicAnalyzerConfig = {
   triggerPin: 0,
 };
 
-export const AVAILABLE_PINS = [
-  { pin: 10, name: "GP10" },
-  { pin: 11, name: "GP11" },
-  { pin: 12, name: "GP12" },
-  { pin: 13, name: "GP13" },
-  { pin: 14, name: "GP14" },
-  { pin: 15, name: "GP15" },
-  { pin: 16, name: "GP16" },
-  { pin: 17, name: "GP17" },
-  { pin: 18, name: "GP18" },
-  { pin: 19, name: "GP19" },
-  { pin: 20, name: "GP20" },
-];
+/** Selectable digital capture pins in the Web UI, not the sigrok allowlist. */
+export const AVAILABLE_PINS = LOGIC_ANALYZER_WEB_CAPTURE_PINS.map((pin) => ({
+  pin,
+  name: `GP${pin}`,
+}));
 
 export const SAMPLE_RATES = [
   { value: 100000, label: "100 kHz" },

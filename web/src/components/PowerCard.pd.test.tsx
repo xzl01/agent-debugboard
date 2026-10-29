@@ -1,4 +1,4 @@
-import { act, Profiler } from "react";
+import { act, Profiler, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LanguageProvider } from "@/lib/i18n";
@@ -8,13 +8,24 @@ import { PowerCard } from "./PowerCard";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const closeViews: (() => void)[] = [];
+type ControlProps = Partial<Pick<ComponentProps<typeof PowerCard>, "disabled" | "stale" | "onSetPd">>;
+const UNKNOWN_PD_WITH_CAPABILITIES: PdStatus = {
+  ...EMPTY_PD_STATUS,
+  available: true, pd: true, protocol: "pd", capabilities_valid: true,
+  fixed_profiles: [
+    { voltage_mv: 5000, max_current_ma: 3000 },
+    { voltage_mv: 9000, max_current_ma: 3000 },
+    { voltage_mv: 12000, max_current_ma: 2500 },
+  ],
+  pps_ranges: [{ min_voltage_mv: 3300, max_voltage_mv: 11000, step_mv: 100, max_current_ma: 3000 }],
+};
 
 function render(lang: "en" | "zh" = "en", pdOverrides: Partial<PdStatus> = {}, readings: readonly AdcReading[] = [
   { kind: "current", unit: "uA", name: "5v_out", signal: "INA226_5V", value: 300_000,
     power_enabled: false, voltage_valid: true, voltage_uv: 4_800_000 },
-]) {
+], controls: ControlProps = {}) {
   localStorage.setItem("lang", lang);
-  const onSetPd = vi.fn().mockResolvedValue(undefined);
+  const onSetPd = vi.fn(controls.onSetPd ?? (async () => {}));
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -28,6 +39,7 @@ function render(lang: "en" | "zh" = "en", pdOverrides: Partial<PdStatus> = {}, r
   act(() => root.render(
     <LanguageProvider>
       <PowerCard
+        {...controls}
         pd={pd} onSetPd={onSetPd} onSet={vi.fn()}
         outputs={["5v_out", "12v_out", "20v_out", "vdd_5v"].map((name) => ({ name, controllable: true, state: "off", value: 0 }))}
         readings={readings}
@@ -49,13 +61,20 @@ function typeValue(input: HTMLInputElement, value: string) {
   });
 }
 
+function selectValue(select: HTMLSelectElement, value: string) {
+  act(() => {
+    select.value = value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
 describe("PowerCard PD editing and real translated measurement copy", () => {
   afterEach(() => {
     closeViews.splice(0).forEach((close) => close());
     localStorage.clear();
   });
 
-  it.each([0, 1] as const)("keeps mode %s unknown until 20 V arrives, with no 5 V commit or startup write", (mode) => {
+  it.each([0, 1] as const)("keeps mode %s unknown and disabled without capabilities until 20 V arrives, with no 5 V commit or startup write", (mode) => {
     localStorage.setItem("lang", "en");
     const host = document.createElement("div");
     document.body.append(host);
@@ -71,6 +90,8 @@ describe("PowerCard PD editing and real translated measurement copy", () => {
     act(() => root.render(renderPd({ ...EMPTY_PD_STATUS, mode })));
     const initialEditor = host.querySelector<HTMLInputElement | HTMLSelectElement>('[aria-label="Requested voltage"], [aria-label="Requested voltage (mV)"]')!;
     expect(initialEditor.disabled).toBe(true);
+    expect(host.querySelector<HTMLSelectElement>('[aria-label="PD mode"]')?.disabled).toBe(true);
+    expect([...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Apply")?.disabled).toBe(true);
     expect(initialEditor.value).toBe(mode === 0 ? "0" : "");
     expect(host.querySelector('[data-testid="pd-live-status"]')?.textContent).toBe("Voltage not reported yet");
     act(() => root.render(renderPd({ ...EMPTY_PD_STATUS, available: true, pd: true, protocol: "pd", mode, voltage_mv: 20000,
@@ -82,6 +103,128 @@ describe("PowerCard PD editing and real translated measurement copy", () => {
     expect(frames[0].status).toBe("Voltage not reported yet");
     expect(frames.every((frame) => frame.value !== "5000" && !/requested 5\.0 V|^5 V/u.test(frame.status + frame.selection))).toBe(true);
     expect(onSetPd).not.toHaveBeenCalled();
+  });
+
+  it.each(["en", "zh"] as const)("allows an explicit fixed request from unknown voltage with valid source capabilities in %s", async (lang) => {
+    const view = render(lang, UNKNOWN_PD_WITH_CAPABILITIES, [{
+      kind: "voltage", unit: "uV", role: "pd_input", name: "adc0", signal: "GPIO26_ADC0", value: 11_660_000,
+    }]);
+    const mode = view.host.querySelector<HTMLSelectElement>(`[aria-label="${lang === "en" ? "PD mode" : "PD 模式"}"]`)!;
+    const voltage = view.host.querySelector<HTMLSelectElement>(`[aria-label="${lang === "en" ? "Requested voltage" : "请求电压"}"]`)!;
+    expect(view.host.textContent).toContain(lang === "en"
+      ? "Source supports fixed profiles: 5V/3000mA, 9V/3000mA, 12V/2500mA · PPS: 3.3–11V/3000mA"
+      : "电源支持固定档：5V/3000mA, 9V/3000mA, 12V/2500mA · PPS：3.3–11V/3000mA");
+    const unknownHint = lang === "en"
+      ? "Current requested voltage is unknown; select a voltage and apply it"
+      : "当前请求电压未知；请选择档位后应用";
+    expect(view.host.querySelector('[data-testid="pd-live-status"]')?.textContent).toBe(unknownHint);
+    expect(view.host.querySelector('[data-testid="pd-input-measurement"]')?.textContent).toContain("11.660 V");
+    expect(mode.disabled).toBe(false);
+    expect(voltage.disabled).toBe(false);
+    expect(voltage.value).toBe("0");
+    expect(voltage.selectedOptions[0].disabled).toBe(true);
+    expect(voltage.selectedOptions[0].textContent).toBe(lang === "en" ? "Current requested voltage is unknown" : "当前请求电压未知");
+    expect(view.apply.disabled).toBe(true);
+    act(() => view.apply.click());
+    expect(view.onSetPd).not.toHaveBeenCalled();
+
+    selectValue(voltage, "9000");
+    expect(view.apply.disabled).toBe(false);
+    expect(view.host.querySelector('[data-testid="pd-live-status"]')?.textContent).toBe(unknownHint);
+    expect(view.onSetPd).not.toHaveBeenCalled();
+    await act(async () => view.apply.click());
+    expect(view.onSetPd).toHaveBeenCalledExactlyOnceWith(0, 9000);
+  });
+
+  it("allows switching from unknown voltage to a PPS draft without submitting it", async () => {
+    const view = render("en", UNKNOWN_PD_WITH_CAPABILITIES);
+    const mode = view.host.querySelector<HTMLSelectElement>('[aria-label="PD mode"]')!;
+    expect(mode.disabled).toBe(false);
+    expect(view.onSetPd).not.toHaveBeenCalled();
+    selectValue(mode, "1");
+    const input = view.host.querySelector<HTMLInputElement>('input[type="number"]')!;
+    expect(input.disabled).toBe(false);
+    expect(input.value).toBe("3300");
+    expect(view.onSetPd).not.toHaveBeenCalled();
+    typeValue(input, "9001");
+    expect(view.apply.disabled).toBe(true);
+    act(() => view.apply.click());
+    expect(view.onSetPd).not.toHaveBeenCalled();
+    typeValue(input, "9000");
+    expect(view.apply.disabled).toBe(false);
+    expect(view.onSetPd).not.toHaveBeenCalled();
+    await act(async () => view.apply.click());
+    expect(view.onSetPd).toHaveBeenCalledExactlyOnceWith(1, 9000);
+  });
+
+  it.each([0, 1] as const)("preserves unsupported mode %s until the user switches to the only supported mode", async (unsupportedMode) => {
+    const supportedMode = unsupportedMode === 0 ? 1 : 0;
+    const view = render("en", {
+      ...UNKNOWN_PD_WITH_CAPABILITIES,
+      mode: unsupportedMode,
+      fixed_profiles: unsupportedMode === 0 ? [] : UNKNOWN_PD_WITH_CAPABILITIES.fixed_profiles,
+      pps_ranges: unsupportedMode === 1 ? [] : UNKNOWN_PD_WITH_CAPABILITIES.pps_ranges,
+    });
+    const mode = view.host.querySelector<HTMLSelectElement>('[aria-label="PD mode"]')!;
+    expect(mode.value).toBe(String(unsupportedMode));
+    expect(mode.selectedOptions[0].disabled).toBe(true);
+    expect(mode.querySelector<HTMLOptionElement>(`option[value="${supportedMode}"]`)?.disabled).toBe(false);
+    expect(mode.disabled).toBe(false);
+    const initialEditor = view.host.querySelector<HTMLInputElement | HTMLSelectElement>(unsupportedMode === 0
+      ? 'select[aria-label="Requested voltage"]' : 'input[aria-label="Requested voltage (mV)"]')!;
+    expect(initialEditor.disabled).toBe(true);
+    expect(view.apply.disabled).toBe(true);
+    expect(view.onSetPd).not.toHaveBeenCalled();
+
+    selectValue(mode, String(supportedMode));
+    expect(mode.value).toBe(String(supportedMode));
+    const editor = view.host.querySelector<HTMLInputElement | HTMLSelectElement>(supportedMode === 0
+      ? 'select[aria-label="Requested voltage"]' : 'input[aria-label="Requested voltage (mV)"]')!;
+    expect(editor.disabled).toBe(false);
+    expect(editor.value).toBe(supportedMode === 0 ? "0" : "3300");
+    expect(view.onSetPd).not.toHaveBeenCalled();
+    if (editor instanceof HTMLSelectElement) selectValue(editor, "9000");
+    else typeValue(editor, "9000");
+    expect(view.apply.disabled).toBe(false);
+    expect(view.onSetPd).not.toHaveBeenCalled();
+    await act(async () => view.apply.click());
+    expect(view.onSetPd).toHaveBeenCalledExactlyOnceWith(supportedMode, 9000);
+  });
+
+  it.each([
+    ["invalid capabilities", { capabilities_valid: false }, {}],
+    ["empty capabilities", { fixed_profiles: [], pps_ranges: [] }, {}],
+    ["unavailable PD", { available: false }, {}],
+    ["non-PD source", { pd: false }, {}],
+    ["PD error", { last_error: -5 }, {}],
+    ["stale data", {}, { stale: true }],
+    ["external disable", {}, { disabled: true }],
+  ] as const)("keeps both PD modes read-only with %s even when a voltage is known", (_reason, pdOverrides, controls) => {
+    for (const mode of [0, 1] as const) {
+      const view = render("en", { ...UNKNOWN_PD_WITH_CAPABILITIES, mode, voltage_mv: 9000, ...pdOverrides }, [], controls);
+      expect(view.host.querySelector<HTMLSelectElement>('[aria-label="PD mode"]')?.disabled).toBe(true);
+      expect(view.host.querySelector<HTMLInputElement | HTMLSelectElement>('[aria-label="Requested voltage"], [aria-label="Requested voltage (mV)"]')?.disabled).toBe(true);
+      expect(view.apply.disabled).toBe(true);
+      act(() => view.apply.click());
+      expect(view.onSetPd).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([0, 1] as const)("disables mode %s controls while an explicit request is pending", async (mode) => {
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    const view = render("en", { ...UNKNOWN_PD_WITH_CAPABILITIES, mode }, [], { onSetPd: () => pending });
+    const editor = view.host.querySelector<HTMLInputElement | HTMLSelectElement>('[aria-label="Requested voltage"], [aria-label="Requested voltage (mV)"]')!;
+    if (editor instanceof HTMLSelectElement) selectValue(editor, "9000");
+    else typeValue(editor, "9000");
+    await act(async () => view.apply.click());
+    expect(view.host.querySelector<HTMLSelectElement>('[aria-label="PD mode"]')?.disabled).toBe(true);
+    expect(editor.disabled).toBe(true);
+    expect(view.apply.disabled).toBe(true);
+    act(() => view.apply.click());
+    expect(view.onSetPd).toHaveBeenCalledExactlyOnceWith(mode, 9000);
+    await act(async () => finish());
+    expect(editor.disabled).toBe(false);
   });
 
   it("keeps each PPS draft keystroke and submits a valid millivolt value", async () => {

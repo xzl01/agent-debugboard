@@ -27,8 +27,12 @@ NCM IPv4 address for `BOARD_IPV4`.
 | FAST8 | GP10-GP17 | 8-channel capture |
 | WIDE11 | GP10-GP20 | 11-channel capture; GP29 excluded from LA (ADC3 voltage monitor; ADC3-owned and input-only) |
 
-GP7-GP9 and GP29 are not available in Sigrok modes. The Web UI sigrok pin
-selection is limited to GP10-GP20; GP29 stays in the persisted/safe catalog but is ADC3-owned and input-only on this firmware (ADC3 voltage monitor).
+GP7-GP9 and GP29 are not available in the current Sigrok modes. Native Sigrok
+still exposes the FAST8/WIDE11 physical ranges above. The Web UI temporarily
+limits its selectable channels to GP12-GP16; ADC1-ADC3 digital capture and the
+planned BOARD8 catalog are not implemented. A Web selection inside GP12-GP16
+can still use a physical FAST8 lane that includes GP10/GP11, so J4 remains
+paused while that capture or stream owns the lane.
 
 FAST8 and WIDE11 include GP10/GP11, and SINGLE includes GP10; these are the J4
 UART1 TX/RX pins. While a capture owns those pins, PIO2 drives the capture
@@ -420,18 +424,23 @@ WebSocket binary protocol. The workflow:
 2. Connect to returned `/api/v1/ws/<slot>` WebSocket URL
 3. Speak sigrok binary protocol over the WebSocket
 
-The logic analyzer is available in the Web UI under the **Terminal workspace**,
-alongside the serial terminal. Captured samples can be decoded in the browser using
-the project-owned Rust/WASM logic decoder: the stable decoder URLs are
+The logic analyzer has its own **Logic Analyzer workspace** in the Web UI. A
+single timeline displays bounded captures or live Stream data, with protocol
+annotations aligned to the same sample axis. Samples are decoded in the browser
+using the project-owned Rust/WASM logic decoder; the stable decoder URLs are
 `/assets/decoder/logic-decoder.js` and `/assets/decoder/logic-decoder_bg.wasm`,
 served with `application/wasm` MIME for the WASM asset and gzip-compressed.
 
 The decoder supports UART, I2C, and SPI protocols only; it is not a
 libsigrokdecode Python plugin compatibility layer.
 
-Completed captures can be previewed in the waveform view and exported as CSV or
-PulseView `.sr` files. The browser decoder operates on completed bounded captures
-only, not on stream data.
+Completed bounded captures can be previewed and exported as CSV or PulseView
+`.sr` files. Stream data uses the same waveform view and a bounded visible
+window for live decoding. At rates up to 25 MHz Stream is the rolling path. At
+supported 100/125 MHz combinations with `GENERIC_PACKED_BURST`, Stream is one
+capacity-bounded CONFIG v1 `post=0` burst and stops
+when the 100000-sample device buffer fills; the Web UI retains that final data
+as a read-only Stream snapshot rather than presenting it as a bounded capture.
 
 ## Native Sigrok Integration
 

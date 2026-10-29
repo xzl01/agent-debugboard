@@ -11,7 +11,8 @@ vi.mock("@/lib/i18n", () => ({ useI18n: () => ({
   t: (key: string, values?: Record<string, unknown>) => key === "serial.autoResponder" ? `Auto replies: ${values?.responder}` : key,
 }) }));
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
-  options: Record<string, unknown>; rows = 24;
+  options: Record<string, unknown>; cols = 80; rows = 24;
+  resize = vi.fn((cols: number, rows: number) => { this.cols = cols; this.rows = rows; });
   modes = { bracketedPasteMode: false };
   decoder = new TextDecoder(); escape = ""; rendered = ""; ansiCommands: string[] = [];
   queryInputDisabled: boolean[] = [];
@@ -105,13 +106,16 @@ let root: Root | null;
 let host: HTMLDivElement;
 let fetchMock: ReturnType<typeof vi.fn<(url: string, init?: RequestInit) => Promise<Response>>>;
 let sessions: J4SerialSession[];
+let fontsDescriptor: PropertyDescriptor | undefined;
+let rootFontFamily: string | undefined;
+let resizeObservers: { callback: ResizeObserverCallback; disconnect: ReturnType<typeof vi.fn> }[];
 // TextEncoder is Node-provided in jsdom; model a browser-realm WS ArrayBuffer.
 function rxBuffer(text: string) { return Uint8Array.from(new TextEncoder().encode(text)).buffer; }
 async function flush() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); }); }
-async function mount() {
+async function mount(fillHeight = true) {
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   const session = new J4SerialSession(); sessions.push(session);
-  act(() => root!.render(<SerialTerminalPane session={session} fillHeight />));
+  act(() => root!.render(<SerialTerminalPane session={session} fillHeight={fillHeight} />));
   await flush(); return session;
 }
 async function connect(session: J4SerialSession, reported = state()) {
@@ -120,10 +124,41 @@ async function connect(session: J4SerialSession, reported = state()) {
   act(() => { socket.readyState = 1; socket.onopen?.(); socket.frame({ type: "serial_state", ...reported }); });
   return socket;
 }
+function controlFrames() {
+  const frames = new Map<number, FrameRequestCallback>();
+  let id = 0;
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.set(++id, callback); return id; });
+  vi.stubGlobal("cancelAnimationFrame", (frame: number) => { frames.delete(frame); });
+  return {
+    frames,
+    nextFrame: () => act(() => {
+      const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach((callback) => callback(0));
+    }),
+  };
+}
+function pendingFonts() {
+  let resolve!: () => void;
+  const ready = new Promise<void>((done) => { resolve = done; });
+  Object.defineProperty(document, "fonts", { configurable: true, value: {
+    status: "loading", ready, load: vi.fn(() => ready.then(() => [])),
+  } });
+  return resolve;
+}
 beforeEach(() => {
   xterm.terminals = []; xterm.addons = []; xterm.delay = "none"; Socket.instances = []; sessions = []; vi.clearAllMocks(); root = null;
+  fontsDescriptor = Object.getOwnPropertyDescriptor(document, "fonts");
+  rootFontFamily = document.documentElement.dataset.terminalFontFamily;
+  resizeObservers = [];
+  const boundingRect = HTMLElement.prototype.getBoundingClientRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (!this.classList.contains("terminal-host")) return boundingRect.call(this);
+    return this.closest("[hidden]") ? new DOMRect() : new DOMRect(0, 0, 1056, 688);
+  });
   vi.stubGlobal("WebSocket", Socket);
-  vi.stubGlobal("ResizeObserver", class { observe = vi.fn(); disconnect = vi.fn(); });
+  vi.stubGlobal("ResizeObserver", class {
+    observe = vi.fn(); disconnect = vi.fn();
+    constructor(public callback: ResizeObserverCallback) { resizeObservers.push(this); }
+  });
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0));
   vi.stubGlobal("cancelAnimationFrame", clearTimeout);
   let id = 0;
@@ -133,7 +168,12 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
 });
 afterEach(async () => {
-  act(() => root?.unmount()); host?.remove(); await Promise.all(sessions.map((session) => session.disconnect())); vi.unstubAllGlobals();
+  act(() => root?.unmount()); host?.remove(); await Promise.all(sessions.map((session) => session.disconnect()));
+  if (fontsDescriptor) Object.defineProperty(document, "fonts", fontsDescriptor);
+  else Reflect.deleteProperty(document, "fonts");
+  if (rootFontFamily === undefined) delete document.documentElement.dataset.terminalFontFamily;
+  else document.documentElement.dataset.terminalFontFamily = rootFontFamily;
+  vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 
 describe("J4 xterm surface", () => {
@@ -229,16 +269,175 @@ describe("J4 xterm surface", () => {
 
   it("stays offline until requested and preserves fit, accessible terminal and touch targets", async () => {
     await mount();
+    await flush();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(host.querySelector('[role="application"]')?.getAttribute("aria-label")).toBe("J4 serial.terminalAria");
     expect(xterm.fit).toHaveBeenCalled();
     expect(xterm.terminals[0].options.screenReaderMode).toBe(true);
+    expect(xterm.terminals[0].options.windowOptions).toEqual({ getWinSizeChars: true });
     expect(xterm.terminals[0].options.disableStdin).toBe(true);
     expect([...host.querySelectorAll('button[aria-label]')].every((button) => button.className.includes("h-10"))).toBe(true);
     expect(host.querySelectorAll('[role="application"]')).toHaveLength(1);
     expect(host.querySelector('[data-testid="terminal-engine"]')?.textContent).toBe("xterm.js · MCU UART");
     expect(xterm.terminals[0].open).toHaveBeenCalledWith(host.querySelector('[role="application"]'));
     expect(host.textContent).toContain("serial.connectToInput");
+  });
+
+  it("defers the initial local fit until the layout frame after opening xterm", async () => {
+    const frames = controlFrames();
+    await mount();
+    expect(xterm.terminals[0].open).toHaveBeenCalledTimes(1);
+    expect(xterm.fit).not.toHaveBeenCalled();
+    frames.nextFrame();
+    expect(xterm.fit).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("keeps frame padding outside the xterm measurement host with fillHeight=%s", async (fillHeight) => {
+    await mount(fillHeight);
+    const frame = host.querySelector('[data-testid="serial-terminal-frame"]')!;
+    const mountPoint = host.querySelector('[role="application"]')!;
+    expect(mountPoint.parentElement).toBe(frame);
+    expect(frame.classList.contains("p-2")).toBe(true);
+    expect(mountPoint.classList.contains("p-2")).toBe(false);
+    expect(mountPoint.classList.contains("h-full")).toBe(true);
+    expect(mountPoint.classList.contains("w-full")).toBe(true);
+    expect(frame.className).toContain(fillHeight ? "min-h-[360px] flex-1" : "h-[clamp(400px,62vh,760px)] shrink-0");
+    expect(xterm.terminals[0].open).toHaveBeenCalledWith(mountPoint);
+  });
+
+  it("coalesces window, observer, fullscreen and font-size fits without sending a remote resize", async () => {
+    const frames = controlFrames();
+    const session = await mount(); const socket = await connect(session);
+    frames.nextFrame(); xterm.fit.mockClear();
+    const sent = [...socket.sent]; const requests = fetchMock.mock.calls.length;
+    const observer = resizeObservers.at(-1)!;
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+      window.dispatchEvent(new Event("resize"));
+      window.dispatchEvent(new Event("resize"));
+      observer.callback([], observer as unknown as ResizeObserver);
+      document.dispatchEvent(new Event("fullscreenchange"));
+      (host.querySelector('button[aria-label="J4 serial.fontUp"]') as HTMLButtonElement).click();
+    });
+    expect(xterm.fit).not.toHaveBeenCalled();
+    frames.nextFrame();
+    expect(xterm.fit).toHaveBeenCalledTimes(1);
+    expect(xterm.terminals.at(-1)!.options.fontSize).toBe(14);
+    expect(socket.sent).toEqual(sent);
+    expect(fetchMock).toHaveBeenCalledTimes(requests);
+  });
+
+  it("waits for initial font loading before creating or measuring the renderer", async () => {
+    const frames = controlFrames(); const fontsReady = pendingFonts();
+    await mount(); frames.nextFrame();
+    expect(document.fonts.load).toHaveBeenCalledWith(expect.stringContaining("13px "), "W");
+    expect(xterm.terminals).toHaveLength(0);
+    expect(xterm.fit).not.toHaveBeenCalled();
+    await act(async () => { fontsReady(); await Promise.resolve(); });
+    expect(xterm.terminals).toHaveLength(1);
+    expect(xterm.fit).not.toHaveBeenCalled();
+    frames.nextFrame();
+    expect(xterm.fit).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the fallback renderer when a requested font is missing", async () => {
+    const frames = controlFrames();
+    Object.defineProperty(document, "fonts", { configurable: true, value: {
+      status: "loading", load: vi.fn().mockRejectedValue(new Error("font unavailable")), ready: Promise.resolve(),
+    } });
+    await mount(); frames.nextFrame();
+    expect(xterm.terminals).toHaveLength(1);
+    expect(xterm.fit).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a font-ready completion after unmount before renderer creation", async () => {
+    const frames = controlFrames(); const fontsReady = pendingFonts();
+    await mount();
+    act(() => root!.unmount()); root = null;
+    await act(async () => { fontsReady(); await Promise.resolve(); });
+    frames.nextFrame();
+    expect(xterm.terminals).toHaveLength(0);
+    expect(xterm.fit).not.toHaveBeenCalled();
+  });
+
+  it("opens only the latest generation after font waiting and preserves its queued RX", async () => {
+    const frames = controlFrames(); const fontsReady = pendingFonts();
+    const session = await mount(); const socket = await connect(session);
+    act(() => {
+      socket.onmessage?.({ data: rxBuffer("OLD") });
+      socket.frame({ type: "serial_state", ...state({ generation: 2 }) });
+      socket.onmessage?.({ data: rxBuffer("NEW") });
+    });
+    expect(xterm.terminals).toHaveLength(0);
+    await act(async () => { fontsReady(); await Promise.resolve(); });
+    expect(xterm.terminals).toHaveLength(1);
+    frames.nextFrame(); frames.nextFrame();
+    expect(xterm.terminals[0].rendered).toBe("NEW");
+    expect(socket.sent).toHaveLength(1); // Subscription only.
+  });
+
+  it("preserves a responder-promotion fence and queued RX while initial fonts are pending", async () => {
+    const frames = controlFrames(); const fontsReady = pendingFonts();
+    const session = await mount(); const socket = await connect(session, state({ terminal_responder: false }));
+    act(() => {
+      socket.onmessage?.({ data: rxBuffer("OLD\u001b[6n") });
+      socket.frame({ type: "serial_state", ...state({ terminal_responder: true }) });
+      socket.onmessage?.({ data: rxBuffer("NEW") });
+    });
+    await act(async () => { fontsReady(); await Promise.resolve(); });
+    const term = xterm.terminals.at(-1)!;
+    expect(term.options.disableStdin).toBe(true);
+    frames.nextFrame(); frames.nextFrame(); frames.nextFrame();
+    expect(term.rendered).toBe("OLDNEW");
+    expect(term.queryInputDisabled).toEqual([true]);
+    expect(term.options.disableStdin).toBe(false);
+    expect(socket.sent).toHaveLength(1); // The cached query must never be replayed as TX.
+    act(() => socket.onmessage?.({ data: rxBuffer("\u001b[6n") }));
+    frames.nextFrame();
+    expect(socket.sent).toHaveLength(2);
+    expect([...(socket.sent[1] as Uint8Array)]).toEqual([...new TextEncoder().encode("\u001b[1;1R")]);
+  });
+
+  it("refits when a hidden browser tab becomes visible", async () => {
+    const frames = controlFrames();
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    await mount(); frames.nextFrame();
+    expect(xterm.fit).not.toHaveBeenCalled();
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect(frames.frames.size).toBe(0);
+    visibility.mockReturnValue("visible");
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect(xterm.fit).not.toHaveBeenCalled();
+    frames.nextFrame();
+    expect(xterm.fit).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels queued fit and ignores late fonts, observer and layout events after cleanup", async () => {
+    const frames = controlFrames();
+    await mount(); frames.nextFrame(); xterm.fit.mockClear();
+    const fontsReady = pendingFonts();
+    act(() => { document.documentElement.dataset.terminalFontFamily = "Delayed cleanup font, monospace"; });
+    await flush();
+    const observer = resizeObservers.at(-1)!;
+    act(() => window.dispatchEvent(new Event("resize")));
+    const staleCallbacks = [...frames.frames.values()];
+    expect(staleCallbacks).toHaveLength(1);
+    act(() => root!.unmount()); root = null;
+    expect(frames.frames.size).toBe(0);
+    expect(observer.disconnect).toHaveBeenCalledTimes(1);
+    expect(xterm.addons.at(-1)!.dispose).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      staleCallbacks.forEach((callback) => callback(0));
+      fontsReady(); await Promise.resolve();
+      observer.callback([], observer as unknown as ResizeObserver);
+      window.dispatchEvent(new Event("resize"));
+      document.dispatchEvent(new Event("fullscreenchange"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(frames.frames.size).toBe(0);
+    frames.nextFrame();
+    expect(xterm.fit).not.toHaveBeenCalled();
   });
 
   it("keeps the same xterm canvas and engine label visible after disconnect", async () => {

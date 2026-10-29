@@ -12,6 +12,7 @@ import {
   LOGIC_ANALYZER_MIN_SAMPLE_RATE_HZ,
   LOGIC_ANALYZER_SAMPLE_RATES_HZ,
   LOGIC_ANALYZER_SIGROK_DISABLED_PINS,
+  LOGIC_ANALYZER_WEB_CAPTURE_PINS,
   LOGIC_ANALYZER_WEB_STREAM_MAX_SAMPLE_RATE_HZ,
   SAMPLE_RATES,
   assembleBoundedSigrokCapture,
@@ -32,7 +33,7 @@ import {
   getLogicAnalyzerUnsupportedRateReason,
   hasExactWide11PinSelection,
   isFast8PhysicalSpanSelection,
-  isWebSigrokPinSupported,
+  isSigrokPinSupported,
   mapSigrokLogicalChannel,
   normalizeLogicAnalyzerCapture,
   normalizeLogicAnalyzerConfig,
@@ -871,7 +872,7 @@ test("classifies exact device-capacity stop, 99999 unexpected stop, and manual s
   );
 });
 
-test("filters unsupported Web sigrok pins without reintroducing a default selection", () => {
+test("filters unsupported sigrok hardware pins without reintroducing a default selection", () => {
   const config = normalizeLogicAnalyzerConfig({
     ...DEFAULT_CONFIG,
     selectedPins: [4, 7, 8, 9, 21, 28],
@@ -890,16 +891,25 @@ test("normalizes stale configs with out-of-range sample rates before use", () =>
   assert.equal(config.sampleRateHz, LOGIC_ANALYZER_MIN_SAMPLE_RATE_HZ);
 });
 
-test("publishes the Web sigrok pin allowlist and disabled pins", () => {
+test("limits the Web picker to five digital pins without narrowing the sigrok hardware allowlist", () => {
+  assert.deepEqual(LOGIC_ANALYZER_WEB_CAPTURE_PINS, [12, 13, 14, 15, 16]);
   assert.deepEqual(
     AVAILABLE_PINS.map((pin) => pin.pin),
+    [12, 13, 14, 15, 16]
+  );
+  assert.deepEqual(DEFAULT_CONFIG.selectedPins, [13]);
+  assert.deepEqual(
+    LOGIC_ANALYZER_CONFIG_V2_EXACT_WIDE11_PINS,
     [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
   );
   assert.deepEqual(LOGIC_ANALYZER_SIGROK_DISABLED_PINS, [7, 8, 9]);
-  assert.equal(isWebSigrokPinSupported(10), true);
-  assert.equal(isWebSigrokPinSupported(29), false);
-  assert.equal(isWebSigrokPinSupported(7), false);
-  assert.equal(isWebSigrokPinSupported(9), false);
+  for (const pin of [10, 11, 17, 18, 19, 20]) {
+    assert.equal(AVAILABLE_PINS.some((entry) => Number(entry.pin) === pin), false);
+    assert.equal(isSigrokPinSupported(pin), true);
+  }
+  for (const pin of [7, 8, 9, 27, 28, 29]) {
+    assert.equal(isSigrokPinSupported(pin), false);
+  }
   assert.equal(LOGIC_ANALYZER_WEB_STREAM_MAX_SAMPLE_RATE_HZ, 25000000);
 });
 
@@ -983,6 +993,20 @@ test("normalizes capture payload bounds and unsafe pin metadata", () => {
   assert.equal(capture.sampleCount, 520);
   assert.equal(capture.triggerIndex, 519);
   assert.equal(capture.samples.length, 520);
+});
+
+test("keeps all WIDE11 channels when capture metadata omits explicit pins", () => {
+  const capture = normalizeLogicAnalyzerCapture({
+    state: "done",
+    config: { pinCount: 11, pinBase: 10, sampleRateHz: 1000000 },
+    sampleCount: 1,
+    triggerIndex: 0,
+    samples: [{ timestampUs: 0, values: 0x7ff }],
+  });
+
+  assert.equal(capture.config.pinCount, 11);
+  assert.equal(capture.config.pinBase, 10);
+  assert.equal(capture.samples[0].values, 0x7ff);
 });
 
 test("reads API errors from either the root message or error.message", () => {

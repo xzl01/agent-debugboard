@@ -41,7 +41,40 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-async function request<T = unknown>(path: string, init?: RequestInit, acknowledgeStatus?: number): Promise<T> {
+// Only short status/ADC reads opt into this total (headers + body) deadline.
+// PD discovery, mutations, lifecycle operations and the separate OTA/task/blob
+// clients retain their existing operation-specific lifetime, not a short cap.
+export const BOARD_READ_TIMEOUT_MS = 10_000;
+
+async function request<T = unknown>(path: string, init?: RequestInit, acknowledgeStatus?: number, timeoutMs?: number): Promise<T> {
+  if (timeoutMs === undefined) return fetchJson<T>(path, init, acknowledgeStatus);
+
+  const callerSignal = init?.signal;
+  callerSignal?.throwIfAborted();
+  const controller = new AbortController();
+  let rejectAborted!: (reason: unknown) => void;
+  const aborted = new Promise<never>((_, reject) => { rejectAborted = reject; });
+  const abort = (reason: unknown) => {
+    // Reject independently of fetch/body cancellation: even a transport that
+    // fails to settle on abort must not permanently stop completion-based polls.
+    rejectAborted(reason);
+    controller.abort(reason);
+  };
+  const onCallerAbort = () => abort(callerSignal?.reason);
+  callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+  const timer = setTimeout(() => abort(new BoardApiError("Board API request timed out.", "timeout")), timeoutMs);
+  try {
+    return await Promise.race([
+      fetchJson<T>(path, { ...init, signal: controller.signal }, acknowledgeStatus),
+      aborted,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", onCallerAbort);
+  }
+}
+
+async function fetchJson<T>(path: string, init?: RequestInit, acknowledgeStatus?: number): Promise<T> {
   let res: Response;
   try {
     res = await fetch(BASE + path, {
@@ -108,10 +141,10 @@ export function liveWebSocketUrl(path: string): string {
 
 export const apiEndpoint = () => BASE;
 
-export const getStatus = () => request("/status");
+export const getStatus = (signal?: AbortSignal) => request("/status", { signal }, undefined, BOARD_READ_TIMEOUT_MS);
 export const getGpioLayout = async (signal?: AbortSignal) =>
   parseGpioPhysicalLayout(await request("/gpio/layout", { signal }));
-export const getAdc = () => request("/adc/read");
+export const getAdc = (signal?: AbortSignal) => request("/adc/read", { signal }, undefined, BOARD_READ_TIMEOUT_MS);
 export const getPd = () => request("/pd");
 export const setPd = (mode: 0 | 1, voltageMv: number) =>
   request("/pd", {

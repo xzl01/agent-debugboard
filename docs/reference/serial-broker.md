@@ -132,7 +132,8 @@ answer terminal queries. A descriptor never identifies the receiving browser by
 itself, and DTR forces these Web automatic replies off without disabling manual
 input.
 
-Non-selected Web clients suppress xterm's internal DSR/DA/CPR generation. Their
+Non-selected Web clients suppress xterm's internal DSR/DA/CPR and window-size
+report generation. Their
 explicit keyboard input, IME composition, and paste still send exactly once
 through the manual path. The terminal UI therefore labels them **Auto-reply
 observer** and **Manual input allowed**, not read-only.
@@ -161,6 +162,61 @@ The finite 2026-10-21 board matrix used a controlled target tty:
 These rows are bounded functional evidence for terminal query handling, not a
 claim that every possible terminal escape sequence or multi-client race was
 exhaustively tested.
+
+## Local terminal size
+
+The Web UI fits its local xterm after layout/font readiness and on container,
+window, fullscreen, font-size, or tab-visibility changes. Fit requests are
+coalesced into an animation frame and canceled when the renderer is disposed.
+Visual padding is on an outer frame; xterm mounts in an unpadded inner content
+area so addon-fit 0.11.0 does not count the frame's padding as extra cells.
+Fit also requires a nonzero layout box. When an App workspace hides an ancestor
+while the browser document remains visible, no fit runs and the previous rows,
+columns and alternate-screen contents are retained. ResizeObserver or a visible
+document event schedules a new fit after the layout returns.
+
+When the FontFaceSet API is available, the terminal requests its selected font
+and waits for initial loading to settle **before creating/opening xterm**, so
+the first glyph measurement does not cache a temporary fallback width. Missing
+fonts fall back to the configured font stack; without that API rendering starts
+normally. Font-family and font-size requests share the fit scheduler: hidden
+layouts only retain the latest request. Once that font is ready and a nonzero
+layout exists, the scheduler applies both public options before fitting, without
+recreating the parser or clearing its buffers. Older font promises cannot replace
+a newer request. An
+initially hidden DOM renderer's invalid zero-size glyph cache is remeasured via
+public same-size `Terminal.resize` before fit. Disposed/superseded renderer epochs
+cannot be created by late font completions. RX queue limits and responder
+promotion fences are unchanged.
+This changes only the local terminal's rows and columns. Like picocom/raw UART,
+the transport does not automatically push browser dimensions to the target tty
+through `TIOCSWINSZ`. Raw UART does support **in-band terminal size queries**;
+no PTY resize message is needed for these probes:
+
+- Standard xterm/BusyBox `resize` saves the cursor (`ESC 7`), resets the scroll
+  region (`CSI r`), moves beyond the bottom-right corner (`CSI 999;999 H` or
+  `CSI 9999;9999 H`), requests cursor position (`CSI 6 n`), then restores the
+  cursor (`ESC 8`). After a successful local fit to 132 columns × 43 rows, the
+  selected Web responder returns CPR `ESC[43;132R`.
+  A DA query is `CSI c` (`ESC[c`), not `ESC c` (RIS, a terminal reset).
+- The character-size query used by `resize -s`, `CSI 18 t`, returns
+  `ESC[8;43;132t` at the same size. The pinned xterm 6.0.0 defaults to
+  `windowOptions: {}`, which suppresses this query. The Web terminal enables
+  **only** `windowOptions: { getWinSizeChars: true }`; `setWinSizeChars` and all
+  other window operations stay disabled.
+
+These replies report the xterm's current fitted dimensions, including after a
+later fit or local terminal resize. A fit alone sends no UART bytes. A target
+utility can obtain the size through the queries and apply it to its own tty;
+local fitting is not itself an update to the target's `stty size`.
+
+The Web slot must be selected for automatic replies, DTR must be false, and
+normal input admission must be available. Observer slots send neither CPR nor
+the `CSI 18 t` reply; with CDC DTR asserted, CDC owns automatic responses and
+this browser's dimensions are not authoritative. Automation, backpressure,
+non-ready/read-only/configuring states and the responder-promotion fence retain
+their existing suppression rules. This change does not bypass those gates or
+retry an inhibited query automatically.
 
 ## Configuration API
 
@@ -234,6 +290,10 @@ owned pin, firmware freezes new serial admission and waits for an active UART TX
 to reach physical wire-complete. The wait is bounded; queued source messages are
 canceled rather than falsely completed. It then advances sink epochs and pauses
 J4 before changing the pin mux.
+
+The current FAST8 physical span is GP10–GP17, not only the selected logical
+channels. Selecting just GP12–GP16 in the temporarily narrowed Web picker still
+takes GP10/GP11 and pauses J4; the UI restriction is not UART isolation.
 
 While PAUSED, raw TCP stops destructive socket reads and applies TCP
 backpressure. WS payloads receive an explicit `serial_paused` error; the WS and

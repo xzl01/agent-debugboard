@@ -101,6 +101,17 @@ x1.2 has no `switch/usb` item. `GET /api/v1/switch/usb` returns HTTP 404;
 do not retry that non-existent endpoint. Read `GET /api/v1/switch` or
 `radxa-linkr-debuggerctl switch list` for the current catalog instead.
 
+## Web vdd_5v control is read-only or rejects a confirmed change
+
+The header and hardware drawer share the same vdd_5v action. Both require a
+current power snapshot and one confirmation, and stay pending together until the
+request finishes. If automatic refresh was paused for 30 seconds, refresh the
+board status first. Finish any active hardware task before retrying.
+
+If connectivity, the output state, or the task lock changes while confirmation
+is open, the action is rejected without sending a power request. Refresh and
+check the current state rather than repeatedly clicking the switch.
+
 ## ADC reads zero
 
 **Symptom:** `adc read` shows 0.000000A on all channels.
@@ -158,11 +169,45 @@ picotool load -v -x radxa-linkr-debugger-rp2350.uf2
    ```
    Log out and back in for the group change to take effect.
 
+## Serial terminal size differs from the target tty
+
+The Web UI fits its **local xterm** after layout and fonts are ready, when the
+window or terminal container changes size, and when a hidden browser tab becomes
+visible again. Fullscreen and font-size changes also refit the local terminal.
+Switching away from the Terminal workspace may hide an ancestor without changing
+browser-tab visibility. In that case fit is skipped until the terminal has a
+nonzero layout box again; hidden percentage sizes must not shrink the terminal
+or discard its alternate screen. Initial webfonts are loaded before xterm's
+first measurement, with fallback fonts used if loading fails.
+
+Like picocom over raw UART, this does not automatically push browser dimensions
+to the target tty through `TIOCSWINSZ`, but a remote `resize` does not require a
+PTY message: standard xterm/BusyBox `resize` probes the bottom-right cursor
+position over UART and reads CPR. After local fit succeeds at 132 columns ×
+43 rows, the selected browser responder returns `ESC[43;132R`. The `CSI 18 t`
+character-size query used by `resize -s` returns `ESC[8;43;132t`. Only that
+read-only window-size query is enabled; window resizing and other window
+operations are not.
+
+Check the **Auto replies** indicator: an observer browser sends no automatic
+size replies. With CDC DTR asserted, CDC owns responses, not this browser.
+Automation, backpressure, a non-ready serial port or a pending responder
+promotion can also suppress replies. After those conditions clear, rerun the
+target's `resize` command. Local fit alone sends no UART bytes and does not
+automatically update the target's `stty size`. See the
+[serial transport contract](../reference/serial-broker.md#local-terminal-size).
+
 ## Logic analyzer capture fails
 
 **Symptom:** `POST /api/v1/logic-analyzer` returns `invalid_config`.
 
-- Check that your pins are in the safe allowlist: GP7–GP9, GP10–GP20, GP29.
+- The Web picker is temporarily limited to GP12–GP16. ADC1–ADC3 capture support
+  is not implemented; their contacts remain read-only pending the capture
+  firmware/ownership/protocol review. The eight-channel target is digital
+  GP12–GP16 plus GP27–GP29, not analog voltage sampling. GP7–GP9 recovery controls
+  are disabled. The native sigrok
+  protocol retains GP10–GP20; see [Capture GPIO Pins](logic-analyzer.md#capture-gpio-pins).
+- FAST8 still takes GP10/GP11 and pauses J4, even when only GP12–GP16 are selected.
 - `pre_samples > 0` only works with edge triggers at ≤25 MHz.
 - Total samples (pre + post) can't exceed 512.
 - Rate must be between 100,000 and 125,000,000 Hz.

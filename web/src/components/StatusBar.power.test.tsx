@@ -6,6 +6,7 @@ import { EMPTY_BOARD_SNAPSHOT } from "@/lib/boardSnapshot";
 import { LanguageProvider } from "@/lib/i18n";
 import { ThemeProvider } from "@/lib/theme";
 import { StatusBar } from "./StatusBar";
+import { useVdd5vAction } from "./useVdd5vAction";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -18,6 +19,23 @@ const snapshot = (state = "off", controllable = true) => ({
 });
 
 const cleanup: Array<() => void> = [];
+
+// Exercise the same action owner the App shares with the drawer, rather than
+// retaining a second header-only confirmation implementation in the fixture.
+function ControlledHeader({ props }: { props: ComponentProps<typeof StatusBar> }) {
+  const output = props.snapshot.powerOutputs.find((item) => item.name === "vdd_5v");
+  const action = useVdd5vAction({
+    available: props.connected && !props.loading && !props.powerStale && output?.controllable === true,
+    state: output?.state === "on" || output?.state === "off" ? output.state : null,
+    updatedAt: props.powerUpdatedAt ?? null,
+    isLocked: () => props.powerDisabled === true,
+    acquire: () => !props.powerDisabled,
+    release: () => {},
+    setPower: (on) => props.onSetVdd5v!(on),
+  });
+  return <StatusBar {...props} onSetVdd5v={props.onSetVdd5v ? action.set : undefined}
+    powerBusy={action.pending} powerError={action.error} />;
+}
 
 function render(overrides: Partial<ComponentProps<typeof StatusBar>> = {}, lang = "en") {
   localStorage.setItem("lang", lang);
@@ -36,7 +54,7 @@ function render(overrides: Partial<ComponentProps<typeof StatusBar>> = {}, lang 
     props = { ...props, ...next };
     act(() => root.render(
       <ThemeProvider><LanguageProvider>
-        <div onClick={onParentClick}><StatusBar {...props} /></div>
+        <div onClick={onParentClick}><ControlledHeader props={props} /></div>
       </LanguageProvider></ThemeProvider>,
     ));
   };

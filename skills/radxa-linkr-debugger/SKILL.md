@@ -132,7 +132,8 @@ Treat `serial_cursor_expired` and `serial_cursor_ahead` as reset boundaries.
 Inspect the returned earliest or latest cursor and the surrounding target output
 before resuming. Do not re-read an old cursor until its output happens to match
 an expected string.
-
+## Target Serial J4
+J4 on GP10/GP11 is the product target console, separate from the legacy MCP `linkr_serial_*` CH347 `uart0`/`uart1` broker. Raw HTTP only reads `GET /api/v1/serial/j4` and changes line coding through `PUT /api/v1/serial/j4/config`: send the complete tuple plus the current `expected_generation`, then poll status; stale generation is 409, baud is 4800-115200, data bits 5-8, parity none/odd/even, stop bits 1/2, flow control none. UART bytes never use raw HTTP: subscribe a live session to `{"type":"subscribe","topic":"serial.j4"}` for binary WebSocket writes of at most 480 bytes, use raw TCP `5555` for up to two binary-transparent clients, or use CDC ACM4 and identify the interface rather than assuming `/dev/ttyACM*`. Every sink has its own cursor and drops; inspect `sink_count`, `queue`, and counters after use. J4 is multiwriter, `serial_write_accepted` is admission while `serial_write_complete` is wire completion or failure, and failed writes are not replayable. Keep 5555 for J4 and 5556 for logic analysis. See [HTTP API](../../docs/user/api.md#j4-target-serial) and [Serial Broker](../../docs/reference/serial-broker.md).
 ### MCP Recovery
 
 For a read-only `host_temporarily_unavailable` result, honor
@@ -164,6 +165,7 @@ curl --fail-with-body -sS -X PUT -H 'Content-Type: application/json' \
 ```
 
 The optional CLI provides the same board operations plus `doctor` and a TUI:
+Without an explicit URL or `LINKR_BOARD_URL`, it selects only a unique verified device (`discover` lists devices) and passes that URL to Tray; an existing Host on another URL is not switched automatically—check for other clients, then quit and relaunch it explicitly.
 
 ```sh
 radxa-linkr-debuggerctl --json doctor
@@ -233,10 +235,12 @@ curl --fail-with-body -sS -X PUT -H 'Content-Type: application/json' \
   "$BOARD_URL/api/v1/power/5v_out"
 ```
 
-On current x1.2 firmware, `5v_usb_hub` is also advertised. It is a child rail of
-`vdd_5v`: enabling it can enable `vdd_5v` first, disabling `vdd_5v` also disables
-the child, and enabling `vdd_5v` alone does not enable the child. It boots off.
-Inspect both parent and child state after a user-approved change.
+On current x1.2 firmware, `5v_usb_hub` and `5v_otg` are child rails of `vdd_5v`.
+Enabling a child can enable the parent first; disabling the parent disables both
+children and clears OTG desired state. Enabling the parent alone does not enable
+either child. Both children boot off. The OTG port is backfeed-capable: off does
+not prove externally supplied VBUS is absent. Inspect parent and both children
+after a user-approved change.
 
 Do not use a fixed rail list as a target contract. Firmware may advertise a
 different catalog, state, or confirmation requirement.
@@ -351,6 +355,12 @@ only when a protocol limit or transport response needs interpretation.
 
 Do not start concurrent capture transports without first checking the current
 capture state. A capture or OTA activity can make other mutations busy.
+
+Before capture, inspect GPIO state across the full physical sampling lane, not
+only the displayed channels. Release conflicting outputs to input only after
+the operator approves the exact pins; otherwise capture is refused. Do not
+automatically switch pin directions to seize resources. Stop capture and wait
+for cleanup before requesting either input or output changes on those GPIOs.
 
 ## Persistent Configuration
 

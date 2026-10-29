@@ -2,7 +2,8 @@
 
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushSync } from "react-dom";
 import App from "../App";
 import type { AutomationTaskControl } from "@/lib/automationTask";
 import type { GpioPhysicalLayout, SafeGpio } from "@/lib/types";
@@ -82,6 +83,7 @@ const headerMocks = vi.hoisted(() => ({
     powerDisabled: boolean;
     powerStale: boolean;
     powerUpdatedAt: number | null;
+    powerBusy: boolean;
   },
 }));
 
@@ -150,7 +152,7 @@ vi.mock("./StatusBar", () => ({
     return null;
   },
 }));
-vi.mock("./PowerCard", () => ({ PowerCard: () => null }));
+vi.mock("./PowerSparkline", () => ({ MeasurementSparkline: () => null }));
 vi.mock("./SwitchCard", () => ({ SwitchCard: () => null }));
 vi.mock("./BootCard", () => ({ BootCard: () => null }));
 vi.mock("./NetworkCard", () => ({ NetworkCard: () => null }));
@@ -293,6 +295,10 @@ function press(element: HTMLElement, key: string): void {
   });
 }
 
+beforeEach(() => {
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+});
+
 afterEach(() => {
   currentView?.close();
   currentView = null;
@@ -336,6 +342,102 @@ afterEach(() => {
 });
 
 describe("App workspace", () => {
+  function drawerVdd5v(view: AppView): HTMLButtonElement {
+    if (!document.body.querySelector("#hardware-controls")) click(byTestId(view.host, "open-hardware-controls"));
+    return document.body.querySelector<HTMLButtonElement>('[data-power-rail="vdd_5v"] [role="switch"]')!;
+  }
+
+  it("uses the real drawer power switch with the same single confirmation and pending gate as the header", async () => {
+    boardMocks.powerOutputs.push({ name: "vdd_5v", controllable: true, state: "off", value: 0 });
+    let resolve!: () => void;
+    boardMocks.setPower.mockReturnValue(new Promise<void>((done) => { resolve = done; }));
+    const view = mountApp();
+    const toggle = drawerVdd5v(view);
+    act(() => { toggle.click(); toggle.click(); });
+    expect(window.confirm).toHaveBeenCalledExactlyOnceWith("status.vdd5v.confirmOn");
+    expect(boardMocks.setPower).toHaveBeenCalledExactlyOnceWith("vdd_5v", true);
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.getAttribute("aria-busy")).toBe("true");
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(headerMocks.latest!.powerBusy).toBe(true);
+    await act(async () => { await headerMocks.latest!.onSetVdd5v(true); });
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    click(byTestId(view.host, "acquire-test-task"));
+    expect(automationMocks.lastAcquire).toBe(false);
+    await act(async () => resolve());
+    expect(toggle.disabled).toBe(false);
+    expect(headerMocks.latest!.powerBusy).toBe(false);
+  });
+
+  it("keeps the real drawer read-only when its power snapshot expires", async () => {
+    boardMocks.powerOutputs.push({ name: "vdd_5v", controllable: true, state: "off", value: 0 });
+    const view = mountApp();
+    boardMocks.powerStateStale = true;
+    view.rerender();
+    const toggle = drawerVdd5v(view);
+    expect(toggle.disabled).toBe(true);
+    act(() => toggle.click());
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(boardMocks.setPower).not.toHaveBeenCalled();
+  });
+
+  it("clears a drawer failure after a retry through the shared header action", async () => {
+    boardMocks.powerOutputs.push({ name: "vdd_5v", controllable: true, state: "off", value: 0 });
+    boardMocks.setPower.mockRejectedValueOnce(new Error("device busy"));
+    const view = mountApp();
+    const toggle = drawerVdd5v(view);
+    await act(async () => toggle.click());
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("device busy");
+    await act(async () => { await headerMocks.latest!.onSetVdd5v(true); });
+    expect(document.body.querySelector('[role="alert"]')).toBeNull();
+    expect(boardMocks.setPower).toHaveBeenCalledTimes(2);
+    expect(window.confirm).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels a drawer action without dispatching or acquiring a task", async () => {
+    vi.mocked(window.confirm).mockReturnValue(false);
+    boardMocks.powerOutputs.push({ name: "vdd_5v", controllable: true, state: "on", value: 1 });
+    const view = mountApp();
+    const toggle = drawerVdd5v(view);
+    await act(async () => toggle.click());
+    expect(window.confirm).toHaveBeenCalledExactlyOnceWith("status.vdd5v.confirmOff");
+    expect(boardMocks.setPower).not.toHaveBeenCalled();
+    expect(toggle.disabled).toBe(false);
+    click(byTestId(view.host, "acquire-test-task"));
+    expect(automationMocks.lastAcquire).toBe(true);
+  });
+
+  it.each(["expired", "disconnected", "state changed", "task acquired"])(
+    "rechecks the latest state and lock after drawer confirmation: %s", async (change) => {
+      const now = vi.spyOn(Date, "now").mockReturnValue(100_000);
+      boardMocks.powerUpdatedAt = 100_000;
+      boardMocks.powerOutputs.push({ name: "vdd_5v", controllable: true, state: "off", value: 0 });
+      const view = mountApp();
+      const toggle = drawerVdd5v(view);
+      vi.mocked(window.confirm).mockImplementation(() => {
+        if (change === "expired") now.mockReturnValue(130_000);
+        else if (change === "disconnected") {
+          boardMocks.connected = false;
+          flushSync(() => view.rerender());
+        } else if (change === "state changed") {
+          boardMocks.powerOutputs = boardMocks.powerOutputs.map((output) => output.name === "vdd_5v"
+            ? { ...output, state: "on", value: 1 } : output);
+          flushSync(() => view.rerender());
+        } else {
+          // Acquire the real lock while the confirmation is open.
+          click(byTestId(view.host, "acquire-test-task"));
+        }
+        return true;
+      });
+      await act(async () => toggle.click());
+      expect(window.confirm).toHaveBeenCalledTimes(1);
+      expect(boardMocks.setPower).not.toHaveBeenCalled();
+      expect(document.body.querySelector('[role="alert"]')?.textContent)
+        .toContain(change === "task acquired" ? "task.error.busy" : "status.vdd5v.unavailable");
+      expect(headerMocks.latest!.powerBusy).toBe(false);
+    },
+  );
+
   it("routes the header toggle only to vdd_5v and holds the global lock until its request settles", async () => {
     boardMocks.powerOutputs.push({ name: "vdd_5v", controllable: true, state: "off", value: 0 });
     let resolve!: () => void;
@@ -704,6 +806,26 @@ describe("App workspace", () => {
     expect(dialog.querySelector('[data-testid="hardware-section-panel-power"]')).toBeNull();
     expect(dialog.querySelector('[data-testid="hardware-section-tab-recovery"]')).toBeNull();
     expect(dialog.querySelector('[data-testid="hardware-section-tab-firmware"]')).toBeNull();
+  });
+
+  it("moves hardware tab focus and selection with arrows, wraps, and supports Home/End", () => {
+    const view = mountApp();
+    click(byTestId(view.host, "open-hardware-controls"));
+    const power = byTestId<HTMLButtonElement>(document.body, "hardware-section-tab-power");
+    const io = byTestId<HTMLButtonElement>(document.body, "hardware-section-tab-io");
+    act(() => power.focus());
+    expect(power.tabIndex).toBe(0);
+    expect(io.tabIndex).toBe(-1);
+    for (const [from, key, to] of [[power, "ArrowRight", io], [io, "ArrowRight", power],
+      [power, "ArrowLeft", io], [io, "Home", power], [power, "End", io]] as const) {
+      press(from, key);
+      expect(document.activeElement).toBe(to);
+      expect(to.getAttribute("aria-selected")).toBe("true");
+      expect(to.tabIndex).toBe(0);
+      expect((to === power ? io : power).tabIndex).toBe(-1);
+      expect(document.getElementById(to.getAttribute("aria-controls")!)).not.toBeNull();
+    }
+    expect(localStorage.getItem("linkr-hardware-controls-section")).toBe("io");
   });
 
   it("places the sole physical GPIO card immediately before Watchdog in the IO drawer", () => {

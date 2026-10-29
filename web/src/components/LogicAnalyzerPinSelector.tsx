@@ -18,12 +18,12 @@ import {
   STROKE_DEFAULT,
   STROKE_TRIGGER,
 } from "./GpioPinoutGroup";
-import { AVAILABLE_PINS, LOGIC_ANALYZER_SIGROK_DISABLED_PINS } from "@/lib/logicAnalyzer";
+import { LOGIC_ANALYZER_WEB_CAPTURE_PINS, LOGIC_ANALYZER_SIGROK_DISABLED_PINS } from "@/lib/logicAnalyzer";
 import type { GpioPhysicalLayout, SafeGpio } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
 
-/** Web Sigrok capture pins (GP10-GP20). */
-const CAPTURE_PINS = AVAILABLE_PINS.map((entry) => entry.pin);
+/** Only GP12-GP16 are selectable in the Web UI. */
+const CAPTURE_PINS = LOGIC_ANALYZER_WEB_CAPTURE_PINS;
 /** Pins that render disabled capture controls when they appear on a connector. */
 const UNAVAILABLE_PINS: readonly number[] = LOGIC_ANALYZER_SIGROK_DISABLED_PINS;
 const CONTROL_PINS = new Set<number>([...CAPTURE_PINS, ...UNAVAILABLE_PINS]);
@@ -225,8 +225,9 @@ export function LogicAnalyzerPinSelector({
       <p id={instructionsId} className="text-[10px] text-ink-dim">
         {t("logicAnalyzer.pinKeys")}
       </p>
-      <div className="text-[10px] text-ink-dim">
-        {t("logicAnalyzer.sigrokPinsHint")}
+      <div className="space-y-1 text-[10px] text-ink-dim">
+        <p>{t("logicAnalyzer.sigrokPinsHint")}</p>
+        <p className="text-warn">{t("logicAnalyzer.j4PauseHint")}</p>
       </div>
     </div>
   );

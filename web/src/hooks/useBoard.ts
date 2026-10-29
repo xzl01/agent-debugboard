@@ -5,6 +5,7 @@ import { parseHttpAdcReadings } from "@/lib/adc";
 import {
   EMPTY_BOARD_SNAPSHOT,
   mapBoardStatus,
+  mergeBoardWsSnapshot,
 } from "@/lib/boardSnapshot";
 import { persistentConfigCurrentStateKey } from "@/lib/persistentConfigCurrentStateKey";
 import { parsePdStatus } from "@/lib/pd";
@@ -17,7 +18,7 @@ import { useBoardLive } from "./useBoardLive";
 import { useBoardMutations } from "./useBoardMutations";
 import { useBoardReboot } from "./useBoardReboot";
 import { useBoardGpioLayout } from "./useBoardGpioLayout";
-import type { UseBoard as UseBoardBase } from "./useBoard.types";
+import type { BoardRequestLifecycle, UseBoard as UseBoardBase } from "./useBoard.types";
 
 export interface UseBoard extends UseBoardBase {
   gpioPhysicalLayout: ReturnType<typeof useBoardGpioLayout>["gpioPhysicalLayout"];
@@ -29,6 +30,21 @@ export interface UseBoard extends UseBoardBase {
 }
 
 const PD_CAPABILITY_RETRY_MS = 5000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Compact only the live fields received during the current HTTP read. Nested
+// partial frames accumulate; arrays replace rather than retaining frame history.
+function mergeLivePatch(previous: Record<string, unknown>, next: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...previous,
+    ...Object.fromEntries(Object.entries(next).map(([key, value]) => [
+      key, isRecord(value) && isRecord(previous[key]) ? mergeLivePatch(previous[key], value) : value,
+    ])),
+  };
+}
 
 export function useBoard(): UseBoard {
   const { gpioPhysicalLayout, gpioLayoutError, gpioLayoutLoading, noteGpioStatus, invalidateGpioLayout } = useBoardGpioLayout();
@@ -42,6 +58,44 @@ export function useBoard(): UseBoard {
   const [loading, setLoading] = useState(true);
   const [auto, setAuto] = useState(true);
   const [live, setLive] = useState(false);
+  const requests = useMemo<BoardRequestLifecycle>(() => {
+    let sessionGeneration = 0;
+    let requestGeneration = 0;
+    let active = false;
+    let pending: { livePatch: Record<string, unknown>; liveSeen: boolean } | null = null;
+    return {
+      beginSession: () => {
+        const session = ++sessionGeneration;
+        active = true;
+        pending = null;
+        return () => {
+          if (session !== sessionGeneration) return;
+          active = false;
+          pending = null;
+          ++sessionGeneration;
+        };
+      },
+      beginRequest: () => {
+        const session = sessionGeneration;
+        const generation = ++requestGeneration;
+        const request = { livePatch: {} as Record<string, unknown>, liveSeen: false };
+        pending = request;
+        const isCurrent = () => active && session === sessionGeneration && generation === requestGeneration;
+        return {
+          isCurrent,
+          canUpdateConnection: () => isCurrent() && !request.liveSeen,
+          canUpdatePower: () => isCurrent() && !Array.isArray(request.livePatch.power_outputs),
+          mergeSnapshot: (next) => request.liveSeen ? mergeBoardWsSnapshot(next, request.livePatch) : next,
+        };
+      },
+      noteLiveSnapshot: (message) => {
+        if (!active || !pending) return;
+        pending.liveSeen = true;
+        pending.livePatch = mergeLivePatch(pending.livePatch, message);
+      },
+      invalidateRequests: () => { ++requestGeneration; pending = null; },
+    };
+  }, []);
   const [documentVisible, setDocumentVisible] = useState(
     () => typeof document === "undefined" || !document.hidden
   );
@@ -152,12 +206,13 @@ export function useBoard(): UseBoard {
       // Do not interrupt an armed or active capture just because its tab was
       // backgrounded. Once the capture is idle, the hidden tab can release its
       // polling/WebSocket load and reconnect when it becomes visible again.
+      requests.invalidateRequests();
       setDocumentVisible(!document.hidden);
     };
     updateVisibility();
     document.addEventListener("visibilitychange", updateVisibility);
     return () => document.removeEventListener("visibilitychange", updateVisibility);
-  }, []);
+  }, [requests]);
 
   const pd = snapshot.pd ?? EMPTY_BOARD_SNAPSHOT.pd!;
   useEffect(() => {
@@ -220,37 +275,45 @@ export function useBoard(): UseBoard {
   }, [connected, documentVisible, pd.available, pd.pd, pd.last_error, pd.capabilities_valid]);
 
   const refresh = useCallback(async () => {
+    const request = requests.beginRequest();
     try {
       const status = await api.getStatus();
-      noteGpioStatus();
+      if (!request.isCurrent()) return;
       // Stamp the status receipt, not the later ADC completion or React effect.
       const updatedAt = typeof status === "object" && status !== null &&
         "power_outputs" in status && Array.isArray(status.power_outputs) ? Date.now() : null;
       const adcResponse: unknown = await api.getAdc();
+      if (!request.isCurrent()) return;
       const readings = parseHttpAdcReadings(adcResponse);
-      setSnapshot((prev) => mapBoardStatus(status, readings, prev.pd));
-      setPowerUpdatedAt(updatedAt);
+      noteGpioStatus();
+      setSnapshot((prev) => request.mergeSnapshot(mapBoardStatus(status, readings, prev.pd)));
+      if (request.canUpdatePower()) setPowerUpdatedAt(updatedAt);
       setHasData(true);
-      setBoardConnected(true);
-      markVerified();
-      setError(null);
+      if (request.canUpdateConnection()) {
+        setBoardConnected(true);
+        markVerified();
+        setError(null);
+      }
     } catch (e) {
+      if (!request.canUpdateConnection()) return;
       setBoardConnected(false);
       setConnectionError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (request.canUpdateConnection()) setLoading(false);
     }
-  }, [markVerified, setBoardConnected, setConnectionError, noteGpioStatus]);
+  }, [markVerified, setBoardConnected, setConnectionError, noteGpioStatus, requests]);
 
   useBoardLive({
     live,
     pageVisible,
     auto,
+    requests,
     refresh,
     onStatus: noteGpioStatus,
     wsRef,
     pendingCaptureRef,
-    setSnapshot: setSnapshotVerified,
+    setSnapshot,
+    onVerified: markVerified,
     onPowerSnapshot: setPowerUpdatedAt,
     setHasData,
     setConnected: setBoardConnected,

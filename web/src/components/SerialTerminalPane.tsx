@@ -24,6 +24,21 @@ function terminalInputPolicy(current: J4SerialSessionSnapshot) {
   return { manual, responder: current.serial?.terminal_responder === true && !current.serial.dtr };
 }
 
+function terminalFontReady(fontFamily: string, fontSize: number): Promise<void> | null {
+  const fonts = document.fonts;
+  if (!fonts) return null;
+  const descriptor = `${fontSize}px ${fontFamily}`;
+  try {
+    if (fonts.status === "loaded" && fonts.check?.(descriptor, "W")) return null;
+    // Request the actual terminal face before open() measures and caches W.
+    // Missing webfonts must settle on the configured fallback, not block RX.
+    return Promise.resolve(fonts.load?.(descriptor, "W")).catch(() => undefined)
+      .then(() => fonts.ready).then(() => undefined, () => undefined);
+  } catch {
+    return null; // Unsupported FontFaceSet API or invalid/unavailable face.
+  }
+}
+
 export function SerialTerminalPane({ session, fillHeight = false }: {
   session: J4SerialSession;
   fillHeight?: boolean;
@@ -44,7 +59,7 @@ export function SerialTerminalPane({ session, fillHeight = false }: {
   const hostRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const termRef = useRef<XTerm | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
+  const scheduleFitRef = useRef<(() => void) | null>(null);
   const lineEndingRef = useRef(lineEnding);
   const fontSizeRef = useRef(fontSize);
   fontSizeRef.current = fontSize;
@@ -157,29 +172,82 @@ export function SerialTerminalPane({ session, fillHeight = false }: {
       renderFrameRef.current = null;
       outputRef.current = []; outputSizeRef.current = 0; outputBusyRef.current = false;
       promotionRef.current = null; enabledResponderRef.current = false;
-      termRef.current = null; fitRef.current = null;
+      termRef.current = null; scheduleFitRef.current = null;
       disposables.splice(0).forEach((item) => item.dispose());
       resize?.disconnect(); theme?.disconnect();
       fit?.dispose(); term?.dispose();
       fit = null; term = null;
       host.replaceChildren();
     };
-    const createRenderer = () => {
-      if (disposed || !modules) return;
-      const epoch = renderEpochRef.current;
+    const openRenderer = (epoch: number, fontFamily: string) => {
+      if (disposed || !modules || epoch !== renderEpochRef.current) return;
       const current = session.getState();
       const policy = terminalInputPolicy(current);
       enabledResponderRef.current = policy.responder && !promotionRef.current;
       const nextTerm = new modules.xterm.Terminal({ cursorBlink: policy.manual, disableStdin: !policy.manual || !enabledResponderRef.current, screenReaderMode: true,
-        fontFamily: terminalFontFamilyFromRoot(), fontSize: fontSizeRef.current, lineHeight: 1.15,
-        scrollback: 10000, theme: resolveTerminalTheme() });
+        fontFamily, fontSize: fontSizeRef.current, lineHeight: 1.15,
+        scrollback: 10000, theme: resolveTerminalTheme(), windowOptions: { getWinSizeChars: true } });
       const nextFit = new modules.addon.FitAddon(); nextTerm.loadAddon(nextFit); nextTerm.open(host);
-      term = nextTerm; fit = nextFit; termRef.current = nextTerm; fitRef.current = nextFit;
+      term = nextTerm; fit = nextFit; termRef.current = nextTerm;
       syncInputState();
       const active = () => !disposed && epoch === renderEpochRef.current && termRef.current === nextTerm;
-      const fitTerminal = () => { if (active()) try { nextFit.fit(); } catch { /* Transient hidden layout. */ } };
-      document.addEventListener("fullscreenchange", fitTerminal);
-      disposables.push({ dispose: () => document.removeEventListener("fullscreenchange", fitTerminal) });
+      let fitFrame: number | null = null;
+      let requestedFont = { fontFamily, fontSize: fontSizeRef.current, ready: true };
+      const syncFontRequest = () => {
+        const fontFamily = terminalFontFamilyFromRoot();
+        const fontSize = fontSizeRef.current;
+        if (requestedFont.fontFamily === fontFamily && requestedFont.fontSize === fontSize) return requestedFont;
+        const request = { fontFamily, fontSize, ready: false };
+        requestedFont = request;
+        const ready = terminalFontReady(fontFamily, fontSize);
+        if (ready) void ready.then(() => {
+          if (!active() || requestedFont !== request) return;
+          request.ready = true;
+          scheduleFit();
+        });
+        else request.ready = true;
+        return request;
+      };
+      // Fit only the local xterm, after layout. All resize/font paths share one
+      // frame. It sends nothing to UART; target size queries use the existing
+      // automatic-reply gate, not an unsolicited remote resize message.
+      const scheduleFit = () => {
+        if (!active()) return;
+        syncFontRequest();
+        if (fitFrame !== null) return;
+        fitFrame = requestAnimationFrame(() => {
+          fitFrame = null;
+          if (!active() || document.visibilityState === "hidden") return;
+          const request = syncFontRequest();
+          if (!request.ready) return;
+          // An App workspace can hide an ancestor without hiding the browser
+          // document. Never let percentage computed sizes shrink either buffer.
+          const box = host.getBoundingClientRect();
+          if (box.width <= 0 || box.height <= 0) return;
+          try {
+            // Font options measure immediately. Apply the latest loaded style
+            // only with a real layout, never while an ancestor is hidden.
+            if (nextTerm.options.fontFamily !== request.fontFamily) nextTerm.options.fontFamily = request.fontFamily;
+            if (nextTerm.options.fontSize !== request.fontSize) nextTerm.options.fontSize = request.fontSize;
+            // Public resize remeasures an invalid (zero-sized) character cache
+            // when a DOM-measured renderer was first opened while hidden.
+            nextTerm.resize(nextTerm.cols, nextTerm.rows);
+            nextFit.fit();
+          } catch { /* Transient hidden layout. */ }
+        });
+      };
+      const fitWhenVisible = () => { if (document.visibilityState === "visible") scheduleFit(); };
+      scheduleFitRef.current = scheduleFit;
+      window.addEventListener("resize", scheduleFit);
+      document.addEventListener("fullscreenchange", scheduleFit);
+      document.addEventListener("visibilitychange", fitWhenVisible);
+      disposables.push({ dispose: () => {
+        if (fitFrame !== null) cancelAnimationFrame(fitFrame);
+        fitFrame = null;
+        window.removeEventListener("resize", scheduleFit);
+        document.removeEventListener("fullscreenchange", scheduleFit);
+        document.removeEventListener("visibilitychange", fitWhenVisible);
+      } });
       setTerminalVersion((version) => version + 1);
       const send = (bytes: string | Uint8Array) => {
         if (!active() || !terminalInputPolicy(session.getState()).manual) return;
@@ -227,16 +295,32 @@ export function SerialTerminalPane({ session, fillHeight = false }: {
       host.addEventListener("compositionend", manualComposition, true);
       disposables.push({ dispose: () => host.removeEventListener("paste", manualPaste, true) });
       disposables.push({ dispose: () => host.removeEventListener("compositionend", manualComposition, true) });
-      resize = new ResizeObserver(fitTerminal); resize.observe(host);
+      resize = new ResizeObserver(scheduleFit); resize.observe(host);
       theme = new MutationObserver(() => {
         if (!active()) return;
         nextTerm.options.theme = resolveTerminalTheme();
-        nextTerm.options.fontFamily = terminalFontFamilyFromRoot();
-        nextTerm.refresh(0, Math.max(0, nextTerm.rows - 1)); fitTerminal();
+        scheduleFit();
       });
       theme.observe(document.documentElement, { attributes: true,
         attributeFilter: ["data-theme", "data-terminal-theme", "data-terminal-font-family"] });
-      fitTerminal(); scheduleOutput();
+      scheduleFit(); scheduleOutput();
+    };
+    const createRenderer = () => {
+      if (disposed || !modules) return;
+      const epoch = renderEpochRef.current;
+      const fontFamily = terminalFontFamilyFromRoot();
+      const fontSize = fontSizeRef.current;
+      const open = () => {
+        if (disposed || epoch !== renderEpochRef.current) return;
+        if (fontFamily !== terminalFontFamilyFromRoot() || fontSize !== fontSizeRef.current) {
+          createRenderer();
+          return;
+        }
+        openRenderer(epoch, fontFamily);
+      };
+      const ready = terminalFontReady(fontFamily, fontSize);
+      if (ready) void ready.then(open);
+      else open();
     };
     generationRef.current = session.getState().serial?.generation ?? null;
     responderRef.current = terminalInputPolicy(session.getState()).responder;
@@ -294,9 +378,7 @@ export function SerialTerminalPane({ session, fillHeight = false }: {
     syncInputState();
   }, [readOnly, responder, terminalVersion, session]);
   useEffect(() => {
-    if (!termRef.current) return;
-    termRef.current.options.fontSize = fontSize;
-    try { fitRef.current?.fit(); } catch { /* Fullscreen transitions can hide the host. */ }
+    scheduleFitRef.current?.();
   }, [fontSize, terminalVersion]);
   useEffect(() => {
     if (snapshot.serial) setDraft({ ...snapshot.serial.config, baud: String(snapshot.serial.config.baud) });
@@ -414,8 +496,13 @@ export function SerialTerminalPane({ session, fillHeight = false }: {
       </form>}
       {errorText && <div role="alert" className={`break-words border-b px-3 py-2 text-xs ${snapshot.phase === "unavailable" || snapshot.error?.code === "backpressure" ? "border-warn/30 bg-warn/10 text-warn" : "border-danger/30 bg-danger/10 text-danger"}`}>{errorText}</div>}
       {(snapshot.droppedBytes > 0 || localDropped > 0) && <p role="status" className="border-b border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">{t("serial.dropped").replaceAll("{bytes}", formatBytes(snapshot.droppedBytes + localDropped))}</p>}
-      <div ref={hostRef} role="application" aria-label={`J4 ${t("serial.terminalAria")}`} tabIndex={0} onClick={() => termRef.current?.focus()}
-        className={`${fillHeight ? "min-h-[360px] flex-1" : "h-[clamp(400px,62vh,760px)] shrink-0"} terminal-host min-w-0 overflow-hidden bg-terminal p-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand/40 [&_.xterm]:h-full [&_.xterm]:max-w-full`} />
+      {/* addon-fit measures the mount's computed size, not its content box.
+          Keep visual padding outside that measurement area. */}
+      <div data-testid="serial-terminal-frame" onClick={() => termRef.current?.focus()}
+        className={`${fillHeight ? "min-h-[360px] flex-1" : "h-[clamp(400px,62vh,760px)] shrink-0"} min-w-0 overflow-hidden bg-terminal p-2`}>
+        <div ref={hostRef} role="application" aria-label={`J4 ${t("serial.terminalAria")}`} tabIndex={0}
+          className="terminal-host h-full w-full min-h-0 min-w-0 overflow-hidden bg-terminal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand/40 [&_.xterm]:h-full [&_.xterm]:max-w-full" />
+      </div>
       <footer className="flex min-h-10 flex-wrap items-center gap-x-4 gap-y-1 border-t border-line/70 px-3 py-2 text-[10px] text-ink-dim">
         <span aria-live="polite">{t(inputHint)}</span>
         <span className="font-mono" title={t("serial.logCacheHint")}>{t("serial.logCached")} {formatBytes(logBytes)}</span>

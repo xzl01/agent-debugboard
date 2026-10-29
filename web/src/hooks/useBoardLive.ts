@@ -24,6 +24,7 @@ import type {
 } from "@/lib/types";
 
 import type { BoardCaptureMessageHandler } from "./useBoardCaptureMessages";
+import type { BoardRequestLifecycle } from "./useBoard.types";
 
 const LIVE_STATUS_POLL_MS = 10_000;
 
@@ -44,11 +45,13 @@ export interface UseBoardLiveOptions {
   readonly live: boolean;
   readonly pageVisible: boolean;
   readonly auto: boolean;
+  readonly requests: BoardRequestLifecycle;
   readonly refresh: () => Promise<void>;
   readonly onStatus?: () => void;
   readonly wsRef: { current: WebSocket | null };
   readonly pendingCaptureRef: { current: CaptureConfig | null };
   readonly setSnapshot: Dispatch<SetStateAction<BoardSnapshot>>;
+  readonly onVerified: () => void;
   readonly onPowerSnapshot: (updatedAt: number | null) => void;
   readonly setHasData: (hasData: boolean) => void;
   readonly setConnected: (connected: boolean) => void;
@@ -65,11 +68,13 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
     live,
     pageVisible,
     auto,
+    requests,
     refresh,
     onStatus,
     wsRef,
     pendingCaptureRef,
     setSnapshot,
+    onVerified,
     onPowerSnapshot,
     setHasData,
     setConnected,
@@ -83,7 +88,11 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
 
   // Polling mode (default) or WebSocket live mode.
   useEffect(() => {
+    // Cleanup invalidates success, failure, and finally from this entire mode
+    // session, including requests still waiting for status or ADC on unmount.
+    const endSession = requests.beginSession();
     if (live && pageVisible) {
+      const reads = new AbortController();
       let ws: WebSocket | null = null;
       let cancelled = false;
       let sessionId: number | null = null;
@@ -97,13 +106,21 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
         statusTimer = setTimeout(async () => {
           if (cancelled) return;
           if (!document.hidden && ws?.readyState === WebSocket.OPEN) {
+            const request = requests.beginRequest();
             try {
-              const status = await api.getStatus();
+              const status = await api.getStatus(reads.signal);
               if (cancelled) return;
-              onStatus?.();
-              setSnapshot((prev) => mapBoardStatus(status, prev.adc, prev.pd));
-              onPowerSnapshot(isRecord(status) && Array.isArray(status.power_outputs) ? Date.now() : null);
-              setConnected(true);
+              if (request.isCurrent()) {
+                onStatus?.();
+                setSnapshot((prev) => request.mergeSnapshot(mapBoardStatus(status, prev.adc, prev.pd)));
+                if (request.canUpdatePower()) {
+                  onPowerSnapshot(isRecord(status) && Array.isArray(status.power_outputs) ? Date.now() : null);
+                }
+                if (request.canUpdateConnection()) {
+                  setConnected(true);
+                  onVerified();
+                }
+              }
             } catch {
               // The independent live stream still determines connectivity.
             }
@@ -116,6 +133,8 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
       // animation frame. Capture ingestion below stays immediate and never
       // routes through this scheduler, so recording remains lossless.
       const previewScheduler = createTelemetryFrameScheduler<readonly AdcReading[]>((readings) => {
+        if (cancelled) return;
+        onVerified();
         setSnapshot((prev) => ({ ...prev, adc: readings }));
       });
       const cancelPreviewWhenHidden = () => {
@@ -138,24 +157,35 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
 
       (async () => {
         // Seed metadata from an HTTP poll before switching to live stream.
+        const request = requests.beginRequest();
         try {
-          const status = await api.getStatus();
+          const status = await api.getStatus(reads.signal);
           if (cancelled) return;
-          onStatus?.();
-          const powerUpdatedAt = isRecord(status) && Array.isArray(status.power_outputs) ? Date.now() : null;
-          const adcResponse: unknown = await api.getAdc();
-          if (cancelled) return;
-          setSnapshot((prev) => mapBoardStatus(status, parseHttpAdcReadings(adcResponse), prev.pd));
-          onPowerSnapshot(powerUpdatedAt);
-          setHasData(true);
-          setConnected(true);
-          setError(null);
-          setLoading(false);
+          if (request.isCurrent()) {
+            const powerUpdatedAt = isRecord(status) && Array.isArray(status.power_outputs) ? Date.now() : null;
+            const adcResponse: unknown = await api.getAdc(reads.signal);
+            if (cancelled) return;
+            if (request.isCurrent()) {
+              onStatus?.();
+              setSnapshot((prev) => request.mergeSnapshot(mapBoardStatus(status, parseHttpAdcReadings(adcResponse), prev.pd)));
+              if (request.canUpdatePower()) onPowerSnapshot(powerUpdatedAt);
+              setHasData(true);
+              if (request.canUpdateConnection()) {
+                setConnected(true);
+                onVerified();
+                setError(null);
+                setLoading(false);
+              }
+            }
+          }
         } catch (e) {
-          setLive(false);
-          setConnected(false);
-          setError(e instanceof Error ? e.message : String(e));
-          return;
+          if (cancelled) return;
+          if (request.canUpdateConnection()) {
+            setLive(false);
+            setConnected(false);
+            setError(e instanceof Error ? e.message : String(e));
+            return;
+          }
         }
 
         let session: api.LiveSession;
@@ -180,6 +210,7 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
         ws = new WebSocket(api.liveWebSocketUrl(session.ws_url));
         wsRef.current = ws;
         ws.onopen = () => {
+          if (cancelled) return;
           scheduleStatus();
           const pending = pendingCaptureRef.current;
           ws?.send(JSON.stringify(
@@ -198,8 +229,17 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
           try {
             const msg = parsed;
             if (msg.type === "snapshot") {
+              // Preserve only fields this frame supplies. In-flight HTTP can
+              // still contribute PD and pin metadata omitted by firmware WS.
+              requests.noteLiveSnapshot(msg);
+              onStatus?.();
               setSnapshot((prev) => mergeBoardWsSnapshot(prev, msg));
+              onVerified();
               if (Array.isArray(msg.power_outputs)) onPowerSnapshot(Date.now());
+              setHasData(true);
+              setConnected(true);
+              setError(null);
+              setLoading(false);
             } else if (msg.type === "telemetry" || msg.type === "telemetry-batch") {
               const samples = decodeTelemetrySamples(msg);
               const latestReadings = decodeTelemetryReadings(msg);
@@ -214,12 +254,14 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
               handleCaptureMessage(msg, [], 0);
             }
           } catch (error) {
+            requests.invalidateRequests();
             const message = error instanceof Error ? error.message : String(error);
             handleSocketFailure(`Live WebSocket frame handling failed: ${message}`);
           }
         };
         ws.onerror = () => {
           if (!cancelled) {
+            requests.invalidateRequests();
             handleSocketFailure("Live WebSocket error");
             setError("Live WebSocket error");
           }
@@ -230,6 +272,7 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
           if (wsRef.current === ws) wsRef.current = null;
           void releaseSession();
           if (!cancelled) {
+            requests.invalidateRequests();
             handleSocketFailure("Live WebSocket disconnected");
             setLive(false);
             setError("Live WebSocket disconnected");
@@ -239,6 +282,8 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
 
       return () => {
         cancelled = true;
+        endSession();
+        reads.abort();
         clearTimeout(statusTimer);
         previewScheduler.cancel();
         if (typeof document !== "undefined") {
@@ -256,13 +301,26 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
 
     if (!pageVisible) {
       setLoading(false);
-      return;
+      return endSession;
     }
     setLoading(true);
-    refresh();
-    if (!auto) return;
-    const id = setInterval(refresh, 2000);
-    return () => clearInterval(id);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        await refresh();
+      } finally {
+        // Status and ADC each have a total API deadline. An old refresh may be
+        // superseded by a manual one, but must still release this serial loop.
+        if (!cancelled && auto) timer = setTimeout(poll, 2000);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      endSession();
+      clearTimeout(timer);
+    };
   }, [
     auto,
     handleCaptureMessage,
@@ -271,8 +329,10 @@ export function useBoardLive(options: UseBoardLiveOptions): void {
     live,
     onPowerSnapshot,
     onStatus,
+    onVerified,
     pageVisible,
     pendingCaptureRef,
     refresh,
+    requests,
   ]);
 }

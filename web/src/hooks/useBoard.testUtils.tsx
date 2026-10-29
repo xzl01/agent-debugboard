@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { vi } from "vitest";
 import { useBoard, type UseBoard } from "./useBoard";
@@ -197,7 +197,7 @@ export async function flushMicrotasks(): Promise<void> {
   }
 }
 
-export function renderBoard(): BoardView {
+export function renderBoard({ strictMode = false }: { strictMode?: boolean } = {}): BoardView {
   let current: UseBoard | null = null;
   const host = document.createElement("div");
   const root: Root = createRoot(host);
@@ -205,7 +205,7 @@ export function renderBoard(): BoardView {
     current = useBoard();
     return null;
   }
-  act(() => root.render(<Probe />));
+  act(() => root.render(strictMode ? <StrictMode><Probe /></StrictMode> : <Probe />));
   return {
     current: (): UseBoard => {
       if (current == null) throw new TypeError("useBoard did not render");
