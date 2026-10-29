@@ -1,0 +1,18 @@
+{
+  "result": "FAIL",
+  "case": "Web UI GP12–16 100kHz continuous stream",
+  "sample_count": 325912,
+  "data_frames": 80,
+  "mask": 124,
+  "sample_index_gaps": [],
+  "running_to_overrun_seconds": 3.523278000066057,
+  "overrun_event": {
+    "type": 16,
+    "timestamp": 1555335.248966,
+    "payload_hex": "01000518f904",
+    "event": 5,
+    "sample_index": 325912
+  },
+  "root_cause": "not isolated; no baseline/backend-only comparison run",
+  "cleanup": "UI error handler stopped and closed; J4 ready; watchdog healthy"
+}

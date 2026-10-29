@@ -1,0 +1,133 @@
+{
+  "afterflash_5v_enable": {
+    "schema": "radxa-linkr-debugger.v1",
+    "ok": true,
+    "command": "power",
+    "action": "set",
+    "power_output": {
+      "name": "5v_out",
+      "signal": "GP0_5V_EN",
+      "gp": 0,
+      "controllable": true,
+      "state": "on",
+      "value": 1
+    }
+  },
+  "afterflash_pd_set": {
+    "schema": "radxa-linkr-debugger.v1",
+    "ok": true,
+    "command": "pd",
+    "action": "set",
+    "available": true,
+    "mode": 0,
+    "voltage_mv": 20000,
+    "gear": 4,
+    "pps_mv": 0,
+    "pd": true,
+    "qc2": false,
+    "qc3": false,
+    "bc": false,
+    "epr": false,
+    "avs": false,
+    "max_current_ma": 1500,
+    "last_error": 0,
+    "protocol": "pd",
+    "board_max_voltage_mv": 20000,
+    "capabilities_valid": true,
+    "fixed_profiles": [
+      {
+        "voltage_mv": 5000,
+        "max_current_ma": 3000
+      },
+      {
+        "voltage_mv": 9000,
+        "max_current_ma": 3000
+      },
+      {
+        "voltage_mv": 12000,
+        "max_current_ma": 2500
+      },
+      {
+        "voltage_mv": 15000,
+        "max_current_ma": 2000
+      },
+      {
+        "voltage_mv": 20000,
+        "max_current_ma": 1500
+      }
+    ],
+    "pps_ranges": [],
+    "avs_ranges": []
+  },
+  "afterflash_ina": {
+    "schema": "radxa-linkr-debugger.v1",
+    "ok": true,
+    "command": "adc",
+    "action": "read",
+    "readings": [
+      {
+        "name": "5v_out",
+        "signal": "INA226_5V",
+        "role": "native",
+        "power_enabled": true,
+        "raw": null,
+        "mv": 5076,
+        "voltage_valid": true,
+        "voltage_uv": 5076250,
+        "sensor_channel": "current",
+        "unit": "A",
+        "sensor_value": {
+          "val1": 0,
+          "val2": 170500
+        },
+        "current_ua": 170500
+      }
+    ]
+  },
+  "final_pd": {
+    "schema": "radxa-linkr-debugger.v1",
+    "ok": true,
+    "command": "pd",
+    "action": "get",
+    "available": true,
+    "mode": 0,
+    "voltage_mv": 12000,
+    "gear": 2,
+    "pps_mv": 0,
+    "pd": true,
+    "qc2": false,
+    "qc3": false,
+    "bc": false,
+    "epr": false,
+    "avs": false,
+    "max_current_ma": 2500,
+    "last_error": 0,
+    "protocol": "pd",
+    "board_max_voltage_mv": 20000,
+    "capabilities_valid": true,
+    "fixed_profiles": [
+      {
+        "voltage_mv": 5000,
+        "max_current_ma": 3000
+      },
+      {
+        "voltage_mv": 9000,
+        "max_current_ma": 3000
+      },
+      {
+        "voltage_mv": 12000,
+        "max_current_ma": 2500
+      },
+      {
+        "voltage_mv": 15000,
+        "max_current_ma": 2000
+      },
+      {
+        "voltage_mv": 20000,
+        "max_current_ma": 1500
+      }
+    ],
+    "pps_ranges": [],
+    "avs_ranges": []
+  }
+}

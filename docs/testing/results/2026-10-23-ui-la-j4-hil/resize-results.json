@@ -1,0 +1,89 @@
+{
+  "target": "USB 1-1.4.2 / eth1 / 10.123.5.149",
+  "uart_target": "radxa-cubie-a7a",
+  "source": "real target /usr/bin/resize and /dev/tty CSI18t probe through production Web UI",
+  "cases": [
+    {
+      "case": "A",
+      "browser_rows_cols": [
+        35,
+        168
+      ],
+      "target_stty_rows_cols": [
+        35,
+        168
+      ],
+      "csi18t_expected_hex": "1b5b383b33353b31363874",
+      "csi18t_received_hex": "1b5b383b33353b31363874"
+    },
+    {
+      "case": "B",
+      "browser_rows_cols": [
+        35,
+        126
+      ],
+      "target_stty_rows_cols": [
+        35,
+        126
+      ],
+      "csi18t_expected_hex": "1b5b383b33353b31323674",
+      "csi18t_received_hex": "1b5b383b33353b31323674"
+    },
+    {
+      "case": "C",
+      "browser_rows_cols": [
+        35,
+        112
+      ],
+      "target_stty_rows_cols": [
+        35,
+        112
+      ],
+      "csi18t_expected_hex": "1b5b383b33353b31313274",
+      "csi18t_received_hex": "1b5b383b33353b31313274"
+    },
+    {
+      "case": "D",
+      "browser_rows_cols": [
+        35,
+        144
+      ],
+      "target_stty_rows_cols": [
+        35,
+        144
+      ],
+      "csi18t_expected_hex": "1b5b383b33353b31343474",
+      "csi18t_received_hex": "1b5b383b33353b31343474"
+    },
+    {
+      "case": "POST_CAPTURE",
+      "browser_rows_cols": [
+        27,
+        192
+      ],
+      "target_stty_rows_cols": [
+        27,
+        192
+      ],
+      "csi18t_expected_hex": "1b5b383b32373b31393274",
+      "csi18t_received_hex": "1b5b383b32373b31393274"
+    }
+  ],
+  "hidden_font": {
+    "old_family": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    "new_family": "\"Noto Sans Mono CJK SC\", monospace",
+    "before_rows_cols": [
+      35,
+      112
+    ],
+    "hidden_rows_cols": [
+      35,
+      112
+    ],
+    "after_rows_cols": [
+      35,
+      144
+    ],
+    "alternate_screen_marker_preserved": true
+  }
+}
