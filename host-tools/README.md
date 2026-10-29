@@ -8,7 +8,7 @@ consistently to the Web UI and MCP clients:
 linkr-tray
     +-> desktop status icon when a graphical session is available
     +-> Web UI + board HTTP/WS gateway
-    +-> shared CH347F Serial Broker
+    +-> retained legacy CH347F Serial Broker (not MCU J4)
     +-> bounded raw UART RX archive on host disk
     +-> resident Streamable HTTP MCP at /mcp
 
@@ -111,10 +111,47 @@ safe for automatic replay; hardware-changing calls are never marked retryable.
 
 ## Compatibility boundary
 
-The Web Serial path remains available for a browser-owned UART. Bridge mode,
-MCP and other Agents share `linkr-serial-broker.v1`, so they can receive the
-same UART stream without opening competing OS handles. Write claims are short
-and operation-scoped.
+The embedded product terminal uses MCU `j4`; the optional Host's retained
+`/serial` endpoint and MCP serial tools instead use the legacy
+`linkr-serial-broker.v1` CH347 `uart0`/`uart1` channels. They are not aliases for
+J4. Write claims are short and operation-scoped. This change does not remove
+the Broker or introduce a legacy firmware compatibility promise.
+
+CH347 admission requires VID/PID `1a86:55de`, verified physical USB identity,
+and a complete, unique pair of CDC communication interfaces 0/2. Port-name
+suffixes and sorted indices are never used. Multiple devices require the
+optional `open.device_serial` selector; missing or ambiguous identity is an
+error, not a fallback. Native verification uses Linux sysfs, Windows
+SetupAPI/Configuration Manager physical-parent devnodes, and macOS IOKit
+physical-device ancestry. macOS CDC data interfaces and native dialin/callout
+aliases are normalized using OS metadata, not filenames. MCP
+`linkr_serial_connect` exposes the optional `device_serial` selector and forwards
+it to the Broker. It never bypasses identity checks.
+
+Broker output is bounded per peer: 64 queued messages plus one in-flight send,
+with a 256 KiB payload budget including that send. Nonblocking overflow cancels
+only the slow peer. Input messages/frames are limited to 64 KiB; the independent
+socket reader feeds a sequential executor with 16 queued commands plus one
+executing command, within a 256 KiB raw-message budget. It continues detecting
+disconnects during serial backpressure; EOF/Close cancels execution and releases
+the peer's subscriptions and claim.
+
+Serial write/drain has a cancellable 5-second deadline. A local adapter queries
+the driver's output queue without calling the serial library's synchronous
+`tcdrain`/blocking flush. `write_ack.completion=driver_queue_empty` means async
+writes completed and the driver queue was empty, **not** physical UART
+wire-complete. Failed writes may have sent a prefix and must not be automatically
+replayed. Failed opens leave idle reclamation intact.
+
+Managed shutdown closes admission before canceling Broker/proxy sockets and
+serial tasks, including late upgrades and blocked upstream I/O. It drains async
+tasks for 1 second, then aborts and joins them before closing ports/logs. HTTP
+drain is bounded concurrently; log waits are bounded separately (up to 4 seconds
+total cooperative shutdown). Old sockets cannot reopen channels after restart.
+See [the serial transport contract](../docs/reference/serial-broker.md#retained-legacy-host-broker-not-j4)
+for selectors, failure semantics, and OS-worker limitations. Host regressions
+use mock USB inventories, loopback sockets, and Unix virtual serial ports;
+they do not establish hardware compatibility or HIL acceptance.
 
 The former Node gateway and MCP adapter have been removed. New integrations
 should invoke `linkr-host`.

@@ -26,7 +26,7 @@ use rmcp::transport::streamable_http_server::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::{net::TcpListener, sync::Notify};
+use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message as TungsteniteMessage};
 use tokio_util::io::ReaderStream;
 use tower_http::{
@@ -39,6 +39,7 @@ use url::Url;
 use crate::{
     config::{is_allowed_origin, HostConfig},
     host_activity::{HostActivity, LogicAnalyzerSession},
+    lifecycle::{CancelOnDrop, Lifecycle, SHUTDOWN_GRACE},
     mcp::LinkrMcpServer,
     serial_broker::{SerialBroker, PROTOCOL as SERIAL_PROTOCOL},
     serial_log::SerialLogService,
@@ -54,7 +55,7 @@ struct AppState {
     serial: SerialBroker,
     serial_log: SerialLogService,
     activity: HostActivity,
-    shutdown: Arc<Notify>,
+    lifecycle: Lifecycle,
 }
 
 // allow: SIZE_OK — one Axum gateway boundary owns local routes and board proxying.
@@ -75,6 +76,17 @@ pub async fn serve_with_shutdown(
     config: HostConfig,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
+    let listener = TcpListener::bind(config.bind)
+        .await
+        .with_context(|| format!("bind Linkr Host on {}", config.bind))?;
+    serve_listener(config, listener, shutdown_signal).await
+}
+
+async fn serve_listener(
+    config: HostConfig,
+    listener: TcpListener,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
     let client = Client::builder()
         .pool_max_idle_per_host(1)
         .pool_idle_timeout(Duration::from_secs(90))
@@ -83,7 +95,8 @@ pub async fn serve_with_shutdown(
         .context("build board HTTP client")?;
     let serial_log = SerialLogService::new(config.serial_log.clone()).await?;
     let serial = SerialBroker::new(config.serial_idle_timeout, serial_log.clone());
-    let shutdown = Arc::new(Notify::new());
+    let lifecycle = serial.lifecycle.clone();
+    let _owner = CancelOnDrop(lifecycle.clone());
     let activity = HostActivity::default();
     let state = AppState {
         config: Arc::new(config),
@@ -91,7 +104,7 @@ pub async fn serve_with_shutdown(
         serial,
         serial_log,
         activity,
-        shutdown: shutdown.clone(),
+        lifecycle: lifecycle.clone(),
     };
     let index = state.config.web_root.join("index.html");
     let static_files = ServeDir::new(&state.config.web_root)
@@ -140,22 +153,29 @@ pub async fn serve_with_shutdown(
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
 
-    let listener = TcpListener::bind(state.config.bind)
-        .await
-        .with_context(|| format!("bind Linkr Host on {}", state.config.bind))?;
     info!(url = %state.config.public_url(), board = %state.config.board_url, web_root = %state.config.web_root.display(), "Linkr Host ready");
 
-    let shutdown_serial = state.serial.clone();
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            tokio::select! {
-                _ = shutdown_signal => {}
-                _ = shutdown.notified() => {}
-            }
-            shutdown_serial.shutdown().await;
-        })
-        .await
-        .context("run Linkr Host server")
+    use std::future::IntoFuture;
+    let server = axum::serve(listener, app)
+        .with_graceful_shutdown(lifecycle.cancel.clone().cancelled_owned())
+        .into_future();
+    tokio::pin!(server);
+    let result = tokio::select! {
+        result = &mut server => Some(result),
+        _ = shutdown_signal => None,
+        _ = lifecycle.cancel.cancelled() => None,
+    };
+    lifecycle.close();
+    let drain_http = async {
+        if let Some(result) = result {
+            return result;
+        }
+        tokio::time::timeout(SHUTDOWN_GRACE, &mut server)
+            .await
+            .unwrap_or(Ok(()))
+    };
+    let (result, ()) = tokio::join!(drain_http, state.serial.shutdown());
+    result.context("run Linkr Host server")
 }
 
 async fn health(State(state): State<AppState>) -> Json<Value> {
@@ -205,7 +225,7 @@ async fn shutdown_host(State(state): State<AppState>, headers: HeaderMap) -> Res
             "managed shutdown token is invalid",
         );
     }
-    state.shutdown.notify_one();
+    state.lifecycle.close();
     StatusCode::ACCEPTED.into_response()
 }
 
@@ -528,9 +548,16 @@ fn log_error(status: StatusCode, code: &str, message: &str) -> Response {
 }
 
 async fn serial_socket(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
-    ws.on_upgrade(move |socket| async move {
-        state.serial.serve_socket(socket).await;
-    })
+    if state.lifecycle.cancel.is_cancelled() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    ws.max_message_size(crate::serial_broker::MAX_REQUEST_BYTES)
+        .max_frame_size(crate::serial_broker::MAX_REQUEST_BYTES)
+        .on_upgrade(move |socket| async move {
+            state.lifecycle.spawn(async move {
+                state.serial.serve_socket(socket).await;
+            });
+        })
 }
 
 async fn proxy_websocket_request(
@@ -538,6 +565,9 @@ async fn proxy_websocket_request(
     OriginalUri(uri): OriginalUri,
     ws: WebSocketUpgrade,
 ) -> Response {
+    if state.lifecycle.cancel.is_cancelled() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
     let target = match board_ws_url(
         &state.config.board_url,
         uri.path_and_query()
@@ -553,7 +583,17 @@ async fn proxy_websocket_request(
             )
         }
     };
-    ws.on_upgrade(move |socket| proxy_websocket(socket, target, state.activity))
+    ws.on_upgrade(move |socket| async move {
+        let cancel = state.lifecycle.cancel.clone();
+        state.lifecycle.spawn(async move {
+            // Enclose the entire proxy, not just reads: connect/send/close may block.
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {}
+                _ = proxy_websocket(socket, target, state.activity) => {}
+            }
+        });
+    })
 }
 
 async fn proxy_http_request(
@@ -752,6 +792,9 @@ fn tungstenite_to_axum(message: TungsteniteMessage) -> Option<AxumMessage> {
 }
 
 async fn origin_guard(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if state.lifecycle.cancel.is_cancelled() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
     let origin = request
         .headers()
         .get(header::ORIGIN)
@@ -767,7 +810,12 @@ async fn origin_guard(State(state): State<AppState>, request: Request, next: Nex
     if request.method() == Method::OPTIONS {
         return add_cors_headers(StatusCode::NO_CONTENT.into_response(), origin.as_deref());
     }
-    add_cors_headers(next.run(request).await, origin.as_deref())
+    let response = tokio::select! {
+        biased;
+        _ = state.lifecycle.cancel.cancelled() => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        response = next.run(request) => response,
+    };
+    add_cors_headers(response, origin.as_deref())
 }
 
 fn add_cors_headers(mut response: Response, origin: Option<&str>) -> Response {
@@ -817,6 +865,160 @@ fn gateway_error(status: StatusCode, code: &str, message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn loopback_config(bind: std::net::SocketAddr, board: std::net::SocketAddr) -> HostConfig {
+        HostConfig {
+            bind,
+            board_url: Url::parse(&format!("http://{board}")).unwrap(),
+            web_root: "unused-test-web-root".into(),
+            trusted_origins: Default::default(),
+            serial_idle_timeout: Duration::from_millis(20),
+            serial_log: crate::serial_log::SerialLogConfig {
+                enabled: false,
+                root: "unused-test-log-root".into(),
+                segment_bytes: 1024,
+                total_bytes: 4096,
+                retention: Duration::from_secs(60),
+                queue_records: 16,
+            },
+            shutdown_token: Some("test-shutdown".into()),
+        }
+    }
+
+    async fn assert_socket_closed<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while let Some(Ok(message)) = socket.next().await {
+                if matches!(message, TungsteniteMessage::Close(_)) {
+                    break;
+                }
+                assert!(!message.to_text().unwrap_or_default().contains("\"opened\""));
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn managed_shutdown_closes_broker_proxy_and_old_sockets_before_restart() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (stream, _) = upstream.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let message = socket.next().await.unwrap().unwrap();
+            socket.send(message).await.unwrap();
+            assert_socket_closed(&mut socket).await;
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let config = loopback_config(address, upstream_addr);
+        let host = tokio::spawn(serve_listener(
+            config.clone(),
+            listener,
+            std::future::pending(),
+        ));
+        let (mut broker, _) = connect_async(format!("ws://{address}/serial"))
+            .await
+            .unwrap();
+        assert!(broker
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap()
+            .contains("hello"));
+        let (mut proxy, _) = connect_async(format!("ws://{address}/api/v1/ws/0"))
+            .await
+            .unwrap();
+        proxy
+            .send(TungsteniteMessage::Binary(b"probe".as_slice().into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            proxy.next().await.unwrap().unwrap().into_data(),
+            b"probe".as_slice()
+        );
+        let response = Client::new()
+            .post(format!("http://{address}/host/api/v1/shutdown"))
+            .header("x-linkr-shutdown-token", "test-shutdown")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        tokio::time::timeout(Duration::from_secs(2), host)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        // A write on an old TCP socket may buffer locally, but it must never reopen
+        // a channel or receive an opened acknowledgement from the old instance.
+        let _ = broker
+            .send(TungsteniteMessage::Text(
+                json!({"protocol": SERIAL_PROTOCOL, "type": "open", "channel": "uart0"})
+                    .to_string()
+                    .into(),
+            ))
+            .await;
+        assert_socket_closed(&mut broker).await;
+        assert_socket_closed(&mut proxy).await;
+        upstream_task.await.unwrap();
+
+        let listener = TcpListener::bind(address).await.unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let host = tokio::spawn(serve_listener(config, listener, async {
+            let _ = stopped.await;
+        }));
+        let (mut fresh, _) = connect_async(format!("ws://{address}/serial"))
+            .await
+            .unwrap();
+        assert!(fresh
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap()
+            .contains("hello"));
+        stop.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), host)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_socket_closed(&mut fresh).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_interrupts_stalled_upstream_handshake() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let host = tokio::spawn(serve_listener(
+            loopback_config(address, upstream_addr),
+            listener,
+            async {
+                let _ = stopped.await;
+            },
+        ));
+        let (mut socket, _) = connect_async(format!("ws://{address}/api/v1/ws/0"))
+            .await
+            .unwrap();
+        // Accept TCP but never answer the WebSocket handshake.
+        let (_stalled, _) = upstream.accept().await.unwrap();
+        stop.send(()).unwrap();
+        tokio::time::timeout(Duration::from_millis(500), host)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_socket_closed(&mut socket).await;
+    }
 
     #[test]
     fn maps_board_http_urls_to_websocket_urls() {

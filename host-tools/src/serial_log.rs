@@ -348,19 +348,21 @@ impl SerialLogService {
             reason: reason.into(),
             ended_at: OffsetDateTime::now_utc(),
         };
-        self.status
-            .lock()
-            .expect("serial log status")
-            .queued_records += 1;
-        if sender.send(command).await.is_err() {
-            let mut status = self.status.lock().expect("serial log status");
-            status.queued_records = status.queued_records.saturating_sub(1);
-            drop(status);
-            self.note_drop(
+        // A shutdown deadline may cancel this future. Reserve first so a canceled
+        // enqueue cannot leave queued_records permanently inflated.
+        match sender.reserve().await {
+            Ok(permit) => {
+                self.status
+                    .lock()
+                    .expect("serial log status")
+                    .queued_records += 1;
+                permit.send(command);
+            }
+            Err(_) => self.note_drop(
                 Some(session_id),
                 0,
                 "serial log writer stopped before finishing a session",
-            );
+            ),
         }
     }
 
@@ -1127,6 +1129,23 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("condition was not met");
+    }
+
+    #[tokio::test]
+    async fn canceled_finish_does_not_inflate_queue_accounting() {
+        let mut service = SerialLogService::disabled("unused-test-log-root".into());
+        let (sender, mut receiver) = mpsc::channel(1);
+        let (done, _wait) = tokio::sync::oneshot::channel();
+        sender.try_send(Command::Shutdown(done)).unwrap();
+        service.sender = Some(sender);
+        {
+            let finish = service.finish_session(Uuid::new_v4(), "canceled");
+            tokio::pin!(finish);
+            assert!(futures_util::poll!(&mut finish).is_pending());
+        }
+        assert_eq!(service.status().queued_records, 0);
+        assert!(receiver.try_recv().is_ok());
+        assert!(receiver.try_recv().is_err());
     }
 
     #[tokio::test]

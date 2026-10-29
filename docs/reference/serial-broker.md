@@ -1,8 +1,9 @@
 # J4 MCU Serial Transport Contract
 
-This file retains its historical name so existing links do not break. The
-current product has no desktop serial-broker protocol. J4 is owned by the MCU
-and exposed directly over firmware transports.
+This file retains its historical name so existing links do not break. J4 is
+owned by the MCU and exposed directly over firmware transports, not through a
+desktop serial broker. The separately retained legacy CH347 Host endpoint is
+documented below; it is not the J4 product transport.
 
 ## Product identity
 
@@ -247,15 +248,94 @@ capture that owns either pin. The maximum pause wait is 1250 ms, covering one
 Current board evidence completed that low-baud event at 1.213 seconds before a
 GP10 SINGLE capture and then restored 115200 baud.
 
-## Retired host path
+## Retained legacy Host broker (not J4)
 
-Early development builds described a loopback host broker, two logical
-`uart0`/`uart1` channels, direct browser Web Serial, and CH347 serial discovery.
-Those contracts are retired and are not compatibility surfaces. The onboard
-CH347 remains relevant to JTAG/SWD documentation and an external
-`/dev/ttyACM1` may be used as a logic-analyzer stimulus fixture, but neither is
-the J4 product transport. Port 5173 is a Vite preview only; there is no
-`127.0.0.1:8787` J4 broker endpoint.
+The optional Rust Host still exposes `/serial` on its loopback listener
+(default `127.0.0.1:8787`) using `linkr-serial-broker.v1`. Its `uart0`/`uart1`
+channels are legacy CH347 USB CDC functions, **not** aliases for MCU `j4`.
+The Host's MCP serial consumer still uses this endpoint. This retention does
+not create an old-firmware compatibility promise. Port 5173 is only a Vite
+preview; neither endpoint is a J4 broker.
+
+### Device admission
+
+- Discovery requires USB VID/PID `1a86:55de`, independently verified USB device
+  identity and serial, and exactly one complete pair of CDC communication
+  interfaces 0 and 2 on that same physical device. `uart0` selects interface 0;
+  `uart1` selects interface 2. This is USB function identity, not board pin or
+  connector mapping.
+- Port suffixes, lexicographic order, array indices, generic WCH VID matches,
+  and tty names are never selection evidence. Missing interfaces, unknown
+  identity, duplicated interfaces/serials, or multiple eligible devices fail
+  closed before opening any OS port.
+- An `open` request may include `device_serial` to select one unique USB device:
+
+  ```json
+  {"protocol":"linkr-serial-broker.v1","type":"open","channel":"uart0","baud":115200,"device_serial":"<USB-serial>"}
+  ```
+
+  Omitting the selector requires a unique device. A selector cannot bypass
+  VID/PID/interface validation. Selecting another device on an already open
+  channel returns `serial_device_conflict`; a baud mismatch returns
+  `baud_conflict`. `opened` and `status` include `device_serial`.
+  MCP `linkr_serial_connect` accepts the same optional `device_serial` and
+  forwards it unchanged to the Broker open frame. Omission sends no selector.
+- Native identity providers use Linux sysfs ancestry, Windows SetupAPI COM
+  metadata plus Configuration Manager USB interface/physical-parent devnodes,
+  and macOS IOKit serial-service/interface/physical-device ancestry. Physical
+  grouping uses the actual parent node, never just matching serial strings.
+  `serialport` interface metadata is enabled and cross-checked when present.
+- On macOS the native CDC interface class distinguishes communication interfaces
+  0/2 from data interfaces 1/3. Data interfaces normalize to their communication
+  function. IOKit-advertised dialin/callout aliases count as one serial service;
+  only its actual `IOCalloutDevice` path is admitted. No filename suffix or
+  array index participates in either decision. Missing or contradictory native
+  identity still returns `serial_open_failed` on any platform.
+
+### Flow control and lifecycle
+
+- Each peer has at most 64 queued outgoing messages (plus one in-flight send)
+  and a 256 KiB payload-byte budget including the in-flight message. Enqueue is
+  nonblocking. Exhausting either budget cancels only that peer and releases its
+  subscriptions/write claim; other peers continue. Incoming Broker messages
+  and individual frames are limited to 64 KiB. A separate, continuously polled
+  socket reader feeds a sequential command executor through a nonblocking queue
+  of 16 commands plus one executing command, with a 256 KiB raw-message budget
+  including the executing command. Input overflow cancels only that peer.
+  EOF/Close cancels execution and drops queued commands even while serial output
+  is backpressured, then releases subscriptions and the write claim.
+- Serial writes remain ordered. Write plus driver-queue drain has a 5-second
+  deadline and is interruptible by shutdown/disconnect. The repo-local serial
+  adapter never invokes the underlying synchronous `tcdrain`/blocking flush or
+  hides it in an abortable-looking blocking task. It polls `bytes_to_write`
+  (`TIOCOUTQ` on POSIX, `ClearCommError`/`COMSTAT.cbOutQue` on Windows), yielding
+  between nonempty reports. `write_ack.completion` is `driver_queue_empty`:
+  the async writes completed and the driver reported no queued output. This is
+  **not** a guarantee that the USB-device FIFO or final UART stop bit reached the
+  target. Queue-query errors fail the write rather than silently acknowledging.
+  A failed/canceled write can have transmitted a prefix and is not safe to
+  replay (`serial_write_failed.retryable=false`).
+- Channel subscriptions are authoritative; there is no independently committed
+  reverse index. A successful open commits its subscription and cancels idle
+  reclamation in one critical section. Failed opens preserve the existing idle
+  timer. Unexpected disconnect of the last subscriber starts the configured
+  idle timer; explicit last-subscriber close releases the port immediately.
+- Host shutdown first closes admission and persistently cancels the instance.
+  Both Broker and board-proxy WebSockets, including late upgrade callbacks,
+  belong to that lifecycle. Cancellation encloses upstream connect/send/close,
+  not just reads. Old sockets cannot open ports after an in-process restart;
+  clients must reconnect to the new instance. Transport termination need not
+  complete a WebSocket close handshake and does not undo already sent UART bytes.
+- Async tasks have a 1-second cooperative drain before abort-and-join. Only
+  after task reclamation are ports and logs closed. HTTP drain is limited to
+  1 second concurrently; each of the two log-session finishes and final log
+  shutdown has a 1-second wait budget (up to 4 seconds total cooperative Host
+  shutdown). OS-blocked filesystem/enumeration worker threads cannot be forcibly
+  killed by Tokio; these deadlines bound async waits, not kernel scheduling.
+
+The regression evidence for this Host path is offline: loopback mock sockets,
+synthetic USB inventories, and Unix virtual serial ports. The J4 HIL evidence
+below does not validate this legacy Host endpoint.
 
 ## Verification evidence
 

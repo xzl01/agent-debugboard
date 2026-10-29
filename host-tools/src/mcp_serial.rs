@@ -420,22 +420,31 @@ impl SerialBrokerClient {
         }
     }
 
-    pub async fn open(&self, channel: &str, baud: u32) -> Result<Value, BrokerClientError> {
+    pub async fn open(
+        &self,
+        channel: &str,
+        baud: u32,
+        device_serial: Option<&str>,
+    ) -> Result<Value, BrokerClientError> {
         if !(300..=4_000_000).contains(&baud) {
             return Err(BrokerClientError::new(
                 "invalid_baud",
                 "baud must be between 300 and 4000000",
             ));
         }
+        let mut fields = json!({"baud": baud});
+        if let Some(serial) = device_serial {
+            if serial.is_empty() || serial.len() > 128 {
+                return Err(BrokerClientError::new(
+                    "invalid_device_serial",
+                    "device_serial must be a nonempty USB serial string (max 128 bytes)",
+                ));
+            }
+            fields["device_serial"] = Value::String(serial.to_owned());
+        }
         let channel = normalize_channel(channel)?;
         let mut response = self
-            .request(
-                "open",
-                channel,
-                json!({"baud": baud}),
-                &["opened"],
-                REQUEST_TIMEOUT,
-            )
+            .request("open", channel, fields, &["opened"], REQUEST_TIMEOUT)
             .await?;
         response["cursor"] = Value::from(self.current_cursor(channel).await?);
         Ok(response)

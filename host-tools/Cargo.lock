@@ -2190,17 +2190,20 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "clap",
+ "core-foundation",
  "ctrlc",
  "dirs",
  "fs2",
  "futures-util",
  "http",
+ "io-kit-sys",
  "regex",
  "reqwest",
  "rmcp",
  "schemars",
  "serde",
  "serde_json",
+ "serialport",
  "tao",
  "tempfile",
  "thiserror 2.0.19",
@@ -2215,6 +2218,7 @@ dependencies = [
  "tray-icon",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

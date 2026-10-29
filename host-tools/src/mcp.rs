@@ -368,7 +368,7 @@ impl LinkrMcpServer {
 
     #[tool(
         name = "linkr_serial_connect",
-        description = "Subscribe to UART0 or UART1 through the shared host Serial Broker. Existing Web readers remain connected."
+        description = "Subscribe to UART0 or UART1 through the shared host Serial Broker. Use device_serial to select one unique CH347 USB device when several are attached. Existing readers remain connected."
     )]
     async fn serial_connect(
         &self,
@@ -378,7 +378,11 @@ impl LinkrMcpServer {
             Ok(self
                 .serial()
                 .await?
-                .open(args.channel.as_str(), args.baud)
+                .open(
+                    args.channel.as_str(),
+                    args.baud,
+                    args.device_serial.as_deref(),
+                )
                 .await?)
         })
         .await
@@ -854,6 +858,9 @@ struct SerialConnectArgs {
     channel: SerialChannel,
     #[serde(default = "default_baud")]
     baud: u32,
+    /// Exact USB serial selector; does not bypass physical device/interface checks.
+    #[schemars(length(min = 1, max = 128))]
+    device_serial: Option<String>,
 }
 
 fn default_baud() -> u32 {
@@ -1005,6 +1012,63 @@ fn default_password_prompt() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn serial_connect_selector_schema_reaches_broker_open_frame() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::{accept_async, tungstenite::Message};
+        let schema = serde_json::to_value(schemars::schema_for!(SerialConnectArgs)).unwrap();
+        assert!(schema["properties"]["device_serial"].is_object());
+        assert!(!schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("device_serial")));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mock = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(tcp).await.unwrap();
+            let protocol = crate::serial_broker::PROTOCOL;
+            socket
+                .send(Message::Text(
+                    json!({"protocol": protocol, "type": "hello", "client_id": "mock"})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            for selector in [Some("second-device"), None] {
+                let message = socket.next().await.unwrap().unwrap();
+                let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                assert_eq!(request["type"], "open");
+                assert_eq!(request["channel"], "uart1");
+                assert_eq!(request["baud"], 115200);
+                assert_eq!(
+                    request.get("device_serial").and_then(Value::as_str),
+                    selector
+                );
+                if selector.is_none() {
+                    assert!(request.get("device_serial").is_none());
+                }
+                socket.send(Message::Text(json!({"protocol": protocol, "type": "opened", "channel": "uart1", "request_id": request["request_id"]}).to_string().into())).await.unwrap();
+            }
+        });
+        let server = LinkrMcpServer::new(
+            Url::parse(&format!("http://{address}/unused/")).unwrap(),
+            Url::parse(&format!("ws://{address}/serial")).unwrap(),
+        )
+        .unwrap();
+        for args in [
+            json!({"channel": "uart1", "device_serial": "second-device"}),
+            json!({"channel": "uart1"}),
+        ] {
+            let result = server
+                .serial_connect(Parameters(serde_json::from_value(args).unwrap()))
+                .await;
+            assert_ne!(result.is_error, Some(true));
+        }
+        mock.await.unwrap();
+    }
 
     #[test]
     fn status_summary_omits_gpio_details() {

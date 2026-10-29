@@ -1,7 +1,10 @@
 pub mod config;
 pub mod gateway;
 mod host_activity;
+mod lifecycle;
 pub mod mcp;
 pub mod mcp_serial;
 pub mod serial_broker;
+mod serial_discovery;
+mod serial_io;
 pub mod serial_log;

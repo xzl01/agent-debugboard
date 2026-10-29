@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -9,18 +9,23 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
-    sync::{mpsc, Mutex},
-    task::JoinHandle,
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf},
+    sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore},
+    task::AbortHandle,
 };
-use tokio_serial::{SerialPortBuilderExt, SerialPortInfo, SerialPortType, SerialStream};
-use tracing::debug;
+use tokio_serial::{SerialPortBuilderExt, SerialStream};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::serial_log::SerialLogService;
+use crate::{
+    lifecycle::{Lifecycle, SHUTDOWN_GRACE},
+    serial_discovery,
+    serial_io::SerialIo,
+    serial_log::SerialLogService,
+};
 
 pub const PROTOCOL: &str = "linkr-serial-broker.v1";
-const CH347_VENDOR_ID: u16 = 0x1a86;
 const MIN_BAUD: u64 = 300;
 const MAX_BAUD: u64 = 4_000_000;
 const MAX_REDACTION_BUFFER_BYTES: usize = 65_536;
@@ -28,9 +33,87 @@ const REDACTION_SUFFIX_BYTES: usize = 512;
 const SERIAL_READ_BUFFER_BYTES: usize = 16 * 1024;
 const SERIAL_FORWARD_MAX_BYTES: usize = 16 * 1024;
 const SERIAL_FORWARD_FLUSH_INTERVAL: Duration = Duration::from_millis(2);
+const PEER_QUEUE_MESSAGES: usize = 64;
+const PEER_QUEUE_BYTES: usize = 256 * 1024;
+const PEER_COMMAND_MESSAGES: usize = 16;
+const PEER_COMMAND_BYTES: usize = 256 * 1024;
+const SERIAL_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
 type PeerId = String;
-type PeerSender = mpsc::UnboundedSender<Message>;
+type SerialWriter = Arc<Mutex<WriteHalf<SerialIo<SerialStream>>>>;
+
+struct QueuedFrame {
+    frame: Message,
+    // Account for the in-flight send too, not only frames still in the queue.
+    _bytes: OwnedSemaphorePermit,
+}
+
+#[derive(Clone)]
+struct PeerSender {
+    sender: mpsc::Sender<QueuedFrame>,
+    bytes: Arc<Semaphore>,
+    cancel: CancellationToken,
+}
+
+impl PeerSender {
+    fn new(cancel: CancellationToken) -> (Self, mpsc::Receiver<QueuedFrame>) {
+        let (sender, receiver) = mpsc::channel(PEER_QUEUE_MESSAGES);
+        (
+            Self {
+                sender,
+                bytes: Arc::new(Semaphore::new(PEER_QUEUE_BYTES)),
+                cancel,
+            },
+            receiver,
+        )
+    }
+
+    fn send(&self, frame: Message) -> Result<(), ()> {
+        if self.cancel.is_cancelled() {
+            return Err(());
+        }
+        let size = match &frame {
+            Message::Text(text) => text.len(),
+            Message::Binary(bytes) | Message::Ping(bytes) | Message::Pong(bytes) => bytes.len(),
+            Message::Close(frame) => frame.as_ref().map_or(0, |frame| 2 + frame.reason.len()),
+        }
+        .max(1);
+        let permit = u32::try_from(size)
+            .ok()
+            .and_then(|size| self.bytes.clone().try_acquire_many_owned(size).ok());
+        if let Some(permit) = permit {
+            if self
+                .sender
+                .try_send(QueuedFrame {
+                    frame,
+                    _bytes: permit,
+                })
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        // Never await a socket, cleanup, or another task under a channel lock.
+        self.cancel.cancel();
+        Err(())
+    }
+}
+
+async fn write_serial<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    bytes: &[u8],
+    cancel: &CancellationToken,
+) -> std::io::Result<()> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "host shutting down")),
+        result = tokio::time::timeout(SERIAL_WRITE_TIMEOUT, async {
+            writer.write_all(bytes).await?;
+            writer.flush().await
+        }) => result.unwrap_or_else(|_| Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "serial write/flush deadline exceeded"))),
+    }
+}
 
 struct SerialReadBatch {
     bytes: Vec<u8>,
@@ -185,17 +268,10 @@ impl Channel {
         }
     }
 
-    fn preferred_suffix(self) -> &'static str {
-        match self {
-            Self::Uart0 => "D1",
-            Self::Uart1 => "D3",
-        }
-    }
-
-    fn fallback_index(self) -> usize {
+    fn interface(self) -> u8 {
         match self {
             Self::Uart0 => 0,
-            Self::Uart1 => 1,
+            Self::Uart1 => 2,
         }
     }
 }
@@ -204,9 +280,11 @@ struct ChannelState {
     channel: Channel,
     path: Option<String>,
     baud: Option<u32>,
-    writer: Option<WriteHalf<SerialStream>>,
-    reader_task: Option<JoinHandle<()>>,
-    idle_task: Option<JoinHandle<()>>,
+    writer: Option<SerialWriter>,
+    reader_task: Option<AbortHandle>,
+    idle_task: Option<AbortHandle>,
+    device_serial: Option<String>,
+    generation: u64,
     subscribers: HashMap<PeerId, PeerSender>,
     owner: Option<(PeerId, String)>,
     observer_redaction: Option<ObserverRedaction>,
@@ -223,6 +301,8 @@ impl ChannelState {
             writer: None,
             reader_task: None,
             idle_task: None,
+            device_serial: None,
+            generation: 0,
             subscribers: HashMap::new(),
             owner: None,
             observer_redaction: None,
@@ -242,7 +322,9 @@ impl ChannelState {
     }
 
     fn close_port(&mut self) -> Option<Uuid> {
+        self.generation = self.generation.wrapping_add(1);
         self.writer = None;
+        self.device_serial = None;
         self.path = None;
         self.baud = None;
         self.owner = None;
@@ -257,7 +339,7 @@ impl ChannelState {
 #[derive(Clone)]
 pub struct SerialBroker {
     channels: Arc<HashMap<Channel, Arc<Mutex<ChannelState>>>>,
-    peer_subscriptions: Arc<Mutex<HashMap<PeerId, HashSet<Channel>>>>,
+    pub(crate) lifecycle: Lifecycle,
     idle_timeout: Duration,
     started: Instant,
     serial_log: SerialLogService,
@@ -277,7 +359,7 @@ impl SerialBroker {
         ]);
         Self {
             channels: Arc::new(channels),
-            peer_subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            lifecycle: Lifecycle::default(),
             idle_timeout,
             started: Instant::now(),
             serial_log,
@@ -285,16 +367,24 @@ impl SerialBroker {
     }
 
     pub async fn serve_socket(&self, socket: WebSocket) {
+        if self.lifecycle.cancel.is_cancelled() {
+            return;
+        }
         let peer_id = format!("host-{}", Uuid::new_v4());
         let (mut ws_sink, mut ws_stream) = socket.split();
-        let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
-        let writer = tokio::spawn(async move {
-            while let Some(frame) = rx.recv().await {
-                if ws_sink.send(frame).await.is_err() {
+        let cancel = self.lifecycle.cancel.child_token();
+        let (tx, mut rx) = PeerSender::new(cancel.clone());
+        // Keep reading EOF/Close even while a command is blocked on serial I/O.
+        // Never await queue capacity: a flooding peer is canceled instead.
+        let (commands, mut command_rx) = mpsc::channel::<QueuedFrame>(PEER_COMMAND_MESSAGES);
+        let command_bytes = Arc::new(Semaphore::new(PEER_COMMAND_BYTES));
+        let writer = async move {
+            while let Some(queued) = rx.recv().await {
+                if ws_sink.send(queued.frame).await.is_err() {
                     break;
                 }
             }
-        });
+        };
 
         let _ = tx.send(frame(
             "hello",
@@ -312,31 +402,69 @@ impl SerialBroker {
             }),
         ));
 
-        while let Some(message) = ws_stream.next().await {
-            let Ok(message) = message else { break };
-            match message {
-                Message::Text(text) => self.dispatch(&peer_id, &tx, text.as_str()).await,
-                Message::Binary(bytes) => match std::str::from_utf8(&bytes) {
-                    Ok(text) => self.dispatch(&peer_id, &tx, text).await,
-                    Err(_) => send_error(
-                        &tx,
-                        "invalid_json",
-                        "broker request must be valid UTF-8 JSON",
-                        None,
-                        None,
-                        false,
-                    ),
-                },
-                Message::Close(_) => break,
-                Message::Ping(_) | Message::Pong(_) => {}
+        let reader = async {
+            while let Some(message) = ws_stream.next().await {
+                let Ok(message) = message else { break };
+                let size = match &message {
+                    Message::Text(text) => text.len(),
+                    Message::Binary(bytes) => bytes.len(),
+                    Message::Close(_) => break,
+                    Message::Ping(_) | Message::Pong(_) => continue,
+                };
+                let permit = u32::try_from(size.max(1))
+                    .ok()
+                    .filter(|_| size <= MAX_REQUEST_BYTES)
+                    .and_then(|size| command_bytes.clone().try_acquire_many_owned(size).ok());
+                let Some(permit) = permit else {
+                    break;
+                };
+                if commands
+                    .try_send(QueuedFrame {
+                        frame: message,
+                        _bytes: permit,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
             }
+        };
+        let executor = async {
+            while let Some(queued) = command_rx.recv().await {
+                let message = queued.frame;
+                match message {
+                    Message::Text(text) => self.dispatch(&peer_id, &tx, text.as_str()).await,
+                    Message::Binary(bytes) => match std::str::from_utf8(&bytes) {
+                        Ok(text) => self.dispatch(&peer_id, &tx, text).await,
+                        Err(_) => send_error(
+                            &tx,
+                            "invalid_json",
+                            "broker request must be valid UTF-8 JSON",
+                            None,
+                            None,
+                            false,
+                        ),
+                    },
+                    Message::Close(_) => break,
+                    Message::Ping(_) | Message::Pong(_) => {}
+                }
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {}
+            _ = writer => {}
+            _ = reader => {}
+            _ = executor => {}
         }
-
+        cancel.cancel();
         self.disconnect_peer(&peer_id).await;
-        writer.abort();
     }
 
     async fn dispatch(&self, peer_id: &str, sender: &PeerSender, raw: &str) {
+        if self.lifecycle.cancel.is_cancelled() || sender.cancel.is_cancelled() {
+            return;
+        }
         let request = match parse_request(raw) {
             Ok(request) => request,
             Err(error) => {
@@ -367,7 +495,26 @@ impl SerialBroker {
         let baud = request.baud.expect("validated open request has baud");
         let state_ref = self.channel(channel);
         let mut state = state_ref.lock().await;
-        state.cancel_idle_close();
+        if self.lifecycle.cancel.is_cancelled() || sender.cancel.is_cancelled() {
+            return;
+        }
+
+        if state.connected()
+            && request
+                .device_serial
+                .as_ref()
+                .is_some_and(|serial| Some(serial) != state.device_serial.as_ref())
+        {
+            send_error(
+                sender,
+                "serial_device_conflict",
+                "channel is open on another device",
+                request.request_id.as_deref(),
+                Some(channel),
+                false,
+            );
+            return;
+        }
 
         if let Some(current) = state.baud {
             if current != baud {
@@ -384,22 +531,8 @@ impl SerialBroker {
         }
 
         if !state.connected() {
-            let port = match find_serial_port(channel).await {
-                Ok(Some(port)) => port,
-                Ok(None) => {
-                    send_error(
-                        sender,
-                        "serial_not_found",
-                        &format!(
-                            "No CH347F {} serial port found",
-                            channel.as_str().to_uppercase()
-                        ),
-                        request.request_id.as_deref(),
-                        Some(channel),
-                        true,
-                    );
-                    return;
-                }
+            let candidate = match find_serial_port(channel, request.device_serial.clone()).await {
+                Ok(candidate) => candidate,
                 Err(error) => {
                     send_error(
                         sender,
@@ -412,6 +545,10 @@ impl SerialBroker {
                     return;
                 }
             };
+            if self.lifecycle.cancel.is_cancelled() || sender.cancel.is_cancelled() {
+                return;
+            }
+            let port = candidate.port;
             let serial_builder = tokio_serial::new(&port.port_name, baud);
             // Request exclusivity on the builder so it is applied atomically
             // during open. Do not call `set_exclusive(true)` again afterwards:
@@ -433,36 +570,25 @@ impl SerialBroker {
                     return;
                 }
             };
-            let (reader, writer) = tokio::io::split(serial);
-            state.path = Some(port.port_name.clone());
-            state.baud = Some(baud);
-            state.writer = Some(writer);
-            state.log_session =
-                self.serial_log
-                    .start_session(channel.as_str(), &port.port_name, baud);
-            let broker = self.clone();
-            let log_session = state.log_session;
-            state.reader_task = Some(tokio::spawn(async move {
-                broker.read_serial(channel, reader, log_session).await;
-            }));
+            self.attach_port(
+                &mut state,
+                serial,
+                port.port_name,
+                candidate.identity.serial,
+                baud,
+            );
         }
 
+        // No await between successful subscription and canceling the old idle timer.
+        state.cancel_idle_close();
         state.subscribers.insert(peer_id.to_owned(), sender.clone());
-        drop(state);
-        self.peer_subscriptions
-            .lock()
-            .await
-            .entry(peer_id.to_owned())
-            .or_default()
-            .insert(channel);
-
-        let state = state_ref.lock().await;
         let _ = sender.send(frame(
             "opened",
             json!({
                 "request_id": request.request_id,
                 "channel": channel.as_str(),
                 "path": state.path,
+                "device_serial": state.device_serial,
                 "baud": state.baud,
                 "shared": true
             }),
@@ -470,11 +596,62 @@ impl SerialBroker {
         publish_status(&state, None);
     }
 
+    fn attach_port(
+        &self,
+        state: &mut ChannelState,
+        serial: SerialStream,
+        path: String,
+        device_serial: String,
+        baud: u32,
+    ) {
+        let (reader, writer) = tokio::io::split(SerialIo::new(serial));
+        state.path = Some(path.clone());
+        state.baud = Some(baud);
+        state.writer = Some(Arc::new(Mutex::new(writer)));
+        state.device_serial = Some(device_serial);
+        state.generation = state.generation.wrapping_add(1);
+        state.log_session = self
+            .serial_log
+            .start_session(state.channel.as_str(), &path, baud);
+        let broker = self.clone();
+        let log_session = state.log_session;
+        let generation = state.generation;
+        let channel = state.channel;
+        state.reader_task = self.lifecycle.spawn(async move {
+            tokio::select! {
+                biased;
+                _ = broker.lifecycle.cancel.cancelled() => {}
+                _ = broker.read_serial(channel, reader, log_session, generation) => {}
+            }
+        });
+    }
+
     async fn write(&self, peer_id: &str, sender: &PeerSender, request: ClientRequest) {
         let channel = request.channel;
         let state_ref = self.channel(channel);
+        let writer = state_ref.lock().await.writer.clone();
+        let Some(writer) = writer else {
+            send_error(
+                sender,
+                "serial_not_open",
+                "channel is not open",
+                request.request_id.as_deref(),
+                Some(channel),
+                true,
+            );
+            return;
+        };
+        // Serialize writes without holding the channel metadata lock across OS I/O.
+        let mut output = writer.lock().await;
         let mut state = state_ref.lock().await;
-        if !state.subscribers.contains_key(peer_id) || !state.connected() {
+        if !state.subscribers.contains_key(peer_id)
+            || state
+                .writer
+                .as_ref()
+                .is_none_or(|current| !Arc::ptr_eq(current, &writer))
+            || self.lifecycle.cancel.is_cancelled()
+            || sender.cancel.is_cancelled()
+        {
             send_error(
                 sender,
                 "serial_not_open",
@@ -539,42 +716,26 @@ impl SerialBroker {
             );
             return;
         };
-        let Some(writer) = state.writer.as_mut() else {
-            send_error(
-                sender,
-                "serial_not_open",
-                &format!("{} is not open", channel.as_str()),
-                request.request_id.as_deref(),
-                Some(channel),
-                true,
-            );
-            return;
+        drop(state);
+        let result = tokio::select! {
+            biased;
+            _ = sender.cancel.cancelled() => return,
+            result = write_serial(&mut *output, &bytes, &self.lifecycle.cancel) => result,
         };
-        if let Err(error) = writer.write_all(&bytes).await {
+        if let Err(error) = result {
             send_error(
                 sender,
                 "serial_write_failed",
                 &error.to_string(),
                 request.request_id.as_deref(),
                 Some(channel),
-                true,
-            );
-            return;
-        }
-        if let Err(error) = writer.flush().await {
-            send_error(
-                sender,
-                "serial_write_failed",
-                &error.to_string(),
-                request.request_id.as_deref(),
-                Some(channel),
-                true,
+                false, // A prefix may already have reached the UART; never replay it.
             );
             return;
         }
         let _ = sender.send(frame(
             "write_ack",
-            json!({"request_id": request.request_id, "channel": channel.as_str(), "bytes": bytes.len()}),
+            json!({"request_id": request.request_id, "channel": channel.as_str(), "bytes": bytes.len(), "completion": "driver_queue_empty"}),
         ));
     }
 
@@ -665,31 +826,24 @@ impl SerialBroker {
         publish_status(&state, None);
         if state.subscribers.is_empty() {
             if immediate {
-                if let Some(session) = state.close_port() {
-                    self.serial_log
-                        .finish_session(session, "client closed channel")
-                        .await;
-                }
-            } else {
+                state.cancel_idle_close();
+                let session = state.close_port();
                 drop(state);
-                self.schedule_idle_close(channel).await;
+                self.finish_log(session, "client closed channel").await;
+            } else {
+                self.schedule_idle_close(&mut state, state_ref.clone());
             }
-        }
-        if let Some(channels) = self.peer_subscriptions.lock().await.get_mut(peer_id) {
-            channels.remove(&channel);
         }
     }
 
     async fn disconnect_peer(&self, peer_id: &str) {
-        let channels = self
-            .peer_subscriptions
-            .lock()
-            .await
-            .remove(peer_id)
-            .unwrap_or_default();
-        for channel in channels {
-            let state_ref = self.channel(channel);
+        // Two channels are the authoritative subscription table. No reverse index
+        // can be left inconsistent if an open/close future is canceled at an await.
+        for state_ref in self.channels.values() {
             let mut state = state_ref.lock().await;
+            if state.subscribers.remove(peer_id).is_none() {
+                continue;
+            }
             if state
                 .owner
                 .as_ref()
@@ -698,47 +852,45 @@ impl SerialBroker {
                 self.finish_observer_redaction(&mut state);
                 state.owner = None;
             }
-            state.subscribers.remove(peer_id);
             publish_status(&state, None);
-            let idle = state.subscribers.is_empty();
-            drop(state);
-            if idle {
-                self.schedule_idle_close(channel).await;
-            }
+            self.schedule_idle_close(&mut state, state_ref.clone());
         }
     }
 
-    async fn schedule_idle_close(&self, channel: Channel) {
-        let state_ref = self.channel(channel);
-        let mut state = state_ref.lock().await;
-        state.cancel_idle_close();
-        if !state.subscribers.is_empty() || !state.connected() {
+    fn schedule_idle_close(&self, state: &mut ChannelState, next_state: Arc<Mutex<ChannelState>>) {
+        if !state.subscribers.is_empty() || !state.connected() || state.idle_task.is_some() {
             return;
         }
         let timeout = self.idle_timeout;
-        let next_state = state_ref.clone();
-        let serial_log = self.serial_log.clone();
-        state.idle_task = Some(tokio::spawn(async move {
-            tokio::time::sleep(timeout).await;
+        let broker = self.clone();
+        state.idle_task = self.lifecycle.spawn(async move {
+            tokio::select! {
+                biased;
+                _ = broker.lifecycle.cancel.cancelled() => return,
+                _ = tokio::time::sleep(timeout) => {}
+            }
             let mut state = next_state.lock().await;
-            if state.subscribers.is_empty() {
+            let session = if state.subscribers.is_empty() {
                 debug!(
                     channel = state.channel.as_str(),
                     "closing idle serial channel"
                 );
-                if let Some(session) = state.close_port() {
-                    serial_log.finish_session(session, "idle timeout").await;
-                }
-            }
+                state.close_port()
+            } else {
+                None
+            };
             state.idle_task = None;
-        }));
+            drop(state);
+            broker.finish_log(session, "idle timeout").await;
+        });
     }
 
     async fn read_serial(
         &self,
         channel: Channel,
-        mut reader: ReadHalf<SerialStream>,
+        mut reader: ReadHalf<SerialIo<SerialStream>>,
         log_session: Option<Uuid>,
+        generation: u64,
     ) {
         let mut buffer = vec![0_u8; SERIAL_READ_BUFFER_BYTES];
         let mut pending = Vec::new();
@@ -761,10 +913,11 @@ impl SerialBroker {
                 pending.drain(..consumed);
             }
             if !text.is_empty() {
-                self.broadcast_data(channel, text, consumed).await;
+                self.broadcast_data(channel, text, consumed, generation)
+                    .await;
             }
             if let Some(error) = batch.error {
-                self.broadcast_error(channel, "serial_io_error", &error.to_string())
+                self.broadcast_error(channel, "serial_io_error", &error.to_string(), generation)
                     .await;
                 break;
             }
@@ -774,21 +927,22 @@ impl SerialBroker {
         }
         if !pending.is_empty() {
             let text = String::from_utf8_lossy(&pending).into_owned();
-            self.broadcast_data(channel, text, pending.len()).await;
+            self.broadcast_data(channel, text, pending.len(), generation)
+                .await;
         }
         let state_ref = self.channel(channel);
         let mut state = state_ref.lock().await;
-        if let Some(session) = state.log_session.take() {
-            self.serial_log
-                .finish_session(session, "serial port closed")
-                .await;
+        if state.generation != generation {
+            return;
         }
+        let session = state.log_session.take();
         self.finish_observer_redaction(&mut state);
         state.writer = None;
         state.path = None;
         state.baud = None;
         state.owner = None;
         state.reader_task = None;
+        state.device_serial = None;
         let closed = frame(
             "closed",
             json!({"channel": channel.as_str(), "reason": "serial port closed"}),
@@ -797,11 +951,22 @@ impl SerialBroker {
             let _ = sender.send(closed.clone());
         }
         publish_status(&state, None);
+        drop(state);
+        self.finish_log(session, "serial port closed").await;
     }
 
-    async fn broadcast_data(&self, channel: Channel, text: String, byte_count: usize) {
+    async fn broadcast_data(
+        &self,
+        channel: Channel,
+        text: String,
+        byte_count: usize,
+        generation: u64,
+    ) {
         let state_ref = self.channel(channel);
         let mut state = state_ref.lock().await;
+        if state.generation != generation {
+            return;
+        }
         state.sequence = state.sequence.wrapping_add(1);
         let host_t_mono_us = self.started.elapsed().as_micros().min(u64::MAX as u128) as u64;
         let sequence = state.sequence;
@@ -858,9 +1023,12 @@ impl SerialBroker {
         }
     }
 
-    async fn broadcast_error(&self, channel: Channel, code: &str, message: &str) {
+    async fn broadcast_error(&self, channel: Channel, code: &str, message: &str, generation: u64) {
         let state_ref = self.channel(channel);
         let state = state_ref.lock().await;
+        if state.generation != generation {
+            return;
+        }
         for sender in state.subscribers.values() {
             send_error(sender, code, message, None, Some(channel), true);
         }
@@ -874,16 +1042,35 @@ impl SerialBroker {
     }
 
     pub async fn shutdown(&self) {
+        self.lifecycle.shutdown().await;
         for state_ref in self.channels.values() {
             let mut state = state_ref.lock().await;
             state.cancel_idle_close();
-            if let Some(session) = state.close_port() {
-                self.serial_log
-                    .finish_session(session, "host shutdown")
-                    .await;
+            state.subscribers.clear();
+            let session = state.close_port();
+            drop(state);
+            self.finish_log(session, "host shutdown").await;
+        }
+        if tokio::time::timeout(SHUTDOWN_GRACE, self.serial_log.shutdown())
+            .await
+            .is_err()
+        {
+            warn!("serial log shutdown deadline exceeded; archive completion is not guaranteed");
+        }
+    }
+
+    async fn finish_log(&self, session: Option<Uuid>, reason: &str) {
+        if let Some(session) = session {
+            if tokio::time::timeout(
+                SHUTDOWN_GRACE,
+                self.serial_log.finish_session(session, reason),
+            )
+            .await
+            .is_err()
+            {
+                warn!(%session, "serial log finish deadline exceeded");
             }
         }
-        self.serial_log.shutdown().await;
     }
 }
 
@@ -896,6 +1083,7 @@ struct ClientRequest {
     owner: Option<String>,
     data: Option<Vec<u8>>,
     observer_redaction_token: Option<String>,
+    device_serial: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -960,9 +1148,23 @@ fn parse_request(raw: &str) -> Result<ClientRequest, RequestError> {
         owner: None,
         data: None,
         observer_redaction_token: None,
+        device_serial: None,
     };
     match kind {
         "open" => {
+            if let Some(serial) = object.get("device_serial") {
+                let serial = serial
+                    .as_str()
+                    .filter(|serial| !serial.is_empty() && serial.len() <= 128)
+                    .ok_or_else(|| {
+                        request_error(
+                            "invalid_request",
+                            "device_serial must be a nonempty USB serial string (max 128 bytes)",
+                            request_id.clone(),
+                        )
+                    })?;
+                request.device_serial = Some(serial.to_owned());
+            }
             let baud = object
                 .get("baud")
                 .and_then(Value::as_u64)
@@ -1060,13 +1262,17 @@ fn parse_request(raw: &str) -> Result<ClientRequest, RequestError> {
     Ok(request)
 }
 
-async fn find_serial_port(channel: Channel) -> Result<Option<SerialPortInfo>, String> {
+async fn find_serial_port(
+    channel: Channel,
+    serial: Option<String>,
+) -> Result<serial_discovery::Candidate, String> {
+    // Unit/loopback tests must never discover and open a real device, even when
+    // testing a broken admission check. They inject Unix virtual ports instead.
+    if cfg!(test) {
+        return Err("physical serial discovery disabled in unit tests".to_owned());
+    }
     tokio::task::spawn_blocking(move || {
-        let mut ports = tokio_serial::available_ports().map_err(|error| error.to_string())?;
-        ports.retain(|port| matches!(&port.port_type, SerialPortType::UsbPort(info) if info.vid == CH347_VENDOR_ID));
-        ports.sort_by(|left, right| left.port_name.cmp(&right.port_name));
-        let preferred = ports.iter().find(|port| port.port_name.to_ascii_uppercase().ends_with(channel.preferred_suffix())).cloned();
-        Ok(preferred.or_else(|| ports.get(channel.fallback_index()).cloned()))
+        serial_discovery::discover(channel.interface(), serial.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1145,6 +1351,7 @@ fn status_frame(state: &ChannelState, request_id: Option<&str>) -> Message {
             "connected": state.connected(),
             "opening": false,
             "path": state.path,
+            "device_serial": state.device_serial,
             "baud": state.baud,
             "subscribers": state.subscribers.len(),
             "owner": state.owner.as_ref().map(|(client_id, label)| json!({"client_id": client_id, "label": label}))
@@ -1183,6 +1390,450 @@ fn send_error(
 mod tests {
     use super::*;
     use tokio::io::duplex;
+
+    fn test_broker(idle_timeout: Duration) -> SerialBroker {
+        SerialBroker::new(
+            idle_timeout,
+            SerialLogService::disabled("unused-test-archive".into()),
+        )
+    }
+
+    #[cfg(unix)]
+    fn request(kind: &str, baud: u32) -> ClientRequest {
+        parse_request(
+            &json!({"protocol": PROTOCOL, "type": kind, "channel": "uart0", "baud": baud})
+                .to_string(),
+        )
+        .unwrap()
+    }
+
+    #[cfg(unix)]
+    async fn attach_virtual_port(broker: &SerialBroker) -> SerialStream {
+        let (serial, peer) = SerialStream::pair().unwrap();
+        let state_ref = broker.channel(Channel::Uart0);
+        let mut state = state_ref.lock().await;
+        broker.attach_port(
+            &mut state,
+            serial,
+            "virtual-test-only".into(),
+            "test-device".into(),
+            115200,
+        );
+        peer
+    }
+
+    #[tokio::test]
+    async fn peer_queue_bounds_messages_and_inflight_bytes() {
+        let (sender, _rx) = PeerSender::new(CancellationToken::new());
+        for _ in 0..PEER_QUEUE_MESSAGES {
+            sender.send(Message::Text("x".into())).unwrap();
+        }
+        assert!(sender.send(Message::Text("x".into())).is_err());
+        assert!(sender.cancel.is_cancelled());
+
+        let (sender, mut rx) = PeerSender::new(CancellationToken::new());
+        sender
+            .send(Message::Text("x".repeat(PEER_QUEUE_BYTES).into()))
+            .unwrap();
+        let in_flight = rx.recv().await.unwrap();
+        assert_eq!(sender.bytes.available_permits(), 0);
+        assert!(sender.send(Message::Text("x".into())).is_err());
+        drop(in_flight);
+        assert_eq!(sender.bytes.available_permits(), PEER_QUEUE_BYTES);
+    }
+
+    #[tokio::test]
+    async fn slow_peer_cancellation_does_not_block_broadcast_or_other_peer() {
+        let broker = test_broker(Duration::from_secs(1));
+        let (slow, _slow_rx) = PeerSender::new(broker.lifecycle.cancel.child_token());
+        let (fast, mut fast_rx) = PeerSender::new(broker.lifecycle.cancel.child_token());
+        let state_ref = broker.channel(Channel::Uart0);
+        {
+            let mut state = state_ref.lock().await;
+            state.subscribers.insert("slow".into(), slow.clone());
+            state.subscribers.insert("fast".into(), fast.clone());
+        }
+        for _ in 0..=PEER_QUEUE_MESSAGES {
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                broker.broadcast_data(Channel::Uart0, "rx".into(), 2, 0),
+            )
+            .await
+            .unwrap();
+            assert!(fast_rx.recv().await.is_some());
+        }
+        assert!(slow.cancel.is_cancelled());
+        assert!(!fast.cancel.is_cancelled());
+        assert!(!broker.lifecycle.cancel.is_cancelled());
+        broker.disconnect_peer("slow").await;
+        assert_eq!(state_ref.lock().await.subscribers.len(), 1);
+        broker.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn overflowing_live_socket_automatically_releases_subscription_and_claim() {
+        use axum::{extract::WebSocketUpgrade, routing::get, Router};
+        use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+        let broker = test_broker(Duration::from_secs(30));
+        let _serial_peer = attach_virtual_port(&broker).await;
+        let handler_broker = broker.clone();
+        let app = Router::new().route(
+            "/serial",
+            get(move |ws: WebSocketUpgrade| {
+                let broker = handler_broker.clone();
+                async move {
+                    ws.on_upgrade(move |socket| async move {
+                        let lifecycle = broker.lifecycle.clone();
+                        lifecycle.spawn(async move {
+                            broker.serve_socket(socket).await;
+                        });
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let stopped = broker.lifecycle.cancel.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(stopped.cancelled_owned())
+                .await
+                .unwrap();
+        });
+        let (mut socket, _) = connect_async(format!("ws://{address}/serial"))
+            .await
+            .unwrap();
+        let hello: Value =
+            serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        let peer_id = hello["client_id"].as_str().unwrap();
+        socket
+            .send(WsMessage::Text(
+                json!({"protocol": PROTOCOL, "type": "open", "channel": "uart0"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        assert!(socket
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap()
+            .contains("opened"));
+        let state_ref = broker.channel(Channel::Uart0);
+        let (fast, mut fast_rx) = PeerSender::new(broker.lifecycle.cancel.child_token());
+        {
+            let mut state = state_ref.lock().await;
+            let slow = state.subscribers.get(peer_id).unwrap().clone();
+            state.owner = Some((peer_id.to_owned(), "slow".into()));
+            state.subscribers.insert("fast".into(), fast.clone());
+            // Fill without yielding: deterministic regardless of kernel socket buffers.
+            for _ in 0..=PEER_QUEUE_MESSAGES {
+                let _ = slow.send(Message::Text("queued".into()));
+            }
+            assert!(slow.cancel.is_cancelled());
+            publish_status(&state, None);
+        }
+        assert!(fast_rx.recv().await.is_some());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !state_ref.lock().await.subscribers.contains_key(peer_id) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let state = state_ref.lock().await;
+        assert!(state.owner.is_none());
+        assert!(state.subscribers.contains_key("fast"));
+        assert!(state.connected());
+        assert!(!fast.cancel.is_cancelled());
+        drop(state);
+        broker.shutdown().await;
+        server.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tcp_disconnect_cancels_backpressured_write_and_releases_claim() {
+        use axum::{extract::WebSocketUpgrade, routing::get, Router};
+        use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+        let broker = test_broker(Duration::from_secs(30));
+        let mut serial_peer = attach_virtual_port(&broker).await;
+        let handler_broker = broker.clone();
+        let app = Router::new().route(
+            "/serial",
+            get(move |ws: WebSocketUpgrade| {
+                let broker = handler_broker.clone();
+                async move {
+                    ws.on_upgrade(move |socket| async move {
+                        let lifecycle = broker.lifecycle.clone();
+                        lifecycle.spawn(async move {
+                            broker.serve_socket(socket).await;
+                        });
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let stopped = broker.lifecycle.cancel.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(stopped.cancelled_owned())
+                .await
+                .unwrap();
+        });
+        let (mut socket, _) = connect_async(format!("ws://{address}/serial"))
+            .await
+            .unwrap();
+        let hello: Value =
+            serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        let peer_id = hello["client_id"].as_str().unwrap();
+        for (kind, expected) in [("open", "opened"), ("claim", "claimed")] {
+            socket
+                .send(WsMessage::Text(
+                    json!({"protocol": PROTOCOL, "type": kind, "channel": "uart0"})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            loop {
+                let message = socket.next().await.unwrap().unwrap();
+                let frame: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                if frame["type"] == expected {
+                    break;
+                }
+            }
+        }
+        socket.send(WsMessage::Text(json!({"protocol": PROTOCOL, "type": "write", "channel": "uart0", "text": "x".repeat(60 * 1024)}).to_string().into())).await.unwrap();
+        let mut byte = [0];
+        tokio::time::timeout(Duration::from_secs(1), serial_peer.read_exact(&mut byte))
+            .await
+            .unwrap()
+            .unwrap();
+        let state_ref = broker.channel(Channel::Uart0);
+        let peer_cancel = state_ref.lock().await.subscribers[peer_id].cancel.clone();
+        assert!(!peer_cancel.is_cancelled());
+        // Do not read the rest of the PTY. Drop TCP without sending a WS Close.
+        drop(socket);
+        tokio::time::timeout(Duration::from_millis(350), async {
+            loop {
+                let state = state_ref.lock().await;
+                if !state.subscribers.contains_key(peer_id) {
+                    assert!(state.owner.is_none());
+                    assert!(state.idle_task.is_some());
+                    break;
+                }
+                drop(state);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(peer_cancel.is_cancelled());
+        tokio::time::timeout(Duration::from_secs(1), broker.shutdown())
+            .await
+            .unwrap();
+        server.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_open_preserves_idle_timer_and_reclaims_port_reader_and_log() {
+        let root = tempfile::tempdir().unwrap();
+        let log = SerialLogService::new(crate::serial_log::SerialLogConfig {
+            enabled: true,
+            root: root.path().to_path_buf(),
+            segment_bytes: 1024,
+            total_bytes: 4096,
+            retention: Duration::from_secs(60),
+            queue_records: 16,
+        })
+        .await
+        .unwrap();
+        let broker = SerialBroker::new(Duration::from_millis(40), log.clone());
+        let _peer = attach_virtual_port(&broker).await;
+        let (sender, mut rx) = PeerSender::new(broker.lifecycle.cancel.child_token());
+        broker.open("old", &sender, request("open", 115200)).await;
+        broker.disconnect_peer("old").await;
+        let state_ref = broker.channel(Channel::Uart0);
+        let (idle_id, reader, session) = {
+            let state = state_ref.lock().await;
+            (
+                state.idle_task.as_ref().unwrap().id(),
+                state.reader_task.clone().unwrap(),
+                state.log_session.unwrap(),
+            )
+        };
+        broker.open("failed", &sender, request("open", 9600)).await;
+        assert_eq!(
+            state_ref.lock().await.idle_task.as_ref().unwrap().id(),
+            idle_id
+        );
+        assert!(state_ref.lock().await.subscribers.is_empty());
+        let mut saw_conflict = false;
+        while let Ok(frame) = rx.try_recv() {
+            if let Message::Text(text) = frame.frame {
+                saw_conflict |= text.contains("baud_conflict");
+            }
+        }
+        assert!(saw_conflict);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !state_ref.lock().await.connected() && reader.is_finished() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        broker.shutdown().await;
+        assert!(log
+            .find(session)
+            .unwrap()
+            .unwrap()
+            .manifest
+            .ended_at
+            .is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_cancels_blocked_serial_write_and_rejects_later_open() {
+        let broker = test_broker(Duration::from_secs(30));
+        let mut peer = attach_virtual_port(&broker).await;
+        let (sender, _rx) = PeerSender::new(broker.lifecycle.cancel.child_token());
+        broker
+            .open("writer", &sender, request("open", 115200))
+            .await;
+        let mut write = request("status", 115200);
+        write.kind = "write".into();
+        write.data = Some(vec![b'x'; MAX_REQUEST_BYTES]);
+        let task_broker = broker.clone();
+        let write_task = broker
+            .lifecycle
+            .spawn(async move {
+                task_broker.write("writer", &sender, write).await;
+            })
+            .unwrap();
+        let mut byte = [0];
+        tokio::time::timeout(Duration::from_secs(1), peer.read_exact(&mut byte))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !write_task.is_finished(),
+            "virtual tty should backpressure the remaining payload"
+        );
+        tokio::time::timeout(Duration::from_millis(500), broker.shutdown())
+            .await
+            .unwrap();
+        assert!(write_task.is_finished());
+        let (late, mut rx) = PeerSender::new(CancellationToken::new());
+        // If admission regresses, this would enumerate ports. Cancellation must win first.
+        broker.open("late", &late, request("open", 115200)).await;
+        assert!(rx.try_recv().is_err());
+        let state_ref = broker.channel(Channel::Uart0);
+        let state = state_ref.lock().await;
+        assert!(!state.connected());
+        assert!(state.subscribers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_serial_flush() {
+        use std::{
+            pin::Pin,
+            sync::atomic::{AtomicUsize, Ordering},
+            task::{Context, Poll},
+        };
+        struct StalledFlush {
+            calls: Arc<AtomicUsize>,
+            queued: Arc<AtomicUsize>,
+        }
+        impl crate::serial_io::OutputQueue for StalledFlush {
+            fn bytes_pending(&self) -> std::io::Result<u32> {
+                let queued = self.queued.load(Ordering::SeqCst);
+                if queued == usize::MAX {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        "queue query unsupported",
+                    ));
+                }
+                Ok(queued as u32)
+            }
+        }
+        impl AsyncWrite for StalledFlush {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                bytes: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                Poll::Ready(Ok(bytes.len()))
+            }
+            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+                // Model the real tokio-serial -> mio-serial -> tcdrain boundary,
+                // not an asynchronously Pending flush. Calling this blocks the runtime.
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(300));
+                Poll::Ready(Ok(()))
+            }
+            fn poll_shutdown(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                self.poll_flush(cx)
+            }
+        }
+        let cancel = CancellationToken::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let queued = Arc::new(AtomicUsize::new(1));
+        let mut writer = SerialIo::new(StalledFlush {
+            calls: calls.clone(),
+            queued: queued.clone(),
+        });
+        let trigger = cancel.clone();
+        let trigger_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            trigger.cancel();
+        });
+        let started = Instant::now();
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_millis(50),
+                write_serial(&mut writer, b"x", &cancel)
+            )
+            .await
+            .unwrap()
+            .unwrap_err()
+            .kind(),
+            std::io::ErrorKind::Interrupted
+        );
+        trigger_task.await.unwrap();
+        assert!(started.elapsed() < Duration::from_millis(150));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        // Completion requires a queue-empty report, but never calls tcdrain.
+        queued.store(0, Ordering::SeqCst);
+        write_serial(&mut writer, b"x", &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        queued.store(usize::MAX, Ordering::SeqCst);
+        assert_eq!(
+            write_serial(&mut writer, b"x", &CancellationToken::new())
+                .await
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::Unsupported
+        );
+    }
 
     #[tokio::test]
     async fn coalesces_small_serial_reads_within_the_flush_window() {
