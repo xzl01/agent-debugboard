@@ -11,7 +11,7 @@ release 归档、skill 安装器和 Nix 包额外提供 `rdb` 链接；它指向
 
 ## 当前范围
 
-- CLI：`status`、`doctor`、`power list|get|set`、`switch list|get|route`、`adc read`、`adc record`、`gpio list|set|input`、`task list|store|delete|clear|import|export|source|run`、`watchdog status`、`reboot`、`bootloader`、`ota status|upload|test|confirm`
+- CLI：`discover`、`status`、`doctor`、`power list|get|set`、`switch list|get|route`、`adc read`、`adc record`、`gpio list|set|input`、`task list|store|delete|clear|import|export|source|run`、`watchdog status`、`reboot`、`bootloader`、`ota status|upload|test|confirm`
 - 输出：支持 `--json`，并校验 `radxa-linkr-debugger.v1` envelope
 - TUI：无参数启动，为高级用户提供终端交互入口
 - OTA（仅 RP2350）：`ota status` 查看状态，`ota upload PATH` 上传 MCUboot 格式应用 bin，`ota test` 请求测试启动，`ota confirm` 立即确认运行镜像；SHA256 仅校验完整性，无签名/认证/安全启动/防回滚；固件设计为在未确认镜像 watchdog 复位后请求 MCUboot 回滚，但该恢复路径的故障注入 HIL 尚未完成
@@ -21,13 +21,16 @@ release 归档、skill 安装器和 Nix 包额外提供 `rdb` 链接；它指向
 
 ```sh
 cargo run --manifest-path cmd-ng/Cargo.toml -- --help
+cargo run --manifest-path cmd-ng/Cargo.toml -- discover --json --timeout 500ms
 cargo run --manifest-path cmd-ng/Cargo.toml -- --json status
 cargo run --manifest-path cmd-ng/Cargo.toml --
 ```
 
 ## 说明
 
-- 默认设备 URL 仍保留 `http://172.29.203.1` 作为旧镜像回退；新固件请用 `--url http://<板卡 IP>` 或 `LINKR_BOARD_URL=http://<板卡 IP>`（主机 NCM /30 的 .2 地址减一）
+- 普通命令的目标 URL 优先级：`--url` / `--addr` / `--port` > `LINKR_BOARD_URL` > 自动发现。显式值或环境变量存在时完全跳过自动发现；空值或无效 URL 会报错，不回退到固定地址。自动发现选中的 HTTP 控制连接和 ADC Recorder WebSocket 均保留源 IPv4 绑定，不使用代理或跟随重定向；显式 URL 的 HTTP 保持原有 reqwest 行为，但 Recorder WebSocket 也拒绝重定向。命令参数和输入文件先在本地校验，失败时不进行设备发现或桌面启动。
+- 自动发现仅探测本机活动 IPv4 `/30` 接口的另一个可用主机地址，排除所有本机地址；接口名称不参与判断。每个候选只读 GET `/api/v1/status`，严格要求 `schema=radxa-linkr-debugger.v1`、`ok=true`、`command=status`、`project=radxa-linkr-debugger`。恰好一台才自动用于 CLI/TUI；零台报 `device_not_found`，多台报 `multiple_devices` 并列出所有已验证设备，须用 `--url` 明确选择。
+- `discover [--json] [--timeout TIMEOUT]` 始终显式扫描本地接口，不受 URL 参数或 `LINKR_BOARD_URL` 影响；列出所有已验证设备及固件提供的 MCU/USB/镜像版本，并区分探测 `transport_error` 和身份 `validation_failed`。JSON 使用现有 envelope，零设备时成功返回 `devices:[]`。发现最多并发 8 个请求，每个请求（含完整响应体）使用 `--timeout` 总期限（默认 2 秒）与 1 MiB 响应体上限，不使用代理或跟随重定向。接口是否为 `/30` 依据操作系统提供的前缀长度，不依赖 Windows 可能不准确的 netmask。
 - `--json` 仍要求固件返回 `schema/ok/command`
 - TUI 现在以 HTTP 轮询作为主数据通道，因此可以稳定多开；实时高频采集改由 `adc record` 走 websocket
 - TUI 使用无常态边框的高密度布局：顶部两行状态、按需出现的七行电流示波器与一行 ADC 电压 strip（通道由固件快照的 `adc_channels` 目录驱动，电流包含 `vdd_5v`），其下固定显示 Controls、Saved Config、Status 三页页签和当前页表头；示波器按各通道可见峰值自适应量程，无数据时高度为零，底部是不会截断半个操作的 htop 式键位块。示波器相邻活动通道之间固定放一个未着色空格 cell（gutter），内容分栏规则及三通道合成测试的 W=47/48/80/120 示例在 [cmd-ng/DESIGN.md](DESIGN.md) 第 7 节定义；终端太窄时 gutter 收起、通道平铺
@@ -53,7 +56,9 @@ cargo run --manifest-path cmd-ng/Cargo.toml --
 - `watchdog` 仍只暴露 `status`，不提供 host 侧 feed/控制
 - `reboot` 严格不接受额外参数，执行普通冷重启（normal cold restart），不会进入 ROM BOOTSEL；`bootloader` 是独立的 ROM BOOTSEL 操作，二者不可互换。TUI 的 Reboot 行也明确显示 `not ROM BOOTSEL`，取消或三秒确认超时不会发出请求
 - `vdd_5v` 作为固件广告的独立电源输出控制；host 不再保留已移除的 `switch/usb` 专用路由分支、联动规则或默认值。启动状态与 GPIO/电源硬件事实均由固件决定。
-- 安装统一桌面栈后，`-d` / `--desktop` 会启动单个 `linkr-tray` 后台守护并立即退出；Tray 与 Host 服务运行在同一进程，普通 CLI/TUI 启动也会自动确保它已运行。无图形桌面或 GTK 已加载但 AppIndicator 实现不可用时，同一二进制会以 `--headless` 模式常驻；之后恢复完整图形环境再运行 CLI 或 `-d`，headless 守护会优雅交接为单个图形 Tray 守护。Linux 的 `linkr-tray` 本身仍链接 GTK；完全未安装 GTK 的最小系统应直接运行 `linkr-host serve`。普通 CLI/TUI 在桌面组件缺失时会继续工作，只有显式 `-d` 会把启动失败作为错误。仅在明确不需要尝试任何后台 Host 时设置 `LINKR_SKIP_DESKTOP=1`。
+- 安装统一桌面栈后，普通 CLI/TUI 与 `-d` / `--desktop` 都先按上述优先级解析唯一 `BoardTarget`，再通过 `--board-url` 把同一 resolved URL 传给单个 `linkr-tray` 后台守护；显式 `-d` 随后退出，不执行附带的板命令。`--version`、`--help`、`discover` 与无效命令不做桌面自启。普通板命令在桌面启动失败时警告并继续，显式 `-d` 失败则 fatal；仅在明确不需要尝试任何后台 Host 时设置 `LINKR_SKIP_DESKTOP=1`。
+- 复用已有 Host 前核对其 status `board_url`。不同 URL 会报告已有/期望地址以及退出、重启步骤，不会自动关闭 Host/Tray、断共享会话或调用远程写 API 切目标；普通板命令仍直接访问 CLI 目标，显式 `-d` 失败。跨进程仅传 URL，自动发现目标的 `local_address`、no-proxy/no-redirect 仍只约束 CLI/TUI 自己的连接，不假称被已有 Host 继承；standalone `linkr-host serve` 也没有 CLI 自动发现，须显式传 `--board-url`。
+- 无图形桌面或 AppIndicator 实现不可用时，同一 Tray 二进制以 `--headless` 模式常驻；恢复完整图形环境后再运行 CLI 或 `-d` 会优雅交接为单个图形 Tray。Tray 查找顺序为 `LINKR_TRAY_BIN` override、发布 sibling、用户安装路径/PATH，最后才是源码树 release/debug 兜底，不对候选逐个执行 probe；Nix 包装 CLI 已设置该 override。`cargo run` 最终选中源码树 debug Tray 时，NixOS 开发 shell 仍须提供 GTK3 loader 与 `libayatana-appindicator3`，headless 也不例外；也可显式把 `LINKR_TRAY_BIN` 指向正确包装的 Tray。最小无 GTK 系统可直接运行带 `--board-url` 的 `linkr-host serve`。
 
 ## ADC CLI与记录格式
 

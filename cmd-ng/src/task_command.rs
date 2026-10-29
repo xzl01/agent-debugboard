@@ -11,7 +11,7 @@ use crate::task_execution::{
 };
 pub(crate) use crate::task_output::TaskCommandIo;
 use crate::task_parse::{parse, TaskCommand, TASK_USAGE};
-use crate::task_store::TaskStore;
+use crate::task_store::{prepare_import, prepare_store, PreparedStore, TaskStore};
 use anyhow::Result;
 use reqwest::Method;
 use serde_json::json;
@@ -20,6 +20,40 @@ pub(crate) struct TaskRunner<'a> {
     client: &'a dyn BoardTransport,
     sleeper: &'a dyn TaskSleeper,
     cancellation: &'a dyn TaskCancellation,
+}
+
+pub(crate) enum PreparedTask {
+    Command(TaskCommand),
+    Store(PreparedStore),
+    Import { path: String, ir: String },
+}
+
+pub(crate) fn prepare(args: &[String]) -> Result<PreparedTask, (&'static str, TaskError)> {
+    let command = parse(args).map_err(|error| ("parse", error))?;
+    if let TaskCommand::Delete { task_id }
+    | TaskCommand::Source { task_id, .. }
+    | TaskCommand::Run { task_id } = &command
+    {
+        crate::task_blob::validate_task_id(task_id).map_err(|error| {
+            (
+                "parse",
+                TaskError::Command {
+                    code: "usage",
+                    message: error.to_string(),
+                },
+            )
+        })?;
+    }
+    match command {
+        TaskCommand::Store(args) => prepare_store(&args)
+            .map(PreparedTask::Store)
+            .map_err(|error| ("store", error)),
+        TaskCommand::Import { path } => {
+            let ir = prepare_import(&path).map_err(|error| ("import", error))?;
+            Ok(PreparedTask::Import { path, ir })
+        }
+        command => Ok(PreparedTask::Command(command)),
+    }
 }
 
 impl<'a> TaskRunner<'a> {
@@ -44,10 +78,24 @@ impl<'a> TaskRunner<'a> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn run(&self, args: &[String], mut io: TaskCommandIo<'_>) -> Result<u8> {
-        let command = match parse(args) {
+        let prepared = match prepare(args) {
             Ok(command) => command,
-            Err(error) => return io.failure("parse", &error, 2),
+            Err((action, error)) => return io.failure(action, &error, 2),
+        };
+        self.run_prepared(prepared, io)
+    }
+
+    fn run_prepared(&self, prepared: PreparedTask, mut io: TaskCommandIo<'_>) -> Result<u8> {
+        let command = match prepared {
+            PreparedTask::Command(command) => command,
+            PreparedTask::Store(prepared) => {
+                return TaskStore::new(self.client).run_store(prepared, &mut io)
+            }
+            PreparedTask::Import { path, ir } => {
+                return TaskStore::new(self.client).run_import(&path, &ir, &mut io)
+            }
         };
         match command {
             TaskCommand::Help => {
@@ -55,11 +103,12 @@ impl<'a> TaskRunner<'a> {
                 Ok(0)
             }
             TaskCommand::List => self.run_list(&mut io),
-            TaskCommand::Store(args) => TaskStore::new(self.client).run_store(&args, &mut io),
+            TaskCommand::Store(_) | TaskCommand::Import { .. } => {
+                unreachable!("task files must be prepared locally")
+            }
             TaskCommand::Delete { task_id } => {
                 TaskStore::new(self.client).run_delete(&task_id, &mut io)
             }
-            TaskCommand::Import { path } => TaskStore::new(self.client).run_import(&path, &mut io),
             TaskCommand::Export { path } => TaskStore::new(self.client).run_export(&path, &mut io),
             TaskCommand::Source { task_id, path } => {
                 TaskStore::new(self.client).run_source_export(&task_id, &path, &mut io)
@@ -208,14 +257,14 @@ impl<'a> TaskRunner<'a> {
     }
 }
 
-pub(crate) fn run(
+pub(crate) fn run_prepared(
     client: &dyn BoardTransport,
-    args: &[String],
+    command: PreparedTask,
     mut io: TaskCommandIo<'_>,
 ) -> Result<u8> {
     let cancellation = match ProcessCancellation::install() {
         Ok(cancellation) => cancellation,
         Err(error) => return io.failure("run", &error, 1),
     };
-    TaskRunner::with_cancellation(client, &ThreadSleeper, &cancellation).run(args, io)
+    TaskRunner::with_cancellation(client, &ThreadSleeper, &cancellation).run_prepared(command, io)
 }

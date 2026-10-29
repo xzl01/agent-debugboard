@@ -1,6 +1,6 @@
 use super::config_result::ConfigJobResult;
 use super::config_state::ConfigRequest;
-use crate::client::{BoardClient, BoardTransport};
+use crate::client::{BoardClient, BoardTarget, BoardTransport};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -65,7 +65,7 @@ impl ConfigWorker {
 
     pub(super) fn start(
         &mut self,
-        base_url: String,
+        target: impl Into<BoardTarget>,
         timeout: Duration,
         request: ConfigRequest,
     ) -> bool {
@@ -78,8 +78,9 @@ impl ConfigWorker {
         self.next_generation = generation;
         let sender = self.sender.clone();
         let worker_request = request.clone();
+        let target = target.into();
         let handle = thread::spawn(move || {
-            let result = match BoardClient::new(&base_url, timeout) {
+            let result = match BoardClient::from_target(target, timeout) {
                 Ok(client) => execute_request(&client, worker_request),
                 Err(error) => ConfigJobResult::transport(worker_request, error.to_string()),
             };

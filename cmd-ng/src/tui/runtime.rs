@@ -169,9 +169,7 @@ pub(super) fn poll_pd(model: &mut TuiModel, now: Instant) {
             .as_ref()
             .is_some_and(|pd| pd.available && pd.pd && !pd.capabilities_valid)
     {
-        model
-            .pd_worker
-            .start(model.base_url.clone(), model.timeout, now);
+        model.pd_worker.start(model.target(), model.timeout, now);
     }
 }
 
@@ -238,7 +236,7 @@ fn poll_http_at(model: &mut TuiModel, now: Instant) -> Result<HttpPollOutcome> {
 
 fn try_poll_http_at(model: &mut TuiModel, now: Instant) -> Result<()> {
     model.last_http_poll = Some(now);
-    let client = crate::client::BoardClient::new(&model.base_url, model.timeout)?;
+    let client = crate::client::BoardClient::from_target(model.target(), model.timeout)?;
     let status_data = client.send_text(BoardRequest {
         method: reqwest::Method::GET,
         path: "/api/v1/status".to_string(),
@@ -291,7 +289,7 @@ pub(super) fn start_config_request(model: &mut TuiModel, request: config_state::
     model.gpio_gesture.cancel();
     if model
         .config_worker
-        .start(model.base_url.clone(), model.timeout, request)
+        .start(model.target(), model.timeout, request)
     {
         model.saved_config.start(kind);
         model.status = format!("Saved Config {}…", kind.as_str());

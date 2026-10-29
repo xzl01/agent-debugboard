@@ -211,7 +211,7 @@ fn start_gpio_job(model: &mut TuiModel, job: GpioJob) {
     }
     if model
         .gpio_worker
-        .start(model.base_url.clone(), model.timeout, job.clone())
+        .start(model.target(), model.timeout, job.clone())
     {
         model.status = format!("{}…", job.action.status_text(&job.target));
         model.gpio_pending = Some(job);
@@ -224,14 +224,14 @@ fn start_gpio_job(model: &mut TuiModel, job: GpioJob) {
 }
 
 fn toggle_power(model: &mut TuiModel, output: &str, next_state: bool) -> Result<()> {
-    let action = perform_control_action(&model.base_url, model.timeout, output, !next_state)?;
+    let action = perform_control_action(model.target(), model.timeout, output, !next_state)?;
     model.power_states.insert(output.to_string(), next_state);
     model.apply_action_msg(action);
     Ok(())
 }
 
 fn route_switch(model: &mut TuiModel, name: &str, route: &str) -> Result<()> {
-    let action = set_switch_route(&model.base_url, model.timeout, name, route)?;
+    let action = set_switch_route(model.target(), model.timeout, name, route)?;
     if let Some(state) = model.switches.get_mut(name) {
         state.desired_route = route.to_string();
         state.pending_route = Some(route.to_string());
@@ -243,7 +243,7 @@ fn route_switch(model: &mut TuiModel, name: &str, route: &str) -> Result<()> {
 }
 
 fn set_pd(model: &mut TuiModel, voltage_mv: u16) -> Result<()> {
-    let action = set_pd_fixed(&model.base_url, model.timeout, voltage_mv)?;
+    let action = set_pd_fixed(model.target(), model.timeout, voltage_mv)?;
     if let Some(status) = model.pd.as_mut() {
         status.mode = 0;
         status.voltage_mv = voltage_mv;
@@ -254,7 +254,7 @@ fn set_pd(model: &mut TuiModel, voltage_mv: u16) -> Result<()> {
 }
 
 fn reboot(model: &mut TuiModel) -> Result<()> {
-    let action = reboot_board(&model.base_url, model.timeout)?;
+    let action = reboot_board(model.target(), model.timeout)?;
     // Start the bounded reconnect window only after the board has accepted the
     // request. Polling owns recovery and never repeats this POST.
     model.begin_reboot_reconnect(Instant::now());

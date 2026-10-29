@@ -6,9 +6,10 @@
 use crate::adc;
 use crate::cli::Cli;
 use crate::client::{
-    default_base_url, reboot_request, resolve_base_url, BoardBinaryUpload, BoardClient,
-    BoardRequest, BoardTransport,
+    reboot_request, BoardBinaryUpload, BoardBytesRequest, BoardBytesResponse, BoardClient,
+    BoardRequest, BoardTarget, BoardTransport,
 };
+use crate::discovery::{self, DiscoveryBackend, SystemDiscovery};
 use crate::json_contract::{parse_envelope, render_failure, EnvelopeError, JsonError, JSON_SCHEMA};
 use crate::tui;
 use anyhow::Result;
@@ -16,6 +17,7 @@ use clap::{error::ErrorKind, Parser};
 use reqwest::Method;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::cell::{Cell, RefCell};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Write};
@@ -47,7 +49,7 @@ struct DoctorResult {
 pub trait TuiRunner {
     fn run_tui(
         &self,
-        base_url: &str,
+        target: &BoardTarget,
         timeout: Duration,
         stdout: &mut dyn Write,
         stderr: &mut dyn Write,
@@ -59,14 +61,127 @@ pub struct DefaultTuiRunner;
 impl TuiRunner for DefaultTuiRunner {
     fn run_tui(
         &self,
-        base_url: &str,
+        target: &BoardTarget,
         timeout: Duration,
         _stdout: &mut dyn Write,
         _stderr: &mut dyn Write,
     ) -> Result<u8> {
-        let client = BoardClient::new(base_url, timeout)?;
-        tui::run_tui(client, base_url.to_string(), timeout)
+        let client = BoardClient::from_target(target, timeout)?;
+        tui::run_tui(client, target.base_url.clone(), timeout)
     }
+}
+
+trait DesktopLauncher {
+    fn ensure(&self, target: &BoardTarget) -> Result<()>;
+}
+
+struct SystemDesktopLauncher;
+
+impl DesktopLauncher for SystemDesktopLauncher {
+    fn ensure(&self, target: &BoardTarget) -> Result<()> {
+        crate::desktop::ensure_desktop(&target.base_url)
+    }
+}
+
+struct DesktopSession<'a> {
+    launcher: &'a dyn DesktopLauncher,
+    target: &'a BoardTarget,
+    attempted: Cell<bool>,
+    warning: RefCell<Option<String>>,
+}
+
+impl<'a> DesktopSession<'a> {
+    fn new(launcher: &'a dyn DesktopLauncher, target: &'a BoardTarget) -> Self {
+        Self {
+            launcher,
+            target,
+            attempted: Cell::new(false),
+            warning: RefCell::new(None),
+        }
+    }
+
+    fn ensure(&self) {
+        if self.attempted.replace(true) {
+            return;
+        }
+        *self.warning.borrow_mut() = self
+            .launcher
+            .ensure(self.target)
+            .err()
+            .map(|error| format!("{error:#}"));
+    }
+
+    fn write_warning(&self, stderr: &mut dyn Write) -> Result<()> {
+        if let Some(error) = self.warning.borrow_mut().take() {
+            writeln!(
+                stderr,
+                "Linkr desktop unavailable: {error}; continuing with the board command without changing the desktop service"
+            )?;
+        }
+        Ok(())
+    }
+}
+
+struct DesktopClient<'a, 'b, TClient> {
+    client: &'b TClient,
+    desktop: &'b DesktopSession<'a>,
+}
+
+impl<TClient: BoardTransport> BoardTransport for DesktopClient<'_, '_, TClient> {
+    fn send_text(&self, request: BoardRequest) -> Result<String> {
+        self.desktop.ensure();
+        self.client.send_text(request)
+    }
+
+    fn upload_binary(&self, request: BoardBinaryUpload) -> Result<String> {
+        self.desktop.ensure();
+        self.client.upload_binary(request)
+    }
+
+    fn send_bytes(&self, request: BoardBytesRequest) -> Result<BoardBytesResponse> {
+        self.desktop.ensure();
+        self.client.send_bytes(request)
+    }
+
+    fn base_url(&self) -> &str {
+        self.client.base_url()
+    }
+
+    fn target(&self) -> BoardTarget {
+        self.client.target()
+    }
+
+    fn send_reboot(&self) -> Result<Option<String>> {
+        self.desktop.ensure();
+        self.client.send_reboot()
+    }
+
+    fn config_show(&self) -> Result<crate::persistent_config::PersistentConfigResponse> {
+        self.desktop.ensure();
+        self.client.config_show()
+    }
+
+    fn config_save(
+        &self,
+        items: &[crate::persistent_config::ConfigItemId],
+        confirm: bool,
+    ) -> Result<crate::persistent_config::PersistentConfigResponse> {
+        self.desktop.ensure();
+        self.client.config_save(items, confirm)
+    }
+
+    fn config_clear(&self) -> Result<crate::persistent_config::PersistentConfigResponse> {
+        self.desktop.ensure();
+        self.client.config_clear()
+    }
+}
+
+fn ensure_direct_desktop(desktop: Option<&DesktopSession>, stderr: &mut dyn Write) -> Result<()> {
+    if let Some(desktop) = desktop {
+        desktop.ensure();
+        desktop.write_warning(stderr)?;
+    }
+    Ok(())
 }
 
 pub fn run<I, T>(args: I) -> Result<u8>
@@ -82,6 +197,19 @@ where
 }
 
 fn run_with_io<I, T>(args: I, stdout: &mut dyn Write, stderr: &mut dyn Write) -> Result<u8>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    run_with_io_and_desktop(args, stdout, stderr, &SystemDesktopLauncher)
+}
+
+fn run_with_io_and_desktop<I, T>(
+    args: I,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    desktop_launcher: &impl DesktopLauncher,
+) -> Result<u8>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
@@ -103,25 +231,77 @@ where
         }
     };
 
-    let base_url = base_url_from_cli(&cli);
-    let client = BoardClient::new(&base_url, cli.timeout)?;
-    let tui = DefaultTuiRunner;
-    execute_with_io(cli, &client, &tui, stdout, stderr)
+    // A present non-UTF-8 value is invalid, not permission to start discovery.
+    // An explicit URL still takes precedence over this invalid/empty value.
+    let env_url =
+        std::env::var_os("LINKR_BOARD_URL").map(|value| value.into_string().unwrap_or_default());
+    run_cli_with_io(
+        cli,
+        env_url.as_deref(),
+        &SystemDiscovery,
+        desktop_launcher,
+        |target, timeout| BoardClient::from_target(target, timeout),
+        &DefaultTuiRunner,
+        (stdout, stderr),
+    )
 }
 
-fn execute_with_io<TClient, TTui>(
+fn run_cli_with_io<TClient: BoardTransport>(
     cli: Cli,
-    client: &TClient,
-    tui_runner: &TTui,
-    stdout: &mut dyn Write,
-    stderr: &mut dyn Write,
-) -> Result<u8>
-where
-    TClient: BoardTransport,
-    TTui: TuiRunner,
-{
-    let base_url = base_url_from_cli(&cli);
+    env_url: Option<&str>,
+    backend: &impl DiscoveryBackend,
+    desktop_launcher: &impl DesktopLauncher,
+    make_client: impl FnOnce(&BoardTarget, Duration) -> Result<TClient>,
+    tui_runner: &impl TuiRunner,
+    (stdout, stderr): (&mut dyn Write, &mut dyn Write),
+) -> Result<u8> {
+    if let Some(code) = execute_local(&cli, stdout, stderr)? {
+        return Ok(code);
+    }
+    if cli.command_args.first().map(String::as_str) == Some("discover") {
+        return crate::discovery_command::run(&cli, backend, stdout, stderr);
+    }
+    let command = prepare_command(&cli, stdout, stderr)?;
+    if let PreparedCommand::Finished(code) = command {
+        return Ok(code);
+    }
+    let target = match discovery::resolve_target(&cli, env_url, backend) {
+        Ok(target) => target,
+        Err(failure) => {
+            return crate::discovery_command::write_resolution_error(
+                &failure,
+                command_name(&cli.command_args),
+                cli.json,
+                stdout,
+                stderr,
+            );
+        }
+    };
+    if cli.desktop {
+        desktop_launcher.ensure(&target)?;
+        return Ok(0);
+    }
 
+    let client = make_client(&target, cli.timeout)?;
+    let desktop = DesktopSession::new(desktop_launcher, &target);
+    let client = DesktopClient {
+        client: &client,
+        desktop: &desktop,
+    };
+    let result = execute_prepared(
+        &cli,
+        command,
+        &client,
+        tui_runner,
+        Some(&desktop),
+        &mut *stdout,
+        &mut *stderr,
+    );
+    desktop.write_warning(&mut *stderr)?;
+    result
+}
+
+fn execute_local(cli: &Cli, stdout: &mut dyn Write, stderr: &mut dyn Write) -> Result<Option<u8>> {
     if cli.version {
         if cli.json {
             write_json(
@@ -136,70 +316,155 @@ where
         } else {
             writeln!(stdout, "radxa-linkr-debuggerctl {}", version())?;
         }
-        return Ok(0);
+        return Ok(Some(0));
     }
 
-    if cli.command_args.is_empty() {
-        if !cli.raw && !cli.json {
-            return tui_runner.run_tui(&base_url, cli.timeout, stdout, stderr);
-        }
-        return missing_command(cli.json, stdout, stderr);
+    if !cli.desktop && cli.command_args.is_empty() && (cli.raw || cli.json) {
+        return missing_command(cli.json, stdout, stderr).map(Some);
     }
 
     if cli.raw {
-        return unsupported_raw(cli.json, stdout, stderr);
+        return unsupported_raw(cli.json, stdout, stderr).map(Some);
     }
-
-    execute_command(&cli, client, stdout, stderr)
+    Ok(None)
 }
 
-fn execute_command<TClient>(
-    cli: &Cli,
+#[cfg(test)]
+fn execute_with_io<TClient: BoardTransport, TTui: TuiRunner>(
+    cli: Cli,
     client: &TClient,
+    tui_runner: &TTui,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
-) -> Result<u8>
-where
-    TClient: BoardTransport,
-{
-    if !cli.raw && cli.command_args.first().map(String::as_str) == Some("doctor") {
+) -> Result<u8> {
+    execute_with_io_and_desktop(cli, client, tui_runner, None, stdout, stderr)
+}
+
+#[cfg(test)]
+fn execute_with_io_and_desktop<TClient: BoardTransport, TTui: TuiRunner>(
+    cli: Cli,
+    client: &TClient,
+    tui_runner: &TTui,
+    desktop: Option<&DesktopSession>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8> {
+    if let Some(code) = execute_local(&cli, stdout, stderr)? {
+        return Ok(code);
+    }
+    let command = prepare_command(&cli, stdout, stderr)?;
+    execute_prepared(&cli, command, client, tui_runner, desktop, stdout, stderr)
+}
+
+enum PreparedCommand {
+    Finished(u8),
+    Tui,
+    Desktop,
+    Doctor,
+    Reboot,
+    Task(crate::task_command::PreparedTask),
+    Config(crate::config_command::ConfigCommand),
+    Net(crate::net_command::NetCommand),
+    AdcRecord(AdcRecordArgs),
+    OtaUpload(BoardBinaryUpload),
+    Test(crate::test::PreparedTest),
+    AdcRead {
+        request: BoardRequest,
+        verbose: bool,
+    },
+    Standard(BoardRequest),
+}
+
+fn local_command_error(
+    cli: &Cli,
+    command: &str,
+    code: &str,
+    message: &str,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<PreparedCommand> {
+    if cli.json {
+        write_json_error(stdout, command, code, message)?;
+    } else {
+        writeln!(stderr, "{message}")?;
+    }
+    Ok(PreparedCommand::Finished(2))
+}
+
+// Parse/build each command exactly once, before target discovery, desktop
+// startup, or any board I/O. Prepared file inputs survive until execution.
+fn prepare_command(
+    cli: &Cli,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<PreparedCommand> {
+    if cli.command_args.is_empty() {
+        return Ok(if cli.desktop {
+            PreparedCommand::Desktop
+        } else {
+            PreparedCommand::Tui
+        });
+    }
+    if cli.command_args.first().map(String::as_str) == Some("doctor") {
         if cli.command_args.len() != 1 {
-            if cli.json {
-                write_json_error(
-                    stdout,
-                    "doctor",
-                    "usage",
-                    "usage: radxa-linkr-debuggerctl doctor",
-                )?;
-            } else {
-                writeln!(stderr, "usage: radxa-linkr-debuggerctl doctor")?;
-            }
-            return Ok(2);
+            return local_command_error(
+                cli,
+                "doctor",
+                "usage",
+                "usage: radxa-linkr-debuggerctl doctor",
+                stdout,
+                stderr,
+            );
         }
-        return run_doctor(client, cli.json, stdout, stderr);
+        return Ok(PreparedCommand::Doctor);
     }
 
     if cli.command_args.first().map(String::as_str) == Some("reboot") {
-        return run_reboot(client, &cli.command_args, cli.json, stdout, stderr);
+        if cli.command_args.len() != 1 {
+            return local_command_error(
+                cli,
+                "reboot",
+                "usage",
+                "usage: radxa-linkr-debuggerctl reboot",
+                stdout,
+                stderr,
+            );
+        }
+        return Ok(PreparedCommand::Reboot);
     }
 
     if cli.command_args.first().map(String::as_str) == Some("task") {
-        return crate::task_command::run(
-            client,
-            &cli.command_args,
-            crate::task_command::TaskCommandIo::new(cli.json, stdout, stderr),
-        );
+        return match crate::task_command::prepare(&cli.command_args) {
+            Ok(crate::task_command::PreparedTask::Command(
+                crate::task_parse::TaskCommand::Help,
+            )) => {
+                writeln!(stdout, "{}", crate::task_parse::TASK_USAGE)?;
+                Ok(PreparedCommand::Finished(0))
+            }
+            Ok(command) => Ok(PreparedCommand::Task(command)),
+            Err((action, error)) => {
+                let code = crate::task_command::TaskCommandIo::new(cli.json, stdout, stderr)
+                    .failure(action, &error, 2)?;
+                Ok(PreparedCommand::Finished(code))
+            }
+        };
     }
 
     if cli.command_args.first().map(String::as_str) == Some("config") {
-        return crate::config_command::run(client, &cli.command_args, cli.json, stdout, stderr);
+        return match crate::config_command::parse(&cli.command_args) {
+            Ok(command) => Ok(PreparedCommand::Config(command)),
+            Err(message) => local_command_error(cli, "config", "usage", &message, stdout, stderr),
+        };
     }
 
     if matches!(
         cli.command_args.first().map(String::as_str),
         Some("ip") | Some("net")
     ) {
-        return crate::net_command::run(client, &cli.command_args, cli.json, stdout, stderr);
+        return match crate::net_command::parse(&cli.command_args) {
+            Ok(command) => Ok(PreparedCommand::Net(command)),
+            Err(message) => local_command_error(cli, "net", "usage", &message, stdout, stderr),
+        };
     }
 
     let adc_read_command = is_adc_read_command(&cli.command_args);
@@ -222,56 +487,125 @@ where
     }
 
     if is_adc_record_command(&cli.command_args) {
-        return run_adc_record(
-            client.base_url(),
-            cli.timeout,
-            &cli.command_args,
-            stdout,
-            stderr,
-        );
+        return match parse_adc_record_args(&strip_passthrough_flags(&cli.command_args)) {
+            Ok(command) => Ok(PreparedCommand::AdcRecord(command)),
+            Err(message) => local_command_error(cli, "adc", "usage", &message, stdout, stderr),
+        };
     }
 
     if is_ota_upload_command(&cli.command_args) {
-        return run_ota_upload(client, &cli.command_args, cli.json, stdout, stderr);
+        let cleaned = strip_passthrough_flags(&cli.command_args);
+        if cleaned.len() != 3 {
+            return local_command_error(
+                cli,
+                "ota",
+                "usage",
+                "usage: radxa-linkr-debuggerctl ota upload PATH",
+                stdout,
+                stderr,
+            );
+        }
+        return match prepare_ota_upload(&cleaned[2]) {
+            Ok(upload) => Ok(PreparedCommand::OtaUpload(upload)),
+            Err(message) => {
+                local_command_error(cli, "ota", "invalid_file", &message, stdout, stderr)
+            }
+        };
     }
 
     if is_test_command(&cli.command_args) {
-        return crate::test::run_test(
-            &cli.command_args,
-            client.base_url(),
-            cli.timeout,
-            cli.json,
-            cli.verbose,
-            stdout,
-            stderr,
+        return Ok(
+            match crate::test::prepare(&cli.command_args, cli.json, cli.verbose, (stdout, stderr))?
+            {
+                Some(command) => PreparedCommand::Test(command),
+                None => PreparedCommand::Finished(2),
+            },
         );
     }
 
     let request = match request_from_args(&wire_args) {
         Ok(request) => request,
         Err(err) => {
-            if cli.json {
-                write_json_error(stdout, command_name(&cli.command_args), "usage", &err)?;
-            } else {
-                writeln!(stderr, "{err}")?;
-            }
-            return Ok(2);
+            return local_command_error(
+                cli,
+                command_name(&cli.command_args),
+                "usage",
+                &err,
+                stdout,
+                stderr,
+            );
         }
     };
 
     if adc_read_command {
-        let channel = extract_adc_channel(&wire_args);
-        return run_adc(client, channel, cli.json, adc_verbose, stdout, stderr);
+        return Ok(PreparedCommand::AdcRead {
+            request,
+            verbose: adc_verbose,
+        });
     }
 
-    run_standard(
-        client,
-        command_name(&cli.command_args),
-        request,
-        cli.json,
-        stdout,
-        stderr,
-    )
+    Ok(PreparedCommand::Standard(request))
+}
+
+fn execute_prepared<TClient: BoardTransport, TTui: TuiRunner>(
+    cli: &Cli,
+    command: PreparedCommand,
+    client: &TClient,
+    tui_runner: &TTui,
+    desktop: Option<&DesktopSession>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8> {
+    match command {
+        PreparedCommand::Finished(code) => Ok(code),
+        PreparedCommand::Desktop => ensure_direct_desktop(desktop, stderr).map(|()| 0),
+        PreparedCommand::Tui => {
+            ensure_direct_desktop(desktop, stderr)?;
+            tui_runner.run_tui(&client.target(), cli.timeout, stdout, stderr)
+        }
+        PreparedCommand::Doctor => run_doctor(client, cli.json, stdout, stderr),
+        PreparedCommand::Reboot => run_reboot(client, cli.json, stdout, stderr),
+        PreparedCommand::Task(command) => crate::task_command::run_prepared(
+            client,
+            command,
+            crate::task_command::TaskCommandIo::new(cli.json, stdout, stderr),
+        ),
+        PreparedCommand::Config(command) => {
+            crate::config_command::run_prepared(client, command, cli.json, stdout, stderr)
+        }
+        PreparedCommand::Net(command) => {
+            crate::net_command::run_prepared(client, command, cli.json, stdout, stderr)
+        }
+        PreparedCommand::AdcRecord(command) => run_adc_record_prepared(
+            client.target(),
+            cli.timeout,
+            command,
+            stdout,
+            stderr,
+            |stderr| ensure_direct_desktop(desktop, stderr),
+        ),
+        PreparedCommand::OtaUpload(upload) => {
+            run_ota_upload(client, upload, cli.json, stdout, stderr)
+        }
+        PreparedCommand::Test(command) => crate::test::run_prepared(
+            command,
+            client.target(),
+            cli.timeout,
+            (stdout, stderr),
+            |stderr| ensure_direct_desktop(desktop, stderr),
+        ),
+        PreparedCommand::AdcRead { request, verbose } => {
+            run_adc(client, request, cli.json, verbose, stdout, stderr)
+        }
+        PreparedCommand::Standard(request) => run_standard(
+            client,
+            command_name(&cli.command_args),
+            request,
+            cli.json,
+            stdout,
+            stderr,
+        ),
+    }
 }
 
 fn run_standard<TClient>(
@@ -327,7 +661,6 @@ fn finish_standard(
 
 fn run_reboot<TClient>(
     client: &TClient,
-    args: &[String],
     json_output: bool,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
@@ -335,16 +668,6 @@ fn run_reboot<TClient>(
 where
     TClient: BoardTransport,
 {
-    if args.len() != 1 {
-        let usage = "usage: radxa-linkr-debuggerctl reboot";
-        if json_output {
-            write_json_error(stdout, "reboot", "usage", usage)?;
-        } else {
-            writeln!(stderr, "{usage}")?;
-        }
-        return Ok(2);
-    }
-
     match client.send_reboot() {
         Ok(Some(output)) => finish_standard("reboot", output, json_output, stdout),
         Ok(None) => {
@@ -381,7 +704,7 @@ where
 
 fn run_adc<TClient>(
     client: &TClient,
-    channel: Option<String>,
+    request: BoardRequest,
     json_output: bool,
     verbose: bool,
     stdout: &mut dyn Write,
@@ -390,16 +713,7 @@ fn run_adc<TClient>(
 where
     TClient: BoardTransport,
 {
-    let mut query = Vec::new();
-    if let Some(name) = channel {
-        query.push(("channel".to_string(), name));
-    }
-    let output = match client.send_text(BoardRequest {
-        method: Method::GET,
-        path: "/api/v1/adc/read".to_string(),
-        query,
-        body: None,
-    }) {
+    let output = match client.send_text(request) {
         Ok(output) => output,
         Err(err) => {
             if json_output {
@@ -534,19 +848,6 @@ fn finish_doctor(
     Ok(exit_code)
 }
 
-fn base_url_from_cli(cli: &Cli) -> String {
-    if let Some(url) = cli.url.as_deref() {
-        return resolve_base_url(url);
-    }
-    if let Some(addr) = cli.addr.as_deref() {
-        return resolve_base_url(addr);
-    }
-    if let Some(port) = cli.port.as_deref() {
-        return resolve_base_url(port);
-    }
-    default_base_url()
-}
-
 fn has_arg(args: &[String], value: &str) -> bool {
     args.iter().any(|arg| arg == value)
 }
@@ -589,20 +890,14 @@ fn command_name(args: &[String]) -> &str {
         .unwrap_or("radxa-linkr-debuggerctl")
 }
 
-fn extract_adc_channel(args: &[String]) -> Option<String> {
-    let cleaned = strip_passthrough_flags(args);
-    if cleaned.len() >= 3 {
-        return cleaned.get(2).cloned();
-    }
-    None
-}
-
+#[cfg(test)]
 fn run_adc_record(
-    base_url: &str,
+    target: impl Into<BoardTarget>,
     timeout: Duration,
     args: &[String],
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
+    before_connect: impl FnOnce(&mut dyn Write) -> Result<()>,
 ) -> Result<u8> {
     let cleaned = strip_passthrough_flags(args);
     if cleaned.len() < 3 {
@@ -617,8 +912,20 @@ fn run_adc_record(
             return Ok(2);
         }
     };
+    run_adc_record_prepared(target, timeout, parsed, stdout, stderr, before_connect)
+}
+
+fn run_adc_record_prepared(
+    target: impl Into<BoardTarget>,
+    timeout: Duration,
+    parsed: AdcRecordArgs,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    before_connect: impl FnOnce(&mut dyn Write) -> Result<()>,
+) -> Result<u8> {
+    before_connect(stderr)?;
     crate::recorder::record_adc_ws_to_file(
-        base_url,
+        target,
         timeout,
         &parsed.output,
         parsed.max_samples,
@@ -630,7 +937,7 @@ fn run_adc_record(
 
 fn run_ota_upload<TClient>(
     client: &TClient,
-    args: &[String],
+    upload: BoardBinaryUpload,
     json_output: bool,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
@@ -638,28 +945,6 @@ fn run_ota_upload<TClient>(
 where
     TClient: BoardTransport,
 {
-    let cleaned = strip_passthrough_flags(args);
-    let usage = "usage: radxa-linkr-debuggerctl ota upload PATH";
-    if cleaned.len() != 3 {
-        if json_output {
-            write_json_error(stdout, "ota", "usage", usage)?;
-        } else {
-            writeln!(stderr, "{usage}")?;
-        }
-        return Ok(2);
-    }
-
-    let upload = match prepare_ota_upload(&cleaned[2]) {
-        Ok(upload) => upload,
-        Err(err) => {
-            if json_output {
-                write_json_error(stdout, "ota", "invalid_file", &err)?;
-            } else {
-                writeln!(stderr, "{err}")?;
-            }
-            return Ok(2);
-        }
-    };
     let size = upload.size;
     let sha256 = upload.sha256.clone();
 
@@ -906,7 +1191,7 @@ fn power_request(args: &[String]) -> Result<BoardRequest, String> {
             Ok(get_request(format!("/api/v1/power/{}", args[2])))
         }
         "set" => {
-            if args.len() != 4 {
+            if args.len() != 4 || !matches!(args[3].as_str(), "on" | "off") {
                 return Err("usage: radxa-linkr-debuggerctl power set NAME on|off".to_string());
             }
             Ok(put_request(
@@ -986,7 +1271,11 @@ fn gpio_request(args: &[String]) -> Result<BoardRequest, String> {
             if args.len() != 4 {
                 return Err("usage: radxa-linkr-debuggerctl gpio set NAME 0|1".to_string());
             }
-            let value = args[3].parse::<i32>().unwrap_or(0);
+            let value = match args[3].as_str() {
+                "0" => 0,
+                "1" => 1,
+                _ => return Err("usage: radxa-linkr-debuggerctl gpio set NAME 0|1".to_string()),
+            };
             Ok(put_request(
                 format!("/api/v1/gpio/{}", args[2]),
                 json!({ "direction": "output", "value": value }),
@@ -1147,6 +1436,11 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
     writeln!(writer, "  radxa-linkr-debuggerctl status")?;
     writeln!(writer, "  radxa-linkr-debuggerctl --json status")?;
     writeln!(writer, "  radxa-linkr-debuggerctl doctor")?;
+    writeln!(writer, "  radxa-linkr-debuggerctl discover --json")?;
+    writeln!(
+        writer,
+        "  # Target: --url/--addr/--port > LINKR_BOARD_URL > verified local /30 discovery"
+    )?;
     writeln!(writer, "  radxa-linkr-debuggerctl power set 12v_out on")?;
     writeln!(writer, "  radxa-linkr-debuggerctl pd fixed 5000")?;
     writeln!(writer, "  radxa-linkr-debuggerctl pd pps 9000")?;
@@ -1205,6 +1499,10 @@ fn write_usage(writer: &mut dyn Write) -> Result<()> {
     writeln!(writer, "  -h, --help")?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "app_discovery_tests.rs"]
+mod discovery_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1301,13 +1599,13 @@ mod tests {
     impl TuiRunner for FakeTuiRunner {
         fn run_tui(
             &self,
-            base_url: &str,
+            target: &BoardTarget,
             timeout: Duration,
             _stdout: &mut dyn Write,
             _stderr: &mut dyn Write,
         ) -> Result<u8> {
             *self.called.borrow_mut() = true;
-            *self.seen_base_url.borrow_mut() = base_url.to_string();
+            *self.seen_base_url.borrow_mut() = target.base_url.clone();
             *self.seen_timeout.borrow_mut() = timeout;
             Ok(self.code)
         }
@@ -1316,7 +1614,10 @@ mod tests {
     #[test]
     fn prefers_url_flag() {
         let cli = Cli::parse_from(["cmd", "--url", "http://example.com", "status"]);
-        assert_eq!(base_url_from_cli(&cli), "http://example.com");
+        assert_eq!(
+            discovery::configured_url(&cli, None),
+            Some("http://example.com")
+        );
     }
 
     #[test]
@@ -1547,8 +1848,15 @@ mod tests {
                 .collect();
             let mut stdout = Vec::new();
             let mut stderr = Vec::new();
-            let code = run_adc_record("not-a-url", Duration::ZERO, &args, &mut stdout, &mut stderr)
-                .unwrap();
+            let code = run_adc_record(
+                "not-a-url",
+                Duration::ZERO,
+                &args,
+                &mut stdout,
+                &mut stderr,
+                |_| Ok(()),
+            )
+            .unwrap();
             assert_eq!(code, 2);
             assert!(stdout.is_empty());
             assert_eq!(
@@ -1769,6 +2077,42 @@ mod tests {
         // Then: it is rejected without sending a control request.
         assert_eq!(code, 2);
         assert!(client.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn gpio_set_rejects_invalid_values_without_requests() {
+        for value in ["typo", "", "2", "-1", "2147483648", "01", "+1", " 1", "1.0"] {
+            for json in [false, true] {
+                let mut args = vec!["cmd", "gpio", "set", "GP13", value];
+                if json {
+                    args.insert(1, "--json");
+                }
+                let cli = Cli::parse_from(args);
+                let client = FakeClient::default();
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                let code = execute_with_io(
+                    cli,
+                    &client,
+                    &FakeTuiRunner::new(0),
+                    &mut stdout,
+                    &mut stderr,
+                )
+                .unwrap();
+                assert_eq!(code, 2, "value={value:?}, json={json}");
+                assert!(client.requests.borrow().is_empty());
+                if json {
+                    let response: Value = serde_json::from_slice(&stdout).unwrap();
+                    assert_eq!(response["error"]["code"], "usage");
+                } else {
+                    assert!(String::from_utf8(stderr).unwrap().contains("0|1"));
+                }
+            }
+        }
+        for (value, expected) in [("0", 0), ("1", 1)] {
+            let request = gpio_request(&["gpio", "set", "GP13", value].map(str::to_owned)).unwrap();
+            assert_eq!(request.body.unwrap()["value"], expected);
+        }
     }
 
     #[test]

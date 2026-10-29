@@ -4,6 +4,7 @@
 , buildNpmPackage
 , cacert
 , installShellFiles
+, util-linux
 , lld
 , pkg-config
 , udev
@@ -37,7 +38,7 @@ let
     inherit version src;
 
     cargoRoot = "cmd-ng";
-    cargoHash = "sha256-fF0hOW3MExveRvJCzfAOV44gn8XhNv93P6xVrNzzp8o=";
+    cargoHash = "sha256-FQwF7Tbv7xYioDTHqEQw6204WeAKkK5skRh7M7Coqog=";
     buildAndTestSubdir = "cmd-ng";
 
     nativeBuildInputs = [
@@ -49,6 +50,8 @@ let
       cacert
       udev
     ];
+
+    nativeCheckInputs = lib.optionals stdenvNoCC.hostPlatform.isLinux [ util-linux ];
 
     SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
     NIX_SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
@@ -191,6 +194,7 @@ stdenvNoCC.mkDerivation {
 
   preFixup = ''
     gappsWrapperArgs+=(
+      --prefix PATH : "${lib.makeBinPath [ util-linux ]}"
       --set LINKR_TRAY_BIN "$out/bin/linkr-tray"
       --set LINKR_WEB_ROOT "$out/share/radxa-linkr-debugger/web"
       --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath [ libayatana-appindicator ]}"

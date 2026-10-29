@@ -8,7 +8,7 @@ use std::process::{Child, Command, Stdio};
 
 #[path = "desktop_host.rs"]
 mod host;
-use host::{host_is_ready, host_pid, wait_for_host_ready, HostLaunch};
+use host::{ensure_host_board_url, host_status, wait_for_host_ready, HostLaunch};
 
 const DEFAULT_HOST_PORT: u16 = 8787;
 const APP_DATA_DIR_NAME: &str = "radxa-linkr-debugger";
@@ -17,14 +17,18 @@ const TRAY_TOOL_NAME: &str = "linkr-tray.exe";
 #[cfg(not(windows))]
 const TRAY_TOOL_NAME: &str = "linkr-tray";
 
-pub fn ensure_desktop() -> Result<()> {
+pub fn ensure_desktop(board_url: &str) -> Result<()> {
     if env::var_os("LINKR_SKIP_DESKTOP").is_some() {
         return Ok(());
     }
     let port = host_port();
     let log_path = host_log_path();
     let tray_lock = tray_lock_path();
-    let previous_host_pid = host_pid(port);
+    let previous_host = host_status(port);
+    let previous_host_pid = previous_host.as_ref().map(|status| status.pid);
+    if let Some(status) = previous_host {
+        ensure_host_board_url(port, &status.board_url, board_url)?;
+    }
     let replacing_headless = tray_lock
         .as_deref()
         .and_then(|path| std::fs::read_to_string(path).ok())
@@ -34,16 +38,20 @@ pub fn ensure_desktop() -> Result<()> {
         return Ok(());
     }
     if !graphical {
-        return ensure_tray_daemon(port, true, log_path.as_deref());
+        return ensure_tray_daemon(port, board_url, true, log_path.as_deref());
     }
 
-    let tray_error = match find_tray_binary()
-        .and_then(|tray| spawn_detached(tray_command(&tray, port, false), log_path.as_deref()))
-    {
+    let tray_error = match find_tray_binary().and_then(|tray| {
+        spawn_detached(
+            tray_command(&tray, port, board_url, false),
+            log_path.as_deref(),
+        )
+    }) {
         Ok(mut launcher) => {
             if let Err(error) = wait_for_host_ready(
                 HostLaunch {
                     port,
+                    board_url,
                     previous_host_pid,
                     launcher_name: "linkr-tray",
                     log_path: log_path.as_deref(),
@@ -67,7 +75,7 @@ pub fn ensure_desktop() -> Result<()> {
         Err(error) => error,
     };
 
-    ensure_tray_daemon(port, true, log_path.as_deref()).with_context(|| {
+    ensure_tray_daemon(port, board_url, true, log_path.as_deref()).with_context(|| {
         format!("linkr-tray unavailable ({tray_error:#}); start headless desktop daemon")
     })
 }
@@ -94,23 +102,43 @@ fn graphical_session_available() -> bool {
     true
 }
 
-fn ensure_tray_daemon(port: u16, headless: bool, log_path: Option<&Path>) -> Result<()> {
-    if host_is_ready(port) {
+fn ensure_tray_daemon(
+    port: u16,
+    board_url: &str,
+    headless: bool,
+    log_path: Option<&Path>,
+) -> Result<()> {
+    ensure_tray_daemon_with_launcher(port, board_url, || {
+        let tray = find_tray_binary()?;
+        let mut launcher =
+            spawn_detached(tray_command(&tray, port, board_url, headless), log_path)?;
+        wait_for_host_ready(
+            HostLaunch {
+                port,
+                board_url,
+                previous_host_pid: None,
+                launcher_name: "linkr-tray",
+                log_path,
+                tray_lock: None,
+                replacing_headless: false,
+            },
+            &mut launcher,
+        )
+    })
+}
+
+// Inject the entire resolver/launcher boundary: a failed status fixture must
+// never fall through to PATH/installed binaries or process creation in tests.
+fn ensure_tray_daemon_with_launcher(
+    port: u16,
+    board_url: &str,
+    launch: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if let Some(status) = host_status(port) {
+        ensure_host_board_url(port, &status.board_url, board_url)?;
         return Ok(());
     }
-    let tray = find_tray_binary()?;
-    let mut launcher = spawn_detached(tray_command(&tray, port, headless), log_path)?;
-    wait_for_host_ready(
-        HostLaunch {
-            port,
-            previous_host_pid: None,
-            launcher_name: "linkr-tray",
-            log_path,
-            tray_lock: None,
-            replacing_headless: false,
-        },
-        &mut launcher,
-    )
+    launch()
 }
 
 fn host_port() -> u16 {
@@ -155,15 +183,17 @@ fn find_tray_binary() -> Result<PathBuf> {
 }
 
 fn find_tool_binary(name: &str, override_variable: &str) -> Result<PathBuf> {
+    let candidates = tool_binary_candidates(name, override_variable);
+    if let Some(path) = candidates.into_iter().find(|path| path.is_file()) {
+        return Ok(path);
+    }
+    bail!("{name} not found; install the Radxa Linkr desktop stack or set {override_variable}")
+}
+
+fn tool_binary_candidates(name: &str, override_variable: &str) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = env::var_os(override_variable) {
         candidates.push(PathBuf::from(path));
-    }
-    #[cfg(debug_assertions)]
-    {
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        candidates.push(manifest.join("../host-tools/target/debug").join(name));
-        candidates.push(manifest.join("../host-tools/target/release").join(name));
     }
     if let Ok(exe) = env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -205,10 +235,15 @@ fn find_tool_binary(name: &str, override_variable: &str) -> Result<PathBuf> {
     if let Some(path) = find_on_path(name) {
         candidates.push(path);
     }
-    if let Some(path) = candidates.into_iter().find(|path| path.is_file()) {
-        return Ok(path);
+    #[cfg(debug_assertions)]
+    {
+        // Source-tree binaries may lack the desktop loader wrapper supplied by
+        // packaged installs, so use them only after packaged candidates.
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        candidates.push(manifest.join("../host-tools/target/release").join(name));
+        candidates.push(manifest.join("../host-tools/target/debug").join(name));
     }
-    bail!("{name} not found; install the Radxa Linkr desktop stack or set {override_variable}")
+    candidates
 }
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
@@ -238,7 +273,7 @@ fn configure_desktop_output(command: &mut Command, log_path: Option<&Path>) -> R
     Ok(())
 }
 
-fn tray_command(path: &Path, port: u16, headless: bool) -> Command {
+fn tray_command(path: &Path, port: u16, board_url: &str, headless: bool) -> Command {
     #[cfg(target_os = "linux")]
     let mut command = {
         let mut command = Command::new("setsid");
@@ -250,7 +285,9 @@ fn tray_command(path: &Path, port: u16, headless: bool) -> Command {
     command
         .arg("--no-open-when-running")
         .arg("--port")
-        .arg(port.to_string());
+        .arg(port.to_string())
+        .arg("--board-url")
+        .arg(board_url);
     if headless {
         command.arg("--headless");
     }

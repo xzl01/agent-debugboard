@@ -4,33 +4,63 @@
 
 `radxa-linkr-debuggerctl` talks to the board over USB NCM. Installed release
 packages also provide `rdb` as a link to that exact executable, so either name
-accepts the same commands. Examples below omit `--url` for brevity; prefix them
-with `--url http://<board-ip>` or set `LINKR_BOARD_URL=http://<board-ip>`. The board runs a DHCPv4 server, so the host gets a
-compatible address automatically. Each board derives and persists a unique
-private `/30` and MAC on first boot. The host NCM address is the network's
-`.2`; the board is `.1` in the same `/30`. Pass that board URL with `--url`
-(the historical compiled default is only a fallback for old images). The CDC
-shell command `ip` also prints the board URL.
+accepts the same commands. Examples below omit connection options. URL priority
+is explicit `--url` / `--addr` / `--port` > `LINKR_BOARD_URL` > automatic
+discovery > error. Without an explicit or environment URL, the CLI selects a
+board only when exactly one verified device is found. With no verified devices
+it returns `device_not_found`; with multiple it returns `multiple_devices` and
+requires `--url http://<board-ip>` to select one.
 
-With the unified desktop stack installed, running the CLI/TUI also starts one
-`linkr-tray` daemon if it is not already running. The tray and Host services
-share that process. Use `-d` / `--desktop` to start only the desktop launcher
-and background daemon, then exit; the daemon remains alive after the CLI
-exits. If no `DISPLAY` / `WAYLAND_DISPLAY` is available, or the GTK-linked tray
-starts but cannot load an AppIndicator implementation, the CLI relaunches the
-same binary with `--headless`. The Linux tray executable still requires the GTK
-loader libraries; a minimal system without GTK should run `linkr-host serve`
-directly. Ordinary CLI/TUI commands continue when desktop components are absent;
-only explicit `-d` treats startup failure as fatal. Set `LINKR_SKIP_DESKTOP=1`
-only when no background Host should be attempted. When a graphical session becomes available
-later, the next CLI/TUI or `-d` launch gracefully replaces that headless daemon
-with one graphical Tray daemon instead of running both.
-On desktop startup failure, the CLI writes daemon and Host startup output
-to `$XDG_DATA_HOME/radxa-linkr-debugger/host.log` and names that path in the
-error; the Linux default is `~/.local/share/radxa-linkr-debugger/host.log`. When
-running a graphical debug binary directly from the source tree on NixOS,
-launch it inside `nix-shell` so `libayatana-appindicator3` is available to the
-Tray. Headless mode does not construct the AppIndicator UI.
+Command arguments and input files are validated before discovery or desktop
+startup. Automatically discovered HTTP and ADC Recorder WebSocket connections
+retain the selected local IPv4 address and use no proxy or redirects. Recorder
+WebSockets also reject redirects for explicitly selected URLs; explicit HTTP
+URLs retain their usual client policy.
+
+The board runs a DHCPv4 server, so the host gets a compatible address
+automatically. Each board derives and persists a unique private `/30` and MAC
+on first boot. The host NCM address is the network's `.2`; the board is `.1` in
+the same `/30`. The CDC shell command `ip` also prints the board URL.
+
+With the unified desktop stack installed, a CLI/TUI board command resolves one
+board target before starting `linkr-tray`, and passes that exact resolved URL to
+the Tray with `--board-url`. Tray and Host share the daemon process. `-d` /
+`--desktop` uses the same explicit/environment/unique-discovery target selection,
+starts only the desktop launcher and daemon, then exits; the daemon remains
+alive. Automatic desktop startup does not occur for `--version`, `--help`,
+`discover`, or invalid command lines. Ordinary CLI/TUI commands warn and continue
+when desktop startup fails; only explicit `-d` makes that failure fatal. Set
+`LINKR_SKIP_DESKTOP=1` only when no background Host should be attempted.
+
+An existing Host is reused only when its `/host/api/v1/status` `board_url` is the
+same board URL. A different URL produces a diagnostic containing both URLs; the
+CLI never silently retargets or stops that Host/Tray or interrupts its shared
+sessions. An ordinary board command still runs directly after the warning, while
+the existing Tray/Web UI remains on its original board; explicit `-d` fails. To
+switch the desktop service, check for other clients, quit the existing Radxa
+Linkr Tray (or stop a manually started `linkr-host` service), then run
+`radxa-linkr-debuggerctl --url http://<board-ip> --desktop`.
+
+If no `DISPLAY` / `WAYLAND_DISPLAY` is available, or the GTK-linked tray starts
+but cannot load an AppIndicator implementation, the CLI relaunches the same
+binary with `--headless`. When a graphical session becomes available later, the
+next CLI/TUI or `-d` launch gracefully replaces that headless daemon with one
+graphical Tray daemon instead of running both. The Linux tray executable still
+requires GTK3 loader libraries even in headless mode; a minimal system without
+GTK can run `linkr-host serve --board-url http://<board-ip>` directly. Standalone
+Host does not inherit CLI discovery: only the resolved URL crosses the process
+boundary, not the discovered CLI connection's local source-address binding,
+no-proxy, or no-redirect policy.
+
+On desktop startup failure, the CLI writes daemon and Host startup output to
+`$XDG_DATA_HOME/radxa-linkr-debugger/host.log` and names that path in the error;
+the Linux default is `~/.local/share/radxa-linkr-debugger/host.log`. Headless
+mode does not construct the AppIndicator UI. For source-tree development, the
+CLI prefers `LINKR_TRAY_BIN`, packaged sibling/install/PATH copies, and only then
+repository debug binaries. The Nix package sets `LINKR_TRAY_BIN` to its wrapped
+Tray. A direct repository debug Tray on NixOS still needs a development shell
+providing GTK3 and `libayatana-appindicator3`; alternatively set
+`LINKR_TRAY_BIN` to a correctly wrapped executable.
 
 The daemon still contains the legacy CH347 `uart0`/`uart1` Serial Broker and MCP
 serial client. Those commands are non-J4 compatibility/test-fixture paths
@@ -38,10 +68,24 @@ pending separate removal. They are not the production target terminal. Use the
 board-hosted xterm.js terminal, MCU `serial.j4`, J4 CDC ACM, or raw TCP 5555 for
 J4.
 
+`discover` lists USB-NCM candidates and supports `--json` and `--timeout`.
+The explicit `discover` command always scans local interfaces even when
+`--url` or `LINKR_BOARD_URL` is configured. Discovery probes only the IPv4
+`/30` peers of local interfaces and strictly
+validates `schema`, `ok`, `command`, and `project` in `/api/v1/status` before
+treating a candidate as a verified device.
+
 ```sh
+# List USB-NCM candidates, optionally as JSON
+radxa-linkr-debuggerctl discover
+radxa-linkr-debuggerctl --json discover
+
 # Check connection and board health
 radxa-linkr-debuggerctl doctor
 radxa-linkr-debuggerctl status
+
+# Select a board explicitly when multiple devices are found
+radxa-linkr-debuggerctl --url 'http://<board-ip>' status
 ```
 
 Running without a subcommand starts the [interactive TUI](tui.md). All subcommands below work in CLI mode.

@@ -15,11 +15,18 @@ const HOST_READY_POLL: Duration = Duration::from_millis(100);
 
 pub(super) struct HostLaunch<'a> {
     pub(super) port: u16,
+    pub(super) board_url: &'a str,
     pub(super) previous_host_pid: Option<u64>,
     pub(super) launcher_name: &'a str,
     pub(super) log_path: Option<&'a Path>,
     pub(super) tray_lock: Option<&'a Path>,
     pub(super) replacing_headless: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct HostStatus {
+    pub(super) pid: u64,
+    pub(super) board_url: String,
 }
 
 impl HostLaunch<'_> {
@@ -72,7 +79,7 @@ pub(super) fn host_not_ready_message(port: u16, log_path: Option<&Path>) -> Stri
     format!("Linkr Host did not become ready at 127.0.0.1:{port}; Host log: {log_path}")
 }
 
-pub(super) fn host_pid(port: u16) -> Option<u64> {
+pub(super) fn host_status(port: u16) -> Option<HostStatus> {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(300)).ok()?;
     stream
@@ -98,11 +105,27 @@ pub(super) fn host_pid(port: u16) -> Option<u64> {
     {
         return None;
     }
-    status.get("pid").and_then(serde_json::Value::as_u64)
+    Some(HostStatus {
+        pid: status.get("pid")?.as_u64()?,
+        board_url: status.get("board_url")?.as_str()?.to_owned(),
+    })
 }
 
-pub(super) fn host_is_ready(port: u16) -> bool {
-    host_pid(port).is_some()
+pub(super) fn ensure_host_board_url(port: u16, actual: &str, expected: &str) -> Result<()> {
+    let matches = match (reqwest::Url::parse(actual), reqwest::Url::parse(expected)) {
+        (Ok(actual), Ok(expected)) => actual == expected,
+        _ => false,
+    };
+    if matches {
+        return Ok(());
+    }
+    bail!(
+        "Linkr Host at 127.0.0.1:{port} targets {actual}, but this CLI selected {expected}; \
+         the existing Host/Tray was not stopped or retargeted. Check for other clients, then \
+         quit the existing Radxa Linkr Tray (or stop your manually started linkr-host service) \
+         and restart with `radxa-linkr-debuggerctl --url {expected} --desktop`. Host status: \
+         http://127.0.0.1:{port}/host/api/v1/status"
+    )
 }
 
 pub(super) fn wait_for_host_ready(target: HostLaunch<'_>, launcher: &mut Child) -> Result<()> {
@@ -124,14 +147,15 @@ pub(super) fn wait_for_host_ready(target: HostLaunch<'_>, launcher: &mut Child) 
                 }
             }
         }
-        if let Some(pid) = host_pid(target.port) {
+        if let Some(status) = host_status(target.port) {
             let tray_ready = target
                 .tray_lock
                 .and_then(|path| fs::read_to_string(path).ok())
                 .is_some_and(|owner| {
                     tray_lock_allows_ready(&owner, launcher.id(), launcher_running)
                 });
-            if target.accepts_host(pid, tray_ready) {
+            if target.accepts_host(status.pid, tray_ready) {
+                ensure_host_board_url(target.port, &status.board_url, target.board_url)?;
                 return Ok(());
             }
         }

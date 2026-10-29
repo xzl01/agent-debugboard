@@ -172,6 +172,7 @@ fn parse_status(raw: &str, expected_action: &str) -> Result<NetStatus> {
     })
 }
 
+#[cfg(test)]
 pub(crate) fn run<TClient>(
     client: &TClient,
     args: &[String],
@@ -187,6 +188,16 @@ where
         Err(message) => return write_usage_error(json_output, stdout, stderr, &message),
     };
 
+    run_prepared(client, command, json_output, stdout, stderr)
+}
+
+pub(crate) fn run_prepared<TClient: BoardTransport>(
+    client: &TClient,
+    command: NetCommand,
+    json_output: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8> {
     let (request, expected_action) = match command {
         NetCommand::Show => (
             BoardRequest {
@@ -283,6 +294,7 @@ fn write_http_error(
     Ok(1)
 }
 
+#[cfg(test)]
 fn write_usage_error(
     json_output: bool,
     stdout: &mut dyn Write,

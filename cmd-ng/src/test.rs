@@ -7,10 +7,15 @@ use std::fs::File;
 use std::io::Write;
 use std::time::Duration;
 
-use crate::client::BoardClient;
+use crate::client::{BoardClient, BoardTarget};
 use crate::json_contract::render_failure;
 use crate::test_runner::RunOptions;
-use crate::test_script::parse_script;
+use crate::test_script::{parse_script, TestScript};
+
+pub(crate) struct PreparedTest {
+    script: TestScript,
+    opts: RunOptions,
+}
 
 fn write_error(stdout: &mut dyn Write, code: &str, message: &str) -> Result<()> {
     let json = render_failure("test", code, message);
@@ -18,15 +23,28 @@ fn write_error(stdout: &mut dyn Write, code: &str, message: &str) -> Result<()> 
     Ok(())
 }
 
+#[cfg(test)]
 pub fn run_test(
     args: &[String],
-    base_url: &str,
+    target: impl Into<BoardTarget>,
     timeout: Duration,
     json_output: bool,
     verbose: bool,
-    stdout: &mut dyn Write,
-    stderr: &mut dyn Write,
+    (stdout, stderr): (&mut dyn Write, &mut dyn Write),
+    before_connect: impl FnOnce(&mut dyn Write) -> Result<()>,
 ) -> Result<u8> {
+    let Some(prepared) = prepare(args, json_output, verbose, (&mut *stdout, &mut *stderr))? else {
+        return Ok(2);
+    };
+    run_prepared(prepared, target, timeout, (stdout, stderr), before_connect)
+}
+
+pub(crate) fn prepare(
+    args: &[String],
+    json_output: bool,
+    verbose: bool,
+    (stdout, stderr): (&mut dyn Write, &mut dyn Write),
+) -> Result<Option<PreparedTest>> {
     if args.len() < 3 || args[1] != "run" {
         let usage = "usage: radxa-linkr-debuggerctl test run SCRIPT [--output PATH] [--serial PATH] [--serial-uart0 PATH] [--serial-uart1 PATH]";
         if json_output {
@@ -34,7 +52,7 @@ pub fn run_test(
         } else {
             writeln!(stderr, "{usage}")?;
         }
-        return Ok(2);
+        return Ok(None);
     }
 
     let script_path = &args[2];
@@ -54,7 +72,7 @@ pub fn run_test(
                     } else {
                         writeln!(stderr, "missing value for --output")?;
                     }
-                    return Ok(2);
+                    return Ok(None);
                 };
                 output_path = Some(path.clone());
             }
@@ -66,7 +84,7 @@ pub fn run_test(
                     } else {
                         writeln!(stderr, "missing value for UART0 serial option")?;
                     }
-                    return Ok(2);
+                    return Ok(None);
                 };
                 serial_uart0_path = Some(path.clone());
             }
@@ -78,7 +96,7 @@ pub fn run_test(
                     } else {
                         writeln!(stderr, "missing value for --serial-uart1")?;
                     }
-                    return Ok(2);
+                    return Ok(None);
                 };
                 serial_uart1_path = Some(path.clone());
             }
@@ -89,7 +107,7 @@ pub fn run_test(
                 } else {
                     writeln!(stderr, "{message}")?;
                 }
-                return Ok(2);
+                return Ok(None);
             }
         }
         i += 1;
@@ -105,10 +123,10 @@ pub fn run_test(
             } else {
                 writeln!(stderr, "{message}")?;
             }
-            return Ok(2);
+            return Ok(None);
         }
     };
-    let mut script = match parse_script(file) {
+    let script = match parse_script(file) {
         Ok(script) => script,
         Err(e) => {
             if json_output {
@@ -116,7 +134,7 @@ pub fn run_test(
             } else {
                 writeln!(stderr, "failed to parse script: {e}")?;
             }
-            return Ok(2);
+            return Ok(None);
         }
     };
 
@@ -126,11 +144,8 @@ pub fn run_test(
         } else {
             writeln!(stderr, "script has no steps")?;
         }
-        return Ok(2);
+        return Ok(None);
     }
-
-    // Create client
-    let client = BoardClient::new(base_url, timeout)?;
 
     let opts = RunOptions {
         output_path,
@@ -140,11 +155,26 @@ pub fn run_test(
         verbose,
     };
 
+    Ok(Some(PreparedTest { script, opts }))
+}
+
+pub(crate) fn run_prepared(
+    prepared: PreparedTest,
+    target: impl Into<BoardTarget>,
+    timeout: Duration,
+    (stdout, stderr): (&mut dyn Write, &mut dyn Write),
+    before_connect: impl FnOnce(&mut dyn Write) -> Result<()>,
+) -> Result<u8> {
+    let PreparedTest { mut script, opts } = prepared;
+    // Create client only after all local validation has passed.
+    before_connect(stderr)?;
+    let client = BoardClient::from_target(target, timeout)?;
+
     // Run
     match crate::test_runner::run_script(&mut script, &client, &opts, stdout, stderr) {
         Ok(exit_code) => Ok(exit_code),
         Err(error) => {
-            if json_output {
+            if opts.json_output {
                 write_error(stdout, "run_error", &error.to_string())?;
             } else {
                 writeln!(stderr, "failed to run test: {error}")?;
@@ -171,8 +201,8 @@ mod tests {
             Duration::from_millis(10),
             true,
             false,
-            &mut stdout,
-            &mut stderr,
+            (&mut stdout, &mut stderr),
+            |_| Ok(()),
         )
         .unwrap();
         (

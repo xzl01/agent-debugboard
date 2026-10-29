@@ -4,9 +4,9 @@
 // Copyright (c) Jiali Chen <chenjiali@radxa.com>
 
 use crate::client_url::join_request_path;
+pub use crate::client_url::resolve_base_url;
 #[cfg(test)]
 pub use crate::client_url::DEFAULT_BASE_URL;
-pub use crate::client_url::{default_base_url, resolve_base_url};
 use crate::persistent_config::{
     ConfigAction, ConfigItemId, ConfigSaveRequest, PersistentConfigResponse,
 };
@@ -17,9 +17,54 @@ use reqwest::{Method, StatusCode, Url};
 use serde_json::Value;
 use std::fmt;
 use std::fs::File;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 const MIN_OTA_UPLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Preserve how the target was selected whenever a worker rebuilds a client.
+/// Configured URLs retain reqwest defaults; discovered peers stay direct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoardTarget {
+    pub base_url: String,
+    pub local_ip: Option<Ipv4Addr>,
+}
+
+impl BoardTarget {
+    pub fn direct(base_url: String, local_ip: Ipv4Addr) -> Self {
+        Self {
+            base_url,
+            local_ip: Some(local_ip),
+        }
+    }
+}
+
+impl From<String> for BoardTarget {
+    fn from(base_url: String) -> Self {
+        Self {
+            base_url,
+            local_ip: None,
+        }
+    }
+}
+
+impl From<&str> for BoardTarget {
+    fn from(base_url: &str) -> Self {
+        Self::from(base_url.to_string())
+    }
+}
+
+impl From<&String> for BoardTarget {
+    fn from(base_url: &String) -> Self {
+        Self::from(base_url.as_str())
+    }
+}
+
+impl From<&BoardTarget> for BoardTarget {
+    fn from(target: &BoardTarget) -> Self {
+        target.clone()
+    }
+}
 
 pub(crate) fn ota_upload_timeout(timeout: Duration) -> Duration {
     timeout.max(MIN_OTA_UPLOAD_TIMEOUT)
@@ -27,7 +72,7 @@ pub(crate) fn ota_upload_timeout(timeout: Duration) -> Duration {
 
 #[derive(Debug, Clone)]
 pub struct BoardClient {
-    base_url: String,
+    target: BoardTarget,
     http: Client,
     timeout: Duration,
 }
@@ -59,6 +104,10 @@ pub trait BoardTransport {
         anyhow::bail!("byte-oriented requests are not supported by this transport")
     }
     fn base_url(&self) -> &str;
+
+    fn target(&self) -> BoardTarget {
+        BoardTarget::from(self.base_url())
+    }
 
     fn send_reboot(&self) -> Result<Option<String>> {
         self.send_text(reboot_request()).map(Some)
@@ -122,18 +171,37 @@ pub struct BoardBinaryUpload {
 
 impl BoardClient {
     pub fn new(base_url: &str, timeout: Duration) -> Result<Self> {
-        let base_url = resolve_base_url(base_url);
+        let target = BoardTarget::from(resolve_base_url(base_url));
         let http = Client::builder().timeout(timeout).build()?;
         Ok(Self {
-            base_url,
+            target,
+            http,
+            timeout,
+        })
+    }
+
+    pub fn from_target(target: impl Into<BoardTarget>, timeout: Duration) -> Result<Self> {
+        let mut target = target.into();
+        let Some(local_ip) = target.local_ip else {
+            return Self::new(&target.base_url, timeout);
+        };
+        target.base_url = resolve_base_url(&target.base_url);
+        let http = Client::builder()
+            .timeout(timeout)
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .local_address(IpAddr::V4(local_ip))
+            .build()?;
+        Ok(Self {
+            target,
             http,
             timeout,
         })
     }
 
     fn request_url(&self, path: &str, query: &[(String, String)]) -> Result<Url> {
-        let mut url = Url::parse(&self.base_url)
-            .with_context(|| format!("parse base URL {:?}", self.base_url))?;
+        let mut url = Url::parse(&self.target.base_url)
+            .with_context(|| format!("parse base URL {:?}", self.target.base_url))?;
         let joined_path = join_request_path(url.path(), path);
         url.set_path(&joined_path);
         if !query.is_empty() {
@@ -246,7 +314,11 @@ impl BoardTransport for BoardClient {
     }
 
     fn base_url(&self) -> &str {
-        &self.base_url
+        &self.target.base_url
+    }
+
+    fn target(&self) -> BoardTarget {
+        self.target.clone()
     }
 
     fn send_reboot(&self) -> Result<Option<String>> {

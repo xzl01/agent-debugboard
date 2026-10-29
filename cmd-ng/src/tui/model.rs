@@ -9,6 +9,7 @@ use super::hit::HitMap;
 use super::pages::ActivePage;
 use super::{TuiActionMsg, TUI_HISTORY_LIMIT};
 use crate::adc::{AdcKind, AdcReading};
+use crate::client::BoardTarget;
 use crate::monitoring::BoardMonitoring;
 use crate::ws_status::{TuiPdStatus, TuiStatusAdcChannel, WsStatusSnapshot};
 use std::collections::BTreeMap;
@@ -35,6 +36,7 @@ pub(super) struct TuiSwitchState {
 
 pub struct TuiModel {
     pub base_url: String,
+    pub(super) local_ip: Option<std::net::Ipv4Addr>,
     pub timeout: Duration,
     pub width: usize,
     pub height: usize,
@@ -81,6 +83,7 @@ impl TuiModel {
     pub(super) fn new(base_url: String, timeout: Duration) -> Self {
         Self {
             base_url: base_url.clone(),
+            local_ip: None,
             timeout,
             width: 0,
             height: 0,
@@ -121,6 +124,13 @@ impl TuiModel {
             channel_ids: Vec::new(),
             voltage_channel_ids: Vec::new(),
             adc_channel_metadata: std::collections::HashMap::new(),
+        }
+    }
+
+    pub(super) fn target(&self) -> BoardTarget {
+        BoardTarget {
+            base_url: self.base_url.clone(),
+            local_ip: self.local_ip,
         }
     }
 

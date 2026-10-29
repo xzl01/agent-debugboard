@@ -45,6 +45,7 @@ pub(crate) fn parse(args: &[String]) -> Result<ConfigCommand, String> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn run<TClient>(
     client: &TClient,
     args: &[String],
@@ -59,6 +60,16 @@ where
         Ok(command) => command,
         Err(message) => return write_usage_error(json_output, stdout, stderr, &message),
     };
+    run_prepared(client, command, json_output, stdout, stderr)
+}
+
+pub(crate) fn run_prepared<TClient: BoardTransport>(
+    client: &TClient,
+    command: ConfigCommand,
+    json_output: bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<u8> {
     let response = match &command {
         ConfigCommand::Show => client.config_show(),
         ConfigCommand::Save { items, confirm } => client.config_save(items, *confirm),
@@ -70,6 +81,7 @@ where
     }
 }
 
+#[cfg(test)]
 fn write_usage_error(
     json_output: bool,
     stdout: &mut dyn Write,

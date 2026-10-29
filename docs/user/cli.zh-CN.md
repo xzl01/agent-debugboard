@@ -3,39 +3,74 @@
 [English](cli.md)
 
 `radxa-linkr-debuggerctl` 通过 USB NCM 与调试板通信。release 安装包还会提供
-指向同一可执行文件的 `rdb` 链接，因此两个名称接受完全相同的命令。下文示例为
-简洁省略了 `--url`；请在前面加上 `--url http://<板卡 IP>`，或设置
-`LINKR_BOARD_URL=http://<板卡 IP>`。板子运行
-DHCPv4 server，主机会自动获取兼容地址。每块板首次启动会派生并持久化唯一的
-私有 `/30` 与 MAC。主机 NCM 地址是该网络中的 `.2`，板卡是同一 `/30` 的 `.1`；
-用该板卡 URL 传 `--url`（历史编译默认值只作为旧镜像回退）。CDC shell 的 `ip`
-命令也会打印板卡 URL。
+指向同一可执行文件的 `rdb` 链接，因此两个名称接受完全相同的命令。下文示例省略
+连接选项。URL 优先级为显式 `--url` / `--addr` / `--port` >
+`LINKR_BOARD_URL` > 自动发现 > 报错。未显式指定 URL、也未设置环境变量 URL 时，
+仅发现唯一已验证设备才自动选中；没有已验证设备时返回 `device_not_found`，
+有多个时返回 `multiple_devices`，必须用 `--url http://<板卡 IP>` 指定设备。
 
-安装统一桌面栈后，运行 CLI/TUI 只会在后台启动一个 `linkr-tray` 守护；
-Tray 与 Host 服务位于同一进程。使用 `-d` / `--desktop` 可只启动桌面启动器
-和后台守护后退出，CLI 退出后守护仍常驻。没有 `DISPLAY` /
-`WAYLAND_DISPLAY`，或 GTK 已加载但 Tray 找不到 AppIndicator 实现时，CLI
-会把同一二进制改以 `--headless` 模式启动。Linux 的 `linkr-tray` 可执行文件
-本身仍依赖 GTK loader；完全未安装 GTK 的最小系统应直接运行 `linkr-host serve`。
-桌面组件缺失时普通 CLI/TUI 仍继续工作，只有显式 `-d` 把启动失败视为错误。
-仅在明确不需要尝试任何后台 Host 时设置 `LINKR_SKIP_DESKTOP=1`。之后恢复图形环境时，再运行 CLI/TUI 或 `-d`
-会让 headless 守护优雅退出并由单个图形 Tray 守护接管，不会同时保留两套进程。
-桌面栈启动失败时，CLI 会把守护与 Host 的
-启动输出写入并指向
+命令参数和输入文件在设备发现或桌面启动前完成本地校验。自动发现的 HTTP 与
+ADC Recorder WebSocket 连接均保留选定的本机 IPv4 地址，不使用代理或跟随
+重定向。显式指定 URL 的 Recorder WebSocket 同样拒绝重定向；显式 HTTP URL
+仍保留原有客户端策略。
+
+板子运行 DHCPv4 server，主机会自动获取兼容地址。每块板首次启动会派生并持久化
+唯一的私有 `/30` 与 MAC。主机 NCM 地址是该网络中的 `.2`，板卡是同一 `/30`
+的 `.1`。CDC shell 的 `ip` 命令也会打印板卡 URL。
+
+安装统一桌面栈后，CLI/TUI 板命令会先解析出唯一板卡目标，再启动
+`linkr-tray`，并通过 `--board-url` 把解析出的同一个 URL 显式传给 Tray；
+Tray 与 Host 服务位于同一守护进程。`-d` / `--desktop` 使用相同的
+显式参数、环境变量、唯一设备自动发现目标选择顺序，只启动桌面启动器和守护后退出，
+守护仍常驻。`--version`、`--help`、`discover` 和无效命令不会触发桌面自启。
+普通 CLI/TUI 在桌面启动失败时发出警告并继续板命令，只有显式 `-d` 把失败视为
+fatal。仅在明确不需要尝试任何后台 Host 时设置 `LINKR_SKIP_DESKTOP=1`。
+
+复用已有 Host 前会核对 `/host/api/v1/status` 的 `board_url`；只有 URL 相同才复用。
+URL 不同时，诊断会列出两个地址；CLI 不会静默切换、关闭已有 Host/Tray，也不会
+中断其共享会话。普通板命令仍会在警告后直接访问所选板卡，已有 Tray/Web UI 则
+保持原板卡；显式 `-d` 会失败。需要切换桌面服务时，先检查其他客户端，再退出
+现有 Radxa Linkr Tray（或停止手动启动的 `linkr-host` 服务），随后运行
+`radxa-linkr-debuggerctl --url http://<板卡 IP> --desktop`。
+
+没有 `DISPLAY` / `WAYLAND_DISPLAY`，或 GTK 已加载但 Tray 找不到 AppIndicator
+实现时，CLI 会把同一二进制改以 `--headless` 模式启动。之后恢复图形环境时，
+再运行 CLI/TUI 或 `-d` 会让 headless 守护优雅退出并由单个图形 Tray 守护接管，
+不会同时保留两套进程。Linux 的 `linkr-tray` 即使在 headless 模式也仍依赖
+GTK3 loader；完全未安装 GTK 的最小系统可直接运行
+`linkr-host serve --board-url http://<板卡 IP>`。standalone Host 不继承 CLI
+自动发现：跨进程只传解析后的 URL，不传自动发现 CLI 连接的本地源地址绑定、
+no-proxy 或 no-redirect 策略。
+
+桌面栈启动失败时，CLI 会把守护与 Host 的启动输出写入并指向
 `$XDG_DATA_HOME/radxa-linkr-debugger/host.log`；Linux 默认路径为
-`~/.local/share/radxa-linkr-debugger/host.log`。在 NixOS 源码树中直接运行
-图形 debug 二进制时，应从 `nix-shell` 内启动，以提供 Tray 所需的
-GTK 与 `libayatana-appindicator3`；headless 模式不会构造 AppIndicator UI，
-但 Linux 二进制仍需 GTK loader。
+`~/.local/share/radxa-linkr-debugger/host.log`。headless 模式不会构造
+AppIndicator UI。源码树开发时，CLI 按 `LINKR_TRAY_BIN`、packaged sibling、
+安装路径/PATH、源码树 debug 的顺序查找 Tray；Nix 包会设置 `LINKR_TRAY_BIN`
+指向已包装 Tray。在 NixOS 直接运行源码树 debug Tray 仍需提供 GTK3 与
+`libayatana-appindicator3` 的开发 shell，也可把 `LINKR_TRAY_BIN` 显式指向
+正确包装的可执行文件。
 
 该 daemon 仍包含 legacy CH347 `uart0`/`uart1` Serial Broker 与 MCP serial
 client；这些是等待单独移除的非 J4 兼容/测试夹具路径，不是生产目标终端。J4 应使用
 板载 xterm.js、MCU `serial.j4`、J4 CDC ACM 或 raw TCP 5555。
 
+`discover` 列出 USB-NCM 候选设备，支持 `--json` 与 `--timeout`。显式执行
+`discover` 时始终扫描本机接口，即使设置了 `--url` 或 `LINKR_BOARD_URL`。
+发现仅探测本机接口的 IPv4 `/30` 对端，并严格校验 `/api/v1/status` 的 `schema`、`ok`、
+`command`、`project` 后，才将候选视为已验证设备。
+
 ```sh
+# 列出 USB-NCM 候选设备，也可输出 JSON
+radxa-linkr-debuggerctl discover
+radxa-linkr-debuggerctl --json discover
+
 # 检查连接和板子健康状态
 radxa-linkr-debuggerctl doctor
 radxa-linkr-debuggerctl status
+
+# 发现多个设备时，显式选择板卡
+radxa-linkr-debuggerctl --url 'http://<板卡 IP>' status
 ```
 
 不带子命令运行会启动[交互式 TUI](tui.zh-CN.md)。以下所有子命令都在 CLI 模式下使用。

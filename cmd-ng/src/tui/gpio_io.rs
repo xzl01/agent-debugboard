@@ -1,5 +1,6 @@
 use super::board_io::{set_gpio_input, set_gpio_output};
 use super::TuiActionMsg;
+use crate::client::BoardTarget;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -59,13 +60,19 @@ impl GpioWorker {
         }
     }
 
-    pub(super) fn start(&mut self, base_url: String, timeout: Duration, job: GpioJob) -> bool {
+    pub(super) fn start(
+        &mut self,
+        target: impl Into<BoardTarget>,
+        timeout: Duration,
+        job: GpioJob,
+    ) -> bool {
         if self.active.is_some() {
             return false;
         }
         let sender = self.sender.clone();
+        let target = target.into();
         let handle = thread::spawn(move || {
-            let outcome = execute_job(&base_url, timeout, &job);
+            let outcome = execute_job(&target, timeout, &job);
             drop(sender.send(GpioJobResult { outcome }));
         });
         self.active = Some(ActiveJob { handle });
@@ -134,11 +141,15 @@ impl Drop for GpioWorker {
     }
 }
 
-fn execute_job(base_url: &str, timeout: Duration, job: &GpioJob) -> Result<TuiActionMsg, String> {
+fn execute_job(
+    target: &BoardTarget,
+    timeout: Duration,
+    job: &GpioJob,
+) -> Result<TuiActionMsg, String> {
     let result = match job.action {
-        GpioAction::DriveLow => set_gpio_output(base_url, timeout, &job.target, false),
-        GpioAction::DriveHigh => set_gpio_output(base_url, timeout, &job.target, true),
-        GpioAction::SetInput => set_gpio_input(base_url, timeout, &job.target),
+        GpioAction::DriveLow => set_gpio_output(target, timeout, &job.target, false),
+        GpioAction::DriveHigh => set_gpio_output(target, timeout, &job.target, true),
+        GpioAction::SetInput => set_gpio_input(target, timeout, &job.target),
     };
     result.map_err(|error| format!("{} failed: {error}", job.action.status_text(&job.target)))
 }

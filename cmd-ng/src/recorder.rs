@@ -4,7 +4,7 @@
 // Copyright (c) Jiali Chen <chenjiali@radxa.com>
 
 use crate::adc::AdcKind;
-use crate::client::{BoardClient, BoardRequest, BoardTransport};
+use crate::client::{BoardClient, BoardRequest, BoardTarget, BoardTransport};
 use crate::json_contract::JSON_SCHEMA;
 use crate::ws_client::{
     expand_telemetry_batch, subscribe_batch_request, subscribe_request, WsClient, WsTelemetryBatch,
@@ -55,8 +55,8 @@ struct LiveSession {
     ws_url: String,
 }
 
-fn request_live_session(base_url: &str, timeout: Duration) -> Result<LiveSession> {
-    let client = BoardClient::new(base_url, timeout)?;
+fn request_live_session(target: &BoardTarget, timeout: Duration) -> Result<LiveSession> {
+    let client = BoardClient::from_target(target, timeout)?;
     let data = client.send_text(BoardRequest {
         method: Method::POST,
         path: "/api/v1/live-sessions".to_string(),
@@ -76,8 +76,8 @@ fn request_live_session(base_url: &str, timeout: Duration) -> Result<LiveSession
     })
 }
 
-fn delete_live_session(base_url: &str, timeout: Duration, session_id: u32) -> Result<()> {
-    let client = BoardClient::new(base_url, timeout)?;
+fn delete_live_session(target: &BoardTarget, timeout: Duration, session_id: u32) -> Result<()> {
+    let client = BoardClient::from_target(target, timeout)?;
     client.send_text(BoardRequest {
         method: Method::DELETE,
         path: format!("/api/v1/live-sessions/{session_id}"),
@@ -88,12 +88,12 @@ fn delete_live_session(base_url: &str, timeout: Duration, session_id: u32) -> Re
 }
 
 fn cleanup_live_session(
-    base_url: &str,
+    target: &BoardTarget,
     timeout: Duration,
     session_id: u32,
     ws_client: Option<&WsClient>,
 ) -> Result<()> {
-    let delete_result = delete_live_session(base_url, timeout, session_id);
+    let delete_result = delete_live_session(target, timeout, session_id);
     let close_result = if let Some(ws_client) = ws_client {
         ws_client.close()
     } else {
@@ -125,7 +125,7 @@ fn unix_time_ns() -> i128 {
 }
 
 pub fn record_adc_ws_to_file(
-    base_url: &str,
+    target: impl Into<BoardTarget>,
     timeout: Duration,
     output_path: &str,
     max_samples: Option<usize>,
@@ -135,11 +135,12 @@ pub fn record_adc_ws_to_file(
         (1..=MAX_ADC_RECORD_RATE_HZ).contains(&requested_rate_hz),
         "ADC record rate must be in 1..={MAX_ADC_RECORD_RATE_HZ} Hz"
     );
-    let session = request_live_session(base_url, timeout)?;
-    let ws_client = WsClient::with_ws_url(base_url.to_string(), session.ws_url);
+    let target = target.into();
+    let session = request_live_session(&target, timeout)?;
+    let ws_client = WsClient::with_ws_url(&target, session.ws_url);
     let result =
         record_adc_ws_to_file_with_session(&ws_client, output_path, max_samples, requested_rate_hz);
-    let cleanup = cleanup_live_session(base_url, timeout, session.id, Some(&ws_client));
+    let cleanup = cleanup_live_session(&target, timeout, session.id, Some(&ws_client));
     finish_with_cleanup(result, cleanup)
 }
 
@@ -893,7 +894,7 @@ mod tests {
 
         let path = temp_file_path("connect-cleanup");
         let result = record_adc_ws_to_file(
-            &format!("http://{}", addr),
+            format!("http://{}", addr),
             Duration::from_secs(2),
             path.to_str().unwrap(),
             Some(1),
@@ -912,6 +913,76 @@ mod tests {
             delete_request.starts_with("DELETE /api/v1/live-sessions/42 HTTP/1.1"),
             "{delete_request}"
         );
+    }
+
+    #[test]
+    fn record_target_source_binding_survives_create_ws_and_cleanup_even_on_ws_failure() {
+        for ws_failure in [false, true] {
+            let http = TcpListener::bind("127.0.0.1:0").unwrap();
+            let http_address = http.local_addr().unwrap();
+            let ws = TcpListener::bind("127.0.0.1:0").unwrap();
+            let ws_address = ws.local_addr().unwrap();
+            let local_ip = "127.0.0.2".parse::<std::net::Ipv4Addr>().unwrap();
+            let http_server = thread::spawn(move || {
+                let mut peers = Vec::new();
+                for method in [
+                    "POST /api/v1/live-sessions ",
+                    "DELETE /api/v1/live-sessions/42 ",
+                ] {
+                    let (mut stream, peer) = http.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let request = read_http_request(&mut stream);
+                    assert!(request.starts_with(method), "{request}");
+                    peers.push(peer.ip());
+                    let body = json!({"ok": true, "session_id": 42, "ws_url": format!("ws://{ws_address}/api/v1/ws/0")}).to_string();
+                    write_http_response(&mut stream, &body);
+                }
+                peers
+            });
+            let ws_server = thread::spawn(move || {
+                let (mut stream, peer) = ws.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                if ws_failure {
+                    let _ = read_http_request(&mut stream);
+                    stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                } else {
+                    let mut socket = accept(stream).unwrap();
+                    socket.read().unwrap();
+                    socket
+                        .send(Message::Text(
+                            json!({"type":"telemetry", "sequence":1, "readings":[]})
+                                .to_string()
+                                .into(),
+                        ))
+                        .unwrap();
+                }
+                peer.ip()
+            });
+            let target = BoardTarget::direct(format!("http://{http_address}"), local_ip);
+            let path = temp_file_path(if ws_failure {
+                "bound-failed"
+            } else {
+                "bound-record"
+            });
+            let result = record_adc_ws_to_file(
+                target,
+                Duration::from_secs(2),
+                path.to_str().unwrap(),
+                Some(1),
+                10,
+            );
+            let _ = std::fs::remove_file(path);
+            assert_eq!(result.is_err(), ws_failure, "{result:?}");
+            assert_eq!(
+                http_server.join().unwrap(),
+                [std::net::IpAddr::V4(local_ip); 2]
+            );
+            assert_eq!(ws_server.join().unwrap(), std::net::IpAddr::V4(local_ip));
+        }
     }
 
     fn temp_file_path(name: &str) -> std::path::PathBuf {

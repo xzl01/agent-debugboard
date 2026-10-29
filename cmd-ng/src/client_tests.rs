@@ -1,5 +1,5 @@
 use crate::client::{
-    ota_upload_timeout, BoardBinaryUpload, BoardClient, BoardHttpError, BoardRequest,
+    ota_upload_timeout, BoardBinaryUpload, BoardClient, BoardHttpError, BoardRequest, BoardTarget,
     BoardTransport,
 };
 use anyhow::Context;
@@ -200,7 +200,7 @@ pub(crate) fn mock_http_response(
     (client, server)
 }
 
-fn read_full_http_request(stream: &mut std::net::TcpStream) -> String {
+pub(crate) fn read_full_http_request(stream: &mut std::net::TcpStream) -> String {
     let mut data = Vec::new();
     let mut buf = [0u8; 1024];
     let mut content_length = None;
@@ -250,4 +250,166 @@ fn temp_file_path(name: &str) -> std::path::PathBuf {
         std::process::id(),
     ));
     path
+}
+
+pub(crate) fn response_server(
+    response: String,
+) -> (
+    String,
+    std::thread::JoinHandle<(String, std::net::SocketAddr)>,
+) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let handle = std::thread::spawn(move || {
+        let (mut stream, peer) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let request = read_full_http_request(&mut stream);
+        stream.write_all(response.as_bytes()).unwrap();
+        (request, peer)
+    });
+    (url, handle)
+}
+
+fn status_request() -> BoardRequest {
+    BoardRequest {
+        method: Method::GET,
+        path: "/api/v1/status".into(),
+        query: vec![],
+        body: None,
+    }
+}
+
+fn isolated_client_test(name: &str, marker: &str) -> std::process::Command {
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--exact", name, "--nocapture"])
+        .env(marker, "1")
+        .env("NO_PROXY", "*")
+        .env("no_proxy", "*")
+        .env_remove("REQUEST_METHOD");
+    for name in [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        child.env_remove(name);
+    }
+    child
+}
+
+#[test]
+fn discovered_target_client_bypasses_proxy_environment() {
+    const CHILD: &str = "LINKR_TEST_DIRECT_PROXY_CHILD";
+    const ORIGIN: &str = "LINKR_TEST_DIRECT_PROXY_ORIGIN";
+    if std::env::var_os(CHILD).is_some() {
+        let url = std::env::var(ORIGIN).unwrap();
+        let target = BoardTarget::direct(url.clone(), std::net::Ipv4Addr::LOCALHOST);
+        let direct = BoardClient::from_target(&target, Duration::from_secs(2)).unwrap();
+        assert_eq!(direct.target(), target);
+        assert_eq!(direct.send_text(status_request()).unwrap(), "direct");
+        // Prove the hostile environment is effective, rather than relying on
+        // a platform's implicit localhost proxy bypass.
+        let configured = BoardClient::new(&url, Duration::from_secs(2)).unwrap();
+        assert!(configured.target().local_ip.is_none());
+        assert_eq!(configured.send_text(status_request()).unwrap(), "proxied");
+        return;
+    }
+
+    let (origin, origin_server) = response_server(
+        "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\ndirect".into(),
+    );
+    let (proxy, proxy_server) = response_server(
+        "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nproxied".into(),
+    );
+    // Change environment only in an isolated test subprocess: parallel unit
+    // tests must never inherit temporary proxy settings.
+    let mut child = isolated_client_test(
+        "client_tests::discovered_target_client_bypasses_proxy_environment",
+        CHILD,
+    );
+    child
+        .env(ORIGIN, &origin)
+        .env("NO_PROXY", "")
+        .env("no_proxy", "")
+        .env_remove("REQUEST_METHOD");
+    for name in [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        child.env(name, &proxy);
+    }
+    let output = child.output().unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (request, peer) = origin_server.join().unwrap();
+    assert!(request.starts_with("GET /api/v1/status HTTP/1.1"));
+    assert_eq!(
+        peer.ip(),
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    );
+    let (request, _) = proxy_server.join().unwrap();
+    assert!(request.starts_with(&format!("GET {origin}/api/v1/status HTTP/1.1")));
+}
+
+#[test]
+fn discovered_target_client_rejects_redirects_while_configured_urls_still_follow() {
+    const CHILD: &str = "LINKR_TEST_DIRECT_REDIRECT_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = isolated_client_test(
+            "client_tests::discovered_target_client_rejects_redirects_while_configured_urls_still_follow", CHILD,
+        ).output().unwrap();
+        assert!(
+            output.status.success(),
+            "stdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let response =
+        || "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK".to_string();
+    let unused_redirect = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    unused_redirect.set_nonblocking(true).unwrap();
+    let redirect = |url: &str| {
+        format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    };
+    let (origin, server) = response_server(redirect(&format!(
+        "http://{}",
+        unused_redirect.local_addr().unwrap()
+    )));
+    let target = BoardTarget::direct(origin, std::net::Ipv4Addr::LOCALHOST);
+    let client = BoardClient::from_target(target, Duration::from_secs(1)).unwrap();
+    let error = client.send_text(status_request()).unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<BoardHttpError>().unwrap().status,
+        StatusCode::TEMPORARY_REDIRECT
+    );
+    server.join().unwrap();
+    assert_eq!(
+        unused_redirect.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+
+    let (destination, destination_server) = response_server(response());
+    let (origin, origin_server) = response_server(redirect(&destination));
+    let client = BoardClient::new(&origin, Duration::from_secs(1)).unwrap();
+    assert_eq!(client.send_text(status_request()).unwrap(), "OK");
+    origin_server.join().unwrap();
+    destination_server.join().unwrap();
 }

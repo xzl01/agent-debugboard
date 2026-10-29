@@ -1,19 +1,11 @@
+// An arbitrary fixture address, never a production connection fallback.
+#[cfg(test)]
 pub const DEFAULT_BASE_URL: &str = "http://172.29.203.1";
-
-/// Default board URL. `LINKR_BOARD_URL` overrides the legacy compiled default,
-/// which is only a fallback for old images.
-pub fn default_base_url() -> String {
-    std::env::var("LINKR_BOARD_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| resolve_base_url(&value))
-        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
-}
 
 pub fn resolve_base_url(input: &str) -> String {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return DEFAULT_BASE_URL.to_string();
+        return String::new();
     }
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         return trimmed.trim_end_matches('/').to_string();
@@ -32,11 +24,11 @@ pub(crate) fn join_request_path(base_path: &str, request_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{join_request_path, resolve_base_url, DEFAULT_BASE_URL};
+    use super::{join_request_path, resolve_base_url};
 
     #[test]
-    fn uses_default_url() {
-        assert_eq!(resolve_base_url(""), DEFAULT_BASE_URL);
+    fn empty_url_has_no_compiled_fallback() {
+        assert_eq!(resolve_base_url(""), "");
     }
 
     #[test]

@@ -34,7 +34,7 @@ pub struct Cli {
     pub command_args: Vec<String>,
 }
 
-fn parse_timeout(value: &str) -> Result<std::time::Duration, String> {
+pub(crate) fn parse_timeout(value: &str) -> Result<std::time::Duration, String> {
     if let Ok(duration) = humantime::parse_duration(value) {
         if duration.is_zero() {
             return Err("timeout must be greater than zero".to_string());
@@ -49,7 +49,10 @@ fn parse_timeout(value: &str) -> Result<std::time::Duration, String> {
         return Err("timeout must be greater than zero".to_string());
     }
 
-    Ok(std::time::Duration::from_secs_f64(seconds))
+    match std::time::Duration::try_from_secs_f64(seconds) {
+        Ok(duration) if !duration.is_zero() => Ok(duration),
+        _ => Err("timeout must be finite and greater than zero".to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -66,6 +69,13 @@ mod tests {
     #[test]
     fn parses_numeric_seconds() {
         assert_eq!(parse_timeout("0.5").unwrap(), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn rejects_nonpositive_or_unrepresentable_timeouts_without_panicking() {
+        for value in ["0", "-1", "NaN", "inf", "1e-100", "1e300"] {
+            assert!(parse_timeout(value).is_err(), "{value}");
+        }
     }
 
     #[test]

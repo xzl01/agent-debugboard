@@ -21,6 +21,38 @@ fn finds_sibling_tray_binary() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn packaged_tray_candidates_precede_source_tree_fallbacks() {
+    let candidates = super::tool_binary_candidates(TRAY_TOOL_NAME, "LINKR_TRAY_BIN");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let release = manifest
+        .join("../host-tools/target/release")
+        .join(TRAY_TOOL_NAME);
+    let debug = manifest
+        .join("../host-tools/target/debug")
+        .join(TRAY_TOOL_NAME);
+    let release_index = candidates
+        .iter()
+        .rposition(|path| path == &release)
+        .unwrap();
+    assert_eq!(candidates.last(), Some(&debug));
+    assert!(release_index < candidates.len() - 1);
+
+    if let Some(path) = super::find_on_path(TRAY_TOOL_NAME) {
+        let path_index = candidates
+            .iter()
+            .position(|candidate| candidate == &path)
+            .unwrap();
+        assert!(path_index < release_index);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe.parent().unwrap().join(TRAY_TOOL_NAME);
+        let sibling_index = candidates.iter().position(|path| path == &sibling).unwrap();
+        assert!(sibling_index < release_index);
+    }
+}
+
 #[test]
 fn host_readiness_failure_names_exact_log_path() {
     let log_path = std::path::Path::new("/tmp/radxa-linkr-debugger/host.log");
@@ -95,6 +127,7 @@ fn tray_readiness_requires_the_matching_graphical_lock_owner() {
 
     let replacing_headless = super::HostLaunch {
         port: 0,
+        board_url: "http://192.0.2.1",
         previous_host_pid: Some(7),
         launcher_name: "linkr-tray",
         log_path: None,
@@ -112,7 +145,12 @@ fn tray_readiness_requires_the_matching_graphical_lock_owner() {
 
 #[test]
 fn headless_launch_uses_the_tray_as_the_single_daemon() {
-    let command = super::tray_command(Path::new("/tmp/linkr-tray"), 18_787, true);
+    let command = super::tray_command(
+        Path::new("/tmp/linkr-tray"),
+        18_787,
+        "http://10.123.5.149",
+        true,
+    );
 
     #[cfg(target_os = "linux")]
     assert_eq!(command.get_program(), OsStr::new("setsid"));
@@ -126,9 +164,146 @@ fn headless_launch_uses_the_tray_as_the_single_daemon() {
             OsStr::new("--no-open-when-running"),
             OsStr::new("--port"),
             OsStr::new("18787"),
+            OsStr::new("--board-url"),
+            OsStr::new("http://10.123.5.149"),
             OsStr::new("--headless"),
         ]
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn detached_launcher_passes_the_resolved_board_url_to_a_fake_tray() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!("linkr-tray-args-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let tray = dir.join("fake-tray");
+    let captured = dir.join("args");
+    fs::write(
+        &tray,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$LINKR_TEST_TRAY_ARGS\"\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&tray).unwrap().permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&tray, permissions).unwrap();
+
+    let mut command = super::tray_command(&tray, 18_787, "http://10.123.5.149", true);
+    command.env("LINKR_TEST_TRAY_ARGS", &captured);
+    let mut child = super::spawn_detached(command, None).unwrap();
+    assert!(child.wait().unwrap().success());
+    for _ in 0..100 {
+        if captured.is_file() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    assert_eq!(
+        fs::read_to_string(&captured).unwrap(),
+        "--no-open-when-running\n--port\n18787\n--board-url\nhttp://10.123.5.149\n--headless\n"
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn one_shot_host_status(board_url: &str) -> (u16, std::thread::JoinHandle<()>) {
+    let body = serde_json::json!({
+        "schema": "radxa-linkr-host.v1",
+        "ok": true,
+        "pid": 42,
+        "board_url": board_url,
+    })
+    .to_string();
+    one_shot_host_response(body)
+}
+
+fn one_shot_host_response(body: String) -> (u16, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let mut request = Vec::new();
+        loop {
+            let mut chunk = [0_u8; 1024];
+            let count = stream.read(&mut chunk).unwrap();
+            assert_ne!(count, 0, "client closed before sending Host status request");
+            request.extend_from_slice(&chunk[..count]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        assert!(String::from_utf8(request)
+            .unwrap()
+            .starts_with("GET /host/api/v1/status "));
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    });
+    (port, server)
+}
+
+#[test]
+fn running_host_with_the_same_board_url_is_reused_without_launching_a_tray() {
+    let (port, server) = one_shot_host_status("http://10.123.5.149/");
+
+    super::ensure_tray_daemon_with_launcher(port, "http://10.123.5.149", || {
+        panic!("matching Host must not resolve or launch Tray")
+    })
+    .unwrap();
+
+    server.join().unwrap();
+}
+
+#[test]
+fn running_host_with_a_different_board_url_gets_a_restart_diagnostic() {
+    let (port, server) = one_shot_host_status("http://172.29.203.1/");
+
+    let error = super::ensure_tray_daemon_with_launcher(port, "http://10.123.5.149", || {
+        panic!("mismatching Host must not resolve or launch Tray")
+    })
+    .unwrap_err();
+
+    server.join().unwrap();
+    let message = error.to_string();
+    assert!(message.contains("http://172.29.203.1/"), "{message}");
+    assert!(message.contains("http://10.123.5.149"), "{message}");
+    assert!(
+        message.contains("was not stopped or retargeted"),
+        "{message}"
+    );
+    assert!(
+        message.contains("quit the existing Radxa Linkr Tray"),
+        "{message}"
+    );
+    assert!(message.contains("--desktop"), "{message}");
+}
+
+#[test]
+fn failed_host_status_fixture_only_calls_the_injected_fake_launcher() {
+    for response in [
+        "not JSON".to_string(),
+        serde_json::json!({"schema":"unrelated-service", "ok":true, "pid":42, "board_url":"http://192.0.2.1"}).to_string(),
+        serde_json::json!({"schema":"radxa-linkr-host.v1", "ok":false}).to_string(),
+    ] {
+        let (port, server) = one_shot_host_response(response);
+        let launches = std::cell::Cell::new(0);
+        let error = super::ensure_tray_daemon_with_launcher(port, "http://192.0.2.1", || {
+            launches.set(launches.get() + 1);
+            anyhow::bail!("fake resolver/launcher refused startup")
+        }).unwrap_err();
+        server.join().unwrap();
+        assert_eq!(launches.get(), 1);
+        assert_eq!(error.to_string(), "fake resolver/launcher refused startup");
+    }
 }
 
 #[test]
@@ -150,6 +325,7 @@ fn desktop_launcher_failure_is_logged_and_reported() {
     let error = super::wait_for_host_ready(
         super::HostLaunch {
             port: 0,
+            board_url: "http://192.0.2.1",
             previous_host_pid: None,
             launcher_name: "linkr-tray",
             log_path: Some(&log_path),

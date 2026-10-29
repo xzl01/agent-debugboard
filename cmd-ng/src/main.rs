@@ -10,6 +10,8 @@ mod client;
 mod client_url;
 mod config_command;
 mod desktop;
+mod discovery;
+mod discovery_command;
 mod json_contract;
 mod monitoring;
 mod net_command;
@@ -41,6 +43,8 @@ mod ws_status;
 #[cfg(test)]
 mod client_tests;
 #[cfg(test)]
+mod discovery_test_support;
+#[cfg(test)]
 mod persistent_config_model_tests;
 #[cfg(test)]
 mod persistent_config_tests;
@@ -65,46 +69,16 @@ mod task_transport_tests;
 #[cfg(test)]
 mod task_v2_tests;
 
-use clap::Parser;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-const fn desktop_start_failure_is_fatal(explicit_desktop: bool) -> bool {
-    explicit_desktop
-}
-
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
-    if let Ok(cli) = crate::cli::Cli::try_parse_from(args.iter().cloned()) {
-        if cli.desktop || !cli.version {
-            if let Err(err) = desktop::ensure_desktop() {
-                if desktop_start_failure_is_fatal(cli.desktop) {
-                    eprintln!("{err}");
-                    return ExitCode::from(1);
-                }
-                eprintln!(
-                    "Linkr desktop unavailable: {err:#}; continuing without the background daemon"
-                );
-            }
-        }
-        if cli.desktop {
-            return ExitCode::SUCCESS;
-        }
-    }
     match app::run(args) {
         Ok(code) => ExitCode::from(code),
         Err(err) => {
             eprintln!("{err}");
             ExitCode::from(1)
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn desktop_start_failure_is_only_fatal_for_explicit_desktop_mode() {
-        assert!(super::desktop_start_failure_is_fatal(true));
-        assert!(!super::desktop_start_failure_is_fatal(false));
     }
 }

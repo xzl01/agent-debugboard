@@ -15,6 +15,54 @@ pub(crate) struct StoreArgs {
     pub(crate) task_id: Option<String>,
 }
 
+pub(crate) struct PreparedStore {
+    pub(crate) task_id: String,
+    pub(crate) ir: String,
+}
+
+pub(crate) fn prepare_store(args: &StoreArgs) -> Result<PreparedStore, TaskError> {
+    let text = read_utf8(&args.path)?;
+    let fallback_id = args
+        .task_id
+        .clone()
+        .unwrap_or_else(|| task_id_from_path(&args.path));
+    let ir = build_task_blob(&text, &fallback_id)?;
+    let parsed = TaskBlob::parse(&ir)?;
+    if parsed.tasks().len() != 1 {
+        return Err(TaskError::Command {
+            code: "invalid_mutation",
+            message: "task store accepts exactly one task; use task import for full-set IR"
+                .to_string(),
+        });
+    }
+    let task_id = parsed.tasks()[0].id.clone();
+    if text.starts_with(crate::task_blob::TASK_MARKER_VERSION)
+        && args.task_id.as_deref().is_some_and(|id| id != task_id)
+    {
+        return Err(TaskError::Command {
+            code: "invalid_mutation",
+            message: format!(
+                "explicit task id {:?} differs from IR task id {task_id:?}",
+                args.task_id.as_deref().unwrap_or_default()
+            ),
+        });
+    }
+    Ok(PreparedStore { task_id, ir })
+}
+
+pub(crate) fn prepare_import(path: &str) -> Result<String, TaskError> {
+    let ir = read_utf8(path)?;
+    let blob = TaskBlob::parse(&ir)?;
+    if blob.tasks().is_empty() {
+        return Err(TaskError::Command {
+            code: "invalid_mutation",
+            message: "full IR import requires at least one task; use task clear instead"
+                .to_string(),
+        });
+    }
+    Ok(ir)
+}
+
 pub(crate) struct TaskStore<'a> {
     api: TaskApi<'a>,
 }
@@ -26,44 +74,12 @@ impl<'a> TaskStore<'a> {
         }
     }
 
-    pub(crate) fn run_store(&self, args: &StoreArgs, io: &mut TaskCommandIo<'_>) -> Result<u8> {
-        let text = match read_utf8(&args.path) {
-            Ok(text) => text,
-            Err(error) => return io.failure("store", &error, 2),
-        };
-        let fallback_id = args
-            .task_id
-            .clone()
-            .unwrap_or_else(|| task_id_from_path(&args.path));
-        let ir = match build_task_blob(&text, &fallback_id) {
-            Ok(ir) => ir,
-            Err(error) => return io.failure("store", &error, 2),
-        };
-        let parsed = match TaskBlob::parse(&ir) {
-            Ok(parsed) => parsed,
-            Err(error) => return io.failure("store", &error, 2),
-        };
-        if parsed.tasks().len() != 1 {
-            let error = TaskError::Command {
-                code: "invalid_mutation",
-                message: "task store accepts exactly one task; use task import for full-set IR"
-                    .to_string(),
-            };
-            return io.failure("store", &error, 2);
-        }
-        let task_id = parsed.tasks()[0].id.clone();
-        if text.starts_with(crate::task_blob::TASK_MARKER_VERSION)
-            && args.task_id.as_deref().is_some_and(|id| id != task_id)
-        {
-            let error = TaskError::Command {
-                code: "invalid_mutation",
-                message: format!(
-                    "explicit task id {:?} differs from IR task id {task_id:?}",
-                    args.task_id.as_deref().unwrap_or_default()
-                ),
-            };
-            return io.failure("store", &error, 2);
-        }
+    pub(crate) fn run_store(
+        &self,
+        prepared: PreparedStore,
+        io: &mut TaskCommandIo<'_>,
+    ) -> Result<u8> {
+        let PreparedStore { task_id, ir } = prepared;
         self.run_mutation(
             "store",
             format!("task store ok task={task_id}"),
@@ -94,27 +110,16 @@ impl<'a> TaskStore<'a> {
         )
     }
 
-    pub(crate) fn run_import(&self, path: &str, io: &mut TaskCommandIo<'_>) -> Result<u8> {
-        let ir = match read_utf8(path) {
-            Ok(ir) => ir,
-            Err(error) => return io.failure("import", &error, 2),
-        };
-        match TaskBlob::parse(&ir) {
-            Ok(blob) if !blob.tasks().is_empty() => {}
-            Ok(_) => {
-                let error = TaskError::Command {
-                    code: "invalid_mutation",
-                    message: "full IR import requires at least one task; use task clear instead"
-                        .to_string(),
-                };
-                return io.failure("import", &error, 2);
-            }
-            Err(error) => return io.failure("import", &error, 2),
-        }
+    pub(crate) fn run_import(
+        &self,
+        path: &str,
+        ir: &str,
+        io: &mut TaskCommandIo<'_>,
+    ) -> Result<u8> {
         self.run_mutation(
             "import",
             format!("task IR import ok path={path:?}"),
-            TaskMutation::Import { ir: &ir },
+            TaskMutation::Import { ir },
             io,
         )
     }

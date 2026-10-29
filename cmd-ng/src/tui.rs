@@ -200,8 +200,8 @@ pub fn run_tui<TClient>(client: TClient, base_url: String, timeout: Duration) ->
 where
     TClient: BoardTransport,
 {
-    let _ = client.base_url();
     let mut model = TuiModel::new(base_url, timeout);
+    model.local_ip = client.target().local_ip;
 
     let mut session = TerminalSession::enter()?;
     let stdout = io::stdout();

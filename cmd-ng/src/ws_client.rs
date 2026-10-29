@@ -8,16 +8,19 @@
 use crate::adc::{
     transform_readings, validate_compact_kind_unit, AdcCompactReading, AdcKind, AdcReading, AdcRole,
 };
+use crate::client::BoardTarget;
 use crate::json_contract::{JsonError, JSON_SCHEMA};
 use crate::ws_status::WsStatusSnapshot;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::net::TcpStream;
+use socket2::{Domain, Protocol, Socket, Type};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use tungstenite::client::{connect_with_config, IntoClientRequest};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{connect, Message, WebSocket};
+use tungstenite::{client_tls_with_config, Message, WebSocket};
 
 pub const MAX_ADC_BATCH_SAMPLES: u8 = 18;
 
@@ -170,16 +173,16 @@ pub enum WsMessage {
 }
 
 pub struct WsClient {
-    base_url: String,
+    target: BoardTarget,
     ws_url: Option<String>,
     conn: Mutex<Option<WebSocket<MaybeTlsStream<TcpStream>>>>,
     generation: AtomicU64,
 }
 
 impl WsClient {
-    pub fn with_ws_url(base_url: String, ws_url: String) -> Self {
+    pub fn with_ws_url(target: impl Into<BoardTarget>, ws_url: String) -> Self {
         Self {
-            base_url,
+            target: target.into(),
             ws_url: Some(ws_url),
             conn: Mutex::new(None),
             generation: AtomicU64::new(1),
@@ -214,7 +217,41 @@ impl WsClient {
             .ws_url
             .clone()
             .ok_or_else(|| anyhow!("missing dedicated websocket URL"))?;
-        let (socket, _) = connect(&ws_url)?;
+        let socket = if let Some(local_ip) = self.target.local_ip {
+            let request = ws_url.into_client_request()?;
+            let uri = request.uri();
+            let port = match uri.scheme_str() {
+                Some("ws") => uri.port_u16().unwrap_or(80),
+                Some("wss") => uri.port_u16().unwrap_or(443),
+                _ => return Err(anyhow!("unsupported websocket URL scheme")),
+            };
+            let host = uri
+                .host()
+                .ok_or_else(|| anyhow!("missing websocket host"))?;
+            let mut last_error = None;
+            let mut connected = None;
+            for address in (host, port).to_socket_addrs()?.filter(SocketAddr::is_ipv4) {
+                let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+                socket.bind(&SocketAddr::from((local_ip, 0)).into())?;
+                match socket.connect(&address.into()) {
+                    Ok(()) => {
+                        connected = Some(TcpStream::from(socket));
+                        break;
+                    }
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            let stream = connected.ok_or_else(|| {
+                anyhow!("cannot connect websocket from {local_ip}: {last_error:?}")
+            })?;
+            stream.set_nodelay(true)?;
+            // Caller-supplied direct TCP stream: no proxy lookup and no redirect
+            // loop. Keep tungstenite's configured TLS verification for wss://.
+            client_tls_with_config(request, stream, None, None)?.0
+        } else {
+            // Explicit URLs also must not move recording to another service.
+            connect_with_config(&ws_url, None, 0)?.0
+        };
         *guard = Some(socket);
         Ok(())
     }
@@ -571,6 +608,92 @@ mod tests {
         assert!(after > before);
         assert!(!client.is_current_generation(before));
         assert!(client.is_current_generation(after));
+    }
+
+    #[test]
+    fn discovered_ws_binds_the_selected_nondefault_loopback_source() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (stream, peer) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let _socket = accept(stream).unwrap();
+            peer.ip()
+        });
+        let local_ip = "127.0.0.2".parse().unwrap();
+        let target = crate::client::BoardTarget::direct(format!("http://{address}"), local_ip);
+        let client = WsClient::with_ws_url(target, format!("ws://{address}/api/v1/ws/0"));
+        client.connect().unwrap();
+        client.close().unwrap();
+        assert_eq!(server.join().unwrap(), std::net::IpAddr::V4(local_ip));
+    }
+
+    #[test]
+    fn websocket_redirects_never_connect_to_the_second_service() {
+        use std::io::{Read, Write};
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        use std::time::{Duration, Instant};
+
+        for direct in [false, true] {
+            for status in [301, 302, 303, 307, 308] {
+                let first = TcpListener::bind("127.0.0.1:0").unwrap();
+                let first_address = first.local_addr().unwrap();
+                let second = TcpListener::bind("127.0.0.1:0").unwrap();
+                let second_address = second.local_addr().unwrap();
+                second.set_nonblocking(true).unwrap();
+                let done = Arc::new(AtomicBool::new(false));
+                let stop = done.clone();
+                let other_service = thread::spawn(move || {
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    loop {
+                        match second.accept() {
+                            Ok((stream, _)) => {
+                                stream
+                                    .set_read_timeout(Some(Duration::from_secs(2)))
+                                    .unwrap();
+                                let _ = accept(stream);
+                                return true;
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                            Err(error) => panic!("{error}"),
+                        }
+                        if stop.load(Ordering::SeqCst) || Instant::now() >= deadline {
+                            return false;
+                        }
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                });
+                let redirect = thread::spawn(move || {
+                    let (mut stream, _) = first.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut request = [0u8; 4096];
+                    assert!(stream.read(&mut request).unwrap() > 0);
+                    write!(stream, "HTTP/1.1 {status} Redirect\r\nLocation: ws://{second_address}/other-service\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                });
+                let mut target =
+                    crate::client::BoardTarget::from(format!("http://{first_address}"));
+                if direct {
+                    target.local_ip = Some("127.0.0.2".parse().unwrap());
+                }
+                let client =
+                    WsClient::with_ws_url(target, format!("ws://{first_address}/api/v1/ws/0"));
+                let result = client.connect();
+                done.store(true, Ordering::SeqCst);
+                redirect.join().unwrap();
+                let connected_elsewhere = other_service.join().unwrap();
+                assert!(!connected_elsewhere, "direct={direct} status={status}");
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains(&status.to_string()), "{error}");
+                assert!(!client.is_connected());
+            }
+        }
     }
 
     #[test]

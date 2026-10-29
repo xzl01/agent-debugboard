@@ -1,5 +1,5 @@
 use super::TuiActionMsg;
-use crate::client::{BoardRequest, BoardTransport};
+use crate::client::{BoardRequest, BoardTarget, BoardTransport};
 use crate::ws_status::TuiPdStatus;
 use anyhow::Result;
 use reqwest::{Method, Url};
@@ -21,15 +21,21 @@ pub(super) struct PdWorker {
 }
 
 impl PdWorker {
-    pub(super) fn start(&mut self, base_url: String, timeout: Duration, now: Instant) -> bool {
+    pub(super) fn start(
+        &mut self,
+        target: impl Into<BoardTarget>,
+        timeout: Duration,
+        now: Instant,
+    ) -> bool {
         if self.active.is_some() || self.retry_after.is_some_and(|deadline| now < deadline) {
             return false;
         }
         let generation = self.generation;
+        let target = target.into();
         self.active = Some(PdRead {
             generation,
             handle: thread::spawn(move || {
-                read_pd(&base_url, timeout).map_err(|error| error.to_string())
+                read_pd(&target, timeout).map_err(|error| error.to_string())
             }),
         });
         true
@@ -74,8 +80,8 @@ impl Drop for PdWorker {
     }
 }
 
-pub(super) fn read_pd(base_url: &str, timeout: Duration) -> Result<TuiPdStatus> {
-    let client = crate::client::BoardClient::new(base_url, timeout)?;
+pub(super) fn read_pd(target: impl Into<BoardTarget>, timeout: Duration) -> Result<TuiPdStatus> {
+    let client = crate::client::BoardClient::from_target(target, timeout)?;
     let data = client.send_text(BoardRequest {
         method: Method::GET,
         path: "/api/v1/pd".to_string(),
@@ -101,14 +107,14 @@ fn board_path(kind: &str, name: &str) -> Result<String> {
 }
 
 pub(super) fn perform_control_action(
-    base_url: &str,
+    target: impl Into<BoardTarget>,
     timeout: Duration,
     output: &str,
     current_state: bool,
 ) -> Result<TuiActionMsg> {
     let next_state = if current_state { "off" } else { "on" };
     let path = board_path("power", output)?;
-    let client = crate::client::BoardClient::new(base_url, timeout)?;
+    let client = crate::client::BoardClient::from_target(target, timeout)?;
     client.send_text(BoardRequest {
         method: Method::PUT,
         path,
@@ -122,13 +128,13 @@ pub(super) fn perform_control_action(
 }
 
 pub(super) fn set_switch_route(
-    base_url: &str,
+    target: impl Into<BoardTarget>,
     timeout: Duration,
     name: &str,
     route: &str,
 ) -> Result<TuiActionMsg> {
     let path = board_path("switch", name)?;
-    let client = crate::client::BoardClient::new(base_url, timeout)?;
+    let client = crate::client::BoardClient::from_target(target, timeout)?;
     client.send_text(BoardRequest {
         method: Method::PUT,
         path,
@@ -142,11 +148,11 @@ pub(super) fn set_switch_route(
 }
 
 pub(super) fn set_pd_fixed(
-    base_url: &str,
+    target: impl Into<BoardTarget>,
     timeout: Duration,
     voltage_mv: u16,
 ) -> Result<TuiActionMsg> {
-    let client = crate::client::BoardClient::new(base_url, timeout)?;
+    let client = crate::client::BoardClient::from_target(target, timeout)?;
     client.send_text(BoardRequest {
         method: Method::PUT,
         path: "/api/v1/pd".to_string(),
@@ -159,8 +165,11 @@ pub(super) fn set_pd_fixed(
     })
 }
 
-pub(super) fn reboot_board(base_url: &str, timeout: Duration) -> Result<TuiActionMsg> {
-    let client = crate::client::BoardClient::new(base_url, timeout)?;
+pub(super) fn reboot_board(
+    target: impl Into<BoardTarget>,
+    timeout: Duration,
+) -> Result<TuiActionMsg> {
+    let client = crate::client::BoardClient::from_target(target, timeout)?;
     client.send_reboot()?;
     Ok(TuiActionMsg {
         status: "Normal reboot accepted; waiting for reconnect (not ROM BOOTSEL)".to_string(),
@@ -169,13 +178,13 @@ pub(super) fn reboot_board(base_url: &str, timeout: Duration) -> Result<TuiActio
 }
 
 pub(super) fn set_gpio_output(
-    base_url: &str,
+    target: impl Into<BoardTarget>,
     timeout: Duration,
     gpio: &str,
     value: bool,
 ) -> Result<TuiActionMsg> {
     let path = board_path("gpio", gpio)?;
-    let client = crate::client::BoardClient::new(base_url, timeout)?;
+    let client = crate::client::BoardClient::from_target(target, timeout)?;
     client.send_text(BoardRequest {
         method: Method::PUT,
         path,
@@ -191,12 +200,12 @@ pub(super) fn set_gpio_output(
 }
 
 pub(super) fn set_gpio_input(
-    base_url: &str,
+    target: impl Into<BoardTarget>,
     timeout: Duration,
     gpio: &str,
 ) -> Result<TuiActionMsg> {
     let path = board_path("gpio", gpio)?;
-    let client = crate::client::BoardClient::new(base_url, timeout)?;
+    let client = crate::client::BoardClient::from_target(target, timeout)?;
     client.send_text(BoardRequest {
         method: Method::PUT,
         path,
