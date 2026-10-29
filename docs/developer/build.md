@@ -66,6 +66,37 @@ nix-shell --run "cd web && npm run build"
 The west workspace (`west init` / `west update`) is a one-time prerequisite;
 `make workspace` refreshes it to the pinned manifest.
 
+## Local Validation Entry Points
+
+Run `make check` for the local CI subset. It runs each lane once, sequentially
+even with `make -j`: repository gate contracts/checkers, persistent-configuration
+docs and loopback examples, version synchronization, CLI fmt/clippy/tests,
+Host/Broker/MCP/tray fmt/clippy/locked all-target tests, native decoder
+fmt/all-feature clippy/locked all-target tests, firmware host-model tests, and
+Web tests/production build. The Web build already generates the WASM decoder;
+there is no second standalone WASM build in this entry.
+
+Production decoder WASM omits the optional `name` section to reduce embedded
+flash use without changing executable sections or the ABI. Browser debug stacks
+lose internal symbol names; source and the raw Cargo WASM remain available.
+
+Focused entries are `make gates`, `make persistent-configuration-docs`,
+`make version-check`, `make host-fmt host-clippy host-test`, and
+`make decoder-fmt decoder-clippy decoder-test`. The existing `cli-*`,
+`unit-tests`, `web-test`, and `web` entries remain available. Use the project
+Nix shell for the Host native GTK/AppIndicator/udev dependencies.
+The persistent-docs entry fetches locked CLI dependencies before the tests;
+the tests themselves build with `--locked --offline` and execute only loopback
+requests. For direct `node --test` use, prepare those dependencies separately.
+
+`make check` does not run firmware sysbuild, Nix packaging, cross-platform
+desktop/archive/install checks, or HIL, and is not the complete reusable CI
+workflow. Run `make firmware` separately when required, or `make all` for one
+canonical firmware build followed by the local subset. `make all` serializes
+these phases even under `-j`; do not start a second firmware build or another
+Web generator in parallel against the shared build outputs. HIL requires its
+own authorization and the [functional test procedure](../testing/hil-functional-test-spec.md).
+
 ## Embedded Web Compression And Resource Gates
 
 The firmware Web bundle is embedded as **standard gzip** produced by
@@ -169,7 +200,7 @@ See `docs/user/openocd.md` for the OpenOCD workflow and reset caveats.
    been verified with Zephyr SDK `1.0.1`.
 
 4. Install Node.js 22, npm, Rust toolchain, `wasm32-unknown-unknown` target,
-   and `wasm-bindgen-cli 0.2.121` separately — these are not covered by the
+   `wasm-bindgen-cli 0.2.121`, and Zopfli 1.0.3 separately — these are not covered by the
    Zephyr requirements files.
 
 5. Build:

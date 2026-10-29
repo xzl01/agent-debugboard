@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkHilContracts } from "./repository-gates/hil-contracts.mjs";
-import { checkWorkflowContracts } from "./repository-gates/workflow-contracts.mjs";
+import { checkWorkflowContracts, firmwareRebuildDependencies } from "./repository-gates/workflow-contracts.mjs";
 
 export const POLICY_FILES = Object.freeze([
   ".github/workflows/build.yml",
@@ -351,6 +351,15 @@ export function checkRepositoryGateContents(contents) {
       || !exact(needs(job(nightly, "nightly-assets")), ["native-packages"])
       || !exact(needs(job(nightly, "publish-nightly")), ["nightly-assets"])) {
     fail(failures, "G06", ".github/workflows/nightly.yml", "nightly publication must follow validation and the same native package workflow as tagged releases");
+  }
+  for (const [surface, workflow, name] of [
+    [".github/workflows/build.yml", build, "firmware"],
+    [".github/workflows/release.yml", release, "release"],
+    [".github/workflows/nightly.yml", nightly, "nightly-assets"],
+  ]) {
+    if (!firmwareRebuildDependencies(job(workflow, name))) {
+      fail(failures, "G20", surface, `${name} must install and verify Zopfli before west build`);
+    }
   }
   if (!/both `main` and `dev`[\s\S]*must require pull requests[\s\S]*reject direct pushes[\s\S]*`Required repository gate`/.test(agents)
       || !/block force pushes and branch\s+deletion/.test(agents)) {

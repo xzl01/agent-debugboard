@@ -140,7 +140,7 @@ export function markedShellExamples(surface, section, failures) {
 
 export function curlRequest(command) {
   const normalized = normalizeShell(command);
-  const url = /https?:\/\/[^\s'"`]+/.exec(normalized)?.[0];
+  const url = /"(\$BOARD_URL\/[^"\s]+)"/.exec(normalized)?.[1];
   const method = /(?:--request|-X)\s+([A-Z]+)/i.exec(normalized)?.[1]?.toUpperCase() ?? "GET";
   const data = /(?:--data(?:-raw|-binary|-ascii)?|-d)\s+(['"])(.*?)\1/.exec(normalized)?.[2];
   try {

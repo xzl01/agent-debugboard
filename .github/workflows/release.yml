@@ -387,6 +387,12 @@ jobs:
       - name: Install MCUboot image tool dependencies
         run: python3 -m pip install -r bootloader/mcuboot/scripts/requirements.txt
 
+      - name: Install embedded Web compression tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zopfli
+          command -v zopfli
+
       - name: Run unit tests
         working-directory: app
         run: ./apps/radxa_linkr_debugger/tests/run_unit_tests.sh

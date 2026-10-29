@@ -1,3 +1,7 @@
+// Existence was checked independently when selecting this pin; offline contracts
+// enforce consistency, not GitHub commit availability.
+export const ZEPHYR_SETUP_PIN = "be8136a8bba01580485d98b7ad2d32477c36a49a";
+
 const ACTION_PINS = Object.freeze({
   "actions/checkout": ["d23441a48e516b6c34aea4fa41551a30e30af803", "v6.1.0"],
   "actions/configure-pages": ["983d7736d9b0ae728b81ab479565c72886d7745b", "v5.0.0"],
@@ -10,7 +14,7 @@ const ACTION_PINS = Object.freeze({
   "cachix/install-nix-action": ["630ae543ea3a38a9a4166f03376c02c50f408342", "v31.11.0"],
   "dtolnay/rust-toolchain": ["4360b52568e2003a75bf9bc1d59f33a8e3fc893c", "stable"],
   "Swatinem/rust-cache": ["6323deb102c322ba6fcbdcafc7e3dddab59af2b6", "v2.9.2"],
-  "zephyrproject-rtos/action-zephyr-setup": ["be8136a8bba01580485d98b7ad2d32477c36a49a", "v1"],
+  "zephyrproject-rtos/action-zephyr-setup": [ZEPHYR_SETUP_PIN, "v1"],
 });
 
 const EFFECTIVE_SOURCE_REF = "ref: ${{ needs.source.outputs.effective_source_sha }}";
@@ -24,6 +28,7 @@ const DURABLE_GATE_COMMANDS = Object.freeze([
   ["scripts/install-host.test.mjs"],
 ]);
 const PERSISTENT_DOCS_COMMANDS = Object.freeze([
+  "cargo fetch --locked --manifest-path cmd-ng/Cargo.toml",
   "scripts/check-persistent-configuration-docs.test.mjs",
   "node scripts/check-persistent-configuration-docs.mjs --root .",
 ]);
@@ -59,6 +64,16 @@ function needs(jobBody) {
 
 function steps(jobBody) {
   return jobBody.split(/(?=^      - )/m).filter((step) => step.startsWith("      - "));
+}
+
+export function firmwareRebuildDependencies(jobBody) {
+  const entries = steps(jobBody);
+  const buildIndex = entries.findIndex((entry) => /\bwest build\b/.test(entry));
+  return buildIndex >= 0 && entries.slice(0, buildIndex).some((entry) =>
+    !/^        (?:if|continue-on-error):/m.test(entry)
+    && /^          sudo apt-get update\s*$/m.test(entry)
+    && /^          sudo apt-get install -y zopfli\s*$/m.test(entry)
+    && /^          command -v zopfli\s*$/m.test(entry));
 }
 
 function permissionEntries(text, indent) {
@@ -117,7 +132,25 @@ function permanentGateContract(build, makefile) {
     && worktreeScopeTestsPresent(build) && worktreeScopeTestsPresent(makefile)
     && worktreeScopeCommandAbsent(build) && worktreeScopeCommandAbsent(makefile)
     && /^check:.*\bgates\b.*\bpersistent-configuration-docs\b.*\bweb-test\b.*\bweb\b/m.test(localCheck)
-    && webTargetsUseNix && obsoleteWrappersAbsent;
+    && webTargetsUseNix && obsoleteWrappersAbsent && localCiSubsetContract(makefile);
+}
+
+function localCiSubsetContract(makefile) {
+  const required = [
+    ["host-fmt", "cargo fmt --manifest-path host-tools/Cargo.toml --all --check"],
+    ["host-clippy", "cargo clippy --locked --manifest-path host-tools/Cargo.toml --all-targets -- -D warnings"],
+    ["host-test", "cargo test --locked --manifest-path host-tools/Cargo.toml --all-targets"],
+    ["decoder-fmt", "cargo fmt --manifest-path web/decoder/Cargo.toml --all --check"],
+    ["decoder-clippy", "cargo clippy --locked --manifest-path web/decoder/Cargo.toml --all-targets --all-features -- -D warnings"],
+    ["decoder-test", "cargo test --locked --manifest-path web/decoder/Cargo.toml --all-targets"],
+    ["version-check", "python3 scripts/version_sync.py check"],
+  ];
+  const prerequisites = makeTarget(makefile, "check").split("\n")[0].split("##")[0].split(":")[1]?.trim().split(/\s+/) ?? [];
+  return required.every(([name, command]) => prerequisites.includes(name)
+      && makeTarget(makefile, name).includes(`$(NIX) "${command}"`))
+    && !prerequisites.includes("firmware") && new Set(prerequisites).size === prerequisites.length
+    && /^\.NOTPARALLEL:\s+all check\s*$/m.test(makefile)
+    && /^all: firmware check\b/m.test(makefile);
 }
 
 function sourceGateContract(build) {

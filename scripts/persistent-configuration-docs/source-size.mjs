@@ -12,6 +12,8 @@ export const CHECKER_MODULES = Object.freeze([
   "scripts/persistent-configuration-docs/loopback.mjs",
   "scripts/persistent-configuration-docs/source-size.mjs",
   "scripts/persistent-configuration-docs/source-contract-mutations.mjs",
+  "scripts/persistent-configuration-docs/snapshot-contract.mjs",
+  "scripts/persistent-configuration-docs/current-contract-tests.mjs",
 ]);
 
 export function pureLoc(source) {

@@ -358,17 +358,18 @@ later Save or `config clear` replaces the snapshot. Ordinary control
 setters are volatile; only an explicit `config save` writes the snapshot,
 and there is no auto-persist path on top of normal control operations.
 
-Save and boot restore share this exact nine-stage replay order:
+Save and boot restore share this exact ten-stage replay order:
 
 1. saved GPIO inputs (direction `input`)
 2. `switch sd`
 3. `switch tf_wp`
 4. `power vdd_5v`
 5. `power 5v_usb_hub`
-6. `power 12v_out`
-7. `power 5v_out`
-8. `power 20v_out`
-9. saved GPIO outputs (direction `output`)
+6. `power 5v_otg`
+7. `power 12v_out`
+8. `power 5v_out`
+9. `power 20v_out`
+10. saved GPIO outputs (direction `output`)
 
 Replay stops at the first hardware failure, leaves earlier effects reported
 as applied, and keeps the failed plus remaining entries pending. There is

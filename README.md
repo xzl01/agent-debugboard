@@ -29,7 +29,7 @@ validation. Historical HIL evidence does not establish x1.2 acceptance.
 | GPIO | `GP5`–`GP9`, `GP12`–`GP16`; `GP29` remains cataloged but is input-only while owned by `adc3` (see [GP29 ownership](docs/reference/adc-telemetry.md#gp29-ownership)) |
 | OTA update | MCUboot unsigned OTA |
 | Watchdog | Autonomous recovery to BOOTSEL |
-| Persistent configuration | [One explicit firmware-owned snapshot](docs/reference/persistent-configuration.md); safe values restore at boot, dangerous values require confirmation, and clear leaves live hardware unchanged |
+| Persistent configuration | [One explicit firmware-owned snapshot](docs/reference/persistent-configuration.md); full v1 restore at boot, dangerous values require save-time confirmation, and clear leaves live hardware unchanged |
 | Captive portal | DHCP option 114/HTTP auto-open for Web UI |
 
 `vdd_5v` is an independent power output and is not coupled to switch routes.
@@ -65,7 +65,9 @@ gate. A version byte other than 1 is never replayed, migrated, or
 auto-cleared, and an explicit new Save is the only overwrite path. Replay
 stops at the first hardware failure with applied, failed, and pending rows
 reported; failed retry via repeated save is the only retry path. Clearing
-the snapshot does not change live hardware.
+the snapshot does not change live hardware. The current catalog has 19 items
+(6 power outputs, 2 switches, 11 GPIOs), with a maximum 88-byte snapshot;
+replay includes `5v_otg` after `5v_usb_hub`. Settings uses 32 NVS sectors.
 
 Local validation is not real-hardware HIL. The 2026-08-05 real-hardware HIL
 passed the v1 save-and-apply flow; see the
@@ -82,7 +84,7 @@ Future local tests remain distinct from board HIL.
 | `snapshot` | `linkr/config/snapshot;v1;one` |
 | `explicit-save` | `ordinary-setters-volatile;explicit-save-only` |
 | `boot-restore` | `defaults-first;v1-full-restore` |
-| `header` | `12B-header;byte4-version=1;byte7-zero;max-84B` |
+| `header` | `12B-header;byte4-version=1;byte7-zero;max-88B` |
 | `firmware-confirmation` | `firmware-owned-confirmation;save-time-only` |
 | `save` | `persists-and-applies;failed-retry-via-resave` |
 | `clear` | `settings_delete;hardware-unchanged` |

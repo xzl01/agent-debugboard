@@ -29,7 +29,7 @@ RP2350A 构建目标。G2 / RP2040 已停止支持：
 | GPIO | `GP5`–`GP9`、`GP12`–`GP16`；`GP29` 仍保留在目录中，但在 `adc3` 拥有时仅可输入（见 [GP29 ownership](docs/reference/adc-telemetry.md#gp29-ownership)） |
 | OTA 更新 | MCUboot 无签名 OTA |
 | 看门狗 | 自主恢复至 BOOTSEL |
-| 持久化配置 | [一份由固件持有的显式快照](docs/reference/persistent-configuration.md)；安全值在启动时恢复，危险值需要确认，清除快照不会改变实时硬件 |
+| 持久化配置 | [一份由固件持有的显式快照](docs/reference/persistent-configuration.md)；启动时全量恢复 v1，危险值在 Save 时需要确认，清除快照不会改变实时硬件 |
 | 强制门户 | DHCP option 114/HTTP 自动打开 Web UI |
 
 `vdd_5v` 是独立电源输出，不与 switch 路由耦合。`5v_usb_hub` 是 `vdd_5v` 的子轨，
@@ -52,6 +52,9 @@ ADC3 契约、wire shape 和 GP29 所有权规则见
 
 本地验证不等于真实硬件 HIL。2026-08-05 真实硬件 HIL 通过 v1 save-and-apply flow；见[日期 v1-save HIL 报告](docs/testing/results/2026-08-05-persistent-config-v1-save-hil.md)。历史 2026-07-30 真实硬件 HIL 六个 runner flow 全部通过；见[历史六 flow 报告](docs/testing/results/2026-07-30-persistent-config-hil.md)。未来本地测试仍不能替代板级 HIL。
 
+当前目录为 19 项（6 路 power、2 个 switch、11 个 GPIO），快照最大 88 字节；
+重放在 `5v_usb_hub` 后包含 `5v_otg`，Settings 使用 32 个 NVS sectors。
+
 ### 固定契约摘要
 
 | Contract ID | Frozen literal |
@@ -60,7 +63,7 @@ ADC3 契约、wire shape 和 GP29 所有权规则见
 | `snapshot` | `linkr/config/snapshot;v1;one` |
 | `explicit-save` | `ordinary-setters-volatile;explicit-save-only` |
 | `boot-restore` | `defaults-first;v1-full-restore` |
-| `header` | `12B-header;byte4-version=1;byte7-zero;max-84B` |
+| `header` | `12B-header;byte4-version=1;byte7-zero;max-88B` |
 | `firmware-confirmation` | `firmware-owned-confirmation;save-time-only` |
 | `save` | `persists-and-applies;failed-retry-via-resave` |
 | `clear` | `settings_delete;hardware-unchanged` |

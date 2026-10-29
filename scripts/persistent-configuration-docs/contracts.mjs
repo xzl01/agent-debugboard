@@ -1,3 +1,5 @@
+import { HEADER_SUMMARY } from "./snapshot-contract.mjs";
+
 export const HIL_REPORT_PATH = "docs/testing/results/2026-08-05-persistent-config-v1-save-hil.md";
 export const HIL_COMPLETION_LITERAL = "local-distinct;real-HIL-2026-08-05-v1-save-pass";
 export const STALE_HIL_STATUS = /(?:Todo\s*16[^.\n]{0,140}(?:pending|remains pending|待完成|尚待完成|证据尚未生成)|(?:real-hardware HIL evidence|真实硬件 HIL 证据)[^.\n]{0,100}(?:pending|尚待完成|尚未生成))/i;
@@ -42,7 +44,7 @@ export const FROZEN_SUMMARY = Object.freeze([
   ["snapshot", "linkr/config/snapshot;v1;one"],
   ["explicit-save", "ordinary-setters-volatile;explicit-save-only"],
   ["boot-restore", "defaults-first;v1-full-restore"],
-  ["header", "12B-header;byte4-version=1;byte7-zero;max-84B"],
+  ["header", HEADER_SUMMARY],
   ["firmware-confirmation", "firmware-owned-confirmation;save-time-only"],
   ["save", "persists-and-applies;failed-retry-via-resave"],
   ["clear", "settings_delete;hardware-unchanged"],
@@ -134,7 +136,7 @@ export const REQUIRED_EXAMPLES = Object.freeze({
 });
 
 export const REQUIRED_LITERALS = Object.freeze([
-  "http://172.29.203.1", "storage_partition", "linkr/config/snapshot", "Settings+NVS",
+  "BOARD_URL", "storage_partition", "linkr/config/snapshot", "Settings+NVS",
   "one explicit snapshot", "ordinary setters are volatile",
   "v1 full restore", "save persists and applies", "failed retry via repeated save",
   "byte 4 version", "byte 7 zero",

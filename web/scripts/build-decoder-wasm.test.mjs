@@ -3,7 +3,7 @@ import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { resolveRustCommand } from "./build-decoder-wasm.mjs";
+import { decoderWasmBindgenArgs, resolveRustCommand } from "./build-decoder-wasm.mjs";
 
 test("prefers the Nix PATH tool over a stale rustup home shim", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "decoder-command-"));
@@ -22,4 +22,25 @@ test("prefers the Nix PATH tool over a stale rustup home shim", async (t) => {
     platform: "linux",
     pathValue: bin,
   }), "wasm-bindgen");
+});
+
+test("wasm-bindgen args remove the name section and keep web output options", () => {
+  assert.deepEqual(
+    decoderWasmBindgenArgs({
+      wasm: "radxa_logic_decoder.wasm",
+      outDir: "assets/decoder",
+      outName: "logic-decoder",
+    }),
+    [
+      "radxa_logic_decoder.wasm",
+      "--target",
+      "web",
+      "--out-dir",
+      "assets/decoder",
+      "--out-name",
+      "logic-decoder",
+      "--no-typescript",
+      "--remove-name-section",
+    ]
+  );
 });

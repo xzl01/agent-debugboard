@@ -223,6 +223,62 @@ test("accepts the complete repository gate contract", async () => {
   assert.deepEqual(checkRepositoryGateContents(await repositoryContents()), { ok: true, failures: [] });
 });
 
+test("firmware rebuilds install and verify Zopfli before building, including release/nightly", async (t) => {
+  const baseline = await repositoryContents();
+  for (const relative of [BUILD_WORKFLOW, RELEASE_WORKFLOW, NIGHTLY_WORKFLOW]) {
+    for (const command of ["sudo apt-get update", "sudo apt-get install -y zopfli", "command -v zopfli"]) {
+      await t.test(`${relative}: missing ${command}`, () => {
+        const result = checkRepositoryGateContents(mutationAll(baseline, relative, command, "true"));
+        assert.ok(result.failures.some(({ code, surface }) => code === "G20" && surface === relative));
+      });
+    }
+    await t.test(`${relative}: conditional dependency installation`, () => {
+      const name = relative === BUILD_WORKFLOW ? "Install embedded resource compressor" : "Install embedded Web compression tool";
+      const result = checkRepositoryGateContents(mutation(baseline, relative,
+        `      - name: ${name}\n`,
+        `      - name: ${name}\n        if: \${{ false }}\n`));
+      assert.ok(result.failures.some(({ code }) => code === "G20"));
+    });
+  }
+});
+
+test("make check retains the local Host/decoder/version CI subset without firmware races", async (t) => {
+  const baseline = await repositoryContents();
+  for (const target of ["host-fmt", "host-clippy", "host-test", "decoder-fmt", "decoder-clippy", "decoder-test", "version-check"]) {
+    await t.test(`requires ${target} in check prerequisites`, () => {
+      const original = baseline.get("Makefile").match(/^check:.*$/m)[0];
+      const result = checkRepositoryGateContents(mutation(baseline, "Makefile", original, original.replace(` ${target}`, "")));
+      assert.ok(result.failures.some(({ code }) => code === "G12"));
+    });
+  }
+  for (const [before, after] of [
+    ["cargo test --locked --manifest-path host-tools/Cargo.toml --all-targets", "cargo test --manifest-path host-tools/Cargo.toml"],
+    [".NOTPARALLEL: all check", ""],
+    ["check: gates", "check: firmware gates"],
+    ["check: gates", "check: host-test gates"],
+  ]) {
+    await t.test(`rejects local gate drift: ${before} -> ${after}`, () => {
+      const result = checkRepositoryGateContents(mutation(baseline, "Makefile", before, after));
+      assert.ok(result.failures.some(({ code }) => code === "G12"));
+    });
+  }
+});
+
+test("make dry-run visits Host/decoder/version once and never builds firmware in check", () => {
+  const result = spawnSync("make", ["--dry-run", "-j4", "NIX=bash -c", "check"], { cwd: ROOT, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  for (const command of [
+    "cargo fmt --manifest-path host-tools/Cargo.toml --all --check",
+    "cargo clippy --locked --manifest-path host-tools/Cargo.toml --all-targets -- -D warnings",
+    "cargo test --locked --manifest-path host-tools/Cargo.toml --all-targets",
+    "cargo fmt --manifest-path web/decoder/Cargo.toml --all --check",
+    "cargo clippy --locked --manifest-path web/decoder/Cargo.toml --all-targets --all-features -- -D warnings",
+    "cargo test --locked --manifest-path web/decoder/Cargo.toml --all-targets",
+    "python3 scripts/version_sync.py check",
+  ]) assert.equal(result.stdout.split(command).length - 1, 1, command);
+  assert.doesNotMatch(result.stdout, /west build|nix flake check/);
+});
+
 test("Zopfli build contract compresses all embedded assets outside web-dist without file2hex gzip", async () => {
   const contents = await repositoryContents();
   const cmake = contents.get(APP_CMAKE);

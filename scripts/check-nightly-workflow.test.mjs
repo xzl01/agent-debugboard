@@ -48,6 +48,7 @@ const DEV_AND_MAIN_PUSH_TRIGGER = `on:
 const CANONICAL_UF2_COPY = "cp build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 release-assets/radxa-linkr-debugger-rp2350.uf2";
 const UF2_PROVENANCE_CMP = "cmp ../build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 dist/release/radxa-linkr-debugger-rp2350.uf2";
 const BASELINE = await readFile(path.join(ROOT, WORKFLOW_PATH), "utf8");
+const BUILD_BASELINE = await readFile(path.join(ROOT, ".github/workflows/build.yml"), "utf8");
 const RELEASE_BASELINE = await readFile(path.join(ROOT, ".github/workflows/release.yml"), "utf8");
 const CRLF_BASELINE = BASELINE.replace(/\n/g, "\r\n");
 
@@ -101,6 +102,14 @@ test("tagged and nightly releases share the native package workflow", () => {
   }
 });
 
+test("Zephyr setup uses the independently verified build pin, not just any matching local SHA", () => {
+  const pin = "be8136a8bba01580485d98b7ad2d32477c36a49a";
+  for (const workflow of [BUILD_BASELINE, RELEASE_BASELINE, BASELINE]) {
+    assert.ok(workflow.includes(`zephyrproject-rtos/action-zephyr-setup@${pin} # v1`));
+    assert.ok(!workflow.includes("66a907961072acaa85313d2e064e9f071141265a"));
+  }
+});
+
 test("guard 1/4: checker modules stay within the source-size contract", async () => {
   for (const relativePath of ["scripts/check-nightly-workflow.mjs", "scripts/check-nightly-workflow.test.mjs"]) assert.ok(pureLoc(await readFile(path.join(ROOT, relativePath), "utf8")) <= 250, relativePath);
 });
@@ -139,6 +148,10 @@ const ROOT_TRIGGER_REGRESSIONS = [
 ];
 
 const MUTATIONS = [
+  ["rejects the known nonexistent Zephyr setup commit", "W05", "zephyrproject-rtos/action-zephyr-setup@be8136a8bba01580485d98b7ad2d32477c36a49a", "zephyrproject-rtos/action-zephyr-setup@66a907961072acaa85313d2e064e9f071141265a"],
+  ["rejects missing Zopfli installation", "W17", "          sudo apt-get install -y zopfli\n", ""],
+  ["rejects missing Zopfli executable verification", "W17", "          command -v zopfli\n", ""],
+  ["rejects conditional Zopfli setup", "W17", "      - name: Install embedded Web compression tool\n", "      - name: Install embedded Web compression tool\n        if: ${{ false }}\n"],
   ["rejects bypassing the complete validation workflow", "W04", "    uses: ./.github/workflows/build.yml", "    uses: ./.github/workflows/other.yml"],
   ["rejects an unlocked nightly CLI build", "W14", "cargo build --locked --release --manifest-path", "cargo build --release --manifest-path"],
   ["rejects packaging the application-only UF2", "W15", CANONICAL_UF2_COPY, `${CANONICAL_UF2_COPY}\n          cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.uf2 release-assets/radxa-linkr-debugger-rp2350.uf2`],

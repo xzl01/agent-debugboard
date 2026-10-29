@@ -110,6 +110,7 @@ jobs:
             --target web \
             --out-dir /tmp/decoder-out \
             --out-name logic-decoder \
+            --remove-name-section \
             --no-typescript
           test -f /tmp/decoder-out/logic-decoder.js
           test -f /tmp/decoder-out/logic-decoder_bg.wasm
@@ -376,6 +377,7 @@ jobs:
 
       - name: Check persistent-configuration documentation
         run: |
+          cargo fetch --locked --manifest-path cmd-ng/Cargo.toml
           node --test scripts/check-persistent-configuration-docs.test.mjs
           node scripts/check-persistent-configuration-docs.mjs --root .
 

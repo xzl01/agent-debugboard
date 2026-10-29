@@ -1,9 +1,10 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { firmwareRebuildDependencies, ZEPHYR_SETUP_PIN } from "./repository-gates/workflow-contracts.mjs";
 
 const WORKFLOW = ".github/workflows/nightly.yml";
-const ACTIONS = Object.freeze({ "actions/checkout": "d23441a48e516b6c34aea4fa41551a30e30af803", "actions/upload-artifact": "b7c566a772e6b6bfb58ed0dc250532a479d7789f", "actions/download-artifact": "018cc2cf5baa6db3ef3c5f8a56943fffe632ef53", "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1", "actions/setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020", "Swatinem/rust-cache": "e18b497796c12c097a38f9edb9d0641fb99eee32", "dtolnay/rust-toolchain": "4cda84d5c5c54efe2404f9d843567869ab1699d4", "zephyrproject-rtos/action-zephyr-setup": "66a907961072acaa85313d2e064e9f071141265a" });
+const ACTIONS = Object.freeze({ "actions/checkout": "d23441a48e516b6c34aea4fa41551a30e30af803", "actions/upload-artifact": "b7c566a772e6b6bfb58ed0dc250532a479d7789f", "actions/download-artifact": "018cc2cf5baa6db3ef3c5f8a56943fffe632ef53", "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1", "actions/setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020", "Swatinem/rust-cache": "e18b497796c12c097a38f9edb9d0641fb99eee32", "dtolnay/rust-toolchain": "4cda84d5c5c54efe2404f9d843567869ab1699d4", "zephyrproject-rtos/action-zephyr-setup": ZEPHYR_SETUP_PIN });
 const JOBS = ["validation", "rust-cli-release", "native-packages", "nightly-assets", "publish-nightly"];
 const FIXED_PAYLOADS = ["radxa-linkr-debugger-rp2350.uf2", "radxa-linkr-debugger-rp2350-ota.bin", "radxa-linkr-debugger-rp2350.elf", "radxa-linkr-debugger-rp2350.map", "radxa-linkr-debuggerctl-rust_linux_amd64.tar.gz", "radxa-linkr-debuggerctl-rust_darwin_arm64.tar.gz", "radxa-linkr-debuggerctl-rust_windows_amd64.zip", "skills-radxa-linkr-debugger.tar.gz"];
 const NATIVE_PAYLOADS = ["agent-debugboard-*.tar.gz", "radxa-linkr-debuggerctl_*.deb", "radxa-linkr-debugger-firmware_*.deb", "radxa-linkr-debuggerctl-*.rpm", "radxa-linkr-debugger-firmware-*.rpm", "radxa-linkr-debuggerctl-*.pkg.tar.zst", "radxa-linkr-debugger-firmware-*.pkg.tar.zst"];
@@ -72,6 +73,7 @@ function checkJobs(workflow, failures) {
   if ([rust, assets].some((body) => body.split(/(?=^      - )/m).some((entry) => entry.includes("actions/checkout@") && !/persist-credentials:\s*false/.test(entry)))) fail(failures, "W06", "each checkout must disable credential persistence");
   if (publish.includes("actions/checkout@")) fail(failures, "W07", "publisher must not check out source");
   if (!/x86_64-unknown-linux-musl/.test(rust) || !/cargo zigbuild --locked --release/.test(rust) || !/must not have dynamic library dependencies/.test(rust) || !/cargo build --locked --release/.test(rust)) fail(failures, "W14", "Linux nightly CLI must be locked, static musl while other platforms also use the lockfile");
+  if (!firmwareRebuildDependencies(assets)) fail(failures, "W17", "firmware rebuild must install and verify Zopfli before west build");
   checkArtifacts(assets, publish, failures);
 }
 function checkArtifacts(assets, publish, failures) {

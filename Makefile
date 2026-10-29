@@ -19,7 +19,11 @@ PICO2_TEST_BOARD := rpi_pico2/rp2350a/m33
 PICO2_TEST_APP := apps/pico2_uart_swd_test
 PICO2_TEST_BUILD_DIR := build/pico2_uart_swd_test
 
-.PHONY: help firmware pico2-uart-swd-test pico2-test workspace unit-tests cli cli-test cli-clippy cli-fmt web web-test web-build gates persistent-configuration-docs check all clean
+.PHONY: help firmware pico2-uart-swd-test pico2-test workspace unit-tests cli cli-test cli-clippy cli-fmt host-fmt host-clippy host-test decoder-fmt decoder-clippy decoder-test version-check web web-test web-build gates persistent-configuration-docs check all clean
+
+# Keep canonical firmware and Web generation from racing under make -j; run
+# each local validation lane once, in order, without rebuilding firmware in check.
+.NOTPARALLEL: all check
 
 help: ## Show this help
 	@echo "Radxa Linkr Debugger build targets (run inside nix-shell):"
@@ -31,10 +35,17 @@ help: ## Show this help
 	@echo "  make cli-test      run Rust host CLI tests"
 	@echo "  make cli-clippy    clippy with -D warnings"
 	@echo "  make cli-fmt       rustfmt check"
+	@echo "  make host-fmt      Host/Broker/MCP/tray rustfmt check"
+	@echo "  make host-clippy   Host clippy with -D warnings"
+	@echo "  make host-test     locked Host tests (all targets)"
+	@echo "  make decoder-fmt   Rust decoder rustfmt check"
+	@echo "  make decoder-clippy Rust decoder clippy (all features)"
+	@echo "  make decoder-test  locked native Rust decoder tests"
+	@echo "  make version-check synchronized repository version check"
 	@echo "  make web           web production build"
 	@echo "  make web-test      web unit/contract tests"
 	@echo "  make gates         repository gate checkers + their tests"
-	@echo "  make check         gates + persistent docs + CLI + firmware model + Web tests/build"
+	@echo "  make check         local CI subset: gates/docs/version + CLI/Host/decoder + models + Web"
 	@echo "  make all           firmware + check"
 	@echo "  make clean         remove the build directory"
 
@@ -64,6 +75,27 @@ cli-clippy: ## Clippy with -D warnings
 cli-fmt: ## rustfmt check
 	$(NIX) "cargo fmt --manifest-path cmd-ng/Cargo.toml --all --check"
 
+host-fmt: ## Host/Broker/MCP/tray rustfmt check
+	$(NIX) "cargo fmt --manifest-path host-tools/Cargo.toml --all --check"
+
+host-clippy: ## Host clippy with -D warnings
+	$(NIX) "cargo clippy --locked --manifest-path host-tools/Cargo.toml --all-targets -- -D warnings"
+
+host-test: ## Locked Host tests
+	$(NIX) "cargo test --locked --manifest-path host-tools/Cargo.toml --all-targets"
+
+decoder-fmt: ## Rust decoder rustfmt check
+	$(NIX) "cargo fmt --manifest-path web/decoder/Cargo.toml --all --check"
+
+decoder-clippy: ## Rust decoder clippy, including WASM feature checks
+	$(NIX) "cargo clippy --locked --manifest-path web/decoder/Cargo.toml --all-targets --all-features -- -D warnings"
+
+decoder-test: ## Locked native Rust decoder tests (Web build covers WASM output)
+	$(NIX) "cargo test --locked --manifest-path web/decoder/Cargo.toml --all-targets"
+
+version-check: ## Synchronized repository version check
+	$(NIX) "python3 scripts/version_sync.py check"
+
 web: ## Web production build
 	$(NIX) "cd web && npm run build"
 
@@ -88,10 +120,11 @@ gates: ## Repository gate checkers and their contract tests
 	$(NIX) "node scripts/check-skill-boundary.mjs --root ."
 
 persistent-configuration-docs: ## Persistent-configuration documentation contract
+	$(NIX) "cargo fetch --locked --manifest-path cmd-ng/Cargo.toml" && \
 	$(NIX) "node --test scripts/check-persistent-configuration-docs.test.mjs" && \
 	$(NIX) "node scripts/check-persistent-configuration-docs.mjs --root ."
 
-check: gates persistent-configuration-docs cli-fmt cli-clippy cli-test unit-tests web-test web ## Everything except the firmware build
+check: gates persistent-configuration-docs version-check cli-fmt cli-clippy cli-test host-fmt host-clippy host-test decoder-fmt decoder-clippy decoder-test unit-tests web-test web ## Local CI subset, no firmware build
 
 all: firmware check ## Firmware build + full checks
 

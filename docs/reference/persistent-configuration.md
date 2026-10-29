@@ -90,7 +90,7 @@ The snapshot reuses the existing on-board NVS `storage_partition`. This feature
 does not introduce a `storage_partition` Device Tree node, partition overlay,
 or `chosen` override. Board Kconfig enables `CONFIG_SETTINGS`,
 `CONFIG_SETTINGS_NVS`, `CONFIG_NVS`, and `CONFIG_NVS_DATA_CRC`.
-`CONFIG_SETTINGS_NVS_SECTOR_COUNT=8` reserves eight NVS sectors for Settings
+`CONFIG_SETTINGS_NVS_SECTOR_COUNT=32` reserves 32 NVS sectors for Settings
 under that existing partition.
 
 The Zephyr Settings+NVS backend sits on top of `storage_partition`. The
@@ -189,7 +189,7 @@ boot.
 ## Boot Restore
 
 Boot restores defaults first. Power outputs are off (including the
-`vdd_5v`-child `5v_usb_hub`), `switch sd` is
+`vdd_5v` children `5v_usb_hub` and `5v_otg`), `switch sd` is
 `target`, `switch tf_wp` is `writable`,
 and the allowlisted GPIOs are in input mode. The
 persistent-configuration service then loads the snapshot from
@@ -197,11 +197,11 @@ persistent-configuration service then loads the snapshot from
 backend-unavailable snapshot does not block startup; the boot path reports
 the reason and continues with the defaults. Every structurally valid v1
 snapshot replays every saved entry, including dangerous values, on every normal
-boot through the shared nine-stage order; `pending` stays zero after a
+boot through the shared ten-stage order; `pending` stays zero after a
 successful boot replay, `current` matches the saved value, and `apply_state` is
 `applied` for every replayed row.
 
-Save and boot share the same replay engine and the same nine-stage order,
+Save and boot share the same replay engine and the same ten-stage order,
 enforced by `linkr_debugger_config_replay_order_snapshot`:
 
 1. Safe GPIO inputs (GPIOs in input mode).
@@ -209,16 +209,19 @@ enforced by `linkr_debugger_config_replay_order_snapshot`:
 3. `switch tf_wp`.
 4. `power vdd_5v` (the parent rail).
 5. `power 5v_usb_hub` (the child branch).
-6. `power 12v_out`.
-7. `power 5v_out`.
-8. `power 20v_out`.
-9. Saved GPIO outputs (GPIOs in output mode).
+6. `power 5v_otg` (the port-VBUS child branch).
+7. `power 12v_out`.
+8. `power 5v_out`.
+9. `power 20v_out`.
+10. Saved GPIO outputs (GPIOs in output mode).
 
-The parent is replayed before the child. Enabling `5v_usb_hub` also enables
-`vdd_5v` when needed; disabling `5v_usb_hub` leaves `vdd_5v` unchanged;
-disabling `vdd_5v` disables `5v_usb_hub` first; enabling `vdd_5v` alone does not
-enable `5v_usb_hub`. `vdd_5v` is independent of every switch route; no route
-operation implicitly changes it.
+The parent is replayed before both children. Enabling either child also enables
+`vdd_5v` when needed; disabling a child leaves `vdd_5v` unchanged. Disabling
+`vdd_5v` disables `5v_otg` first, then `5v_usb_hub`; it also clears the OTG
+desired state. Enabling `vdd_5v` alone does not enable either child.
+`vdd_5v` is independent of every switch route; no route operation implicitly
+changes it. The OTG port is backfeed-capable; an off request does not prove
+that externally supplied VBUS is absent.
 
 The service mutex is held for the entire save or boot sequence. It acquires the
 capture owner and then the flash owner once before persisting and replaying, then releases flash and capture
@@ -248,9 +251,17 @@ the CLI/TUI, the Web UI, or the CDC shell.
 The HTTP API uses the same JSON envelope as the rest of the board:
 `schema`, `ok`, `command`, and either command-specific fields or
 `error.code` plus `error.message`. The command is always `config`. Every
-response includes `Cache-Control: no-store`. Use the board `.1` URL printed by
-the CDC shell `ip` as the base address; the curl examples below use
-`http://<board-ip>` as a placeholder.
+response includes `Cache-Control: no-store`. Set and export `BOARD_URL` to the
+identified board `.1` URL printed by the CDC shell `ip` before running any
+example. There is no fixed-address fallback. Replace the placeholder below;
+it is not an executable example:
+
+```text
+export BOARD_URL='http://<board-ip>'
+```
+
+All curl and CLI examples use the explicitly quoted `BOARD_URL`. Local tests
+supply a loopback URL and never discover or contact a physical board.
 
 The three endpoints are:
 
@@ -314,27 +325,30 @@ an input-mode GP5 value is safe and does not require confirmation.
 
 <!-- persistent-config-example: curl-config-get -->
 ```sh
-curl -fsS http://<board-ip>/api/v1/config
+curl -q -fsS "$BOARD_URL/api/v1/config"
 ```
 
 <!-- persistent-config-example: curl-config-save-safe -->
 ```sh
-curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["switch/sd"],"confirm":false}' http://<board-ip>/api/v1/config
+curl -q -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["switch/sd"],"confirm":false}' "$BOARD_URL/api/v1/config"
 ```
 
 <!-- persistent-config-example: curl-config-save-dangerous -->
 ```sh
-curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["gpio/GP5"],"confirm":true}' http://<board-ip>/api/v1/config
+curl -q -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["gpio/GP5"],"confirm":true}' "$BOARD_URL/api/v1/config"
 ```
 
 <!-- persistent-config-example: curl-config-save-dangerous-unconfirmed -->
 ```sh
-curl -fsS -X PUT -H 'Content-Type: application/json' --data '{"items":["gpio/GP5"],"confirm":false}' http://<board-ip>/api/v1/config
+curl -q --fail-with-body -sS -X PUT -H 'Content-Type: application/json' --data '{"items":["gpio/GP5"],"confirm":false}' "$BOARD_URL/api/v1/config"
 ```
+
+This unconfirmed request is expected to return HTTP 409 and curl exit status 22;
+`--fail-with-body` preserves the JSON error body on stdout.
 
 <!-- persistent-config-example: curl-config-clear -->
 ```sh
-curl -fsS -X DELETE http://<board-ip>/api/v1/config
+curl -q -fsS -X DELETE "$BOARD_URL/api/v1/config"
 ```
 
 ## Status And WebSocket Summary
@@ -399,22 +413,22 @@ snapshot version: `1` when a snapshot is present and `null` when absent.
 
 <!-- persistent-config-example: cli-config-show -->
 ```sh
-radxa-linkr-debuggerctl config show
+radxa-linkr-debuggerctl --url "$BOARD_URL" --json config show
 ```
 
 <!-- persistent-config-example: cli-config-save-safe -->
 ```sh
-radxa-linkr-debuggerctl config save switch/sd
+radxa-linkr-debuggerctl --url "$BOARD_URL" --json config save switch/sd
 ```
 
 <!-- persistent-config-example: cli-config-save-dangerous -->
 ```sh
-radxa-linkr-debuggerctl config save --confirm gpio/GP5
+radxa-linkr-debuggerctl --url "$BOARD_URL" --json config save --confirm gpio/GP5
 ```
 
 <!-- persistent-config-example: cli-config-clear -->
 ```sh
-radxa-linkr-debuggerctl config clear
+radxa-linkr-debuggerctl --url "$BOARD_URL" --json config clear
 ```
 
 ## Interactive TUI
@@ -451,7 +465,7 @@ confirmation.
 
 ## Embedded Web UI
 
-The embedded Web UI talks to the same four HTTP endpoints and the same
+The embedded Web UI talks to the same three HTTP endpoints and the same
 WebSocket summary. Its source is under repository `web/`. The Web UI is
 HTTP-driven and does not keep its own copy of the snapshot.
 
@@ -649,6 +663,13 @@ service are exercised by:
 These tests run against a loopback mock or a host-side test binary and do
 not require the board. They are not real-hardware HIL.
 
+`make persistent-configuration-docs` prepares locked Cargo dependencies, then
+validates the current catalog/size/NVS facts and the bilingual summaries. Its
+tests build the CLI with `--locked --offline` and execute the marked curl and CLI
+examples extracted from this actual document, as well as synthetic fixtures,
+against a loopback-only HTTP mock. A passing checker does not expand any dated
+HIL verdict to the current 19-entry / 88-byte catalog or the OTG replay step.
+
 The 2026-08-05 real-hardware HIL passed the v1 save-and-apply flow.
 See the
 [dated v1-save persistent-configuration HIL report](../testing/results/2026-08-05-persistent-config-v1-save-hil.md).
@@ -694,7 +715,7 @@ Firmware implementation:
   service mutex, capture/flash owner acquisition and reverse release, save
   (persist plus replay), boot restore, and clear entry points.
 - [apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_replay.c):
-  nine-stage replay order shared by Save and boot restore, parent-before-child
+  ten-stage replay order shared by Save and boot restore, parent-before-children
   power ordering, and stop-first-failure replay.
 - [apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_config_codec.c):
   catalog, magic `LRCF`, version `1`, entry format, encode and decode
@@ -726,7 +747,7 @@ Firmware implementation:
   service.
 - [apps/radxa_linkr_debugger/boards/rpi_pico2_rp2350a_m33_mcuboot.conf](../../apps/radxa_linkr_debugger/boards/rpi_pico2_rp2350a_m33_mcuboot.conf):
   `CONFIG_NVS`, `CONFIG_SETTINGS`, `CONFIG_SETTINGS_NVS`,
-  `CONFIG_NVS_DATA_CRC`, and `CONFIG_SETTINGS_NVS_SECTOR_COUNT=8`.
+  `CONFIG_NVS_DATA_CRC`, and `CONFIG_SETTINGS_NVS_SECTOR_COUNT=32`.
 
 Host CLI and TUI implementation:
 

@@ -62,6 +62,31 @@ nix-shell --run "cd web && npm run build"
 west 工作区（`west init` / `west update`）只需一次性准备，
 `make workspace` 可将其刷新到清单锁定版本。
 
+## 本地验证入口
+
+`make check` 是本地可运行的 CI 子集，即使传入 `make -j` 也逐项串行且每项只跑一次：
+仓库门禁契约/检查器、持久化配置文档与 loopback 示例、版本同步、CLI fmt/clippy/tests、
+Host/Broker/MCP/tray fmt/clippy/locked 全 target tests、原生 decoder fmt/全 feature
+clippy/locked 全 target tests、固件 host-model tests、Web tests/production build。
+Web build 已生成 WASM decoder，本入口不再单独重复构建一遍 WASM。
+
+发布版 decoder WASM 移除可选的 `name` 段，以减少内嵌 Flash 占用，不改变执行段或 ABI。
+浏览器调试栈不再显示内部符号名；源码和原始 Cargo WASM 仍然保留。
+
+定向入口包括 `make gates`、`make persistent-configuration-docs`、
+`make version-check`、`make host-fmt host-clippy host-test` 和
+`make decoder-fmt decoder-clippy decoder-test`；原有 `cli-*`、`unit-tests`、
+`web-test`、`web` 仍可使用。Host 所需 GTK/AppIndicator/udev 原生依赖由项目
+Nix shell 提供。
+持久化文档入口会先 fetch 锁定的 CLI 依赖；测试自身用 `--locked --offline`
+构建并只请求 loopback。直接运行 `node --test` 前需单独准备这些依赖。
+
+`make check` 不运行 firmware sysbuild、Nix 打包、跨平台桌面归档/安装检查或 HIL，
+不能替代完整 reusable CI workflow。需要固件时单独运行 `make firmware`，或用
+`make all` 先做一次 canonical firmware build 再运行本地子集；`make all` 在 `-j`
+下也串行这两个阶段。不要同时启动第二个 firmware build，或对共享产物另起一个
+Web generator。HIL 需单独授权并遵循[功能测试规范](../testing/hil-functional-test-spec.md)。
+
 ## 内嵌 Web 压缩与资源门禁
 
 固件 Web bundle 以 **Zopfli 1.0.3** 生成的**标准 gzip**嵌入。CMake 查找真实
@@ -157,7 +182,7 @@ OpenOCD 工作流与复位注意事项见 `docs/user/openocd.zh-CN.md`。
    `1.0.1` 验证过。
 
 4. 需要单独安装 Node.js 22、npm、Rust toolchain、`wasm32-unknown-unknown`
-   target 和 `wasm-bindgen-cli 0.2.121` — 这些不包含在 Zephyr requirements
+   target、`wasm-bindgen-cli 0.2.121` 和 Zopfli 1.0.3 — 这些不包含在 Zephyr requirements
    文件中。
 
 5. 构建：

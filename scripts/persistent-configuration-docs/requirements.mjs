@@ -1,5 +1,6 @@
-import { negated, normalizeShell, shellBlocks } from "./markdown.mjs";
+import { negated, normalizeShell, sectionFor, shellBlocks } from "./markdown.mjs";
 import { STALE_HIL_STATUS } from "./contracts.mjs";
+import { CATALOG_FACT, ITEM_COUNT, MAX_ENCODED_BYTES, NVS_FACT, SIZE_FACT } from "./snapshot-contract.mjs";
 
 function requireFacts(content, facts, code, surface, failures) {
   for (const [name, expression] of facts) {
@@ -23,6 +24,11 @@ export function checkHilCompletionFacts(content, surface, failures) {
 }
 
 export function checkCanonicalFacts(content, surface, failures) {
+  requireFacts(sectionFor(content, "## Storage Model")?.content ?? "", [
+    ["snapshot size bound", new RegExp(SIZE_FACT.replaceAll(" ", "\\s+"), "i")],
+    ["exact catalog composition", new RegExp(CATALOG_FACT.replaceAll(" ", "\\s+"), "i")],
+    ["NVS sector count", new RegExp(`${NVS_FACT}\\b`)],
+  ], "source-contract", surface, failures);
   requireFacts(content, [
     ["save owner order", /acquires the\n?capture owner and then the flash owner once before persisting and replaying/i],
     ["save-clear ownership", /successful save[\s\S]{0,140}complete control snapshot[\s\S]{0,180}clear[\s\S]{0,140}complete store deletion/i],
@@ -34,9 +40,8 @@ export function checkCanonicalFacts(content, surface, failures) {
     ["storage does not auto-delete", /does not auto-format, erase, or delete/i],
     ["storage failures remain errors", /storage read and write failures remain errors/i],
     ["empty encoded snapshot", /encoded snapshot `entry_count=0` is rejected as `empty_selection`/i],
-    ["snapshot size bound", /size is 84 bytes[\s\S]{0,80}18 entries of 4 bytes each/i],
-    ["exact catalog composition", /catalog is exactly 18 items: 5 power outputs, 2 switches, and 11 safe GPIOs/i],
-    ["saved GPIO output stage", /9\. Saved GPIO outputs \(GPIOs in output mode\)/i],
+    ["saved GPIO output stage", /10\. Saved GPIO outputs \(GPIOs in output mode\)/i],
+    ["OTG replay stage", /5\. `power 5v_usb_hub`[\s\S]{0,100}6\. `power 5v_otg`[\s\S]{0,100}7\. `power 12v_out`/i],
     ["save persists and applies", /Save captures live values, persists the v1 snapshot, and then replays/i],
     ["boot full restore", /replays every saved entry, including dangerous values, on every normal\s+boot/i],
     ["v1 only version", /version byte other than 1[\s\S]{0,140}never replayed, migrated, or auto-cleared/i],
@@ -66,8 +71,9 @@ export function checkCanonicalFacts(content, surface, failures) {
     /apps\/radxa_linkr_debugger\/web\//i,
     /clear path is the only path/i,
     /service refuses to overwrite/i,
+    /9\. Saved GPIO outputs/i,
     /10\. Safe GPIO outputs/i,
-    /ten-stage replay order/i,
+    /nine-stage (?:replay )?order/i,
     /eight-stage replay order/i,
     /Current is (?:overlaid|computed|derived) from (?:status|WebSocket|WS) values/i,
     /(?:auto|automatically)[\s-]+(?:saves?|writes? flash|persists?|refreshes?)\s+(?:the\s+|every\s+|current\s+)?(?:current\s+value|snapshot|flash)/i,
@@ -121,7 +127,9 @@ export function checkSkillFacts(content, surface, failures) {
 
 const HIL_FACTS = Object.freeze([
   ["explicit CDC serial", /--serial <identified-cdc-device>/],
-  ["future all runner", /config-persistence-hil\.sh --execute --url http:\/\/172\.29\.203\.1/],
+  ["future all runner", /config-persistence-hil\.sh --execute --url "\$BOARD_URL"/],
+  ["current catalog bound", new RegExp(`当前\\s*x1\\.2\\s*目录必须恰好\\s*${ITEM_COUNT}\\s*项、v1\\s*最大\\s*${MAX_ENCODED_BYTES}\\s*字节`)],
+  ["OTG catalog item", /power\/5v_otg/],
   ["dangerous save confirmation flag", /--confirm-dangerous-save/],
   ["combined UF2", /radxa-linkr-debugger-rp2350\.uf2/],
   ["OTA image", /radxa-linkr-debugger-rp2350-ota\.bin/],

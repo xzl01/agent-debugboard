@@ -93,6 +93,20 @@ async function ensureFile(file, message) {
   }
 }
 
+export function decoderWasmBindgenArgs({ wasm, outDir, outName }) {
+  return [
+    wasm,
+    "--target",
+    "web",
+    "--out-dir",
+    outDir,
+    "--out-name",
+    outName,
+    "--no-typescript",
+    "--remove-name-section",
+  ];
+}
+
 function ensureWasmTargetInstalled() {
   const rustupTargets = tryCapture("rustup", ["target", "list", "--installed"]);
   if (rustupTargets?.split(/\r?\n/).includes("wasm32-unknown-unknown")) {
@@ -123,16 +137,14 @@ export async function buildDecoderWasm() {
 
   await rm(decoderOutDir, { recursive: true, force: true });
   await mkdir(decoderOutDir, { recursive: true });
-  run("wasm-bindgen", [
-    rawWasm,
-    "--target",
-    "web",
-    "--out-dir",
-    decoderOutDir,
-    "--out-name",
-    outName,
-    "--no-typescript",
-  ]);
+  run(
+    "wasm-bindgen",
+    decoderWasmBindgenArgs({
+      wasm: rawWasm,
+      outDir: decoderOutDir,
+      outName,
+    })
+  );
 
   await ensureFile(path.join(decoderOutDir, `${outName}.js`), `wasm-bindgen did not produce ${publicJsPath}`);
   await ensureFile(path.join(decoderOutDir, `${outName}_bg.wasm`), `wasm-bindgen did not produce ${publicWasmPath}`);

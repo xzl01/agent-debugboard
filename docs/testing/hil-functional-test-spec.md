@@ -760,10 +760,10 @@ Todo 16 实机 HIL 的 safe-reboot 路径必须选用安全值
 实参必须替换为本次已识别的设备或受控 helper：
 
 ```text
-sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh --execute --url $BOARD_URL --serial <identified-cdc-device> --reboot-command <identified-reboot-command> --capture-start <logic-or-sigrok-capture-start-command> --capture-stop <logic-or-sigrok-capture-stop-command> --combined-uf2 build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 --ota-image build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-ota.bin --confirm-dangerous-save all
+sh skills/radxa-linkr-debugger/scripts/config-persistence-hil.sh --execute --url "$BOARD_URL" --serial <identified-cdc-device> --reboot-command <identified-reboot-command> --capture-start <logic-or-sigrok-capture-start-command> --capture-stop <logic-or-sigrok-capture-stop-command> --combined-uf2 build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 --ota-image build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350-ota.bin --confirm-dangerous-save all
 ```
 
-其核心 `config-persistence-hil.sh --execute --url $BOARD_URL all`
+其核心 `config-persistence-hil.sh --execute --url "$BOARD_URL" all`
 形状不免除这些显式参数。该 `all` 流程包含 `safe-reboot`、
 `dangerous-auto-restore`、`capture-busy`、`ota-preserve`、`bootsel-preserve`
 和 `cdc-fallback` 六个真实 runner flow。Save 是唯一的持久化变更操作：
@@ -775,10 +775,15 @@ firmware/HTTP host-model 测试与 offline shell fixture 覆盖。ROM BOOTSEL
 
 #### 危险项 pending 与固件确认
 
-当前x1.2目录必须恰好18项、v1最大84字节：五路power
-（含`power/5v_usb_hub`）、`sd`/`tf_wp`两个switch、
+当前x1.2目录必须恰好19项、v1最大88字节：六路power
+（含`power/5v_usb_hub`、`power/5v_otg`）、`sd`/`tf_wp`两个switch、
 GP5/6/7/8/9/12/13/14/15/16/29十一个GPIO。旧`switch/usb`、GP17、GP18请求返回
 `unknown_item`；包含旧ID的snapshot必须按malformed拒绝，不能迁移或别名化。
+Settings 当前使用 `CONFIG_SETTINGS_NVS_SECTOR_COUNT=32`。Save/boot 的十阶段
+重放顺序以[规范](../reference/persistent-configuration.md#boot-restore)为准，
+`5v_otg` 在 parent `vdd_5v` 和 `5v_usb_hub` 之后、`12v_out` 之前。
+这些是当前验收要求，不是对历史镜像 HIL 结论的改写；未经本次板级验收不得
+把历史 18 项/84 字节的 PASS 外推到 OTG。
 
 危险项使用已确认无外接负载的 GP5 output HIGH（测试后恢复 input），或由本轮
 夹具明确授权的 power-on 值。x1.2 没有 `switch/usb`。host/client 不得自行推断

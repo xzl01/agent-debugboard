@@ -23,6 +23,8 @@ let
       ../cmd-ng
       ../host-tools
       ../web
+      # CLI wire-contract tests include the firmware's golden response fixture.
+      ../apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_http_net.c
       ../packaging/radxa-linkr-debugger.desktop
       ../skills/radxa-linkr-debugger
       ../docs/reference/openocd/README.md
@@ -126,6 +128,7 @@ let
         --target web \
         --out-dir "$out" \
         --out-name logic-decoder \
+        --remove-name-section \
         --no-typescript
       runHook postInstall
     '';

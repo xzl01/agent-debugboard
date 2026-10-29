@@ -11,6 +11,7 @@ import { buildCli, executeExamples, startMock, withCliWrapper } from "./persiste
 import { checkerModuleSizes } from "./persistent-configuration-docs/source-size.mjs";
 import { parseCurrentSyncMarkers } from "./persistent-configuration-docs/markdown.mjs";
 import { registerSourceContractMutationTests } from "./persistent-configuration-docs/source-contract-mutations.mjs";
+import { executeRepositoryExamples, registerCurrentContractTests } from "./persistent-configuration-docs/current-contract-tests.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -38,7 +39,7 @@ test("persistent-configuration documentation contract", async (suite) => {
     const literals = new Map(FROZEN_SUMMARY);
     assert.equal(literals.get("snapshot"), "linkr/config/snapshot;v1;one");
     assert.equal(literals.get("boot-restore"), "defaults-first;v1-full-restore");
-    assert.equal(literals.get("header"), "12B-header;byte4-version=1;byte7-zero;max-84B");
+    assert.equal(literals.get("header"), "12B-header;byte4-version=1;byte7-zero;max-88B");
     assert.equal(literals.get("firmware-confirmation"), "firmware-owned-confirmation;save-time-only");
     assert.equal(literals.get("save"), "persists-and-applies;failed-retry-via-resave");
   });
@@ -202,6 +203,7 @@ test("persistent-configuration documentation contract", async (suite) => {
   });
 
   await registerSourceContractMutationTests(suite);
+  await registerCurrentContractTests(suite, repositoryRoot);
 
   await suite.test("keeps negative security text and unrelated sections valid", async () => {
     await withFixture(async (root) => {
@@ -263,8 +265,9 @@ test("persistent-configuration documentation contract", async (suite) => {
     });
   });
 
-  await suite.test("repository documentation must satisfy the frozen contract", async () => {
+  await suite.test("repository documentation satisfies the current contract and executes its real examples", async () => {
     const result = await checkPersistentConfigurationDocs(repositoryRoot);
     assert.equal(result.ok, true, formatFailures(result.failures));
+    await executeRepositoryExamples(result.examples, repositoryRoot);
   });
 });

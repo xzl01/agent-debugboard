@@ -78,7 +78,7 @@ function checkPlacement(text, before, heading, after, surface, failures) {
 function checkSurfaceMap(surface, text, section, failures) {
   if (surface.path === "apps/radxa_linkr_debugger/README.md") {
     requireHeadings(section.content, APP_HEADINGS, surface.path, failures);
-    checkPlacement(text, "curl -fsS http://172.29.203.1/api/v1/status", surface.heading, "Raw MCUboot OTA API", surface.path, failures);
+    checkPlacement(text, "/api/v1/status", surface.heading, "Raw MCUboot OTA API", surface.path, failures);
     checkApplicationFacts(section.content, surface.path, failures);
   }
   if (surface.path === "skills/radxa-linkr-debugger/SKILL.md") {
@@ -98,13 +98,13 @@ function checkExample(example, spec, failures) {
   if (spec.kind === "cli") {
     const command = normalizeShell(example.command);
     const accepted = [spec.command, ...(spec.commandAlternatives ?? [])];
-    if (!/(?:^|\s)radxa-linkr-debuggerctl(?:\s|$)/.test(command) || !accepted.some((candidate) => command.includes(candidate))) {
+    if (!/(?:^|\s)radxa-linkr-debuggerctl(?:\s|$)/.test(command) || !command.includes('--url "$BOARD_URL"') || !accepted.some((candidate) => command.includes(candidate))) {
       addFailure(failures, "example-contract", example.surface, `${example.id} must run radxa-linkr-debuggerctl ${accepted.join(" or ")}`);
     }
     return;
   }
   const request = curlRequest(example.command);
-  const expectedUrl = `http://172.29.203.1${spec.path}`;
+  const expectedUrl = `$BOARD_URL${spec.path}`;
   if (!/\bcurl\b/.test(request.normalized) || request.url !== expectedUrl || request.method !== spec.method) {
     addFailure(failures, "example-contract", example.surface, `${example.id} must be ${spec.method} ${expectedUrl}`);
   }
