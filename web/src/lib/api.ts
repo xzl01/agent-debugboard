@@ -185,8 +185,8 @@ export const setGpio = async (
 
 export const getWatchdog = () => request("/watchdog");
 
-export const createLiveSession = () =>
-  request<LiveSession>("/live-sessions", { method: "POST" });
+export const createLiveSession = (signal?: AbortSignal) =>
+  request<LiveSession>("/live-sessions", { method: "POST", signal });
 
 export const deleteLiveSession = (sessionId: number) =>
   request(`/live-sessions/${sessionId}`, { method: "DELETE" });

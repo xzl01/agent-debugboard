@@ -46,6 +46,9 @@ beforeEach(() => {
 });
 afterEach(async () => { act(() => root?.unmount()); root = null; host?.remove(); await flush(); vi.unstubAllGlobals(); });
 const posts = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
+function page(type: "pagehide" | "pageshow", persisted = true) {
+  act(() => window.dispatchEvent(new PageTransitionEvent(type, { persisted })));
+}
 
 describe("App-owned J4 automatic connection epochs", () => {
   it("waits for board availability, automatically connects once, and publishes Connecting → Connected", async () => {
@@ -109,6 +112,7 @@ describe("App-owned J4 automatic connection epochs", () => {
     act(() => { socket.readyState = 3; socket.onclose?.(); });
     await flush();
     await render({ available: true, uptimeMs: 300 });
+    page("pagehide"); page("pageshow"); await flush();
     expect(posts()).toHaveLength(1);
     expect(session.getState().phase).toBe("disconnected");
   });
@@ -129,10 +133,10 @@ describe("App-owned J4 automatic connection epochs", () => {
     expect(posts()).toHaveLength(1);
   });
 
-  it("reconnects once after a reboot epoch, clears old TX and deletes both independent sessions", async () => {
+  it("reconnects once after a reboot epoch and clears old TX without deleting released WS sessions", async () => {
     await render({ available: true, uptimeMs: 10000 });
     const old = Socket.instances[0]; act(() => old.open());
-    const write = session.writeManual("old TX");
+    let write!: Promise<void>; act(() => { write = session.writeManual("old TX"); });
     const rejected = expect(write).rejects.toMatchObject({ code: "disconnected" });
     await render({ available: true, uptimeMs: 300, restarting: true });
     await render({ available: true, uptimeMs: 400, restarting: false });
@@ -145,7 +149,7 @@ describe("App-owned J4 automatic connection epochs", () => {
     expect(posts()).toHaveLength(2);
     act(() => root!.unmount()); root = null; await flush();
     const deletions = fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE").map(([url]) => url);
-    expect(deletions).toEqual(["/api/v1/live-sessions/1", "/api/v1/live-sessions/2"]);
+    expect(deletions).toEqual([]);
   });
 
   it("starts only once under StrictMode and once more after an explicit reboot recovery", async () => {
@@ -154,5 +158,126 @@ describe("App-owned J4 automatic connection epochs", () => {
     await render({ available: true, uptimeMs: 12000, restarting: true }, true);
     await render({ available: true, uptimeMs: 100, restarting: false }, true);
     expect(posts()).toHaveLength(2);
+  });
+
+  it.each([false, true])("synchronously suspends on pagehide and restores one fresh subscription (StrictMode=%s)", async (strict) => {
+    await render({ available: true }, strict);
+    const old = Socket.instances[0]; act(() => old.open());
+    const stale = { message: old.onmessage!, close: old.onclose!, error: old.onerror! };
+    const failures = [vi.fn(), vi.fn(), vi.fn()];
+    let writes!: Promise<unknown>[];
+    act(() => { writes = [session.writeManual("manual"), session.writeBinaryManual(new Uint8Array([255])), session.write("automation")]
+      .map((write, index) => write.catch(failures[index])); });
+    page("pagehide");
+    expect(session.getState().phase).toBe("disconnected");
+    expect(old.close).toHaveBeenCalledTimes(1);
+    await expect(session.writeManual("too late")).rejects.toMatchObject({ code: "read_only" });
+    page("pageshow"); page("pageshow"); await flush(); await Promise.all(writes);
+    failures.forEach((failure) => { expect(failure).toHaveBeenCalledTimes(1); expect(failure.mock.calls[0][0]).toMatchObject({ code: "disconnected" }); });
+    expect(posts()).toHaveLength(2);
+    const next = Socket.instances[1]; act(() => next.open());
+    expect(next.url).not.toBe(old.url);
+    expect(next.sent).toEqual([JSON.stringify({ type: "subscribe", topic: "serial.j4" })]);
+    act(() => {
+      stale.close(); stale.error();
+      stale.message({ data: JSON.stringify({ type: "serial_state", ...wireState, generation: 99 }) });
+      stale.message({ data: new Uint8Array([255]).buffer });
+    });
+    expect(session.getState()).toMatchObject({ phase: "connected", serial: { generation: 1 }, rxBytes: 0, pendingWrites: 0, error: null });
+  });
+
+  it("does not interpret ordinary hidden visibility or initial pageshow as suspension", async () => {
+    await render({ available: true }); const socket = Socket.instances[0]; act(() => socket.open());
+    page("pageshow", false);
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    act(() => document.dispatchEvent(new Event("visibilitychange"))); await flush();
+    expect(socket.close).not.toHaveBeenCalled(); expect(posts()).toHaveLength(1);
+    visibility.mockRestore();
+    page("pagehide", false); page("pageshow", false); await flush();
+    expect(socket.close).toHaveBeenCalledTimes(1); expect(posts()).toHaveLength(1);
+  });
+
+  it("deduplicates freeze/pagehide and resume/pageshow, waiting for close and board recovery", async () => {
+    await render({ available: true }); const old = Socket.instances[0]; act(() => old.open());
+    old.close.mockImplementation(() => { old.readyState = 2; });
+    act(() => document.dispatchEvent(new Event("freeze"))); page("pagehide");
+    expect(old.close).toHaveBeenCalledTimes(1);
+    await render({ available: false });
+    act(() => document.dispatchEvent(new Event("resume"))); page("pageshow"); await flush();
+    expect(posts()).toHaveLength(1);
+    await render({ available: true }); expect(posts()).toHaveLength(1);
+    act(() => { old.readyState = 3; old.onclose?.(); }); await flush();
+    expect(posts()).toHaveLength(2);
+    page("pageshow"); act(() => document.dispatchEvent(new Event("resume"))); await flush();
+    expect(posts()).toHaveLength(2);
+  });
+
+  it("preserves restore intent across two BFCache cycles while the old socket is closing", async () => {
+    await render({ available: true }); const old = Socket.instances[0]; act(() => old.open());
+    old.close.mockImplementation(() => { old.readyState = 2; });
+    page("pagehide"); page("pageshow"); await flush();
+    expect(session.getState().phase).toBe("disconnected"); expect(posts()).toHaveLength(1);
+    page("pagehide"); page("pageshow"); await flush();
+    expect(posts()).toHaveLength(1); expect(old.close).toHaveBeenCalledTimes(1);
+    act(() => { old.readyState = 3; old.onclose?.(); }); await flush();
+    expect(posts()).toHaveLength(2); expect(Socket.instances).toHaveLength(2);
+    const next = Socket.instances[1]; act(() => next.open());
+    expect(next.sent).toEqual([JSON.stringify({ type: "subscribe", topic: "serial.j4" })]);
+    page("pageshow"); await render({ available: true, uptimeMs: 10000 });
+    expect(posts()).toHaveLength(2); expect(session.getState().phase).toBe("connected");
+  });
+
+  it("preserves restore intent through a second freeze/resume while waiting for board availability", async () => {
+    await render({ available: true }); act(() => Socket.instances[0].open());
+    page("pagehide"); await render({ available: false });
+    page("pageshow"); await flush();
+    expect(session.getState().phase).toBe("disconnected"); expect(posts()).toHaveLength(1);
+    act(() => document.dispatchEvent(new Event("freeze")));
+    act(() => document.dispatchEvent(new Event("resume"))); await flush();
+    expect(posts()).toHaveLength(1);
+    await render({ available: true });
+    expect(posts()).toHaveLength(2); expect(Socket.instances).toHaveLength(2);
+    act(() => Socket.instances[1].open());
+    await render({ available: true, uptimeMs: 10000 });
+    expect(posts()).toHaveLength(2); expect(session.getState().phase).toBe("connected");
+  });
+
+  it("lets manual Disconnect cancel the second BFCache restore queued behind socket close", async () => {
+    await render({ available: true }); const old = Socket.instances[0]; act(() => old.open());
+    old.close.mockImplementation(() => { old.readyState = 2; });
+    page("pagehide"); page("pageshow"); await flush();
+    page("pagehide"); page("pageshow"); await flush();
+    let disconnected!: Promise<void>;
+    act(() => { disconnected = session.disconnect(); });
+    expect(posts()).toHaveLength(1);
+    act(() => { old.readyState = 3; old.onclose?.(); }); await disconnected; await flush();
+    page("pagehide"); page("pageshow"); await render({ available: true, uptimeMs: 10000 });
+    expect(posts()).toHaveLength(1); expect(Socket.instances).toHaveLength(1);
+    expect(old.close).toHaveBeenCalledTimes(1); expect(session.getState().phase).toBe("disconnected");
+  });
+
+  it.each(["before", "suspended", "queued", "closing"])("manual Disconnect wins %s a BFCache restore", async (when) => {
+    await render({ available: true }); const old = Socket.instances[0]; act(() => old.open());
+    if (when === "before") await act(async () => { await session.disconnect(); });
+    if (when === "closing") old.close.mockImplementation(() => { old.readyState = 2; });
+    page("pagehide");
+    let disconnected: Promise<void> | undefined;
+    if (when === "suspended") act(() => { disconnected = session.disconnect(); });
+    page("pageshow");
+    if (when === "closing") await flush();
+    if (when === "queued" || when === "closing") act(() => { disconnected = session.disconnect(); });
+    if (when === "closing") act(() => { old.readyState = 3; old.onclose?.(); });
+    await disconnected; await flush();
+    expect(posts()).toHaveLength(1); expect(session.getState().phase).toBe("disconnected");
+  });
+
+  it("restores a connecting intent once and keeps a failed restore sticky", async () => {
+    await render({ available: true }); page("pagehide"); page("pageshow"); await flush();
+    expect(posts()).toHaveLength(2);
+    const socket = Socket.instances[1];
+    act(() => socket.onerror?.()); await flush();
+    page("pagehide"); page("pageshow"); await flush();
+    await render({ available: true, uptimeMs: 10000 });
+    expect(posts()).toHaveLength(2); expect(session.getState().phase).toBe("disconnected");
   });
 });

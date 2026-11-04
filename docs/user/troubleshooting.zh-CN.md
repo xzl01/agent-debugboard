@@ -155,6 +155,22 @@ picotool load -v -x radxa-linkr-debugger-rp2350.uf2
    ```
    注销重新登录生效。
 
+## 浏览器从前进/后退缓存恢复后终端断开
+
+`WebSocket ... failed: Page entered Back-Forward Cache` 指向浏览器历史缓存的
+生命周期事件，单凭这条日志不能认定调试板掉线。当前 Chrome 在页面进入该缓存时
+可能关闭 WebSocket。Web UI 会在页面暂停时关闭 J4，并在恢复后为原先已连接或
+正在连接的终端新建一次连接；用户主动断开的终端不自动恢复。普通隐藏标签页不会
+因此断开串口。
+
+旧版板载 UI 可在返回页面后点击**连接 J4**恢复。重新发送中断的命令前，先确认
+目标端是否已经执行；之前的输入不会自动重放。
+
+`/api/v1/live-sessions/<id>` 的 404 需要结合请求方法和错误码判断：如果是清理用
+DELETE 且为 `unknown_session_id`，可能只是固件已随 socket 关闭自动释放会话，
+不能据此判定设备重启。创建失败、其它读取等 404 仍需单独排查。参见
+[浏览器生命周期约定](../reference/serial-broker.md#browser-suspension-and-restoration)。
+
 ## 串口终端尺寸与目标 tty 不一致
 
 Web UI 会在布局和字体就绪后适配**本地 xterm**，并在窗口或终端容器尺寸变化、

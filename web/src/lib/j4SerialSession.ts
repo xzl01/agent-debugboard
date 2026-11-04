@@ -33,6 +33,9 @@ export class J4SerialSession implements SerialAutomationHandle {
   private readonly byteListeners = new Set<(bytes: Uint8Array) => void>();
   private readonly textListeners = new Set<(text: string, receivedAtMs: number) => void>();
   private readonly clearListeners = new Set<() => void>();
+  private connectionEpoch = 0;
+  private suspended = false;
+  private restoreIntent = false;
 
   constructor() {
     this.client = new J4SerialClient((next) => {
@@ -55,8 +58,36 @@ export class J4SerialSession implements SerialAutomationHandle {
   subscribeState = (listener: () => void) => { this.stateListeners.add(listener); return () => { this.stateListeners.delete(listener); }; };
   isConnected = (_channel?: J4SerialChannel) => j4ConnectionState(this.snapshot) === "ready";
   connectedChannels = (): J4SerialChannel[] => this.isConnected() ? ["j4"] : [];
-  connect = () => this.client.connect();
-  disconnect = () => this.client.disconnect();
+  getConnectionEpoch = () => this.connectionEpoch;
+  connect = () => {
+    if (this.suspended) return Promise.resolve();
+    this.connectionEpoch += 1;
+    this.restoreIntent = false;
+    return this.client.connect();
+  };
+  disconnect = () => {
+    this.restoreIntent = false;
+    return this.interruptTransport();
+  };
+  /** Internal cleanup does not turn a page suspension into a user Disconnect. */
+  interruptTransport = () => {
+    this.connectionEpoch += 1;
+    return this.client.disconnect();
+  };
+  suspend = () => {
+    if (!this.suspended) {
+      this.suspended = true;
+      this.restoreIntent = this.restoreIntent || this.snapshot.phase === "connected" || this.snapshot.phase === "connecting";
+    }
+    return this.interruptTransport();
+  };
+  resume = () => { this.suspended = false; };
+  /** The hook captures this token before queueing: manual Disconnect always wins. */
+  connectAutomatically = (epoch: number, restoring: boolean) => {
+    if (epoch !== this.connectionEpoch || this.suspended || (restoring && !this.restoreIntent)
+      || this.snapshot.phase === "connected" || this.snapshot.phase === "connecting") return Promise.resolve();
+    return this.connect();
+  };
   configure = (config: J4SerialConfig) => this.client.configure(config);
   write = (text: string, _channel?: J4SerialChannel) => this.client.writeText(text);
   writeManual = (text: string) => this.snapshot.automationActive

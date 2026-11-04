@@ -6,6 +6,13 @@ import { J4_SERIAL_BUFFER_LIMIT, J4_SERIAL_FRAME_BYTES, J4_SERIAL_QUEUE_LIMIT, t
 const config = { baud: 115200, data_bits: 8, parity: "none", stop_bits: 1, flow_control: "none" } as const;
 const state = (extra = {}) => ({ generation: 1, state: "ready", line_coding: config, dtr: false, read_only: false, ...extra });
 const response = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status });
+const sessionRequestTimeoutMs = 8_000;
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 class Socket {
   static OPEN = 1;
@@ -233,7 +240,7 @@ describe("J4 MCU live-session transport", () => {
     const rejection = expect(write).rejects.toMatchObject({ code: "disconnected" });
     await serial.disconnect(); await rejection;
     expect(socket.close).toHaveBeenCalledOnce();
-    expect(fetchMock).toHaveBeenCalledWith("/api/v1/live-sessions/10", expect.objectContaining({ method: "DELETE" }));
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
     const next = await connected(serial);
     staleMessage({ data: JSON.stringify({ type: "serial_state", ...state({ generation: 99, state: "faulted" }) }) });
     staleMessage({ data: new Uint8Array([255]).buffer });
@@ -250,7 +257,7 @@ describe("J4 MCU live-session transport", () => {
     expect(second.close).not.toHaveBeenCalled(); expect(b.serial.getSnapshot().phase).toBe("connected");
     expect(a.onBytes.mock.calls[0][0]).toEqual(new Uint8Array([1]));
     expect(b.onBytes.mock.calls[0][0]).toEqual(new Uint8Array([2, 3]));
-    expect(fetchMock.mock.calls.filter(([url, init]) => init?.method === "DELETE").map(([url]) => url)).toEqual(["/api/v1/live-sessions/10"]);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE")).toEqual([]);
   });
 
   it("keeps a write rejection nonfatal without imposing any TX ownership or read-only lock", async () => {
@@ -378,8 +385,8 @@ describe("J4 MCU live-session transport", () => {
       ? new Promise<Response>((done) => { resolve = done; }) : original(url, init));
     const { serial } = client(); const connect = serial.connect();
     await vi.waitFor(() => expect(resolve).toBeTypeOf("function"));
-    await serial.disconnect();
-    resolve(response({ session_id: 77, ws_url: "/api/v1/live-sessions/77/ws" })); await connect;
+    const disconnect = serial.disconnect();
+    resolve(response({ session_id: 77, ws_url: "/api/v1/live-sessions/77/ws" })); await connect; await disconnect;
     expect(Socket.instances).toHaveLength(0);
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/live-sessions/77", expect.objectContaining({ method: "DELETE" }));
   });
@@ -513,12 +520,229 @@ describe("J4 MCU live-session transport", () => {
     expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/serial/j4"))).toHaveLength(21);
   });
 
-  it("waits for its WS close handshake before deleting a connected session", async () => {
+  it("waits for its WS close handshake without deleting a firmware-released session", async () => {
     const { serial } = client(); const socket = await connected(serial);
     socket.close.mockImplementation(() => {});
     const disconnect = serial.disconnect();
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
     socket.onclose?.(); await disconnect;
-    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(0);
+  });
+
+  it.each(["timeout", "throw"])("bounds established WS close %s without deleting any session or letting old callbacks affect a new one", async (mode) => {
+    const { serial } = client(); const old = await connected(serial);
+    const staleClose = old.onclose!; const staleError = old.onerror!;
+    old.close.mockImplementation(() => { if (mode === "throw") throw new Error("close failed"); });
+    const disconnect = serial.disconnect(); const reconnect = serial.connect();
+    if (mode === "timeout") {
+      await vi.advanceTimersByTimeAsync(749); expect(Socket.instances).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    await disconnect; await reconnect;
+    const next = Socket.instances[1]; next.open(); next.frame({ type: "serial_state", ...state() });
+    staleClose(); staleError();
+    expect(serial.getSnapshot().phase).toBe("connected");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(0);
+  });
+
+  it("deletes an unopened reservation and accepts only the expected already-absent cleanup error", async () => {
+    const { serial } = client(); await serial.connect();
+    const original = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => init?.method === "DELETE"
+      ? Promise.resolve(response({ ok: false, error: { code: "unknown_session_id" } }, 404)) : original(url, init));
+    await serial.disconnect();
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/live-sessions/10", expect.objectContaining({ method: "DELETE" }));
+    expect(serial.getSnapshot().error).toBeNull();
+    await serial.connect();
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => init?.method === "DELETE"
+      ? Promise.resolve(response({ ok: false, error: { code: "cleanup_failed", message: "denied" } }, 500)) : original(url, init));
+    await serial.disconnect();
+    expect(serial.getSnapshot().error?.code).toBe("cleanup_failed");
+  });
+
+  it.each([[404, "not_found"], [500, "unknown_session_id"]])("does not hide unrelated reservation cleanup errors (%s, %s)", async (status, code) => {
+    const { serial } = client(); await serial.connect();
+    fetchMock.mockResolvedValue(response({ ok: false, error: { code } }, status as number));
+    await serial.disconnect();
+    expect(serial.getSnapshot().error?.code).toBe(code);
+  });
+
+  it("waits for a cancelled allocation's cleanup before creating a replacement", async () => {
+    const original = fetchMock.getMockImplementation()!;
+    let resolve!: (value: Response) => void; let deleted!: (value: Response) => void;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => init?.method === "DELETE"
+      ? new Promise<Response>((done) => { deleted = done; }) : original(url, init))
+      .mockImplementationOnce(original).mockImplementationOnce(() => new Promise<Response>((done) => { resolve = done; }));
+    const { serial } = client(); const first = serial.connect();
+    await vi.waitFor(() => expect(resolve).toBeTypeOf("function"));
+    const disconnected = serial.disconnect(); const next = serial.connect();
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(Socket.instances).toHaveLength(0);
+    resolve(response({ session_id: 77, ws_url: "/api/v1/live-sessions/77/ws" }));
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(deleted).toBeTypeOf("function");
+    expect(Socket.instances).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    deleted(response({ ok: false, error: { code: "cleanup_failed" } }, 500));
+    await first; await disconnected; await next;
+    expect(Socket.instances).toHaveLength(1);
+    expect(serial.getSnapshot()).toMatchObject({ phase: "connecting", error: null });
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE").map(([url]) => url)).toEqual(["/api/v1/live-sessions/77"]);
+    // Let teardown close this socket as an established worker-owned transport.
+    Socket.instances[0].open();
+  });
+
+  it.each(["headers", "body"])("bounds ignored-abort POST %s and deletes only its late reservation without replaying TX", async (part) => {
+    const { serial } = client(); const old = await connected(serial);
+    const write = serial.writeText("not replayed");
+    const rejected = expect(write).rejects.toMatchObject({ code: "disconnected" });
+    const original = fetchMock.getMockImplementation()!;
+    const headers = deferred<Response>(); const body = deferred<string>();
+    const allocated = { session_id: 77, ws_url: "/api/v1/live-sessions/77/ws" };
+    const late = response(allocated, 201);
+    vi.spyOn(late, "text").mockReturnValue(body.promise);
+    let signal: AbortSignal | undefined; let posted = false;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST" && !posted) {
+        posted = true;
+        signal = init.signal ?? undefined;
+        return headers.promise; // Intentionally ignore cancellation, including body reads.
+      }
+      return original(url, init);
+    });
+    const first = serial.connect();
+    await vi.advanceTimersByTimeAsync(0); await rejected;
+    const disconnected = serial.disconnect(); const replacement = serial.connect();
+    let settled = false;
+    const done = Promise.all([first, disconnected, replacement]).then(() => { settled = true; });
+    try {
+      if (part === "body") {
+        await vi.advanceTimersByTimeAsync(4_000);
+        headers.resolve(late); await vi.advanceTimersByTimeAsync(0);
+      }
+      await vi.advanceTimersByTimeAsync(sessionRequestTimeoutMs - (part === "body" ? 4_000 : 0) - 1);
+      expect(settled).toBe(false);
+      expect(Socket.instances).toHaveLength(1);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      expect(signal?.aborted).toBe(true);
+      await done;
+      const next = Socket.instances[1]; next.open(); next.frame({ type: "serial_state", ...state() });
+      const snapshot = serial.getSnapshot();
+      headers.resolve(late); body.resolve(JSON.stringify(allocated)); await vi.advanceTimersByTimeAsync(0);
+      expect(serial.getSnapshot()).toBe(snapshot);
+      expect(snapshot.phase).toBe("connected");
+      expect(Socket.instances).toHaveLength(2);
+      expect(old.sent).toHaveLength(2);
+      expect(next.sent).toEqual([JSON.stringify({ type: "subscribe", topic: "serial.j4" })]);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE").map(([url]) => url)).toEqual(["/api/v1/live-sessions/77"]);
+      await vi.advanceTimersByTimeAsync(sessionRequestTimeoutMs);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(3);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(0);
+    } finally {
+      headers.resolve(late); body.resolve(JSON.stringify(allocated)); await done;
+    }
+  });
+
+  it.each(["headers", "body"])("bounds WS close plus ignored-abort DELETE %s and ignores late cleanup errors after replacement", async (part) => {
+    const { serial } = client(); await serial.connect();
+    Socket.instances[0].close.mockImplementation(() => {});
+    const original = fetchMock.getMockImplementation()!;
+    const headers = deferred<Response>(); const body = deferred<string>();
+    const error = { ok: false, error: { code: "cleanup_failed" } };
+    const late = response(error, 500);
+    vi.spyOn(late, "text").mockReturnValue(body.promise);
+    let signal: AbortSignal | undefined;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        signal = init.signal ?? undefined;
+        return headers.promise;
+      }
+      return original(url, init);
+    });
+    const disconnected = serial.disconnect(); const replacement = serial.connect();
+    let settled = false;
+    const done = Promise.all([disconnected, replacement]).then(() => { settled = true; });
+    try {
+      await vi.advanceTimersByTimeAsync(749);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+      if (part === "body") {
+        await vi.advanceTimersByTimeAsync(4_000);
+        headers.resolve(late); await vi.advanceTimersByTimeAsync(0);
+      }
+      await vi.advanceTimersByTimeAsync(sessionRequestTimeoutMs - (part === "body" ? 4_000 : 0) - 1);
+      expect(settled).toBe(false);
+      expect(Socket.instances).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      expect(signal?.aborted).toBe(true);
+      await done;
+      const next = Socket.instances[1]; next.open(); next.frame({ type: "serial_state", ...state() });
+      const snapshot = serial.getSnapshot();
+      headers.resolve(late); body.resolve(JSON.stringify(error)); await vi.advanceTimersByTimeAsync(0);
+      expect(serial.getSnapshot()).toBe(snapshot);
+      expect(snapshot).toMatchObject({ phase: "connected", error: null });
+      expect(next.sent).toEqual([JSON.stringify({ type: "subscribe", topic: "serial.j4" })]);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE").map(([url]) => url)).toEqual(["/api/v1/live-sessions/10"]);
+    } finally {
+      headers.resolve(late); body.resolve(JSON.stringify(error)); await done;
+    }
+  });
+
+  it("keeps the allocation deadline when its cancelled reservation DELETE is still pending", async () => {
+    const original = fetchMock.getMockImplementation()!;
+    const headers = deferred<Response>(); const body = deferred<string>();
+    const allocated = { session_id: 77, ws_url: "/api/v1/live-sessions/77/ws" };
+    const error = { ok: false, error: { code: "cleanup_failed" } };
+    const late = response(error, 500);
+    vi.spyOn(late, "text").mockReturnValue(body.promise);
+    let posted = false; let deleteSignal: AbortSignal | undefined;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === "POST" && !posted) { posted = true; return headers.promise; }
+      if (init?.method === "DELETE") { deleteSignal = init.signal ?? undefined; return Promise.resolve(late); }
+      return original(url, init);
+    });
+    const { serial } = client(); const first = serial.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    const disconnected = serial.disconnect(); const replacement = serial.connect();
+    let settled = false;
+    const done = Promise.all([first, disconnected, replacement]).then(() => { settled = true; });
+    try {
+      await vi.advanceTimersByTimeAsync(sessionRequestTimeoutMs - 1);
+      headers.resolve(response(allocated, 201)); await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledWith("/api/v1/live-sessions/77", expect.objectContaining({ method: "DELETE" }));
+      expect(settled).toBe(false); expect(Socket.instances).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true); await done;
+      const next = Socket.instances[0]; next.open(); next.frame({ type: "serial_state", ...state() });
+      const snapshot = serial.getSnapshot();
+      await vi.advanceTimersByTimeAsync(sessionRequestTimeoutMs - 2);
+      expect(deleteSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(deleteSignal?.aborted).toBe(true);
+      body.resolve(JSON.stringify(error)); await vi.advanceTimersByTimeAsync(0);
+      expect(serial.getSnapshot()).toBe(snapshot);
+      expect(snapshot).toMatchObject({ phase: "connected", error: null });
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE").map(([url]) => url)).toEqual(["/api/v1/live-sessions/77"]);
+    } finally {
+      headers.resolve(response(allocated, 201)); body.resolve(JSON.stringify(error)); await done;
+    }
+  });
+
+  it("rejects a stale configuration result without replaying PUT or overwriting the replacement", async () => {
+    const { serial } = client(); await connected(serial);
+    const original = fetchMock.getMockImplementation()!; let resolve!: (value: Response) => void;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => init?.method === "PUT"
+      ? new Promise<Response>((done) => { resolve = done; }) : original(url, init));
+    const configured = serial.configure({ ...config, baud: 57600 });
+    const rejection = expect(configured).rejects.toMatchObject({ code: "disconnected" });
+    await serial.disconnect(); await connected(serial);
+    resolve(response({ accepted: true, request_id: 55 }, 202)); await rejection;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(serial.getSnapshot()).toMatchObject({ phase: "connected", configuring: false, serial: { config: { baud: 115200 } } });
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
   });
 });

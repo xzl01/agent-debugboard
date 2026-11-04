@@ -163,6 +163,44 @@ These rows are bounded functional evidence for terminal query handling, not a
 claim that every possible terminal escape sequence or multi-client race was
 exhaustively tested.
 
+## Browser suspension and restoration
+
+The App-owned J4 session treats `pagehide` and the browser's explicit `freeze`
+event as transport boundaries. It invalidates the current connection and pending
+TX synchronously, then closes the socket. Merely switching to a hidden tab does
+not disconnect J4.
+
+After a persisted `pageshow` or a matching `resume`, a previously connected or
+connecting terminal makes one fresh connection attempt when the board is
+available and prior cleanup has finished. It creates a new live session and
+subscribes again; the returned slot URL may legitimately reuse the same slot.
+Duplicate lifecycle events are coalesced. Manual Disconnect cancels this intent,
+including while restoration is queued. Ordinary network failures retain the
+manual reconnect policy, not an unbounded retry loop.
+
+Queued restoration intent survives a second suspension while transport cleanup
+or board availability is pending. It is consumed when a connection starts or
+cancelled by manual Disconnect, not erased merely because cleanup has already
+published a disconnected state.
+
+Reservation POST and cleanup DELETE each have an 8-second total deadline,
+including response headers and body. The close/cleanup barrier waits at most
+8.75 seconds, including the 750 ms socket-close budget, even if cancellation
+does not settle the transport. A late allocation may only clean up its own old
+session ID; it cannot create an old socket or overwrite a replacement session.
+Cleanup is best effort on timeout, not proof that the board saw the DELETE.
+
+Restoration never retries serial TX or configuration writes. Unconfirmed bytes
+may already have reached the target, so an interrupted write does not establish
+that the command was not executed. Responder authorization and parser-promotion
+fences remain unchanged.
+
+The firmware worker releases an upgraded live session when its WebSocket closes.
+J4 therefore does not issue a redundant DELETE after that normal close. An unused
+reservation still needs cleanup; only `404 unknown_session_id` at that cleanup
+boundary means already released. Other API errors remain errors. A slot such as
+`/ws/0` and a live-session ID such as `/live-sessions/37` are different identities.
+
 ## Local terminal size
 
 The Web UI fits its local xterm after layout/font readiness and on container,

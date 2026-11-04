@@ -169,6 +169,25 @@ picotool load -v -x radxa-linkr-debugger-rp2350.uf2
    ```
    Log out and back in for the group change to take effect.
 
+## Terminal disconnected after browser Back-Forward Cache restoration
+
+`WebSocket ... failed: Page entered Back-Forward Cache` points to a browser
+history-cache lifecycle event, not by itself to a disconnected debugger. Current
+Chrome can close WebSockets when a page enters that cache. The Web UI closes J4
+on page suspension and, after restoration, creates one fresh connection if it was
+previously connected or connecting. An explicit Disconnect remains disconnected;
+ordinary hidden tabs do not trigger this cleanup.
+
+On an older embedded UI, click **Connect J4** after returning to the page. Check
+whether an interrupted command already ran before sending it again: previous
+input is never replayed automatically.
+
+If `/api/v1/live-sessions/<id>` returns 404, inspect the request method and error
+code. A cleanup DELETE with `unknown_session_id` may simply follow the firmware's
+automatic release after socket close. It does not prove that the board rebooted.
+Other 404s, including failed creation or unrelated reads, require separate
+diagnosis. See the [browser lifecycle contract](../reference/serial-broker.md#browser-suspension-and-restoration).
+
 ## Serial terminal size differs from the target tty
 
 The Web UI fits its **local xterm** after layout and fonts are ready, when the

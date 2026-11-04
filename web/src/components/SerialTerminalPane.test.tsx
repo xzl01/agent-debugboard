@@ -894,7 +894,9 @@ describe("J4 xterm surface", () => {
     expect(session.isConnected("j4")).toBe(true);
     await session.disconnect();
     expect(socket.close).toHaveBeenCalledOnce();
-    expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/v1/live-sessions/1" && init?.method === "DELETE")).toBe(true);
+    // The upgraded socket's worker releases the firmware session on CLOSE.
+    // A subsequent DELETE races that release and produces a spurious 404.
+    expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/v1/live-sessions/1" && init?.method === "DELETE")).toBe(false);
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: false }), { status: 404 }));
     const next = await mount(); await act(async () => { await next.connect(); });
     expect(host.textContent).toContain("serial.unavailable"); expect(host.textContent).toContain("serial.unavailableHint");

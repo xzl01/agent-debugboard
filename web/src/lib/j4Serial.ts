@@ -7,6 +7,8 @@ import {
 
 export const J4_SERIAL_TX_MIN_TIMEOUT_MS = 5_000;
 export const J4_SERIAL_TX_SCHEDULING_GUARD_MS = 2_000;
+const SESSION_REQUEST_TIMEOUT_MS = 8_000;
+const WS_CLOSE_TIMEOUT_MS = 750;
 
 /** Bound the shared firmware queue, including seven competing maximum frames
  * ahead of this WS's one in-flight frame. Reserve 2 s for service scheduling
@@ -58,7 +60,10 @@ export class J4SerialClient {
   private snapshot = emptyJ4Snapshot();
   private epoch = 0;
   private ws: WebSocket | null = null;
+  private wsOpened = false;
   private sessionId: number | null = null;
+  private allocation: Promise<void> | null = null;
+  private cleanup = Promise.resolve();
   private pending: PendingWrite[] = [];
   private abort: AbortController | null = null;
   private pressureTimer: ReturnType<typeof setInterval> | null = null;
@@ -95,6 +100,7 @@ export class J4SerialClient {
   async connect(): Promise<void> {
     const cleanup = this.disconnect();
     const epoch = this.epoch;
+    this.update({ phase: "connecting", serial: null, error: null });
     await cleanup;
     if (epoch !== this.epoch) return;
     this.abort = new AbortController();
@@ -104,9 +110,39 @@ export class J4SerialClient {
       const serial = parseJ4SerialState(await this.request({ signal: this.abort.signal }));
       if (epoch !== this.epoch) return;
       this.update({ serial });
-      const session = await api.createLiveSession();
-      if (epoch !== this.epoch) {
-        await api.deleteLiveSession(session.session_id).catch(() => {});
+      const allocation = this.allocateTransport(epoch);
+      this.allocation = allocation;
+      try { await allocation; }
+      finally { if (this.allocation === allocation) this.allocation = null; }
+      // No automatic retries: missing APIs and a stopped board remain quiet.
+    } catch (reason) {
+      if (epoch === this.epoch) this.fail(reason);
+    }
+  }
+
+  private async withSessionDeadline<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    let timer!: ReturnType<typeof setTimeout>;
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const reason = new J4SerialError("request_timeout", "J4 live-session request timed out");
+        // Abort is best effort: headers/body reads may ignore cancellation.
+        reject(reason);
+        controller.abort(reason);
+      }, SESSION_REQUEST_TIMEOUT_MS);
+    });
+    try { return await Promise.race([operation(controller.signal), timedOut]); }
+    finally { clearTimeout(timer); }
+  }
+
+  private allocateTransport(epoch: number): Promise<void> {
+    return this.withSessionDeadline(async (signal) => {
+      const session = await api.createLiveSession(signal);
+      // Keep waiting for cancelled allocations until the deadline. Even if POST
+      // ignores abort and returns later, only its local ID can be cleaned up;
+      // neither a late POST nor its bounded DELETE may touch the replacement.
+      if (signal.aborted || epoch !== this.epoch) {
+        await this.deleteReservation(session.session_id);
         return;
       }
       this.sessionId = session.session_id;
@@ -118,7 +154,9 @@ export class J4SerialClient {
         if (current() && this.snapshot.phase === "connecting") this.fail(new J4SerialError("connect_timeout"));
       }, 8_000);
       ws.onopen = () => {
-        if (current()) ws.send(JSON.stringify({ type: "subscribe", topic: J4_SERIAL_TOPIC }));
+        if (!current()) return;
+        this.wsOpened = true;
+        ws.send(JSON.stringify({ type: "subscribe", topic: J4_SERIAL_TOPIC }));
       };
       ws.onmessage = (event) => {
         if (!current()) return;
@@ -133,10 +171,7 @@ export class J4SerialClient {
       };
       ws.onerror = () => { if (current()) this.fail(new J4SerialError("connection_error")); };
       ws.onclose = () => { if (current()) this.fail(new J4SerialError("connection_closed")); };
-      // No automatic retries: missing APIs and a stopped board remain quiet.
-    } catch (reason) {
-      if (epoch === this.epoch) this.fail(reason);
-    }
+    });
   }
 
   private receiveText(text: string) {
@@ -259,13 +294,13 @@ export class J4SerialClient {
     try {
       const result = await this.request({ method: "PUT", signal: this.abort?.signal,
         body: JSON.stringify({ ...config, expected_generation: serial.generation }) });
-      if (epoch !== this.epoch) return;
+      if (epoch !== this.epoch) throw new J4SerialError("disconnected");
       if (result.accepted !== true || !Number.isSafeInteger(result.request_id)) throw new J4SerialError("invalid_response");
       this.configRequestId = Number(result.request_id);
       // 202 is admission, not completion. Poll only this pending operation, bounded.
       if (this.snapshot.configuring) this.pollConfiguration(epoch, 0);
     } catch (reason) {
-      if (epoch !== this.epoch) return;
+      if (epoch !== this.epoch) throw new J4SerialError("disconnected");
       this.configRequestId = null;
       const error = this.errorInfo(reason);
       this.update({ configuring: false, error });
@@ -383,8 +418,9 @@ export class J4SerialClient {
       ? "unavailable" : "disconnected" });
   }
 
-  async disconnect(): Promise<void> {
+  disconnect(): Promise<void> {
     this.epoch += 1;
+    const epoch = this.epoch;
     this.abort?.abort(); this.abort = null;
     this.configRequestId = null;
     this.rejectWrites(new J4SerialError("disconnected"));
@@ -393,20 +429,53 @@ export class J4SerialClient {
     if (this.connectTimer) clearTimeout(this.connectTimer);
     this.pressureTimer = this.configTimer = this.connectTimer = null;
     const ws = this.ws; this.ws = null;
+    const opened = this.wsOpened || ws?.readyState === WebSocket.OPEN; this.wsOpened = false;
     const sessionId = this.sessionId; this.sessionId = null;
     this.update({ phase: "disconnected", pendingWrites: 0, backpressure: false, configuring: false });
+    // A second disconnect/connect must not bypass an earlier close or a POST
+    // whose late reservation still needs deleting. All IDs remain epoch-local.
+    // Each branch is bounded: allocation <= 8 s, WS close + DELETE <= 8.75 s.
+    // A failed branch must not bypass another branch's still-pending cleanup.
+    this.cleanup = Promise.allSettled([this.cleanup, this.allocation, this.closeTransport(ws, sessionId, opened)])
+      .then((results) => {
+        const failure = results.find((result) => result.status === "rejected");
+        if (epoch === this.epoch && failure?.status === "rejected") this.update({ error: this.errorInfo(failure.reason) });
+      });
+    return this.cleanup;
+  }
+
+  private deleteReservation(sessionId: number): Promise<void> {
+    // Keep the already-absent exception local to cleanup, including its HTTP
+    // status. The general API client must continue reporting ordinary 404s.
+    return this.withSessionDeadline(async (signal) => {
+      const response = await fetch(`${api.apiEndpoint()}/live-sessions/${sessionId}`, { method: "DELETE", signal });
+      let data: Record<string, unknown>;
+      try {
+        const text = await response.text();
+        data = text ? record(JSON.parse(text)) : {};
+      } catch { throw new J4SerialError("invalid_response"); }
+      const error = record(data.error);
+      // A cancelled upgrade may have reached the worker and already been released.
+      if (response.status === 404 && error.code === "unknown_session_id") return;
+      if (!response.ok || data.ok === false) {
+        throw new J4SerialError(String(error.code ?? `http_${response.status}`), String(error.message ?? response.statusText));
+      }
+    });
+  }
+
+  private async closeTransport(ws: WebSocket | null, sessionId: number | null, opened: boolean): Promise<void> {
     if (ws) {
       ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
       if (ws.readyState !== 3) {
-        // DELETE refuses connected firmware sessions. Give the close handshake
-        // a bounded chance to detach first; never delete another client's slot.
+        // Once upgraded, the firmware worker owns release, even if the browser
+        // close fails or times out. Never follow its release with a stale DELETE.
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(() => { ws.onclose = null; resolve(); }, 750);
+          const timer = setTimeout(() => { ws.onclose = null; resolve(); }, WS_CLOSE_TIMEOUT_MS);
           ws.onclose = () => { clearTimeout(timer); ws.onclose = null; resolve(); };
           try { ws.close(); } catch { clearTimeout(timer); ws.onclose = null; resolve(); }
         });
       }
     }
-    if (sessionId !== null) await api.deleteLiveSession(sessionId).catch(() => {});
+    if (!opened && sessionId !== null) await this.deleteReservation(sessionId);
   }
 }
