@@ -286,13 +286,14 @@ state update has not completed it. USB ACM line-coding/CAS conflicts refresh the
 actual tuple without retrying the mutation. Suspended, faulted, read-only,
 applying-settings, and backpressure states disable manual TX.
 
-Baud uses a numeric input accepting every integer from 4800 through 115200;
-five common values are offered as recommended presets but do not constrain the
+Baud uses a numeric input accepting every integer from 4800 through 3000000;
+eleven values, including Rockchip's 1500000, are recommended presets but do not constrain the
 input. The GET current tuple/generation remains authoritative because a CDC host
 SET_LINE_CODING transfer cannot surface a later application rejection. TX
 timeouts are derived from the active framing and bounded eight-slot queue plus
 a 2-second margin, so valid low-baud writes are not timed out by a fixed desktop
-deadline.
+deadline. The startup default stays 115200; accepted baud does not guarantee
+sustained lossless throughput on every transport or client.
 
 Default connection attempts remain once per explicit board availability/restart
 epoch; manual Disconnect and failures stay quiet during that epoch. A manual

@@ -8,7 +8,8 @@ import { J4SerialSession } from "@/lib/j4SerialSession";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const xterm = vi.hoisted(() => ({ terminals: [] as Record<string, any>[], addons: [] as Record<string, any>[], fit: vi.fn(), delay: "none" as "none" | "callback" | "write" }));
 vi.mock("@/lib/i18n", () => ({ useI18n: () => ({
-  t: (key: string, values?: Record<string, unknown>) => key === "serial.autoResponder" ? `Auto replies: ${values?.responder}` : key,
+  t: (key: string, values?: Record<string, unknown>) => key === "serial.autoResponder" ? `Auto replies: ${values?.responder}`
+    : key === "serial.baudRange" || key === "serial.invalidBaud" ? `${key} ${values?.min} ${values?.max}` : key,
 }) }));
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
   options: Record<string, unknown>; cols = 80; rows = 24;
@@ -206,27 +207,28 @@ describe("J4 xterm surface", () => {
     return event;
   }
 
-  it("displays an authoritative current 5200 baud as a valid editable value and retains five presets", async () => {
-    const reported = state({ line_coding: { ...state().line_coding, baud: 5200 } });
+  it.each([5200, 115201, 1500000, 3000000])("displays authoritative baud %s as a valid editable value and retains eleven presets", async (baud) => {
+    const reported = state({ line_coding: { ...state().line_coding, baud } });
     const original = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/serial/j4")
       ? Promise.resolve(new Response(JSON.stringify(reported))) : original(url, init));
     const session = await mount(); await connect(session, reported);
     const input = openConfig();
-    expect(input.value).toBe("5200");
+    expect(input.value).toBe(String(baud));
     expect(input.getAttribute("aria-invalid")).not.toBe("true");
-    expect([input.min, input.max, input.step]).toEqual(["4800", "115200", "1"]);
+    expect([input.min, input.max, input.step]).toEqual(["4800", "3000000", "1"]);
     expect(input.disabled).toBe(false);
     expect([...input.list!.querySelectorAll("option")].map((option) => option.value)).toEqual(
-      ["9600", "19200", "38400", "57600", "115200"],
+      ["9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600", "1500000", "2000000", "3000000"],
     );
-    expect(host.querySelector('[data-testid="serial-terminal-j4"] > div')?.textContent).toContain((5200).toLocaleString());
+    expect(host.querySelector('[data-testid="serial-terminal-j4"] > div')?.textContent).toContain(baud.toLocaleString());
+    expect(host.textContent).toContain("serial.baudRange 4800 3000000");
     expect(host.textContent).toContain("serial.generation 1");
   });
 
-  it("submits custom 5200 with expected_generation and waits for authoritative GET completion", async () => {
+  it.each([5200, 115201, 1500000, 3000000])("submits baud %s with expected_generation and waits for authoritative GET completion", async (baud) => {
     const session = await mount(); await connect(session);
-    const input = openConfig(); typeBaud(input, "5200");
+    const input = openConfig(); typeBaud(input, String(baud));
     const original = fetchMock.getMockImplementation()!;
     let reported = state();
     fetchMock.mockImplementation((url: string, init?: RequestInit) => init?.method === "PUT"
@@ -235,32 +237,32 @@ describe("J4 xterm surface", () => {
     act(() => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     await flush();
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/serial/j4/config", expect.objectContaining({ method: "PUT",
-      body: JSON.stringify({ ...state().line_coding, baud: 5200, expected_generation: 1 }) }));
+      body: JSON.stringify({ ...state().line_coding, baud, expected_generation: 1 }) }));
     expect(session.getState().configuring).toBe(true);
     expect(session.getState().serial?.config.baud).toBe(115200);
     expect(host.querySelector('[data-testid="serial-terminal-j4"] > div')?.textContent).toContain((115200).toLocaleString());
     expect(host.textContent).toContain("serial.generation 1");
-    reported = state({ generation: 2, line_coding: { ...state().line_coding, baud: 5200 }, config_request: { id: 7, done: true, result: 0 } });
+    reported = state({ generation: 2, line_coding: { ...state().line_coding, baud }, config_request: { id: 7, done: true, result: 0 } });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 280)); });
     expect(session.getState().configuring).toBe(false);
-    expect(session.getState().serial?.config.baud).toBe(5200);
-    expect(input.value).toBe("5200");
-    expect(host.querySelector('[data-testid="serial-terminal-j4"] > div')?.textContent).toContain((5200).toLocaleString());
+    expect(session.getState().serial?.config.baud).toBe(baud);
+    expect(input.value).toBe(String(baud));
+    expect(host.querySelector('[data-testid="serial-terminal-j4"] > div')?.textContent).toContain(baud.toLocaleString());
     expect(host.textContent).toContain("serial.generation 2");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
   });
 
-  it.each(["", "4799", "115201", "5200.5"])("blocks invalid custom baud %j before PUT, even on programmatic submit", async (value) => {
+  it.each(["", "4799", "3000001", "5200.5"])("blocks invalid custom baud %j before PUT, even on programmatic submit", async (value) => {
     const session = await mount(); await connect(session);
     const input = openConfig(); typeBaud(input, value);
     expect(input.value).toBe(value);
     expect(input.getAttribute("aria-invalid")).toBe("true");
     expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe("serial.invalidBaud");
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe("serial.invalidBaud 4800 3000000");
     act(() => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     await flush();
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
-    for (const valid of ["4800", "5200", "115200"]) {
+    for (const valid of ["4800", "5200", "115200", "115201", "1500000", "3000000"]) {
       typeBaud(input, valid);
       expect(input.getAttribute("aria-invalid")).not.toBe("true");
       expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false);

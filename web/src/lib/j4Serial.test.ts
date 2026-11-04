@@ -144,20 +144,21 @@ describe("J4 MCU live-session transport", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(sessionPosts);
   });
 
-  it("accepts an initial GET and serial_state with arbitrary 5200 baud", async () => {
+  it.each([5200, 115201, 1500000, 3000000])("accepts an initial GET and serial_state with baud %s", async (baud) => {
     const original = fetchMock.getMockImplementation()!;
-    const reported = state({ line_coding: { ...config, baud: 5200 } });
+    const reported = state({ line_coding: { ...config, baud } });
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/serial/j4") ? Promise.resolve(response(reported)) : original(url, init));
     const { serial } = client();
     await serial.connect();
-    expect(serial.getSnapshot().serial?.config.baud).toBe(5200);
+    expect(serial.getSnapshot().serial?.config.baud).toBe(baud);
     const socket = Socket.instances.at(-1)!;
-    socket.open(); socket.frame({ type: "serial_state", ...reported });
+    socket.open(); socket.frame({ type: "serial_state", ...reported, generation: 2 });
     expect(serial.getSnapshot().phase).toBe("connected");
-    expect(serial.getSnapshot().serial?.config.baud).toBe(5200);
+    expect(serial.getSnapshot().serial?.generation).toBe(2);
+    expect(serial.getSnapshot().serial?.config.baud).toBe(baud);
   });
 
-  it.each([4799, 115201, 5200.5, NaN, Infinity])("rejects configure baud %s before any PUT or config-state change", async (baud) => {
+  it.each([4799, 3000001, 5200.5, NaN, Infinity])("rejects configure baud %s before any PUT or config-state change", async (baud) => {
     const { serial } = client(); await connected(serial);
     await expect(serial.configure({ ...config, baud })).rejects.toMatchObject({ code: "invalid_baud" });
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
@@ -456,23 +457,25 @@ describe("J4 MCU live-session transport", () => {
     expect(serial.getSnapshot().error?.code).toBe("tx_canceled");
   });
 
-  it("uses expected_generation and leaves 202 config admission pending until completion", async () => {
+  it.each([57600, 115201, 1500000, 3000000])("PUTs baud %s unchanged with expected_generation and leaves 202 admission pending until completion", async (baud) => {
     const { serial } = client(); const socket = await connected(serial);
     const original = fetchMock.getMockImplementation()!;
     fetchMock.mockImplementation((url: string, init?: RequestInit) => init?.method === "PUT"
       ? Promise.resolve(response({ ok: true, accepted: true, request_id: 5 }, 202)) : original(url, init));
-    await serial.configure({ ...config, baud: 57600 });
+    await serial.configure({ ...config, baud });
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/serial/j4/config", expect.objectContaining({ method: "PUT",
-      body: JSON.stringify({ ...config, baud: 57600, expected_generation: 1 }) }));
+      body: JSON.stringify({ ...config, baud, expected_generation: 1 }) }));
     expect(serial.getSnapshot().configuring).toBe(true);
+    expect(serial.getSnapshot().serial?.config.baud).toBe(115200);
     await expect(serial.writeText("wait")).rejects.toMatchObject({ code: "read_only" });
     fetchMock.mockImplementation((url: string, init?: RequestInit) => url.endsWith("/serial/j4")
-      ? Promise.resolve(response(state({ generation: 2, line_coding: { ...config, baud: 57600 }, config_request: { id: 5, done: true, result: 0 } }))) : original(url, init));
-    socket.frame({ type: "serial_state", ...state({ generation: 2, line_coding: { ...config, baud: 57600 } }) });
+      ? Promise.resolve(response(state({ generation: 2, line_coding: { ...config, baud }, config_request: { id: 5, done: true, result: 0 } }))) : original(url, init));
+    socket.frame({ type: "serial_state", ...state({ generation: 2, line_coding: { ...config, baud } }) });
     expect(serial.getSnapshot().configuring).toBe(true);
     await vi.advanceTimersByTimeAsync(250);
     expect(serial.getSnapshot().configuring).toBe(false);
-    expect(serial.getSnapshot().serial?.config.baud).toBe(57600);
+    expect(serial.getSnapshot().serial?.config.baud).toBe(baud);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
   });
 
   it("surfaces DTR/CAS conflicts and refreshes actual settings without retrying PUT", async () => {

@@ -227,7 +227,8 @@ Composite patterns outside `ui.tsx` that are part of the language:
   screen-reader-enabled terminal retains keyboard focus, font controls,
   ResizeObserver fit, theme updates, and fullscreen fit on mobile/desktop.
 - J4 baud is a custom numeric field constrained to the firmware range
-  4800..115200. Five recommended presets are convenience choices, not a
+  4800..3000000. Eleven recommended presets, including 1500000 for Rockchip,
+  are convenience choices, not a
   whitelist. The page confirms Apply through authoritative GET/WS generation
   state; CDC SET_LINE_CODING cannot report a later application rejection.
   Write deadlines derive from active framing and the bounded eight-slot queue,

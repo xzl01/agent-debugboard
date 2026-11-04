@@ -1849,6 +1849,107 @@ static void test_line_coding_control_and_config_cas(struct fake_hal *hal)
 	assert(status.current_config.baud == next.baud);
 }
 
+static void test_high_baud_web_cas_and_cdc_promotion(struct fake_hal *hal)
+{
+	static const uint32_t accepted[] = {115201U, 1500000U, 3000000U};
+	struct linkr_debugger_serial_status initial;
+	struct linkr_debugger_serial_status before;
+	struct linkr_debugger_serial_status status;
+	struct linkr_debugger_serial_config next;
+	uint64_t request_id;
+	unsigned int configure_count;
+
+	assert(linkr_debugger_serial_status_snapshot(&initial) == 0);
+	assert(!initial.dtr);
+	next = initial.current_config;
+	for (size_t i = 0U; i < ARRAY_SIZE(accepted); ++i) {
+		assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+		next.baud = accepted[i];
+		configure_count = hal->configure_count;
+		assert(linkr_debugger_serial_config_cas(
+			       &next, before.generation, &request_id) == 0);
+		linkr_debugger_serial_process_events();
+		assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+		assert(status.last_config_done && status.last_config_result == 0);
+		assert(status.last_config_request_id == request_id);
+		assert(status.generation == before.generation + 1U);
+		assert(linkr_debugger_serial_config_equal(
+			       &status.current_config, &next));
+		assert(hal->configured.baud == accepted[i]);
+		assert(hal->configure_count == configure_count + 1U);
+	}
+
+	before = status;
+	next.baud = LINKR_DEBUGGER_SERIAL_BAUD_MAX + 1U;
+	request_id = UINT64_MAX;
+	configure_count = hal->configure_count;
+	assert(linkr_debugger_serial_config_cas(
+		       &next, before.generation, &request_id) == -EINVAL);
+	assert(request_id == UINT64_MAX);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(status.generation == before.generation);
+	assert(linkr_debugger_serial_config_equal(
+		       &status.current_config, &before.current_config));
+	assert(hal->configure_count == configure_count);
+
+	for (size_t i = 0U; i < ARRAY_SIZE(accepted); ++i) {
+		assert(linkr_debugger_serial_status_snapshot(&before) == 0);
+		assert(!before.dtr);
+		configure_count = hal->configure_count;
+		hal->cdc_config = initial.current_config;
+		hal->cdc_config.baud = accepted[i];
+		assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) == 0);
+		linkr_debugger_serial_process_events();
+		assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+		assert(!status.dtr && status.pending_cdc_config_valid);
+		assert(status.pending_cdc_config.baud == accepted[i]);
+		assert(status.generation == before.generation);
+		assert(linkr_debugger_serial_config_equal(
+			       &status.current_config, &before.current_config));
+		assert(hal->configure_count == configure_count);
+
+		hal->dtr = 1U;
+		assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+		linkr_debugger_serial_process_events();
+		assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+		assert(status.dtr && !status.pending_cdc_config_valid);
+		assert(!status.cdc_promotion_pending);
+		assert(status.current_config.baud == accepted[i]);
+		assert(status.generation == before.generation + 1U);
+		assert(hal->configured.baud == accepted[i]);
+		assert(hal->configure_count == configure_count + 1U);
+
+		before = status;
+		hal->cdc_config.baud = LINKR_DEBUGGER_SERIAL_BAUD_MAX + 1U;
+		assert(linkr_debugger_serial_cdc_line_coding(&hal->cdc.device) ==
+		       -EINVAL);
+		linkr_debugger_serial_process_events();
+		assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+		assert(status.dtr && !status.pending_cdc_config_valid);
+		assert(status.generation == before.generation);
+		assert(linkr_debugger_serial_config_equal(
+			       &status.current_config, &before.current_config));
+		assert(status.runtime_counters.invalid_line_coding ==
+		       before.runtime_counters.invalid_line_coding + 1U);
+		assert(hal->configure_count == configure_count + 1U);
+		hal->cdc_config = status.current_config;
+		hal->dtr = 0U;
+		assert(linkr_debugger_serial_cdc_control_line(&hal->cdc.device) == 0);
+		linkr_debugger_serial_process_events();
+	}
+
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(linkr_debugger_serial_config_cas(
+		       &initial.current_config, status.generation, &request_id) == 0);
+	linkr_debugger_serial_process_events();
+	assert(linkr_debugger_serial_status_snapshot(&status) == 0);
+	assert(!status.dtr && status.last_config_result == 0);
+	assert(linkr_debugger_serial_config_equal(
+		       &status.current_config, &initial.current_config));
+	hal->cdc_config = initial.current_config;
+}
+
 static void test_config_rollback_unfreezes_queued_tx(struct fake_hal *hal)
 {
 	static const uint8_t active[] = {0xa8U, 0xa9U};
@@ -2671,6 +2772,7 @@ int main(void)
 	test_pause_freezes_next_frame(&hal);
 	test_config_retries_after_active_wire_completion(&hal);
 	test_line_coding_control_and_config_cas(&hal);
+	test_high_baud_web_cas_and_cdc_promotion(&hal);
 	test_config_rollback_unfreezes_queued_tx(&hal);
 	test_network_adapter_fanout_completion_and_raw_tcp(&hal);
 	test_pause_timeout_errors_and_resume(&hal);

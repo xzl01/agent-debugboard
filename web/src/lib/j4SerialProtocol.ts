@@ -5,9 +5,11 @@ export const J4_SERIAL_FRAME_BYTES = 480;
 export const J4_SERIAL_QUEUE_LIMIT = 8;
 export const J4_SERIAL_BUFFER_LIMIT = J4_SERIAL_FRAME_BYTES * J4_SERIAL_QUEUE_LIMIT;
 export const J4_SERIAL_BAUD_MIN = 4800;
-export const J4_SERIAL_BAUD_MAX = 115200;
+export const J4_SERIAL_BAUD_MAX = 3000000;
 // Recommended presets, not an exhaustive list of legal firmware baud rates.
-export const J4_SERIAL_BAUD_RATES = [9600, 19200, 38400, 57600, 115200];
+export const J4_SERIAL_BAUD_RATES = [
+  9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1500000, 2000000, 3000000,
+];
 
 export function isJ4SerialBaudRate(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value)

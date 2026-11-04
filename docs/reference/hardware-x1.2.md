@@ -259,10 +259,11 @@ Device Tree-selected input pin.
 
 J4 is a 3-pin (TX/RX/GND) target UART on **UART1** (TX=GPIO10, RX=GPIO11,
 default `115200`). The runtime accepts every integer baud in the inclusive range
-4800 through 115200; the five recommended UI presets are 9600, 19200, 38400,
-57600, and 115200. Higher rates such as 230400, 921600, and 1500000 are rejected
-and are not product paths; earlier high-rate samples are diagnostic evidence
-only.
+4800 through 3000000, including Rockchip's 1500000. The eleven recommended UI
+presets are 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600,
+1500000, 2000000, and 3000000. The same range applies to CDC line coding;
+the default remains 115200. This range does not certify sustained lossless
+traffic, electrical margins, or every sink's throughput at the upper rates.
 Production does **not** use Zephyr's generic UART bridge.
 The repo-local `linkr_debugger_serial` runtime owns the physical UART, line
 coding, bounded TX queue, completion events, and the shared 4096-byte RX ring.
@@ -396,8 +397,8 @@ do not identify a pull-up source or prove cross-domain safety. CH224A
 (`0x22/0x23`) I2C, any 400 kHz enablement with explicit external pull-ups and
 the required rise-time/VOL/reverse-current evidence, rail current calibration,
 rail/LED polarity, INA226 telemetry while WIDE11 captures the GP20/SCL tap,
-and the physical BOOTSEL button path remain HIL items. Current J4
-CDC/WS/raw-TCP fan-out, the 4800..115200 product ceiling and high-rate
+and the physical BOOTSEL button path remain HIL items. Earlier J4
+CDC/WS/raw-TCP fan-out, the then-current 4800..115200 ceiling and high-rate
 diagnostics, CDC line-coding staging/promotion, the fifth hub power output, the
 J4 automatic-responder matrix, and post-capture restoration evidence are in
 [the 2026-10-21 x1.2 report](../testing/results/2026-10-21-x1.2-adc-pinout-j4-hil.md);

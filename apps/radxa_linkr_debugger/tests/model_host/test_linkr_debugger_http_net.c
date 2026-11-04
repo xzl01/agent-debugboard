@@ -1356,6 +1356,9 @@ static void test_serial_config_rejects_wide_values_before_narrowing(void)
 		"{\"baud\":4294967296,\"data_bits\":8,\"parity\":\"none\","
 		"\"stop_bits\":1,\"flow_control\":\"none\","
 		"\"expected_generation\":9}",
+		"{\"baud\":4296467296,\"data_bits\":8,\"parity\":\"none\","
+		"\"stop_bits\":1,\"flow_control\":\"none\","
+		"\"expected_generation\":9}",
 		"{\"baud\":115200,\"data_bits\":261,\"parity\":\"none\","
 		"\"stop_bits\":1,\"flow_control\":\"none\","
 		"\"expected_generation\":9}",
@@ -1382,29 +1385,49 @@ static void test_serial_config_rejects_wide_values_before_narrowing(void)
 
 static void test_serial_config_accepts_continuous_baud_range(void)
 {
-	struct http_response_ctx response = { 0 };
+	static const uint32_t accepted[] = {
+		4800U, 5200U, 115201U, 1500000U, 3000000U,
+	};
+	static const uint32_t rejected[] = {
+		0U, 4799U, 3000001U, UINT32_MAX,
+	};
 	struct http_client_ctx client = { .method = HTTP_PUT };
+	char config_json[192];
 
 	reset_test();
 	serial_status.dtr = false;
 	strcpy(client.url_buffer, "/api/v1/serial/j4/config");
-	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL,
-	      "{\"baud\":5200,\"data_bits\":8,\"parity\":\"none\","
-	      "\"stop_bits\":1,\"flow_control\":\"none\","
-	      "\"expected_generation\":9}", &response);
-	assert(response.status == HTTP_202_ACCEPTED);
-	assert(serial_config_calls == 1U);
-	assert(serial_config_request.baud == 5200U);
-	assert(serial_config_expected_generation == 9U);
+	for (size_t i = 0U; i < ARRAY_SIZE(accepted); ++i) {
+		struct http_response_ctx response = { 0 };
+		int length = snprintf(config_json, sizeof(config_json),
+			"{\"baud\":%" PRIu32 ",\"data_bits\":8,\"parity\":\"none\","
+			"\"stop_bits\":1,\"flow_control\":\"none\","
+			"\"expected_generation\":9}", accepted[i]);
 
-	route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
-	memset(&response, 0, sizeof(response));
-	route(&client, HTTP_SERVER_REQUEST_DATA_FINAL,
-	      "{\"baud\":115201,\"data_bits\":8,\"parity\":\"none\","
-	      "\"stop_bits\":1,\"flow_control\":\"none\","
-	      "\"expected_generation\":9}", &response);
-	assert(response.status == HTTP_400_BAD_REQUEST);
-	assert(serial_config_calls == 1U);
+		assert(length > 0 && (size_t)length < sizeof(config_json));
+		route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, config_json, &response);
+		assert(response.status == HTTP_202_ACCEPTED);
+		assert(serial_config_calls == i + 1U);
+		assert(serial_config_request.baud == accepted[i]);
+		assert(serial_config_expected_generation == 9U);
+		route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
+	}
+	for (size_t i = 0U; i < ARRAY_SIZE(rejected); ++i) {
+		struct http_response_ctx response = { 0 };
+		int length = snprintf(config_json, sizeof(config_json),
+			"{\"baud\":%" PRIu32 ",\"data_bits\":8,\"parity\":\"none\","
+			"\"stop_bits\":1,\"flow_control\":\"none\","
+			"\"expected_generation\":9}", rejected[i]);
+
+		assert(length > 0 && (size_t)length < sizeof(config_json));
+		route(&client, HTTP_SERVER_REQUEST_DATA_FINAL, config_json, &response);
+		assert(response.status == HTTP_400_BAD_REQUEST);
+		assert(serial_config_calls == ARRAY_SIZE(accepted));
+		assert(serial_config_request.baud == 3000000U);
+		assert(serial_status.current_config.baud == 115200U);
+		assert(serial_status.generation == 9U);
+		route(&client, HTTP_SERVER_TRANSACTION_COMPLETE, NULL, &response);
+	}
 }
 
 static void test_gpio_layout_group_encoder_is_generic_and_bounded(void)

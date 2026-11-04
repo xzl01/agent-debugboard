@@ -243,9 +243,10 @@ drained behind a parser fence before automatic replies are enabled, and a
 generation change rebuilds the renderer before subsequent bytes. A passive
 page's stale partial query is not answered later.
 
-UART settings accept a custom numeric baud from 4800 through 115200 and also
-offer five recommended presets. Rates above 115200 are rejected; earlier
-high-rate samples are diagnostic only. After Apply, the page treats
+UART settings accept a custom numeric baud from 4800 through 3000000 and also
+offer eleven recommended presets, including Rockchip's 1500000. The default
+remains 115200; CDC uses the same range. Full-rate lossless traffic is not
+guaranteed for every client: inspect drop/error counters. After Apply, the page treats
 `GET /api/v1/serial/j4` current settings and generation as authority; this is
 also required after CDC SET_LINE_CODING because USB cannot return a later
 application-level rejection. Low-baud write deadlines are derived from the

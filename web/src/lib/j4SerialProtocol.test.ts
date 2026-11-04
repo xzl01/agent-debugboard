@@ -7,22 +7,26 @@ function report(baud: unknown) {
 }
 
 describe("J4 inclusive integer baud contract", () => {
-  it.each([4800, 5200, 9600, 115200])("accepts authoritative non-preset/boundary baud %s", (baud) => {
+  it.each([4800, 5200, 9600, 115200, 115201, 1500000, 3000000])("accepts authoritative non-preset/boundary baud %s", (baud) => {
     expect(isJ4SerialBaudRate(baud)).toBe(true);
     expect(parseJ4SerialState(report(baud)).config.baud).toBe(baud);
   });
 
-  it.each([4799, 115201, 5200.5, -1, NaN, Infinity, "5200", undefined, null])("rejects invalid reported baud %s", (baud) => {
+  it.each([4799, 3000001, 5200.5, -1, NaN, Infinity, "5200", undefined, null])("rejects invalid reported baud %s", (baud) => {
     expect(isJ4SerialBaudRate(baud)).toBe(false);
     expect(() => parseJ4SerialState(report(baud))).toThrow("Invalid J4 serial state");
   });
 
-  it("retains five recommended presets without making them a whitelist", () => {
-    expect([J4_SERIAL_BAUD_MIN, J4_SERIAL_BAUD_MAX]).toEqual([4800, 115200]);
-    expect(J4_SERIAL_BAUD_RATES).toEqual([9600, 19200, 38400, 57600, 115200]);
+  it("retains eleven recommended presets without making them a whitelist", () => {
+    expect([J4_SERIAL_BAUD_MIN, J4_SERIAL_BAUD_MAX]).toEqual([4800, 3000000]);
+    expect(J4_SERIAL_BAUD_RATES).toEqual([
+      9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1500000, 2000000, 3000000,
+    ]);
     expect(J4_SERIAL_BAUD_RATES.every(isJ4SerialBaudRate)).toBe(true);
     expect(J4_SERIAL_BAUD_RATES).not.toContain(5200);
     expect(isJ4SerialBaudRate(5200)).toBe(true);
+    expect(J4_SERIAL_BAUD_RATES).not.toContain(115201);
+    expect(isJ4SerialBaudRate(115201)).toBe(true);
   });
 });
 

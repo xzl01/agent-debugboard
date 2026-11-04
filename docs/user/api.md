@@ -130,15 +130,18 @@ curl -fsS -X PUT -H 'Content-Type: application/json' \
 
 Success is HTTP 202 with `accepted:true` and `request_id`. A stale generation
 or an in-progress transition returns HTTP 409. Baud accepts every integer from
-4800 through 115200 inclusive. The five recommended presets are 9600, 19200,
-38400, 57600, and 115200; custom values such as 5200 are valid. Requests above
-115200, including 115201, return HTTP 400 and leave the current tuple unchanged.
+4800 through 3000000 inclusive. The eleven recommended presets are 9600, 19200,
+38400, 57600, 115200, 230400, 460800, 921600, 1500000, 2000000, and 3000000;
+custom values such as 5200 and 115201 are valid. Requests above 3000000 return
+HTTP 400 and leave the current tuple unchanged. The default remains 115200.
 Data bits are 5–8, parity is `none`/`odd`/`even`, stop bits are
 1 or 2, and flow control is currently `none` only.
 
-Rates above 115200 are not product-supported. The 230400/921600/1500000
-samples in the HIL record are diagnostics that motivated the cap, not accepted
-client configurations.
+1500000 can be selected for Rockchip consoles configured at that rate. Web and
+CDC share the same accepted range. Rate acceptance is not a guarantee of
+sustained lossless throughput; check UART and per-sink error/drop counters.
+Older high-rate HIL failures remain historical evidence, not a validation of
+this expanded range.
 
 Application is asynchronous. Poll `GET /api/v1/serial/j4`; its current tuple,
 generation, completion result and diagnostics are authoritative. A USB CDC host

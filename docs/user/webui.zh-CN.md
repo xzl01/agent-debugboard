@@ -199,8 +199,9 @@ responder 切换保持同一套 xterm modes：promotion 前的输出先经过 pa
 排空，之后才启用自动回复；generation 变化会在后续字节前重建 renderer。被动页面
 的旧半截查询不会在之后被回复。
 
-UART settings 接受 4800 到 115200 的 custom 整数 baud，并提供五个推荐 preset。
-高于 115200 的 rate 会被拒绝；早期 high-rate 样本只是诊断证据。Apply 后以
+UART settings 接受 4800 到 3000000 的 custom 整数 baud，并提供十一个推荐 preset，
+包含 Rockchip 常用的 1500000。默认仍为 115200，CDC 使用同一范围。持续满速无损
+不是所有客户端的保证，应检查丢失/错误计数。Apply 后以
 `GET /api/v1/serial/j4` 的 current settings 与 generation 为权威；CDC
 SET_LINE_CODING 无法返回稍后的 application-level rejection，因此也必须 GET
 确认。低 baud 写 timeout 按有界八槽队列推导，并增加 2 秒余量。

@@ -71,7 +71,7 @@
         <mxCell id="64" value="Sigrok TCP server&#xa;0.0.0.0:5556&#xa;native sigrok / PulseView access" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="15">
           <mxGeometry x="980" y="80" width="300" height="140" as="geometry" />
         </mxCell>
-        <mxCell id="65" value="Shared J4 serial core&#xa;RP2350 UART1 · GP10 / GP11&#xa;4800..115200 baud&#xa;4096-byte RX ring&#xa;independent RX sinks · bounded TX&#xa;one automatic responder · multiwriter explicit TX" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=2;fontSize=14;" vertex="1" parent="15">
+        <mxCell id="65" value="Shared J4 serial core&#xa;RP2350 UART1 · GP10 / GP11&#xa;4800..3000000 baud (default 115200)&#xa;4096-byte RX ring&#xa;independent RX sinks · bounded TX&#xa;one automatic responder · multiwriter explicit TX" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=2;fontSize=14;" vertex="1" parent="15">
           <mxGeometry x="420" y="410" width="470" height="180" as="geometry" />
         </mxCell>
         <mxCell id="66" value="Logic / Power Capture&#xa;firmware capture engine&#xa;Sigrok server backend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="15">

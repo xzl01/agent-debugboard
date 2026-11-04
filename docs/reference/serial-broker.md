@@ -12,10 +12,12 @@ There is exactly one logical target serial port: `j4`.
 - Physical UART: RP2350 UART1, TX GP10 and RX GP11.
 - Default line coding: 115200, 8 data bits, no parity, 1 stop bit, no flow
   control.
-- Baud accepts every integer from 4800 through 115200. The five recommended
-  presets are 9600, 19200, 38400, 57600, and 115200; presets are UI
-  convenience, not a whitelist. Requests above 115200 are rejected. Earlier
-  230400/921600/1500000 samples were diagnostics, not product support.
+- Baud accepts every integer from 4800 through 3000000. Recommended presets are
+  9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1500000, 2000000,
+  and 3000000; presets are UI convenience, not a whitelist. The default stays
+  115200. Rockchip consoles configured for 1500000 require the same rate here.
+  Requests above 3000000 are rejected. This is a configuration range, not a
+  guarantee of sustained lossless traffic on every transport and client.
 - Shared receive storage: one 4096-byte UART RX ring.
 - Receive sinks: one USB CDC ACM4 sink, four fixed WebSocket sinks, and two
   fixed raw-TCP sinks.
@@ -286,7 +288,13 @@ The GET current tuple and generation are authoritative for both HTTP and CDC.
 USB SET_LINE_CODING completes at the USB control-transfer layer and cannot
 report a later application rejection; clients must read GET status and its
 configuration counters. Web exposes a custom numeric baud input in addition to
-the five recommended presets.
+the recommended presets. Web and CDC line coding use the same firmware range.
+
+At 8N1, 1500000 and 3000000 represent up to 150/300 kB/s on the UART. A
+4096-byte RX ring covers only about 27.3/13.7 ms at those rates. Check per-sink
+drops and UART errors; accepting a rate does not establish its sustained
+throughput. With the current 150 MHz UART clock, the PL011 divider represents
+both rates exactly. No change to the default clock or GPIO mapping is required.
 
 ### CDC line-coding staging and promotion
 
@@ -441,8 +449,9 @@ The current x1.2 board evidence is recorded in
 [2026-10-21 x1.2 ADC/pinout/J4 HIL](../testing/results/2026-10-21-x1.2-adc-pinout-j4-hil.md).
 It covers the embedded xterm.js terminal, the finite responder matrix above,
 CDC + WS + two TCP sinks including a slow sink, accepted/complete ownership, raw
-TCP 5555, and J4 recovery after a GP10 logic-analyzer capture. Its supported-rate
-BER covers only 4800/5200/115200; rates above 115200 are rejected and the
-high-rate samples are diagnostic, not product PASS rows. Read the report
+TCP 5555, and J4 recovery after a GP10 logic-analyzer capture. That image capped
+baud at 115200, and its supported-rate BER covers only 4800/5200/115200. Its
+high-rate failure diagnostics do not validate this later 3000000 configuration
+range and must not be relabeled as new product PASS rows. Read the report
 limitations before treating it as electrical or worst-case timing
 certification.

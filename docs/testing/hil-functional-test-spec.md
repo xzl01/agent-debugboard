@@ -368,26 +368,25 @@ Terminal**，必须验证：
 5. `GET /api/v1/serial/j4` 的 state、line coding、generation、DTR/RTS、USB configured、
    sink count、queue/counters 可解析。用当前 generation 执行一次 PUT CAS 并确认新
    generation；旧 generation 返回 conflict，非法 tuple 不窄化/不排队。
-6. baud范围是4800..115200的连续整数，不是preset白名单。在同一CDC fd上依次验证
-   115200→custom 5200→4800→115200，每次以GET current/generation为权威；
-   115201的HTTP请求必须400且current不变。DTR持有配置所有权时，HTTP CAS可先accepted
+6. baud范围是4800..3000000的连续整数，不是preset白名单。在同一CDC fd上依次验证
+   115200→custom 5200→4800→1500000→3000000→115200，每次以GET current/generation为权威；
+   115201也应可配置，3000001的HTTP请求必须400且current/generation不变。DTR持有配置所有权时，HTTP CAS可先accepted
    后异步完成`result=-16`，tuple/generation保持不变；释放DTR后custom 5200必须可应用。
-   Web UART settings必须提供custom numeric input及五个推荐preset。CDC SET本身无法报告
-   application rejection，不能作为最终权威。230400、921600、1500000同样必须被拒绝；
-   这些 high-rate 只作为上限诊断，不得记为产品 pass；若使用单独标注的 non-product
-   diagnostic build 观察高 rate，也必须与产品验收分开记录。
+   Web UART settings必须提供custom numeric input及十一个推荐preset，包含Rockchip的
+   1500000及上限3000000。CDC SET本身无法报告application rejection，不能作为最终权威。
+   必须分别记录“配置接受/应用”和“真实收发数据正确”；接受配置不代表满速持续无损。
 7. 在4800 baud、8E2下发送480个zero byte；write timeout必须按八槽队列wire time加2秒
    margin推导。物理complete后再启动拥有GP10的SINGLE采集；LA pause最大等待1250ms。
-8. 对侧 UART 可被独占时，临时停止 getty，将两端设为 raw 8N1，并只在支持的4800、
-   custom 5200、115200逐档执行确定性伪随机payload的双向bit compare。记录每档每方向
+8. 对侧 UART 可被独占时，临时停止 getty，将两端设为 raw 8N1，在4800、custom 5200、
+   115200、1500000、3000000逐档执行确定性伪随机payload的双向bit compare。记录每档每方向
    bytes、missing bytes、bit errors与有限样本BER；任何中途重启、人工串口操作或整组
-   USB断开均使该轮无效，必须从完整矩阵开头重跑。最终镜像中4800/5200各方向
-   65536 bits、115200各方向1048576 bits，支持档聚合为2,359,296 tested bits
-   （131072+131072+2097152），零观测错误。结束后恢复两端115200、原tty设置和getty，
-   并确认干净shell输出。BER=0只能表述为该有限样本零观测错误，不能代替模拟信号完整性
-   认证。high-rate 诊断必须单独记录、不得并入支持档 BER：230400 的0x55 peer读数主要
-   为0xB5/0x95且有明显framing error；921600/1500000无法稳定sync；早期一次1500000
-   零错误样本不可复现，后续1500000记录560 bit errors。未做oscilloscope bit-width测量。
+   USB断开均使该轮无效，必须从完整矩阵开头重跑，不得把无效样本计入PASS。
+   结束后恢复原tty设置/getty及操作者
+   指定的最终速率，并确认干净shell输出。BER=0只能表述为该有限样本零观测错误，不能
+   代替模拟信号完整性认证。1.5M/3M还应分别记录CDC与Web收发、持续时间、UART错误及
+   各sink丢失，慢sink不得拖累其它sink；没有独占对端或仪器时明确标未验证。
+   2026-10-21旧镜像的低速BER及230400/921600/1500000失败诊断保持历史记录，
+   不作为本次扩展的PASS证据，详见该日期报告。
 9. 用 SINGLE/FAST8/WIDE11 中拥有 GP10/GP11 的模式执行一次采集：J4 必须先报告 PAUSED，
    capture 中 payload 明确被拒绝但 WS/TCP session 不被注销；STOP/terminal cleanup 后
    UART mux 与 fresh sink epoch 恢复，同一终端无需刷新即可继续。
@@ -3016,9 +3015,10 @@ ADC0 physical source unplug/replug monitor, stuck-line electrical injection,
 analog 50 ns/tr/VOL/Ioff certification, and the active worst-case
 480-byte-at-4800 8E2 timeout/cancel branch beyond the observed 1.213s physical
 completion. It also does not certify hub current, because `5v_usb_hub` has no
-INA226/ADC channel. The J4 product baud ceiling is 115200; the report's
+INA226/ADC channel. That image's J4 baud ceiling was 115200; the report's
 230400/921600/1500000 captures are high-rate failure diagnostics and never
-product PASS rows. The report also records the final CDC line-coding
+product PASS rows or validation of the later 3000000 configuration range.
+The report also records the final CDC line-coding
 staging/promotion behavior: DTR=false defaults remain staged, HTTP/WS low-state
 changes are immediate, and LOW→HIGH publishes DTR/ingress only after staged work
 completes or rolls back.

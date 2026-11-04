@@ -582,9 +582,15 @@ static void test_tx_fault_requires_driver_stop(void)
 
 static void test_config_baud_range_and_presets(void)
 {
+	static const uint32_t expected_presets[] = {
+		9600U, 19200U, 38400U, 57600U, 115200U, 230400U,
+		460800U, 921600U, 1500000U, 2000000U, 3000000U,
+	};
 	static const uint32_t accepted[] = {
 		LINKR_DEBUGGER_SERIAL_BAUD_MIN,
 		5200U,
+		115201U,
+		1500000U,
 		LINKR_DEBUGGER_SERIAL_BAUD_MAX,
 	};
 	static const uint32_t rejected[] = {
@@ -598,10 +604,15 @@ static void test_config_baud_range_and_presets(void)
 	enum linkr_debugger_serial_config_decision decision;
 	size_t i;
 
-	_Static_assert(sizeof(linkr_debugger_serial_baud_presets) /
-			       sizeof(linkr_debugger_serial_baud_presets[0]) ==
-		       LINKR_DEBUGGER_SERIAL_BAUD_PRESET_COUNT,
+	_Static_assert(LINKR_DEBUGGER_SERIAL_BAUD_MIN == 4800U &&
+		       LINKR_DEBUGGER_SERIAL_BAUD_MAX == 3000000U,
+		       "serial baud range changed");
+	_Static_assert(LINKR_DEBUGGER_SERIAL_BAUD_PRESET_COUNT == 11U &&
+		       sizeof(linkr_debugger_serial_baud_presets) ==
+			       sizeof(expected_presets),
 		       "serial preset count changed");
+	assert(memcmp(linkr_debugger_serial_baud_presets, expected_presets,
+		      sizeof(expected_presets)) == 0);
 	for (i = 0U; i < LINKR_DEBUGGER_SERIAL_BAUD_PRESET_COUNT; ++i) {
 		config.baud = linkr_debugger_serial_baud_presets[i];
 		assert(linkr_debugger_serial_config_valid(&config));
@@ -610,9 +621,23 @@ static void test_config_baud_range_and_presets(void)
 		config.baud = accepted[i];
 		assert(linkr_debugger_serial_config_valid(&config));
 	}
+	init_model(&model);
 	for (i = 0U; i < sizeof(rejected) / sizeof(rejected[0]); ++i) {
 		config.baud = rejected[i];
 		assert(!linkr_debugger_serial_config_valid(&config));
+		assert(linkr_debugger_serial_config_request_cdc(
+			       &model, &config, &decision) == -EINVAL);
+		assert(linkr_debugger_serial_config_request_web(
+			       &model, &config, model.generation, &decision) ==
+		       -EINVAL);
+		assert(model.state == LINKR_DEBUGGER_SERIAL_READY);
+		assert(!model.pending_valid);
+		assert(model.generation == 1U);
+		assert(model.config_counters.configure_count == 0U);
+		assert(linkr_debugger_serial_config_equal(
+			       &model.current, &config_115200_8n1));
+		assert(linkr_debugger_serial_config_equal(
+			       &model.last_good, &config_115200_8n1));
 	}
 	config = config_115200_8n1;
 	config.data_bits = 4U;

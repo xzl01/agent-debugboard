@@ -116,14 +116,16 @@ curl -fsS -X PUT -H 'Content-Type: application/json' \
 ```
 
 成功返回 HTTP 202、`accepted:true` 和 `request_id`；generation 过期或转换进行中
-返回 HTTP 409。baud 接受 4800 到 115200 的任意整数；五个推荐 preset 为
-9600、19200、38400、57600、115200，5200 等 custom 值同样有效。超过 115200
-的请求（包括 115201）返回 HTTP 400，当前 tuple 保持不变。data bits 为 5–8，
+返回 HTTP 409。baud 接受 4800 到 3000000 的任意整数；十一个推荐 preset 为
+9600、19200、38400、57600、115200、230400、460800、921600、1500000、2000000、
+3000000，5200、115201 等 custom 值同样有效。超过 3000000 的请求返回 HTTP 400，
+当前 tuple 保持不变；默认仍为 115200。data bits 为 5–8，
 parity 为 `none`/`odd`/`even`，
 stop bits 为 1 或 2，flow control 当前仅支持 `none`。
 
-高于 115200 的 rate 不是产品支持范围。HIL 记录中的 230400/921600/1500000
-样本是促成收紧上限的诊断证据，不是可接受的 client 配置。
+Rockchip 控制台配置为 1500000 时，可在此选择相同速率。Web 与 CDC 接受范围一致；
+接受配置不代表所有传输都能持续满速无损，应检查 UART 和各 sink 的错误/丢失计数。
+旧 HIL 的高波特率失败记录保留为历史证据，不能用来证明本次扩展范围已验收。
 
 应用是异步的，必须轮询 `GET /api/v1/serial/j4`；其中 current tuple、generation、
 完成结果和诊断计数才是权威。USB CDC host 的 SET_LINE_CODING transfer 无法把稍后

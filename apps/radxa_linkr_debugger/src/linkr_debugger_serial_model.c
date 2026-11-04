@@ -22,7 +22,8 @@ BUILD_ASSERT(sizeof(struct linkr_debugger_serial_model) <=
 
 const uint32_t
 	linkr_debugger_serial_baud_presets[LINKR_DEBUGGER_SERIAL_BAUD_PRESET_COUNT] = {
-		9600U, 19200U, 38400U, 57600U, 115200U,
+		9600U, 19200U, 38400U, 57600U, 115200U, 230400U,
+		460800U, 921600U, 1500000U, 2000000U, 3000000U,
 	};
 
 static bool sink_valid(enum linkr_debugger_serial_sink sink)

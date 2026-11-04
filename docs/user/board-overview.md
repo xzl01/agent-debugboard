@@ -142,9 +142,10 @@ pulled low while the I2C bus is active.
 ### Target UART (J4)
 
 J4 is one logical 3-pin target serial port on UART1. The runtime accepts any
-integer baud from 4800 through 115200; the UI also offers five recommended
-presets, with 115200 as the default. Rates above 115200 are rejected; earlier
-high-rate samples are diagnostic only, not product support. The pinout is:
+integer baud from 4800 through 3000000; Web and CDC use the same range. The UI
+offers eleven recommended presets, including 1500000 for Rockchip consoles;
+115200 remains the default. Rate acceptance does not guarantee sustained
+lossless throughput on every client. The pinout is:
 
 | Pin | Signal |
 |-----|--------|
