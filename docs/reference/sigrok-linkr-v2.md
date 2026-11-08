@@ -335,6 +335,9 @@ can remain smaller for compressible input.
 Before delivering a DATA event, a session client must compare its complete mask
 with the last successfully acknowledged CONFIG, not just its popcount. Pending
 or rejected CONFIG does not replace that snapshot; disconnect clears it.
+On a malformed or mismatched DATA frame, the browser WebSocket client emits an
+error and closes the session, rejecting pending requests and discarding buffered
+frames. It does not deliver a later coalesced STOPPED as a successful capture.
 
 ### ERROR (3 bytes)
 

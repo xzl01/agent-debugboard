@@ -85,14 +85,15 @@ native 电压卡片显示在 switch 路由上方，使用 0..3.3 V 量程。Web 
 
 ## Terminal 工作区
 
-Terminal 工作区与主仪表盘并列，包含：
+逻辑分析仪与 Web 串口终端是两个独立的工作区标签页：
 
-- **逻辑分析仪** — RP2350 PIO2+DMA 高速单次捕获。支持安全引脚列表中的
-  1-16 个通道（GP7-GP9、GP10-GP20、GP29），触发模式 `none`、`rising`、
-  `falling`、`either`，请求采样率 1-125 MHz，最多导出 512 个样本。
-  完成的捕获可在波形视图中预览，并导出为 CSV 或 PulseView `.sr` 文件。
-  还提供连续流式模式（1-25 MHz）。浏览器内 Rust/WASM 解码器支持
-  UART、I2C 和 SPI 协议解码。
+- **逻辑分析仪** — RP2350 PIO2+DMA 采集。当前 Web 选路仅开放 GP12–GP16
+  （1–5路），不采集 GP7–GP9 或 GP27–GP29。有限采集请求100kHz–125MHz，
+  在固件能力允许时最多100000点；边沿预触发另有512点总量及物理计划/速率限制。
+  Stream 使用最近100万点的浏览器滚动缓存，不是持续持久化记录，请求速率也不等于
+  已验证的持续吞吐。有限采集可导出 CSV/PulseView `.sr`；Rust/WASM 的 UART、
+  I2C、SPI 解码也提供有限窗口的实时预览。详见
+  [协议与采集限制](../reference/logic-analyzer.md)。
 - **J4 串口终端** — 使用 xterm.js 显示一个逻辑目标控制台。页面创建固件
   live session 并订阅 `serial.j4`，不经过浏览器设备选择器、主机串口 broker
   或本机 tty。进入工作区时自动连接；手动断开后在当前页面 session 内保持

@@ -861,7 +861,13 @@ export class SigrokClient {
 
       ws.onmessage = (event) => {
         if (isCurrent() && event.data instanceof ArrayBuffer) {
-          this.feedBinaryData(new Uint8Array(event.data));
+          try {
+            this.feedBinaryData(new Uint8Array(event.data));
+          } catch (error) {
+            const protocolError = error instanceof Error ? error : new Error(String(error));
+            failCurrentConnection(protocolError);
+            this.emit({ type: "error", message: protocolError.message });
+          }
         }
       };
 

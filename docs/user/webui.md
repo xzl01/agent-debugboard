@@ -15,9 +15,8 @@ ip -brief addr show
 ip
 ```
 
-On most operating systems, the board's captive-portal detection will prompt the
-browser to open this page automatically. If it doesn't, navigate to the printed
-URL manually.
+The board offers captive-portal hints, but the operating system may ignore them.
+If no prompt appears, navigate to the printed URL manually.
 
 ## WebUSB landing-page hint
 
@@ -102,15 +101,17 @@ timestamps and a pre/post-trigger ring buffer.
 
 ## Terminal Workspace
 
-The Terminal workspace lives alongside the primary dashboard and contains:
+The Logic Analyzer and Web Terminal are separate workspace tabs:
 
-- **Logic analyzer** — RP2350 PIO2+DMA high-speed single-shot capture. Supports
-  1-16 channels from the safe pin allowlist (GP7-GP9, GP10-GP20, GP29), trigger
-  modes `none`, `rising`, `falling`, `either`, requested sample rates 1-125 MHz,
-  and up to 512 exported samples. Completed captures can be previewed in the
-  waveform view and exported as CSV or PulseView `.sr` files. A continuous
-  streaming mode (1-25 MHz) is also available. The browser-based Rust/WASM
-  decoder supports UART, I2C, and SPI protocol decoding.
+- **Logic analyzer** — RP2350 PIO2+DMA capture. The current Web picker exposes
+  GP12–GP16 (1–5 channels), not GP7–GP9 or GP27–GP29. Bounded captures request
+  100 kHz–125 MHz and up to 100000 samples when the advertised capabilities
+  permit it; edge pre-trigger capture has a separate 512-sample total and
+  physical-plan/rate limits. Stream uses a rolling one-million-sample browser
+  cache, not persistent recording. Requested rate is not a sustained-throughput
+  guarantee. Bounded captures export CSV or PulseView `.sr`; Rust/WASM UART,
+  I2C and SPI decoding also supports a limited live preview. See the
+  [wire and capture limits](../reference/logic-analyzer.md).
 - **J4 serial terminal** — one logical target console rendered by xterm.js. The
   page creates a firmware live session and subscribes to `serial.j4`; no browser
   device chooser, desktop serial broker, or local tty access is involved. The

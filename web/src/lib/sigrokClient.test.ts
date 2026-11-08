@@ -167,8 +167,14 @@ async function createClientFixture(t: TestContext, channelMask?: number) {
     client.disconnect();
     Object.assign(globalThis, { WebSocket: originalWebSocket });
   });
+  const socket = await connectFakeClient(client, channelMask);
+  return { client, socket };
+}
+
+async function connectFakeClient(client: SigrokClient, channelMask?: number): Promise<FakeWebSocket> {
   const connection = client.connect("ws://fixture.invalid/live");
-  const socket = FakeWebSocket.instances[0];
+  const socket = FakeWebSocket.instances.at(-1)!;
+  assert.ok(socket);
   socket.forceLateOpen();
   await connection;
   if (channelMask !== undefined) {
@@ -176,7 +182,38 @@ async function createClientFixture(t: TestContext, channelMask?: number) {
     socket.receive(configAck(socket));
     await configured;
   }
-  return { client, socket };
+  return socket;
+}
+
+function assertSocketProtocolFailure(
+  client: SigrokClient,
+  socket: FakeWebSocket,
+  data: Uint8Array,
+  expectedError: RegExp
+): void {
+  const errors: string[] = [];
+  const states: string[] = [];
+  const publishedFrames: number[] = [];
+  const listener = (event: Parameters<Parameters<SigrokClient["addEventListener"]>[0]>[0]) => {
+    if (event.type === "error") errors.push(event.message);
+    if (event.type === "state") states.push(event.state);
+    if (event.type === "frame") publishedFrames.push(event.frame.type);
+    if (event.type === "data") publishedFrames.push(SigrokFrameType.DATA);
+  };
+  client.addEventListener(listener);
+  try {
+    assert.doesNotThrow(() => socket.receive(data));
+  } finally {
+    client.removeEventListener(listener);
+  }
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], expectedError);
+  assert.deepEqual(states, ["disconnected"]);
+  assert.deepEqual(publishedFrames, []);
+  assert.equal(client.getState(), "disconnected");
+  assert.equal(socket.readyState, FakeWebSocket.CLOSED);
+  assert.equal(socket.closeCalls, 1);
+  assert.equal((client as unknown as { buffer: Uint8Array }).buffer.length, 0);
 }
 
 describe("sigrok frame helpers", () => {
@@ -804,19 +841,73 @@ describe("SigrokClient connection lifecycle", () => {
 });
 
 describe("SigrokClient successful CONFIG snapshot", () => {
+  it("fails closed on a bad DATA frame before a coalesced STOPPED event", async (t) => {
+    const oldMask = 0x0001;
+    const newMask = 0x0002;
+    const { client, socket } = await createClientFixture(t, oldMask);
+    socket.receive(buildSigrokFrame(0, SigrokFrameType.EVENT, Uint8Array.from([
+      1, 0, SigrokEventCode.RUNNING, 0, 0, 0,
+    ])));
+
+    const errors: string[] = [];
+    const dataMasks: number[] = [];
+    const receivedFrameTypes: number[] = [];
+    client.addEventListener((event) => {
+      if (event.type === "error") errors.push(event.message);
+      if (event.type === "data") dataMasks.push(event.meta.channelMask);
+      if (event.type === "frame") receivedFrameTypes.push(event.frame.type);
+    });
+
+    const pending = client.configure(streamConfig(newMask));
+    const rejected = assert.rejects(pending, /does not match successful CONFIG/);
+    const badData = denseDataFrame(newMask, 1, [0]);
+    const stopped = buildSigrokFrame(0, SigrokFrameType.EVENT, Uint8Array.from([
+      1, 0, SigrokEventCode.STOPPED, 0, 0, 0,
+    ]));
+    assert.doesNotThrow(() => socket.receive(Uint8Array.from([...badData, ...stopped])));
+    await rejected;
+
+    assert.deepEqual(dataMasks, []);
+    assert.deepEqual(receivedFrameTypes, []);
+    assert.deepEqual(errors, ["DATA frame channel mask does not match successful CONFIG"]);
+    assert.equal(client.getState(), "disconnected");
+    assert.equal(socket.readyState, FakeWebSocket.CLOSED);
+    assert.equal(socket.closeCalls, 1);
+    assert.equal((client as unknown as { buffer: Uint8Array }).buffer.length, 0);
+
+    const connection = client.connect("ws://fixture.invalid/reconnected-after-protocol-error");
+    const reconnectedSocket = FakeWebSocket.instances.at(-1)!;
+    reconnectedSocket.forceLateOpen();
+    await connection;
+    assert.throws(
+      () => client.feedBinaryData(denseDataFrame(oldMask, 1, [0])),
+      /without a successful CONFIG/
+    );
+    const configured = client.configure(streamConfig(newMask));
+    reconnectedSocket.receive(configAck(reconnectedSocket));
+    await configured;
+    reconnectedSocket.receive(denseDataFrame(newMask, 1, [1]));
+    assert.deepEqual(dataMasks, [newMask]);
+  });
+
   it("rejects DATA before the first CONFIG ACK without publishing either DATA event", async (t) => {
     const { client, socket } = await createClientFixture(t);
+    const data = denseDataFrame(0x0441, 1, [0]);
+    assertSocketProtocolFailure(client, socket, data, /without a successful CONFIG/);
+
+    const pendingSocket = await connectFakeClient(client);
+    const configured = client.configure(streamConfig(0x0441));
+    const rejected = assert.rejects(configured, /without a successful CONFIG/);
+    assertSocketProtocolFailure(client, pendingSocket, data, /without a successful CONFIG/);
+    await rejected;
+
+    const configuredSocket = await connectFakeClient(client);
+    const reconfigured = client.configure(streamConfig(0x0441));
+    configuredSocket.receive(configAck(configuredSocket));
+    await reconfigured;
     const events: string[] = [];
     client.addEventListener((event) => events.push(event.type));
-    const data = denseDataFrame(0x0441, 1, [0]);
-    assert.throws(() => socket.receive(data), /without a successful CONFIG/);
-    const configured = client.configure(streamConfig(0x0441));
-    assert.throws(() => socket.receive(data), /without a successful CONFIG/);
-    assert.deepEqual(events, []);
-    socket.receive(configAck(socket));
-    await configured;
-    events.length = 0;
-    socket.receive(data);
+    configuredSocket.receive(data);
     assert.deepEqual(events, ["frame", "data"]);
   });
 
@@ -836,14 +927,21 @@ describe("SigrokClient successful CONFIG snapshot", () => {
     });
     socket.receive(Uint8Array.from([...configAck(socket), ...data]));
     assert.deepEqual(masks, [0x024b, 0x024b]);
-    assert.throws(() => socket.receive(denseDataFrame(0x001f, 1, [0])), /does not match successful CONFIG/);
     await configured;
+    assertSocketProtocolFailure(
+      client,
+      socket,
+      denseDataFrame(0x001f, 1, [0]),
+      /does not match successful CONFIG/
+    );
   });
 
   it("retains the successful mask while another CONFIG is pending or fails, ignoring unsolicited ACKs", async (t) => {
     const oldMask = 0x0441;
     const newMask = 0x0007;
-    const { client, socket } = await createClientFixture(t, oldMask);
+    const fixture = await createClientFixture(t, oldMask);
+    const { client } = fixture;
+    let socket = fixture.socket;
     const masks: number[] = [];
     const frameMasks: number[] = [];
     client.addEventListener((event) => {
@@ -852,30 +950,51 @@ describe("SigrokClient successful CONFIG snapshot", () => {
         frameMasks.push(event.frame.meta.channelMask);
       }
     });
+
     const pending = client.configure(streamConfig(newMask));
-    const rejected = assert.rejects(pending, /Unexpected response to CONFIG/);
-    const ack = configAck(socket);
+    const rejected = assert.rejects(pending, /does not match successful CONFIG/);
     socket.receive(denseDataFrame(oldMask, 1, [1]));
-    assert.throws(() => socket.receive(denseDataFrame(newMask, 1, [1])), /does not match successful CONFIG/);
-    socket.receive(buildSigrokFrame(parseSigrokHeader(ack)!.id, SigrokFrameType.ERROR, Uint8Array.from([7, 0, 0])));
+    assertSocketProtocolFailure(
+      client,
+      socket,
+      denseDataFrame(newMask, 1, [1]),
+      /does not match successful CONFIG/
+    );
     await rejected;
+
+    socket = await connectFakeClient(client, oldMask);
+    const failedConfig = client.configure(streamConfig(newMask));
+    const failed = assert.rejects(failedConfig, /Unexpected response to CONFIG/);
+    const ack = configAck(socket);
+    socket.receive(buildSigrokFrame(parseSigrokHeader(ack)!.id, SigrokFrameType.ERROR, Uint8Array.from([7, 0, 0])));
+    await failed;
     socket.receive(ack);
     socket.receive(denseDataFrame(oldMask, 1, [2]));
-    assert.throws(() => socket.receive(denseDataFrame(newMask, 1, [2])), /does not match successful CONFIG/);
+    assertSocketProtocolFailure(
+      client,
+      socket,
+      denseDataFrame(newMask, 1, [2]),
+      /does not match successful CONFIG/
+    );
 
+    socket = await connectFakeClient(client, oldMask);
     const configured = client.configure(streamConfig(newMask));
     socket.receive(Uint8Array.from([...configAck(socket), ...denseDataFrame(newMask, 1, [3])]));
     await configured;
-    assert.throws(() => socket.receive(denseDataFrame(oldMask, 1, [3])), /does not match successful CONFIG/);
+    assertSocketProtocolFailure(
+      client,
+      socket,
+      denseDataFrame(oldMask, 1, [3]),
+      /does not match successful CONFIG/
+    );
     assert.deepEqual(masks, [oldMask, oldMask, newMask]);
     assert.deepEqual(frameMasks, masks);
   });
 
   it("checks the complete successful mask for every codec during continuous streaming", async (t) => {
-    const { client, socket } = await createClientFixture(t, 0x0001);
-    socket.receive(buildSigrokFrame(0, SigrokFrameType.EVENT, Uint8Array.from([
-      1, 0, SigrokEventCode.RUNNING, 0, 0, 0,
-    ])));
+    const fixture = await createClientFixture(t, 0x0001);
+    const { client } = fixture;
+    let socket = fixture.socket;
     const published: number[] = [];
     client.addEventListener((event) => {
       if (event.type === "data" || (event.type === "frame" && event.frame.type === SigrokFrameType.DATA)) {
@@ -892,15 +1011,20 @@ describe("SigrokClient successful CONFIG snapshot", () => {
       [SigrokCompression.PACKED_PALETTE2, [0, 1, 0]],
       [SigrokCompression.DENSE_BITS, [0]],
     ] as const;
-    for (const [compression, samples] of codecs) {
+    for (const [index, [compression, samples]] of codecs.entries()) {
+      if (index > 0) socket = await connectFakeClient(client, 0x0001);
+      socket.receive(buildSigrokFrame(0, SigrokFrameType.EVENT, Uint8Array.from([
+        1, 0, SigrokEventCode.RUNNING, 0, 0, 0,
+      ])));
+      assert.equal(client.getState(), "running");
       const frame = (channelMask: number) => buildSigrokFrame(0, SigrokFrameType.DATA, buildDataFramePayload({
         sampleIndex: 0, sampleCount: 1, compression, channelMask, samples,
       }));
       socket.receive(frame(0x0001));
-      assert.throws(() => socket.receive(frame(0x0002)), /does not match successful CONFIG/);
+      assertSocketProtocolFailure(client, socket, frame(0x0002), /does not match successful CONFIG/);
     }
     assert.deepEqual(published, Array(16).fill(0x0001));
-    assert.equal(client.getState(), "running");
+    assert.equal(client.getState(), "disconnected");
   });
 
   for (const closeMode of ["disconnect", "socket-close"] as const) {
@@ -914,17 +1038,25 @@ describe("SigrokClient successful CONFIG snapshot", () => {
       await rejected;
       assert.equal(client.getState(), "disconnected");
 
-      const connection = client.connect("ws://fixture.invalid/reconnected");
-      const reconnectedSocket = FakeWebSocket.instances.at(-1)!;
-      reconnectedSocket.forceLateOpen();
-      await connection;
+      let reconnectedSocket = await connectFakeClient(client);
       reconnectedSocket.receive(staleAck);
-      const published: string[] = [];
-      client.addEventListener((event) => published.push(event.type));
-      for (const mask of [0x0001, 0x0002]) {
-        assert.throws(() => reconnectedSocket.receive(denseDataFrame(mask, 1, [0])), /without a successful CONFIG/);
-      }
-      assert.deepEqual(published, []);
+      assertSocketProtocolFailure(
+        client,
+        reconnectedSocket,
+        denseDataFrame(0x0001, 1, [0]),
+        /without a successful CONFIG/
+      );
+
+      reconnectedSocket = await connectFakeClient(client);
+      reconnectedSocket.receive(staleAck);
+      assertSocketProtocolFailure(
+        client,
+        reconnectedSocket,
+        denseDataFrame(0x0002, 1, [0]),
+        /without a successful CONFIG/
+      );
+
+      reconnectedSocket = await connectFakeClient(client);
       const configured = client.configure(streamConfig(0x0002));
       reconnectedSocket.receive(configAck(reconnectedSocket));
       await configured;

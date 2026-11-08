@@ -193,18 +193,19 @@ also confirmed on the same freeze build. Historical WIDE12 baseline
 **Stream** mode also uses the sigrok live session. At negotiated high rates with
 GENERIC_PACKED_BURST, post=0 captures exactly 100000 samples losslessly then
 auto-STOP/drain (one capture, not continuous streaming). At lower non-packed rates
-(1-25 MHz in browser), Stream mode sends `post_samples=0` and runs until stopped
-by the user. Web Sigrok pin selection is limited to `GP10-GP20`; GP29 is excluded from LA
-and remains input-only while used by ADC3; `GP7-GP9` are shown but disabled.
+(100 kHz–25 MHz in browser), Stream mode sends `post_samples=0` and runs until stopped
+by the user or a lossless-or-stop terminal condition. The current Web picker
+exposes only `GP12-GP16`; the underlying native wire plans retain `GP10-GP20`.
+GP27–GP29 capture remains unimplemented, and `GP7-GP9` are disabled.
 
 Completed captures can be previewed in the waveform view and exported as CSV or
-PulseView `.sr` files. The browser decoder still operates on completed bounded
-captures only, not on stream data. Native raw-TCP integrations for PulseView /
-sigrok-cli are documented elsewhere in the repository and are separate from the
-browser WebSocket path.
+PulseView `.sr` files. Live protocol decoding uses at most 8192 samples per pass;
+the stream cache retains the latest one million samples, not the complete
+recording. The repository's native libsigrok prototype does not implement the
+current v2 protocol; `.sr` file export is not proof of live PulseView integration.
 
-The logic analyzer lives in the **Terminal workspace** alongside the serial
-terminal, not under Debugger maintenance. The browser-based Rust/WASM decoder
+The logic analyzer has its own **Logic Analyzer workspace**, separate from the
+serial terminal and Debugger maintenance. The browser-based Rust/WASM decoder
 serves the stable URLs `/assets/decoder/logic-decoder.js` and
 `/assets/decoder/logic-decoder_bg.wasm` with `application/wasm` MIME for the
 binary and gzip compression. It decodes UART, I2C, and SPI protocols only and
