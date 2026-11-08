@@ -54,23 +54,32 @@ launch asks the headless daemon to release its Host and lock, then replaces it
 with one graphical Tray daemon. If an explicit standalone Host already owns the
 port, the graphical Tray adopts it without starting a competing Host and starts
 an in-process replacement only if that endpoint later disappears. Its icon
-follows the Web UI animation contract:
-Starting chases the
-four leaves over 1.2 seconds, Offline flashes all four over 1.2 seconds, and
-Ready keeps the leaves stable except for the lower-right Host Bridge UART
-heartbeat. In Ready, the upper-left, upper-right, and lower-left X leaves show
-the firmware-reported 5 V, 12 V, and 20 V rails; only the center diamond runs
-the 0.8-second board heartbeat. A binary Sigrok WebSocket session temporarily
-rotates the complete X at one revolution per 480 ms. The Host publishes both
+uses the same logo and state colors as the Web UI. Starting, Offline and the
+power leaves stay static; only the
+online center keeps its original 800 ms double pulse (bright 200 ms, dim 100 ms,
+bright 100 ms, dim 400 ms). This pulse means a recent board status probe
+succeeded, not independent proof of watchdog or electrical health. Unknown or
+offline board status stops the pulse immediately. State changes update the icon
+immediately. In Ready, the upper-left, upper-right, lower-right, and lower-left
+X leaves show the firmware-reported `5v_out`, `12v_out`, `vdd_5v`, and `20v_out`
+switch states, matching the Web logo. The lower-right leaf is not a UART or
+logging indicator. Capture activity does not overwrite these four power colors
+or change the center heartbeat cadence. Explicit output `state` is authoritative;
+the colors do not assert measured voltage. Identical consecutive visual states do not render
+or publish another icon. Failures for the same underlying status wait one second
+before retrying; heartbeat phase changes cannot bypass that delay. Linux uses one
+AppIndicator with a private, stable directory of immutable, bounded state PNGs.
+Heartbeat edges alternate existing icon names, rather than writing a new file or
+changing the desktop's icon-theme path. The Host publishes both
 the live session count and a bounded
 one-second activity latch in `/host/api/v1/status` under
 `activity.logic_analyzer_sessions` and `activity.logic_analyzer_active`, so a
 short capture still reaches the tray's 100 ms Host-activity probe without
 adding a firmware protocol field. Rail and board-heartbeat status are read
 directly from the configured firmware URL every 100 ms instead of passing
-through the Host gateway. A small internal wake pulse keeps these animations
-advancing when the Linux desktop is otherwise idle without adding status
-requests. Its menu opens the Web console and JSON status, restarts its
+through the Host gateway. These read-only probes are independent of icon
+publication; unchanged results do not refresh the desktop. Its menu opens the
+Web console and JSON status, restarts its
 in-process Host task, and shuts down the daemon on Quit. Desktop and Host
 output is retained at
 `$XDG_DATA_HOME/radxa-linkr-debugger/host.log` (defaulting to

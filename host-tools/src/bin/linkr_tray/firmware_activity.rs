@@ -10,7 +10,7 @@ use super::{
     icon::IndicatorState, UserEvent, BOARD_STATUS_INTERVAL, HEALTH_TIMEOUT, HOST_ACTIVITY_INTERVAL,
 };
 
-const MAIN_RAILS: [&str; 3] = ["5v_out", "12v_out", "20v_out"];
+const MAIN_RAILS: [&str; 4] = ["5v_out", "12v_out", "vdd_5v", "20v_out"];
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct IndicatorSnapshot {
@@ -25,14 +25,12 @@ impl IndicatorSnapshot {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct HostIndicatorSnapshot {
-    uart_bridge_active: bool,
     logic_analyzer_active: bool,
 }
 
 impl HostIndicatorSnapshot {
-    pub(super) const fn new(uart_bridge_active: bool, logic_analyzer_active: bool) -> Self {
+    pub(super) const fn new(logic_analyzer_active: bool) -> Self {
         Self {
-            uart_bridge_active,
             logic_analyzer_active,
         }
     }
@@ -46,17 +44,14 @@ pub(super) fn complete_host_activity_probe(
     indicator: IndicatorState,
     sample: Option<HostIndicatorSnapshot>,
 ) -> IndicatorState {
-    let (uart_bridge_active, logic_analyzer_active) = sample.map_or((false, false), |sample| {
-        (sample.uart_bridge_active, sample.logic_analyzer_active)
-    });
-    indicator.with_host_activity(uart_bridge_active, logic_analyzer_active)
+    let logic_analyzer_active = sample.is_some_and(|sample| sample.logic_analyzer_active);
+    indicator.with_host_activity(logic_analyzer_active)
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 struct PowerState {
     name: String,
     state: String,
-    value: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -68,13 +63,7 @@ struct StatusResponse {
 #[derive(Deserialize)]
 struct HostStatusResponse {
     ok: bool,
-    serial_logging: SerialLoggingStatus,
     activity: HostActivityStatus,
-}
-
-#[derive(Deserialize)]
-struct SerialLoggingStatus {
-    active_sessions: usize,
 }
 
 #[derive(Deserialize)]
@@ -106,7 +95,6 @@ async fn fetch_host_activity(client: &Client, url: &Url) -> Option<HostIndicator
         return None;
     }
     Some(HostIndicatorSnapshot::new(
-        host.serial_logging.active_sessions > 0,
         host.activity.logic_analyzer_active,
     ))
 }
@@ -125,15 +113,20 @@ async fn fetch_firmware(client: &Client, url: &Url) -> Option<IndicatorSnapshot>
     if !status.ok {
         return None;
     }
-    let rails = MAIN_RAILS.map(|name| {
-        status
+    let mut rails = [false; MAIN_RAILS.len()];
+    for (rail, name) in rails.iter_mut().zip(MAIN_RAILS) {
+        let output = status
             .power_outputs
             .iter()
-            .find(|output| output.name == name)
-            .is_some_and(|output| output.state == "on" || output.value == Some(1))
-    });
+            .find(|output| output.name == name)?;
+        *rail = match output.state.as_str() {
+            "on" => true,
+            "off" => false,
+            _ => return None,
+        };
+    }
     Some(IndicatorSnapshot {
-        indicator: IndicatorState::new(rails, false, false),
+        indicator: IndicatorState::new(rails, false),
     })
 }
 

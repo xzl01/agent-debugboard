@@ -16,10 +16,7 @@ use tao::{
     event_loop::{ControlFlow, EventLoopBuilder},
 };
 use tokio::task::JoinHandle;
-use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
-    TrayIcon, TrayIconBuilder,
-};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use uuid::Uuid;
 
 use radxa_linkr_host::{
@@ -29,6 +26,9 @@ use radxa_linkr_host::{
 
 #[path = "linkr_tray/firmware_activity.rs"]
 mod firmware_activity;
+#[cfg(target_os = "linux")]
+#[path = "linkr_tray/heartbeat_wake.rs"]
+mod heartbeat_wake;
 #[path = "linkr_tray/icon.rs"]
 mod icon;
 #[path = "linkr_tray/icon_publish.rs"]
@@ -38,20 +38,15 @@ use firmware_activity::{
     complete_host_activity_probe, complete_probe, run_indicator_probes, HostIndicatorSnapshot,
     IndicatorSnapshot,
 };
-use icon::{changed_status_icon, status_icon, status_rgba, IconFrame, IndicatorState};
-use icon_publish::IconPublisher;
+#[cfg(target_os = "linux")]
+use heartbeat_wake::LinuxHeartbeatWake;
+use icon::{status_rgba, IconCache, IconFrame, IndicatorState};
+use icon_publish::{IconPublisher, TrayHandle};
 
 const HEALTH_INTERVAL: Duration = Duration::from_secs(2);
 const HEALTH_TIMEOUT: Duration = Duration::from_millis(500);
 const BOARD_STATUS_INTERVAL: Duration = Duration::from_millis(100);
 const HOST_ACTIVITY_INTERVAL: Duration = Duration::from_millis(100);
-const CONNECTION_ANIMATION_INTERVAL: Duration = Duration::from_millis(300);
-const OFFLINE_ANIMATION_INTERVAL: Duration = Duration::from_millis(600);
-const READY_ANIMATION_INTERVAL: Duration = Duration::from_millis(100);
-const LOGIC_ANALYZER_ANIMATION_INTERVAL: Duration = Duration::from_millis(60);
-// ponytail: fixed wake keeps Linux tray animation independent of desktop input;
-// replace with a deadline channel only if the 50 wakeups/s cost becomes measurable.
-const ANIMATION_WAKE_INTERVAL: Duration = Duration::from_millis(20);
 const RESTART_INITIAL: Duration = Duration::from_millis(500);
 const RESTART_MAX: Duration = Duration::from_secs(30);
 const SHUTDOWN_REQUEST_INTERVAL: Duration = Duration::from_millis(100);
@@ -85,14 +80,28 @@ enum ServiceState {
     Offline,
 }
 
-fn icon_animation_interval(state: ServiceState, indicator: IndicatorState) -> Duration {
-    match state {
-        ServiceState::Ready if indicator.logic_analyzer_active() => {
-            LOGIC_ANALYZER_ANIMATION_INTERVAL
+#[derive(Default)]
+struct HeartbeatClock {
+    epoch: Option<Instant>,
+}
+
+impl HeartbeatClock {
+    fn update(&mut self, now: Instant, state: ServiceState) -> (bool, Option<Instant>) {
+        if state != ServiceState::Ready {
+            self.epoch = None;
+            return (false, None);
         }
-        ServiceState::Ready => READY_ANIMATION_INTERVAL,
-        ServiceState::Starting => CONNECTION_ANIMATION_INTERVAL,
-        ServiceState::Offline => OFFLINE_ANIMATION_INTERVAL,
+        let epoch = *self.epoch.get_or_insert(now);
+        let phase = now.saturating_duration_since(epoch).as_nanos() % 800_000_000;
+        let (on, edge) = match phase {
+            0..200_000_000 => (true, 200_000_000),
+            200_000_000..300_000_000 => (false, 300_000_000),
+            300_000_000..400_000_000 => (true, 400_000_000),
+            _ => (false, 800_000_000),
+        };
+        let remaining = u64::try_from(edge - phase).expect("heartbeat edge is within 800 ms");
+        // Compute the current phase from the epoch, never replay missed edges.
+        (on, Some(now + Duration::from_nanos(remaining)))
     }
 }
 
@@ -110,27 +119,11 @@ const fn icon_state(
     }
 }
 
-const fn animation_mode(
-    state: ServiceState,
-    indicator: IndicatorState,
-) -> (ServiceState, (bool, bool)) {
-    (state, indicator.host_activity())
-}
-
 fn schedule_control_flow(now: Instant, deadline: Instant) -> ControlFlow {
     if deadline <= now {
         ControlFlow::Poll
     } else {
         ControlFlow::WaitUntil(deadline)
-    }
-}
-
-fn run_animation_waker(mut wake: impl FnMut() -> bool) {
-    loop {
-        std::thread::sleep(ANIMATION_WAKE_INTERVAL);
-        if !wake() {
-            return;
-        }
     }
 }
 
@@ -141,7 +134,8 @@ enum UserEvent {
         firmware: Option<IndicatorSnapshot>,
         host: Option<HostIndicatorSnapshot>,
     },
-    AnimationWake,
+    #[cfg(target_os = "linux")]
+    HeartbeatWake,
     Shutdown,
 }
 
@@ -259,18 +253,19 @@ async fn main() -> Result<()> {
     .context("build tray menu")?;
     let initial_frame = IconFrame {
         state: ServiceState::Starting,
-        animation: 0,
         indicator: IndicatorState::default(),
+        heartbeat_on: false,
     };
-    let mut icon_publisher = IconPublisher::new(&data_dir)?;
+    let initial_rgba = status_rgba(initial_frame);
+    let icon_publisher = IconPublisher::new(&data_dir)?;
     let tray = icon_publisher
-        .configure(TrayIconBuilder::new())
-        .with_menu(Box::new(menu))
-        .with_tooltip("Radxa Linkr: starting Web / Broker / MCP")
-        .with_icon(status_icon(initial_frame)?)
-        .build()
+        .build(
+            menu,
+            "Radxa Linkr: starting Web / Broker / MCP",
+            initial_frame.publication_key(),
+            &initial_rgba,
+        )
         .context("create tray icon")?;
-    icon_publisher.protect_initial()?;
     write_lock_owner(&mut lock, "tray")?;
 
     let indicator_proxy = event_loop.create_proxy();
@@ -289,31 +284,24 @@ async fn main() -> Result<()> {
         let _ = shutdown_proxy.send_event(UserEvent::Shutdown);
     })
     .context("install tray shutdown handler")?;
-    let animation_proxy = event_loop.create_proxy();
-    std::thread::Builder::new()
-        .name("linkr-tray-animation".to_string())
-        .spawn(move || {
-            run_animation_waker(|| animation_proxy.send_event(UserEvent::AnimationWake).is_ok());
-        })
-        .context("start tray animation wake timer")?;
-
     let web_url = format!("http://127.0.0.1:{port}/");
     let status_url = format!("http://127.0.0.1:{port}/host/api/v1/status");
     let serial_logs_url = format!("http://127.0.0.1:{port}/#serial-logs");
     let mut managed = (!existing_host_healthy).then(|| spawn_host(host_config.clone()));
     let mut last_state = ServiceState::Starting;
     let mut next_health = Instant::now();
-    let mut next_animation = Instant::now();
-    let mut animation_frame = 0_u8;
+    let mut heartbeat = HeartbeatClock::default();
+    #[cfg(target_os = "linux")]
+    let mut heartbeat_wake = LinuxHeartbeatWake::new(event_loop.create_proxy());
     let mut indicator = IndicatorState::default();
     let mut board_status_known = false;
-    let mut published_rgba = status_rgba(initial_frame);
+    let mut icon_cache = IconCache::new(initial_frame);
+    let mut published_menu_state = (ServiceState::Starting, false);
     let mut next_restart = Instant::now();
     let mut restart_delay = RESTART_INITIAL;
     let mut shutting_down = false;
 
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = schedule_control_flow(Instant::now(), next_health.min(next_animation));
         match event {
             Event::UserEvent(UserEvent::Menu(event)) if event.id == *items.open_web.id() => {
                 let _ = open_browser(&web_url);
@@ -332,49 +320,34 @@ async fn main() -> Result<()> {
                 }
                 next_restart = Instant::now();
                 restart_delay = RESTART_INITIAL;
-                update_tray(&tray, &items, ServiceState::Starting, false);
+                update_tray(
+                    &tray,
+                    &items,
+                    &mut published_menu_state,
+                    ServiceState::Starting,
+                    false,
+                );
                 last_state = ServiceState::Starting;
                 indicator = IndicatorState::default();
                 board_status_known = false;
-                animation_frame = 0;
-                next_animation = Instant::now();
             }
             Event::UserEvent(UserEvent::IndicatorProbe { firmware, host }) => {
                 if last_state == ServiceState::Ready {
-                    let previous_mode = animation_mode(
-                        icon_state(last_state, board_status_known, indicator),
-                        indicator,
-                    );
                     board_status_known = true;
                     indicator = complete_host_activity_probe(complete_probe(firmware), host);
-                    let state = icon_state(last_state, board_status_known, indicator);
-                    let restart_animation = previous_mode != animation_mode(state, indicator);
-                    if restart_animation {
-                        animation_frame = 0;
-                    }
-                    publish_status_icon(
-                        &tray,
-                        &mut icon_publisher,
-                        IconFrame {
-                            state,
-                            animation: animation_frame,
-                            indicator,
-                        },
-                        &mut published_rgba,
-                    );
-                    if restart_animation {
-                        next_animation = Instant::now() + icon_animation_interval(state, indicator);
-                    }
                 } else {
                     indicator = IndicatorState::default();
                     board_status_known = false;
                 }
-                *control_flow =
-                    schedule_control_flow(Instant::now(), next_health.min(next_animation));
             }
-            Event::UserEvent(UserEvent::AnimationWake) => {}
+            // A wake carries no phase/state; even a queued old wake only causes
+            // the current clock and connection state to be recomputed below.
+            #[cfg(target_os = "linux")]
+            Event::UserEvent(UserEvent::HeartbeatWake) => {}
             Event::UserEvent(UserEvent::Menu(event)) if event.id == *items.quit.id() => {
                 shutting_down = true;
+                #[cfg(target_os = "linux")]
+                heartbeat_wake.schedule(None);
                 if let Some(mut host) = managed.take() {
                     stop_managed_host(&mut host, health_addr, &shutdown_token);
                 }
@@ -382,6 +355,8 @@ async fn main() -> Result<()> {
             }
             Event::UserEvent(UserEvent::Shutdown) => {
                 shutting_down = true;
+                #[cfg(target_os = "linux")]
+                heartbeat_wake.schedule(None);
                 if let Some(mut host) = managed.take() {
                     stop_managed_host(&mut host, health_addr, &shutdown_token);
                 }
@@ -389,70 +364,65 @@ async fn main() -> Result<()> {
             }
             Event::MainEventsCleared if shutdown_request.is_file() => {
                 shutting_down = true;
+                #[cfg(target_os = "linux")]
+                heartbeat_wake.schedule(None);
                 let _ = std::fs::remove_file(&shutdown_request);
                 if let Some(mut host) = managed.take() {
                     stop_managed_host(&mut host, health_addr, &shutdown_token);
                 }
                 *control_flow = ControlFlow::Exit;
             }
-            Event::MainEventsCleared
-                if !shutting_down
-                    && (Instant::now() >= next_health || Instant::now() >= next_animation) =>
-            {
+            Event::MainEventsCleared if !shutting_down && Instant::now() >= next_health => {
                 let now = Instant::now();
-                if now >= next_health {
-                    if managed.as_ref().is_some_and(JoinHandle::is_finished) {
-                        managed = None;
-                    }
-
-                    let healthy = host_is_healthy(health_addr);
-                    let state = if healthy {
-                        restart_delay = RESTART_INITIAL;
-                        ServiceState::Ready
-                    } else {
-                        if managed.is_none() && now >= next_restart {
-                            managed = Some(spawn_host(host_config.clone()));
-                            next_restart = now + restart_delay;
-                            restart_delay = restart_delay.saturating_mul(2).min(RESTART_MAX);
-                        }
-                        if managed.is_some() {
-                            ServiceState::Starting
-                        } else {
-                            ServiceState::Offline
-                        }
-                    };
-                    if state != last_state {
-                        update_tray(&tray, &items, state, managed.is_some());
-                        last_state = state;
-                        indicator = IndicatorState::default();
-                        board_status_known = false;
-                        animation_frame = 0;
-                        next_animation = now;
-                    } else {
-                        items.restart.set_enabled(managed.is_some());
-                    }
-                    next_health = now + HEALTH_INTERVAL;
+                if managed.as_ref().is_some_and(JoinHandle::is_finished) {
+                    managed = None;
                 }
 
-                if now >= next_animation {
-                    let state = icon_state(last_state, board_status_known, indicator);
-                    publish_status_icon(
-                        &tray,
-                        &mut icon_publisher,
-                        IconFrame {
-                            state,
-                            animation: animation_frame,
-                            indicator,
-                        },
-                        &mut published_rgba,
-                    );
-                    animation_frame = animation_frame.wrapping_add(1);
-                    next_animation = now + icon_animation_interval(state, indicator);
+                let healthy = host_is_healthy(health_addr);
+                let state = if healthy {
+                    restart_delay = RESTART_INITIAL;
+                    ServiceState::Ready
+                } else {
+                    if managed.is_none() && now >= next_restart {
+                        managed = Some(spawn_host(host_config.clone()));
+                        next_restart = now + restart_delay;
+                        restart_delay = restart_delay.saturating_mul(2).min(RESTART_MAX);
+                    }
+                    if managed.is_some() {
+                        ServiceState::Starting
+                    } else {
+                        ServiceState::Offline
+                    }
+                };
+                update_tray(
+                    &tray,
+                    &items,
+                    &mut published_menu_state,
+                    state,
+                    managed.is_some(),
+                );
+                if state != last_state {
+                    last_state = state;
+                    indicator = IndicatorState::default();
+                    board_status_known = false;
                 }
-                *control_flow =
-                    schedule_control_flow(Instant::now(), next_health.min(next_animation));
+                next_health = now + HEALTH_INTERVAL;
             }
             _ => {}
+        }
+        if !shutting_down {
+            let state = icon_state(last_state, board_status_known, indicator);
+            let (heartbeat_on, next_edge) = heartbeat.update(Instant::now(), state);
+            #[cfg(target_os = "linux")]
+            heartbeat_wake.schedule(next_edge);
+            let frame = IconFrame {
+                state,
+                indicator,
+                heartbeat_on,
+            };
+            publish_status_icon(&tray, &icon_publisher, frame, &mut icon_cache);
+            let deadline = next_edge.map_or(next_health, |edge| edge.min(next_health));
+            *control_flow = schedule_control_flow(Instant::now(), deadline);
         }
     });
 }
@@ -574,35 +544,45 @@ fn host_health_is_acceptable(body: &str) -> bool {
     })
 }
 
-fn update_tray(tray: &TrayIcon, items: &MenuItems, state: ServiceState, managed: bool) {
-    let (status, tooltip) = match state {
-        ServiceState::Starting => (
-            "Starting Web / Broker / MCP…",
-            "Radxa Linkr: starting Web / Broker / MCP",
-        ),
-        ServiceState::Ready => (
-            "Web / Broker / MCP are running",
-            "Radxa Linkr: Web / Broker / MCP running",
-        ),
-        ServiceState::Offline => (
-            "Web / Broker / MCP are unavailable",
-            "Radxa Linkr: services unavailable",
-        ),
-    };
-    items.status.set_text(status);
-    items.restart.set_enabled(managed);
-    let _ = tray.set_tooltip(Some(tooltip));
+fn update_tray(
+    tray: &TrayHandle,
+    items: &MenuItems,
+    published: &mut (ServiceState, bool),
+    state: ServiceState,
+    managed: bool,
+) {
+    if published.0 != state {
+        let (status, tooltip) = match state {
+            ServiceState::Starting => (
+                "Starting Web / Broker / MCP…",
+                "Radxa Linkr: starting Web / Broker / MCP",
+            ),
+            ServiceState::Ready => (
+                "Web / Broker / MCP are running",
+                "Radxa Linkr: Web / Broker / MCP running",
+            ),
+            ServiceState::Offline => (
+                "Web / Broker / MCP are unavailable",
+                "Radxa Linkr: services unavailable",
+            ),
+        };
+        items.status.set_text(status);
+        let _ = tray.set_tooltip(Some(tooltip));
+        published.0 = state;
+    }
+    if published.1 != managed {
+        items.restart.set_enabled(managed);
+        published.1 = managed;
+    }
 }
 
 fn publish_status_icon(
-    tray: &TrayIcon,
-    publisher: &mut IconPublisher,
+    tray: &TrayHandle,
+    publisher: &IconPublisher,
     frame: IconFrame,
-    published_rgba: &mut Vec<u8>,
+    cache: &mut IconCache,
 ) {
-    if let Ok(Some(icon)) = changed_status_icon(frame, published_rgba) {
-        let _ = publisher.set_icon(tray, icon);
-    }
+    let _ = cache.publish(frame, |key, rgba| publisher.set_icon(tray, key, rgba));
 }
 
 fn app_data_dir() -> Result<PathBuf> {
@@ -633,13 +613,12 @@ fn open_browser(url: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        host_health_is_acceptable, icon_animation_interval, icon_state, run_animation_waker,
-        IndicatorState, ServiceState, ANIMATION_WAKE_INTERVAL, BOARD_STATUS_INTERVAL,
-        CONNECTION_ANIMATION_INTERVAL, HEALTH_INTERVAL, HEALTH_TIMEOUT, HOST_ACTIVITY_INTERVAL,
-        LOGIC_ANALYZER_ANIMATION_INTERVAL, OFFLINE_ANIMATION_INTERVAL, READY_ANIMATION_INTERVAL,
+        host_health_is_acceptable, icon_state, HeartbeatClock, IconCache, IconFrame,
+        IndicatorState, ServiceState, BOARD_STATUS_INTERVAL, HEALTH_INTERVAL, HEALTH_TIMEOUT,
+        HOST_ACTIVITY_INTERVAL,
     };
     use std::ffi::OsStr;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tao::event_loop::ControlFlow;
 
     #[test]
@@ -668,21 +647,6 @@ mod tests {
     }
 
     #[test]
-    fn logic_analyzer_uses_the_fastest_animation_interval() {
-        let idle = IndicatorState::default();
-        let logic = IndicatorState::new([false, false, false], false, true);
-
-        assert!(
-            icon_animation_interval(ServiceState::Ready, logic)
-                < icon_animation_interval(ServiceState::Ready, idle)
-        );
-        assert!(
-            icon_animation_interval(ServiceState::Ready, idle)
-                < icon_animation_interval(ServiceState::Starting, idle)
-        );
-    }
-
-    #[test]
     fn indicator_probe_is_responsive_without_speeding_up_health_checks() {
         assert_eq!(HOST_ACTIVITY_INTERVAL, Duration::from_millis(100));
         assert_eq!(BOARD_STATUS_INTERVAL, Duration::from_millis(100));
@@ -692,22 +656,8 @@ mod tests {
     }
 
     #[test]
-    fn tray_animation_periods_match_the_webui_contract() {
-        assert_eq!(
-            CONNECTION_ANIMATION_INTERVAL * 4,
-            Duration::from_millis(1200)
-        );
-        assert_eq!(OFFLINE_ANIMATION_INTERVAL * 2, Duration::from_millis(1200));
-        assert_eq!(READY_ANIMATION_INTERVAL * 8, Duration::from_millis(800));
-        assert_eq!(
-            LOGIC_ANALYZER_ANIMATION_INTERVAL * 8,
-            Duration::from_millis(480)
-        );
-    }
-
-    #[test]
     fn tray_connection_state_follows_the_webui_board_boundary() {
-        let online = IndicatorState::new([false, false, false], false, false);
+        let online = IndicatorState::new([false, false, false, false], false);
 
         assert_eq!(
             icon_state(ServiceState::Starting, false, IndicatorState::default()),
@@ -743,39 +693,198 @@ mod tests {
     }
 
     #[test]
-    fn animation_waker_produces_ticks_without_external_events() {
-        let mut wakes = 0;
-
-        run_animation_waker(|| {
-            wakes += 1;
-            wakes < 2
-        });
-
-        assert_eq!(wakes, 2);
-        assert_eq!(ANIMATION_WAKE_INTERVAL, Duration::from_millis(20));
+    fn heartbeat_repeats_the_original_800_ms_double_pulse_at_exact_edges() {
+        let start = Instant::now();
+        let mut clock = HeartbeatClock::default();
+        for cycle in 0..5 {
+            for (millis, on, edge) in [
+                (0, true, 200),
+                (199, true, 200),
+                (200, false, 300),
+                (299, false, 300),
+                (300, true, 400),
+                (399, true, 400),
+                (400, false, 800),
+                (799, false, 800),
+            ] {
+                let now = start + Duration::from_millis(cycle * 800 + millis);
+                assert_eq!(
+                    clock.update(now, ServiceState::Ready),
+                    (on, Some(start + Duration::from_millis(cycle * 800 + edge)))
+                );
+            }
+        }
+        let now = start + Duration::from_millis(4_199) + Duration::from_nanos(999_999);
         assert_eq!(
-            LOGIC_ANALYZER_ANIMATION_INTERVAL.as_millis() % ANIMATION_WAKE_INTERVAL.as_millis(),
-            0
+            clock.update(now, ServiceState::Ready),
+            (true, Some(start + Duration::from_millis(4_200)))
         );
+        // A delayed event computes only the current phase, with no catch-up ticks.
         assert_eq!(
-            READY_ANIMATION_INTERVAL.as_millis() % ANIMATION_WAKE_INTERVAL.as_millis(),
-            0
+            clock.update(start + Duration::from_millis(10_050), ServiceState::Ready),
+            (false, Some(start + Duration::from_millis(10_400)))
         );
     }
 
     #[test]
-    fn rail_poll_updates_do_not_restart_the_webui_heartbeat_phase() {
-        let first = IndicatorState::new([true, false, true], false, false);
-        let rails_changed = IndicatorState::new([true, true, true], false, false);
-        let uart_started = IndicatorState::new([true, true, true], true, false);
-
+    fn heartbeat_stops_for_unavailable_or_unknown_board_and_restarts_on_reconnection() {
+        let start = Instant::now();
+        let online = IndicatorState::new([false; 4], false);
+        let mut clock = HeartbeatClock::default();
         assert_eq!(
-            super::animation_mode(ServiceState::Ready, first),
-            super::animation_mode(ServiceState::Ready, rails_changed)
+            clock.update(start, icon_state(ServiceState::Ready, true, online)),
+            (true, Some(start + Duration::from_millis(200)))
         );
-        assert_ne!(
-            super::animation_mode(ServiceState::Ready, rails_changed),
-            super::animation_mode(ServiceState::Ready, uart_started)
+        for (service, known, indicator) in [
+            (ServiceState::Offline, true, online),
+            (ServiceState::Ready, false, online),
+            (ServiceState::Ready, true, IndicatorState::default()),
+            (ServiceState::Starting, true, online),
+        ] {
+            assert_eq!(
+                clock.update(
+                    start + Duration::from_millis(100),
+                    icon_state(service, known, indicator)
+                ),
+                (false, None)
+            );
+            assert_eq!(clock.epoch, None);
+        }
+        let reconnect = start + Duration::from_millis(500);
+        assert_eq!(
+            clock.update(reconnect, icon_state(ServiceState::Ready, true, online)),
+            (true, Some(reconnect + Duration::from_millis(200)))
         );
+        assert_eq!(clock.epoch, Some(reconnect));
+    }
+
+    #[test]
+    fn four_rail_and_capture_changes_preserve_the_heartbeat_epoch() {
+        let start = Instant::now();
+        let mut clock = HeartbeatClock::default();
+        clock.update(start, ServiceState::Ready);
+        for indicator in [
+            IndicatorState::new([true, false, true, false], false),
+            IndicatorState::new([true; 4], false),
+            IndicatorState::new([true; 4], true),
+            IndicatorState::new([false; 4], false),
+        ] {
+            assert_eq!(
+                clock.update(
+                    start + Duration::from_millis(250),
+                    icon_state(ServiceState::Ready, true, indicator)
+                ),
+                (false, Some(start + Duration::from_millis(300)))
+            );
+            assert_eq!(clock.epoch, Some(start));
+        }
+    }
+
+    #[test]
+    fn heartbeat_publication_only_follows_edges_not_probe_or_event_frequency() {
+        let start = Instant::now();
+        let indicator = IndicatorState::new([true, false, false, true], false);
+        let mut clock = HeartbeatClock::default();
+        let mut cache = IconCache::new(IconFrame {
+            state: ServiceState::Starting,
+            indicator: IndicatorState::default(),
+            heartbeat_on: false,
+        });
+        let mut publications = Vec::new();
+        for millis in (0..=12_000).step_by(10) {
+            let (heartbeat_on, _) =
+                clock.update(start + Duration::from_millis(millis), ServiceState::Ready);
+            let frame = IconFrame {
+                state: ServiceState::Ready,
+                indicator,
+                heartbeat_on,
+            };
+            cache
+                .publish(frame, |key, rgba| {
+                    assert_eq!(key, frame.publication_key());
+                    assert_eq!(rgba.len(), 32 * 32 * 4);
+                    publications.push(millis);
+                    Ok(())
+                })
+                .unwrap();
+        }
+        assert_eq!(&publications[..5], &[0, 200, 300, 400, 800]);
+        assert_eq!(publications.len(), 61); // Initial state plus 60 edges in 12 seconds.
+    }
+
+    #[test]
+    fn service_four_rail_and_capture_transitions_publish_immediately() {
+        let online = IndicatorState::new([false; 4], false);
+        let initial = IconFrame {
+            state: ServiceState::Starting,
+            indicator: IndicatorState::default(),
+            heartbeat_on: false,
+        };
+        let mut cache = IconCache::new(initial);
+        let mut publications = 0;
+        let transitions = [
+            (ServiceState::Offline, IndicatorState::default()),
+            (ServiceState::Ready, online),
+            (
+                ServiceState::Ready,
+                IndicatorState::new([true, false, false, false], false),
+            ),
+            (
+                ServiceState::Ready,
+                IndicatorState::new([true, true, false, false], false),
+            ),
+            (
+                ServiceState::Ready,
+                IndicatorState::new([true, true, true, false], false),
+            ),
+            (ServiceState::Ready, IndicatorState::new([true; 4], false)),
+            (ServiceState::Ready, IndicatorState::new([true; 4], true)),
+            (ServiceState::Ready, IndicatorState::new([true; 4], false)),
+            (ServiceState::Offline, IndicatorState::default()),
+            (ServiceState::Starting, IndicatorState::default()),
+        ];
+        for (state, indicator) in transitions {
+            let frame = IconFrame {
+                state,
+                indicator,
+                heartbeat_on: state == ServiceState::Ready,
+            };
+            assert!(cache
+                .publish(frame, |_, _| {
+                    publications += 1;
+                    Ok(())
+                })
+                .unwrap());
+            assert!(!cache
+                .publish(frame, |_, _| panic!("same transition must not repeat"))
+                .unwrap());
+        }
+        assert_eq!(publications, transitions.len());
+    }
+
+    #[test]
+    fn board_online_offline_and_unknown_snapshot_transitions_publish_immediately() {
+        let online = IndicatorState::new([false; 4], false);
+        let mut cache = IconCache::new(IconFrame {
+            state: ServiceState::Starting,
+            indicator: IndicatorState::default(),
+            heartbeat_on: false,
+        });
+        for (known, indicator) in [
+            (true, IndicatorState::default()),
+            (true, online),
+            (false, IndicatorState::default()),
+            (true, online),
+        ] {
+            let frame = IconFrame {
+                state: icon_state(ServiceState::Ready, known, indicator),
+                indicator,
+                heartbeat_on: true,
+            };
+            assert!(cache.publish(frame, |_, _| Ok(())).unwrap());
+            assert!(!cache
+                .publish(frame, |_, _| panic!("unchanged board state"))
+                .unwrap());
+        }
     }
 }

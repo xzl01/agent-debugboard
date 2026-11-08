@@ -83,7 +83,7 @@ let
     inherit version src;
 
     cargoRoot = "host-tools";
-    cargoHash = "sha256-RLMhJvczsNMx84beNPHu7czHkpGrKr+63N+qVwXnxKo=";
+    cargoHash = "sha256-vxtOKRzKZbknNQ00AHxBNguwgc6QBIGR1MAW4AImeXA=";
     buildAndTestSubdir = "host-tools";
 
     nativeBuildInputs = [ pkg-config ];
