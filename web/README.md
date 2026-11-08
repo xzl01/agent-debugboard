@@ -114,7 +114,7 @@ of the host `/30`, or read the URL from the CDC shell `ip` command.
 
 ## GitHub Pages
 
-Pushes to `dev` deploy the production build to
+Pushes to `next` with changes under `web/` or to the Pages workflow deploy the production build to
 <https://xzl01.github.io/agent-debugboard/>. The Pages build sets the Vite base
 path automatically; local development continues to use `/`.
 

@@ -2,7 +2,7 @@ name: Deploy Web UI to GitHub Pages
 
 on:
   push:
-    branches: ["dev"]
+    branches: ["next"]
     paths:
       - ".github/workflows/pages.yml"
       - "web/**"
