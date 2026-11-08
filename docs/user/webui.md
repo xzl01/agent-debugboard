@@ -19,7 +19,34 @@ On most operating systems, the board's captive-portal detection will prompt the
 browser to open this page automatically. If it doesn't, navigate to the printed
 URL manually.
 
-## How auto-open works
+## WebUSB landing-page hint
+
+The firmware advertises a WebUSB HTTPS landing URL containing the board address:
+
+```text
+https://xzl01.github.io/agent-debugboard/connect.html#device=10.20.30.1
+```
+
+When supported, the browser may show a connection notification. Opening it leads
+to a small guide, not the dashboard. Check the displayed address and explicitly
+open the board's local HTTP page. The guide does not scan, open USB interfaces,
+connect to board APIs, or redirect automatically. A private address is not proof
+of device identity.
+
+The address is an existing network-identity snapshot prepared during USB
+initialization, not a second saved configuration. After changing the network
+identity, restart the board to regenerate it; an old browser notification may
+still contain the old address. The fragment is not part of the HTTP request to
+Pages and contains no serial number or token.
+
+The Pages deployment must include `connect.html` and `connect.js`; flashing
+firmware does not publish them. Loading the guide requires Internet access.
+Offline, open the known board URL directly or use the existing Tray/CLI.
+Notifications remain best-effort: browser policy, USB access permissions and
+platform support apply, particularly Windows/WinUSB. No vendor data interface is
+added, and this feature does not convert HTTP/WS control into WebUSB transport.
+
+## How captive-portal hints work
 
 The board uses DHCP option 114 and HTTP detection endpoints to trigger the OS
 captive portal prompt without becoming the host's Internet gateway:

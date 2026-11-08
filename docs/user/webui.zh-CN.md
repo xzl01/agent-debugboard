@@ -18,6 +18,27 @@ ip -brief addr show
 ip
 ```
 
+## WebUSB 主页提示
+
+固件通过 WebUSB 声明携带板卡地址的 HTTPS 引导链接，例如：
+
+```text
+https://xzl01.github.io/agent-debugboard/connect.html#device=10.20.30.1
+```
+
+支持时，浏览器可能显示 USB 连接通知。点击通知进入的是轻量引导页，不是控制台；
+确认显示的地址后，再主动打开板卡本地 HTTP 页面。引导页不扫描、不打开 USB 接口、
+不连接板卡 API，也不自动跳转。私网地址本身不能证明设备身份。
+
+地址来自 USB 初始化时已有网络身份的快照，不是新增的持久化配置。修改网络身份后，
+重启板卡以重新生成声明；浏览器旧通知仍可能保留旧地址。fragment 不随 HTTP 请求
+发送给 Pages，且不携带序列号或 token。
+
+Pages 须发布包含 `connect.html` 和 `connect.js` 的版本；刷固件不会自动发布网页。
+加载引导页需要互联网；离线时直接打开已知板卡 URL，或使用现有 Tray/CLI。
+通知仍为 best-effort，受浏览器策略、USB 访问权限和平台支持限制，尤其是 Windows/
+WinUSB。此功能不增加 vendor 数据接口，也不把 HTTP/WS 控制迁移到 WebUSB。
+
 ## 强制门户发现
 
 固件通过 DHCP option 114 和 HTTP 检测端点辅助操作系统打开调试板 Web UI，

@@ -7,9 +7,12 @@
 
 #include "linkr_debugger_usb_net.h"
 
+#include "linkr_debugger_network.h"
 #include "linkr_debugger_serial.h"
+#include "linkr_debugger_webusb_url.h"
 
 #include <errno.h>
+#include <stdbool.h>
 
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
@@ -22,6 +25,9 @@ LOG_MODULE_REGISTER(linkr_debugger_usb_net, LOG_LEVEL_INF);
 #define LINKR_DEBUGGER_USB_PID  sys_cpu_to_le16(0xDB01U)
 #define LINKR_DEBUGGER_USB_POWER_MA 50U
 #define LINKR_DEBUGGER_J4_CDC_NODE DT_CHOSEN(radxa_linkr_j4_cdc)
+#define LINKR_DEBUGGER_WEBUSB_VENDOR_CODE 0x01U
+#define LINKR_DEBUGGER_WEBUSB_LANDING_PAGE 0x0001U
+#define LINKR_DEBUGGER_WEBUSB_GET_URL 0x0002U
 
 USBD_DEVICE_DEFINE(linkr_debugger_usbd,
 		   DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)),
@@ -35,6 +41,96 @@ USBD_DESC_CONFIG_DEFINE(linkr_debugger_fs_cfg_desc, "FS Configuration");
 
 USBD_CONFIGURATION_DEFINE(linkr_debugger_fs_config, 0U, LINKR_DEBUGGER_USB_POWER_MA,
 			  &linkr_debugger_fs_cfg_desc);
+
+static uint8_t webusb_url_descriptor[LINKR_DEBUGGER_WEBUSB_URL_DESCRIPTOR_MAX_LEN];
+static size_t webusb_url_descriptor_len;
+
+static const struct usb_bos_capability_lpm linkr_debugger_usb_ext = {
+	.bLength = sizeof(struct usb_bos_capability_lpm),
+	.bDescriptorType = USB_DESC_DEVICE_CAPABILITY,
+	.bDevCapabilityType = USB_BOS_CAPABILITY_EXTENSION,
+	.bmAttributes = 0UL,
+};
+
+USBD_DESC_BOS_DEFINE(linkr_debugger_usb_ext_desc, sizeof(linkr_debugger_usb_ext),
+		     &linkr_debugger_usb_ext);
+
+struct linkr_debugger_webusb_bos_desc {
+	struct usb_bos_platform_descriptor platform;
+	struct usb_bos_capability_webusb capability;
+} __packed;
+
+static const struct linkr_debugger_webusb_bos_desc linkr_debugger_webusb_bos = {
+	.platform = {
+		.bLength = sizeof(struct linkr_debugger_webusb_bos_desc),
+		.bDescriptorType = USB_DESC_DEVICE_CAPABILITY,
+		.bDevCapabilityType = USB_BOS_CAPABILITY_PLATFORM,
+		.PlatformCapabilityUUID = {
+			0x38, 0xB6, 0x08, 0x34, 0xA9, 0x09, 0xA0, 0x47,
+			0x8B, 0xFD, 0xA0, 0x76, 0x88, 0x15, 0xB6, 0x65,
+		},
+	},
+	.capability = {
+		.bcdVersion = sys_cpu_to_le16(0x0100),
+		.bVendorCode = LINKR_DEBUGGER_WEBUSB_VENDOR_CODE,
+		.iLandingPage = LINKR_DEBUGGER_WEBUSB_LANDING_PAGE,
+	},
+};
+
+static struct net_buf *linkr_debugger_webusb_to_host(
+	const struct usbd_context *const ctx,
+	const struct usb_setup_packet *const setup)
+{
+	struct net_buf *buf;
+	size_t len;
+
+	if (setup->RequestType.type != USB_REQTYPE_TYPE_VENDOR ||
+	    setup->RequestType.recipient != USB_REQTYPE_RECIPIENT_DEVICE ||
+	    setup->bRequest != LINKR_DEBUGGER_WEBUSB_VENDOR_CODE ||
+	    setup->wIndex != LINKR_DEBUGGER_WEBUSB_GET_URL ||
+	    setup->wValue != LINKR_DEBUGGER_WEBUSB_LANDING_PAGE ||
+	    webusb_url_descriptor_len == 0U) {
+		return NULL;
+	}
+
+	len = MIN((size_t)setup->wLength, webusb_url_descriptor_len);
+	buf = usbd_ep_ctrl_data_in_alloc(ctx, len);
+	if (buf == NULL) {
+		return NULL;
+	}
+
+	net_buf_add_mem(buf, webusb_url_descriptor, len);
+	return buf;
+}
+
+USBD_DESC_BOS_VREQ_DEFINE(linkr_debugger_webusb_desc,
+			  sizeof(linkr_debugger_webusb_bos),
+			  &linkr_debugger_webusb_bos,
+			  LINKR_DEBUGGER_WEBUSB_VENDOR_CODE,
+			  linkr_debugger_webusb_to_host, NULL);
+
+static bool linkr_debugger_webusb_snapshot_url(void)
+{
+	struct linkr_debugger_net_identity identity;
+	int ret;
+
+	webusb_url_descriptor_len = 0U;
+	ret = linkr_debugger_network_identity(&identity);
+	if (ret < 0) {
+		LOG_WRN("WebUSB URL identity unavailable (%d)", ret);
+		return false;
+	}
+
+	ret = linkr_debugger_webusb_url_encode(&identity, webusb_url_descriptor,
+					       sizeof(webusb_url_descriptor),
+					       &webusb_url_descriptor_len);
+	if (ret < 0) {
+		LOG_WRN("WebUSB URL unavailable (%d)", ret);
+		return false;
+	}
+
+	return true;
+}
 
 static void linkr_debugger_fix_code_triple(struct usbd_context *uds_ctx)
 {
@@ -91,7 +187,10 @@ static void linkr_debugger_usbd_msg_cb(struct usbd_context *const ctx,
 
 static struct usbd_context *linkr_debugger_usbd_setup(void)
 {
+	bool webusb_available;
 	int err;
+
+	webusb_available = linkr_debugger_webusb_snapshot_url();
 
 	err = usbd_add_descriptor(&linkr_debugger_usbd, &linkr_debugger_lang);
 	if (err) {
@@ -115,6 +214,30 @@ static struct usbd_context *linkr_debugger_usbd_setup(void)
 	if (err) {
 		LOG_ERR("Failed to add serial descriptor (%d)", err);
 		return NULL;
+	}
+
+	if (webusb_available) {
+		/* Chromium only probes WebUSB capabilities for USB 2.1 or newer. */
+		err = usbd_device_set_bcd_usb(&linkr_debugger_usbd, USBD_SPEED_FS,
+					      USB_SRN_2_1);
+		if (err) {
+			LOG_ERR("Failed to set USB 2.1 revision (%d)", err);
+			return NULL;
+		}
+
+		err = usbd_add_descriptor(&linkr_debugger_usbd,
+					  &linkr_debugger_usb_ext_desc);
+		if (err) {
+			LOG_ERR("Failed to add USB extension descriptor (%d)", err);
+			return NULL;
+		}
+
+		err = usbd_add_descriptor(&linkr_debugger_usbd,
+					  &linkr_debugger_webusb_desc);
+		if (err) {
+			LOG_ERR("Failed to add WebUSB descriptor (%d)", err);
+			return NULL;
+		}
 	}
 
 	err = usbd_add_configuration(&linkr_debugger_usbd, USBD_SPEED_FS,

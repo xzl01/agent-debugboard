@@ -30,14 +30,52 @@
 6. OTA 路径相关改动必须验证上传、测试启动、手动确认基本流程
 7. 新增功能补对应 functional test（可行时）
 
-持久化配置可能在 HTTP/CDC/WS control transport ready 之前重放并打开 `5v_out`、
+以下为默认 `full`／依赖外部供电的 HIL 预检。持久化配置可能在 HTTP/CDC/WS control transport ready 之前重放并打开 `5v_out`、
 `vdd_5v` 或 `5v_usb_hub`。这不改变 HIL 操作顺序：transport ready 后的
 **第一条 host hardware mutation** 仍必须显式确认/设置 `5v_out=on`，第二条
 mutation 请求 fixed PD 20 V，
 随后用 INA226 验证 5 V rail 后才能继续其它硬件操作。报告必须区分“启动重放已为
 on”和“host 首次 mutation 再次确认 on”。
 
+### 无 PD 供电时的 `usb-only` 受限验收
+
+用户明确说明已移除 PD 供电，或明确授权排除 PD20／相关外部供电项目时，可选择
+`usb-only`，不再以 PD20 和外供 5V/INA 预检作为 USB 控制面的前置。执行前记录用户授权、
+profile、板卡身份、固件和供电条件；不得把默认 `full` 预检失败静默改记为通过。
+
+- 每次刷写、启动或 reboot 后，transport ready 的第一条 host hardware mutation
+  **仍为 `5v_out=on`**，并回读逻辑状态；不发送 PD 档位请求。
+- 不要求外部供电 INA 电压非零；可读取电压/电流供记录，但不能记为电源/传感器功能 PASS。
+- 允许验证 USB 枚举、描述符/BOS/GET_URL、NCM HTTP/WS 控制面和只读状态、控制 CDC
+  fallback、watchdog 状态，以及正常 reboot、HTTP/CDC BOOTSEL 和完整 UF2 恢复。
+- 不运行 PD 协商、电源轨功能/负载测试、ADC/INA 精度或功率采集、外部目标供电及 GPIO
+  驱动类测试；除上述首条 `5v_out` fixture 动作外，不为此 profile 额外切换电源/线路。
+- 报告必须写“`usb-only` 受限 HIL”；PD20、外部电源和相关 ADC/INA 项标为“不适用／未测”，
+  不声明完整 HIL 通过。需要验证这些功能时，恢复默认 `full` 预检，不自动沿用例外。
+
 ## 标准构建与烧录
+
+### WebUSB 描述符与零长度请求回归
+
+此用例是 live HIL，不加入 offline unit runner。先按默认 `full` 或用户明确授权的
+`usb-only` profile 完成对应 fixture，并核对目标 USB bus、address、serial 和当前板卡 URL。
+需要 PyUSB/libusb 及原始 USB 读取权限；不要为此接管/卸载 NCM 或 CDC 驱动。
+
+```sh
+# 参数取自本轮已确认的同一板卡，不能复制其他板的枚举编号或旧地址。
+python3 apps/radxa_linkr_debugger/tests/webusb_hil.py \
+  --bus "$USB_BUS" --address "$USB_ADDRESS" --serial "$USB_SERIAL" \
+  --expected-url "https://xzl01.github.io/agent-debugboard/connect.html#device=$BOARD_IP" \
+  --output "$HIL_RESULT_DIR/webusb.json"
+```
+
+脚本验证实际 USB 2.1/BOS/GET_URL、短 `wLength`、完整非法索引拒绝和恢复，再发送64次
+零长度 vendor IN。当前 Zephyr 将 `wLength=0` 归为无 data stage 的 to-device 请求；
+WebUSB 没有 OUT handler，因此应逐次 STALL，而不是调用 IN callback 分配缓冲。
+每8次复查合法 GET_URL，最后重读 device/BOS/URL descriptor，确认拒绝未损坏控制面。
+不能仅测 URL 编码器就宣称该边界通过。测试不请求 PD、不切换输出，不自动重启或重试以掩盖失败。
+失败保留 JSON 阶段/已完成次数，按授权的恢复流程处理。通过仅代表描述符控制路径，
+不证明普通用户浏览器会显示通知，也不替代 Pages 发布或完整电源 HIL。
 
 ### 构建
 

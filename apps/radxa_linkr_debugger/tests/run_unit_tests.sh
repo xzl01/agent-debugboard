@@ -582,6 +582,19 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 "${OUT}/linkr_debugger_net_settings_test"
 
 ${CC} -std=c11 -Wall -Wextra -Werror \
+	-DLINKR_DEBUGGER_NET_SETTINGS_HOST_TEST=1 \
+	-ffunction-sections -fdata-sections \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_net_settings.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_webusb_url.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_webusb_url.c" \
+	-Wl,--gc-sections \
+	-o "${OUT}/linkr_debugger_webusb_url_test"
+
+"${OUT}/linkr_debugger_webusb_url_test"
+
+${CC} -std=c11 -Wall -Wextra -Werror \
 	-fsanitize=address,undefined -fno-omit-frame-pointer \
 	-I"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/pd_stubs" \
 	-I"${ROOT}/apps/radxa_linkr_debugger/src" \

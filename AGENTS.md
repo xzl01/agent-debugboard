@@ -133,10 +133,27 @@ radxa-linkr-debuggerctl ota confirm
 ## HIL functional test requirements
 
 After every flash, board startup, or reboot, the first hardware mutation once
-the control transport is ready must enable `5v_out`. Then request fixed PD
-20 V and verify the enabled 5 V rail with valid INA226 voltage/current data.
-Do not start other functional HIL steps until this preflight passes; stop if
-it cannot pass. These are HIL fixture steps, not firmware boot defaults.
+the control transport is ready must enable `5v_out`. The default `full` or
+externally powered HIL profile must then request fixed PD 20 V and verify the
+enabled 5 V rail with valid INA226 voltage/current data. Stop that profile if
+its preflight cannot pass. These are HIL fixture steps, not firmware boot defaults.
+
+When the user explicitly states that PD power is removed or authorizes excluding
+PD20-related power tests, a recorded `usb-only` profile may instead validate the
+USB-powered control plane without PD20 or externally supplied 5 V/INA preflight:
+
+- Preserve the first host hardware mutation `5v_out=on` and read back its logical
+  state after every startup. Do not request a PD voltage in this profile.
+- Allow USB enumeration/descriptors/BOS/GET_URL, NCM HTTP/WS control-plane and
+  read-only status, control CDC fallback, watchdog status, normal reboot,
+  HTTP/CDC BOOTSEL and combined-UF2 recovery.
+- Do not run PD, rail/load, ADC/INA accuracy, power capture, externally powered
+  target or GPIO-drive tests, or add rail/route mutations beyond the first
+  `5v_out` fixture action. An absent external voltage is not a power-test PASS.
+- Record the user's authorization, target, firmware, power conditions and
+  `usb-only` scope. Mark excluded power/PD/ADC items untested or not applicable;
+  never claim full HIL passed. Restore the default preflight when those features
+  are in scope. Follow `docs/testing/hil-functional-test-spec.md`.
 
 Firmware and host control logic changes must not be considered complete based only on compilation, static analysis, or unit tests. When a change affects real hardware behavior, the author must also perform a board-level HIL functional test.
 

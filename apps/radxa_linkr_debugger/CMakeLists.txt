@@ -187,6 +187,7 @@ target_sources(app PRIVATE
   src/linkr_debugger_shell.c
   src/linkr_debugger_sigrok_linkr.c
   src/linkr_debugger_ws.c
+  src/linkr_debugger_webusb_url.c
   src/linkr_debugger_usb_net.c
 )
 
