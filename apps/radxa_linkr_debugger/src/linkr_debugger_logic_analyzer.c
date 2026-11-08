@@ -1128,28 +1128,55 @@ static int la_stream_sink_write_fast8_payload(
 	uint16_t *values_and)
 {
 	const struct linkr_debugger_la_packed_ring_lane *lane = &plan->lanes[0];
+	uint8_t selected_count = plan->selected_pin_count;
+	uint8_t first_pin;
+	uint8_t shift;
+	uint8_t mask;
 
 	if (plan->kind != LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED ||
 	    plan->lane_count != 1U || plan->bytes_per_sample != 1U ||
-	    !la_stream_selected_pins_match(plan, 10U, 8U) ||
 	    lane->pin_base != 10U || lane->pin_count != 8U ||
 	    lane->bits_per_sample != 8U || lane->autopush_bits != 32U ||
 	    lane->samples_per_word != 4U || lane->sample_capacity == 0U ||
 	    sample_count > lane->sample_capacity ||
 	    lane->sample_capacity != plan->sample_capacity ||
 	    lane->word_count != lane->sample_capacity / 4U ||
-	    lane_words[0] == NULL || lane_word_counts[0] != lane->word_count) {
+	    lane_words[0] == NULL || lane_word_counts[0] != lane->word_count ||
+	    selected_count == 0U || selected_count > lane->pin_count) {
 		return -ENOTSUP;
 	}
+	first_pin = plan->selected_pins[0];
+	if (first_pin < lane->pin_base) {
+		return -ENOTSUP;
+	}
+	shift = (uint8_t)(first_pin - lane->pin_base);
+	if (shift >= lane->pin_count || selected_count > lane->pin_count - shift) {
+		return -ENOTSUP;
+	}
+	for (uint8_t i = 0U; i < selected_count; i++) {
+		if (plan->selected_pins[i] != (uint8_t)(first_pin + i)) {
+			return -ENOTSUP;
+		}
+	}
+	mask = (uint8_t)((1U << selected_count) - 1U);
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 	const uint8_t *ring = (const uint8_t *)lane_words[0];
 	uint32_t ring_index = (uint32_t)(first_sample % lane->sample_capacity);
 	size_t first_len = sample_count < lane->sample_capacity - ring_index ?
 		sample_count : lane->sample_capacity - ring_index;
 
-	memcpy(payload, ring + ring_index, first_len);
-	if (first_len < sample_count) {
-		memcpy(payload + first_len, ring, sample_count - first_len);
+	if (shift == 0U && selected_count == lane->pin_count) {
+		memcpy(payload, ring + ring_index, first_len);
+		if (first_len < sample_count) {
+			memcpy(payload + first_len, ring, sample_count - first_len);
+		}
+	} else {
+		for (size_t i = 0U; i < first_len; i++) {
+			payload[i] = (uint8_t)((ring[ring_index + i] >> shift) & mask);
+		}
+		for (size_t i = first_len; i < sample_count; i++) {
+			payload[i] = (uint8_t)((ring[i - first_len] >> shift) & mask);
+		}
 	}
 #else
 	return -ENOTSUP;

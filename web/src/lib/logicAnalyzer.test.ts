@@ -46,6 +46,7 @@ import {
   buildSigrokFrame,
   parseSigrokFrame,
   parseSigrokHeader,
+  SigrokCompression,
   SigrokFrameType,
   SigrokModeId,
   SigrokModeFlag,
@@ -70,7 +71,7 @@ const PRE_TRIGGER_CAPS: SigrokCapsResp = {
       channelCount: 8,
       sampleBytes: 1,
       maxSamplerateKhz: 125000,
-      compression: 3,
+      compression: 0x1f,
     },
     {
       modeId: SigrokModeId.WIDE11,
@@ -78,7 +79,7 @@ const PRE_TRIGGER_CAPS: SigrokCapsResp = {
       channelCount: 11,
       sampleBytes: 2,
       maxSamplerateKhz: 125000,
-      compression: 3,
+      compression: 0x1b,
     },
   ],
 };
@@ -1159,4 +1160,24 @@ test("assembles bounded captures across mixed BIT_PACK and BIT_PACK_RLE frames",
   assert.equal(capture.sampleCount, 7);
   assert.equal(capture.triggerIndex, 4);
   assert.deepEqual(capture.values, [0x01, 0x05, 0x00, 0x07, 0x07, 0x03, 0x03]);
+});
+
+test("assembles sparse DENSE_BITS and existing codecs across u24 wrap without changing trigger indices", () => {
+  const channelMask = 0x0441;
+  const chunks = [
+    { sampleIndex: 0xfffffd, sampleCount: 3, compression: SigrokCompression.DENSE_BITS, samples: [0xc8, 0x01] },
+    { sampleIndex: 0, sampleCount: 2, compression: SigrokCompression.BIT_PACK, samples: [2, 5] },
+    { sampleIndex: 2, sampleCount: 2, compression: SigrokCompression.RLE, samples: [3, 2, 0] },
+    { sampleIndex: 4, sampleCount: 4, compression: SigrokCompression.PACKED_PALETTE2, samples: [0, 7, 0x0a] },
+    { sampleIndex: 8, sampleCount: 1, compression: SigrokCompression.RAW, samples: [1] },
+    { sampleIndex: 9, sampleCount: 2, compression: SigrokCompression.BIT_PACK_RLE, samples: [4, 2, 0] },
+  ];
+  const frames = chunks.map((chunk) => parseDataFrame(buildSigrokFrame(
+    0, SigrokFrameType.DATA, buildDataFramePayload({ ...chunk, channelMask })
+  )));
+  const capture = assembleBoundedSigrokCapture({ channelMask, triggerSampleIndex: 0, frames });
+  assert.equal(capture.firstSampleIndex, 0xfffffd);
+  assert.equal(capture.sampleCount, 14);
+  assert.equal(capture.triggerIndex, 3);
+  assert.deepEqual(capture.values, [0, 1, 7, 2, 5, 3, 3, 0, 7, 0, 7, 1, 4, 4]);
 });

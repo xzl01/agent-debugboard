@@ -367,6 +367,26 @@ ${CC} -std=c11 -Wall -Wextra -Werror \
 
 "${OUT}/linkr_debugger_ws_sampler_sync_test"
 
+${CC} -std=c11 -Wall -Wextra -Werror -Wno-unused-function \
+	-pthread \
+	-DLINKR_DEBUGGER_CAPTURE_ARENA_HOST_TEST \
+	-DLINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST \
+	-DLINKR_DEBUGGER_LA_HOST_TEST \
+	-DLINKR_DEBUGGER_SIGROK_LINKR_HOST_TEST \
+	-DCONFIG_SOC_SERIES_RP2350 \
+	-ffunction-sections -fdata-sections \
+	-fsanitize=address,undefined -fno-omit-frame-pointer \
+	-I"${ROOT}/apps/radxa_linkr_debugger/src" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_arena.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_capture_arbiter.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_logic_analyzer.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/src/linkr_debugger_sigrok_linkr.c" \
+	"${ROOT}/apps/radxa_linkr_debugger/tests/model_host/test_linkr_debugger_ws_slot_pool.c" \
+	-Wl,--gc-sections \
+	-o "${OUT}/linkr_debugger_ws_slot_pool_test"
+
+"${OUT}/linkr_debugger_ws_slot_pool_test"
+
 ${CC} -std=c11 -Wall -Wextra -Werror \
 	-DLINKR_DEBUGGER_TASK_HOST_TEST \
 	-DLINKR_DEBUGGER_CAPTURE_ARBITER_HOST_TEST \

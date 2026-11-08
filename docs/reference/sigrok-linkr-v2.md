@@ -111,6 +111,10 @@ The Web UI always sends `pre_samples=0`.
 | 1 | RLE | Supports run-length encoding |
 | 2 | SINGLE_BITS | Supports chronological 1-bit SINGLE payloads and their RLE form |
 | 3 | PALETTE2 | Supports two-value palettes with one LSB-first selector bit per sample |
+| 4 | DENSE_BITS | Supports chronological N-bit packing across sample boundaries, codec 7 |
+
+These are compression capability flags, not a bitmap indexed by codec ID.
+The current FAST8 and WIDE11 compression masks are 31 and 27 respectively.
 
 ### CONFIG_REQ (12 bytes)
 
@@ -238,6 +242,7 @@ Sample indices wrap modulo 24 bits; wrap is not a terminal condition.
 | 4 | SINGLE_BITS | Eight chronological SINGLE samples per byte, LSB-first |
 | 5 | SINGLE_BITS_RLE | RLE over the chronological packed bytes |
 | 6 | PACKED_PALETTE2 | Two packed sample values plus one selector bit per sample |
+| 7 | DENSE_BITS | Exactly popcount(channel_mask) bits per chronological sample, LSB-first |
 
 **Sample Formats**:
 
@@ -249,8 +254,9 @@ Each sample: ceil(popcount(channel_mask)/8) bytes
 
 **BIT_PACK (compression=1)**:
 ```
-[packed_byte_0][packed_byte_1]...
-Bits packed LSB-first, channel order follows channel_mask
+[packed_sample_0][packed_sample_1]...
+Each sample occupies ceil(popcount(channel_mask)/8) little-endian bytes
+Channel bits are compacted in ascending channel_mask order; sample boundaries remain byte-aligned
 ```
 
 **RLE (compression=2)**:
@@ -293,10 +299,42 @@ selector bit order: chronological samples, least-significant bit first
 selector bytes: ceil(sample_count/8); unused high bits in the final byte must be zero
 ```
 
-The encoder emits PACKED_PALETTE2 only when a chunk contains exactly two packed
-sample values and its payload is strictly smaller than both sample-value RLE and
-BIT_PACK. One-value chunks use BIT_PACK_RLE. Chunks with three or more values
-fall back to the smaller valid RLE/BIT_PACK representation without data loss.
+**DENSE_BITS (compression=7)**:
+```
+k = popcount(channel_mask), 1 <= k <= 11
+bit (i*k+j) of the payload bitstream = compact channel bit j of sample i
+byte order within the bitstream: least-significant bit first
+payload bytes: ceil(sample_count*k/8)
+channel_mask must be nonzero and contain no bits outside 0x07ff
+sample_count must be nonzero
+unused high bits in the final byte must be zero
+```
+
+Channel order follows set bits of the mask from low to high, not the physical
+GPIO number as a payload bit offset. Decoders expand each sample back to the
+usual `ceil(k/8)` little-endian bytes. For example, mask `0x024b` and samples
+`0,1,2,3,4,5,6,7,31` produce `20 88 41 8a 39 1f`. Truncation, trailing bytes,
+invalid masks/counts and nonzero padding are errors, not partial frames.
+
+The packed encoder compares valid BIT_PACK, sample-value RLE, two-value palette
+and DENSE_BITS candidates before modifying its input. RLE is a candidate only
+when its in-place output prefixes cannot overwrite unread input; palette needs
+exactly two distinct packed values. DENSE_BITS is selected only when strictly
+smaller than the previously selected strategy; ties retain that strategy.
+Eight-channel chunks skip the dense candidate but still consider RLE/palette.
+The existing SINGLE continuous path retains SINGLE_BITS/SINGLE_BITS_RLE.
+No additional scratch buffer or heap allocation is required, and chunk/sample
+limits, first-sample indices and trigger semantics do not change.
+
+For incompressible chunks, five channels and 4096 samples occupy 2560 rather
+than 4096 sample-data bytes; eleven channels and 2048 samples occupy 2816 rather
+than 4096 bytes. These are payload savings, not measured USB throughput gains;
+the 17-byte DATA prefix and transport overhead still apply. Existing RLE/palette
+can remain smaller for compressible input.
+
+Before delivering a DATA event, a session client must compare its complete mask
+with the last successfully acknowledged CONFIG, not just its popcount. Pending
+or rejected CONFIG does not replace that snapshot; disconnect clears it.
 
 ### ERROR (3 bytes)
 
@@ -348,7 +386,7 @@ SINGLE and FAST8 use one capture SM; WIDE11 uses two capture SMs. For WIDE11:
 - **Post-capture deep-burst transport**: up to 98 DATA frames, with the dedicated
   raw-burst item ceiling of 1024 samples per frame and 140000 B total payload; this
   item ceiling is independent of the larger continuous-stream chunk sizes above
-- **Shared burst slice**: 144184 bytes; overlays the 161144 B total backing allocation (sized to max(normal, burst)=161144 B); quiesces ADC telemetry, power capture, and normal Sigrok pool for the lease lifetime; restores after drain
+- **Shared burst slice**: 144184 bytes; overlays the 144184 B total backing allocation (sized to max(normal, burst)=144184 B); quiesces ADC telemetry, power capture, and normal Sigrok pool for the lease lifetime; restores after drain
 - **Two-phase START**: ownership and quiesce are ready before the response. NONE
   sends START_RESP in RUNNING state with no ARMED event; triggered captures send
   START_RESP in ARMED state followed by the ARMED event. GO then synchronously
@@ -361,7 +399,7 @@ The three physical capture plans:
   12500 B source at 100 MHz (100000 samples × 1 bit). A FAST8 physical plan, not a separate Sigrok wire mode.
 - **FAST8**: one 8-bit lane (GP10-GP17), autopush32, 4 samples per 32-bit word,
   100000 B source at 100 MHz (100000 samples × 8 bits)
-- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 161144 B total backing allocation)
+- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 144184 B total backing allocation)
 
 WIDE11 verification is the freeze-final HIL evidence block below; it is not the
 same artifact as the historical WIDE12 baseline.
@@ -505,8 +543,8 @@ All acquisitions capture at the requested sample rate until a stop condition:
 **Key insight**: Continuous protocol captures are bounded by the packed ring and
 USB/NCM transport. Higher rates fill the buffer faster; if continuity
 can no longer be proven, firmware emits a terminal OVERRUN/ERROR event and stops
-instead of silently continuing (lossless-or-stop). The packed ring reuses the 161144 B
-total backing allocation (sized to max(normal, burst)=161144 B); the WIDE11 144184 B hardware
+instead of silently continuing (lossless-or-stop). The packed ring reuses the 144184 B
+total backing allocation (sized to max(normal, burst)=144184 B); the WIDE11 144184 B hardware
 slice and the 43008 B WS telemetry ring share that backing allocation.
 
 ## Session Flow
@@ -677,7 +715,7 @@ mapping, transition-rich 16 MHz SINGLE, 25/125 MHz sustained transport, or watch
 usable capacities are SINGLE 260096, FAST8 30720, WIDE11 14336; WIDE11 advances at the
 minimum completed lane sequence, treats DMA write-pointer skew as diagnostic, and stops on the
 sticky PIO RXSTALL hardware flag or ring overwrite; the packed
-ring reuses the 161144 B total backing allocation (sized to max(normal, burst)=161144 B),
+ring reuses the 144184 B total backing allocation (sized to max(normal, burst)=144184 B),
 and the WIDE11 144184 B hardware slice plus the 43008 B WS telemetry ring share that
 backing allocation
 - LA sink: protocol-neutral consumer with 4 DATA slots of 4,096 payload bytes each plus
@@ -741,15 +779,21 @@ capacity stops are labeled `capacity_stop_before_data` and are capacity-stop
 diagnostics only, not sustained-throughput claims. See "Lossless-or-stop
 capacity outcomes on the wire" above.
 
-### libsigrok Driver
+### libsigrok Driver (Planned, Not Implemented for v2)
 
-- TCP client connecting to port 5556
-- Parses binary frames, sends SR_DF_LOGIC
-- Supports continuous streaming
+The in-repository driver is a pre-existing v1 prototype, not a current v2
+implementation. The following are intended integration capabilities, not PASS
+claims or functionality provided by stock libsigrok:
 
-### PulseView Integration
+- A v2-aware TCP client connecting to port 5556
+- Parsing current binary frames and forwarding decoded samples as SR_DF_LOGIC
+- Continuous streaming with current codec and lossless-or-stop semantics
 
-- Single device per connection
+### PulseView Integration (Planned)
+
+Intended behavior after a working native v2 driver exists:
+
+- One device per connection
 - Dynamic channel selection
-- Compression transparent to UI
+- Compression decoded before UI delivery
 - Real-time waveform display

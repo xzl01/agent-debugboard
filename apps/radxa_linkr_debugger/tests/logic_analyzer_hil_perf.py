@@ -4,6 +4,12 @@
 This runner measures the host-observed behavior of the current firmware.  It
 does not infer the hardware samplerate from transport throughput: receive rates
 reported here are only effective host receive rates for the selected transport.
+
+Live runs require an authorized, connected board and the prerequisites in
+docs/testing/hil-functional-test-spec.md. After each startup/reboot/flash, enable
+5v_out as the first hardware mutation, then request fixed PD 20 V and verify
+valid INA226 voltage/current data before running the matrix. Mapping/trigger
+cases additionally require their declared physical fixture.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ SIGROK_MAGIC = 0x72
 SIGROK_PROTOCOL_VERSION = 2
 SIGROK_HEADER_BYTES = 9
 SIGROK_DATA_META_BYTES = 8
+SIGROK_MAX_SAMPLE_PAYLOAD_BYTES = 4096
 SIGROK_SAMPLE_INDEX_MODULO = 1 << 24
 SIGROK_SAMPLE_INDEX_MASK = SIGROK_SAMPLE_INDEX_MODULO - 1
 COMPRESSION_NONE = 0
@@ -39,6 +46,7 @@ COMPRESSION_BIT_PACK_RLE = 3
 COMPRESSION_SINGLE_BITS = 4
 COMPRESSION_SINGLE_BITS_RLE = 5
 COMPRESSION_PACKED_PALETTE2 = 6
+COMPRESSION_DENSE_BITS = 7
 
 FRAME_HELLO_REQ = 0x01
 FRAME_HELLO_RESP = 0x02
@@ -654,13 +662,47 @@ def _decode_single_bits(sample_payload: bytes, sample_count: int, channel_mask: 
     )
 
 
+def _decode_dense_bits(sample_payload: bytes, sample_count: int, channel_count: int) -> bytes:
+    bit_count = sample_count * channel_count
+    expected_len = (bit_count + 7) // 8
+    if len(sample_payload) != expected_len:
+        raise ValueError(f"DENSE_BITS payload length {len(sample_payload)} != expected {expected_len}")
+    trailing_bits = bit_count % 8
+    if trailing_bits and sample_payload[-1] & ~((1 << trailing_bits) - 1):
+        raise ValueError("DENSE_BITS payload has non-zero tail padding")
+
+    bytes_per_sample = (channel_count + 7) // 8
+    out = bytearray(sample_count * bytes_per_sample)
+    accumulator = 0
+    available_bits = 0
+    input_pos = 0
+    value_mask = (1 << channel_count) - 1
+    for sample_index in range(sample_count):
+        while available_bits < channel_count:
+            accumulator |= sample_payload[input_pos] << available_bits
+            available_bits += 8
+            input_pos += 1
+        value = accumulator & value_mask
+        accumulator >>= channel_count
+        available_bits -= channel_count
+        output_pos = sample_index * bytes_per_sample
+        out[output_pos] = value & 0xFF
+        if bytes_per_sample == 2:
+            out[output_pos + 1] = value >> 8
+    return bytes(out)
+
+
 def decode_sigrok_data_payload(meta: SigrokDataMeta, sample_payload: bytes) -> bytes:
-    if meta.sample_count <= 0:
-        raise ValueError("DATA sample_count must be non-zero")
+    if not 1 <= meta.sample_count <= 0xFFFF:
+        raise ValueError("DATA sample_count must be a non-zero uint16")
+    if meta.channel_mask <= 0 or meta.channel_mask & ~0x07FF:
+        raise ValueError("DATA channel_mask must be non-zero within 0x07ff")
+    if len(sample_payload) > SIGROK_MAX_SAMPLE_PAYLOAD_BYTES:
+        raise ValueError("DATA sample payload exceeds 4096-byte limit")
     bytes_per_sample = sigrok_bytes_per_sample(meta.channel_mask)
-    if bytes_per_sample <= 0:
-        raise ValueError("DATA channel_mask selects no channels")
     expected_len = meta.sample_count * bytes_per_sample
+    if meta.compression == COMPRESSION_DENSE_BITS:
+        return _decode_dense_bits(sample_payload, meta.sample_count, meta.channel_mask.bit_count())
     if meta.compression in (COMPRESSION_NONE, COMPRESSION_BIT_PACK):
         if len(sample_payload) != expected_len:
             raise ValueError(f"BIT_PACK payload length {len(sample_payload)} != expected {expected_len}")

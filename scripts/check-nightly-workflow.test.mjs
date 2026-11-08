@@ -197,8 +197,9 @@ const MUTATIONS = [
 ];
 
 for (const readme of Object.keys(READMES)) {
-  for (const [current, obsolete] of [["43008 B", "30720 B"], ["161144 B", "148856 B"]]) {
-    test(`W13: ${readme} rejects obsolete ${obsolete} allocation`, async () => {
+  const allocationLabel = readme === "README.md" ? "total backing allocation" : "总后备分配";
+  for (const [current, obsolete] of [["43008 B", "30720 B"], [`144184 B ${allocationLabel}`, `161144 B ${allocationLabel}`]]) {
+    test(`W13: ${readme} rejects obsolete ${obsolete}`, async () => {
       await withRepo(BASELINE, async (root) => {
         await writeFile(path.join(root, readme), replaceOnce(READMES[readme], current, obsolete));
         const result = await checkNightlyWorkflow(root);

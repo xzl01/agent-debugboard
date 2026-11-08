@@ -5,6 +5,7 @@
  * Copyright (c) Jiali Chen <chenjiali@radxa.com>
  */
 
+#ifndef LINKR_DEBUGGER_WS_POOL_HOST_TEST
 #include <stdbool.h>
 #include <errno.h>
 #include <stdarg.h>
@@ -1027,9 +1028,14 @@ static uint64_t linkr_debugger_ws_latest_sample_sequence;
 static K_THREAD_STACK_DEFINE(linkr_debugger_adc_sampler_stack, 2048);
 static struct k_thread linkr_debugger_adc_sampler_thread_data;
 
-BUILD_ASSERT(sizeof(struct linkr_debugger_capture) <=
+BUILD_ASSERT(sizeof(struct linkr_debugger_capture) == 136U,
+	"host-stream-v1 power capture ARM state must occupy exactly 136 bytes");
+BUILD_ASSERT(sizeof(struct linkr_debugger_capture) ==
 	LINKR_DEBUGGER_CAPTURE_ARENA_POWER_CAPTURE_BYTES,
 	"power capture arena slice size mismatch");
+BUILD_ASSERT(LINKR_DEBUGGER_CAPTURE_ARENA_POWER_CAPTURE_OFFSET %
+	_Alignof(struct linkr_debugger_capture) == 0U,
+	"power capture arena slice must retain its ARM alignment");
 
 enum {
 	LINKR_DEBUGGER_WS_EVENT_STATE = BIT(0),
@@ -3391,6 +3397,11 @@ static void sigrok_ws_release_capture_if_held(struct linkr_debugger_ws_client *c
 	}
 }
 
+#endif /* LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST */
+#endif /* LINKR_DEBUGGER_WS_POOL_HOST_TEST */
+
+#ifndef LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST
+
 struct sigrok_ws_stream_queue_item {
 	void *fifo_reserved;
 	enum linkr_debugger_sigrok_linkr_ws_slot_state state;
@@ -3406,12 +3417,17 @@ struct sigrok_ws_stream_queue_item {
 
 struct sigrok_ws_stream_data_slot {
 	struct sigrok_ws_stream_queue_item item;
-	uint8_t storage[LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_BYTES] __aligned(4);
 };
 
 struct sigrok_ws_stream_terminal_slot {
 	struct sigrok_ws_stream_queue_item item;
-	uint8_t storage[LINKR_DEBUGGER_WS_SIGROK_TERMINAL_SLOT_BYTES] __aligned(4);
+};
+
+struct sigrok_ws_stream_payload_storage {
+	struct {
+		uint8_t bytes[LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_BYTES] __aligned(4);
+	} data[LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_COUNT];
+	uint8_t terminal[LINKR_DEBUGGER_WS_SIGROK_TERMINAL_SLOT_BYTES] __aligned(4);
 };
 
 struct sigrok_ws_stream_slot_pool {
@@ -3419,6 +3435,7 @@ struct sigrok_ws_stream_slot_pool {
 	struct sigrok_ws_stream_data_slot data[LINKR_DEBUGGER_WS_SIGROK_DATA_SLOT_COUNT];
 	struct sigrok_ws_stream_terminal_slot terminal;
 	bool initialized;
+	bool gate_closed;
 };
 
 struct sigrok_ws_burst_slot_pool {
@@ -3438,13 +3455,23 @@ struct sigrok_ws_burst_slot_pool {
 };
 
 static struct sigrok_ws_burst_slot_pool sigrok_ws_burst_pool;
+/* Never overlay the lock or a queue/lease node with DMA payload. */
+static struct sigrok_ws_stream_slot_pool sigrok_ws_stream_pool;
 
-#define sigrok_ws_stream_pool \
-	(*((struct sigrok_ws_stream_slot_pool *)linkr_debugger_capture_arena_sigrok_ws_pool()))
+#ifndef LINKR_DEBUGGER_WS_POOL_HOST_TEST
+BUILD_ASSERT(sizeof(struct sigrok_ws_stream_slot_pool) == 144U,
+	"normal WS resident ARM metadata must occupy exactly 144 bytes");
+#endif
+
+#define sigrok_ws_stream_storage \
+	(*((struct sigrok_ws_stream_payload_storage *)linkr_debugger_capture_arena_sigrok_ws_pool()))
 
 BUILD_ASSERT(LINKR_DEBUGGER_CAPTURE_ARENA_SIGROK_WS_POOL_BYTES ==
-	sizeof(struct sigrok_ws_stream_slot_pool),
-	"Sigrok WS stream pool arena slice size mismatch");
+	sizeof(struct sigrok_ws_stream_payload_storage),
+	"Sigrok WS payload storage arena slice size mismatch");
+BUILD_ASSERT(LINKR_DEBUGGER_CAPTURE_ARENA_SIGROK_WS_POOL_OFFSET %
+	_Alignof(struct sigrok_ws_stream_payload_storage) == 0U,
+	"Sigrok WS payload storage must retain its alignment");
 
 BUILD_ASSERT((sizeof(struct sigrok_ws_stream_queue_item) +
 	LINKR_DEBUGGER_SIGROK_LINKR_HEADER_BYTES +
@@ -3503,8 +3530,8 @@ static void sigrok_ws_stream_pool_init_locked(void)
 		item->state = LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_FREE;
 		item->kind = SIGROK_WS_STREAM_ITEM_FREE;
 		item->burst_slot = false;
-		item->data = sigrok_ws_stream_pool.data[i].storage;
-		item->capacity = sizeof(sigrok_ws_stream_pool.data[i].storage);
+		item->data = sigrok_ws_stream_storage.data[i].bytes;
+		item->capacity = sizeof(sigrok_ws_stream_storage.data[i].bytes);
 	}
 
 	memset(&sigrok_ws_stream_pool.terminal.item, 0,
@@ -3512,8 +3539,8 @@ static void sigrok_ws_stream_pool_init_locked(void)
 	sigrok_ws_stream_pool.terminal.item.state = LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_FREE;
 	sigrok_ws_stream_pool.terminal.item.kind = SIGROK_WS_STREAM_ITEM_FREE;
 	sigrok_ws_stream_pool.terminal.item.burst_slot = false;
-	sigrok_ws_stream_pool.terminal.item.data = sigrok_ws_stream_pool.terminal.storage;
-	sigrok_ws_stream_pool.terminal.item.capacity = sizeof(sigrok_ws_stream_pool.terminal.storage);
+	sigrok_ws_stream_pool.terminal.item.data = sigrok_ws_stream_storage.terminal;
+	sigrok_ws_stream_pool.terminal.item.capacity = sizeof(sigrok_ws_stream_storage.terminal);
 	sigrok_ws_stream_pool.initialized = true;
 }
 
@@ -3531,20 +3558,31 @@ static bool sigrok_ws_stream_pool_all_free_locked(void)
 		LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_FREE;
 }
 
-static bool sigrok_ws_stream_pool_all_free(void)
+static bool sigrok_ws_stream_pool_try_quiesce(void)
 {
 	bool all_free;
 	k_spinlock_key_t key = k_spin_lock(&sigrok_ws_stream_pool.lock);
 
 	all_free = sigrok_ws_stream_pool_all_free_locked();
+	if (all_free) {
+		/* Allocation and the final all-free check share this same lock. */
+		sigrok_ws_stream_pool.gate_closed = true;
+	}
 	k_spin_unlock(&sigrok_ws_stream_pool.lock, key);
 	return all_free;
 }
 
 static void sigrok_ws_stream_pool_reinitialize_after_arena_resume(void)
 {
-	memset(&sigrok_ws_stream_pool, 0, sizeof(sigrok_ws_stream_pool));
-	sigrok_ws_stream_pool_init_locked();
+	k_spinlock_key_t key = k_spin_lock(&sigrok_ws_stream_pool.lock);
+
+	if (sigrok_ws_stream_pool.gate_closed) {
+		/* No lease can survive a successful quiesce. Never clear the lock. */
+		sigrok_ws_stream_pool.initialized = false;
+		sigrok_ws_stream_pool_init_locked();
+		sigrok_ws_stream_pool.gate_closed = false;
+	}
+	k_spin_unlock(&sigrok_ws_stream_pool.lock, key);
 }
 
 static uint32_t sigrok_ws_stream_pool_data_slots_used_locked(uint32_t session_id,
@@ -3579,8 +3617,11 @@ static void sigrok_ws_stream_slot_release_locked(struct sigrok_ws_stream_queue_i
 	item->len = 0U;
 }
 
-static void sigrok_ws_stream_pool_release_client_slots(struct linkr_debugger_ws_client *client)
+static void sigrok_ws_burst_slot_release(struct sigrok_ws_stream_queue_item *item);
+
+static void sigrok_ws_stream_pool_reset_client_queue(struct linkr_debugger_ws_client *client)
 {
+	struct sigrok_ws_stream_queue_item *item;
 	k_spinlock_key_t key;
 
 	if (client == NULL) {
@@ -3589,18 +3630,23 @@ static void sigrok_ws_stream_pool_release_client_slots(struct linkr_debugger_ws_
 
 	key = k_spin_lock(&sigrok_ws_stream_pool.lock);
 	sigrok_ws_stream_pool_init_locked();
-	for (size_t i = 0U; i < ARRAY_SIZE(sigrok_ws_stream_pool.data); i++) {
-		struct sigrok_ws_stream_queue_item *item = &sigrok_ws_stream_pool.data[i].item;
-
-		if (item->owner_session_id == client->session_id &&
-		    item->state != LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_POPPED) {
+	/* Invalidate before draining, atomically against acquire/commit. Producer
+	 * and sender POPPED items remain held until their sole owner returns them.
+	 */
+	client->sigrok_stream_generation++;
+	if (client->sigrok_stream_generation == 0U) {
+		client->sigrok_stream_generation++;
+	}
+	while ((item = k_fifo_get(&client->sigrok_stream_fifo, K_NO_WAIT)) != NULL) {
+		/* Capture stop may already have aborted the independent burst pool. */
+		if (item->burst_slot) {
+			sigrok_ws_burst_slot_release(item);
+		} else {
 			sigrok_ws_stream_slot_release_locked(item);
 		}
 	}
-	if (sigrok_ws_stream_pool.terminal.item.owner_session_id == client->session_id &&
-	    sigrok_ws_stream_pool.terminal.item.state != LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_POPPED) {
-		sigrok_ws_stream_slot_release_locked(&sigrok_ws_stream_pool.terminal.item);
-	}
+	atomic_set(&client->sigrok_stream_qdepth, 0);
+	atomic_set(&client->sigrok_stream_qbytes, 0);
 	k_spin_unlock(&sigrok_ws_stream_pool.lock, key);
 }
 
@@ -3912,6 +3958,10 @@ static struct sigrok_ws_stream_queue_item *sigrok_ws_stream_slot_acquire(
 
 	key = k_spin_lock(&sigrok_ws_stream_pool.lock);
 	sigrok_ws_stream_pool_init_locked();
+	if (sigrok_ws_stream_pool.gate_closed || !client->connected) {
+		k_spin_unlock(&sigrok_ws_stream_pool.lock, key);
+		return NULL;
+	}
 	if (terminal) {
 		struct sigrok_ws_stream_queue_item *item = &sigrok_ws_stream_pool.terminal.item;
 
@@ -3961,6 +4011,7 @@ static void sigrok_ws_stream_slot_release(struct sigrok_ws_stream_queue_item *it
 	k_spin_unlock(&sigrok_ws_stream_pool.lock, key);
 }
 
+#ifndef LINKR_DEBUGGER_WS_POOL_HOST_TEST
 static void sigrok_ws_stream_wake_work_handler(struct k_work *work)
 {
 	struct k_work_delayable *delayable = k_work_delayable_from_work(work);
@@ -4123,6 +4174,8 @@ static void sigrok_ws_stream_log_transport_metrics(struct linkr_debugger_ws_clie
 		client->sigrok_session.sample_index, client->sigrok_session.emitted_samples);
 }
 
+#endif /* LINKR_DEBUGGER_WS_POOL_HOST_TEST */
+
 static void sigrok_ws_stream_qbytes_add(struct linkr_debugger_ws_client *client,
 	size_t bytes)
 {
@@ -4147,6 +4200,41 @@ static void sigrok_ws_stream_qbytes_sub(struct linkr_debugger_ws_client *client,
 			return;
 		}
 	}
+}
+
+/* A normal producer token is exclusive until commit succeeds or abort returns it.
+ * Reset never reclaims POPPED nodes, and a rejected commit never releases one:
+ * the producer's subsequent abort must not race a new lease of the same node.
+ */
+static bool sigrok_ws_stream_slot_commit_allowed_locked(
+	const struct linkr_debugger_ws_client *client,
+	const struct sigrok_ws_stream_queue_item *item)
+{
+	return !sigrok_ws_stream_pool.gate_closed && client->connected &&
+		linkr_debugger_sigrok_linkr_ws_slot_commit_allowed(item->state,
+			item->owner_session_id, item->owner_generation, client->session_id,
+			client->sigrok_stream_generation);
+}
+
+static bool sigrok_ws_stream_slot_has_lease(struct linkr_debugger_ws_client *client,
+	struct sigrok_ws_stream_queue_item *item)
+{
+	bool allowed;
+	k_spinlock_key_t key;
+
+	if (client == NULL || item == NULL) {
+		return false;
+	}
+	if (item->burst_slot) {
+		key = k_spin_lock(&sigrok_ws_burst_pool.lock);
+		allowed = sigrok_ws_burst_commit_allowed_locked(client, item);
+		k_spin_unlock(&sigrok_ws_burst_pool.lock, key);
+	} else {
+		key = k_spin_lock(&sigrok_ws_stream_pool.lock);
+		allowed = sigrok_ws_stream_slot_commit_allowed_locked(client, item);
+		k_spin_unlock(&sigrok_ws_stream_pool.lock, key);
+	}
+	return allowed;
 }
 
 static void sigrok_ws_stream_free_accounted_item(struct linkr_debugger_ws_client *client,
@@ -4203,13 +4291,8 @@ static bool sigrok_ws_stream_put_accounted_item(struct linkr_debugger_ws_client 
 	}
 
 	key = k_spin_lock(&sigrok_ws_stream_pool.lock);
-	allowed = linkr_debugger_sigrok_linkr_ws_slot_commit_allowed(item->state,
-		item->owner_session_id, item->owner_generation, client->session_id,
-		client->sigrok_stream_generation);
+	allowed = sigrok_ws_stream_slot_commit_allowed_locked(client, item);
 	if (!allowed) {
-		if (item->state == LINKR_DEBUGGER_SIGROK_LINKR_WS_SLOT_POPPED) {
-			sigrok_ws_stream_slot_release_locked(item);
-		}
 		k_spin_unlock(&sigrok_ws_stream_pool.lock, key);
 		return false;
 	}
@@ -4269,31 +4352,38 @@ static struct sigrok_ws_stream_queue_item *sigrok_ws_stream_pop_accounted_item(
 	return item;
 }
 
-static void sigrok_ws_stream_reset_queue(struct linkr_debugger_ws_client *client)
+static void sigrok_ws_stream_drain_and_invalidate_queue(struct linkr_debugger_ws_client *client)
 {
 	struct sigrok_ws_stream_queue_item *item;
-	uint32_t old_generation;
+	uint32_t old_generation = client->sigrok_stream_generation;
 
+	if (sigrok_ws_burst_pool_active_for_client(client)) {
+		while ((item = sigrok_ws_stream_pop_accounted_item(client)) != NULL) {
+			sigrok_ws_stream_free_accounted_item(client, item);
+		}
+		client->sigrok_stream_generation++;
+		if (client->sigrok_stream_generation == 0U) {
+			client->sigrok_stream_generation++;
+		}
+		atomic_set(&client->sigrok_stream_qdepth, 0);
+		atomic_set(&client->sigrok_stream_qbytes, 0);
+	} else {
+		sigrok_ws_stream_pool_reset_client_queue(client);
+	}
+	linkr_debugger_ws_sigrok_burst_pool_abort(client->session_id, old_generation);
+}
+
+static void sigrok_ws_stream_reset_queue(struct linkr_debugger_ws_client *client)
+{
 	if (client == NULL) {
 		return;
 	}
 	sigrok_ws_stream_cancel_deferred_wake_sync(client);
-	while ((item = sigrok_ws_stream_pop_accounted_item(client)) != NULL) {
-		sigrok_ws_stream_free_accounted_item(client, item);
-	}
-	atomic_set(&client->sigrok_stream_qdepth, 0);
-	atomic_set(&client->sigrok_stream_qbytes, 0);
+	sigrok_ws_stream_drain_and_invalidate_queue(client);
 	atomic_set(&client->sigrok_stream_dropped, 0);
 	atomic_set(&client->sigrok_stream_stop_pending, 0);
 	atomic_set(&client->sigrok_stream_abort_pending, 0);
 	atomic_set(&client->sigrok_stream_deferred_wake_pending, 0);
-	old_generation = client->sigrok_stream_generation;
-	client->sigrok_stream_generation++;
-	if (client->sigrok_stream_generation == 0U) {
-		client->sigrok_stream_generation++;
-	}
-	sigrok_ws_stream_pool_release_client_slots(client);
-	linkr_debugger_ws_sigrok_burst_pool_abort(client->session_id, old_generation);
 	client->sigrok_rate_window_ms = k_uptime_get();
 	client->sigrok_rate_used = 0;
 	client->sigrok_stream_slow_send_logs = 0U;
@@ -4314,26 +4404,13 @@ static int sigrok_ws_disconnect_after_send_failure(struct linkr_debugger_ws_clie
 
 static void sigrok_ws_stream_clear_stale_queue(struct linkr_debugger_ws_client *client)
 {
-	struct sigrok_ws_stream_queue_item *item;
-	uint32_t old_generation;
-
 	sigrok_ws_stream_cancel_deferred_wake_sync(client);
-	while ((item = sigrok_ws_stream_pop_accounted_item(client)) != NULL) {
-		sigrok_ws_stream_free_accounted_item(client, item);
-	}
-	atomic_set(&client->sigrok_stream_qdepth, 0);
-	atomic_set(&client->sigrok_stream_qbytes, 0);
+	sigrok_ws_stream_drain_and_invalidate_queue(client);
 	atomic_set(&client->sigrok_stream_deferred_wake_pending, 0);
 	atomic_set(&client->sigrok_stream_abort_pending, 0);
-	old_generation = client->sigrok_stream_generation;
-	client->sigrok_stream_generation++;
-	if (client->sigrok_stream_generation == 0U) {
-		client->sigrok_stream_generation++;
-	}
-	sigrok_ws_stream_pool_release_client_slots(client);
-	linkr_debugger_ws_sigrok_burst_pool_abort(client->session_id, old_generation);
 }
 
+#ifndef LINKR_DEBUGGER_WS_POOL_HOST_TEST
 static void sigrok_ws_mark_stop_pending(struct linkr_debugger_ws_client *client)
 {
 	atomic_set(&client->sigrok_stream_stop_pending, 1);
@@ -4720,7 +4797,16 @@ static bool sigrok_ws_queue_event_at(struct linkr_debugger_ws_client *client,
 	ev_item->len = ev_len;
 	ev_item->kind = SIGROK_WS_STREAM_ITEM_PREFRAMED;
 	memcpy(ev_item->data, ev_buf, ev_len);
-	return sigrok_ws_stream_put_accounted_item(client, ev_item);
+	if (!sigrok_ws_stream_put_accounted_item(client, ev_item)) {
+		/* Normal commit rejection retains the caller's lease. The independent
+		 * burst path retains its existing rejection/release behavior.
+		 */
+		if (!ev_item->burst_slot) {
+			sigrok_ws_stream_slot_release(ev_item);
+		}
+		return false;
+	}
+	return true;
 }
 
 static bool sigrok_ws_queue_event(struct linkr_debugger_ws_client *client,
@@ -4811,6 +4897,8 @@ static int sigrok_ws_stream_sink_lease(uint32_t sample_count,
 	return 0;
 }
 
+#endif /* LINKR_DEBUGGER_WS_POOL_HOST_TEST */
+
 static int sigrok_ws_stream_sink_commit(
 	const struct linkr_debugger_la_stream_sink_commit *commit, void *user_data)
 {
@@ -4836,6 +4924,12 @@ static int sigrok_ws_stream_sink_commit(
 	channel_mask = session->config.channel_mask;
 	format = sigrok_ws_stream_sink_payload_format(session);
 	item = (struct sigrok_ws_stream_queue_item *)commit->token;
+	/* Validate under the resident pool lock before reading or framing payload.
+	 * A valid POPPED lease pins storage even if reset invalidates its generation.
+	 */
+	if (!sigrok_ws_stream_slot_has_lease(client, item)) {
+		return -ESTALE;
+	}
 	if (session->state != LINKR_DEBUGGER_SIGROK_LINKR_SESSION_RUNNING ||
 	    linkr_debugger_sigrok_linkr_bytes_per_sample(channel_mask) !=
 	    commit->bytes_per_sample ||
@@ -4880,6 +4974,7 @@ static int sigrok_ws_stream_sink_commit(
 	return 0;
 }
 
+#ifndef LINKR_DEBUGGER_WS_POOL_HOST_TEST
 static void sigrok_ws_stream_sink_abort(void *token, void *user_data)
 {
 	ARG_UNUSED(user_data);
@@ -5428,7 +5523,7 @@ static int linkr_debugger_ws_capture_arena_quiesce(int32_t timeout_ms, void *use
 	}
 	k_mutex_unlock(&linkr_debugger_ws_clients_lock);
 
-	sigrok_pool_free = sigrok_ws_stream_pool_all_free();
+	sigrok_pool_free = sigrok_ws_stream_pool_try_quiesce();
 	if (!linkr_debugger_capture_arena_ws_quiesce_allows_overwrite(
 	    power_capture_active, true, false, sigrok_pool_free)) {
 		return -EBUSY;
@@ -5468,8 +5563,6 @@ static void linkr_debugger_ws_capture_arena_resume(void *user_data)
 		linkr_debugger_capture_owner_session_id = 0U;
 		k_mutex_unlock(&linkr_debugger_capture_lock);
 
-		sigrok_ws_stream_pool_reinitialize_after_arena_resume();
-
 		k_mutex_lock(&linkr_debugger_ws_clients_lock, K_FOREVER);
 		for (size_t i = 0U; i < ARRAY_SIZE(linkr_debugger_ws_clients); i++) {
 			linkr_debugger_ws_clients[i].next_sample_sequence = 1U;
@@ -5479,6 +5572,10 @@ static void linkr_debugger_ws_capture_arena_resume(void *user_data)
 		}
 		k_mutex_unlock(&linkr_debugger_ws_clients_lock);
 	}
+	/* Also reopens a closed gate on an acquisition rollback, without clearing
+	 * resident synchronization state or reclaiming any outstanding lease.
+	 */
+	sigrok_ws_stream_pool_reinitialize_after_arena_resume();
 
 	k_event_post(&linkr_debugger_ws_sampler_events,
 		LINKR_DEBUGGER_WS_SAMPLER_EVENT_RESUME |
@@ -5639,4 +5736,5 @@ void linkr_debugger_ws_publish_serial(uint8_t slot)
 	k_mutex_unlock(&linkr_debugger_ws_clients_lock);
 }
 
+#endif /* LINKR_DEBUGGER_WS_POOL_HOST_TEST */
 #endif /* LINKR_DEBUGGER_WS_SAMPLER_POLICY_HOST_TEST */

@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 
 import {
@@ -12,6 +12,7 @@ import {
   SIGROK_SAMPLE_INDEX_MODULO,
   SigrokClient,
   SigrokCompression,
+  SigrokCompressionFlag,
   SigrokEventCode,
   SigrokFrameType,
   SigrokModeId,
@@ -19,6 +20,7 @@ import {
   SigrokServerFlag,
   SigrokTriggerType,
   sigrokEventCodeName,
+  type SigrokConfigReq,
 } from "./sigrokClient.ts";
 
 function buildDataFramePayload({
@@ -64,7 +66,7 @@ function buildCapsPayload(fast8Flags: number, wide11Flags: number): Uint8Array {
     0x48,
     0xe8,
     0x01,
-    3,
+    0x1f,
     SigrokModeId.WIDE11,
     wide11Flags,
     11,
@@ -72,8 +74,109 @@ function buildCapsPayload(fast8Flags: number, wide11Flags: number): Uint8Array {
     0x48,
     0xe8,
     0x01,
-    3,
+    0x1b,
   ]);
+}
+
+function denseDataFrame(channelMask: number, sampleCount: number, samples: readonly number[] | Uint8Array): Uint8Array {
+  return buildSigrokFrame(0, SigrokFrameType.DATA, buildDataFramePayload({
+    sampleIndex: 0,
+    sampleCount,
+    compression: SigrokCompression.DENSE_BITS,
+    channelMask,
+    samples,
+  }));
+}
+
+class FakeWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+  static instances: FakeWebSocket[] = [];
+
+  readyState = FakeWebSocket.CONNECTING;
+  binaryType = "";
+  closeCalls = 0;
+  sent: Uint8Array[] = [];
+  onopen: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onclose: ((event: CloseEvent) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  readonly url: string;
+
+  constructor(url: string) {
+    this.url = url;
+    FakeWebSocket.instances.push(this);
+  }
+
+  send(data: Uint8Array): void {
+    this.sent.push(data);
+    const header = parseSigrokHeader(data);
+    assert.ok(header);
+    if (header.type === SigrokFrameType.HELLO_REQ) {
+      this.receive(buildSigrokFrame(header.id, SigrokFrameType.HELLO_RESP, Uint8Array.from([
+        2, SigrokServerFlag.CONFIG_V2 | SigrokServerFlag.GENERIC_PACKED_BURST, 2, 0x08, 0x10,
+      ])));
+    } else if (header.type === SigrokFrameType.CAPS_REQ) {
+      this.receive(buildSigrokFrame(header.id, SigrokFrameType.CAPS_RESP, buildCapsPayload(0x3f, 0x3f)));
+    }
+  }
+
+  receive(data: Uint8Array): void {
+    this.onmessage?.({ data: data.slice().buffer } as MessageEvent);
+  }
+
+  close(): void {
+    this.closeCalls += 1;
+    this.readyState = FakeWebSocket.CLOSED;
+    this.onclose?.(new Event("close") as CloseEvent);
+  }
+
+  forceLateOpen(): void {
+    this.readyState = FakeWebSocket.OPEN;
+    this.onopen?.(new Event("open"));
+  }
+}
+
+function streamConfig(channelMask: number): SigrokConfigReq {
+  return {
+    modeId: channelMask > 0xff ? SigrokModeId.WIDE11 : SigrokModeId.FAST8,
+    triggerType: SigrokTriggerType.NONE,
+    triggerChannel: 0,
+    channelMask,
+    samplerateKhz: 1000,
+    preSamples: 0,
+    postSamples: 0,
+  };
+}
+
+function configAck(socket: FakeWebSocket): Uint8Array {
+  const header = parseSigrokHeader(socket.sent.at(-1)!);
+  assert.ok(header);
+  assert.ok(header.type === SigrokFrameType.CONFIG_REQ || header.type === SigrokFrameType.CONFIG_V2_REQ);
+  return buildSigrokFrame(header.id, SigrokFrameType.CONFIG_RESP, Uint8Array.from([1, 0, 1, 0xe8, 3, 0]));
+}
+
+async function createClientFixture(t: TestContext, channelMask?: number) {
+  const originalWebSocket = globalThis.WebSocket;
+  FakeWebSocket.instances = [];
+  Object.assign(globalThis, { WebSocket: FakeWebSocket });
+  const client = new SigrokClient();
+  t.after(() => {
+    client.disconnect();
+    Object.assign(globalThis, { WebSocket: originalWebSocket });
+  });
+  const connection = client.connect("ws://fixture.invalid/live");
+  const socket = FakeWebSocket.instances[0];
+  socket.forceLateOpen();
+  await connection;
+  if (channelMask !== undefined) {
+    const configured = client.configure(streamConfig(channelMask));
+    socket.receive(configAck(socket));
+    await configured;
+  }
+  return { client, socket };
 }
 
 describe("sigrok frame helpers", () => {
@@ -452,6 +555,94 @@ describe("sigrok frame helpers", () => {
     }
   });
 
+  it("decodes independent DENSE_BITS golden bodies into compact LE sample units", () => {
+    assert.equal(SigrokCompression.DENSE_BITS, 7);
+    assert.equal(SigrokCompressionFlag.DENSE_BITS, 0x10);
+    const vectors = [
+      {
+        mask: 0x024b,
+        count: 9,
+        body: [0x20, 0x88, 0x41, 0x8a, 0x39, 0x1f],
+        decoded: [0, 1, 2, 3, 4, 5, 6, 7, 31],
+      },
+      {
+        mask: 0x07ff,
+        count: 7,
+        body: [0x00, 0x08, 0xc0, 0xff, 0x01, 0x58, 0x15, 0x55, 0x49, 0x13],
+        decoded: [0x00, 0x00, 0x01, 0x00, 0xff, 0x07, 0x00, 0x04, 0x55, 0x01, 0xaa, 0x02, 0xd2, 0x04],
+      },
+      {
+        mask: 0x0441,
+        count: 9,
+        body: [0xc8, 0xd5, 0x99, 0x00],
+        decoded: [0, 1, 7, 2, 5, 3, 6, 4, 0],
+      },
+    ];
+    for (const { mask, count, body, decoded } of vectors) {
+      const frame = parseFrameData(denseDataFrame(mask, count, body));
+      assert.ok(frame?.type === SigrokFrameType.DATA);
+      assert.equal(frame.meta.channelMask, mask);
+      assert.equal(frame.meta.sampleCount, count);
+      assert.deepEqual(frame.samples, Uint8Array.from(decoded));
+    }
+  });
+
+  for (let width = 1; width <= 11; width += 1) {
+    it(`decodes DENSE_BITS k=${width} across byte boundaries`, () => {
+      const mask = (1 << width) - 1;
+      for (const count of [1, 7, 8, 9]) {
+        const values = Array.from({ length: count }, (_, index) => (mask - index * 0x125) & mask);
+        // Independent, bit-at-a-time reference; golden vectors above stay literal.
+        const body = new Uint8Array(Math.ceil(count * width / 8));
+        values.forEach((value, index) => {
+          for (let bit = 0; bit < width; bit += 1) {
+            const position = index * width + bit;
+            body[position >>> 3] |= ((value >>> bit) & 1) << (position & 7);
+          }
+        });
+        const frame = parseFrameData(denseDataFrame(mask, count, body));
+        assert.ok(frame?.type === SigrokFrameType.DATA);
+        assert.deepEqual(frame.samples, Uint8Array.from(values.flatMap((value) =>
+          width <= 8 ? [value] : [value & 0xff, value >>> 8]
+        )), `k=${width}, count=${count}`);
+      }
+    });
+  }
+
+  it("decodes bounded DENSE_BITS payloads at chunk and wire-size limits", () => {
+    for (const [mask, width, count] of [[0x001f, 5, 4096], [0x07ff, 11, 2048], [1, 1, 32768]]) {
+      const body = new Uint8Array(count * width / 8).fill(0xff);
+      const frame = parseFrameData(denseDataFrame(mask, count, body));
+      assert.ok(frame?.type === SigrokFrameType.DATA);
+      const expected = Uint8Array.from(Array.from({ length: count }, () =>
+        width <= 8 ? [mask] : [0xff, 0x07]
+      ).flat());
+      assert.deepEqual(frame.samples, expected);
+    }
+  });
+
+  it("rejects DENSE_BITS invalid masks, counts, exact lengths, padding, and oversized bodies", () => {
+    const invalid = [
+      { mask: 0, count: 1, body: [0], error: /non-zero channel mask/ },
+      { mask: 0x0800, count: 1, body: [0], error: /within 0x07ff/ },
+      { mask: 0x8001, count: 1, body: [0], error: /within 0x07ff/ },
+      { mask: 0x07ff, count: 0, body: [], error: /non-zero sampleCount/ },
+      { mask: 0x001f, count: 9, body: [0, 0, 0, 0, 0], error: /length does not match/ },
+      { mask: 0x001f, count: 9, body: [0, 0, 0, 0, 0, 0, 0], error: /length does not match/ },
+      { mask: 0x001f, count: 9, body: [0, 0, 0, 0, 0, 0x80], error: /tail padding/ },
+      { mask: 1, count: 32769, body: new Uint8Array(4097), error: /4096-byte/ },
+    ];
+    for (const { mask, count, body, error } of invalid) {
+      assert.throws(() => parseFrameData(denseDataFrame(mask, count, body)), error);
+    }
+    for (let usedBits = 1; usedBits < 8; usedBits += 1) {
+      assert.throws(
+        () => parseFrameData(denseDataFrame(0x0400, usedBits, [1 << usedBits])),
+        /non-zero tail padding/
+      );
+    }
+  });
+
   it("decodes BIT_PACK_RLE DATA with 1-byte UART-style runs", () => {
     const data = buildSigrokFrame(
       10,
@@ -584,44 +775,6 @@ describe("sigrok frame helpers", () => {
 });
 
 describe("SigrokClient connection lifecycle", () => {
-  class FakeWebSocket {
-    static readonly CONNECTING = 0;
-    static readonly OPEN = 1;
-    static readonly CLOSING = 2;
-    static readonly CLOSED = 3;
-    static instances: FakeWebSocket[] = [];
-
-    readyState = FakeWebSocket.CONNECTING;
-    binaryType = "";
-    closeCalls = 0;
-    sent: unknown[] = [];
-    onopen: ((event: Event) => void) | null = null;
-    onmessage: ((event: MessageEvent) => void) | null = null;
-    onclose: ((event: CloseEvent) => void) | null = null;
-    onerror: ((event: Event) => void) | null = null;
-    readonly url: string;
-
-    constructor(url: string) {
-      this.url = url;
-      FakeWebSocket.instances.push(this);
-    }
-
-    send(data: unknown): void {
-      this.sent.push(data);
-    }
-
-    close(): void {
-      this.closeCalls += 1;
-      this.readyState = FakeWebSocket.CLOSED;
-      this.onclose?.(new Event("close") as CloseEvent);
-    }
-
-    forceLateOpen(): void {
-      this.readyState = FakeWebSocket.OPEN;
-      this.onopen?.(new Event("open"));
-    }
-  }
-
   it("closes and rejects a socket that is disconnected while still connecting", async () => {
     const originalWebSocket = globalThis.WebSocket;
     FakeWebSocket.instances = [];
@@ -650,14 +803,153 @@ describe("SigrokClient connection lifecycle", () => {
   });
 });
 
+describe("SigrokClient successful CONFIG snapshot", () => {
+  it("rejects DATA before the first CONFIG ACK without publishing either DATA event", async (t) => {
+    const { client, socket } = await createClientFixture(t);
+    const events: string[] = [];
+    client.addEventListener((event) => events.push(event.type));
+    const data = denseDataFrame(0x0441, 1, [0]);
+    assert.throws(() => socket.receive(data), /without a successful CONFIG/);
+    const configured = client.configure(streamConfig(0x0441));
+    assert.throws(() => socket.receive(data), /without a successful CONFIG/);
+    assert.deepEqual(events, []);
+    socket.receive(configAck(socket));
+    await configured;
+    events.length = 0;
+    socket.receive(data);
+    assert.deepEqual(events, ["frame", "data"]);
+  });
+
+  it("commits the copied CONFIG_V2 mask synchronously before ACK callbacks and coalesced DATA", async (t) => {
+    const { client, socket } = await createClientFixture(t);
+    const config = { ...streamConfig(0x024b), postSamples: 100000 };
+    const configured = client.configure(config);
+    assert.equal(parseSigrokHeader(socket.sent.at(-1)!)?.type, SigrokFrameType.CONFIG_V2_REQ);
+    config.channelMask = 0x001f; // Same popcount, but not the configuration sent on wire.
+    const masks: number[] = [];
+    const data = denseDataFrame(0x024b, 1, [0x1f]);
+    client.addEventListener((event) => {
+      if (event.type === "frame" && event.frame.type === SigrokFrameType.CONFIG_RESP) {
+        socket.receive(data);
+      }
+      if (event.type === "data") masks.push(event.meta.channelMask);
+    });
+    socket.receive(Uint8Array.from([...configAck(socket), ...data]));
+    assert.deepEqual(masks, [0x024b, 0x024b]);
+    assert.throws(() => socket.receive(denseDataFrame(0x001f, 1, [0])), /does not match successful CONFIG/);
+    await configured;
+  });
+
+  it("retains the successful mask while another CONFIG is pending or fails, ignoring unsolicited ACKs", async (t) => {
+    const oldMask = 0x0441;
+    const newMask = 0x0007;
+    const { client, socket } = await createClientFixture(t, oldMask);
+    const masks: number[] = [];
+    const frameMasks: number[] = [];
+    client.addEventListener((event) => {
+      if (event.type === "data") masks.push(event.meta.channelMask);
+      if (event.type === "frame" && event.frame.type === SigrokFrameType.DATA) {
+        frameMasks.push(event.frame.meta.channelMask);
+      }
+    });
+    const pending = client.configure(streamConfig(newMask));
+    const rejected = assert.rejects(pending, /Unexpected response to CONFIG/);
+    const ack = configAck(socket);
+    socket.receive(denseDataFrame(oldMask, 1, [1]));
+    assert.throws(() => socket.receive(denseDataFrame(newMask, 1, [1])), /does not match successful CONFIG/);
+    socket.receive(buildSigrokFrame(parseSigrokHeader(ack)!.id, SigrokFrameType.ERROR, Uint8Array.from([7, 0, 0])));
+    await rejected;
+    socket.receive(ack);
+    socket.receive(denseDataFrame(oldMask, 1, [2]));
+    assert.throws(() => socket.receive(denseDataFrame(newMask, 1, [2])), /does not match successful CONFIG/);
+
+    const configured = client.configure(streamConfig(newMask));
+    socket.receive(Uint8Array.from([...configAck(socket), ...denseDataFrame(newMask, 1, [3])]));
+    await configured;
+    assert.throws(() => socket.receive(denseDataFrame(oldMask, 1, [3])), /does not match successful CONFIG/);
+    assert.deepEqual(masks, [oldMask, oldMask, newMask]);
+    assert.deepEqual(frameMasks, masks);
+  });
+
+  it("checks the complete successful mask for every codec during continuous streaming", async (t) => {
+    const { client, socket } = await createClientFixture(t, 0x0001);
+    socket.receive(buildSigrokFrame(0, SigrokFrameType.EVENT, Uint8Array.from([
+      1, 0, SigrokEventCode.RUNNING, 0, 0, 0,
+    ])));
+    const published: number[] = [];
+    client.addEventListener((event) => {
+      if (event.type === "data" || (event.type === "frame" && event.frame.type === SigrokFrameType.DATA)) {
+        published.push(event.type === "data" ? event.meta.channelMask : event.frame.meta.channelMask);
+      }
+    });
+    const codecs = [
+      [SigrokCompression.RAW, [0]],
+      [SigrokCompression.BIT_PACK, [0]],
+      [SigrokCompression.RLE, [0, 1, 0]],
+      [SigrokCompression.BIT_PACK_RLE, [0, 1, 0]],
+      [SigrokCompression.SINGLE_BITS, [0]],
+      [SigrokCompression.SINGLE_BITS_RLE, [0, 1, 0]],
+      [SigrokCompression.PACKED_PALETTE2, [0, 1, 0]],
+      [SigrokCompression.DENSE_BITS, [0]],
+    ] as const;
+    for (const [compression, samples] of codecs) {
+      const frame = (channelMask: number) => buildSigrokFrame(0, SigrokFrameType.DATA, buildDataFramePayload({
+        sampleIndex: 0, sampleCount: 1, compression, channelMask, samples,
+      }));
+      socket.receive(frame(0x0001));
+      assert.throws(() => socket.receive(frame(0x0002)), /does not match successful CONFIG/);
+    }
+    assert.deepEqual(published, Array(16).fill(0x0001));
+    assert.equal(client.getState(), "running");
+  });
+
+  for (const closeMode of ["disconnect", "socket-close"] as const) {
+    it(`clears the snapshot and pending CONFIG after ${closeMode} and reconnect`, async (t) => {
+      const { client, socket } = await createClientFixture(t, 0x0001);
+      const pending = client.configure(streamConfig(0x0002));
+      const rejected = assert.rejects(pending, /Client disconnected|WebSocket closed/);
+      const staleAck = configAck(socket);
+      if (closeMode === "disconnect") client.disconnect();
+      else socket.close();
+      await rejected;
+      assert.equal(client.getState(), "disconnected");
+
+      const connection = client.connect("ws://fixture.invalid/reconnected");
+      const reconnectedSocket = FakeWebSocket.instances.at(-1)!;
+      reconnectedSocket.forceLateOpen();
+      await connection;
+      reconnectedSocket.receive(staleAck);
+      const published: string[] = [];
+      client.addEventListener((event) => published.push(event.type));
+      for (const mask of [0x0001, 0x0002]) {
+        assert.throws(() => reconnectedSocket.receive(denseDataFrame(mask, 1, [0])), /without a successful CONFIG/);
+      }
+      assert.deepEqual(published, []);
+      const configured = client.configure(streamConfig(0x0002));
+      reconnectedSocket.receive(configAck(reconnectedSocket));
+      await configured;
+      reconnectedSocket.receive(denseDataFrame(0x0002, 1, [1]));
+    });
+  }
+
+  it("does not restore configured state after disconnecting between an ACK and its Promise continuation", async (t) => {
+    const { client, socket } = await createClientFixture(t);
+    const configured = client.configure(streamConfig(0x0001));
+    socket.receive(configAck(socket));
+    client.disconnect();
+    await configured;
+    assert.equal(client.getState(), "disconnected");
+  });
+});
+
 describe("SigrokClient", () => {
   it("starts disconnected", () => {
     const client = new SigrokClient();
     assert.equal(client.getState(), "disconnected");
   });
 
-  it("emits frame and data events when fed a complete frame", () => {
-    const client = new SigrokClient();
+  it("emits frame and data events when fed a complete frame", async (t) => {
+    const { client } = await createClientFixture(t, 0x0003);
     const events: Array<string> = [];
     client.addEventListener((event) => {
       events.push(event.type);
@@ -777,6 +1069,11 @@ describe("SigrokClient", () => {
       SigrokModeFlag.PRE_TRIGGER
     );
     assert.equal(capabilities.caps?.modes[1]?.modeId, SigrokModeId.WIDE11);
+    assert.equal(capabilities.caps?.modes[0]?.compression, 0x1f);
+    assert.equal(capabilities.caps?.modes[1]?.compression, 0x1b);
+    for (const mode of capabilities.caps?.modes ?? []) {
+      assert.equal(mode.compression & SigrokCompressionFlag.DENSE_BITS, 0x10);
+    }
     assert.equal(Object.isFrozen(capabilities.caps), true);
     assert.equal(Object.isFrozen(capabilities.caps?.modes), true);
   });
@@ -800,8 +1097,8 @@ describe("SigrokClient", () => {
     assert.equal((modes[1]?.modeFlags ?? 0) & SigrokModeFlag.PRE_TRIGGER, 0);
   });
 
-  it("emits both inner frames from one coalesced binary feed", () => {
-    const client = new SigrokClient();
+  it("emits both inner frames from one coalesced binary feed", async (t) => {
+    const { client } = await createClientFixture(t, 0x0001);
     const frameTypes: number[] = [];
     const sampleIndices: number[] = [];
     client.addEventListener((event) => {
@@ -833,8 +1130,8 @@ describe("SigrokClient", () => {
     assert.deepEqual(sampleIndices, [0, 1]);
   });
 
-  it("decodes compressed DATA before a coalesced EVENT frame", () => {
-    const client = new SigrokClient();
+  it("decodes compressed DATA before a coalesced EVENT frame", async (t) => {
+    const { client } = await createClientFixture(t, 0x0003);
     const frameTypes: number[] = [];
     const decodedSamples: number[][] = [];
     client.addEventListener((event) => {

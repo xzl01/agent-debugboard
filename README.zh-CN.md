@@ -38,7 +38,7 @@ VBUS 子轨，同样没有 INA/ADC，并存在体二极管回灌。Task-v2 store
 Settings NVS 分区（当前镜像 128 KiB）和四个 slot，不读取已移除的
 `linkr/task/tasks` blob。
 
-WIDE11 使用 144184 B 硬件切片和 43008 B WS 遥测环，共享 161144 B 总后备分配。历史严格 10/10 连续流工作点为：FAST8 静态 2.600 MHz、GP16 活动输入 WS 1.200 MHz / TCP 1.375 MHz；WIDE11 静态 WS 1.050 MHz / TCP 1.175 MHz、GP16 活动输入 WS 850 kHz / TCP 950 kHz。这些是传输工作点，不是 125 MHz 连续流声明，也不代表 x1.2 重新验收。
+WIDE11 使用 144184 B 硬件切片和 43008 B WS 遥测环，共享 144184 B 总后备分配。历史严格 10/10 连续流工作点为：FAST8 静态 2.600 MHz、GP16 活动输入 WS 1.200 MHz / TCP 1.375 MHz；WIDE11 静态 WS 1.050 MHz / TCP 1.175 MHz、GP16 活动输入 WS 850 kHz / TCP 950 kHz。这些是传输工作点，不是 125 MHz 连续流声明，也不代表 x1.2 重新验收。
 
 ADC3 契约、wire shape 和 GP29 所有权规则见
 [docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md)；[2026-07-31 ADC3 telemetry HIL 报告](docs/testing/results/2026-07-31-adc3-telemetry-hil.md)

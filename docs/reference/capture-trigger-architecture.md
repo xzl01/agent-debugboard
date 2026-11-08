@@ -17,7 +17,7 @@ The WIDE11 writer advances at the minimum completed lane sequence. DMA write-poi
 skew is diagnostic because joined RX FIFOs and in-flight DMA make snapshots non-atomic. The
 sticky PIO RXSTALL flag, cleared at arm, is the authoritative lane-stall signal. On overrun, possible overrun, transport backpressure, or bounded-capture
 completion, the firmware emits a terminal event and stops rather than silently continuing
-(lossless-or-stop). The packed ring reuses the 161144 B total backing allocation (sized to max(normal, burst)=161144 B); the WIDE11 144184 B hardware slice and the 43008 B WS telemetry ring share that backing allocation.
+(lossless-or-stop). The packed ring reuses the 144184 B total backing allocation (sized to max(normal, burst)=144184 B); the WIDE11 144184 B hardware slice and the 43008 B WS telemetry ring share that backing allocation.
 DATA and EVENT sample indices wrap modulo 24 bits; wrap is not a terminal condition.
 
 After an overrun terminal is requested, sink retries yield CPU time so the
@@ -309,7 +309,7 @@ Continuous captures with post=0:
 | Trigger SM | Hardware | No CPU edge polling |
 | DMA transfer | Hardware | ENDLESS write ring with address polling |
 | Ring observation | Rate-dependent | Priority-1 poller, bounded 1 to 4 ms interval |
-| Decode/compression | Data-dependent | Exact FAST8/WIDE11 paths plus RLE, PACKED_PALETTE2, or raw fallback |
+| Decode/compression | Data-dependent | Exact FAST8/WIDE11 paths plus shortest valid RLE, PACKED_PALETTE2, DENSE_BITS or byte-aligned fallback |
 | Network send | Transport-dependent | WS fixed pool or TCP dynamic queue capped at 10 frames |
 | Total | Measured by HIL | Use the dated static and activity-qualified operating points, not a fixed percentage |
 
@@ -356,7 +356,7 @@ capture SMs. For WIDE11:
 
 - **SM-A** (capture): GP10-GP17, 8-bit autopush32, 100000 B source buffer
 - **SM-B** (capture): GP18-GP20, 3-bit autopush30, 40000 B source buffer
-- **Shared burst slice**: 144184 B; overlays the 161144 B total backing allocation (sized to max(normal, burst)=161144 B); temporarily removes ADC telemetry, power capture, and normal Sigrok pool resources for the lease lifetime; restores after drain
+- **Shared burst slice**: 144184 B; overlays the 144184 B total backing allocation (sized to max(normal, burst)=144184 B); temporarily removes ADC telemetry, power capture, and normal Sigrok pool resources for the lease lifetime; restores after drain
 - **Post-capture deep-burst transport**: up to 98 DATA frames, with the dedicated
   raw-burst item ceiling of 1024 samples per frame and 140000 B total payload; this
   item ceiling is independent of continuous-stream chunk sizing
@@ -370,7 +370,7 @@ The three physical capture plans:
   12500 B source at 100 MHz (100000 samples × 1 bit). A FAST8 physical plan, not a separate Sigrok wire mode.
 - **FAST8**: one 8-bit lane (GP10-GP17), autopush32, 4 samples per 32-bit word,
   100000 B source at 100 MHz (100000 samples × 8 bits)
-- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 161144 B total backing allocation); triggered deep burst adds a third trigger-only SM
+- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 144184 B total backing allocation); triggered deep burst adds a third trigger-only SM
 
 GP29 is excluded from WIDE11 LA (ADC3 voltage monitor; ADC3-owned and input-only). WIDE11
 verification is the freeze-final HIL evidence block below; it is **not** the same
@@ -509,10 +509,11 @@ rejection (INVALID_CONFIG, error code 7). The matrix-eligibility rule uses the
 | Packed ring (SINGLE/FAST8) | 32768 bytes | One 32768B packed wrap ring; usable SINGLE 260096 / FAST8 30720 samples |
 | Packed ring (WIDE11) | 32768 bytes | Lane A 16384B + lane B 8192B; common capacity 16384 samples; safety 2048; usable 14336 samples; min lane sequence; PIO RXSTALL or overwrite stops |
 | Stream scratch | 2048 bytes | Shared synchronous compression output |
-| Normal Sigrok WS pool | 16624 bytes | Four 4,113-byte frame slots plus one terminal slot and pool metadata; 192 bytes smaller than the former layout |
+| Normal Sigrok WS payload storage | 16480 bytes | Four 4,113-byte frame slots at 4-byte-aligned strides plus one 15-byte terminal slot; payload only, overlaid during burst |
+| Normal Sigrok WS resident metadata | 144 bytes | Pool lock, gate and five queue/lease nodes remain outside the arena; no additional payload copy or heap allocation |
 | TCP dynamic queue | 10 DATA frames max | Terminal-reserved cap prevents the 49,156-byte heap from reaching the measured connection-stalling exhaustion point |
 | DMA config | 64 bytes | Runtime |
-| WIDE11 deep burst slice | 144184 bytes | Dual-SM packed burst slice; overlays the 161144 B total backing allocation (sized to max(normal, burst)=161144 B); quiesces LA/Sigrok pool during lease; GP29 excluded from LA (ADC3 voltage monitor; ADC3-owned and input-only) |
+| WIDE11 deep burst slice | 144184 bytes | Dual-SM packed burst slice; overlays the 144184 B total backing allocation (sized to max(normal, burst)=144184 B); quiesces LA/Sigrok pool during lease; GP29 excluded from LA (ADC3 voltage monitor; ADC3-owned and input-only) |
 
 ## Stop Conditions
 
@@ -643,8 +644,8 @@ uint32_t calculate_clock_div(uint32_t requested_rate_khz) {
 The capture engine uses two engines: packed finite DMA and packed DMA ring.
 SINGLE/FAST8 uses one 32768B packed wrap ring; WIDE11 uses lane A 16384B plus lane B 8192B
 inside the same 32768B slice, common capacity 16384 samples, safety 2048, usable capacities
-SINGLE 260096 / FAST8 30720 / WIDE11 14336. The packed ring reuses the 161144 B total backing
-allocation (sized to max(normal, burst)=161144 B); the WIDE11 144184 B hardware slice and the
+SINGLE 260096 / FAST8 30720 / WIDE11 14336. The packed ring reuses the 144184 B total backing
+allocation (sized to max(normal, burst)=144184 B); the WIDE11 144184 B hardware slice and the
 43008 B WS telemetry ring share that backing allocation. The WIDE11 writer advances at the minimum completed lane
 sequence. DMA write-pointer skew is diagnostic; sticky PIO RXSTALL or ring overwrite is
 terminal. See [ring-buffer-gap-analysis.md](ring-buffer-gap-analysis.md)

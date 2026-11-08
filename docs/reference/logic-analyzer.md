@@ -113,7 +113,19 @@ DATA metadata is 8 bytes. Sample indices are modulo 24 bits; wrap is not a termi
 
 On overrun, possible overrun, transport backpressure, or bounded-capture completion,
 the firmware emits a terminal event and stops rather than silently continuing (lossless-or-stop).
-The packed ring reuses the 161144 B total backing allocation (sized to max(normal, burst)=161144 B); the WIDE11 144184 B hardware slice and the 43008 B WS telemetry ring share that allocation.
+The packed ring reuses the 144184 B total backing allocation (sized to max(normal, burst)=144184 B); the WIDE11 144184 B hardware slice and the 43008 B WS telemetry ring share that allocation.
+
+The normal arena layout retains the 173-row ADC ring (43008 B slice), a 136 B
+host-stream power-capture state, and 16480 B of normal Sigrok WS payload storage.
+The 144 B normal pool control structure remains resident outside the arena:
+locks, FIFO nodes and lease metadata must never alias DMA sample storage. Its
+existing lock atomically closes the allocation gate only when all normal leases,
+queued frames and sender-held frames are free. Client cleanup cannot reclaim a
+producer- or sender-held lease; restoration rebinds storage before reopening the
+gate and does not clear the resident lock. DATA and terminal slot capacities are
+unchanged. The resulting normal layout is 95464 B; burst still determines the
+144184 B backing allocation. See the
+[capture architecture](capture-trigger-architecture.md#memory-resources).
 
 Arena pause/resume is a lossless, generation-scoped handshake. The ADC sampler
 atomically consumes preposted CONFIG/RESUME events, and an old generation's
@@ -261,7 +273,7 @@ The three physical capture plans:
   12500 B source at 100 MHz (100000 samples × 1 bit). A FAST8 physical plan, not a separate Sigrok wire mode.
 - **FAST8**: one 8-bit lane (GP10-GP17), autopush32, 4 samples per 32-bit word,
   100000 B source at 100 MHz (100000 samples × 8 bits)
-- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 161144 B total backing allocation); triggered deep burst adds a third trigger-only SM
+- **WIDE11**: two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B (GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B burst slice (overlays the 144184 B total backing allocation); triggered deep burst adds a third trigger-only SM
 
 GP29 is excluded from WIDE11 LA (ADC3 voltage monitor; ADC3-owned and input-only).
 On x1.2, GP20 is the PIO I2C **SCL** and GP21 is **SDA**. WIDE11 keeps GP20 as a
@@ -376,10 +388,18 @@ the arena slice by 192 bytes. SINGLE uses 16,384-sample chunks represented by 2,
 chronological packed bytes, so each chunk still fits an existing WS slot. Aligned
 spans copy directly from the one-bit DMA ring; wrapped or non-byte-aligned spans
 use the extraction fallback. Exact FAST8 copies the DMA byte ring directly; exact WIDE11
-combines its 8-bit and 3-bit lanes with running word counters, while sparse/reordered selections
-retain the generic decoder. Packed chunks are 4,096 FAST8 or 2,048 WIDE11 samples. Protocol v2
-uses BIT_PACK_RLE for one value, PACKED_PALETTE2 for two values when smaller than RLE, and
-BIT_PACK/RLE fallback for other chunks. WS pre-encodes in the leased slot; TCP encodes in place
+combines its 8-bit and 3-bit lanes with running word counters. FAST8 also extracts an
+ascending contiguous subset within its byte lane using a shift and mask per sample;
+noncontiguous or reordered selections retain the generic decoder. This includes
+GP12–GP16 without changing their compact bit order. See the
+[five-channel overrun diagnosis](../testing/results/2026-11-06-five-channel-overrun-fix.md).
+Packed chunks are 4,096 FAST8 or 2,048 WIDE11 samples. Protocol v2
+selects the shortest valid BIT_PACK/RLE/palette representation and uses DENSE_BITS
+when cross-sample N-bit packing is strictly smaller. Existing SINGLE streaming
+retains its chronological bit path. This reduces five-channel incompressible
+payloads by 37.5% without changing sample indices or chunk limits; it is not an
+USB throughput measurement. See the [wire codec contract](sigrok-linkr-v2.md#data-8--n-bytes).
+WS pre-encodes in the leased slot; TCP encodes in place
 and caps its dynamic queue at 10 DATA frames plus terminal reserve. Sink and transport threads
 run at priority 8. Temporary slot exhaustion
 yields and retries without advancing the reader; true ring overwrite pressure
@@ -387,14 +407,14 @@ retains the lossless-or-stop terminal behavior. When the writer is frozen on a t
 selection, the freeze policy (described under "Terminal selection freezes the
 writer" above) disables the trigger SM and the sampler SM(s) and aborts the ring
 DMA channel(s) without releasing the channels back to the pool, so the consumer
-can only drain already-committed ring data. The packed ring reuses the 161144 B total backing
-allocation (sized to max(normal, burst)=161144 B); the WIDE11 144184 B hardware slice and the
+can only drain already-committed ring data. The packed ring reuses the 144184 B total backing
+allocation (sized to max(normal, burst)=144184 B); the WIDE11 144184 B hardware slice and the
 43008 B WS telemetry ring share that backing allocation.
 
 The generic packed burst path uses a dual-SM packed arena: SM-A captures
 GP10-GP17 (8-bit autopush32, 100000 B source) and SM-B captures GP18-GP20 (3-bit
 autopush30, 40000 B source), with 140000 B total from two DMA channels and a
-144184 B burst slice (overlays the 161144 B total backing allocation). This is the WIDE11 architecture; GP29 is excluded from
+144184 B burst slice (overlays the 144184 B total backing allocation). This is the WIDE11 architecture; GP29 is excluded from
 WIDE11 LA. NONE deep burst uses two capture SMs; triggered deep burst adds a third SM
 running the 3-instruction trigger program. The three physical plans: SINGLE (one 1-bit lane, autopush32,
 32 samples/word, 12500 B at 100 MHz), FAST8 (one 8-bit lane, autopush32, 4 samples/word,

@@ -137,6 +137,7 @@ enum linkr_debugger_sigrok_linkr_compression {
 	LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_SINGLE_BITS = 4,
 	LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_SINGLE_BITS_RLE = 5,
 	LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_PACKED_PALETTE2 = 6,
+	LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_DENSE_BITS = 7,
 };
 
 enum linkr_debugger_sigrok_linkr_compression_flags {
@@ -144,6 +145,7 @@ enum linkr_debugger_sigrok_linkr_compression_flags {
 	LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_RLE = 1U << 1,
 	LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_SINGLE_BITS = 1U << 2,
 	LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_PALETTE2 = 1U << 3,
+	LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_DENSE_BITS = 1U << 4,
 };
 
 enum linkr_debugger_sigrok_linkr_event_type {
@@ -580,6 +582,7 @@ size_t linkr_debugger_sigrok_linkr_compress_rle_if_smaller(
 	uint8_t bytes_per_sample,
 	uint8_t *out,
 	size_t out_len);
+/* Payload must be disjoint from the output body or start exactly at that body. */
 size_t linkr_debugger_sigrok_linkr_encode_stream_data_frame(
 	enum linkr_debugger_la_stream_payload_format format,
 	uint32_t sample_index,

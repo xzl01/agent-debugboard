@@ -1596,11 +1596,11 @@ size_t linkr_debugger_sigrok_linkr_compress_rle_if_smaller(
 	return out_pos < normal_len ? out_pos : 0U;
 }
 
-static size_t sigrok_linkr_compress_rle_if_smaller_in_place(
-	uint8_t *samples,
+static size_t sigrok_linkr_rle_size_if_smaller(
+	const uint8_t *samples,
 	uint32_t count,
 	uint8_t bytes_per_sample,
-	size_t out_len)
+	bool in_place)
 {
 	size_t normal_len = (size_t)count * bytes_per_sample;
 	size_t out_pos = 0U;
@@ -1619,16 +1619,15 @@ static size_t sigrok_linkr_compress_rle_if_smaller_in_place(
 			bytes_per_sample) == 0) {
 			run_count++;
 		}
-		if (out_pos + needed >= normal_len || out_pos + needed > out_len ||
-		    out_pos + needed > (size_t)(i + run_count) * bytes_per_sample) {
+		if (out_pos + needed >= normal_len ||
+		    (in_place && out_pos + needed > (size_t)(i + run_count) * bytes_per_sample)) {
 			return 0U;
 		}
 		out_pos += needed;
 		i += run_count;
 	}
 
-	return linkr_debugger_sigrok_linkr_compress_rle_if_smaller(samples, count,
-		bytes_per_sample, samples, out_len);
+	return out_pos;
 }
 
 static uint16_t sigrok_linkr_read_packed_sample(
@@ -1645,56 +1644,24 @@ static uint16_t sigrok_linkr_read_packed_sample(
 	return sample;
 }
 
-static size_t sigrok_linkr_compress_palette2_if_smaller(
+static bool sigrok_linkr_payload_alias_valid(const uint8_t *samples, size_t samples_len,
+	const uint8_t *out, size_t out_len)
+{
+	uintptr_t source = (uintptr_t)samples;
+	uintptr_t destination = (uintptr_t)out;
+
+	return samples == out || (source < destination ?
+		destination - source >= samples_len : source - destination >= out_len);
+}
+
+static void sigrok_linkr_write_palette2(
 	const uint8_t *samples,
 	uint32_t count,
 	uint8_t bytes_per_sample,
-	uint8_t *out,
-	size_t out_len)
+	uint16_t palette0,
+	uint16_t palette1,
+	uint8_t *out)
 {
-	uint16_t palette0;
-	uint16_t palette1 = 0U;
-	uint16_t previous;
-	bool have_second = false;
-	uint32_t runs = 1U;
-	size_t normal_len = (size_t)count * bytes_per_sample;
-	size_t selector_len = ((size_t)count + 7U) / 8U;
-	size_t palette_len = ((size_t)bytes_per_sample * 2U) + selector_len;
-	size_t rle_len;
-
-	if (samples == NULL || out == NULL || count == 0U || bytes_per_sample == 0U ||
-	    bytes_per_sample > sizeof(uint16_t) || palette_len >= normal_len ||
-	    palette_len > out_len) {
-		return 0U;
-	}
-	palette0 = sigrok_linkr_read_packed_sample(samples, 0U, bytes_per_sample);
-	previous = palette0;
-	for (uint32_t i = 1U; i < count; i++) {
-		uint16_t sample = sigrok_linkr_read_packed_sample(samples, i,
-			bytes_per_sample);
-
-		if (sample != previous) {
-			runs++;
-			previous = sample;
-		}
-		if (sample == palette0) {
-			continue;
-		}
-		if (!have_second) {
-			palette1 = sample;
-			have_second = true;
-		} else if (sample != palette1) {
-			return 0U;
-		}
-	}
-	if (!have_second) {
-		return 0U;
-	}
-	rle_len = (size_t)runs * (bytes_per_sample + 2U);
-	if (palette_len >= rle_len) {
-		return 0U;
-	}
-
 	for (uint32_t base = 0U; base < count; base += 8U) {
 		uint8_t selectors = 0U;
 		uint32_t group_count = count - base < 8U ? count - base : 8U;
@@ -1713,7 +1680,30 @@ static size_t sigrok_linkr_compress_palette2_if_smaller(
 		out[1] = (uint8_t)(palette0 >> 8U);
 		out[bytes_per_sample + 1U] = (uint8_t)(palette1 >> 8U);
 	}
-	return palette_len;
+}
+
+static void sigrok_linkr_write_dense_bits(const uint8_t *samples, uint16_t count,
+	uint8_t bytes_per_sample, uint8_t channel_count, uint8_t *out)
+{
+	uint32_t pending = 0U;
+	uint8_t pending_bits = 0U;
+	size_t out_pos = 0U;
+
+	for (uint32_t i = 0U; i < count; i++) {
+		/* Read the whole sample before emitting bytes over an in-place input. */
+		uint16_t sample = sigrok_linkr_read_packed_sample(samples, i, bytes_per_sample);
+
+		pending |= (uint32_t)sample << pending_bits;
+		pending_bits += channel_count;
+		while (pending_bits >= 8U) {
+			out[out_pos++] = (uint8_t)pending;
+			pending >>= 8U;
+			pending_bits -= 8U;
+		}
+	}
+	if (pending_bits > 0U) {
+		out[out_pos] = (uint8_t)pending;
+	}
 }
 
 static size_t linkr_debugger_sigrok_linkr_encode_packed_payload(
@@ -1726,51 +1716,91 @@ static size_t linkr_debugger_sigrok_linkr_encode_packed_payload(
 	size_t out_len)
 {
 	uint8_t bytes_per_sample = linkr_debugger_sigrok_linkr_bytes_per_sample(channel_mask);
+	uint8_t channel_count = (uint8_t)__builtin_popcount((unsigned)channel_mask);
 	size_t expected_len = (size_t)sample_count * bytes_per_sample;
 	size_t payload_len;
+	size_t rle_len;
+	size_t palette_len;
+	size_t dense_len;
+	uint16_t palette0;
+	uint16_t palette1 = 0U;
+	uint16_t sample_limit;
+	bool have_second = false;
+	uint8_t selected = LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_BIT_PACK;
 
 	if (packed == NULL || compression == NULL || out == NULL || sample_count == 0U ||
-	    bytes_per_sample == 0U || packed_len != expected_len) {
+	    channel_mask == 0U || (channel_mask & (uint16_t)~0x07ffU) != 0U ||
+	    packed_len != expected_len || expected_len > LINKR_DEBUGGER_SIGROK_LINKR_MAX_DATA_BYTES ||
+	    !sigrok_linkr_payload_alias_valid(packed, packed_len, out, out_len)) {
 		return 0U;
 	}
-	if (packed == out && expected_len > (size_t)bytes_per_sample + 2U) {
-		size_t equal_len = bytes_per_sample;
-
-		while (equal_len < expected_len &&
-		       packed[equal_len] == packed[equal_len % bytes_per_sample]) {
-			equal_len++;
-		}
-		if (equal_len == expected_len) {
-			out[bytes_per_sample] = (uint8_t)(sample_count & 0xffU);
-			out[bytes_per_sample + 1U] = (uint8_t)(sample_count >> 8U);
-			*compression = LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_BIT_PACK_RLE;
-			return (size_t)bytes_per_sample + 2U;
+	/* Validate every sample before planning or writing any candidate. */
+	sample_limit = (uint16_t)((1U << channel_count) - 1U);
+	for (uint32_t i = 0U; i < sample_count; i++) {
+		if ((sigrok_linkr_read_packed_sample(packed, i, bytes_per_sample) &
+		     (uint16_t)~sample_limit) != 0U) {
+			return 0U;
 		}
 	}
 
-	payload_len = sigrok_linkr_compress_palette2_if_smaller(packed,
-		sample_count, bytes_per_sample, out, out_len);
-	if (payload_len > 0U) {
-		*compression = LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_PACKED_PALETTE2;
-		return payload_len;
+	/* Only feasible RLE prefixes may compete with palette/raw/dense. */
+	payload_len = expected_len;
+	palette_len = ((size_t)bytes_per_sample * 2U) + ((size_t)sample_count + 7U) / 8U;
+	dense_len = ((size_t)sample_count * channel_count + 7U) / 8U;
+	rle_len = sigrok_linkr_rle_size_if_smaller(packed, sample_count,
+		bytes_per_sample, packed == out);
+	if (rle_len > 0U) {
+		payload_len = rle_len;
+		selected = LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_BIT_PACK_RLE;
+	}
+	palette0 = sigrok_linkr_read_packed_sample(packed, 0U, bytes_per_sample);
+	if (palette_len < payload_len) {
+		for (uint32_t i = 1U; i < sample_count; i++) {
+			uint16_t sample = sigrok_linkr_read_packed_sample(packed, i, bytes_per_sample);
+
+			if (sample == palette0) {
+				continue;
+			}
+			if (!have_second) {
+				palette1 = sample;
+				have_second = true;
+			} else if (sample != palette1) {
+				have_second = false;
+				break;
+			}
+		}
+		if (have_second) {
+			payload_len = palette_len;
+			selected = LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_PACKED_PALETTE2;
+		}
+	}
+	if (channel_count != 8U && dense_len < payload_len) {
+		payload_len = dense_len;
+		selected = LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_DENSE_BITS;
+	}
+	if (payload_len > out_len) {
+		return 0U;
 	}
 
-	payload_len = packed == out ?
-		sigrok_linkr_compress_rle_if_smaller_in_place(out, sample_count,
-			bytes_per_sample, out_len) :
-		linkr_debugger_sigrok_linkr_compress_rle_if_smaller(packed,
+	switch (selected) {
+	case LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_BIT_PACK_RLE:
+		(void)linkr_debugger_sigrok_linkr_compress_rle_if_smaller(packed,
 			sample_count, bytes_per_sample, out, out_len);
-	if (payload_len > 0U) {
-		*compression = LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_BIT_PACK_RLE;
-		return payload_len;
+		break;
+	case LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_PACKED_PALETTE2:
+		sigrok_linkr_write_palette2(packed, sample_count, bytes_per_sample,
+			palette0, palette1, out);
+		break;
+	case LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_DENSE_BITS:
+		sigrok_linkr_write_dense_bits(packed, sample_count, bytes_per_sample,
+			channel_count, out);
+		break;
+	default:
+		memmove(out, packed, expected_len);
+		break;
 	}
-	if (expected_len > out_len) {
-		return 0U;
-	}
-
-	memmove(out, packed, expected_len);
-	*compression = LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_BIT_PACK;
-	return expected_len;
+	*compression = selected;
+	return payload_len;
 }
 
 static size_t sigrok_linkr_encode_single_bits_payload(
@@ -1786,7 +1816,10 @@ static size_t sigrok_linkr_encode_single_bits_payload(
 	size_t payload_len;
 
 	if (packed == NULL || compression == NULL || out == NULL || sample_count == 0U ||
-	    packed_len != expected_len) {
+	    packed_len != expected_len ||
+	    !sigrok_linkr_payload_alias_valid(packed, packed_len, out, out_len) ||
+	    ((sample_count % 8U) != 0U &&
+	     (packed[expected_len - 1U] >> (sample_count % 8U)) != 0U)) {
 		return 0U;
 	}
 	if (try_rle && expected_len > 3U) {
@@ -1796,6 +1829,9 @@ static size_t sigrok_linkr_encode_single_bits_payload(
 			equal_len++;
 		}
 		if (equal_len == expected_len && expected_len <= UINT16_MAX) {
+			if (out_len < 3U) {
+				return 0U;
+			}
 			out[0] = packed[0];
 			out[1] = (uint8_t)(expected_len & 0xffU);
 			out[2] = (uint8_t)((expected_len >> 8U) & 0xffU);
@@ -1804,12 +1840,14 @@ static size_t sigrok_linkr_encode_single_bits_payload(
 		}
 	}
 	if (try_rle) {
-		payload_len = packed == out ?
-			sigrok_linkr_compress_rle_if_smaller_in_place(out,
-				(uint32_t)expected_len, 1U, out_len) :
-			linkr_debugger_sigrok_linkr_compress_rle_if_smaller(packed,
-				(uint32_t)expected_len, 1U, out, out_len);
+		payload_len = sigrok_linkr_rle_size_if_smaller(packed,
+			(uint32_t)expected_len, 1U, packed == out);
 		if (payload_len > 0U) {
+			if (payload_len > out_len) {
+				return 0U;
+			}
+			(void)linkr_debugger_sigrok_linkr_compress_rle_if_smaller(packed,
+				(uint32_t)expected_len, 1U, out, out_len);
 			*compression = LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_SINGLE_BITS_RLE;
 			return payload_len;
 		}
@@ -1844,7 +1882,10 @@ size_t linkr_debugger_sigrok_linkr_encode_stream_data_frame(
 	struct linkr_debugger_sigrok_linkr_data_meta meta;
 
 	if (payload == NULL || out == NULL || sample_count == 0U || bytes_per_sample == 0U ||
-	    payload_len != expected_len || expected_len == 0U || prefix_len > out_len) {
+	    channel_mask == 0U || (channel_mask & (uint16_t)~0x07ffU) != 0U ||
+	    !linkr_debugger_sigrok_linkr_sample_range_fits(sample_index, sample_count) ||
+	    payload_len != expected_len || expected_len == 0U || prefix_len > out_len ||
+	    expected_len > LINKR_DEBUGGER_SIGROK_LINKR_MAX_DATA_BYTES) {
 		return 0U;
 	}
 	if (format == LINKR_DEBUGGER_LA_STREAM_PAYLOAD_SINGLE_BITS) {
@@ -2067,7 +2108,8 @@ void linkr_debugger_sigrok_linkr_caps_init(struct linkr_debugger_sigrok_linkr_ca
 	caps->modes[0].compression = LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_BIT_PACK |
 		LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_RLE |
 		LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_SINGLE_BITS |
-		LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_PALETTE2;
+		LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_PALETTE2 |
+		LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_DENSE_BITS;
 
 	caps->modes[1].mode_id = LINKR_DEBUGGER_SIGROK_LINKR_MODE_WIDE11;
 	caps->modes[1].mode_flags = LINKR_DEBUGGER_SIGROK_LINKR_MODE_FLAG_CONTINUOUS |
@@ -2081,7 +2123,8 @@ void linkr_debugger_sigrok_linkr_caps_init(struct linkr_debugger_sigrok_linkr_ca
 	caps->modes[1].max_samplerate_khz = 125000U;
 	caps->modes[1].compression = LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_BIT_PACK |
 		LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_RLE |
-		LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_PALETTE2;
+		LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_PALETTE2 |
+		LINKR_DEBUGGER_SIGROK_LINKR_COMPRESSION_FLAG_DENSE_BITS;
 }
 
 void linkr_debugger_sigrok_linkr_session_reset(struct linkr_debugger_sigrok_linkr_session *session)

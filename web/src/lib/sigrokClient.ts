@@ -106,9 +106,19 @@ export const SigrokCompression = {
   SINGLE_BITS: 4,
   SINGLE_BITS_RLE: 5,
   PACKED_PALETTE2: 6,
+  DENSE_BITS: 7,
 } as const;
 
 export type SigrokCompression = typeof SigrokCompression[keyof typeof SigrokCompression];
+
+// CAPS flags describe codec families, not DATA codec-number bits.
+export const SigrokCompressionFlag = {
+  BIT_PACK: 1 << 0,
+  RLE: 1 << 1,
+  SINGLE_BITS: 1 << 2,
+  PALETTE2: 1 << 3,
+  DENSE_BITS: 1 << 4,
+} as const;
 
 export interface SigrokHeader {
   magic: number;
@@ -343,6 +353,55 @@ function decodeSingleBitsSamples(
   return decoded;
 }
 
+function decodeDenseBitsSamples(
+  packed: Uint8Array,
+  sampleCount: number,
+  channelMask: number
+): Uint8Array {
+  if (channelMask === 0 || (channelMask & ~0x07ff) !== 0) {
+    throw new Error("DENSE_BITS DATA frame requires a non-zero channel mask within 0x07ff");
+  }
+  if (sampleCount === 0) {
+    throw new Error("DENSE_BITS DATA frame requires a non-zero sampleCount");
+  }
+  const { activeChannelCount, bytesPerSample } = getPackedSampleWidth(channelMask);
+  const bitCount = sampleCount * activeChannelCount;
+  const expectedPackedBytes = Math.ceil(bitCount / 8);
+  if (expectedPackedBytes > 4096) {
+    throw new Error("DENSE_BITS DATA frame exceeds 4096-byte sample payload limit");
+  }
+  if (packed.length !== expectedPackedBytes) {
+    throw new Error("DENSE_BITS DATA frame length does not match sampleCount and channelMask");
+  }
+  const trailingBits = bitCount % 8;
+  if (
+    trailingBits !== 0 &&
+    (packed[packed.length - 1] & ~((1 << trailingBits) - 1)) !== 0
+  ) {
+    throw new Error("DENSE_BITS DATA frame has non-zero tail padding");
+  }
+
+  // Validate the entire wire shape before allocating the byte-aligned output.
+  const decoded = new Uint8Array(sampleCount * bytesPerSample);
+  const sampleMask = (1 << activeChannelCount) - 1;
+  let bits = 0;
+  let availableBits = 0;
+  let readOffset = 0;
+  for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+    while (availableBits < activeChannelCount) {
+      bits |= packed[readOffset++] << availableBits;
+      availableBits += 8;
+    }
+    const sample = bits & sampleMask;
+    const writeOffset = sampleIndex * bytesPerSample;
+    decoded[writeOffset] = sample & 0xff;
+    if (bytesPerSample === 2) decoded[writeOffset + 1] = sample >>> 8;
+    bits >>>= activeChannelCount;
+    availableBits -= activeChannelCount;
+  }
+  return decoded;
+}
+
 function decodePackedPalette2Samples(
   packed: Uint8Array,
   sampleCount: number,
@@ -443,6 +502,8 @@ function decodeSigrokDataSamples(meta: SigrokDataMeta, packed: Uint8Array): Uint
     }
     case SigrokCompression.PACKED_PALETTE2:
       return decodePackedPalette2Samples(packed, meta.sampleCount, meta.channelMask);
+    case SigrokCompression.DENSE_BITS:
+      return decodeDenseBitsSamples(packed, meta.sampleCount, meta.channelMask);
     default:
       throw new Error(`Unsupported DATA compression ${meta.compression}`);
   }
@@ -656,6 +717,7 @@ export class SigrokClient {
   private disconnecting = false;
   private hello: SigrokHelloResp | null = null;
   private caps: SigrokCapsResp | null = null;
+  private configuredConfig: Readonly<SigrokConfigReq> | null = null;
 
   addEventListener(listener: SigrokClientEventListener): void {
     this.listeners.push(listener);
@@ -692,9 +754,10 @@ export class SigrokClient {
     this.emit({ type: "state", state });
   }
 
-  private clearCapabilities(): void {
+  private clearSession(): void {
     this.hello = null;
     this.caps = null;
+    this.configuredConfig = null;
   }
 
   async connect(url: string): Promise<void> {
@@ -705,7 +768,7 @@ export class SigrokClient {
     const generation = ++this.connectionGeneration;
     this.disconnecting = false;
     this.buffer = new Uint8Array(0);
-    this.clearCapabilities();
+    this.clearSession();
     this.setState("connecting");
 
     return new Promise((resolve, reject) => {
@@ -759,7 +822,7 @@ export class SigrokClient {
         ) {
           ws.close();
         }
-        this.clearCapabilities();
+        this.clearSession();
         this.setState("disconnected");
         this.rejectAllPending(error);
         rejectConnect(error);
@@ -807,7 +870,7 @@ export class SigrokClient {
         this.connectionGeneration += 1;
         this.ws = null;
         this.buffer = new Uint8Array(0);
-        this.clearCapabilities();
+        this.clearSession();
         this.setState("disconnected");
         const error = new Error("WebSocket closed");
         this.rejectAllPending(error);
@@ -838,7 +901,7 @@ export class SigrokClient {
       ws.close();
     }
     this.buffer = new Uint8Array(0);
-    this.clearCapabilities();
+    this.clearSession();
     this.setState("disconnected");
     const error = new Error("Client disconnected");
     this.rejectAllPending(error);
@@ -895,6 +958,14 @@ export class SigrokClient {
   }
 
   private handleFrame(frame: SigrokFrame): void {
+    if (frame.type === SigrokFrameType.DATA) {
+      if (this.configuredConfig === null) {
+        throw new Error("DATA frame received without a successful CONFIG");
+      }
+      if (frame.meta.channelMask !== this.configuredConfig.channelMask) {
+        throw new Error("DATA frame channel mask does not match successful CONFIG");
+      }
+    }
     if (frame.type === SigrokFrameType.HELLO_RESP) {
       this.hello = frame.payload;
     }
@@ -902,16 +973,17 @@ export class SigrokClient {
       this.caps = freezeSigrokCaps(frame.payload);
     }
 
-    this.emit({ type: "frame", frame });
-
-    if (frame.type === SigrokFrameType.DATA) {
-      this.emit({ type: "data", meta: frame.meta, samples: frame.samples });
-    }
-
+    // Commit a matching CONFIG ACK before callbacks or a coalesced DATA frame.
     const pending = this.pendingRequests.get(frame.id);
     if (pending) {
       this.pendingRequests.delete(frame.id);
       pending.resolve(frame);
+    }
+
+    this.emit({ type: "frame", frame });
+
+    if (frame.type === SigrokFrameType.DATA) {
+      this.emit({ type: "data", meta: frame.meta, samples: frame.samples });
     }
 
     if (frame.type === SigrokFrameType.EVENT) {
@@ -949,7 +1021,11 @@ export class SigrokClient {
     this.ws.send(frame);
   }
 
-  private sendRequest(type: typeof SigrokFrameType[keyof typeof SigrokFrameType], payload: Uint8Array = new Uint8Array(0)): Promise<SigrokFrame> {
+  private sendRequest(
+    type: typeof SigrokFrameType[keyof typeof SigrokFrameType],
+    payload: Uint8Array = new Uint8Array(0),
+    onResponse?: (frame: SigrokFrame) => void
+  ): Promise<SigrokFrame> {
     const frame = this.buildFrame(type, payload);
     const id = this.nextId - 1;
 
@@ -962,7 +1038,12 @@ export class SigrokClient {
       this.pendingRequests.set(id, {
         resolve: (frame) => {
           clearTimeout(timeout);
-          resolve(frame);
+          try {
+            onResponse?.(frame);
+            resolve(frame);
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error(String(error)));
+          }
         },
         reject: (err) => {
           clearTimeout(timeout);
@@ -999,12 +1080,17 @@ export class SigrokClient {
   }
 
   async configure(config: SigrokConfigReq, options: SigrokConfigureOptions = {}): Promise<SigrokAck> {
-    const request = buildSigrokConfigFrameRequest(config, this.getServerCapabilities(), options);
-    const resp = await this.sendRequest(request.type, request.payload);
+    const snapshot = Object.freeze({ ...config });
+    const request = buildSigrokConfigFrameRequest(snapshot, this.getServerCapabilities(), options);
+    const resp = await this.sendRequest(request.type, request.payload, (frame) => {
+      if (frame.type === SigrokFrameType.CONFIG_RESP) {
+        this.configuredConfig = snapshot;
+        this.setState("configured");
+      }
+    });
     if (resp.type !== SigrokFrameType.CONFIG_RESP) {
       throw new Error("Unexpected response to CONFIG");
     }
-    this.setState("configured");
     return resp.payload;
   }
 

@@ -40,7 +40,7 @@ channel. The task-v2 store uses the firmware-owned
 Settings NVS partition (128 KiB in the current image) and four slots;
 it does not read the removed `linkr/task/tasks` blob.
 
-WIDE11 uses a 144184 B hardware slice and a 43008 B WS telemetry ring within the 161144 B total backing allocation. Historical strict 10/10 continuous points are FAST8 static 2.600 MHz and GP16-active 1.200 MHz WS / 1.375 MHz TCP; WIDE11 static 1.050 MHz WS / 1.175 MHz TCP and GP16-active 850 kHz WS / 950 kHz TCP. These are transport operating points, not 125 MHz continuous claims or x1.2 revalidation.
+WIDE11 uses a 144184 B hardware slice and a 43008 B WS telemetry ring within the 144184 B total backing allocation. Historical strict 10/10 continuous points are FAST8 static 2.600 MHz and GP16-active 1.200 MHz WS / 1.375 MHz TCP; WIDE11 static 1.050 MHz WS / 1.175 MHz TCP and GP16-active 850 kHz WS / 950 kHz TCP. These are transport operating points, not 125 MHz continuous claims or x1.2 revalidation.
 
 ADC3 contract, wire shapes, and GP29 ownership rules live in
 [docs/reference/adc-telemetry.md](docs/reference/adc-telemetry.md); the dated

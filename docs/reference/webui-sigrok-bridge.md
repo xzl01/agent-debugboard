@@ -2,8 +2,8 @@
 
 ## Overview
 
-The Web UI communicates with the firmware logic analyzer using the sigrok binary
-protocol over a WebSocket transport.
+The Web UI communicates with the firmware logic analyzer using Linkr's custom
+Sigrok-Linkr v2 binary protocol over a WebSocket transport.
 
 ## Architecture
 
@@ -53,6 +53,10 @@ Key protocol parameters for Web UI:
   CONFIG_RESP, then START returns INVALID_CONFIG
 - **Supported modes**: FAST8 (GP10-17), WIDE11 (GP10-GP20, 11 channels; GP29 excluded from LA)
 - **GP7-GP9**: Not available in Sigrok modes
+- **Dense sample encoding**: CAPS compression bit4 advertises DENSE_BITS codec7.
+  It packs the enabled channels across sample boundaries and expands back to the
+  existing byte-aligned sample format before waveform rendering or decoding.
+  Full DATA masks must match the successfully acknowledged CONFIG snapshot.
 
 ## Key Implementation Notes
 
@@ -92,10 +96,16 @@ Key protocol parameters for Web UI:
 
 The sigrok-over-WebSocket path provides:
 
-- Standard sigrok binary protocol (shared with native PulseView/sigrok-cli)
+- Custom Sigrok-Linkr v2 protocol shared by WebSocket and raw-TCP port 5556
 - Better protocol efficiency (binary vs text)
-- Consistent protocol across Web UI and native integrations
+- Consistent frames for current v2-aware clients; not a stock libsigrok protocol
 - Pre-trigger not exposed in Web UI (simpler contract)
+
+The repository's `tools/sigrok/linkr-driver` and `tools/sigrok/test.sh` are
+pre-existing v1 prototypes, not a working v2 native integration. They do not
+decode current v2 frames or codecs; do not use their results as validation of
+PulseView/sigrok-cli support. Native integration remains unimplemented here;
+the current firmware wire contract is the v2 reference below.
 
 ## See Also
 

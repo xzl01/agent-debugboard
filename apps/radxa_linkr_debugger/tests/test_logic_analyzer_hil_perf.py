@@ -23,6 +23,13 @@ runner = importlib.util.module_from_spec(RUNNER_SPEC)
 sys.modules[RUNNER_SPEC.name] = runner
 RUNNER_SPEC.loader.exec_module(runner)
 
+DECODER_PATH = RUNNER_PATH.with_name("sigrok_data_decoder.py")
+DECODER_SPEC = importlib.util.spec_from_file_location("sigrok_data_decoder", DECODER_PATH)
+if DECODER_SPEC is None or DECODER_SPEC.loader is None:
+    raise RuntimeError(f"failed to load {DECODER_PATH}")
+ws_decoder = importlib.util.module_from_spec(DECODER_SPEC)
+DECODER_SPEC.loader.exec_module(ws_decoder)
+
 FakeWebSocketTimeoutException = type("WebSocketTimeoutException", (Exception,), {})
 ADC0_PAD_RAW = 2000
 ADC0_PAD_MV = 2608
@@ -342,6 +349,115 @@ def adc_ws_batch_message(samples: list[dict[str, object]] | None = None) -> dict
         "channels": adc_ws_batch_channels(),
         "samples": samples if samples is not None else [adc_ws_batch_sample()],
     }
+
+
+class SigrokDataDecoderTests(unittest.TestCase):
+    @staticmethod
+    def decode(module, sample_count: int, channel_mask: int, compression: int, payload: bytes) -> bytes:
+        meta = runner.SigrokDataMeta(0xFFFFFC, sample_count, compression, channel_mask)
+        if module is runner:
+            return runner.decode_sigrok_data_payload(meta, payload)
+        return ws_decoder.decode_data_payload(asdict(meta), payload)
+
+    def test_dense_bits_golden_vectors(self) -> None:
+        vectors = [
+            (0x024B, 9, "2088418a391f", bytes([0, 1, 2, 3, 4, 5, 6, 7, 31])),
+            (0x07FF, 7, "0008c0ff015815554913", bytes.fromhex("00000100ff0700045501aa02d204")),
+            (0x0441, 9, "c8d59900", bytes([0, 1, 7, 2, 5, 3, 6, 4, 0])),
+        ]
+        for module in (runner, ws_decoder):
+            for mask, count, body_hex, expected in vectors:
+                with self.subTest(decoder=module.__name__, mask=mask):
+                    self.assertEqual(self.decode(module, count, mask, 7, bytes.fromhex(body_hex)), expected)
+
+    def test_dense_bits_all_widths_and_odd_counts(self) -> None:
+        for width in range(1, 12):
+            for count in (1, 7, 9, 17):
+                mask = (1 << width) - 1
+                samples = [(index * 37 + index // 2) & mask for index in range(count)]
+                samples[-1] = mask
+                bitstream = sum(sample << (index * width) for index, sample in enumerate(samples))
+                payload = bitstream.to_bytes((count * width + 7) // 8, "little")
+                expected = b"".join(sample.to_bytes((width + 7) // 8, "little") for sample in samples)
+                for module in (runner, ws_decoder):
+                    with self.subTest(decoder=module.__name__, width=width, count=count):
+                        self.assertEqual(self.decode(module, count, mask, 7, payload), expected)
+
+    def test_dense_bits_rejects_invalid_inputs_before_output_allocation(self) -> None:
+        body = bytes.fromhex("2088418a391f")
+        cases = [
+            (9, 0x024B, body[:-1], "length"),
+            (9, 0x024B, body + b"\x00", "length"),
+            (9, 0x024B, body[:-1] + b"\x3f", "padding"),
+            (1, 1, b"", "length"),
+            (1, 0, b"\x00", "channel_mask"),
+            (1, 0x0800, b"\x00", "channel_mask"),
+            (9, 0x824B, body, "channel_mask"),
+            (1, 0x10000, b"\x00", "channel_mask"),
+            (1, -1, b"\x00", "channel_mask"),
+            (0, 1, b"", "sample_count"),
+            (-1, 1, b"", "sample_count"),
+            (65536, 1, b"\x00" * 8192, "sample_count"),
+            (32769, 1, b"\x00" * 4097, "4096"),
+        ]
+        for module in (runner, ws_decoder):
+            for count, mask, payload, error in cases:
+                with self.subTest(decoder=module.__name__, count=count, mask=mask, error=error):
+                    with mock.patch.object(module, "bytearray", side_effect=AssertionError("allocated before validation"), create=True):
+                        with self.assertRaisesRegex(ValueError, error):
+                            self.decode(module, count, mask, 7, payload)
+
+    def test_dense_bits_accepts_maximum_payload(self) -> None:
+        for module in (runner, ws_decoder):
+            with self.subTest(decoder=module.__name__):
+                self.assertEqual(self.decode(module, 32768, 1, 7, b"\x55" * 4096), b"\x01\x00" * 16384)
+
+    def test_existing_codecs_keep_sample_bytes_and_rejection_policy(self) -> None:
+        vectors = [
+            (0, 3, 0x0441, b"\x00\x07\x02", b"\x00\x07\x02"),
+            (1, 3, 0x0441, b"\x00\x07\x02", b"\x00\x07\x02"),
+            (3, 3, 0x07FF, b"\x01\x00\x02\x00\xff\x07\x01\x00", b"\x01\x00\x01\x00\xff\x07"),
+            (4, 9, 0x0400, b"\x4d\x01", bytes([1, 0, 1, 1, 0, 0, 1, 0, 1])),
+            (5, 16, 0x0400, b"\x55\x02\x00", b"\x01\x00" * 8),
+            (6, 9, 0x07FF, b"\x00\x00\xff\x07\xaa\x01", b"\x00\x00\xff\x07" * 4 + b"\xff\x07"),
+        ]
+        malformed = [
+            (1, 1, 1, b"\x00\x00"),
+            (3, 1, 1, b"\x00\x00\x00"),
+            (3, 1, 1, b"\x00\x02\x00"),
+            (4, 9, 1, b"\x00\x80"),
+            (4, 8, 3, b"\x00"),
+            (5, 9, 1, b"\x80\x02\x00"),
+            (6, 9, 1, b"\x00\x01\xaa\x80"),
+            (6, 8, 1, b"\x00\x00\x00"),
+            (2, 1, 1, b"\x00\x01\x00"),
+            (8, 1, 1, b"\x00"),
+        ]
+        for module in (runner, ws_decoder):
+            for codec, count, mask, payload, expected in vectors:
+                with self.subTest(decoder=module.__name__, codec=codec):
+                    self.assertEqual(self.decode(module, count, mask, codec, payload), expected)
+            for codec, count, mask, payload in malformed:
+                with self.subTest(decoder=module.__name__, invalid_codec=codec, payload=payload):
+                    with self.assertRaises(ValueError):
+                        self.decode(module, count, mask, codec, payload)
+
+    def test_dense_bits_stats_use_sample_counts_and_indices(self) -> None:
+        stats = runner.StreamStats()
+        body = bytes.fromhex("2088418a391f")
+        for first_index in (0xFFFFFC, 5):
+            frame_payload = first_index.to_bytes(3, "little") + bytes.fromhex("0900074b02") + body
+            meta = runner.parse_data_meta(frame_payload)
+            runner.observe_sigrok_data_payload(stats, meta, frame_payload, expected_channel_mask=0x024B, sample_bytes=1)
+        self.assertEqual(stats.data_decode_error_frames, 0)
+        self.assertEqual(stats.channel_mask_mismatch_frames, 0)
+        self.assertEqual(stats.compression_frame_counts, {"7": 2})
+        self.assertEqual(stats.received_sample_count, 18)
+        self.assertEqual(stats.activity_analyzed_samples, 18)
+        self.assertEqual(stats.payload_bytes, 12)
+        self.assertEqual(stats.sample_index_gaps, 0)
+        self.assertEqual(stats.last_sample_index, 13)
+        self.assertEqual(stats.sample_value_or, 31)
 
 
 class LogicAnalyzerHilPerfTests(unittest.TestCase):

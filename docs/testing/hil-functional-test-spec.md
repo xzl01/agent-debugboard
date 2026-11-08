@@ -1680,7 +1680,9 @@ bound 到 5 秒以内（足够看到 2-3 次完整周期）。
 
 The logic analyzer uses RP2350 PIO2+DMA for high-speed GPIO capture. The sigrok
 binary protocol runs over two transports: Web UI uses `/api/v1/live-sessions` then
-`/api/v1/ws/<slot>` binary Sigrok; native sigrok/PulseView uses raw-TCP port 5556.
+`/api/v1/ws/<slot>` binary Sigrok-Linkr v2; a compatible TCP client uses raw-TCP
+port 5556. The in-repository `tools/sigrok` v1 prototypes are not working native
+v2 integrations and must not be used as PulseView/sigrok-cli PASS evidence.
 
 Pin ownership is part of the HIL contract. FAST8/WIDE11 take over both J4
 UART1 pins (TX GP10 and RX GP11) through PIO2; a SINGLE capture on GP10 takes
@@ -1833,6 +1835,24 @@ remains unverified. Multichannel active-input validation uses a separate GP16 pr
 See docs/testing/results/2026-08-30-logic-analyzer-v2-dense-hil.md and
 docs/testing/results/2026-08-31-logic-analyzer-v2-multichannel-hil.md.
 
+DENSE_BITS codec7 requires a separate, explicitly authorized HIL run; the
+historical rows above are not its hardware acceptance evidence. Before such a run:
+
+- Verify CAPS compression bit4 and use current v2 decoders on both WS and TCP.
+- Use an approved independent multichannel pattern source with at least three
+  sample values; one toggling line may select palette2 and cannot establish
+  dense-codec throughput. Check byte-exact samples, full mask, indices and drops.
+- For five-channel 4096-sample codec7 chunks, expect 2560 sample-data bytes;
+  full eleven-channel 2048-sample chunks use 2816. Count the 17-byte DATA prefix
+  and transport overhead separately, and report actual codec frame counts.
+- Recheck compressible RLE/palette and SINGLE paths, bounded/continuous capture,
+  trigger position, slow-sink stop/recovery and arena/ADC restoration. Record
+  throughput, gaps and errors rather than inferring USB speed from byte savings.
+
+The 2026-11-05 implementation work has no HIL authorization and does not execute
+these steps. Its offline evidence is recorded separately in
+[the memory/bandwidth report](results/2026-11-05-capture-memory-bandwidth.md).
+
 Bounded pre=0 and post=1..512 HIL results (exact finite engine). post=513 to 65535 uses packed ring streaming.
 post=65536 is not a valid uint16; use CONFIG_V2 with u32LE pre/post for >65535 captures.
 
@@ -1914,7 +1934,7 @@ The 2026-07-27 WIDE11 HIL verified the then-current target at 100 MHz with
 `pre=0` and both `post=100000` and high-rate `post=0`. Accepted deep bursts
 delivered exactly 100000 samples in 98 DATA frames with zero sample-index gaps.
 WIDE11 uses two capture SMs: SM-A (GP10-GP17, 8-bit autopush32, 100000 B) and SM-B
-(GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B shared burst slice (overlays the 161144 B total backing allocation).
+(GP18-GP20, 3-bit autopush30, 40000 B); two DMA channels; 144184 B shared burst slice (overlays the 144184 B total backing allocation).
 GP29 is excluded from WIDE11 LA and remains input-only while used by ADC3. NONE deep burst uses
 two capture SMs; triggered deep burst adds a third SM running the 3-instruction trigger
 program. Two-phase START prepares ownership and quiesce before the response. NONE sends
@@ -1929,7 +1949,7 @@ ARMED state followed by the ARMED event. GO then synchronously enables the sampl
 | WS | WIDE11 high-rate capacity burst | NONE | 100 MHz | PASS — post=0 produced exactly 100000 samples and auto-STOPPED |
 | TCP | WIDE11 high-rate capacity burst | NONE | 100 MHz | PASS — post=0 produced exactly 100000 samples and auto-STOPPED |
 
-After each deep burst run, verify HTTP health and restart capability. The 144184 B shared burst slice (overlaying the 161144 B total backing allocation)
+After each deep burst run, verify HTTP health and restart capability. The 144184 B shared burst slice (overlaying the 144184 B total backing allocation)
 restores ADC telemetry, power capture, and normal Sigrok pool after drain;
 confirm these services are functional after the capture completes.
 
@@ -2059,7 +2079,7 @@ The executable two-client regression is `--matrix wide11-telemetry-isolation` in
 normal JSON WebSocket ADC telemetry client stays connected but pauses while a second
 client holds the WIDE11 shared burst-slice lease through raw-TCP sigrok deep burst.
 WIDE11 uses two packed capture SMs and two DMA channels in the 144184-byte
-shared burst slice (overlays the 161144 B total backing allocation); triggered capture adds a third trigger-only SM.
+shared burst slice (overlays the 144184 B total backing allocation); triggered capture adds a third trigger-only SM.
 
 Run with 5-second bounded operations:
 

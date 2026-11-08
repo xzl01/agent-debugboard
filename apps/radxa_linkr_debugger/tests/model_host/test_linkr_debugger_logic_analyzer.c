@@ -1046,7 +1046,7 @@ static void assert_sink_matches_decoded_span(
 	const struct linkr_debugger_la_packed_ring_plan *plan,
 	const uint32_t * const lane_ptrs[],
 	const uint32_t lane_counts[],
-	uint32_t first_sample,
+	uint64_t first_sample,
 	uint32_t sample_count)
 {
 	uint16_t values_or;
@@ -1299,7 +1299,9 @@ static void test_stream_sink_wrap_batch_matches_decode_span_two_bytes(void)
 	free(lane_b_words);
 }
 
-static void test_stream_sink_fast8_large_random_wrap_matches_generic(void)
+static void assert_fast8_selection_matches_generic(const uint8_t *pins,
+	uint8_t pin_count, uint64_t sequence_prefix, uint32_t samples_before_wrap,
+	uint32_t sample_count)
 {
 	struct linkr_debugger_la_config config = fast8_plan_config(0U);
 	struct linkr_debugger_la_packed_ring_plan plan;
@@ -1307,9 +1309,11 @@ static void test_stream_sink_fast8_large_random_wrap_matches_generic(void)
 	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
 	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
 
+	memcpy(config.selected_pins, pins, pin_count);
+	config.selected_pin_count = pin_count;
 	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
 	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED);
-	assert(plan.selected_pin_count == 8U);
+	assert(plan.selected_pin_count == pin_count);
 	lane_words = alloc_lane_words(plan.lanes[0].word_count);
 	for (uint32_t i = 0U; i < plan.lanes[0].word_count; i++) {
 		lane_words[i] = (i * 2654435761U) ^ (i >> 3U) ^ 0xa5c39e71U;
@@ -1317,8 +1321,26 @@ static void test_stream_sink_fast8_large_random_wrap_matches_generic(void)
 	lane_ptrs[0] = lane_words;
 	lane_counts[0] = plan.lanes[0].word_count;
 	assert_sink_matches_decoded_span(&plan, lane_ptrs, lane_counts,
-		plan.sample_capacity - 1023U, 2048U);
+		sequence_prefix + plan.sample_capacity - samples_before_wrap, sample_count);
 	free(lane_words);
+}
+
+static void test_stream_sink_fast8_large_random_wrap_matches_generic(void)
+{
+	static const uint8_t pins[] = { 10U, 11U, 12U, 13U, 14U, 15U, 16U, 17U };
+
+	assert_fast8_selection_matches_generic(pins, sizeof(pins), 0U, 1023U, 2048U);
+}
+
+static void test_stream_sink_contiguous_fast8_subsets_match_generic(void)
+{
+	static const uint8_t low[] = { 10U, 11U, 12U, 13U, 14U };
+	static const uint8_t high[] = { 13U, 14U, 15U };
+	static const uint8_t five[] = { 12U, 13U, 14U, 15U, 16U };
+
+	assert_fast8_selection_matches_generic(low, sizeof(low), 0U, 31U, 64U);
+	assert_fast8_selection_matches_generic(high, sizeof(high), UINT32_MAX, 31U, 64U);
+	assert_fast8_selection_matches_generic(five, sizeof(five), 0U, 1023U, 4096U);
 }
 
 static void test_stream_sink_wide11_large_random_lane_wraps_match_generic(void)
@@ -1357,27 +1379,11 @@ static void test_stream_sink_wide11_large_random_lane_wraps_match_generic(void)
 
 static void test_stream_sink_sparse_fast8_selection_keeps_generic_order(void)
 {
-	static const uint8_t pins[] = { 17U, 10U, 14U, 12U };
-	struct linkr_debugger_la_config config = fast8_plan_config(0U);
-	struct linkr_debugger_la_packed_ring_plan plan;
-	uint32_t *lane_words;
-	const uint32_t *lane_ptrs[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
-	uint32_t lane_counts[LINKR_DEBUGGER_LA_PACKED_BURST_MAX_LANES] = {0};
+	static const uint8_t sparse[] = { 10U, 12U, 14U, 17U };
+	static const uint8_t reordered[] = { 17U, 10U, 14U, 12U };
 
-	memcpy(config.selected_pins, pins, sizeof(pins));
-	config.selected_pin_count = (uint8_t)(sizeof(pins) / sizeof(pins[0]));
-	assert(linkr_debugger_logic_analyzer_packed_ring_plan(&config, &plan) == 0);
-	assert(plan.kind == LINKR_DEBUGGER_LA_HARDWARE_PLAN_FAST8_PACKED);
-	assert(plan.selected_pin_count == 4U);
-	lane_words = alloc_lane_words(plan.lanes[0].word_count);
-	for (uint32_t i = 0U; i < plan.lanes[0].word_count; i++) {
-		lane_words[i] = (i * 2654435761U) ^ 0x13579bdfU;
-	}
-	lane_ptrs[0] = lane_words;
-	lane_counts[0] = plan.lanes[0].word_count;
-	assert_sink_matches_decoded_span(&plan, lane_ptrs, lane_counts,
-		plan.sample_capacity - 31U, 64U);
-	free(lane_words);
+	assert_fast8_selection_matches_generic(sparse, sizeof(sparse), 0U, 31U, 64U);
+	assert_fast8_selection_matches_generic(reordered, sizeof(reordered), 0U, 31U, 64U);
 }
 
 static void test_stream_sink_single_fast_path_default_selection_matches_generic(void)
@@ -3282,6 +3288,7 @@ int main(void)
 	test_stream_sink_wrap_batch_matches_decode_span_single_byte();
 	test_stream_sink_wrap_batch_matches_decode_span_two_bytes();
 	test_stream_sink_fast8_large_random_wrap_matches_generic();
+	test_stream_sink_contiguous_fast8_subsets_match_generic();
 	test_stream_sink_wide11_large_random_lane_wraps_match_generic();
 	test_stream_sink_sparse_fast8_selection_keeps_generic_order();
 	test_stream_sink_single_fast_path_default_selection_matches_generic();

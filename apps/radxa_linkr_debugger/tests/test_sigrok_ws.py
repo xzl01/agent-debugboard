@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 # pyright: reportMissingImports=false, reportMissingTypeArgument=false, reportReturnType=false
-"""Sigrok WebSocket protocol test script."""
+"""Live Sigrok WebSocket protocol test; requires an authorized, connected board.
+
+Follow docs/testing/hil-functional-test-spec.md before invoking this script.
+After each board startup/reboot/flash, the first hardware mutation must enable
+5v_out, then request fixed PD 20 V and verify valid INA226 voltage/current data
+before running any test. Trigger tests also require the declared UART fixture.
+This is not an offline unit-test entry point.
+"""
 
 import argparse
 import os
@@ -10,6 +17,8 @@ import time
 import socket
 import json
 import urllib.request
+
+from sigrok_data_decoder import decode_data_payload
 
 try:
     import websocket
@@ -41,14 +50,6 @@ SERVER_FLAG_GENERIC_PACKED_BURST = 1 << 1
 SERVER_EXPECTED_HIGH_RATE_FLAGS = SERVER_FLAG_CONFIG_V2 | SERVER_FLAG_GENERIC_PACKED_BURST
 
 ERROR_BUSY = 8
-
-COMPRESSION_NONE = 0
-COMPRESSION_BIT_PACK = 1
-COMPRESSION_RLE = 2
-COMPRESSION_BIT_PACK_RLE = 3
-COMPRESSION_SINGLE_BITS = 4
-COMPRESSION_SINGLE_BITS_RLE = 5
-COMPRESSION_PACKED_PALETTE2 = 6
 
 TRIGGER_NONE = 0
 TRIGGER_RISING = 1
@@ -186,103 +187,6 @@ def parse_data_meta(payload: bytes) -> dict:
         "compression": payload[5],
         "channel_mask": struct.unpack("<H", payload[6:8])[0],
     }
-
-
-def sigrok_bytes_per_sample(channel_mask: int) -> int:
-    channel_count = (channel_mask & 0xFFFF).bit_count()
-    if channel_count == 0:
-        return 0
-    return (channel_count + 7) // 8
-
-
-def decode_rle_units(
-    sample_payload: bytes,
-    unit_count: int,
-    unit_bytes: int,
-    compression_name: str,
-) -> bytes:
-    tuple_len = unit_bytes + 2
-    if len(sample_payload) == 0 or len(sample_payload) % tuple_len != 0:
-        raise ValueError(f"{compression_name} payload has truncated tuple")
-    out = bytearray()
-    expanded_count = 0
-    for pos in range(0, len(sample_payload), tuple_len):
-        value = sample_payload[pos:pos + unit_bytes]
-        run_pos = pos + unit_bytes
-        run_count = sample_payload[run_pos] | (sample_payload[run_pos + 1] << 8)
-        if run_count == 0:
-            raise ValueError(f"{compression_name} run_count must be non-zero")
-        if expanded_count + run_count > unit_count:
-            raise ValueError(f"{compression_name} expanded unit count overflows metadata")
-        out.extend(value * run_count)
-        expanded_count += run_count
-    if expanded_count != unit_count or len(out) != unit_count * unit_bytes:
-        raise ValueError(f"{compression_name} expanded output does not match metadata")
-    return bytes(out)
-
-
-def decode_packed_palette2(sample_payload: bytes, sample_count: int, bytes_per_sample: int) -> bytes:
-    selector_len = (sample_count + 7) // 8
-    palette_bytes = bytes_per_sample * 2
-    if len(sample_payload) != palette_bytes + selector_len:
-        raise ValueError("PACKED_PALETTE2 payload length does not match metadata")
-    palette0 = sample_payload[:bytes_per_sample]
-    palette1 = sample_payload[bytes_per_sample:palette_bytes]
-    if palette0 == palette1:
-        raise ValueError("PACKED_PALETTE2 palette values must be distinct")
-    selectors = sample_payload[palette_bytes:]
-    trailing_bits = sample_count % 8
-    if trailing_bits and selectors[-1] & ~((1 << trailing_bits) - 1):
-        raise ValueError("PACKED_PALETTE2 selector tail padding is non-zero")
-    out = bytearray()
-    for sample_index in range(sample_count):
-        selector = selectors[sample_index >> 3]
-        out.extend(palette1 if selector & (1 << (sample_index & 7)) else palette0)
-    return bytes(out)
-
-
-def decode_single_bits(sample_payload: bytes, sample_count: int, channel_mask: int) -> bytes:
-    if int(channel_mask & 0xFFFF).bit_count() != 1:
-        raise ValueError("SINGLE_BITS requires exactly one active channel")
-    expected_len = (sample_count + 7) // 8
-    if len(sample_payload) != expected_len:
-        raise ValueError(f"SINGLE_BITS payload length {len(sample_payload)} != expected {expected_len}")
-    trailing_bits = sample_count % 8
-    if trailing_bits and sample_payload[-1] & ~((1 << trailing_bits) - 1):
-        raise ValueError("SINGLE_BITS payload has non-zero tail padding")
-    return bytes(
-        (sample_payload[sample_index >> 3] >> (sample_index & 7)) & 1
-        for sample_index in range(sample_count)
-    )
-
-
-def decode_data_payload(meta: dict, sample_payload: bytes) -> bytes:
-    sample_count = int(meta["sample_count"])
-    if sample_count <= 0:
-        raise ValueError("DATA sample_count must be non-zero")
-    channel_mask = int(meta["channel_mask"])
-    bytes_per_sample = sigrok_bytes_per_sample(channel_mask)
-    if bytes_per_sample <= 0:
-        raise ValueError("DATA channel_mask selects no channels")
-    expected_len = sample_count * bytes_per_sample
-    compression = int(meta["compression"])
-    if compression in (COMPRESSION_NONE, COMPRESSION_BIT_PACK):
-        if len(sample_payload) != expected_len:
-            raise ValueError(f"BIT_PACK payload length {len(sample_payload)} != expected {expected_len}")
-        return sample_payload
-    if compression == COMPRESSION_BIT_PACK_RLE:
-        return decode_rle_units(sample_payload, sample_count, bytes_per_sample, "BIT_PACK_RLE")
-    if compression == COMPRESSION_SINGLE_BITS:
-        return decode_single_bits(sample_payload, sample_count, channel_mask)
-    if compression == COMPRESSION_SINGLE_BITS_RLE:
-        dense_byte_count = (sample_count + 7) // 8
-        dense = decode_rle_units(sample_payload, dense_byte_count, 1, "SINGLE_BITS_RLE")
-        return decode_single_bits(dense, sample_count, channel_mask)
-    if compression == COMPRESSION_PACKED_PALETTE2:
-        return decode_packed_palette2(sample_payload, sample_count, bytes_per_sample)
-    if compression == COMPRESSION_RLE:
-        raise ValueError("standalone RLE is not valid for current DATA samples")
-    raise ValueError(f"unsupported DATA compression {compression}")
 
 
 def recv_frame(ws, timeout: float = 5.0) -> tuple:
