@@ -44,6 +44,7 @@ async function createRepo({ planned = false, evidence = false, playwright = fals
   git(root, ["init"]);
   git(root, ["config", "user.name", "Test User"]);
   git(root, ["config", "user.email", "test@example.invalid"]);
+  git(root, ["config", "commit.gpgsign", "false"]);
   git(root, ["add", ".github/workflows/version-bump.yml"]);
   git(root, ["commit", "-m", "base"]);
   await mkdir(path.join(root, "cmd-ng", "target"), { recursive: true });
