@@ -4,6 +4,14 @@
 
 Radxa Linkr Debugger 固件的详细构建流程、产物说明和 CI/release asset 参考。
 
+## Zephyr 基线
+
+`west.yml` 固定到 `f3fc249035296b87c75fa808b3abf78829fe9378`
+（2026-11-06 查询的 main，4.5.99 开发快照），不使用浮动分支；导入模块也须随该
+清单更新。本基线要求 CMake 3.28 以上和 Python 3.12 以上，Nix shell 提供
+Zephyr SDK 1.0.1。RP2350 target 以及应用 overlay/conf 文件名改用 `m33_0`；
+旧 `m33` 构建目录须经过 pristine 完整重建，不能直接沿用。
+
 ## Nix 工作流
 
 仓库提供的 `shell.nix` 包含 Zephyr SDK、cmake、ninja、dtc、gperf、pkg-config、
@@ -43,7 +51,7 @@ picotool 和 udisks2。Zephyr SDK 的安装路径由 shell hook 导出，交互�
 
 ```sh
 # 固件（canonical 目录，全量重建）
-nix-shell --run "west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger"
+nix-shell --run "west build -p always -b rpi_pico2/rp2350a/m33_0/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger"
 
 # 固件 host-model 单元测试
 nix-shell --run "apps/radxa_linkr_debugger/tests/run_unit_tests.sh"
@@ -97,7 +105,7 @@ optional header 且 `mtime=0`，解压必须逐字节等于源文件，并检查
 别的 codec 压缩。不要给这条内嵌路径增加 Brotli 或其它 content encoding。
 
 Canonical build 保留硬资源门禁：至少 **8 KiB Flash** 和 **32 KiB RAM** 空闲。
-ROM/RAM linker assertion 分别要求 `_flash_used <= 0xCCFD8`（847832 字节中保留
+ROM/RAM linker assertion 分别要求 `_flash_used <= 0xCBFD8`（843736 字节中保留
 8192）和 `_image_ram_size <= 0x7A000`（532480 字节中保留 32768）。超过任一门禁
 的 build 必须失败，不能静默吃掉 reserve。`zopfli` 必须存在于 build shell 和
 CI；干净固件构建需要 Node.js 22、npm、Rust `wasm32-unknown-unknown` target、

@@ -3,7 +3,7 @@
 # Copyright (c) Radxa Computer (Shenzhen) Co., Ltd.
 # Copyright (c) Jiali Chen <chenjiali@radxa.com>
 
-cmake_minimum_required(VERSION 3.20.0)
+cmake_minimum_required(VERSION 3.28.0)
 
 # Zephyr has built-in application-version support: a VERSION file produces
 # generated app_version.h and APP_BUILD_VERSION from git describe. Pass the

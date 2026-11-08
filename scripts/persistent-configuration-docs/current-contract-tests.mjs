@@ -28,7 +28,7 @@ export async function registerCurrentContractTests(suite, root) {
     })) {
       assert.match(codec, new RegExp(`^#define LINKR_DEBUGGER_CONFIG_${name} ${expected}U$`, "m"));
     }
-    assert.match(await source("boards/rpi_pico2_rp2350a_m33_mcuboot.conf"),
+    assert.match(await source("boards/rpi_pico2_rp2350a_m33_0_mcuboot.conf"),
       new RegExp(`^CONFIG_SETTINGS_NVS_SECTOR_COUNT=${SNAPSHOT_CONTRACT.nvsSectors}$`, "m"));
     const replay = await source("src/linkr_debugger_config_replay.c");
     assert.match(replay, /POWER_5V_USB_HUB_ID[\s\S]*?POWER_5V_OTG_ID[\s\S]*?POWER_12V_OUT_ID/);

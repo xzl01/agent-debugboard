@@ -3715,7 +3715,10 @@ static int la_packed_burst_configure_dma_locked(void)
 	la_packed_dma_a_config.head_block = &la_packed_dma_a_block;
 	la_packed_dma_a_config.user_data = (void *)(uintptr_t)la_generation;
 	la_packed_dma_a_config.dma_callback = la_packed_burst_dma_callback;
-	la_packed_dma_a_config.complete_callback_en = 1U;
+	/* The RP Pico driver maps this flag to IRQ_QUIET. Each single-block
+	 * lane needs its completion IRQ to schedule burst postprocessing.
+	 */
+	la_packed_dma_a_config.complete_callback_en = 0U;
 
 	if (la_packed_burst_plan_active.lane_count > 1U) {
 		la_packed_dma_b_block.source_address = (uint32_t)&pio->rxf[la_packed_sm_b];
@@ -3734,7 +3737,7 @@ static int la_packed_burst_configure_dma_locked(void)
 		la_packed_dma_b_config.head_block = &la_packed_dma_b_block;
 		la_packed_dma_b_config.user_data = (void *)(uintptr_t)la_generation;
 		la_packed_dma_b_config.dma_callback = la_packed_burst_dma_callback;
-		la_packed_dma_b_config.complete_callback_en = 1U;
+		la_packed_dma_b_config.complete_callback_en = 0U;
 	}
 
 	ret = dma_config(la_dma_dev, (uint32_t)la_packed_dma_a_channel,

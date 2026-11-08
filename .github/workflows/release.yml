@@ -400,7 +400,7 @@ jobs:
       - name: Build RP2350 firmware
         run: |
           mkdir -p release-assets
-          west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild app/apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+          west build -p always -b rpi_pico2/rp2350a/m33_0/mcuboot --sysbuild app/apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
           cp build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 release-assets/radxa-linkr-debugger-rp2350.uf2
           cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.signed.bin release-assets/radxa-linkr-debugger-rp2350-ota.bin
           cp build/radxa_linkr_debugger/radxa_linkr_debugger/zephyr/zephyr.elf release-assets/radxa-linkr-debugger-rp2350.elf

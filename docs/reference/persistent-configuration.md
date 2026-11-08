@@ -745,7 +745,7 @@ Firmware implementation:
 - [apps/radxa_linkr_debugger/src/linkr_debugger_flash_arbiter.c](../../apps/radxa_linkr_debugger/src/linkr_debugger_flash_arbiter.c):
   flash owner arbitration between OTA and the persistent-configuration
   service.
-- [apps/radxa_linkr_debugger/boards/rpi_pico2_rp2350a_m33_mcuboot.conf](../../apps/radxa_linkr_debugger/boards/rpi_pico2_rp2350a_m33_mcuboot.conf):
+- [apps/radxa_linkr_debugger/boards/rpi_pico2_rp2350a_m33_0_mcuboot.conf](../../apps/radxa_linkr_debugger/boards/rpi_pico2_rp2350a_m33_0_mcuboot.conf):
   `CONFIG_NVS`, `CONFIG_SETTINGS`, `CONFIG_SETTINGS_NVS`,
   `CONFIG_NVS_DATA_CRC`, and `CONFIG_SETTINGS_NVS_SECTOR_COUNT=32`.
 

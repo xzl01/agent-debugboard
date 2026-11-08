@@ -5,6 +5,16 @@
 Detailed build workflows, artifact descriptions, and CI/release asset
 reference for the Radxa Linkr Debugger firmware.
 
+## Zephyr baseline
+
+`west.yml` pins Zephyr `f3fc249035296b87c75fa808b3abf78829fe9378`
+(4.5.99 development snapshot, main as queried on 2026-11-06), not a floating
+branch. Update the imported modules with that manifest. This baseline requires
+CMake 3.28 or newer and Python 3.12 or newer; the Nix shell provides Zephyr SDK
+1.0.1. RP2350 targets now use `m33_0`, including the application overlay and
+configuration filenames; do not reuse the old `m33` build directory without a
+pristine rebuild.
+
 ## Nix Workflow
 
 The repo provides a `shell.nix` with the Zephyr SDK, cmake, ninja, dtc, gperf,
@@ -47,7 +57,7 @@ the repository root with a single `nix-shell --run "..."`:
 
 ```sh
 # Firmware (canonical directory, full rebuild)
-nix-shell --run "west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger"
+nix-shell --run "west build -p always -b rpi_pico2/rp2350a/m33_0/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger"
 
 # Firmware host-model unit tests
 nix-shell --run "apps/radxa_linkr_debugger/tests/run_unit_tests.sh"
@@ -110,7 +120,7 @@ another content encoding to this embedded path.
 
 The canonical link keeps hard resource gates: at least **8 KiB Flash** and
 **32 KiB RAM** must remain free. The ROM/RAM linker assertions enforce
-`_flash_used <= 0xCCFD8` (8192 bytes free of 847832) and
+`_flash_used <= 0xCBFD8` (8192 bytes free of 843736) and
 `_image_ram_size <= 0x7A000` (32768 bytes free of 532480). A build that
 exceeds either gate fails instead of silently consuming the reserve.
 `zopfli` must be available in the build shell and CI; a clean firmware build

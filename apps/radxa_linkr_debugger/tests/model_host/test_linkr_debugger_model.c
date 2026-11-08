@@ -574,7 +574,7 @@ static void test_usb_hub_regulator_dt_contract(void)
 
 	assert(filename != NULL);
 	assert(snprintf(filename + 1, sizeof(path) - (size_t)(filename + 1 - path),
-			"../../boards/rpi_pico2_rp2350a_m33.overlay") > 0);
+			"../../boards/rpi_pico2_rp2350a_m33_0.overlay") > 0);
 	file = fopen(path, "rb");
 	assert(file != NULL);
 	length = fread(source, 1U, sizeof(source) - 1U, file);

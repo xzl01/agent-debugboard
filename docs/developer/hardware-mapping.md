@@ -8,7 +8,7 @@ The active target is the `RA051_MB_X1.2` board with an RP2354A (QFN-60,
 RP2350A-compatible core and pinout). G2/RP2040 is retired and is not built,
 released, maintained, or included in HIL coverage.
 
-The build keeps the upstream `rpi_pico2/rp2350a/m33/mcuboot` board definition.
+The build keeps the upstream `rpi_pico2/rp2350a/m33_0/mcuboot` board definition.
 `U23` (external QSPI) is not populated on x1.2, so the board uses the 2 MB
 internal flash. The 4 MB sysbuild partition layout only over-declares the
 storage partition and does not move used data past 2 MB; moving to a 2 MB

@@ -1004,7 +1004,7 @@ BUILD_ASSERT(sizeof(struct linkr_debugger_ws_client_sidecar) == 1096U,
 	"WS serial sidecar ARM layout changed");
 BUILD_ASSERT(sizeof(linkr_debugger_ws_client_sidecars) == 4384U,
 	"four WS serial sidecars must occupy exactly 4384 bytes");
-BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28704U);
+BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28768U);
 static struct linkr_debugger_ws_client_thread_arg linkr_debugger_ws_thread_args[LINKR_DEBUGGER_WS_MAX_CLIENTS];
 static K_THREAD_STACK_ARRAY_DEFINE(linkr_debugger_ws_stacks, LINKR_DEBUGGER_WS_MAX_CLIENTS,
 	LINKR_DEBUGGER_WS_STACK_SIZE);

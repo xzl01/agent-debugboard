@@ -137,11 +137,11 @@ function firmwareMemoryCaptureContract({
     && /static\s+uint8_t\s+linkr_debugger_capture_arena\s*\[\s*LINKR_DEBUGGER_CAPTURE_ARENA_BYTES\s*\]\s*__aligned\(\s*LINKR_DEBUGGER_CAPTURE_ARENA_ALIGN\s*\)/.test(captureArenaSource)
     && /max\(normal,\s*burst\)=144184 B/.test(logicAnalyzerDoc);
   const linker = /zephyr_linker_sources\(\s*RAM_SECTIONS\s+SORT_KEY\s+0\s+sections-ram\.ld\s*\)/.test(appCmake)
-    && /SECTION_PROLOGUE\(\s*\.bss\.pre_capture\s*,\s*\(\s*NOLOAD\s*\)[\s\S]*?KEEP\(\s*\*\(\s*\.bss\.pre_capture\.sigrok_runtime\s*\)\s*\)[\s\S]*?KEEP\(\s*\*\(\s*\.bss\.pre_capture\.ws_clients\s*\)\s*\)[\s\S]*?GROUP_NOLOAD_LINK_IN\(\s*RAMABLE_REGION\s*,\s*RAMABLE_REGION\s*\)[\s\S]*?ASSERT\(\s*SIZEOF\(\s*\.bss\.pre_capture\s*\)\s*==\s*0xDA40/.test(sectionsRam)
+    && /SECTION_PROLOGUE\(\s*\.bss\.pre_capture\s*,\s*\(\s*NOLOAD\s*\)[\s\S]*?KEEP\(\s*\*\(\s*\.bss\.pre_capture\.sigrok_runtime\s*\)\s*\)[\s\S]*?KEEP\(\s*\*\(\s*\.bss\.pre_capture\.ws_clients\s*\)\s*\)[\s\S]*?GROUP_NOLOAD_LINK_IN\(\s*RAMABLE_REGION\s*,\s*RAMABLE_REGION\s*\)[\s\S]*?ASSERT\(\s*SIZEOF\(\s*\.bss\.pre_capture\s*\)\s*==\s*0xDA80/.test(sectionsRam)
     && /ASSERT\(\s*__data_region_end\s*<=\s*0x20010000/.test(sectionsRam)
     && /ASSERT\(\s*__bss_start\s*==\s*0x20010000/.test(sectionsRam)
     && /ASSERT\(\s*\(\s*__bss_start\s*&\s*0x7fff\s*\)\s*==\s*0/.test(sectionsRam);
-  const imageBudget = /ASSERT\(\s*_flash_used\s*<=\s*0xCCFD8\s*,\s*"[^"]*8192\s+B\s+of\s+847832\s+B[^"]*"\s*\)/.test(sectionsRom)
+  const imageBudget = /ASSERT\(\s*_flash_used\s*<=\s*0xCBFD8\s*,\s*"[^"]*8192\s+B\s+of\s+843736\s+B[^"]*"\s*\)/.test(sectionsRom)
     && /ASSERT\(\s*_image_ram_size\s*<=\s*0x7A000\s*,\s*"[^"]*32768\s+B\s+of\s+532480\s+B[^"]*"\s*\)/.test(sectionsRam);
   const sigrok = /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_RING_BUFFER_BYTES\s+32768U\b/.test(sigrokHeader)
     && /#define\s+LINKR_DEBUGGER_SIGROK_LINKR_STREAM_QDEPTH_LIMIT\s+32U\b/.test(sigrokHeader)
@@ -162,7 +162,7 @@ function firmwareMemoryCaptureContract({
     && /#define\s+LINKR_DEBUGGER_WS_SEND_BUFFER_SIZE\s+6144U?\b/.test(wsSource)
     && /Z_GENERIC_SECTION\(\s*\.bss\.pre_capture\.ws_clients\s*\)/.test(wsSource)
     && !/section\(\s*"\.bss\.pre_capture\.ws_clients"\s*\)/.test(wsSource)
-    && /BUILD_ASSERT\(\s*sizeof\(\s*linkr_debugger_ws_clients\s*\)\s*==\s*28704U\s*\)/.test(wsSource)
+    && /BUILD_ASSERT\(\s*sizeof\(\s*linkr_debugger_ws_clients\s*\)\s*==\s*28768U\s*\)/.test(wsSource)
     && /static\s+struct\s+linkr_debugger_ws_client_sidecar\s+linkr_debugger_ws_client_sidecars\s*\[\s*LINKR_DEBUGGER_WS_SIDECAR_COUNT\s*\]\s*;/.test(wsSource)
     && !/linkr_debugger_ws_client_sidecars[\s\S]{0,80}Z_GENERIC_SECTION/.test(wsSource)
     && /BUILD_ASSERT\(\s*sizeof\(\s*struct\s+linkr_debugger_ws_client_sidecar\s*\)\s*==\s*1096U/.test(wsSource)

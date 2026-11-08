@@ -495,17 +495,14 @@
 
 	/* J4 target UART: TX = GPIO10, RX = GPIO11 (UART1 alternate function),
 	 * serviced by the project-owned serial runtime.
-	 * Use the raw pinmux cell: this Zephyr tree's UART1_*_P10 helpers
-	 * reference an undefined RP2_PINCTRL_GPIO_FUNC_UART_ALT symbol, while
-	 * RP2350 names function 11 RP2_PINCTRL_GPIO_FUNC_UART_AUX.
 	 */
 	uart1_default: uart1_default {
 		tx_pins {
-			pinmux = <RP2XXX_PINMUX(10, RP2_PINCTRL_GPIO_FUNC_UART_AUX)>;
+			pinmux = <UART1_TX_P10>;
 		};
 
 		rx_pins {
-			pinmux = <RP2XXX_PINMUX(11, RP2_PINCTRL_GPIO_FUNC_UART_AUX)>;
+			pinmux = <UART1_RX_P11>;
 			input-enable;
 		};
 	};

@@ -13,7 +13,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3]
 APP_PATH = ROOT / "apps/radxa_linkr_debugger"
 DRIVER_PATH = APP_PATH / "src/i2c_rpi_pico_pio.c"
-OVERLAY_PATH = APP_PATH / "boards/rpi_pico2_rp2350a_m33.overlay"
+OVERLAY_PATH = APP_PATH / "boards/rpi_pico2_rp2350a_m33_0.overlay"
 BINDING_PATH = APP_PATH / "dts/bindings/i2c/raspberrypi,pico-pio-i2c.yaml"
 PRJ_CONF_PATH = APP_PATH / "prj.conf"
 HARDWARE_DOC_PATH = ROOT / "docs/reference/hardware-x1.2.md"

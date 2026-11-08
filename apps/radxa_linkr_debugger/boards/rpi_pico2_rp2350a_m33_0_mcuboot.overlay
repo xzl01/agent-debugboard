@@ -5,4 +5,4 @@
  * Copyright (c) Jiali Chen <chenjiali@radxa.com>
  */
 
-#include "rpi_pico2_rp2350a_m33.overlay"
+#include "rpi_pico2_rp2350a_m33_0.overlay"

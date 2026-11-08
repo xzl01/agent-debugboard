@@ -7,7 +7,7 @@
 当前目标板是 `RA051_MB_X1.2`，MCU 为 RP2354A（QFN-60，内核与引脚兼容
 RP2350A）。G2 / RP2040 已退役，不再参与构建、发布、维护和 HIL 覆盖。
 
-构建仍复用上游 `rpi_pico2/rp2350a/m33/mcuboot` board 定义。x1.2 不贴装外部
+构建仍复用上游 `rpi_pico2/rp2350a/m33_0/mcuboot` board 定义。x1.2 不贴装外部
 QSPI `U23`，使用 2 MB 内部 Flash。4 MB sysbuild 分区布局只是把 storage 分区
 声明得更大，不会把实际数据放到 2 MB 之后；若要切换到 2 MB 布局，需要仓库内的
 MCUboot board。权威板级说明见

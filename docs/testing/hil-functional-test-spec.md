@@ -42,11 +42,11 @@ on”和“host 首次 mutation 再次确认 on”。
 ### 构建
 
 ```sh
-west build -p always -b rpi_pico2/rp2350a/m33/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
+west build -p always -b rpi_pico2/rp2350a/m33_0/mcuboot --sysbuild apps/radxa_linkr_debugger -d build/radxa_linkr_debugger
 ```
 
 完整 build 必须通过硬资源门禁：至少保留 **8 KiB Flash** 和 **32 KiB RAM**
-（`_flash_used <= 0xCCFD8`，`_image_ram_size <= 0x7A000`）。固件内嵌 Web 资源使用
+（`_flash_used <= 0xCBFD8`，`_image_ram_size <= 0x7A000`）。固件内嵌 Web 资源使用
 **Zopfli 1.0.3 标准 gzip**，`mtime=0`、无 optional header，并且必须可复现；不得
 改用 Brotli 或让 `file2hex` 再次压缩。缺少 `zopfli` 的 build 视为失败。
 
@@ -2721,13 +2721,13 @@ timeout 30s curl -sS -o /tmp/linkr-ota-error.json -w '%{http_code}\n' -X POST \
    ```sh
    mkdir -p docs/testing/results/2026-08-28-watchdog-rollback-fault-injection-hil/fault-baseline \
      docs/testing/results/2026-08-28-watchdog-rollback-fault-injection-hil/fault-candidate
-   west build -p always -b rpi_pico2/rp2350a/m33/mcuboot \
+   west build -p always -b rpi_pico2/rp2350a/m33_0/mcuboot \
      --sysbuild apps/radxa_linkr_debugger \
      -d build/radxa_linkr_debugger \
      -- -DEXTRA_CONF_FILE="$PWD/apps/radxa_linkr_debugger/prj-fault.conf"
    cp build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 \
      docs/testing/results/2026-08-28-watchdog-rollback-fault-injection-hil/fault-baseline/
-   west build -p always -b rpi_pico2/rp2350a/m33/mcuboot \
+   west build -p always -b rpi_pico2/rp2350a/m33_0/mcuboot \
      --sysbuild apps/radxa_linkr_debugger \
      -d build/radxa_linkr_debugger \
      -- -DEXTRA_CONF_FILE="$PWD/apps/radxa_linkr_debugger/prj-fault-candidate.conf"

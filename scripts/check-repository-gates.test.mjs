@@ -131,7 +131,7 @@ async function optimizedMemoryContents() {
   KEEP(*(.bss.pre_capture.sigrok_runtime))
   KEEP(*(.bss.pre_capture.ws_clients))
 } GROUP_NOLOAD_LINK_IN(RAMABLE_REGION, RAMABLE_REGION)
-ASSERT(SIZEOF(.bss.pre_capture) == 0xDA40, "pre-capture size")
+ASSERT(SIZEOF(.bss.pre_capture) == 0xDA80, "pre-capture size")
 ASSERT(__data_region_end <= 0x20010000, "pre-capture start")
 ASSERT(__bss_start == 0x20010000, "generic BSS start")
 ASSERT((__bss_start & 0x7fff) == 0, "generic BSS alignment")
@@ -155,7 +155,7 @@ ASSERT(_image_ram_size <= 0x7A000, "RAM image exceeds 499712 B: _image_ram_size 
   let wsSource = contents.get(WS_SOURCE);
   wsSource = appendIfMissing(wsSource, "Z_GENERIC_SECTION(.bss.pre_capture.ws_clients)", `static struct linkr_debugger_ws_client linkr_debugger_ws_clients
   Z_GENERIC_SECTION(.bss.pre_capture.ws_clients);`);
-  wsSource = appendIfMissing(wsSource, "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28704U)", "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28704U);");
+  wsSource = appendIfMissing(wsSource, "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28768U)", "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28768U);");
   wsSource = appendIfMissing(wsSource, "linkr_debugger_ws_client_sidecars[LINKR_DEBUGGER_WS_SIDECAR_COUNT]", `static struct linkr_debugger_ws_client_sidecar
   linkr_debugger_ws_client_sidecars[LINKR_DEBUGGER_WS_SIDECAR_COUNT];
 BUILD_ASSERT(sizeof(struct linkr_debugger_ws_client_sidecar) == 1096U);
@@ -863,13 +863,13 @@ test("rejects every firmware memory optimization contract regression", async (t)
   const baseline = await optimizedMemoryContents();
   const cases = [
     ["RAM linker registration", APP_CMAKE, "zephyr_linker_sources(RAM_SECTIONS SORT_KEY 0 sections-ram.ld)", "zephyr_linker_sources(SECTIONS sections-ram.ld)"],
-    ["flash image budget", ROM_SECTIONS, "ASSERT(_flash_used <= 0xCCFD8", "ASSERT(_flash_used <= 0xCCFD9"],
+    ["flash image budget", ROM_SECTIONS, "ASSERT(_flash_used <= 0xCBFD8", "ASSERT(_flash_used <= 0xCBFD9"],
     ["RAM image budget", RAM_SECTIONS, "ASSERT(_image_ram_size <= 0x7A000", "ASSERT(_image_ram_size <= 0x7A001"],
     ["pre-capture NOBITS section", RAM_SECTIONS, "SECTION_PROLOGUE(.bss.pre_capture, (NOLOAD),)", "SECTION_PROLOGUE(.bss.pre_capture, (),)"],
     ["Sigrok pre-capture linker section", RAM_SECTIONS, ".bss.pre_capture.sigrok_runtime", ".bss.pre_capture.other"],
     ["WS pre-capture linker section", RAM_SECTIONS, ".bss.pre_capture.ws_clients", ".bss.pre_capture.other"],
     ["pre-capture no-load group", RAM_SECTIONS, "GROUP_NOLOAD_LINK_IN(RAMABLE_REGION, RAMABLE_REGION)", "GROUP_LINK_IN(RAMABLE_REGION)"],
-    ["pre-capture size assertion", RAM_SECTIONS, "ASSERT(SIZEOF(.bss.pre_capture) == 0xDA40", "ASSERT(SIZEOF(.bss.pre_capture) == 0xDA41"],
+    ["pre-capture size assertion", RAM_SECTIONS, "ASSERT(SIZEOF(.bss.pre_capture) == 0xDA80", "ASSERT(SIZEOF(.bss.pre_capture) == 0xDA81"],
     ["pre-capture start assertion", RAM_SECTIONS, "ASSERT(__data_region_end <= 0x20010000", "ASSERT(__data_region_end <= 0x2000ffff"],
     ["generic BSS start assertion", RAM_SECTIONS, "ASSERT(__bss_start == 0x20010000", "ASSERT(__bss_start == 0x20010001"],
     ["generic BSS alignment assertion", RAM_SECTIONS, "(__bss_start & 0x7fff)", "(__bss_start & 0x3fff)"],
@@ -907,7 +907,7 @@ test("rejects every firmware memory optimization contract regression", async (t)
     ["Sigrok sequence restore", SIGROK_SOURCE, "linkr_debugger_sigrok_linkr_runtime.next_sequence_id = 1U", "linkr_debugger_sigrok_linkr_runtime.next_sequence_id = 0U"],
     ["Sigrok server stack", SIGROK_SOURCE, "static K_THREAD_STACK_DEFINE(server_stack, 2048U)", "static K_THREAD_STACK_DEFINE(server_stack, 2049U)"],
     ["WS pre-capture placement", WS_SOURCE, "Z_GENERIC_SECTION(.bss.pre_capture.ws_clients)", "__attribute__((section(\".bss.pre_capture.ws_clients\")))"],
-    ["WS clients size", WS_SOURCE, "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28704U)", "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28703U)"],
+    ["WS clients size", WS_SOURCE, "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28768U)", "BUILD_ASSERT(sizeof(linkr_debugger_ws_clients) == 28767U)"],
     ["WS sidecar placement", WS_SOURCE, "linkr_debugger_ws_client_sidecars[LINKR_DEBUGGER_WS_SIDECAR_COUNT];", "linkr_debugger_ws_client_sidecars[LINKR_DEBUGGER_WS_SIDECAR_COUNT] Z_GENERIC_SECTION(.bss.pre_capture.ws_clients);"],
     ["WS sidecar ARM slot size", WS_SOURCE, "sizeof(struct linkr_debugger_ws_client_sidecar) == 1096U", "sizeof(struct linkr_debugger_ws_client_sidecar) == 1097U"],
     ["WS sidecar ARM array size", WS_SOURCE, "sizeof(linkr_debugger_ws_client_sidecars) == 4384U", "sizeof(linkr_debugger_ws_client_sidecars) == 4385U"],

@@ -10,7 +10,7 @@ Schematics are under `docs/hardware/`.
 - MCU: **RP2354A** (QFN-60). RP2350A-compatible core and pinout.
 - External QSPI `U23` (`W25Q64JV`) is **not populated**; the board uses the
   **2 MB internal flash**.
-- The build keeps the `rpi_pico2/rp2350a/m33/mcuboot` board and the 4 MB
+- The build keeps the `rpi_pico2/rp2350a/m33_0/mcuboot` board and the 4 MB
   sysbuild partition layout. All used regions fit below 2 MB: MCUboot at
   `0x0..0x10000`, slot0 `0x10000..0xE0000`, slot1 `0xE0000..0x1B0000`,
   and one repo-owned Settings NVS partition at `0x1B0000..0x1D0000`

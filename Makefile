@@ -11,11 +11,11 @@ SHELL := /bin/sh
 
 NIX ?= nix-shell --run
 
-BOARD := rpi_pico2/rp2350a/m33/mcuboot
+BOARD := rpi_pico2/rp2350a/m33_0/mcuboot
 APP := apps/radxa_linkr_debugger
 BUILD_DIR := build/radxa_linkr_debugger
 
-PICO2_TEST_BOARD := rpi_pico2/rp2350a/m33
+PICO2_TEST_BOARD := rpi_pico2/rp2350a/m33_0
 PICO2_TEST_APP := apps/pico2_uart_swd_test
 PICO2_TEST_BUILD_DIR := build/pico2_uart_swd_test
 
