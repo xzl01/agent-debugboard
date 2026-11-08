@@ -1,9 +1,54 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { decoderWasmBindgenArgs, resolveRustCommand } from "./build-decoder-wasm.mjs";
+import {
+  decoderWasmBindgenArgs,
+  decoderWasmCargoArgs,
+  decoderWasmProfile,
+  decoderWasmRawPath,
+  resolveRustCommand,
+} from "./build-decoder-wasm.mjs";
+
+test("WASM cargo args select the dedicated profile and override crate types in Cargo", () => {
+  assert.deepEqual(decoderWasmCargoArgs({ manifest: "decoder/Cargo.toml" }), [
+    "rustc",
+    "--manifest-path",
+    "decoder/Cargo.toml",
+    "--profile",
+    "wasm-release",
+    "--target",
+    "wasm32-unknown-unknown",
+    "--features",
+    "wasm",
+    "--lib",
+    "--crate-type",
+    "cdylib",
+  ]);
+});
+
+test("raw WASM stays below decoder target in the dedicated profile directory", () => {
+  assert.equal(
+    decoderWasmRawPath("decoder"),
+    path.join("decoder", "target", "wasm32-unknown-unknown", "wasm-release", "radxa_logic_decoder.wasm")
+  );
+});
+
+test("the WASM profile enables fat LTO without changing native release or library types", async () => {
+  const manifest = await readFile(new URL("../decoder/Cargo.toml", import.meta.url), "utf8");
+  assert.equal(decoderWasmProfile, "wasm-release");
+  const profile = manifest.split(/(?=^\[)/m).find((section) => section.startsWith(`[profile.${decoderWasmProfile}]`));
+  assert.ok(profile, "dedicated WASM profile must exist");
+  assert.deepEqual(profile.trim().split(/\r?\n/).slice(1), [
+    'inherits = "release"',
+    "opt-level = 3",
+    'lto = "fat"',
+    "codegen-units = 1",
+  ]);
+  assert.doesNotMatch(manifest, /^\[profile\.release(?:\.|\])/m);
+  assert.match(manifest, /^\[lib\]\r?\ncrate-type = \["cdylib", "rlib"\]/m);
+});
 
 test("prefers the Nix PATH tool over a stale rustup home shim", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "decoder-command-"));

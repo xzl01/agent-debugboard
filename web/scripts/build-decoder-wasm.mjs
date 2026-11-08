@@ -11,8 +11,8 @@ const decoderRoot = path.join(webRoot, "decoder");
 const decoderManifest = path.join(decoderRoot, "Cargo.toml");
 const distRoot = process.env.VITE_OUT_DIR ? path.resolve(process.env.VITE_OUT_DIR) : path.join(webRoot, "dist");
 const decoderOutDir = path.join(distRoot, "assets", "decoder");
-const wasmTargetDir = path.join(decoderRoot, "target", "wasm32-unknown-unknown", "release");
-const rawWasm = path.join(wasmTargetDir, "radxa_logic_decoder.wasm");
+export const decoderWasmProfile = "wasm-release";
+const rawWasm = decoderWasmRawPath(decoderRoot);
 const outName = "logic-decoder";
 const publicJsPath = "/assets/decoder/logic-decoder.js";
 const publicWasmPath = "/assets/decoder/logic-decoder_bg.wasm";
@@ -93,6 +93,27 @@ async function ensureFile(file, message) {
   }
 }
 
+export function decoderWasmCargoArgs({ manifest }) {
+  return [
+    "rustc",
+    "--manifest-path",
+    manifest,
+    "--profile",
+    decoderWasmProfile,
+    "--target",
+    "wasm32-unknown-unknown",
+    "--features",
+    "wasm",
+    "--lib",
+    "--crate-type",
+    "cdylib",
+  ];
+}
+
+export function decoderWasmRawPath(root) {
+  return path.join(root, "target", "wasm32-unknown-unknown", decoderWasmProfile, "radxa_logic_decoder.wasm");
+}
+
 export function decoderWasmBindgenArgs({ wasm, outDir, outName }) {
   return [
     wasm,
@@ -123,16 +144,7 @@ function ensureWasmTargetInstalled() {
 
 export async function buildDecoderWasm() {
   await ensureFile(decoderManifest, `Decoder manifest not found at ${decoderManifest}`);
-  run("cargo", [
-    "build",
-    "--manifest-path",
-    decoderManifest,
-    "--release",
-    "--target",
-    "wasm32-unknown-unknown",
-    "--features",
-    "wasm",
-  ]);
+  run("cargo", decoderWasmCargoArgs({ manifest: decoderManifest }));
   await ensureFile(rawWasm, `Cargo did not produce expected decoder WASM at ${rawWasm}`);
 
   await rm(decoderOutDir, { recursive: true, force: true });

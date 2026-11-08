@@ -114,12 +114,14 @@ let
     buildPhase = ''
       runHook preBuild
       export CARGO_TARGET_DIR="$PWD/target"
-      cargo build \
+      cargo rustc \
         --manifest-path web/decoder/Cargo.toml \
         --frozen \
-        --release \
+        --profile wasm-release \
         --target ${wasmTarget} \
         --features wasm \
+        --lib \
+        --crate-type cdylib \
         -j "$NIX_BUILD_CORES"
       runHook postBuild
     '';
@@ -127,7 +129,7 @@ let
     installPhase = ''
       runHook preInstall
       wasm-bindgen \
-        "target/${wasmTarget}/release/radxa_logic_decoder.wasm" \
+        "target/${wasmTarget}/wasm-release/radxa_logic_decoder.wasm" \
         --target web \
         --out-dir "$out" \
         --out-name logic-decoder \

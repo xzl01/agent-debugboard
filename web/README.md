@@ -95,9 +95,19 @@ executable must therefore be available when building firmware from a clean
 checkout. Run
 `npm run build:firmware` directly to reproduce that fixed-asset build from the
 Web workspace; unlike the normal build, it disables JavaScript code splitting.
-The board-hosted decoder public contract is stable for the future React loader:
+The board-hosted decoder public contract keeps the same stable URLs:
 import `/assets/decoder/logic-decoder.js`, which loads
 `/assets/decoder/logic-decoder_bg.wasm` next to itself.
+
+The browser decoder uses the dedicated Cargo `wasm-release` profile: release
+optimization level 3, fat LTO and one codegen unit. The WASM build selects only
+`cdylib` through Cargo's `rustc --crate-type cdylib` option; requesting both the
+`cdylib` and `rlib` outputs in one build prevents cross-crate LTO. The manifest
+retains both crate types for native tests and other Rust consumers, whose normal
+release defaults are unchanged. Local, CI and Nix WASM builds use this same
+profile and keep the existing bindings, metadata and public asset names.
+See the [build comparison evidence](../docs/testing/results/2026-11-05-web-wasm-build-ab.md)
+for the measured scope and rejected size-only alternatives.
 
 After flashing, connect the USB NCM interface and open the board `.1` address
 of the host `/30`, or read the URL from the CDC shell `ip` command.
