@@ -182,6 +182,8 @@ stdenvNoCC.mkDerivation {
 
   installPhase = ''
     runHook preInstall
+    install -Dm644 ${../packaging/udev/70-linkr-webusb.rules} \
+      "$out/lib/udev/rules.d/70-linkr-webusb.rules"
     mkdir -p "$out/bin" "$out/share"
     ln -s ${cli}/bin/radxa-linkr-debuggerctl "$out/bin/radxa-linkr-debuggerctl"
     ln -s radxa-linkr-debuggerctl "$out/bin/rdb"

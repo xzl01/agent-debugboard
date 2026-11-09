@@ -89,6 +89,7 @@
             package="${pkgs.radxa-linkr-debuggerctl}"
             desktop="$package/share/applications/radxa-linkr-debugger.desktop"
             icon="$package/share/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg"
+            udev_rule="$package/lib/udev/rules.d/70-linkr-webusb.rules"
             test -x "$package/bin/linkr-host"
             test -x "$package/bin/linkr-tray"
             test -f "$package/share/radxa-linkr-debugger/web/index.html"
@@ -96,6 +97,9 @@
             test -s "$package/share/radxa-linkr-debugger/web/assets/decoder/logic-decoder_bg.wasm"
             test -f "$desktop"
             test -f "$icon"
+            test -f "$udev_rule"
+            test "$("${pkgs.coreutils}/bin/stat" -c '%a' "$udev_rule")" = 444
+            "${pkgs.diffutils}/bin/cmp" ${./packaging/udev/70-linkr-webusb.rules} "$udev_rule"
             ${pkgs.desktop-file-utils}/bin/desktop-file-validate "$desktop"
             grep -Fx "Name=Radxa Linkr Debugger" "$desktop"
             grep -Fx "GenericName=Hardware Debugger Control" "$desktop"
