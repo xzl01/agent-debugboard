@@ -1625,8 +1625,8 @@ production Web 形状已通过，见当日报告。ADC0 实际 PD source 物理�
 GP29 时停在第一个硬件失败、GP29 `apply_state="failed"`
 而后续 GPIO output 仍 `pending` 这两个历史 v1 snapshot 兼容子项仍
 `pending`，等待未来真实板卡 HIL。rolling nightly 检查（第 12h 节）
-与 4b 节无关，独立保持 `pending`。nightly 现仅在推送到 `dev` 分支时
-触发，每次实际 dev-push run 都保持 `pending`，直到 GitHub 在新触发
+与 4b 节无关，独立保持 `pending`。nightly 现仅在推送到 `next` 分支时
+触发，每次实际 next-push run 都保持 `pending`，直到 GitHub 在新触发
 条件下产出真实 Actions 执行 evidence（命名带日期与主题的产物/日志），
 该 evidence 在本规范当前修订时仍不存在。宿端单测
 （`cmd-ng/src/adc.rs` 与 `web/src/lib/adc.test.ts`）只证明 wire-shape
@@ -3003,9 +3003,9 @@ same NCM-assigned address.
 
 ### 12h. Rolling Nightly Prerelease Isolation
 
-`.github/workflows/nightly.yml` 仅在推送到 `dev` 分支时产出
+`.github/workflows/nightly.yml` 仅在推送到 `next` 分支时产出
 mutable `nightly` Git tag 与一个标记为 `not latest` 的 prerelease，发布一个
-固定的 9-asset 子集，并显式省略正式 Release 才包含的
+包含固件、CLI 归档、原生 Linux 包、源码归档、skill bundle 与校验清单的产物集，并显式省略正式 Release 才包含的
 `radxa-linkr-debuggerctl-rust_linux_arm64.tar.gz` Linux ARM64 CLI 归档。本节描述 nightly 通道与正式 HIL 的隔离约定，
 本身不要求任何具体实物跑分；它属于发布链路约束，避免污染既有 artifact 与
 HIL 报告。

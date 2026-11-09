@@ -91,4 +91,4 @@ NDJSON 保留完整八路归一化读数和固件提供的可选说明。
 ## Released 与 nightly 通道
 
 - 正式 release 由 GitHub `Release` workflow 在推送 `v*` tag 后产出，资产、签名策略与现有 release 一致。
-- 一条独立的滚动 nightly workflow `.github/workflows/nightly.yml` 仅在每次推送到 `dev` 分支时把可变 `nightly` Git tag 与标记为 `not latest` 的 prerelease 一同发布，覆盖固定 9 个资产（4 个固件产物、Linux AMD64 / macOS ARM64 / Windows AMD64 三份 CLI 归档、skill bundle 与 `SHA256SUMS.txt`），并在每次 run 中清理先前多余资产。nightly 是滚动且仅用于测试，不会替换正式 `v*` release；正式 release 仍多出 Linux ARM64 CLI 归档这一份、共 10 个资产，是生产交付的唯一权威来源。
+- 独立的滚动 nightly workflow `.github/workflows/nightly.yml` 在每次推送到 `next` 分支后，先执行完整仓库验证，再发布固件、CLI 归档、原生 Linux 包、skill bundle 和校验清单。它更新可变 `nightly` Git tag 与标记为 `not latest` 的 prerelease，不是定时任务。nightly 仅用于测试，不会替换正式 `v*` release；正式 release 是生产交付的权威来源。

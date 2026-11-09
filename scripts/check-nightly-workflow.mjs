@@ -11,10 +11,10 @@ const NATIVE_PAYLOADS = ["agent-debugboard-*.tar.gz", "radxa-linkr-debuggerctl_*
 const CHECKSUM_PAYLOADS = [...FIXED_PAYLOADS, ...NATIVE_PAYLOADS];
 const PAYLOAD_ARRAY = [...FIXED_PAYLOADS, '"${native_payloads[@]}"'];
 const ASSET_ARRAY = ['"${payloads[@]}"', "SHA256SUMS.txt"];
-const DEV_ONLY_TRIGGER = normalized(`on:
+const NEXT_ONLY_TRIGGER = normalized(`on:
   push:
     branches:
-      - dev
+      - next
 `);
 
 function normalized(text) { return text.replace(/\r\n?/g, "\n"); }
@@ -52,7 +52,7 @@ function rootTrigger(workflow) {
 }
 
 function checkRoot(workflow, failures) {
-  if (normalized(rootTrigger(workflow)) !== DEV_ONLY_TRIGGER) fail(failures, "W01", "requires exact push.branches: [dev] trigger");
+  if (normalized(rootTrigger(workflow)) !== NEXT_ONLY_TRIGGER) fail(failures, "W01", "requires exact push.branches: [next] trigger");
   if (!/^permissions:\s*\n  contents:\s*read\s*$/m.test(workflow)) fail(failures, "W02", "workflow permissions must be contents: read");
   if (!/^  cancel-in-progress:\s*false\s*$/m.test(workflow)) fail(failures, "W03", "concurrency cancellation must be disabled");
 }

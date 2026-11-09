@@ -13,22 +13,22 @@ const LEGACY_SCHEDULE_MANUAL_TRIGGER = `on:
     - cron: "0 3 * * *"
   workflow_dispatch:
 `;
-const DEV_PUSH_TRIGGER = `on:
+const NEXT_PUSH_TRIGGER = `on:
   push:
     branches:
-      - dev
+      - next
 `;
-const DEV_PUSH_AND_SCHEDULE_TRIGGER = `on:
+const NEXT_PUSH_AND_SCHEDULE_TRIGGER = `on:
   push:
     branches:
-      - dev
+      - next
   schedule:
     - cron: "0 3 * * *"
 `;
-const DEV_PUSH_AND_WORKFLOW_DISPATCH_TRIGGER = `on:
+const NEXT_PUSH_AND_WORKFLOW_DISPATCH_TRIGGER = `on:
   push:
     branches:
-      - dev
+      - next
   workflow_dispatch:
 `;
 const BARE_PUSH_TRIGGER = `on:
@@ -39,11 +39,16 @@ const MAIN_ONLY_PUSH_TRIGGER = `on:
     branches:
       - main
 `;
-const DEV_AND_MAIN_PUSH_TRIGGER = `on:
+const NEXT_AND_MAIN_PUSH_TRIGGER = `on:
+  push:
+    branches:
+      - next
+      - main
+`;
+const DEV_ONLY_PUSH_TRIGGER = `on:
   push:
     branches:
       - dev
-      - main
 `;
 const CANONICAL_UF2_COPY = "cp build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 release-assets/radxa-linkr-debugger-rp2350.uf2";
 const UF2_PROVENANCE_CMP = "cmp ../build/radxa_linkr_debugger/radxa-linkr-debugger-rp2350.uf2 dist/release/radxa-linkr-debugger-rp2350.uf2";
@@ -118,8 +123,8 @@ test("guard 2/4: current nightly workflow baseline passes", async () => {
   await withRepo(BASELINE, async (root) => assert.equal((await checkNightlyWorkflow(root)).ok, true));
 });
 
-test("guard 3/4: exact dev-only trigger contract", async () => {
-  await withRepo(replaceRootTrigger(BASELINE, DEV_PUSH_TRIGGER), async (root) => {
+test("guard 3/4: exact next-only trigger contract", async () => {
+  await withRepo(replaceRootTrigger(BASELINE, NEXT_PUSH_TRIGGER), async (root) => {
     const result = await checkNightlyWorkflow(root);
     assert.equal(result.ok, true, formatFailures(result.failures));
   });
@@ -134,17 +139,18 @@ test("guard 4/4: CRLF baseline survives root-trigger replacement", async () => {
 
 const TRIGGER_MUTATIONS = [
   ["rejects legacy schedule+workflow_dispatch trigger", LEGACY_SCHEDULE_MANUAL_TRIGGER],
-  ["rejects dev+schedule trigger", DEV_PUSH_AND_SCHEDULE_TRIGGER],
-  ["rejects dev+workflow_dispatch trigger", DEV_PUSH_AND_WORKFLOW_DISPATCH_TRIGGER],
+  ["rejects next+schedule trigger", NEXT_PUSH_AND_SCHEDULE_TRIGGER],
+  ["rejects next+workflow_dispatch trigger", NEXT_PUSH_AND_WORKFLOW_DISPATCH_TRIGGER],
   ["rejects bare unfiltered push trigger", BARE_PUSH_TRIGGER],
   ["rejects main-only push trigger", MAIN_ONLY_PUSH_TRIGGER],
-  ["rejects dev+main push trigger", DEV_AND_MAIN_PUSH_TRIGGER],
+  ["rejects next+main push trigger", NEXT_AND_MAIN_PUSH_TRIGGER],
+  ["rejects the former dev-only push trigger", DEV_ONLY_PUSH_TRIGGER],
 ];
 
 const ROOT_TRIGGER_REGRESSIONS = [
-  ["rejects missing root on block", "W01", replaceOnce(BASELINE, DEV_PUSH_TRIGGER, "")],
-  ["rejects two root on blocks before permissions", "W01", replaceOnce(BASELINE, DEV_PUSH_TRIGGER, `${DEV_PUSH_TRIGGER}${MAIN_ONLY_PUSH_TRIGGER}`)],
-  ["rejects second root on block after permissions", "W01", replaceOnce(replaceRootTrigger(BASELINE, DEV_PUSH_TRIGGER), "\npermissions:\n  contents: read\n", `\npermissions:\n  contents: read\n\n${MAIN_ONLY_PUSH_TRIGGER}`)],
+  ["rejects missing root on block", "W01", replaceOnce(BASELINE, NEXT_PUSH_TRIGGER, "")],
+  ["rejects two root on blocks before permissions", "W01", replaceOnce(BASELINE, NEXT_PUSH_TRIGGER, `${NEXT_PUSH_TRIGGER}${MAIN_ONLY_PUSH_TRIGGER}`)],
+  ["rejects second root on block after permissions", "W01", replaceOnce(replaceRootTrigger(BASELINE, NEXT_PUSH_TRIGGER), "\npermissions:\n  contents: read\n", `\npermissions:\n  contents: read\n\n${MAIN_ONLY_PUSH_TRIGGER}`)],
 ];
 
 const MUTATIONS = [
