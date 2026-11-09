@@ -133,7 +133,7 @@ The flake exposes two user-facing packages and one development overlay:
 
 | Package | What it is | Source of truth |
 |---|---|---|
-| `radxa-linkr-debuggerctl` | One Rust binary plus a relative symlink `rdb -> radxa-linkr-debuggerctl` | `nix/package.nix`, exported via `nix/overlay.nix` and `flake.nix` |
+| `radxa-linkr-debuggerctl` | CLI/TUI with the relative `rdb` symlink, Host/Tray, Web assets, desktop files, and the Linux WebUSB udev rule | `nix/package.nix`, exported via `nix/overlay.nix` and `flake.nix` |
 | `openocd-latest` | A pinned CH347-enabled OpenOCD build (upstream commit `da3920b0a52dc2d394afb222c688dac7e57acc1b`); executable name is `openocd` | `nix/openocd-latest.nix`, exported via `nix/overlay.nix` and `flake.nix` |
 | `overlays.default` | Adds both packages to a Nixpkgs import | `nix/overlay.nix` |
 
@@ -186,6 +186,15 @@ pattern:
 ```
 
 See `docs/user/openocd.md` for the OpenOCD workflow and reset caveats.
+
+On NixOS, also add `pkgs.radxa-linkr-debuggerctl` to
+`services.udev.packages` in the system configuration to enable the packaged
+`70-linkr-webusb.rules`. Installing the package with `nix profile install` or
+entering `nix shell` does not activate system udev rules. The rule is installed
+from the single `packaging/udev/70-linkr-webusb.rules` source at the top-level
+package boundary; it is not a Rust dependency or a firmware boot default.
+See [Linux WebUSB permissions](../user/install.md#linux-webusb-permissions) for
+the active-seat access scope and reconnect requirement.
 
 ## Manual Workflow (Without Nix)
 

@@ -45,6 +45,11 @@ Notifications remain best-effort: browser policy, USB access permissions and
 platform support apply, particularly Windows/WinUSB. No vendor data interface is
 added, and this feature does not convert HTTP/WS control into WebUSB transport.
 
+On Linux, enable the [packaged WebUSB access rule](install.md#linux-webusb-permissions)
+before reconnecting the board with the browser running. Without device access,
+the browser can enumerate the board but cannot read its landing URL. The rule
+does not guarantee a notification or deploy the Pages guide.
+
 ## How captive-portal hints work
 
 The board uses DHCP option 114 and HTTP detection endpoints to trigger the OS

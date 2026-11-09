@@ -67,3 +67,16 @@ WebUSB notifications are optional browser behavior, not an auto-open guarantee.
 Linux USB access permissions and Windows WinUSB requirements can affect whether
 the browser reads the URL. Adding this BOS capability alone does not establish
 cross-platform notification support.
+
+Linux host packages carry the single `packaging/udev/70-linkr-webusb.rules`
+source: native CLI packages install it under `/usr/lib/udev/rules.d/`, while the
+Nix desktop package carries it under `$out/lib/udev/rules.d/`. Its `uaccess`
+grant is device read/write access for the active local desktop user, not a
+GET_URL-only permission. Firmware-only packages and user-level installers do
+not enable it. NixOS requires `services.udev.packages`; see
+[Linux WebUSB permissions](../user/install.md#linux-webusb-permissions).
+
+Reconnect with the browser running after enabling access, when interruption is
+safe. Linux descriptor discovery needs to open the USB device before reading
+the landing URL. A missing Pages guide can cause a 404 after clicking a
+notification, but the URL's HTTP reachability is not a notification prerequisite.

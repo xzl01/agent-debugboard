@@ -64,6 +64,35 @@ PowerShell 使用 `./scripts/install-host.ps1`。可加 `--no-start`、
 `--no-autostart` 或 `--prefix DIR`；PowerShell 对应 `-NoStart`、
 `-NoAutostart` 和 `-Prefix`。
 
+## Linux WebUSB 访问权限
+
+原生 `radxa-linkr-debuggerctl` DEB、RPM 和 Arch 包会安装
+`/usr/lib/udev/rules.d/70-linkr-webusb.rules`；仅固件包不包含该规则。
+规则通过 `uaccess` 向当前本地活动桌面用户授予 Linkr USB 设备（`2fe3:db01`）
+的读写权限，并不只限于 WebUSB GET_URL 请求。ACL 按当前本地用户的 UID 生效，
+不隔离浏览器或会话；仅有 SSH 或无活动桌面的登录不会建立这项授权，但同一已获
+授权 UID 下的其他进程仍可访问设备。
+
+Nix 包携带同一规则，但 NixOS 必须在系统配置中显式启用。若系统 `pkgs`
+已使用本仓库 overlay，可在 NixOS 模块中加入：
+
+```nix
+{ pkgs, ... }: {
+  environment.systemPackages = [ pkgs.radxa-linkr-debuggerctl ];
+  services.udev.packages = [ pkgs.radxa-linkr-debuggerctl ];
+}
+```
+
+通过平时的 NixOS 部署流程应用配置。`nix profile install`、`nix shell`
+以及用户级桌面/skill 安装器不会启用系统 udev 规则；参见
+[Nix 包接入说明](../developer/build.md#nix-package-boundary)。
+
+规则安装或启用后，保持浏览器运行，在允许中断连接时重新插拔板卡；USB 供电的
+板卡会因此重启。本项目不添加复位板卡或重启浏览器的 hook；Arch 现有 systemd
+包管理器 hook 在安装规则时还可能重放系统范围的 udev `change` 事件，本包不替换
+该系统策略。通知仍受浏览器检测和
+桌面设置限制；通知链接要能打开，还需另行部署 Pages 引导页。
+
 ## 从 GitHub Releases 下载
 
 从[项目 GitHub Releases](https://github.com/xzl01/agent-debugboard/releases)

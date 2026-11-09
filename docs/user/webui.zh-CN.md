@@ -39,6 +39,10 @@ Pages 须发布包含 `connect.html` 和 `connect.js` 的版本；刷固件不�
 通知仍为 best-effort，受浏览器策略、USB 访问权限和平台支持限制，尤其是 Windows/
 WinUSB。此功能不增加 vendor 数据接口，也不把 HTTP/WS 控制迁移到 WebUSB。
 
+Linux 请先启用[随包提供的 WebUSB 访问规则](install.zh-CN.md#linux-webusb-访问权限)，
+再保持浏览器运行并重新插拔板卡。没有设备访问权限时，浏览器可能已枚举板卡，
+却无法读取引导 URL。安装规则不等于通知一定出现，也不会发布 Pages 引导页。
+
 ## 强制门户发现
 
 固件通过 DHCP option 114 和 HTTP 检测端点辅助操作系统打开调试板 Web UI，

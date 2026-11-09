@@ -71,6 +71,38 @@ Use `./scripts/install-host.ps1` on PowerShell. Optional switches are
 `--no-start`, `--no-autostart`, and `--prefix DIR`; PowerShell uses `-NoStart`,
 `-NoAutostart`, and `-Prefix`.
 
+## Linux WebUSB permissions
+
+The native `radxa-linkr-debuggerctl` DEB, RPM, and Arch packages install
+`/usr/lib/udev/rules.d/70-linkr-webusb.rules`. The firmware-only package does not.
+The rule grants read/write access to Linkr USB devices (`2fe3:db01`) to the active
+local desktop user through `uaccess`; it is not limited to the WebUSB GET_URL
+request. The ACL applies to the active local user's UID, not to an individual
+browser or session. An SSH-only/headless login does not establish this grant;
+other processes using an already-authorized UID can still access the device.
+
+On NixOS, the Nix package carries the same rule but must be enabled in the
+system configuration. With this repository's overlay in the system's `pkgs`:
+
+```nix
+{ pkgs, ... }: {
+  environment.systemPackages = [ pkgs.radxa-linkr-debuggerctl ];
+  services.udev.packages = [ pkgs.radxa-linkr-debuggerctl ];
+}
+```
+
+Apply that configuration through your normal NixOS deployment. `nix profile
+install`, `nix shell`, and the user-level desktop/skill installers do not enable
+system udev rules. See the [Nix package setup](../developer/build.md#nix-package-boundary).
+
+After installing or enabling the rule, keep the browser running and reconnect
+the board when it is safe to interrupt its connections. Reconnecting a
+USB-powered board restarts it. This project adds no reset or browser restart
+hook. Arch's existing systemd package-manager hook may also replay udev `change`
+events system-wide when rules are installed; it is not replaced by this package.
+Notifications still depend on browser detection and desktop settings;
+the Pages guide must also be deployed before its link can be used.
+
 ## Download from GitHub Releases
 
 Download the matching archive for your platform from the
