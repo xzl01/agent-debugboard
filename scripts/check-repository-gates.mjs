@@ -42,6 +42,7 @@ export const POLICY_FILES = Object.freeze([
   "debian/control",
   "debian/rules",
   "packaging/radxa-linkr-debugger.desktop",
+  "packaging/udev/70-linkr-webusb.rules",
   "packaging/redhat/radxa-linkr-debugger.spec",
   "packaging/archlinux/PKGBUILD",
   "web/public/linkr-mark.svg",
@@ -51,6 +52,12 @@ const REQUIRED_GATE_NEEDS = Object.freeze([
   "source", "version-gate", "decoder", "nix", "web", "desktop-release", "scripts", "windows-installer",
   "firmware", "host-cli", "host-tools", "skill-bundle",
 ]);
+
+const WEBUSB_UDEV_RULE = [
+  "# Allow the active local desktop user to read Linkr WebUSB landing-page descriptors.",
+  'SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2fe3", ATTR{idProduct}=="db01", TAG+="uaccess"',
+  "",
+].join("\n");
 
 function job(workflow, name) {
   const body = workflow.slice(Math.max(0, workflow.search(/^jobs:\s*$/m)));
@@ -181,7 +188,7 @@ function firmwareMemoryCaptureContract({
     && /Local\s+unit tests and CI gates are not HIL/.test(docsIndex);
 }
 
-function nativePackageReleaseContract({ release, nightly, nativePackages, nixPackage, desktopEntry, desktopIcon, debianControl, debianRules, rpmSpec, pkgbuild }) {
+function nativePackageReleaseContract({ release, nightly, nativePackages, flake, nixPackage, desktopEntry, desktopIcon, webusbUdevRule, debianControl, debianRules, rpmSpec, pkgbuild }) {
   const firmwareFiles = [
     "radxa-linkr-debugger-rp2350.uf2",
     "radxa-linkr-debugger-rp2350-ota.bin",
@@ -263,11 +270,63 @@ function nativePackageReleaseContract({ release, nightly, nativePackages, nixPac
     && archCli.includes("$pkgdir/usr/share/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg");
   const nixDesktop = nixPackage.includes("$out/share/applications/radxa-linkr-debugger.desktop")
     && nixPackage.includes("$out/share/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg");
+  const udevRuleName = "70-linkr-webusb.rules";
+  const udevRuleInstallPath = `usr/lib/udev/rules.d/${udevRuleName}`;
+  const canonicalUdevRule = webusbUdevRule === WEBUSB_UDEV_RULE;
+  const debianUdevRule = debianRules.includes(`install -Dm644 packaging/udev/${udevRuleName}`)
+    && debianRules.includes(`debian/radxa-linkr-debuggerctl/${udevRuleInstallPath}`)
+    && !debianRules.includes(`debian/radxa-linkr-debugger-firmware/${udevRuleInstallPath}`);
+  const rpmFirmwareFiles = rpmSpec.slice(rpmSpec.indexOf("%files -n radxa-linkr-debugger-firmware"));
+  const rpmUdevInstallPaths = [
+    `%{buildroot}/usr/lib/udev/rules.d/${udevRuleName}`,
+    `%{buildroot}%{_prefix}/lib/udev/rules.d/${udevRuleName}`,
+    `%{buildroot}%{_udevrulesdir}/${udevRuleName}`,
+  ];
+  const rpmUdevFilePaths = [
+    `/usr/lib/udev/rules.d/${udevRuleName}`,
+    `%{_prefix}/lib/udev/rules.d/${udevRuleName}`,
+    `%{_udevrulesdir}/${udevRuleName}`,
+  ];
+  const rpmUdevRule = rpmSpec.includes(`install -Dm644 packaging/udev/${udevRuleName}`)
+    && rpmUdevInstallPaths.some((destination) => rpmSpec.includes(destination))
+    && rpmUdevFilePaths.some((destination) => rpmMainFiles.includes(destination))
+    && !rpmFirmwareFiles.includes(udevRuleName);
+  const archUdevRule = archCli.includes(`packaging/udev/${udevRuleName}`)
+    && archCli.includes(`$pkgdir/${udevRuleInstallPath}`)
+    && !pkgbuild.slice(archFirmwareStart).includes(udevRuleName);
+  const nixTopLevel = nixPackage.slice(nixPackage.indexOf("stdenvNoCC.mkDerivation"));
+  const nixUdevSource = `\${../packaging/udev/${udevRuleName}}`;
+  const nixUdevRule = nixTopLevel.includes(nixUdevSource)
+    && nixTopLevel.includes(`$out/lib/udev/rules.d/${udevRuleName}`)
+    && nixPackage.split(`../packaging/udev/${udevRuleName}`).length === 2;
+  const nixUdevVerification = flake.includes(`$package/lib/udev/rules.d/${udevRuleName}`)
+    && flake.includes(`stat" -c '%a' "$udev_rule")" = 444`)
+    && flake.includes(`cmp" \${./packaging/udev/${udevRuleName}} "$udev_rule"`);
+  const nativeUdevVerification = [
+    "native-package-files-debian-firmware.txt",
+    "native-package-files-rpm-firmware.txt",
+    "native-package-files-arch-firmware.txt",
+    `usr/lib/udev/rules.d/${udevRuleName}`,
+    `cmp packaging/udev/${udevRuleName}`,
+    `stat -c '%a' "$deb_extract/usr/lib/udev/rules.d/${udevRuleName}"`,
+    `sha256sum /work/app/packaging/udev/${udevRuleName}`,
+    `expected=$(sha256sum "/work/app/packaging/udev/${udevRuleName}" | cut -d" " -f1)`,
+    `actual=$(sha256sum "$extract/usr/lib/udev/rules.d/${udevRuleName}" | cut -d" " -f1)`,
+    `test "$actual" = "$expected"`,
+    `stat -c "%a" "$extract/usr/lib/udev/rules.d/${udevRuleName}"`,
+  ].every((marker) => nativePackages.includes(marker))
+    && /for listing in "\$deb_cli_listing" "\$rpm_cli_listing" "\$arch_cli_listing"/.test(nativePackages)
+    && /for listing in "\$deb_firmware_listing" "\$rpm_firmware_listing" "\$arch_firmware_listing"/.test(nativePackages)
+    && nativePackages.includes(`grep -q 'usr/lib/udev/rules.d/${udevRuleName}' "$listing"`)
+    && nativePackages.includes("usr/lib/udev/rules.d/|web/")
+    && /test "\$2" = 0100644/.test(nativePackages);
   return twoPackages && payloads && noBundledDesktopRuntime && nativeTools
     && compatibilityBaselines && sourceNaming && sourceLineage
     && sourceChecksums && exactArchOutputs && releaseAssets && sharedArtifact
     && desktopPackageVerification && desktopFields && desktopSources
-    && debianDesktop && rpmDesktop && archDesktop && nixDesktop;
+    && debianDesktop && rpmDesktop && archDesktop && nixDesktop
+    && canonicalUdevRule && debianUdevRule && rpmUdevRule && archUdevRule
+    && nixUdevRule && nixUdevVerification && nativeUdevVerification;
 }
 
 export function checkRepositoryGateContents(contents) {
@@ -309,6 +368,7 @@ export function checkRepositoryGateContents(contents) {
   const debianControl = contents.get("debian/control") ?? "";
   const debianRules = contents.get("debian/rules") ?? "";
   const desktopEntry = contents.get("packaging/radxa-linkr-debugger.desktop") ?? "";
+  const webusbUdevRule = contents.get("packaging/udev/70-linkr-webusb.rules") ?? "";
   const desktopIcon = contents.get("web/public/linkr-mark.svg") ?? "";
   const rpmSpec = contents.get("packaging/redhat/radxa-linkr-debugger.spec") ?? "";
   const pkgbuild = contents.get("packaging/archlinux/PKGBUILD") ?? "";
@@ -457,8 +517,8 @@ export function checkRepositoryGateContents(contents) {
   })) {
     fail(failures, "G18", "apps/radxa_linkr_debugger/{CMakeLists.txt,sections-rom.ld,sections-ram.ld,prj.conf,src/*} + docs/{README.md,reference/logic-analyzer.md}", "firmware memory and capture layout must retain approved flash/RAM image reserve budgets, capacities, pre-capture NOBITS initialization, stack targets, disabled features, and non-HIL documentation");
   }
-  if (!nativePackageReleaseContract({ release, nightly, nativePackages, nixPackage, desktopEntry, desktopIcon, debianControl, debianRules, rpmSpec, pkgbuild })) {
-    fail(failures, "G19", "debian/ + nix/ + packaging/{redhat,archlinux}/ + .github/workflows/{native-packages,release,nightly}.yml", "Debian/RPM/Arch must emit separate CLI and safe complete-firmware packages without Web/Host/tray payloads; Nix must install the shared launcher; release workflows must publish all six native package families");
+  if (!nativePackageReleaseContract({ release, nightly, nativePackages, flake, nixPackage, desktopEntry, desktopIcon, webusbUdevRule, debianControl, debianRules, rpmSpec, pkgbuild })) {
+    fail(failures, "G19", "debian/ + nix/ + packaging/{udev,redhat,archlinux}/ + .github/workflows/{native-packages,release,nightly}.yml", "Debian/RPM/Arch must emit separate CLI and safe complete-firmware packages, install the canonical scoped WebUSB udev rule only in CLI packages, and exclude Web/Host/tray payloads; Nix must install the launcher and rule; release workflows must publish all six native package families");
   }
   if (!/release_notes="docs\/releases\/\$\{RELEASE_TAG%%-\*\}\.md"/.test(release)
       || !/release_flags=\(\)/.test(release)

@@ -21,6 +21,7 @@ const NIGHTLY_WORKFLOW = ".github/workflows/nightly.yml";
 const NATIVE_PACKAGES_WORKFLOW = ".github/workflows/native-packages.yml";
 const NIX_PACKAGE = "nix/package.nix";
 const DESKTOP_ENTRY = "packaging/radxa-linkr-debugger.desktop";
+const WEBUSB_UDEV_RULE = "packaging/udev/70-linkr-webusb.rules";
 const DEBIAN_CONTROL = "debian/control";
 const DEBIAN_RULES = "debian/rules";
 const RPM_SPEC = "packaging/redhat/radxa-linkr-debugger.spec";
@@ -548,6 +549,7 @@ test("loads auxiliary workflows for action pin validation", () => {
   assert.ok(POLICY_FILES.includes(NATIVE_PACKAGES_WORKFLOW));
   assert.ok(POLICY_FILES.includes(NIX_PACKAGE));
   assert.ok(POLICY_FILES.includes(DESKTOP_ENTRY));
+  assert.ok(POLICY_FILES.includes(WEBUSB_UDEV_RULE));
 });
 
 test("rejects a Pages validation source SHA override", async () => {
@@ -802,6 +804,17 @@ test("requires native packages without a desktop stack and allows the Nix deskto
     false,
   );
   const cases = [
+    ["WebUSB udev rule", WEBUSB_UDEV_RULE, 'SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2fe3", ATTR{idProduct}=="db01", TAG+="uaccess"', ""],
+    ["WebUSB udev device scope", WEBUSB_UDEV_RULE, 'ATTR{idProduct}=="db01", ', ""],
+    ["Debian CLI WebUSB udev rule", DEBIAN_RULES, "debian/radxa-linkr-debuggerctl/usr/lib/udev/rules.d/70-linkr-webusb.rules", "debian/radxa-linkr-debugger-firmware/usr/lib/udev/rules.d/70-linkr-webusb.rules"],
+    ["RPM CLI WebUSB udev rule", RPM_SPEC, "/usr/lib/udev/rules.d/70-linkr-webusb.rules", "/usr/share/udev/rules.d/70-linkr-webusb.rules", true],
+    ["Arch CLI WebUSB udev rule", PKGBUILD, "$pkgdir/usr/lib/udev/rules.d/70-linkr-webusb.rules", "$pkgdir/usr/share/udev/rules.d/70-linkr-webusb.rules"],
+    ["Nix WebUSB udev rule source", NIX_PACKAGE, "${../packaging/udev/70-linkr-webusb.rules}", "packaging/udev/70-linkr-webusb.rules"],
+    ["Nix WebUSB udev content verification", "flake.nix", '"${pkgs.diffutils}/bin/cmp" ${./packaging/udev/70-linkr-webusb.rules}', "true #"],
+    ["CI CLI WebUSB udev listing", NATIVE_PACKAGES_WORKFLOW, "            grep -q 'usr/lib/udev/rules.d/70-linkr-webusb.rules' \"$listing\"\n", ""],
+    ["CI firmware WebUSB udev exclusion", NATIVE_PACKAGES_WORKFLOW, "usr/lib/udev/rules.d/|web/", "web/"],
+    ["CI WebUSB udev content verification", NATIVE_PACKAGES_WORKFLOW, "sha256sum /work/app/packaging/udev/70-linkr-webusb.rules", "sha256sum /dev/null"],
+    ["CI Arch WebUSB udev content verification", NATIVE_PACKAGES_WORKFLOW, 'actual=$(sha256sum "$extract/usr/lib/udev/rules.d/70-linkr-webusb.rules" | cut -d" " -f1)', 'actual="$expected"'],
     ["Debian firmware package", DEBIAN_CONTROL, "Package: radxa-linkr-debugger-firmware", "Package: removed-firmware"],
     ["Debian combined UF2", DEBIAN_RULES, "radxa-linkr-debugger-rp2350.uf2", "zephyr.uf2", true],
     ["RPM firmware subpackage", RPM_SPEC, "%package -n radxa-linkr-debugger-firmware", "%package -n removed-firmware"],
