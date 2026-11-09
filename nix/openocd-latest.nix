@@ -18,6 +18,6 @@ openocd.overrideAttrs (old: {
   ];
   postInstall = (old.postInstall or "") + ''
     "$out/bin/openocd" -c "adapter list" -c shutdown 2>&1 \
-      | grep -Eq '(^|[[:space:]])ch347([[:space:]]|$)'
+      | grep -E '(^|[[:space:]])ch347([[:space:]]|$)' >/dev/null
   '';
 })
