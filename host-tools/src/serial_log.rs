@@ -1041,7 +1041,7 @@ fn directory_size(root: &Path) -> Result<u64> {
 }
 
 fn subtract_atomic(value: &AtomicU64, amount: u64) {
-    let _ = value.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let _ = value.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_sub(amount))
     });
 }
@@ -1109,6 +1109,22 @@ pub fn default_log_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subtract_atomic_saturates_without_wrapping() {
+        for (initial, amount, expected) in [
+            (0, 1, 0),
+            (3, 5, 0),
+            (3, 0, 3),
+            (10, 3, 7),
+            (u64::MAX, u64::MAX, 0),
+            (u64::MAX, 1, u64::MAX - 1),
+        ] {
+            let value = AtomicU64::new(initial);
+            subtract_atomic(&value, amount);
+            assert_eq!(value.load(Ordering::Relaxed), expected);
+        }
+    }
 
     fn config(root: PathBuf, segment_bytes: u64) -> SerialLogConfig {
         SerialLogConfig {
