@@ -487,9 +487,36 @@ mod tests {
         BoardMonitoring, MonitoringAvailability, MonitoringCpu, MonitoringHeap, MonitoringMemory,
         MonitoringRuntime, MonitoringTemperature,
     };
-    use std::net::TcpListener;
+    use std::io;
+    use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::thread;
+    use std::time::{Duration, Instant};
     use tungstenite::{accept, Message};
+
+    const TEST_SERVER_TIMEOUT: Duration = Duration::from_secs(2);
+
+    fn accept_test_connection(
+        listener: &TcpListener,
+    ) -> io::Result<Option<(TcpStream, SocketAddr)>> {
+        listener.set_nonblocking(true)?;
+        let deadline = Instant::now() + TEST_SERVER_TIMEOUT;
+        loop {
+            match listener.accept() {
+                Ok((stream, peer)) => {
+                    stream.set_nonblocking(false)?;
+                    stream.set_read_timeout(Some(TEST_SERVER_TIMEOUT))?;
+                    stream.set_write_timeout(Some(TEST_SERVER_TIMEOUT))?;
+                    return Ok(Some((stream, peer)));
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error),
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
 
     #[test]
     fn status_switches_parse_legacy_and_dynamic_metadata() {
@@ -611,23 +638,51 @@ mod tests {
     }
 
     #[test]
-    fn discovered_ws_binds_the_selected_nondefault_loopback_source() {
+    fn discovered_ws_binds_the_selected_configured_loopback_source() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
-            let (stream, peer) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-                .unwrap();
+            let (stream, peer) = accept_test_connection(&listener)
+                .unwrap()
+                .expect("websocket client did not reach the test server before the deadline");
             let _socket = accept(stream).unwrap();
             peer.ip()
         });
-        let local_ip = "127.0.0.2".parse().unwrap();
+        let local_ip = "127.0.0.1".parse().unwrap();
         let target = crate::client::BoardTarget::direct(format!("http://{address}"), local_ip);
         let client = WsClient::with_ws_url(target, format!("ws://{address}/api/v1/ws/0"));
-        client.connect().unwrap();
+        let result = client.connect();
+        let peer_ip = server.join().unwrap();
+        result.unwrap();
+        assert_eq!(peer_ip, std::net::IpAddr::V4(local_ip));
         client.close().unwrap();
-        assert_eq!(server.join().unwrap(), std::net::IpAddr::V4(local_ip));
+    }
+
+    #[test]
+    fn discovered_ws_rejects_an_unassigned_selected_source() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let Some((stream, _)) = accept_test_connection(&listener).unwrap() else {
+                return false;
+            };
+            let _socket = accept(stream).unwrap();
+            true
+        });
+        let local_ip = "192.0.2.1".parse().unwrap();
+        let target = crate::client::BoardTarget::direct(format!("http://{address}"), local_ip);
+        let client = WsClient::with_ws_url(target, format!("ws://{address}/api/v1/ws/0"));
+        let result = client.connect();
+        let reached_server = server.join().unwrap();
+
+        assert!(
+            !reached_server,
+            "client reached the server after selecting unassigned source {local_ip}"
+        );
+        assert!(
+            result.is_err(),
+            "client ignored unassigned selected source {local_ip}"
+        );
     }
 
     #[test]
@@ -637,7 +692,6 @@ mod tests {
             atomic::{AtomicBool, Ordering},
             Arc,
         };
-        use std::time::{Duration, Instant};
 
         for direct in [false, true] {
             for status in [301, 302, 303, 307, 308] {
@@ -669,26 +723,27 @@ mod tests {
                     }
                 });
                 let redirect = thread::spawn(move || {
-                    let (mut stream, _) = first.accept().unwrap();
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
-                        .unwrap();
+                    let Some((mut stream, _)) = accept_test_connection(&first).unwrap() else {
+                        return false;
+                    };
                     let mut request = [0u8; 4096];
                     assert!(stream.read(&mut request).unwrap() > 0);
                     write!(stream, "HTTP/1.1 {status} Redirect\r\nLocation: ws://{second_address}/other-service\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    true
                 });
                 let mut target =
                     crate::client::BoardTarget::from(format!("http://{first_address}"));
                 if direct {
-                    target.local_ip = Some("127.0.0.2".parse().unwrap());
+                    target.local_ip = Some("127.0.0.1".parse().unwrap());
                 }
                 let client =
                     WsClient::with_ws_url(target, format!("ws://{first_address}/api/v1/ws/0"));
                 let result = client.connect();
                 done.store(true, Ordering::SeqCst);
-                redirect.join().unwrap();
+                let reached_redirect = redirect.join().unwrap();
                 let connected_elsewhere = other_service.join().unwrap();
                 assert!(!connected_elsewhere, "direct={direct} status={status}");
+                assert!(reached_redirect, "direct={direct} status={status}");
                 let error = result.unwrap_err().to_string();
                 assert!(error.contains(&status.to_string()), "{error}");
                 assert!(!client.is_connected());
@@ -701,8 +756,10 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
-        thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = accept_test_connection(&listener)
+                .unwrap()
+                .expect("websocket client did not reach the test server before the deadline");
             let mut socket = accept(stream).unwrap();
             let msg = socket.read().unwrap();
             let text = match msg {
@@ -775,12 +832,13 @@ mod tests {
         let client = WsClient::with_ws_url("http://172.29.203.1".to_string(), ws_url);
         client.connect().unwrap();
         client.send(&subscribe_request(60)).unwrap();
-        let raw = rx.recv().unwrap();
+        let raw = rx.recv_timeout(TEST_SERVER_TIMEOUT).unwrap();
         let got: WsCommandRequest = serde_json::from_str(&raw).unwrap();
         assert_eq!(got.message_type, "subscribe");
         assert_eq!(got.topic.as_deref(), Some("live"));
         assert_eq!(got.rate_hz, Some(60));
         assert_eq!(got.batch_size, None);
+        server.join().unwrap();
     }
 
     #[test]
@@ -1017,8 +1075,10 @@ mod tests {
     fn recv_parses_result_message() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = accept_test_connection(&listener)
+                .unwrap()
+                .expect("websocket client did not reach the test server before the deadline");
             let mut socket = accept(stream).unwrap();
             socket
                 .send(Message::Text(
@@ -1046,14 +1106,17 @@ mod tests {
             }
             _ => panic!("expected result message"),
         }
+        server.join().unwrap();
     }
 
     #[test]
     fn recv_parses_telemetry_without_http_envelope_fields() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = accept_test_connection(&listener)
+                .unwrap()
+                .expect("websocket client did not reach the test server before the deadline");
             let mut socket = accept(stream).unwrap();
             socket
                 .send(Message::Text(
@@ -1088,5 +1151,6 @@ mod tests {
             }
             _ => panic!("expected telemetry message"),
         }
+        server.join().unwrap();
     }
 }

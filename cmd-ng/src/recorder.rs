@@ -366,11 +366,47 @@ mod tests {
     use super::*;
     use crate::json_contract::JSON_SCHEMA;
     use serde_json::Value;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::io::{self, Read, Write};
+    use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
     use std::sync::mpsc;
     use std::thread;
     use tungstenite::{accept, Message};
+
+    const NETWORK_TEST_TIMEOUT: Duration = Duration::from_secs(2);
+
+    fn accept_test_connection(
+        listener: &TcpListener,
+    ) -> io::Result<Option<(TcpStream, SocketAddr)>> {
+        listener.set_nonblocking(true)?;
+        let deadline = Instant::now() + NETWORK_TEST_TIMEOUT;
+        loop {
+            match listener.accept() {
+                Ok((stream, peer)) => {
+                    stream.set_nonblocking(false)?;
+                    stream.set_read_timeout(Some(NETWORK_TEST_TIMEOUT))?;
+                    stream.set_write_timeout(Some(NETWORK_TEST_TIMEOUT))?;
+                    return Ok(Some((stream, peer)));
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error),
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn available_loopback_source() -> Ipv4Addr {
+        let nondefault = Ipv4Addr::new(127, 0, 0, 2);
+        match TcpListener::bind((nondefault, 0)) {
+            Ok(listener) => {
+                drop(listener);
+                nondefault
+            }
+            Err(_) => Ipv4Addr::LOCALHOST,
+        }
+    }
 
     #[test]
     fn recorder_subscribes_at_requested_rate_and_preserves_it_in_ndjson() {
@@ -922,17 +958,16 @@ mod tests {
             let http_address = http.local_addr().unwrap();
             let ws = TcpListener::bind("127.0.0.1:0").unwrap();
             let ws_address = ws.local_addr().unwrap();
-            let local_ip = "127.0.0.2".parse::<std::net::Ipv4Addr>().unwrap();
+            let local_ip = available_loopback_source();
             let http_server = thread::spawn(move || {
                 let mut peers = Vec::new();
                 for method in [
                     "POST /api/v1/live-sessions ",
                     "DELETE /api/v1/live-sessions/42 ",
                 ] {
-                    let (mut stream, peer) = http.accept().unwrap();
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
-                        .unwrap();
+                    let Some((mut stream, peer)) = accept_test_connection(&http).unwrap() else {
+                        break;
+                    };
                     let request = read_http_request(&mut stream);
                     assert!(request.starts_with(method), "{request}");
                     peers.push(peer.ip());
@@ -942,10 +977,7 @@ mod tests {
                 peers
             });
             let ws_server = thread::spawn(move || {
-                let (mut stream, peer) = ws.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
+                let (mut stream, peer) = accept_test_connection(&ws).unwrap()?;
                 if ws_failure {
                     let _ = read_http_request(&mut stream);
                     stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
@@ -960,7 +992,7 @@ mod tests {
                         ))
                         .unwrap();
                 }
-                peer.ip()
+                Some(peer.ip())
             });
             let target = BoardTarget::direct(format!("http://{http_address}"), local_ip);
             let path = temp_file_path(if ws_failure {
@@ -976,13 +1008,51 @@ mod tests {
                 10,
             );
             let _ = std::fs::remove_file(path);
+            let http_peers = http_server.join().unwrap();
+            let ws_peer = ws_server.join().unwrap();
+
             assert_eq!(result.is_err(), ws_failure, "{result:?}");
-            assert_eq!(
-                http_server.join().unwrap(),
-                [std::net::IpAddr::V4(local_ip); 2]
-            );
-            assert_eq!(ws_server.join().unwrap(), std::net::IpAddr::V4(local_ip));
+            assert_eq!(http_peers, [std::net::IpAddr::V4(local_ip); 2]);
+            assert_eq!(ws_peer, Some(std::net::IpAddr::V4(local_ip)));
         }
+    }
+
+    #[test]
+    fn record_target_rejects_an_unassigned_source_before_create() {
+        let http = TcpListener::bind("127.0.0.1:0").unwrap();
+        let http_address = http.local_addr().unwrap();
+        let http_server = thread::spawn(move || {
+            let Some((mut stream, _)) = accept_test_connection(&http).unwrap() else {
+                return false;
+            };
+            let request = read_http_request(&mut stream);
+            assert!(
+                request.starts_with("POST /api/v1/live-sessions "),
+                "{request}"
+            );
+            true
+        });
+        let local_ip = Ipv4Addr::new(192, 0, 2, 1);
+        let target = BoardTarget::direct(format!("http://{http_address}"), local_ip);
+        let path = temp_file_path("unassigned-source");
+        let result = record_adc_ws_to_file(
+            target,
+            NETWORK_TEST_TIMEOUT,
+            path.to_str().unwrap(),
+            Some(1),
+            10,
+        );
+        let _ = std::fs::remove_file(path);
+        let reached_server = http_server.join().unwrap();
+
+        assert!(
+            !reached_server,
+            "create request reached the server after selecting unassigned source {local_ip}"
+        );
+        assert!(
+            result.is_err(),
+            "recorder ignored unassigned selected source {local_ip}"
+        );
     }
 
     fn temp_file_path(name: &str) -> std::path::PathBuf {
