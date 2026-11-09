@@ -155,7 +155,8 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-musl'
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-user-static
+          sudo apt-get install -y --no-install-recommends qemu-user
+          command -v qemu-aarch64
 
       - name: Build Rust release binary
         shell: bash
@@ -181,8 +182,8 @@ jobs:
           expected_version="${{ needs.resolve.outputs.normalized_tag }}"
           expected_version="${expected_version#v}"
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
-            qemu-aarch64-static "${{ matrix.binary_path }}" --help
-            version_output="$(qemu-aarch64-static "${{ matrix.binary_path }}" --version)"
+            qemu-aarch64 "${{ matrix.binary_path }}" --help
+            version_output="$(qemu-aarch64 "${{ matrix.binary_path }}" --version)"
           else
             "${{ matrix.binary_path }}" --help
             version_output="$("${{ matrix.binary_path }}" --version)"

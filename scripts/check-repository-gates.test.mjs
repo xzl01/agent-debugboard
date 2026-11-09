@@ -242,6 +242,24 @@ test("firmware rebuilds install and verify Zopfli before building, including rel
   }
 });
 
+test("ARM64 host CLI smoke tests use the matching portable QEMU package and executable", async (t) => {
+  const baseline = await repositoryContents();
+  assert.deepEqual(checkRepositoryGateContents(baseline), { ok: true, failures: [] });
+
+  for (const relative of [BUILD_WORKFLOW, RELEASE_WORKFLOW]) {
+    for (const [name, before, after] of [
+      ["legacy package name", "sudo apt-get install -y --no-install-recommends qemu-user", "sudo apt-get install -y qemu-user-static"],
+      ["legacy executable name", "qemu-aarch64 \"${{ matrix.binary_path }}\"", "qemu-aarch64-static \"${{ matrix.binary_path }}\""],
+    ]) {
+      await t.test(`${relative}: rejects ${name}`, () => {
+        const result = checkRepositoryGateContents(mutationAll(baseline, relative, before, after));
+        assert.equal(result.ok, false);
+        assert.ok(result.failures.some(({ code }) => code === "G12"));
+      });
+    }
+  }
+});
+
 test("make check retains the local Host/decoder/version CI subset without firmware races", async (t) => {
   const baseline = await repositoryContents();
   for (const target of ["host-fmt", "host-clippy", "host-test", "decoder-fmt", "decoder-clippy", "decoder-test", "version-check"]) {

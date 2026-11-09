@@ -540,7 +540,8 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-musl'
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-user-static
+          sudo apt-get install -y --no-install-recommends qemu-user
+          command -v qemu-aarch64
 
       - name: Check formatting
         run: cargo fmt --manifest-path cmd-ng/Cargo.toml --all --check
@@ -573,8 +574,8 @@ jobs:
             cargo build --locked --release --manifest-path cmd-ng/Cargo.toml
           fi
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
-            qemu-aarch64-static "${{ matrix.binary_path }}" --help
-            qemu-aarch64-static "${{ matrix.binary_path }}" --version
+            qemu-aarch64 "${{ matrix.binary_path }}" --help
+            qemu-aarch64 "${{ matrix.binary_path }}" --version
           else
             "${{ matrix.binary_path }}" --help
             "${{ matrix.binary_path }}" --version

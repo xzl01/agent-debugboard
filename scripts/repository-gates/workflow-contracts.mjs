@@ -174,6 +174,19 @@ function sourceGateContract(build) {
     && needs(gate).includes("source");
 }
 
+function arm64EmulatorContract(workflow, jobName, runStepName) {
+  const jobBody = job(workflow, jobName);
+  const install = steps(jobBody).find((step) => step.startsWith("      - name: Install ARM64 emulator\n")) ?? "";
+  const run = steps(jobBody).find((step) => step.startsWith(`      - name: ${runStepName}\n`)) ?? "";
+  return /^        if: matrix\.target == 'aarch64-unknown-linux-musl'\s*$/m.test(install)
+    && /^          sudo apt-get install -y --no-install-recommends qemu-user\s*$/m.test(install)
+    && /^          command -v qemu-aarch64\s*$/m.test(install)
+    && run.includes('qemu-aarch64 "${{ matrix.binary_path }}" --help')
+    && run.includes('qemu-aarch64 "${{ matrix.binary_path }}" --version')
+    && !`${install}\n${run}`.includes("qemu-user-static")
+    && !`${install}\n${run}`.includes("qemu-aarch64-static");
+}
+
 function nativePackageSourceContract(nativePackages) {
   const nativeJobs = jobs(nativePackages);
   const build = job(nativePackages, "native-packages");
@@ -241,5 +254,7 @@ export function checkWorkflowContracts({ build, release, nativePackages, pages, 
   return sourceGateContract(build) && releaseSourceContract(release) && nativePackageSourceContract(nativePackages)
     && externalActionsArePinned(build) && externalActionsArePinned(release) && externalActionsArePinned(nativePackages)
     && externalActionsArePinned(pages) && externalActionsArePinned(versionBump)
-    && permanentGateContract(build, makefile);
+    && permanentGateContract(build, makefile)
+    && arm64EmulatorContract(build, "host-cli", "Smoke test Rust host CLI build")
+    && arm64EmulatorContract(release, "rust-cli-release", "Build Rust release binary");
 }
