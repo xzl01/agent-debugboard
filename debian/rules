@@ -29,6 +29,8 @@ override_dh_auto_install:
 		"$(CURDIR)/debian/radxa-linkr-debuggerctl/usr/share/applications/radxa-linkr-debugger.desktop"
 	install -Dm644 web/public/linkr-mark.svg \
 		"$(CURDIR)/debian/radxa-linkr-debuggerctl/usr/share/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg"
+	install -Dm644 packaging/udev/70-linkr-webusb.rules \
+		"$(CURDIR)/debian/radxa-linkr-debuggerctl/usr/lib/udev/rules.d/70-linkr-webusb.rules"
 	install -Dm644 "$(INPUT_DIR)/radxa-linkr-debugger-rp2350.uf2" \
 		"$(CURDIR)/debian/radxa-linkr-debugger-firmware/usr/share/radxa-linkr-debugger/firmware/radxa-linkr-debugger-rp2350.uf2"
 	install -Dm644 "$(INPUT_DIR)/radxa-linkr-debugger-rp2350-ota.bin" \

@@ -1,0 +1,2 @@
+# Allow the active local desktop user to read Linkr WebUSB landing-page descriptors.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2fe3", ATTR{idProduct}=="db01", TAG+="uaccess"

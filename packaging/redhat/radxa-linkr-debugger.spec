@@ -51,6 +51,8 @@ install -Dm644 packaging/radxa-linkr-debugger.desktop \
     %{buildroot}%{_datadir}/applications/radxa-linkr-debugger.desktop
 install -Dm644 web/public/linkr-mark.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg
+install -Dm644 packaging/udev/70-linkr-webusb.rules \
+    %{buildroot}/usr/lib/udev/rules.d/70-linkr-webusb.rules
 install -Dm644 %{SOURCE2} \
     %{buildroot}%{_datadir}/radxa-linkr-debugger/firmware/radxa-linkr-debugger-rp2350.uf2
 install -Dm644 %{SOURCE3} \
@@ -71,6 +73,7 @@ test ! -e zephyr.uf2
 %{_bindir}/rdb
 %{_datadir}/applications/radxa-linkr-debugger.desktop
 %{_datadir}/icons/hicolor/scalable/apps/radxa-linkr-debugger.svg
+/usr/lib/udev/rules.d/70-linkr-webusb.rules
 
 %files -n radxa-linkr-debugger-firmware
 %license LICENSE COPYING COPYING.LESSER
